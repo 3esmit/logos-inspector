@@ -1,0 +1,8 @@
+/target/
+/ui/node_modules/
+/ui/.env
+/.env
+*.log
+*.tmp
+.DS_Store
+

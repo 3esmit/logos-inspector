@@ -1,0 +1,11 @@
+{
+  "name": "lez-inspect-ui",
+  "version": "0.1.0",
+  "description": "Local web UI for LEZ Inspect",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js && node --check public/app.js"
+  }
+}
