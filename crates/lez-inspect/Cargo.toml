@@ -1,0 +1,28 @@
+[package]
+name = "lez-inspect"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Command-line inspector for Logos Execution Zone networks"
+publish = false
+
+[dependencies]
+amm_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "cf3639d8252040d13b3d4e933feb19b42c76e14a" }
+base64 = "0.22"
+borsh = "1.6"
+common = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "cf3639d8252040d13b3d4e933feb19b42c76e14a" }
+hex = "0.4"
+k256 = { version = "0.13.3", features = ["ecdsa-core"] }
+nssa = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "cf3639d8252040d13b3d4e933feb19b42c76e14a", features = ["test-utils"] }
+nssa_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "cf3639d8252040d13b3d4e933feb19b42c76e14a" }
+rand = "0.8.5"
+risc0-binfmt = "3.0.4"
+sequencer_service_rpc = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "cf3639d8252040d13b3d4e933feb19b42c76e14a", features = ["client"] }
+serde = "1"
+serde_json = "1"
+sha2 = "0.10.8"
+tokio = { version = "1", features = ["rt-multi-thread"] }
+token_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "cf3639d8252040d13b3d4e933feb19b42c76e14a" }
+wallet = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "cf3639d8252040d13b3d4e933feb19b42c76e14a" }

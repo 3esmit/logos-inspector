@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>LEZ Inspect</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="side">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">
+            <span></span><span></span><span></span>
+          </div>
+          <div>
+            <div class="brand-title">LEZ Inspect</div>
+            <div class="brand-subtitle" id="cliState">checking</div>
+          </div>
+        </div>
+
+        <nav class="nav" aria-label="Sections">
+          <button class="nav-item is-active" data-view="overview">Overview</button>
+          <button class="nav-item" data-view="blocks">Blocks</button>
+          <button class="nav-item" data-view="transactions">Transactions</button>
+          <button class="nav-item" data-view="accounts">Accounts</button>
+          <button class="nav-item" data-view="programs">Programs</button>
+          <button class="nav-item" data-view="indexer">Indexer</button>
+          <button class="nav-item" data-view="idl">IDL</button>
+          <button class="nav-item" data-view="rpc">RPC</button>
+          <button class="nav-item" data-view="cli">CLI</button>
+        </nav>
+
+        <form class="endpoint-form" id="endpointForm">
+          <label for="endpointInput">Sequencer</label>
+          <input id="endpointInput" name="endpoint" spellcheck="false">
+          <label for="indexerEndpointInput">Indexer</label>
+          <input id="indexerEndpointInput" name="indexerEndpoint" spellcheck="false">
+          <button type="submit">Connect</button>
+        </form>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div>
+            <div class="eyebrow">LEZ operations</div>
+            <h1 id="viewTitle">Overview</h1>
+          </div>
+          <div class="top-actions">
+            <button class="secondary" id="refreshBtn" type="button">Refresh</button>
+            <button class="secondary" id="buildBtn" type="button">Build CLI</button>
+          </div>
+        </header>
+
+        <section class="view is-active" id="view-overview">
+          <div class="metrics">
+            <article class="metric">
+              <span>Sequencer head</span>
+              <strong id="headMetric">-</strong>
+            </article>
+            <article class="metric">
+              <span>Indexer finalized</span>
+              <strong id="indexerHeadMetric">-</strong>
+            </article>
+            <article class="metric">
+              <span>Latest status</span>
+              <strong id="latestStatusMetric">-</strong>
+            </article>
+            <article class="metric">
+              <span>CLI</span>
+              <strong id="cliMetric">-</strong>
+            </article>
+          </div>
+
+          <article class="panel">
+            <div class="panel-head">
+              <h2>Recent sequencer blocks</h2>
+              <form class="head-window-form" id="overviewWindowForm">
+                <label>
+                  Window
+                  <input id="overviewWindowInput" value="8" inputmode="numeric">
+                </label>
+                <button class="secondary" type="submit">Scan head</button>
+              </form>
+            </div>
+            <div class="rail" id="boundaryRail" aria-label="Block status rail"></div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Block</th>
+                    <th>Status</th>
+                    <th>UTC</th>
+                    <th>Transactions</th>
+                  </tr>
+                </thead>
+                <tbody id="boundaryRows"></tbody>
+              </table>
+            </div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-head">
+              <h2>Built-in programs</h2>
+              <button class="secondary" id="loadProgramIdsBtn" type="button">Load</button>
+            </div>
+            <div class="program-grid" id="programGrid"></div>
+          </article>
+        </section>
+
+        <section class="view" id="view-blocks">
+          <div class="tool-grid">
+            <article class="panel">
+              <div class="panel-head">
+                <h2>Block inspector</h2>
+                <div class="segmented">
+                  <button type="button" id="prevBlockBtn">Prev</button>
+                  <button type="button" id="nextBlockBtn">Next</button>
+                </div>
+              </div>
+              <form class="form-row" id="blockForm">
+                <label>
+                  Block ID
+                  <input id="blockIdInput" inputmode="numeric" placeholder="latest">
+                </label>
+                <button type="submit">Inspect</button>
+              </form>
+              <div class="result-panel" id="blockResult"></div>
+            </article>
+
+            <article class="panel">
+              <div class="panel-head">
+                <h2>Range scan</h2>
+                <button class="secondary" id="scanCurrentHeadBtn" type="button">Head window</button>
+              </div>
+              <form class="form-row three" id="rangeForm">
+                <label>
+                  Start
+                  <input id="rangeStartInput" inputmode="numeric">
+                </label>
+                <label>
+                  End
+                  <input id="rangeEndInput" inputmode="numeric">
+                </label>
+                <button type="submit">Scan</button>
+              </form>
+              <div class="rail" id="rangeRail" aria-label="Range status rail"></div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Block</th>
+                      <th>Status</th>
+                      <th>Tx</th>
+                      <th>Timestamp</th>
+                    </tr>
+                  </thead>
+                  <tbody id="rangeRows"></tbody>
+                </table>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section class="view" id="view-transactions">
+          <div class="tool-grid">
+            <article class="panel">
+              <div class="panel-head">
+                <h2>Sequencer transaction</h2>
+              </div>
+              <form class="form-row" id="txForm">
+                <label>
+                  Hash
+                  <input id="txHashInput" spellcheck="false">
+                </label>
+                <button type="submit">Fetch</button>
+              </form>
+              <div class="result-panel" id="txResult"></div>
+            </article>
+
+            <article class="panel">
+              <div class="panel-head">
+                <h2>Indexer transaction</h2>
+              </div>
+              <form class="form-row" id="indexerTxForm">
+                <label>
+                  Hash
+                  <input id="indexerTxHashInput" spellcheck="false">
+                </label>
+                <button type="submit">Fetch</button>
+              </form>
+              <div class="result-panel" id="indexerTxResult"></div>
+            </article>
+          </div>
+        </section>
+
+        <section class="view" id="view-accounts">
+          <article class="panel">
+            <div class="panel-head">
+              <h2>Account lookup</h2>
+              <button class="secondary" id="clearAccountBtn" type="button">Clear</button>
+            </div>
+            <form class="account-form" id="accountForm">
+              <label class="wide">
+                Account ID
+                <input id="accountIdInput" spellcheck="false">
+              </label>
+              <label>
+                Source
+                <select id="accountSource">
+                  <option value="sequencer">Sequencer</option>
+                  <option value="indexer">Indexer</option>
+                </select>
+              </label>
+              <label>
+                IDL account
+                <select id="accountIdlType">
+                  <option value="">Auto</option>
+                </select>
+              </label>
+              <button type="submit">Inspect</button>
+            </form>
+            <div class="result-panel" id="accountResult"></div>
+          </article>
+        </section>
+
+        <section class="view" id="view-programs">
+          <div class="tool-grid">
+            <article class="panel">
+              <div class="panel-head">
+                <h2>Program file</h2>
+              </div>
+              <form class="program-form" id="programFileForm">
+                <label class="wide">
+                  Local path
+                  <input id="programPathInput" spellcheck="false" placeholder="/path/to/program.bin">
+                </label>
+                <label>
+                  Action
+                  <select id="programFileMode">
+                    <option value="program-id">Program ID</option>
+                    <option value="hash-deploy">Deploy hash</option>
+                  </select>
+                </label>
+                <button type="submit">Run</button>
+              </form>
+              <div class="result-panel" id="programFileResult"></div>
+            </article>
+
+            <article class="panel">
+              <div class="panel-head">
+                <h2>RPC program IDs</h2>
+                <button class="secondary" id="loadProgramsPanelBtn" type="button">Load</button>
+              </div>
+              <div class="program-grid" id="programsPanelGrid"></div>
+            </article>
+          </div>
+        </section>
+
+        <section class="view" id="view-indexer">
+          <div class="tool-grid">
+            <article class="panel">
+              <div class="panel-head">
+                <h2>Indexer status</h2>
+                <button class="secondary" id="indexerStatusBtn" type="button">Check</button>
+              </div>
+              <div class="result-panel" id="indexerStatusResult"></div>
+            </article>
+
+            <article class="panel">
+              <div class="panel-head">
+                <h2>Indexer blocks</h2>
+              </div>
+              <form class="form-row three" id="indexerBlocksForm">
+                <label>
+                  Before
+                  <input id="indexerBeforeInput" inputmode="numeric" placeholder="latest">
+                </label>
+                <label>
+                  Limit
+                  <input id="indexerLimitInput" value="10" inputmode="numeric">
+                </label>
+                <button type="submit">Load</button>
+              </form>
+              <div class="result-panel" id="indexerBlocksResult"></div>
+            </article>
+          </div>
+
+          <article class="panel">
+            <div class="panel-head">
+              <h2>Indexer lookup</h2>
+            </div>
+            <form class="indexer-form" id="indexerLookupForm">
+              <label>
+                Query type
+                <select id="indexerLookupType">
+                  <option value="block-id">Block ID</option>
+                  <option value="block-hash">Block hash</option>
+                  <option value="transaction">Transaction</option>
+                  <option value="account">Account</option>
+                  <option value="account-transactions">Account transactions</option>
+                </select>
+              </label>
+              <label class="wide">
+                Value
+                <input id="indexerLookupValue" spellcheck="false">
+              </label>
+              <label>
+                Offset
+                <input id="indexerOffsetInput" value="0" inputmode="numeric">
+              </label>
+              <label>
+                Limit
+                <input id="indexerLookupLimitInput" value="20" inputmode="numeric">
+              </label>
+              <button type="submit">Lookup</button>
+            </form>
+            <div class="result-panel" id="indexerLookupResult"></div>
+          </article>
+        </section>
+
+        <section class="view" id="view-idl">
+          <div class="tool-grid">
+            <article class="panel">
+              <div class="panel-head">
+                <h2>Program IDL</h2>
+              </div>
+              <form class="idl-form" id="idlForm">
+                <label class="wide">
+                  Program ID / label
+                  <input id="idlProgramInput" spellcheck="false" placeholder="optional program ID or local label">
+                </label>
+                <label>
+                  Artifact
+                  <select id="idlArtifactSelect"></select>
+                </label>
+                <button class="secondary" id="loadArtifactBtn" type="button">Load</button>
+                <label class="wide span-all">
+                  IDL JSON
+                  <textarea id="idlText" spellcheck="false"></textarea>
+                </label>
+                <label>
+                  File
+                  <input id="idlFileInput" type="file" accept="application/json,.json">
+                </label>
+                <button type="submit">Save IDL</button>
+              </form>
+              <div class="result-panel" id="idlResult"></div>
+            </article>
+
+            <article class="panel">
+              <div class="panel-head">
+                <h2>Mapped IDLs</h2>
+                <button class="secondary" id="clearIdlsBtn" type="button">Clear all</button>
+              </div>
+              <div class="program-grid" id="idlMapList"></div>
+            </article>
+          </div>
+        </section>
+
+        <section class="view" id="view-rpc">
+          <article class="panel">
+            <div class="panel-head">
+              <h2>Raw RPC</h2>
+              <div class="segmented">
+                <button type="button" data-rpc-sample="head">Head</button>
+                <button type="button" data-rpc-sample="programs">Programs</button>
+                <button type="button" data-rpc-sample="block">Block</button>
+                <button type="button" data-rpc-sample="health">Health</button>
+              </div>
+            </div>
+            <form class="rpc-form" id="rpcForm">
+              <label>
+                Source
+                <select id="rpcSource">
+                  <option value="sequencer">Sequencer</option>
+                  <option value="indexer">Indexer</option>
+                </select>
+              </label>
+              <label>
+                Method
+                <input id="rpcMethod" value="getLastBlockId" spellcheck="false">
+              </label>
+              <label class="wide">
+                Params JSON
+                <textarea id="rpcParams" spellcheck="false">[]</textarea>
+              </label>
+              <button type="submit">Send</button>
+            </form>
+            <div class="result-panel" id="rpcResult"></div>
+          </article>
+        </section>
+
+        <section class="view" id="view-cli">
+          <article class="panel">
+            <div class="panel-head">
+              <h2>Command runner</h2>
+              <button class="secondary" id="copyCommandBtn" type="button">Copy command</button>
+            </div>
+            <form class="cli-form" id="cliForm">
+              <label>
+                Command
+                <select id="cliCommand"></select>
+              </label>
+              <label class="wide">
+                Arguments
+                <input id="cliArgs" spellcheck="false">
+              </label>
+              <button type="submit">Run</button>
+            </form>
+            <pre class="command-preview" id="commandPreview"></pre>
+            <div class="result-panel" id="cliResult"></div>
+          </article>
+        </section>
+      </main>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
