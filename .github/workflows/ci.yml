@@ -11,20 +11,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
       - name: Install Rust
         run: rustup show
       - name: Check formatting
         run: cargo fmt --all -- --check
       - name: Install Logos circuits
         run: |
-          ./scripts/setup-circuits.sh v0.4.2 "$RUNNER_TEMP/logos-blockchain-circuits"
+          python3 scripts/setup-circuits.py v0.5.3 "$RUNNER_TEMP/logos-blockchain-circuits"
           echo "LOGOS_BLOCKCHAIN_CIRCUITS=$RUNNER_TEMP/logos-blockchain-circuits" >> "$GITHUB_ENV"
-      - name: Check Rust workspace
-        run: RISC0_SKIP_BUILD=1 cargo check --workspace
-      - name: Check UI JavaScript
-        run: |
-          node --check ui/server.js
-          node --check ui/public/app.js
+      - name: Check Rust crate
+        run: RISC0_SKIP_BUILD=1 cargo check
+      - name: Check lints
+        run: RISC0_SKIP_BUILD=1 cargo clippy --all-targets -- -D warnings
