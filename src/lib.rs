@@ -22,6 +22,7 @@ pub const TESTNET_SEQUENCER_ENDPOINT: &str = "https://testnet.lez.logos.co/";
 pub const LOCAL_SEQUENCER_ENDPOINT: &str = "http://127.0.0.1:3040/";
 pub const DEFAULT_SEQUENCER_ENDPOINT: &str = TESTNET_SEQUENCER_ENDPOINT;
 pub const DEFAULT_INDEXER_ENDPOINT: &str = "http://127.0.0.1:8779/";
+pub const DEFAULT_NODE_ENDPOINT: &str = "http://127.0.0.1:8080/";
 pub const DEFAULT_NETWORK_PROFILE: &str = "default";
 pub const CUSTOM_NETWORK_PROFILE: &str = "custom";
 pub const ACCOUNT_TRANSACTION_LIMIT: usize = 20;
@@ -32,6 +33,7 @@ pub struct NetworkProfile {
     pub label: &'static str,
     pub sequencer_endpoint: &'static str,
     pub indexer_endpoint: &'static str,
+    pub node_endpoint: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -39,6 +41,7 @@ pub struct NetworkEndpoints {
     pub profile: String,
     pub sequencer_endpoint: String,
     pub indexer_endpoint: String,
+    pub node_endpoint: String,
 }
 
 const NETWORK_PROFILES: &[NetworkProfile] = &[
@@ -47,18 +50,21 @@ const NETWORK_PROFILES: &[NetworkProfile] = &[
         label: "Testnet",
         sequencer_endpoint: DEFAULT_SEQUENCER_ENDPOINT,
         indexer_endpoint: DEFAULT_INDEXER_ENDPOINT,
+        node_endpoint: DEFAULT_NODE_ENDPOINT,
     },
     NetworkProfile {
         id: "testnet-indexer-local",
         label: "Testnet + local indexer",
         sequencer_endpoint: DEFAULT_SEQUENCER_ENDPOINT,
         indexer_endpoint: DEFAULT_INDEXER_ENDPOINT,
+        node_endpoint: DEFAULT_NODE_ENDPOINT,
     },
     NetworkProfile {
         id: "local",
         label: "Local sequencer",
         sequencer_endpoint: LOCAL_SEQUENCER_ENDPOINT,
         indexer_endpoint: DEFAULT_INDEXER_ENDPOINT,
+        node_endpoint: DEFAULT_NODE_ENDPOINT,
     },
 ];
 
@@ -71,6 +77,7 @@ pub fn resolve_network_endpoints(
     profile_id: Option<&str>,
     sequencer_url: Option<&str>,
     indexer_url: Option<&str>,
+    node_url: Option<&str>,
 ) -> Result<NetworkEndpoints> {
     let selected_profile = profile_id
         .map(str::trim)
@@ -84,15 +91,17 @@ pub fn resolve_network_endpoints(
 
     let sequencer_endpoint = sequencer_url.unwrap_or(base.sequencer_endpoint).to_owned();
     let indexer_endpoint = indexer_url.unwrap_or(base.indexer_endpoint).to_owned();
-    let has_overrides = sequencer_url.is_some() || indexer_url.is_some();
+    let node_endpoint = node_url.unwrap_or(base.node_endpoint).to_owned();
+    let has_overrides = sequencer_url.is_some() || indexer_url.is_some() || node_url.is_some();
     let profile = if has_overrides {
         if selected_profile != CUSTOM_NETWORK_PROFILE
             && sequencer_endpoint == base.sequencer_endpoint
             && indexer_endpoint == base.indexer_endpoint
+            && node_endpoint == base.node_endpoint
         {
             selected_profile.to_owned()
         } else {
-            infer_network_profile(&sequencer_endpoint, &indexer_endpoint)
+            infer_network_profile(&sequencer_endpoint, &indexer_endpoint, &node_endpoint)
                 .unwrap_or(CUSTOM_NETWORK_PROFILE)
                 .to_owned()
         }
@@ -104,6 +113,7 @@ pub fn resolve_network_endpoints(
         profile,
         sequencer_endpoint,
         indexer_endpoint,
+        node_endpoint,
     })
 }
 
@@ -111,12 +121,14 @@ pub fn resolve_network_endpoints(
 pub fn infer_network_profile(
     sequencer_endpoint: &str,
     indexer_endpoint: &str,
+    node_endpoint: &str,
 ) -> Option<&'static str> {
     NETWORK_PROFILES
         .iter()
         .find(|profile| {
             profile.sequencer_endpoint == sequencer_endpoint
                 && profile.indexer_endpoint == indexer_endpoint
+                && profile.node_endpoint == node_endpoint
         })
         .map(|profile| profile.id)
 }
@@ -143,6 +155,7 @@ fn default_network_profile() -> NetworkProfile {
         label: "Testnet",
         sequencer_endpoint: DEFAULT_SEQUENCER_ENDPOINT,
         indexer_endpoint: DEFAULT_INDEXER_ENDPOINT,
+        node_endpoint: DEFAULT_NODE_ENDPOINT,
     }
 }
 
@@ -213,9 +226,16 @@ pub struct ServiceProbe {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct NodeProbe {
+    pub endpoint: String,
+    pub consensus: ProbeField,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct OverviewReport {
     pub product: &'static str,
     pub scopes: Vec<InspectorScope>,
+    pub node: NodeProbe,
     pub sequencer: ServiceProbe,
     pub indexer: ServiceProbe,
 }
@@ -306,6 +326,8 @@ pub struct TransactionInspectionRow {
 #[derive(Debug, Clone, Serialize)]
 pub struct BlockSummary {
     pub block_id: u64,
+    pub header_hash: String,
+    pub parent_hash: String,
     pub timestamp: u64,
     pub bedrock_status: String,
     pub tx_count: usize,
@@ -341,6 +363,23 @@ pub struct AccountTransactionSummary {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct IndexerBlockReport {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub block_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub header_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bedrock_status: Option<String>,
+    pub tx_count: usize,
+    pub transactions: Vec<AccountTransactionSummary>,
+    pub raw: Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct DecodedField {
     pub path: String,
     pub value: String,
@@ -362,7 +401,10 @@ pub struct AccountIdlDecodeReport {
 #[derive(Debug, Clone, Serialize)]
 pub struct SequencerAccountIdlReport {
     pub account: AccountReport,
-    pub decode: AccountIdlDecodeReport,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decode: Option<AccountIdlDecodeReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decode_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -401,7 +443,19 @@ pub struct RawRpcReport {
     pub response: Value,
 }
 
-pub async fn overview(sequencer_endpoint: &str, indexer_endpoint: &str) -> OverviewReport {
+pub async fn overview(
+    sequencer_endpoint: &str,
+    indexer_endpoint: &str,
+    node_endpoint: &str,
+) -> OverviewReport {
+    let node = NodeProbe {
+        endpoint: node_endpoint.to_owned(),
+        consensus: match logos_node_cryptarchia_info(node_endpoint).await {
+            Ok(value) => ProbeField::ok(value),
+            Err(err) => ProbeField::err(err),
+        },
+    };
+
     let sequencer = ServiceProbe {
         endpoint: sequencer_endpoint.to_owned(),
         health: match sequencer_health(sequencer_endpoint).await {
@@ -418,28 +472,37 @@ pub async fn overview(sequencer_endpoint: &str, indexer_endpoint: &str) -> Overv
         }),
     };
 
+    let indexer_head = match raw_json_rpc(
+        indexer_endpoint,
+        "getLastFinalizedBlockId",
+        Value::Array(vec![]),
+    )
+    .await
+    {
+        Ok(value) => ProbeField::ok(value),
+        Err(err) => ProbeField::err(err),
+    };
+    let indexer_health = if indexer_head.ok {
+        ProbeField::ok("reachable")
+    } else {
+        ProbeField {
+            ok: false,
+            value: None,
+            error: indexer_head.error.clone(),
+        }
+    };
+
     let indexer = ServiceProbe {
         endpoint: indexer_endpoint.to_owned(),
-        health: match raw_json_rpc(indexer_endpoint, "checkHealth", Value::Array(vec![])).await {
-            Ok(value) => ProbeField::ok(value),
-            Err(err) => ProbeField::err(err),
-        },
-        head: match raw_json_rpc(
-            indexer_endpoint,
-            "getLastFinalizedBlockId",
-            Value::Array(vec![]),
-        )
-        .await
-        {
-            Ok(value) => ProbeField::ok(value),
-            Err(err) => ProbeField::err(err),
-        },
+        health: indexer_health,
+        head: indexer_head,
         programs: None,
     };
 
     OverviewReport {
         product: "Logos Inspector",
         scopes: inspector_scopes(),
+        node,
         sequencer,
         indexer,
     }
@@ -480,6 +543,38 @@ pub async fn sequencer_block(endpoint: &str, block_id: u64) -> Result<Option<Blo
     let block = decode_sequencer_block(encoded)
         .with_context(|| format!("failed to decode sequencer block {block_id}"))?;
     Ok(Some(block))
+}
+
+pub async fn indexer_block_by_hash(
+    endpoint: &str,
+    header_hash: &str,
+) -> Result<Option<IndexerBlockReport>> {
+    let parsed_hash = parse_hash(header_hash, "block header hash")?;
+    let response = raw_json_rpc(endpoint, "getBlockByHash", json!([parsed_hash.to_string()]))
+        .await
+        .with_context(|| format!("failed to fetch indexer block {}", parsed_hash))?;
+    let Some(result) = json_rpc_result(&response, "getBlockByHash")? else {
+        return Ok(None);
+    };
+    Ok(Some(summarize_indexer_block(result)))
+}
+
+pub async fn indexer_blocks(
+    endpoint: &str,
+    before: Option<u64>,
+    limit: u64,
+) -> Result<Vec<IndexerBlockReport>> {
+    let before = before.map_or(Value::Null, |block_id| json!(block_id));
+    let response = raw_json_rpc(endpoint, "getBlocks", json!([before, limit]))
+        .await
+        .context("failed to fetch indexer blocks")?;
+    let Some(result) = json_rpc_result(&response, "getBlocks")? else {
+        return Ok(Vec::new());
+    };
+    let blocks = result
+        .as_array()
+        .context("getBlocks result was not an array")?;
+    Ok(blocks.iter().map(summarize_indexer_block).collect())
 }
 
 pub async fn sequencer_transaction(
@@ -579,13 +674,11 @@ pub async fn sequencer_account_with_idl(
     account_type: Option<&str>,
 ) -> Result<SequencerAccountIdlReport> {
     let account = sequencer_account(endpoint, account_id).await?;
-    let decode = decode_account_data_hex_with_idl(
+    Ok(account_report_with_optional_idl_decode(
+        account,
         idl_json,
         account_type,
-        &account.data_hex,
-        Some(account_id),
-    )?;
-    Ok(SequencerAccountIdlReport { account, decode })
+    ))
 }
 
 pub async fn account_lookup_with_idl(
@@ -596,13 +689,36 @@ pub async fn account_lookup_with_idl(
     account_type: Option<&str>,
 ) -> Result<SequencerAccountIdlReport> {
     let account = account_lookup(sequencer_endpoint, indexer_endpoint, account_id).await?;
+    Ok(account_report_with_optional_idl_decode(
+        account,
+        idl_json,
+        account_type,
+    ))
+}
+
+fn account_report_with_optional_idl_decode(
+    account: AccountReport,
+    idl_json: &str,
+    account_type: Option<&str>,
+) -> SequencerAccountIdlReport {
     let decode = decode_account_data_hex_with_idl(
         idl_json,
         account_type,
         &account.data_hex,
-        Some(account_id),
-    )?;
-    Ok(SequencerAccountIdlReport { account, decode })
+        Some(&account.account_id),
+    );
+    match decode {
+        Ok(decode) => SequencerAccountIdlReport {
+            account,
+            decode: Some(decode),
+            decode_error: None,
+        },
+        Err(error) => SequencerAccountIdlReport {
+            account,
+            decode: None,
+            decode_error: Some(format!("{error:#}")),
+        },
+    }
 }
 
 pub async fn account_transactions_by_account(
@@ -900,6 +1016,36 @@ pub async fn raw_json_rpc(endpoint: &str, method: &str, params: Value) -> Result
     Ok(json)
 }
 
+pub async fn logos_node_cryptarchia_info(endpoint: &str) -> Result<Value> {
+    raw_http_json(endpoint, "/cryptarchia/info").await
+}
+
+pub async fn raw_http_json(endpoint: &str, path: &str) -> Result<Value> {
+    let endpoint = endpoint.trim_end_matches('/');
+    let path = path.trim_start_matches('/');
+    let url = format!("{endpoint}/{path}");
+    let response = reqwest::Client::new()
+        .get(&url)
+        .send()
+        .await
+        .with_context(|| format!("failed to call {url}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .await
+        .context("failed to read http response body")?;
+    let json: Value = serde_json::from_str(&text).with_context(|| {
+        format!(
+            "invalid JSON response: {}",
+            text.chars().take(400).collect::<String>()
+        )
+    })?;
+    if !status.is_success() {
+        bail!("http call `{url}` failed with status {status}: {json}");
+    }
+    Ok(json)
+}
+
 fn json_rpc_result<'a>(response: &'a Value, method: &str) -> Result<Option<&'a Value>> {
     if let Some(error) = response.get("error") {
         bail!("{method} returned JSON-RPC error: {error}");
@@ -956,6 +1102,8 @@ fn summarize_block_parts(
 ) -> BlockSummary {
     BlockSummary {
         block_id: header.block_id,
+        header_hash: header.hash.to_string(),
+        parent_hash: header.prev_block_hash.to_string(),
         timestamp: header.timestamp,
         bedrock_status: format!("{bedrock_status:?}"),
         tx_count: body.transactions.len(),
@@ -965,6 +1113,47 @@ fn summarize_block_parts(
             .map(summarize_transaction)
             .collect(),
         decode_warning,
+    }
+}
+
+fn summarize_indexer_block(value: &Value) -> IndexerBlockReport {
+    let empty = Value::Null;
+    let header = value.get("header").unwrap_or(&empty);
+    let body = value.get("body").unwrap_or(&empty);
+    let transactions = body
+        .get("transactions")
+        .or_else(|| value.get("transactions"))
+        .and_then(Value::as_array);
+    let transaction_summaries = transactions
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .map(|(index, transaction)| summarize_indexer_transaction(transaction, index))
+        .collect::<Vec<_>>();
+
+    IndexerBlockReport {
+        block_id: value_u64_any(header, &["block_id", "id", "slot", "height"])
+            .or_else(|| value_u64_any(value, &["block_id", "id", "slot", "height"])),
+        header_hash: value_string_any(header, &["hash", "header_hash", "header_id"])
+            .or_else(|| value_string_any(value, &["hash", "header_hash", "header_id"])),
+        parent_hash: value_string_any(header, &["prev_block_hash", "parent_hash", "parent_id"])
+            .or_else(|| {
+                value_string_any(
+                    value,
+                    &[
+                        "prev_block_hash",
+                        "parent_hash",
+                        "parent_id",
+                        "bedrock_parent_id",
+                    ],
+                )
+            }),
+        timestamp: value_u64_any(header, &["timestamp", "time"])
+            .or_else(|| value_u64_any(value, &["timestamp", "time"])),
+        bedrock_status: value_string_any(value, &["bedrock_status", "status"]),
+        tx_count: transactions.map_or(transaction_summaries.len(), Vec::len),
+        transactions: transaction_summaries,
+        raw: value.clone(),
     }
 }
 
@@ -1093,6 +1282,25 @@ fn value_list_u32(value: Option<&Value>) -> Vec<u32> {
             .collect(),
         None => Vec::new(),
     }
+}
+
+fn value_u64_any(value: &Value, keys: &[&str]) -> Option<u64> {
+    keys.iter().find_map(|key| {
+        value.get(*key).and_then(|value| {
+            value
+                .as_u64()
+                .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+        })
+    })
+}
+
+fn value_string_any(value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        value.get(*key).and_then(|value| {
+            let text = value_to_string(value);
+            (!text.is_empty() && text != "null").then_some(text)
+        })
+    })
 }
 
 fn split_list_string(value: &str) -> Vec<String> {
@@ -1303,7 +1511,7 @@ async fn fetch_sequencer_transaction(
     endpoint: &str,
     tx_hash: &str,
 ) -> Result<Option<LeeTransaction>> {
-    let parsed_hash = parse_hash(tx_hash)?;
+    let parsed_hash = parse_hash(tx_hash, "transaction hash")?;
     sequencer_client(endpoint)?
         .get_transaction(parsed_hash)
         .await
@@ -1742,10 +1950,14 @@ fn parse_account_id(value: &str) -> Result<AccountId> {
         .with_context(|| format!("invalid account id `{value}`"))
 }
 
-fn parse_hash(value: &str) -> Result<HashType> {
+fn parse_hash(value: &str, label: &str) -> Result<HashType> {
+    let value = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+        .unwrap_or(value);
     value
         .parse()
-        .with_context(|| format!("invalid transaction hash `{value}`"))
+        .with_context(|| format!("invalid {label} `{value}`"))
 }
 
 fn public_message_prehash(message: &PublicMessage) -> Result<[u8; 32]> {
@@ -2498,6 +2710,8 @@ mod tests {
         assert_eq!(summary.block_id, 1234);
         assert_eq!(summary.tx_count, 1);
         assert_eq!(summary.transactions.len(), 1);
+        assert_eq!(summary.header_hash.len(), 64);
+        assert_eq!(summary.parent_hash.len(), 64);
         assert_eq!(
             summary.transactions.first().map(|tx| tx.kind.as_str()),
             Some("Public")
@@ -2533,6 +2747,48 @@ mod tests {
     }
 
     #[test]
+    fn summarize_indexer_block_maps_header_hash_and_transactions() {
+        let header_hash = "ab".repeat(32);
+        let parent_hash = "cd".repeat(32);
+        let tx_hash = "ef".repeat(32);
+        let raw = serde_json::json!({
+            "header": {
+                "block_id": 44,
+                "hash": header_hash.clone(),
+                "prev_block_hash": parent_hash.clone(),
+                "timestamp": 1000
+            },
+            "body": {
+                "transactions": [{
+                    "Public": {
+                        "hash": tx_hash.clone(),
+                        "message": {
+                            "program_id": "program-1",
+                            "account_ids": ["acct-a"],
+                            "instruction_data": [1, 2]
+                        }
+                    }
+                }]
+            },
+            "bedrock_status": "Finalized"
+        });
+
+        let summary = summarize_indexer_block(&raw);
+
+        assert_eq!(summary.block_id, Some(44));
+        assert_eq!(summary.header_hash.as_deref(), Some(header_hash.as_str()));
+        assert_eq!(summary.parent_hash.as_deref(), Some(parent_hash.as_str()));
+        assert_eq!(summary.timestamp, Some(1000));
+        assert_eq!(summary.bedrock_status.as_deref(), Some("Finalized"));
+        assert_eq!(summary.tx_count, 1);
+        assert_eq!(
+            summary.transactions.first().map(|tx| tx.hash.as_str()),
+            Some(tx_hash.as_str())
+        );
+        assert_eq!(summary.raw, raw);
+    }
+
+    #[test]
     fn account_report_serializes_loaded_empty_related_transactions() {
         let report = AccountReport {
             account_id: "acct-a".to_owned(),
@@ -2556,7 +2812,7 @@ mod tests {
 
     #[test]
     fn resolve_network_endpoints_uses_default_profile_without_overrides() {
-        let endpoints = resolve_network_endpoints(None, None, None);
+        let endpoints = resolve_network_endpoints(None, None, None, None);
 
         assert!(endpoints.is_ok(), "{endpoints:?}");
         let Ok(endpoints) = endpoints else {
@@ -2565,11 +2821,12 @@ mod tests {
         assert_eq!(endpoints.profile, DEFAULT_NETWORK_PROFILE);
         assert_eq!(endpoints.sequencer_endpoint, DEFAULT_SEQUENCER_ENDPOINT);
         assert_eq!(endpoints.indexer_endpoint, DEFAULT_INDEXER_ENDPOINT);
+        assert_eq!(endpoints.node_endpoint, DEFAULT_NODE_ENDPOINT);
     }
 
     #[test]
     fn resolve_network_endpoints_uses_testnet_indexer_local_profile() {
-        let endpoints = resolve_network_endpoints(Some("testnet-indexer-local"), None, None);
+        let endpoints = resolve_network_endpoints(Some("testnet-indexer-local"), None, None, None);
 
         assert!(endpoints.is_ok(), "{endpoints:?}");
         let Ok(endpoints) = endpoints else {
@@ -2578,11 +2835,12 @@ mod tests {
         assert_eq!(endpoints.profile, "testnet-indexer-local");
         assert_eq!(endpoints.sequencer_endpoint, DEFAULT_SEQUENCER_ENDPOINT);
         assert_eq!(endpoints.indexer_endpoint, DEFAULT_INDEXER_ENDPOINT);
+        assert_eq!(endpoints.node_endpoint, DEFAULT_NODE_ENDPOINT);
     }
 
     #[test]
     fn resolve_network_endpoints_uses_local_profile() {
-        let endpoints = resolve_network_endpoints(Some("local"), None, None);
+        let endpoints = resolve_network_endpoints(Some("local"), None, None, None);
 
         assert!(endpoints.is_ok(), "{endpoints:?}");
         let Ok(endpoints) = endpoints else {
@@ -2591,14 +2849,20 @@ mod tests {
         assert_eq!(endpoints.profile, "local");
         assert_eq!(endpoints.sequencer_endpoint, LOCAL_SEQUENCER_ENDPOINT);
         assert_eq!(endpoints.indexer_endpoint, DEFAULT_INDEXER_ENDPOINT);
+        assert_eq!(endpoints.node_endpoint, DEFAULT_NODE_ENDPOINT);
     }
 
     #[test]
     fn resolve_network_endpoints_preserves_custom_urls() {
         let sequencer = "https://sequencer.example.invalid/";
         let indexer = "http://127.0.0.1:9999/";
-        let endpoints =
-            resolve_network_endpoints(Some(CUSTOM_NETWORK_PROFILE), Some(sequencer), Some(indexer));
+        let node = "http://127.0.0.1:9090/";
+        let endpoints = resolve_network_endpoints(
+            Some(CUSTOM_NETWORK_PROFILE),
+            Some(sequencer),
+            Some(indexer),
+            Some(node),
+        );
 
         assert!(endpoints.is_ok(), "{endpoints:?}");
         let Ok(endpoints) = endpoints else {
@@ -2607,13 +2871,14 @@ mod tests {
         assert_eq!(endpoints.profile, CUSTOM_NETWORK_PROFILE);
         assert_eq!(endpoints.sequencer_endpoint, sequencer);
         assert_eq!(endpoints.indexer_endpoint, indexer);
+        assert_eq!(endpoints.node_endpoint, node);
     }
 
     #[test]
     fn resolve_network_endpoints_explicit_urls_override_profile() {
         let sequencer = "https://override.example.invalid/";
         let endpoints =
-            resolve_network_endpoints(Some("testnet-indexer-local"), Some(sequencer), None);
+            resolve_network_endpoints(Some("testnet-indexer-local"), Some(sequencer), None, None);
 
         assert!(endpoints.is_ok(), "{endpoints:?}");
         let Ok(endpoints) = endpoints else {
@@ -2622,11 +2887,12 @@ mod tests {
         assert_eq!(endpoints.profile, CUSTOM_NETWORK_PROFILE);
         assert_eq!(endpoints.sequencer_endpoint, sequencer);
         assert_eq!(endpoints.indexer_endpoint, DEFAULT_INDEXER_ENDPOINT);
+        assert_eq!(endpoints.node_endpoint, DEFAULT_NODE_ENDPOINT);
     }
 
     #[test]
     fn resolve_network_endpoints_rejects_unknown_profile() {
-        let endpoints = resolve_network_endpoints(Some("missing"), None, None);
+        let endpoints = resolve_network_endpoints(Some("missing"), None, None, None);
 
         assert!(endpoints.is_err(), "{endpoints:?}");
         let Err(err) = endpoints else {
@@ -2957,6 +3223,41 @@ mod tests {
             .iter()
             .find(|row| row.path == "remaining_data_hex");
         assert!(remaining.is_some(), "missing remaining data row");
+    }
+
+    #[test]
+    fn account_report_with_optional_idl_decode_preserves_account_when_decode_fails() {
+        let account = AccountReport {
+            account_id: "acct".to_owned(),
+            account: serde_json::json!({ "balance": "0" }),
+            data_hex: "ff".to_owned(),
+            related_transactions: Some(Vec::new()),
+            related_transactions_error: None,
+        };
+        let idl = r#"{
+            "accounts": [
+                {
+                    "name": "TooLong",
+                    "type": {
+                        "kind": "struct",
+                        "fields": [
+                            { "name": "amount", "type": "u64" }
+                        ]
+                    }
+                }
+            ]
+        }"#;
+
+        let report = account_report_with_optional_idl_decode(account, idl, Some("TooLong"));
+
+        assert_eq!(report.account.account_id, "acct");
+        assert!(report.decode.is_none());
+        assert!(
+            report
+                .decode_error
+                .as_deref()
+                .is_some_and(|error| error.contains("failed to decode as `TooLong`"))
+        );
     }
 
     #[test]

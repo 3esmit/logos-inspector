@@ -10,13 +10,13 @@ use eframe::egui;
 use lee::AccountId;
 use logos_inspector::{
     CUSTOM_NETWORK_PROFILE, DEFAULT_INDEXER_ENDPOINT, DEFAULT_NETWORK_PROFILE,
-    DEFAULT_SEQUENCER_ENDPOINT, account_lookup, account_lookup_with_idl,
+    DEFAULT_NODE_ENDPOINT, DEFAULT_SEQUENCER_ENDPOINT, account_lookup, account_lookup_with_idl,
     decode_account_data_hex_with_idl, decode_event_data_hex_with_idl,
-    decode_instruction_words_with_idl, last_sequencer_block_id, network_profiles, overview,
-    program_file_info, raw_rpc_report, resolve_network_endpoints, sequencer_block,
-    sequencer_program_ids, sequencer_transaction, sequencer_transaction_inspection,
-    sequencer_transaction_inspection_with_idl, sequencer_transaction_trace,
-    sequencer_transaction_trace_with_idl,
+    decode_instruction_words_with_idl, indexer_block_by_hash, indexer_blocks,
+    last_sequencer_block_id, network_profiles, overview, program_file_info, raw_rpc_report,
+    resolve_network_endpoints, sequencer_block, sequencer_program_ids, sequencer_transaction,
+    sequencer_transaction_inspection, sequencer_transaction_inspection_with_idl,
+    sequencer_transaction_trace, sequencer_transaction_trace_with_idl,
 };
 use serde_json::Value;
 
@@ -107,7 +107,7 @@ enum IndexerTab {
 }
 
 impl IndexerTab {
-    const ALL: [(Self, &'static str); 2] = [(Self::Status, "Status"), (Self::Rpc, "RPC")];
+    const ALL: [(Self, &'static str); 2] = [(Self::Status, "Dashboard"), (Self::Rpc, "RPC")];
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,6 +172,8 @@ impl AccountOutputTab {
         (Self::Detail, "Detail Output"),
         (Self::Raw, "Raw Output"),
     ];
+    const DETAIL_RAW: [(Self, &'static str); 2] =
+        [(Self::Detail, "Detail Output"), (Self::Raw, "Raw Output")];
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,6 +191,7 @@ enum LookupTarget {
     Account(String),
     Transaction(String),
     Block(u64),
+    BlockHash(String),
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -201,7 +204,13 @@ struct RegisteredIdl {
 #[derive(Debug, Default, serde::Deserialize, serde::Serialize)]
 struct PersistedIdlState {
     registered_idls: Vec<RegisteredIdl>,
-    active_idl_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IdlTarget {
+    Transaction,
+    Account,
+    Instruction,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -218,6 +227,8 @@ struct DashboardReport {
 #[derive(Debug, Clone, serde::Serialize)]
 struct DashboardBlock {
     block_id: u64,
+    header_hash: Option<String>,
+    parent_hash: Option<String>,
     timestamp: u64,
     bedrock_status: String,
     tx_count: usize,
@@ -289,7 +300,8 @@ fn should_prefer_x11_on_wslg() -> bool {
 }
 
 fn use_custom_chrome_runtime() -> bool {
-    is_wslg_runtime() && !should_prefer_x11_on_wslg()
+    // Native chrome keeps WSLg/Wayland hit testing aligned.
+    false
 }
 
 #[cfg(target_os = "linux")]
@@ -304,10 +316,6 @@ fn configure_event_loop(options: &mut eframe::NativeOptions) {
 
 #[cfg(not(target_os = "linux"))]
 fn configure_event_loop(_options: &mut eframe::NativeOptions) {}
-
-fn is_wslg_runtime() -> bool {
-    std::env::var_os("WSL_INTEROP").is_some() && std::env::var_os("WAYLAND_DISPLAY").is_some()
-}
 
 fn strip_wslg_host_resize_frame() {
     let script = r#"
@@ -414,6 +422,7 @@ struct LogosInspectorApp {
     network_profile: String,
     sequencer_url: String,
     indexer_url: String,
+    node_url: String,
     block_id: String,
     tx_hash: String,
     transaction_idl_json: String,
@@ -434,12 +443,12 @@ struct LogosInspectorApp {
     program_idl_json: String,
     program_idl_error: Option<String>,
     registered_idls: Vec<RegisteredIdl>,
-    active_idl_name: Option<String>,
     program_ids: Vec<Value>,
     program_ids_error: Option<String>,
     draft_network_profile: String,
     draft_sequencer_url: String,
     draft_indexer_url: String,
+    draft_node_url: String,
     network_config_error: Option<String>,
     indexer_method: String,
     indexer_params: String,
@@ -473,6 +482,7 @@ impl Default for LogosInspectorApp {
             network_profile: DEFAULT_NETWORK_PROFILE.to_owned(),
             sequencer_url: DEFAULT_SEQUENCER_ENDPOINT.to_owned(),
             indexer_url: DEFAULT_INDEXER_ENDPOINT.to_owned(),
+            node_url: DEFAULT_NODE_ENDPOINT.to_owned(),
             block_id: String::new(),
             tx_hash: String::new(),
             transaction_idl_json: String::new(),
@@ -493,12 +503,12 @@ impl Default for LogosInspectorApp {
             program_idl_json: String::new(),
             program_idl_error: None,
             registered_idls: Vec::new(),
-            active_idl_name: None,
             program_ids: Vec::new(),
             program_ids_error: None,
             draft_network_profile: DEFAULT_NETWORK_PROFILE.to_owned(),
             draft_sequencer_url: DEFAULT_SEQUENCER_ENDPOINT.to_owned(),
             draft_indexer_url: DEFAULT_INDEXER_ENDPOINT.to_owned(),
+            draft_node_url: DEFAULT_NODE_ENDPOINT.to_owned(),
             network_config_error: None,
             indexer_method: "getLastFinalizedBlockId".to_owned(),
             indexer_params: "[]".to_owned(),
@@ -528,15 +538,6 @@ impl LogosInspectorApp {
             && let Some(saved) = eframe::get_value::<PersistedIdlState>(storage, IDL_STORAGE_KEY)
         {
             app.registered_idls = saved.registered_idls;
-            if let Some(active_name) = saved.active_idl_name
-                && let Some(idl) = app
-                    .registered_idls
-                    .iter()
-                    .find(|idl| idl.name == active_name)
-                    .cloned()
-            {
-                app.set_active_idl(idl.name, idl.json);
-            }
         }
         app
     }
@@ -544,7 +545,6 @@ impl LogosInspectorApp {
     fn persisted_idl_state(&self) -> PersistedIdlState {
         PersistedIdlState {
             registered_idls: self.registered_idls.clone(),
-            active_idl_name: self.active_idl_name.clone(),
         }
     }
 }
@@ -655,13 +655,14 @@ impl LogosInspectorApp {
 
     fn apply_network_profile_to_draft(&mut self) {
         let Ok(endpoints) =
-            resolve_network_endpoints(Some(&self.draft_network_profile), None, None)
+            resolve_network_endpoints(Some(&self.draft_network_profile), None, None, None)
         else {
             self.draft_network_profile = CUSTOM_NETWORK_PROFILE.to_owned();
             return;
         };
         self.draft_sequencer_url = endpoints.sequencer_endpoint;
         self.draft_indexer_url = endpoints.indexer_endpoint;
+        self.draft_node_url = endpoints.node_endpoint;
         self.network_config_error = None;
     }
 
@@ -669,31 +670,38 @@ impl LogosInspectorApp {
         self.draft_network_profile != self.network_profile
             || self.draft_sequencer_url.trim() != self.sequencer_url
             || self.draft_indexer_url.trim() != self.indexer_url
+            || self.draft_node_url.trim() != self.node_url
     }
 
     fn has_valid_network_config_draft(&self) -> bool {
-        has_text(&self.draft_sequencer_url) && has_text(&self.draft_indexer_url)
+        has_text(&self.draft_sequencer_url)
+            && has_text(&self.draft_indexer_url)
+            && has_text(&self.draft_node_url)
     }
 
     fn reset_network_config_draft(&mut self) {
         self.draft_network_profile = self.network_profile.clone();
         self.draft_sequencer_url = self.sequencer_url.clone();
         self.draft_indexer_url = self.indexer_url.clone();
+        self.draft_node_url = self.node_url.clone();
         self.network_config_error = None;
     }
 
     fn activate_network_config(&mut self) -> bool {
         if !self.has_valid_network_config_draft() {
-            self.network_config_error = Some("sequencer and indexer endpoints are required".into());
+            self.network_config_error =
+                Some("sequencer, indexer, and node endpoints are required".into());
             return false;
         }
 
         let sequencer_url = self.draft_sequencer_url.trim().to_owned();
         let indexer_url = self.draft_indexer_url.trim().to_owned();
+        let node_url = self.draft_node_url.trim().to_owned();
         let endpoints = match resolve_network_endpoints(
             Some(&self.draft_network_profile),
             Some(&sequencer_url),
             Some(&indexer_url),
+            Some(&node_url),
         ) {
             Ok(endpoints) => endpoints,
             Err(error) => {
@@ -704,10 +712,12 @@ impl LogosInspectorApp {
 
         let changed = self.network_profile != endpoints.profile
             || self.sequencer_url != endpoints.sequencer_endpoint
-            || self.indexer_url != endpoints.indexer_endpoint;
+            || self.indexer_url != endpoints.indexer_endpoint
+            || self.node_url != endpoints.node_endpoint;
         self.network_profile = endpoints.profile;
         self.sequencer_url = endpoints.sequencer_endpoint;
         self.indexer_url = endpoints.indexer_endpoint;
+        self.node_url = endpoints.node_endpoint;
         self.reset_network_config_draft();
         changed
     }
@@ -829,13 +839,15 @@ impl LogosInspectorApp {
         self.last_overview_refresh = Some(Instant::now());
         let sequencer = self.sequencer_url.clone();
         let indexer = self.indexer_url.clone();
+        let node = self.node_url.clone();
         let (sender, receiver) = mpsc::channel();
         let ctx = ctx.clone();
         self.overview_receiver = Some(receiver);
         thread::spawn(move || {
-            let result = run_async(async move { dashboard_report(&sequencer, &indexer).await })
-                .and_then(|value| serde_json::to_value(value).map_err(Into::into))
-                .map_err(|err| format!("{err:#}"));
+            let result =
+                run_async(async move { dashboard_report(&sequencer, &indexer, &node).await })
+                    .and_then(|value| serde_json::to_value(value).map_err(Into::into))
+                    .map_err(|err| format!("{err:#}"));
             if sender.send(result).is_ok() {
                 ctx.request_repaint();
             }
@@ -855,7 +867,9 @@ impl LogosInspectorApp {
     }
 
     fn maybe_refresh_overview(&mut self, ctx: &egui::Context) {
-        if self.view != View::Overview {
+        let wants_dashboard_refresh = self.view == View::Overview
+            || (self.view == View::Indexer && self.indexer_tab == IndexerTab::Status);
+        if !wants_dashboard_refresh {
             return;
         }
         ctx.request_repaint_after(OVERVIEW_REFRESH_INTERVAL);
@@ -1112,6 +1126,9 @@ impl LogosInspectorApp {
             "Indexer",
             &mut self.draft_indexer_url,
         );
+        ui.add_space(12.0);
+        endpoints_edited |=
+            endpoint_field(ui, "node-endpoint", "Node HTTP", &mut self.draft_node_url);
         if endpoints_edited {
             self.draft_network_profile = CUSTOM_NETWORK_PROFILE.to_owned();
             self.network_config_error = None;
@@ -1150,8 +1167,7 @@ impl LogosInspectorApp {
         ui.add_space(10.0);
         sidebar_kv(ui, "Sequencer", &compact_endpoint(&self.sequencer_url));
         sidebar_kv(ui, "Indexer", &compact_endpoint(&self.indexer_url));
-        ui.add_space(10.0);
-        sidebar_kv(ui, "IDL source", &self.active_idl_label());
+        sidebar_kv(ui, "Node", &compact_endpoint(&self.node_url));
     }
 
     fn view_card(&mut self, ui: &mut egui::Ui) {
@@ -1179,10 +1195,6 @@ impl LogosInspectorApp {
 
     fn dashboard_header(&mut self, ui: &mut egui::Ui) {
         let target = dashboard_search_target(&self.dashboard_search);
-        let target_label = target
-            .as_ref()
-            .map(dashboard_search_target_label)
-            .unwrap_or("Search");
         let idle = !self.is_busy();
         let mut submit = false;
         ui.horizontal_wrapped(|ui| {
@@ -1202,7 +1214,9 @@ impl LogosInspectorApp {
             focus_outline(ui, &response);
             submit |=
                 response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-            status_pill(ui, target_label);
+            if let Some(target) = &target {
+                status_pill(ui, dashboard_search_target_label(target));
+            }
             submit |= primary_button_enabled(ui, "Search", idle && target.is_some()).clicked();
         });
         if submit && let Some(target) = target {
@@ -1263,6 +1277,7 @@ impl LogosInspectorApp {
             network_profile_label(&self.network_profile),
             &self.sequencer_url,
             &self.indexer_url,
+            &self.node_url,
         );
         ui.add_space(16.0);
 
@@ -1319,6 +1334,39 @@ impl LogosInspectorApp {
         });
     }
 
+    fn open_dashboard_block_hash(&mut self, header_hash: String, ctx: &egui::Context) {
+        if self.is_busy() {
+            return;
+        }
+        self.view = View::Sequencer;
+        self.sequencer_tab = SequencerTab::Blocks;
+        self.block_id.clone_from(&header_hash);
+        let endpoint = self.indexer_url.clone();
+        self.spawn("fetching block", ctx, move || {
+            run_async(async move { indexer_block_by_hash(&endpoint, &header_hash).await })
+        });
+    }
+
+    fn run_block_lookup(&mut self, ctx: &egui::Context) {
+        let query = self.block_id.trim().to_owned();
+        let sequencer_endpoint = self.sequencer_url.clone();
+        let indexer_endpoint = self.indexer_url.clone();
+        self.spawn("fetching block", ctx, move || -> Result<Value> {
+            if let Some(block_id) = parse_lookup_block(&query) {
+                let block =
+                    run_async(async move { sequencer_block(&sequencer_endpoint, block_id).await })?;
+                return serde_json::to_value(block).context("failed to serialize block result");
+            }
+            if let Some(header_hash) = normalize_hash_lookup_value(&query) {
+                let block = run_async(async move {
+                    indexer_block_by_hash(&indexer_endpoint, &header_hash).await
+                })?;
+                return serde_json::to_value(block).context("failed to serialize block result");
+            }
+            anyhow::bail!("invalid block id or header hash `{query}`");
+        });
+    }
+
     fn open_dashboard_transaction(&mut self, hash: String, ctx: &egui::Context) {
         if self.is_busy() {
             return;
@@ -1338,6 +1386,9 @@ impl LogosInspectorApp {
             LookupTarget::Account(account_id) => self.open_account_lookup(account_id, ctx),
             LookupTarget::Transaction(hash) => self.open_dashboard_transaction(hash, ctx),
             LookupTarget::Block(block_id) => self.open_dashboard_block(block_id, ctx),
+            LookupTarget::BlockHash(header_hash) => {
+                self.open_dashboard_block_hash(header_hash, ctx)
+            }
         }
     }
 
@@ -1389,18 +1440,65 @@ impl LogosInspectorApp {
     fn indexer(&mut self, ui: &mut egui::Ui) {
         tab_bar(ui, &mut self.indexer_tab, &IndexerTab::ALL);
         ui.add_space(14.0);
-        if ui.available_width() >= 900.0 {
-            screen_split(ui, |ui, controls_width, detail_width| {
-                split_panel(ui, controls_width, |ui| self.indexer_controls(ui));
-                split_panel(ui, detail_width, |ui| {
-                    self.output_card(ui, "Indexer detail")
-                });
-            });
-        } else {
-            self.indexer_controls(ui);
-            ui.add_space(16.0);
-            self.output_card(ui, "Indexer detail");
+        match self.indexer_tab {
+            IndexerTab::Status => self.indexer_dashboard(ui),
+            IndexerTab::Rpc => {
+                if ui.available_width() >= 900.0 {
+                    screen_split(ui, |ui, controls_width, detail_width| {
+                        split_panel(ui, controls_width, |ui| self.indexer_controls(ui));
+                        split_panel(ui, detail_width, |ui| {
+                            self.output_card(ui, "Indexer detail")
+                        });
+                    });
+                } else {
+                    self.indexer_controls(ui);
+                    ui.add_space(16.0);
+                    self.output_card(ui, "Indexer detail");
+                }
+            }
         }
+    }
+
+    fn indexer_dashboard(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                egui::RichText::new("Indexer dashboard")
+                    .size(18.0)
+                    .strong()
+                    .color(TEXT),
+            );
+            status_pill(ui, &self.overview_status_text());
+            if secondary_button_enabled(ui, "Refresh", self.overview_receiver.is_none()).clicked() {
+                self.refresh_overview(ui.ctx());
+            }
+        });
+        ui.add_space(12.0);
+
+        if self.overview_output.is_none()
+            && let Some(error) = &self.overview_error
+        {
+            detail_title_row(ui, "Indexer dashboard", "error");
+            error_panel(ui, error);
+            return;
+        }
+
+        let Some(output) = self.dashboard_output() else {
+            detail_title_row(ui, "Indexer dashboard", "waiting");
+            dashboard_empty(ui, "Waiting for the first refresh");
+            return;
+        };
+        let output = output.clone();
+
+        indexer_dashboard_sections(
+            ui,
+            &output,
+            network_profile_label(&self.network_profile),
+            &self.sequencer_url,
+            &self.indexer_url,
+            &self.node_url,
+        );
+        ui.add_space(16.0);
+        self.indexer_status(ui);
     }
 
     fn programs(&mut self, ui: &mut egui::Ui) {
@@ -1465,18 +1563,17 @@ impl LogosInspectorApp {
         inline_input_action_row(ui, |ui, input_width, stacked| {
             ui.scope(|ui| {
                 ui.set_width(input_width);
-                labeled_singleline(ui, "block-id", "Block ID", &mut self.block_id, "7067");
+                labeled_singleline(
+                    ui,
+                    "block-id",
+                    "Block ID / header hash",
+                    &mut self.block_id,
+                    "7067 or 64-byte hash",
+                );
             });
             ui.add_space(if stacked { 10.0 } else { 8.0 });
             if primary_button_enabled(ui, "Inspect", idle && has_text(&self.block_id)).clicked() {
-                let endpoint = self.sequencer_url.clone();
-                let block_id = self.block_id.clone();
-                self.spawn("fetching block", ui.ctx(), move || {
-                    let block_id = block_id
-                        .parse::<u64>()
-                        .with_context(|| format!("invalid block id `{block_id}`"))?;
-                    run_async(async move { sequencer_block(&endpoint, block_id).await })
-                });
+                self.run_block_lookup(ui.ctx());
             }
         });
     }
@@ -1485,7 +1582,7 @@ impl LogosInspectorApp {
         let idle = !self.is_busy();
         panel_head(ui, "Transaction inspector", |_| {});
         ui.add_space(12.0);
-        self.idl_source_selector(ui, "transaction-idl-source");
+        self.idl_source_selector(ui, "transaction-idl-source", IdlTarget::Transaction);
         ui.add_space(12.0);
         tab_bar(ui, &mut self.transaction_tab, &TransactionTab::ALL);
         ui.add_space(12.0);
@@ -1568,7 +1665,7 @@ impl LogosInspectorApp {
             panel_head(ui, "Indexer quick calls", |_| {});
             ui.add_space(12.0);
             action_row(ui, |ui| {
-                if primary_button_enabled(ui, "Health", idle).clicked() {
+                if primary_button_enabled(ui, "Deep health", idle).clicked() {
                     let endpoint = self.indexer_url.clone();
                     self.spawn("checking indexer", ui.ctx(), move || {
                         run_async(async move {
@@ -1753,7 +1850,9 @@ impl LogosInspectorApp {
         if self.account_idl_json.trim().is_empty() {
             return "IDL Auto-detect".to_owned();
         }
-        let source = self.active_idl_label();
+        let source = self
+            .idl_name_for_json(&self.account_idl_json)
+            .unwrap_or("Custom");
         let definition_type = account_definition_type_label(&self.account_idl_type);
         format!("IDL {source} / {definition_type}")
     }
@@ -1781,7 +1880,7 @@ impl LogosInspectorApp {
                     }
                 });
                 ui.add_space(14.0);
-                self.idl_source_selector(ui, "account-idl-source-modal");
+                self.idl_source_selector(ui, "account-idl-source-modal", IdlTarget::Account);
                 ui.add_space(12.0);
                 account_definition_type_field(
                     ui,
@@ -1800,7 +1899,7 @@ impl LogosInspectorApp {
                 ui.add_space(14.0);
                 action_row(ui, |ui| {
                     if secondary_button_enabled(ui, "Clear override", true).clicked() {
-                        self.clear_active_idl();
+                        self.clear_idl_target(IdlTarget::Account);
                     }
                     if primary_button_enabled(ui, "Done", true).clicked() {
                         close = true;
@@ -1817,7 +1916,7 @@ impl LogosInspectorApp {
         panel(ui).show(ui, |ui| {
             panel_head(ui, "IDL inspect", |_| {});
             ui.add_space(12.0);
-            self.idl_source_selector(ui, "instruction-idl-source");
+            self.idl_source_selector(ui, "instruction-idl-source", IdlTarget::Instruction);
             ui.add_space(12.0);
             labeled_singleline(
                 ui,
@@ -1949,37 +2048,19 @@ impl LogosInspectorApp {
                 return;
             }
 
-            let mut use_index = None;
             let mut remove_index = None;
             for (index, idl) in self.registered_idls.iter().enumerate() {
                 idl_registry_row(ui, idl, |ui| {
-                    if secondary_button_enabled(ui, "Set active", idle).clicked() {
-                        use_index = Some(index);
-                    }
                     if secondary_button_enabled(ui, "Remove", idle).clicked() {
                         remove_index = Some(index);
                     }
                 });
-                ui.add_space(10.0);
+                ui.add_space(6.0);
+                divider(ui);
+                ui.add_space(6.0);
             }
 
-            if let Some(index) = use_index
-                && let Some(idl) = self.registered_idls.get(index)
-            {
-                let name = idl.name.clone();
-                let json = idl.json.clone();
-                self.set_active_idl(name, json);
-            }
-            if let Some(index) = remove_index
-                && let Some(idl) = self.registered_idls.get(index)
-            {
-                if self
-                    .active_idl_name
-                    .as_ref()
-                    .is_some_and(|name| *name == idl.name)
-                {
-                    self.active_idl_name = None;
-                }
+            if let Some(index) = remove_index {
                 self.registered_idls.remove(index);
             }
         });
@@ -2044,33 +2125,52 @@ impl LogosInspectorApp {
         let program_id = optional_text(self.program_idl_program.clone());
         let json = json.to_owned();
         self.registered_idls.push(RegisteredIdl {
-            name: name.clone(),
+            name,
             program_id,
-            json: json.clone(),
+            json,
         });
-        self.set_active_idl(name, json);
         self.program_idl_error = None;
     }
 
-    fn set_active_idl(&mut self, name: String, json: String) {
-        self.active_idl_name = Some(name);
-        self.transaction_idl_json.clone_from(&json);
-        self.account_idl_json.clone_from(&json);
-        self.instruction_idl_json = json;
+    fn idl_target_json(&self, target: IdlTarget) -> &str {
+        match target {
+            IdlTarget::Transaction => &self.transaction_idl_json,
+            IdlTarget::Account => &self.account_idl_json,
+            IdlTarget::Instruction => &self.instruction_idl_json,
+        }
+    }
+
+    fn set_idl_target_json(&mut self, target: IdlTarget, json: String) {
+        match target {
+            IdlTarget::Transaction => self.transaction_idl_json = json,
+            IdlTarget::Account => {
+                self.account_idl_json = json;
+                self.account_idl_type.clear();
+            }
+            IdlTarget::Instruction => self.instruction_idl_json = json,
+        }
         self.program_idl_error = None;
     }
 
-    fn clear_active_idl(&mut self) {
-        self.active_idl_name = None;
-        self.transaction_idl_json.clear();
-        self.account_idl_json.clear();
-        self.instruction_idl_json.clear();
-        self.account_idl_type.clear();
-        self.program_idl_error = None;
+    fn clear_idl_target(&mut self, target: IdlTarget) {
+        self.set_idl_target_json(target, String::new());
     }
 
-    fn idl_source_selector(&mut self, ui: &mut egui::Ui, id_salt: &'static str) {
-        let mut selected = self.active_idl_name.clone().unwrap_or_default();
+    fn idl_name_for_json(&self, json: &str) -> Option<&str> {
+        if json.trim().is_empty() {
+            return None;
+        }
+        self.registered_idls
+            .iter()
+            .find(|idl| idl.json == json)
+            .map(|idl| idl.name.as_str())
+    }
+
+    fn idl_source_selector(&mut self, ui: &mut egui::Ui, id_salt: &'static str, target: IdlTarget) {
+        let mut selected = self
+            .idl_name_for_json(self.idl_target_json(target))
+            .unwrap_or_default()
+            .to_owned();
         let current = selected.clone();
         let options = self
             .registered_idls
@@ -2103,16 +2203,16 @@ impl LogosInspectorApp {
             return;
         }
         if selected.is_empty() {
-            self.clear_active_idl();
+            self.clear_idl_target(target);
             return;
         }
-        if let Some(idl) = self
+        if let Some(json) = self
             .registered_idls
             .iter()
             .find(|idl| idl.name == selected)
-            .cloned()
+            .map(|idl| idl.json.clone())
         {
-            self.set_active_idl(idl.name, idl.json);
+            self.set_idl_target_json(target, json);
         }
     }
 
@@ -2154,7 +2254,7 @@ impl LogosInspectorApp {
         panel(ui).show(ui, |ui| {
             panel_head(ui, "Event decode", |_| {});
             ui.add_space(12.0);
-            self.idl_source_selector(ui, "event-idl-source");
+            self.idl_source_selector(ui, "event-idl-source", IdlTarget::Instruction);
             ui.add_space(12.0);
             labeled_singleline(
                 ui,
@@ -2441,12 +2541,6 @@ impl LogosInspectorApp {
 
     fn dashboard_output(&self) -> Option<&Value> {
         self.overview_output.as_ref()
-    }
-
-    fn active_idl_label(&self) -> String {
-        self.active_idl_name
-            .as_deref()
-            .map_or_else(|| idl_source_label("").to_owned(), |name| name.to_owned())
     }
 
     fn last_refresh_text(&self) -> String {
@@ -3010,6 +3104,7 @@ fn dashboard_network_summary(
     network_profile: &str,
     sequencer_endpoint: &str,
     indexer_endpoint: &str,
+    node_endpoint: &str,
 ) {
     if ui.available_width() >= DASHBOARD_TWO_COLUMN_MIN_WIDTH {
         ui.columns(2, |columns| {
@@ -3020,6 +3115,7 @@ fn dashboard_network_summary(
                     network_profile,
                     sequencer_endpoint,
                     indexer_endpoint,
+                    node_endpoint,
                 );
                 dashboard_operational_signals(signals, output);
             }
@@ -3031,6 +3127,7 @@ fn dashboard_network_summary(
             network_profile,
             sequencer_endpoint,
             indexer_endpoint,
+            node_endpoint,
         );
         ui.add_space(16.0);
         dashboard_operational_signals(ui, output);
@@ -3043,6 +3140,7 @@ fn dashboard_topology(
     network_profile: &str,
     sequencer_endpoint: &str,
     indexer_endpoint: &str,
+    node_endpoint: &str,
 ) {
     panel(ui).show(ui, |ui| {
         panel_head(ui, "Network topology", |_| {});
@@ -3055,16 +3153,25 @@ fn dashboard_topology(
         let finality = head_gap_text(&sequencer_head, &indexer_head);
         let sequencer = compact_endpoint(sequencer_endpoint);
         let indexer = compact_endpoint(indexer_endpoint);
-        let topology = "Inspector -> Sequencer RPC; Inspector -> Indexer RPC";
+        let node = compact_endpoint(node_endpoint);
+        let node_status = node_consensus_status(overview);
+        let node_slot = node_consensus_field_text(overview, "slot");
+        let node_height = node_consensus_field_text(overview, "height");
+        let topology =
+            "Inspector -> Sequencer RPC; Inspector -> Indexer RPC; Inspector -> Node HTTP";
         let stats = [
             ("Network", network_profile),
             ("Topology", topology),
             ("Sequencer", sequencer.as_str()),
             ("Indexer", indexer.as_str()),
+            ("Node", node.as_str()),
             ("Sequencer health", sequencer_health.as_str()),
             ("Indexer health", indexer_health.as_str()),
+            ("Node status", node_status.as_str()),
             ("Current block", sequencer_head.as_str()),
             ("Latest finalized", indexer_head.as_str()),
+            ("Node slot", node_slot.as_str()),
+            ("Node height", node_height.as_str()),
             ("Finality lag", finality.as_str()),
         ];
         compact_stat_grid(ui, &stats);
@@ -3131,6 +3238,249 @@ fn dashboard_signal_row(ui: &mut egui::Ui, label: &str, value: &str, source: &st
     ui.add_space(8.0);
 }
 
+fn indexer_dashboard_sections(
+    ui: &mut egui::Ui,
+    output: &Value,
+    network_profile: &str,
+    sequencer_endpoint: &str,
+    indexer_endpoint: &str,
+    node_endpoint: &str,
+) {
+    let overview = overview_payload(output);
+    let sequencer_head = probe_text_field(overview, "sequencer", "head");
+    let indexer_head = probe_text_field(overview, "indexer", "head");
+    let finality = head_gap_text(&sequencer_head, &indexer_head);
+    let mode = indexer_dashboard_mode(overview);
+    let latest_header = latest_block_header(output).unwrap_or("-");
+    let sequencer = compact_endpoint(sequencer_endpoint);
+    let indexer = compact_endpoint(indexer_endpoint);
+    let node = compact_endpoint(node_endpoint);
+    let node_slot = node_consensus_field_text(overview, "slot");
+    let node_height = node_consensus_field_text(overview, "height");
+    let node_lib_slot = node_consensus_field_text(overview, "lib_slot");
+    let node_tip = node_consensus_hash(overview, "tip").unwrap_or("-");
+    let node_lib = node_consensus_hash(overview, "lib").unwrap_or("-");
+    let finalized = dashboard_block_status_count(output, "Finalized").to_string();
+    let recent_blocks = output
+        .get("latest_blocks")
+        .and_then(Value::as_array)
+        .map_or_else(|| "-".to_owned(), |blocks| blocks.len().to_string());
+
+    indexer_metric_section(
+        ui,
+        "Chain",
+        vec![
+            ("Tip slot", prefer_node_metric(&node_slot, &sequencer_head)),
+            ("Tip height", node_height),
+            (
+                "LIB slot",
+                prefer_node_metric(&node_lib_slot, &indexer_head),
+            ),
+            ("Mode", mode),
+        ],
+    );
+    ui.add_space(16.0);
+
+    indexer_metric_section(
+        ui,
+        "Network",
+        vec![
+            ("Peers", "Unavailable".to_owned()),
+            ("Connections", "Unavailable".to_owned()),
+            ("Pending", "Unavailable".to_owned()),
+        ],
+    );
+    indexer_key_value_section(
+        ui,
+        "Network identity",
+        &[
+            ("Network", network_profile),
+            ("Peer ID", "Unavailable"),
+            ("Sequencer", sequencer.as_str()),
+            ("Indexer", indexer.as_str()),
+            ("Node", node.as_str()),
+        ],
+    );
+    ui.add_space(16.0);
+
+    indexer_metric_section(
+        ui,
+        "Cryptarchia participation",
+        vec![
+            ("Slot density", recent_blocks),
+            ("LIB lag", finality),
+            ("Finalized", finalized),
+            ("Orphaned", "Unavailable".to_owned()),
+        ],
+    );
+    ui.add_space(16.0);
+
+    indexer_metric_section(
+        ui,
+        "Mantle",
+        vec![
+            ("Pending items", "Unavailable".to_owned()),
+            ("Last item", "Unavailable".to_owned()),
+        ],
+    );
+    ui.add_space(16.0);
+
+    indexer_key_value_section(
+        ui,
+        "Indexer",
+        &[
+            ("Archive genesis slot", "Unavailable"),
+            ("Archive genesis header", "Unavailable"),
+            ("Last tip slot", sequencer_head.as_str()),
+            ("Last tip header", latest_header),
+            ("Last processed LIB", indexer_head.as_str()),
+            ("Node tip", node_tip),
+            ("Node LIB", node_lib),
+        ],
+    );
+}
+
+fn indexer_metric_section(ui: &mut egui::Ui, title: &str, stats: Vec<(&str, String)>) {
+    indexer_section_heading(ui, title);
+    let columns = if ui.available_width() >= 920.0 {
+        stats.len()
+    } else if ui.available_width() >= 520.0 {
+        2
+    } else {
+        1
+    };
+    for row in stats.chunks(columns) {
+        ui.columns(row.len(), |columns| {
+            for (column, (label, value)) in columns.iter_mut().zip(row.iter()) {
+                compact_stat(column, label, value);
+            }
+        });
+        ui.add_space(10.0);
+    }
+    divider(ui);
+}
+
+fn indexer_key_value_section(ui: &mut egui::Ui, title: &str, rows: &[(&str, &str)]) {
+    indexer_section_heading(ui, title);
+    for (index, (label, value)) in rows.iter().enumerate() {
+        compact_pair_row(ui, label, value);
+        if index + 1 < rows.len() {
+            ui.add_space(6.0);
+            divider(ui);
+            ui.add_space(6.0);
+        }
+    }
+    ui.add_space(10.0);
+    divider(ui);
+}
+
+fn indexer_section_heading(ui: &mut egui::Ui, title: &str) {
+    ui.label(egui::RichText::new(title).size(15.0).strong().color(TEXT));
+    ui.add_space(10.0);
+}
+
+fn indexer_dashboard_mode(overview: &Value) -> String {
+    if let Some(status) = node_consensus_mode(overview) {
+        return status;
+    }
+    match (
+        probe_ok(overview, "sequencer", "health"),
+        probe_ok(overview, "indexer", "health"),
+    ) {
+        (Some(true), Some(true)) => "Online".to_owned(),
+        (Some(false), _) | (_, Some(false)) => "Error".to_owned(),
+        _ => "Unknown".to_owned(),
+    }
+}
+
+fn node_consensus_status(overview: &Value) -> String {
+    let Some(probe) = overview.get("node").and_then(|node| node.get("consensus")) else {
+        return "Unavailable".to_owned();
+    };
+    if probe.get("ok").and_then(Value::as_bool) == Some(false) {
+        return "Unavailable".to_owned();
+    }
+    node_consensus_mode(overview).unwrap_or_else(|| "Reachable".to_owned())
+}
+
+fn node_consensus_mode(overview: &Value) -> Option<String> {
+    let value = node_consensus_payload(overview)?;
+    value
+        .get("mode")
+        .map(node_mode_text)
+        .filter(|mode| mode != "-")
+}
+
+fn node_mode_text(value: &Value) -> String {
+    if let Some(mode) = value.as_str() {
+        return mode.to_owned();
+    }
+    if let Some(mode) = value.as_u64() {
+        return match mode {
+            0 => "Bootstrapping".to_owned(),
+            1 => "Online".to_owned(),
+            2 => "Not Started".to_owned(),
+            other => other.to_string(),
+        };
+    }
+    value_text(value)
+}
+
+fn node_consensus_payload(overview: &Value) -> Option<&Value> {
+    overview
+        .get("node")
+        .and_then(|node| node.get("consensus"))
+        .filter(|probe| probe.get("ok").and_then(Value::as_bool) == Some(true))
+        .and_then(|probe| probe.get("value"))
+}
+
+fn node_consensus_field<'a>(overview: &'a Value, key: &str) -> Option<&'a Value> {
+    let value = node_consensus_payload(overview)?;
+    value
+        .get("cryptarchia_info")
+        .and_then(|info| info.get(key))
+        .or_else(|| value.get(key))
+}
+
+fn node_consensus_field_text(overview: &Value, key: &str) -> String {
+    node_consensus_field(overview, key)
+        .map(value_text)
+        .unwrap_or_else(|| "-".to_owned())
+}
+
+fn node_consensus_hash<'a>(overview: &'a Value, key: &str) -> Option<&'a str> {
+    node_consensus_field(overview, key).and_then(Value::as_str)
+}
+
+fn prefer_node_metric(node_value: &str, fallback: &str) -> String {
+    if node_value == "-" {
+        fallback.to_owned()
+    } else {
+        node_value.to_owned()
+    }
+}
+
+fn dashboard_block_status_count(output: &Value, status: &str) -> usize {
+    output
+        .get("latest_blocks")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|block| {
+            value_str(block, "bedrock_status")
+                .is_some_and(|value| value.eq_ignore_ascii_case(status))
+        })
+        .count()
+}
+
+fn latest_block_header(output: &Value) -> Option<&str> {
+    output
+        .get("latest_blocks")
+        .and_then(Value::as_array)
+        .and_then(|blocks| blocks.first())
+        .and_then(|block| value_str(block, "header_hash"))
+}
+
 fn dashboard_blocks(ui: &mut egui::Ui, output: &Value) -> Option<u64> {
     let mut selected = None;
     panel(ui).show(ui, |ui| {
@@ -3166,6 +3516,9 @@ fn dashboard_block_row(ui: &mut egui::Ui, block: &Value) -> bool {
     let tx_count = value_usize(block, "tx_count")
         .map(|value| format!("{value} tx"))
         .unwrap_or_else(|| "-".to_owned());
+    let header = value_str(block, "header_hash")
+        .map(short_token)
+        .unwrap_or_else(|| "-".to_owned());
 
     let id = ui.make_persistent_id(("dashboard-block-row", block_id.as_str()));
     let inner = egui::Frame::new()
@@ -3179,6 +3532,7 @@ fn dashboard_block_row(ui: &mut egui::Ui, block: &Value) -> bool {
             if ui.available_width() < DASHBOARD_COMPACT_ROW_WIDTH {
                 ui.horizontal_wrapped(|ui| {
                     row_cell(ui, &block_id, 76.0, true);
+                    row_cell(ui, &header, 150.0, false);
                     row_cell(ui, &timestamp, 132.0, false);
                     status_chip(ui, status);
                     dashboard_row_action(ui);
@@ -3190,6 +3544,7 @@ fn dashboard_block_row(ui: &mut egui::Ui, block: &Value) -> bool {
             } else {
                 ui.horizontal(|ui| {
                     row_cell(ui, &block_id, 76.0, true);
+                    row_cell(ui, &header, 150.0, false);
                     row_cell(ui, &timestamp, 132.0, false);
                     row_cell(ui, &tx_count, 72.0, false);
                     status_chip(ui, status);
@@ -3454,45 +3809,49 @@ fn idl_registry_row(
     add_actions: impl FnOnce(&mut egui::Ui),
 ) {
     let (instructions, accounts) = idl_json_counts(&idl.json);
-    egui::Frame::new()
-        .fill(PANEL)
-        .stroke(egui::Stroke::new(1.0, BORDER_STRONG))
-        .corner_radius(egui::CornerRadius::same(8))
-        .inner_margin(egui::Margin::same(12))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.label(
-                        egui::RichText::new(&idl.name)
-                            .size(15.0)
-                            .strong()
-                            .color(TEXT),
-                    );
-                    ui.label(
-                        egui::RichText::new(format!("{} bytes", idl.json.len()))
-                            .size(12.0)
-                            .color(TEXT_MUTED),
-                    );
-                    if let Some(program_id) = &idl.program_id {
-                        ui.label(
-                            egui::RichText::new(program_id)
-                                .size(12.0)
-                                .monospace()
-                                .color(TEXT_MUTED),
-                        );
-                    }
-                    ui.horizontal_wrapped(|ui| {
-                        status_chip(ui, &format!("{instructions} instructions"));
-                        status_chip(ui, &format!("{accounts} accounts"));
-                    });
-                });
-                ui.with_layout(
-                    egui::Layout::right_to_left(egui::Align::Center),
-                    add_actions,
-                );
-            });
-        });
+    ui.horizontal(|ui| {
+        ui.set_width(ui.available_width());
+        ui.add_sized(
+            [180.0, 20.0],
+            egui::Label::new(
+                egui::RichText::new(&idl.name)
+                    .size(13.0)
+                    .strong()
+                    .color(TEXT),
+            )
+            .truncate(),
+        )
+        .on_hover_text(&idl.name);
+        ui.add_sized(
+            [170.0, 20.0],
+            egui::Label::new(
+                egui::RichText::new(format!(
+                    "{instructions} instr / {accounts} acct / {} bytes",
+                    idl.json.len()
+                ))
+                .size(12.0)
+                .color(TEXT_MUTED),
+            )
+            .truncate(),
+        );
+        if let Some(program_id) = &idl.program_id {
+            ui.add_sized(
+                [150.0, 20.0],
+                egui::Label::new(
+                    egui::RichText::new(short_inline(program_id, 22))
+                        .size(12.0)
+                        .monospace()
+                        .color(TEXT_MUTED),
+                )
+                .truncate(),
+            )
+            .on_hover_text(program_id);
+        }
+        ui.with_layout(
+            egui::Layout::right_to_left(egui::Align::Center),
+            add_actions,
+        );
+    });
 }
 
 fn idl_json_counts(json: &str) -> (usize, usize) {
@@ -3590,7 +3949,13 @@ fn render_known_detail(
         render_account_output_tabs(ui, account, Some(decode), value, account_output_tab, lookup);
         return true;
     }
-    if value.get("block_id").is_some() && value.get("transactions").is_some() {
+    if let Some(account) = account_report_from_wrapper(value) {
+        render_account_output_tabs(ui, account, None, value, account_output_tab, lookup);
+        return true;
+    }
+    if (value.get("block_id").is_some() || value.get("header_hash").is_some())
+        && value.get("transactions").is_some()
+    {
         render_block_detail(ui, value, lookup);
         return true;
     }
@@ -3647,7 +4012,7 @@ fn render_account_output_tabs(
     if decode.is_none() && *account_output_tab == AccountOutputTab::Decoded {
         *account_output_tab = AccountOutputTab::Detail;
     }
-    tab_bar(ui, account_output_tab, &AccountOutputTab::ALL);
+    tab_bar(ui, account_output_tab, account_output_tabs(decode));
     if decode.is_none() && *account_output_tab == AccountOutputTab::Decoded {
         *account_output_tab = AccountOutputTab::Detail;
     }
@@ -3663,6 +4028,10 @@ fn render_account_output_tabs(
                 decode.and_then(account_definition_type_from_decode),
                 lookup,
             );
+            if let Some(error) = value_str(raw, "decode_error") {
+                ui.add_space(12.0);
+                warning_panel(ui, "IDL decode unavailable", error);
+            }
         }
         (AccountOutputTab::Raw, _) => {
             detail_title_row(ui, "Raw account", "json");
@@ -3671,13 +4040,32 @@ fn render_account_output_tabs(
     }
 }
 
+fn account_output_tabs(decode: Option<&Value>) -> &'static [(AccountOutputTab, &'static str)] {
+    if decode.is_some() {
+        &AccountOutputTab::ALL
+    } else {
+        &AccountOutputTab::DETAIL_RAW
+    }
+}
+
 fn is_account_output_result(value: &Value) -> bool {
     is_decoded_account_output_result(value)
-        || (value.get("account_id").is_some() && value.get("account").is_some())
+        || is_account_report(value)
+        || account_report_from_wrapper(value).is_some()
 }
 
 fn is_decoded_account_output_result(value: &Value) -> bool {
     value.get("account").is_some() && account_decode_output(value).is_some()
+}
+
+fn account_report_from_wrapper(value: &Value) -> Option<&Value> {
+    value
+        .get("account")
+        .filter(|account| is_account_report(account))
+}
+
+fn is_account_report(value: &Value) -> bool {
+    value.get("account_id").is_some() && value.get("account").is_some()
 }
 
 fn account_decode_output(value: &Value) -> Option<&Value> {
@@ -3722,6 +4110,13 @@ fn render_block_detail(ui: &mut egui::Ui, value: &Value, lookup: &mut Option<Loo
         ],
         lookup,
     );
+    if let Some(hash) = value_str(value, "header_hash") {
+        ui.add_space(10.0);
+        detail_token_row_linked(ui, "Header hash", hash, lookup);
+    }
+    if let Some(hash) = value_str(value, "parent_hash") {
+        detail_token_row_linked(ui, "Parent hash", hash, lookup);
+    }
     if let Some(warning) = value_str(value, "decode_warning") {
         ui.add_space(12.0);
         warning_panel(ui, "Decode warning", warning);
@@ -3939,25 +4334,40 @@ fn render_account_detail(
     if let Some(transactions) = value.get("related_transactions").and_then(Value::as_array) {
         stats.push(("Transactions".to_owned(), transactions.len().to_string()));
     }
-    detail_stat_grid_dynamic_linked(ui, &stats, lookup);
-    if let Some(account_id) = value_str(value, "account_id") {
-        detail_token_row_linked(ui, "Account ID", account_id, lookup);
+    for (label, value) in &stats {
+        compact_pair_row_linked(ui, label, label, value, lookup);
     }
     if let Some(data_hex) = data_hex {
-        detail_token_row(ui, "Data hex", data_hex);
+        ui.add_space(6.0);
+        egui::CollapsingHeader::new("Data hex")
+            .id_salt("account-data-hex")
+            .default_open(false)
+            .show(ui, |ui| {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(data_hex)
+                            .size(12.0)
+                            .monospace()
+                            .color(TEXT),
+                    )
+                    .wrap()
+                    .selectable(true),
+                );
+            });
     }
     if let Some(account) = account {
-        ui.add_space(12.0);
-        result_section(ui, "Account fields", |ui| {
-            render_structured_value(ui, account, lookup, None)
-        });
+        ui.add_space(8.0);
+        divider(ui);
+        ui.add_space(8.0);
+        detail_heading(ui, "Fields");
+        render_structured_value(ui, account, lookup, None);
     }
     if let Some(error) = value_str(value, "related_transactions_error") {
-        ui.add_space(12.0);
+        ui.add_space(8.0);
         warning_panel(ui, "Related transactions unavailable", error);
     }
     if let Some(transactions) = value.get("related_transactions").and_then(Value::as_array) {
-        ui.add_space(12.0);
+        ui.add_space(8.0);
         detail_heading(ui, "Related transactions");
         if transactions.is_empty() {
             detail_empty(ui, "No related transactions found");
@@ -5210,6 +5620,9 @@ fn lookup_target_for_field(label: &str, value: &str) -> Option<LookupTarget> {
     if label.contains("blockid") || label == "block" {
         return parse_lookup_block(value).map(LookupTarget::Block);
     }
+    if is_block_hash_lookup_label(&label) {
+        return normalize_hash_lookup_value(value).map(LookupTarget::BlockHash);
+    }
     if is_transaction_lookup_label(&label) {
         return Some(LookupTarget::Transaction(normalize_hash_lookup_value(
             value,
@@ -5247,6 +5660,15 @@ fn is_transaction_lookup_label(label: &str) -> bool {
             || label.contains("txhash")
             || label.contains("deploymenttxhash")
             || label.contains("deploytx"))
+}
+
+fn is_block_hash_lookup_label(label: &str) -> bool {
+    label.contains("headerhash")
+        || label.contains("headerid")
+        || label.contains("blockhash")
+        || label.contains("parenthash")
+        || label.contains("parentid")
+        || label.contains("prevblockhash")
 }
 
 fn is_account_lookup_label(label: &str) -> bool {
@@ -5330,7 +5752,9 @@ fn split_dashboard_search_hint(value: &str) -> Option<(&str, &str)> {
 
 fn dashboard_search_target_with_hint(kind: &str, value: &str) -> Option<LookupTarget> {
     match dashboard_search_hint_kind(kind)? {
-        DashboardSearchHint::Block => parse_lookup_block(value).map(LookupTarget::Block),
+        DashboardSearchHint::Block => parse_lookup_block(value)
+            .map(LookupTarget::Block)
+            .or_else(|| normalize_hash_lookup_value(value).map(LookupTarget::BlockHash)),
         DashboardSearchHint::Transaction => {
             normalize_hash_lookup_value(value).map(LookupTarget::Transaction)
         }
@@ -5345,6 +5769,7 @@ fn dashboard_search_target_label(target: &LookupTarget) -> &'static str {
         LookupTarget::Account(_) => "Account",
         LookupTarget::Transaction(_) => "Transaction",
         LookupTarget::Block(_) => "Block",
+        LookupTarget::BlockHash(_) => "Block",
     }
 }
 
@@ -5357,7 +5782,10 @@ enum DashboardSearchHint {
 
 fn dashboard_search_hint_kind(value: &str) -> Option<DashboardSearchHint> {
     let key = lookup_label_key(value);
-    if matches!(key.as_str(), "block" | "blockid" | "height" | "slot") {
+    if matches!(
+        key.as_str(),
+        "block" | "blockid" | "height" | "slot" | "header" | "headerhash" | "headerid"
+    ) {
         Some(DashboardSearchHint::Block)
     } else if matches!(
         key.as_str(),
@@ -5379,6 +5807,9 @@ fn lookup_target_tooltip(target: &LookupTarget) -> String {
         LookupTarget::Account(account_id) => format!("Open account {}", short_token(account_id)),
         LookupTarget::Transaction(hash) => format!("Open transaction {}", short_token(hash)),
         LookupTarget::Block(block_id) => format!("Open block #{block_id}"),
+        LookupTarget::BlockHash(header_hash) => {
+            format!("Open block {}", short_token(header_hash))
+        }
     }
 }
 
@@ -6036,12 +6467,85 @@ fn focus_outline(ui: &egui::Ui, response: &egui::Response) {
 async fn dashboard_report(
     sequencer_endpoint: &str,
     indexer_endpoint: &str,
+    node_endpoint: &str,
 ) -> Result<DashboardReport> {
-    let overview_report = overview(sequencer_endpoint, indexer_endpoint).await;
+    let overview_report = overview(sequencer_endpoint, indexer_endpoint, node_endpoint).await;
     let mut latest_blocks = Vec::with_capacity(8);
     let mut latest_transactions = Vec::with_capacity(12);
     let mut block_errors = Vec::new();
 
+    match indexer_blocks(indexer_endpoint, None, 8).await {
+        Ok(blocks) if !blocks.is_empty() => {
+            for block in blocks {
+                let Some(block_id) = block.block_id else {
+                    block_errors.push("indexer returned a block without block_id".to_owned());
+                    continue;
+                };
+                for transaction in &block.transactions {
+                    if latest_transactions.len() >= 12 {
+                        break;
+                    }
+                    latest_transactions.push(DashboardTransaction {
+                        block_id,
+                        hash: transaction.hash.clone(),
+                        kind: transaction.kind.clone(),
+                        program_id_hex: transaction.program_id_hex.clone(),
+                        account_count: transaction.account_ids.len(),
+                        instruction_words: transaction.instruction_data.len(),
+                    });
+                }
+                latest_blocks.push(DashboardBlock {
+                    block_id,
+                    header_hash: block.header_hash,
+                    parent_hash: block.parent_hash,
+                    timestamp: block.timestamp.unwrap_or_default(),
+                    bedrock_status: block.bedrock_status.unwrap_or_else(|| "Indexed".to_owned()),
+                    tx_count: block.tx_count,
+                    decode_warning: None,
+                });
+            }
+        }
+        Ok(_) => block_errors.push("indexer returned no blocks; using sequencer feed".to_owned()),
+        Err(error) => block_errors.push(format!(
+            "failed to fetch indexer blocks; using sequencer feed: {error:#}"
+        )),
+    }
+
+    if latest_blocks.is_empty()
+        && let Err(error) = fill_dashboard_blocks_from_sequencer(
+            sequencer_endpoint,
+            &mut latest_blocks,
+            &mut latest_transactions,
+            &mut block_errors,
+        )
+        .await
+    {
+        block_errors.push(format!("failed to fetch sequencer blocks: {error:#}"));
+    }
+
+    let recent_transaction_count = latest_blocks.iter().map(|block| block.tx_count).sum();
+    let recent_window_seconds = dashboard_recent_window_seconds(&latest_blocks);
+    let recent_tps = recent_window_seconds
+        .filter(|seconds| *seconds > 0)
+        .map(|seconds| recent_transaction_count as f64 / seconds as f64);
+
+    Ok(DashboardReport {
+        overview: overview_report,
+        recent_transaction_count,
+        recent_tps,
+        recent_window_seconds,
+        latest_blocks,
+        latest_transactions,
+        block_errors,
+    })
+}
+
+async fn fill_dashboard_blocks_from_sequencer(
+    sequencer_endpoint: &str,
+    latest_blocks: &mut Vec<DashboardBlock>,
+    latest_transactions: &mut Vec<DashboardTransaction>,
+    block_errors: &mut Vec<String>,
+) -> Result<()> {
     match last_sequencer_block_id(sequencer_endpoint).await {
         Ok(head) => {
             let start = head.saturating_sub(7);
@@ -6063,6 +6567,8 @@ async fn dashboard_report(
                         }
                         latest_blocks.push(DashboardBlock {
                             block_id: block.block_id,
+                            header_hash: Some(block.header_hash),
+                            parent_hash: Some(block.parent_hash),
                             timestamp: block.timestamp,
                             bedrock_status: block.bedrock_status,
                             tx_count: block.tx_count,
@@ -6076,25 +6582,9 @@ async fn dashboard_report(
                 }
             }
         }
-        Err(error) => block_errors.push(format!(
-            "failed to fetch latest sequencer block id: {error:#}"
-        )),
+        Err(error) => return Err(error).context("failed to fetch latest sequencer block id"),
     }
-    let recent_transaction_count = latest_blocks.iter().map(|block| block.tx_count).sum();
-    let recent_window_seconds = dashboard_recent_window_seconds(&latest_blocks);
-    let recent_tps = recent_window_seconds
-        .filter(|seconds| *seconds > 0)
-        .map(|seconds| recent_transaction_count as f64 / seconds as f64);
-
-    Ok(DashboardReport {
-        overview: overview_report,
-        recent_transaction_count,
-        recent_tps,
-        recent_window_seconds,
-        latest_blocks,
-        latest_transactions,
-        block_errors,
-    })
+    Ok(())
 }
 
 fn run_async<T: Send + 'static>(
@@ -6358,6 +6848,27 @@ mod gui_tests {
     }
 
     #[test]
+    fn account_output_tab_defaults_to_detail_when_idl_decode_fails() {
+        let output = serde_json::json!({
+            "account": {
+                "account_id": "acct",
+                "account": {},
+                "data_hex": "0102"
+            },
+            "decode_error": "failed to decode as `Vault`"
+        });
+
+        assert_eq!(
+            default_account_output_tab(&output),
+            Some(AccountOutputTab::Detail)
+        );
+        assert_eq!(
+            account_output_tabs(None::<&Value>),
+            &AccountOutputTab::DETAIL_RAW[..]
+        );
+    }
+
+    #[test]
     fn dashboard_search_routes_blocks_transactions_and_accounts() {
         let hash = "ab".repeat(32);
         let account = "11111111111111111111111111111111";
@@ -6368,6 +6879,10 @@ mod gui_tests {
         assert_eq!(
             dashboard_search_target(&format!("tx:{hash}")),
             Some(LookupTarget::Transaction(hash.clone()))
+        );
+        assert_eq!(
+            dashboard_search_target(&format!("block:{hash}")),
+            Some(LookupTarget::BlockHash(hash.clone()))
         );
         assert_eq!(
             dashboard_search_target(account),
@@ -6384,6 +6899,8 @@ mod gui_tests {
         let blocks = vec![
             DashboardBlock {
                 block_id: 2,
+                header_hash: Some("ab".repeat(32)),
+                parent_hash: Some("cd".repeat(32)),
                 timestamp: 20_000,
                 bedrock_status: "Finalized".to_owned(),
                 tx_count: 3,
@@ -6391,6 +6908,8 @@ mod gui_tests {
             },
             DashboardBlock {
                 block_id: 1,
+                header_hash: Some("cd".repeat(32)),
+                parent_hash: Some("ef".repeat(32)),
                 timestamp: 10_000,
                 bedrock_status: "Finalized".to_owned(),
                 tx_count: 2,
@@ -6403,6 +6922,36 @@ mod gui_tests {
     }
 
     #[test]
+    fn indexer_dashboard_derives_mode_counts_and_latest_header() {
+        let header = "ab".repeat(32);
+        let output = serde_json::json!({
+            "overview": {
+                "sequencer": { "health": { "ok": true, "value": "ok" } },
+                "indexer": { "health": { "ok": true, "value": "ok" } }
+            },
+            "latest_blocks": [
+                {
+                    "block_id": 3,
+                    "header_hash": header,
+                    "bedrock_status": "Finalized"
+                },
+                {
+                    "block_id": 2,
+                    "header_hash": "cd".repeat(32),
+                    "bedrock_status": "Pending"
+                }
+            ]
+        });
+
+        assert_eq!(indexer_dashboard_mode(overview_payload(&output)), "Online");
+        assert_eq!(dashboard_block_status_count(&output, "finalized"), 1);
+        assert_eq!(
+            latest_block_header(&output),
+            Some("abababababababababababababababababababababababababababababababab")
+        );
+    }
+
+    #[test]
     fn saved_idl_definitions_are_persisted() {
         let mut app = LogosInspectorApp {
             registered_idls: vec![RegisteredIdl {
@@ -6410,7 +6959,6 @@ mod gui_tests {
                 program_id: Some("wallet-program".to_owned()),
                 json: r#"{"accounts":[{"name":"Wallet"}]}"#.to_owned(),
             }],
-            active_idl_name: Some("Wallet IDL".to_owned()),
             ..Default::default()
         };
         let mut storage = MemoryStorage::default();
@@ -6420,7 +6968,6 @@ mod gui_tests {
 
         assert!(saved.is_some());
         let saved = saved.unwrap_or_default();
-        assert_eq!(saved.active_idl_name.as_deref(), Some("Wallet IDL"));
         assert_eq!(saved.registered_idls.len(), 1);
         assert_eq!(
             saved.registered_idls.first().map(|idl| idl.name.as_str()),
@@ -6446,6 +6993,10 @@ mod gui_tests {
         assert_eq!(
             lookup_target_for_field("Block ID", "#42"),
             Some(LookupTarget::Block(42))
+        );
+        assert_eq!(
+            lookup_target_for_field("Header hash", &hash),
+            Some(LookupTarget::BlockHash(hash.clone()))
         );
         assert_eq!(
             lookup_target_for_field("program_id_hex", &program_hex),

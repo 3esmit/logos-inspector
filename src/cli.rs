@@ -119,6 +119,8 @@ pub struct EndpointArgs {
     sequencer_url: Option<String>,
     #[arg(long)]
     indexer_url: Option<String>,
+    #[arg(long)]
+    node_url: Option<String>,
 }
 
 #[derive(Debug, Clone, ClapArgs)]
@@ -135,20 +137,20 @@ impl EndpointArgs {
             self.profile.as_deref(),
             self.sequencer_url.as_deref(),
             self.indexer_url.as_deref(),
+            self.node_url.as_deref(),
         )
     }
 }
 
 impl SequencerArgs {
     fn sequencer_url(&self) -> Result<String> {
-        Ok(
-            resolve_network_endpoints(
-                self.profile.as_deref(),
-                self.sequencer_url.as_deref(),
-                None,
-            )?
-            .sequencer_endpoint,
-        )
+        Ok(resolve_network_endpoints(
+            self.profile.as_deref(),
+            self.sequencer_url.as_deref(),
+            None,
+            None,
+        )?
+        .sequencer_endpoint)
     }
 }
 
@@ -160,6 +162,7 @@ pub fn run(args: CliArgs) -> Result<()> {
             let report = runtime.block_on(overview(
                 &endpoints.sequencer_endpoint,
                 &endpoints.indexer_endpoint,
+                &endpoints.node_endpoint,
             ));
             print_json(&report)
         }
