@@ -1,112 +1,116 @@
-# LEZ Inspect
+# Logos Inspector
 
-LEZ Inspect is a local inspection toolkit for Logos Execution Zone networks.
-It provides command-line tools and a web UI for reading sequencer, indexer,
-transaction, block, account, and program binary data.
+Logos Inspector is a native inspection toolkit for Logos networks. It currently
+targets Logos Blockchain and Logos Execution Zone, with room for future
+inspectors for Logos messaging, storage, and other services.
 
 ## Components
 
-- `crates/lez-inspect`: Current LEZ/NSSA CLI.
-- `crates/lee-inspect`: Legacy LEE compatibility CLI.
-- `ui`: Local web UI backed by `lez-inspect`.
+- `src/lib.rs`: shared inspection library.
+- `src/main.rs`: native GUI and CLI entry point.
+- `src/cli.rs`, `src/gui.rs`: mode-specific shells over the shared library.
 
-Use `lez-inspect` for current LEZ testnet work. Use `lee-inspect` only when
-you need to inspect or submit legacy LEE-format public transactions.
+The GUI and CLI both call the package library directly. The GUI does not shell
+out to the CLI.
 
 ## Requirements
 
 - Rust `1.94.0`.
-- Node.js `20` or newer for the UI.
+- Python 3 for circuit bootstrap.
 - Network access to the selected sequencer and indexer endpoints.
-- Logos blockchain circuits `v0.4.2` when building Rust dependencies that
+- Logos blockchain circuits `v0.5.3` when building Rust dependencies that
   require circuit verification keys.
 
 ## Build
 
-Build the current CLI:
+Build the tool:
 
 ```bash
-cargo build -p lez-inspect
+cargo build
 ```
 
-Build the legacy CLI:
+Run checks:
 
 ```bash
-cargo build -p lee-inspect
-```
-
-Run static checks:
-
-```bash
-./scripts/setup-circuits.sh v0.4.2 /tmp/logos-blockchain-circuits
+python3 scripts/setup-circuits.py v0.5.3 /tmp/logos-blockchain-circuits
 export LOGOS_BLOCKCHAIN_CIRCUITS=/tmp/logos-blockchain-circuits
 cargo fmt --all -- --check
-RISC0_SKIP_BUILD=1 cargo check --workspace
-node --check ui/server.js
-node --check ui/public/app.js
+RISC0_SKIP_BUILD=1 cargo check
+RISC0_SKIP_BUILD=1 cargo clippy --all-targets -- -D warnings
+```
+
+On Windows, run the same script with Python and set the environment variable in
+PowerShell:
+
+```powershell
+py -3 scripts/setup-circuits.py v0.5.3 $env:TEMP\logos-blockchain-circuits
+$env:LOGOS_BLOCKCHAIN_CIRCUITS="$env:TEMP\logos-blockchain-circuits"
 ```
 
 ## CLI
 
-Show available commands:
+Run CLI mode:
 
 ```bash
-cargo run -p lez-inspect --
+cargo run -- cli overview
 ```
 
 Examples:
 
 ```bash
-cargo run -p lez-inspect -- fetch-tx <tx-hash> https://testnet.lez.logos.co/
-cargo run -p lez-inspect -- account-json <account-id> https://testnet.lez.logos.co/
-cargo run -p lez-inspect -- program-id <program.bin>
+cargo run -- cli head
+cargo run -- cli programs
+cargo run -- cli block <block-id>
+cargo run -- cli tx <tx-hash>
+cargo run -- cli account <account-id>
+cargo run -- cli account <account-id> --idl <idl.json> --idl-account <account-type>
+cargo run -- cli decode-account --data-hex <hex> --idl <idl.json> --idl-account <account-type>
+cargo run -- cli decode-instruction --program-id <program-id> --words <u32-list> --idl <idl.json> --accounts <account-list>
+cargo run -- cli program-file <program.bin>
+cargo run -- cli rpc http://127.0.0.1:8779/ getLastFinalizedBlockId '[]'
 ```
 
-Commands that submit transactions require a configured LEZ wallet. Set the
-wallet environment variables expected by the upstream wallet crate before
-running submit commands.
+## GUI
 
-## UI
-
-Start the web UI:
+Run native GUI mode:
 
 ```bash
-cd ui
-npm start
+cargo run -- gui
 ```
 
-Open:
+Running without arguments also starts the GUI:
 
-```text
-http://127.0.0.1:8787
+```bash
+cargo run
 ```
-
-The UI builds `lez-inspect` on demand when the CLI binary is missing.
 
 ## Configuration
 
 Environment variables:
 
-- `HOST`: HTTP bind host for the UI. Default: `127.0.0.1`.
-- `PORT`: HTTP bind port for the UI. Default: `8787`.
-- `LEZ_SEQUENCER_ENDPOINT`: Default sequencer JSON-RPC endpoint.
-- `LEZ_INDEXER_ENDPOINT`: Default indexer JSON-RPC endpoint.
-- `LEZ_IDL_DIR`: Directory containing `*-idl.json` files for UI loading.
-- `LEZ_INSPECT_CLI`: Optional path to a prebuilt `lez-inspect` binary.
 - `LOGOS_BLOCKCHAIN_CIRCUITS`: Directory containing the compatible Logos
   circuits release required by upstream Rust dependencies.
 
-If `LEZ_IDL_DIR` is unset, the UI looks for IDLs in `artifacts/` at the repo
-root. You can also paste an IDL directly into the UI.
+Default endpoints:
+
+- Sequencer: `https://testnet.lez.logos.co/`
+- Indexer: `http://127.0.0.1:8779/`
+
+Both CLI and GUI allow endpoint override.
+
+## IDL Decode
+
+Logos Inspector is program-agnostic. To decode program-owned account data or
+instruction words, provide the account or program address plus that program's
+IDL JSON. The core library handles Borsh account decoding and LEZ instruction
+word decoding, and both CLI and GUI use the same implementation.
+
+The GUI exposes IDL inputs in the `Account` and `IDL` tabs. No built-in Token,
+TokenDefinition, or AMM knowledge is required.
 
 ## Dependency pins
 
-The tools depend on internal LEZ crates that are not published on crates.io.
-The manifests pin those crates to public git revisions:
-
-- `lez-inspect`: `logos-blockchain/logos-execution-zone` at
-  `cf3639d8252040d13b3d4e933feb19b42c76e14a`.
-- `lee-inspect`: `logos-blockchain/logos-execution-zone` at
-  `27360cb7d6ccb2bfbcca7d171bab8a3938490264`.
-
-These pins make a public clone reproducible without private local paths.
+The core library depends on internal LEZ crates that are not published on
+crates.io. The manifests pin those crates to
+`logos-blockchain/logos-execution-zone` tag `v0.2.0-rc6`, matching the LEZ
+program workspace release line.

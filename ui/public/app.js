@@ -145,6 +145,121 @@ function renderRaw(raw) {
   return `<pre class="code-block">${escapeHtml(parts.join("\n\n"))}</pre>`;
 }
 
+function renderRawDetails(raw, label = "Raw output") {
+  if (!raw) return "";
+  return `<details>
+    <summary class="tx-item">${escapeHtml(label)}</summary>
+    ${renderRaw(raw)}
+  </details>`;
+}
+
+function renderJsonDetails(value, label = "Raw JSON") {
+  return `<details>
+    <summary class="tx-item">${escapeHtml(label)}</summary>
+    ${renderJson(value)}
+  </details>`;
+}
+
+function formatLabel(value) {
+  return String(value || "")
+    .replaceAll("_", " ")
+    .replaceAll("-", " ")
+    .replace(/\b\w/g, (ch) => ch.toUpperCase());
+}
+
+function isScalarValue(value) {
+  return value === null || ["string", "number", "boolean"].includes(typeof value);
+}
+
+function valueKind(value) {
+  if (value === null || value === undefined) return "empty";
+  if (Array.isArray(value)) return `${value.length} items`;
+  if (typeof value === "object") return `${Object.keys(value).length} fields`;
+  return typeof value;
+}
+
+function valueText(value) {
+  if (value === null || value === undefined || value === "") return "-";
+  if (typeof value === "boolean") return value ? "yes" : "no";
+  if (Array.isArray(value)) return `${value.length} items`;
+  if (typeof value === "object") return `${Object.keys(value).length} fields`;
+  return String(value);
+}
+
+function renderStructuredValue(value) {
+  if (value === null || value === undefined) return `<div class="empty">No result</div>`;
+  if (isScalarValue(value)) return renderKv({ value: valueText(value) });
+  if (Array.isArray(value)) {
+    if (!value.length) return `<div class="empty">No items</div>`;
+    return `<div class="tx-list">${value.map((item, index) => `
+      <div class="tx-item">
+        <div class="tx-top">
+          <strong>Item ${index + 1}</strong>
+          <span class="pill">${escapeHtml(valueKind(item))}</span>
+        </div>
+        ${renderStructuredValue(item)}
+      </div>
+    `).join("")}</div>`;
+  }
+
+  const scalars = {};
+  const nested = [];
+  for (const [key, item] of Object.entries(value)) {
+    if (isScalarValue(item)) scalars[formatLabel(key)] = valueText(item);
+    else nested.push([key, item]);
+  }
+
+  return `
+    ${Object.keys(scalars).length ? renderKv(scalars) : ""}
+    ${nested.map(([key, item]) => `
+      <div class="tx-item">
+        <div class="tx-top">
+          <strong>${escapeHtml(formatLabel(key))}</strong>
+          <span class="pill">${escapeHtml(valueKind(item))}</span>
+        </div>
+        ${renderStructuredValue(item)}
+      </div>
+    `).join("")}
+  `;
+}
+
+function renderStructuredResult(value, title = "Result") {
+  return `<div class="tx-item">
+    <div class="tx-top">
+      <strong>${escapeHtml(title)}</strong>
+      <span class="pill">${escapeHtml(valueKind(value))}</span>
+    </div>
+    ${renderStructuredValue(value)}
+  </div>`;
+}
+
+function renderRpcResponse(response) {
+  const hasError = response && Object.hasOwn(response, "error");
+  const hasResult = response && Object.hasOwn(response, "result");
+  return `
+    ${renderKv({
+      jsonrpc: response?.jsonrpc,
+      id: response?.id,
+      status: hasError ? "error" : hasResult ? "ok" : "unknown",
+      result: hasResult ? valueKind(response.result) : "-"
+    })}
+    ${hasError ? `<div class="error">${escapeHtml(valueText(response.error))}</div>` : ""}
+    ${hasResult ? renderStructuredResult(response.result, "RPC result") : `<div class="empty">No result field</div>`}
+  `;
+}
+
+function renderProgramFileResult(json) {
+  return `${renderStructuredResult(json.parsed?.values || {}, "Program file")}${renderRawDetails(json.raw, "Raw command output")}`;
+}
+
+function renderCliResult(json) {
+  return `
+    ${renderStructuredResult(json.parsed?.values || {}, "Command values")}
+    ${renderTransactions(json.parsed?.transactions || [])}
+    ${renderRawDetails(json.raw, "Raw command output")}
+  `;
+}
+
 function parseWords(value) {
   if (Array.isArray(value)) {
     return value.map((word) => Number(word)).filter(Number.isFinite);
@@ -781,10 +896,7 @@ function renderAccountInspection(target, account, raw = null) {
       data_hex: bytesToHex(bytes)
     })}
     ${renderAccountDecode(decoded)}
-    <details>
-      <summary class="tx-item">Raw account</summary>
-      ${raw ? renderRaw(raw) : renderJson(account)}
-    </details>
+    ${raw ? renderRawDetails(raw, "Raw account") : renderJsonDetails(account, "Raw account")}
   `;
 }
 
@@ -827,10 +939,7 @@ function renderBlock(target, decoded) {
       })}
     </div>
     ${renderTransactions(decoded.transactions)}
-    <details>
-      <summary class="tx-item">Raw output</summary>
-      ${renderRaw(decoded.raw)}
-    </details>
+    ${renderRawDetails(decoded.raw, "Raw output")}
   `;
 }
 
@@ -967,10 +1076,7 @@ function renderIndexerTransactionResult(target, tx) {
     target.innerHTML = `<div class="empty">Transaction not found</div>`;
     return;
   }
-  target.innerHTML = `${renderTransactions([flattenIndexerTransaction(tx)])}<details>
-    <summary class="tx-item">Raw JSON</summary>
-    ${renderJson(tx)}
-  </details>`;
+  target.innerHTML = `${renderTransactions([flattenIndexerTransaction(tx)])}${renderJsonDetails(tx, "Raw transaction")}`;
 }
 
 async function sequencerRpc(method, params = []) {
@@ -1219,14 +1325,16 @@ async function runIndexerLookup(target = $("#indexerLookupResult")) {
   }
   if (type === "account") {
     const json = await indexerRpc("getAccount", [value]);
-    target.innerHTML = renderJson(json.response.result);
+    target.innerHTML = json.response.result
+      ? renderStructuredResult(json.response.result, "Account")
+      : `<div class="empty">Account not found</div>`;
     return;
   }
   if (type === "account-transactions") {
     const json = await indexerRpc("getTransactionsByAccount", [value, offset, limit]);
     const txs = json.response.result || [];
     target.innerHTML = txs.length
-      ? `${renderTransactions(txs.map(flattenIndexerTransaction))}<details><summary class="tx-item">Raw JSON</summary>${renderJson(txs)}</details>`
+      ? `${renderTransactions(txs.map(flattenIndexerTransaction))}${renderJsonDetails(txs, "Raw transactions")}`
       : `<div class="empty">No transactions</div>`;
   }
 }
@@ -1346,7 +1454,7 @@ function bindEvents() {
       target.innerHTML = `
         ${renderKv(values)}
         ${values.kind === "Public" ? renderInstructionDecode(decodeInstruction(values.program_id_hex, values.instruction_data, values.account_ids), values.program_id_hex) : ""}
-        ${renderRaw(json.raw)}
+        ${renderRawDetails(json.raw, "Raw transaction")}
       `;
     } catch (error) {
       resultError(target, error);
@@ -1381,7 +1489,7 @@ function bindEvents() {
         decoder: "account-json"
       });
       if (!json.json) {
-        target.innerHTML = renderRaw(json.raw);
+        target.innerHTML = `${renderStructuredResult({}, "Account")}${renderRawDetails(json.raw, "Raw account")}`;
         return;
       }
       renderAccountInspection(target, json.json, json.raw);
@@ -1404,7 +1512,7 @@ function bindEvents() {
         mode: $("#programFileMode").value,
         path: $("#programPathInput").value.trim()
       });
-      target.innerHTML = `${renderKv(json.parsed.values)}${renderRaw(json.raw)}`;
+      target.innerHTML = renderProgramFileResult(json);
     } catch (error) {
       resultError(target, error);
     }
@@ -1494,7 +1602,7 @@ function bindEvents() {
       const json = source === "indexer"
         ? await indexerRpc($("#rpcMethod").value.trim(), params)
         : await sequencerRpc($("#rpcMethod").value.trim(), params);
-      target.innerHTML = renderJson(json.response);
+      target.innerHTML = renderRpcResponse(json.response);
     } catch (error) {
       resultError(target, error);
     }
@@ -1517,7 +1625,7 @@ function bindEvents() {
         command: $("#cliCommand").value,
         args: splitArgs($("#cliArgs").value)
       });
-      target.innerHTML = `${renderKv(json.parsed.values)}${renderTransactions(json.parsed.transactions)}${renderRaw(json.raw)}`;
+      target.innerHTML = renderCliResult(json);
     } catch (error) {
       resultError(target, error);
     }

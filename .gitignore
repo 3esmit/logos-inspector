@@ -1,8 +1,6 @@
 /target/
-/ui/node_modules/
-/ui/.env
 /.env
+__pycache__/
 *.log
 *.tmp
 .DS_Store
-
