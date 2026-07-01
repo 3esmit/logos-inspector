@@ -8,14 +8,20 @@ inspectors for Logos messaging, storage, and other services.
 
 - `src/lib.rs`: shared inspection library.
 - `src/main.rs`: native GUI and CLI entry point.
-- `src/cli.rs`, `src/gui.rs`: mode-specific shells over the shared library.
+- `src/cli.rs`: CLI shell over the shared library.
+- `src/gui.rs`: thin launcher for the standalone QML flake app.
+- `crates/standalone-gui`: CXX-Qt standalone host over the shared QML UI.
+- `qml/Main.qml`, `qml/`: Logos QML UI plugin.
 
-The GUI and CLI both call the package library directly. The GUI does not shell
-out to the CLI.
+The CLI calls the package library directly. The QML GUI follows the Logos UI
+plugin model and routes UI actions through the injected `logos.callModule()`
+bridge when hosted by Logos Basecamp or the standalone CXX-Qt host.
+The host must provide the declared runtime modules for inspection actions.
 
 ## Requirements
 
 - Rust `1.94.0`.
+- Nix with flakes enabled for the QML UI.
 - Python 3 for circuit bootstrap.
 - Network access to the selected sequencer and indexer endpoints.
 - Logos blockchain circuits `v0.5.3` when building Rust dependencies that
@@ -82,6 +88,24 @@ Running without arguments also starts the GUI:
 
 ```bash
 cargo run
+```
+
+Run the Basecamp QML plugin directly:
+
+```bash
+nix run .#qml-ui
+```
+
+Run the standalone QML host:
+
+```bash
+nix run .#standalone
+```
+
+Build plugin outputs:
+
+```bash
+nix build
 ```
 
 ## Configuration
