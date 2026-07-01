@@ -7,12 +7,15 @@ use std::{
 use anyhow::{Context as _, Result};
 use clap::{Args as ClapArgs, Parser, Subcommand};
 use logos_inspector::{
-    account_lookup, account_lookup_with_idl, decode_account_data_hex_with_idl,
+    account_lookup, account_lookup_with_idl, blockchain::blockchain_blocks,
+    blockchain::blockchain_node_report, channels::channel_scan, decode_account_data_hex_with_idl,
     decode_event_data_hex_with_idl, decode_instruction_words_with_idl, last_sequencer_block_id,
-    overview, program_file_info, raw_rpc_report, resolve_network_endpoints, sequencer_block,
+    modules::blockchain_module_report, modules::capabilities_report, modules::delivery_report,
+    modules::logoscore_status_report, modules::modules_report, modules::storage_report, overview,
+    program_file_info, raw_rpc_report, resolve_network_endpoints, sequencer_block,
     sequencer_health, sequencer_program_ids, sequencer_transaction,
     sequencer_transaction_inspection, sequencer_transaction_inspection_with_idl,
-    sequencer_transaction_trace, sequencer_transaction_trace_with_idl,
+    sequencer_transaction_trace, sequencer_transaction_trace_with_idl, spel::spel_idl_report,
 };
 use serde_json::Value;
 
@@ -103,6 +106,41 @@ enum CliCommand {
     },
     ProgramFile {
         path: String,
+    },
+    BlockchainNode(EndpointArgs),
+    BlockchainBlocks {
+        #[arg(long)]
+        slot_from: u64,
+        #[arg(long)]
+        slot_to: u64,
+        #[command(flatten)]
+        endpoints: EndpointArgs,
+    },
+    LogoscoreStatus,
+    Modules,
+    BlockchainModule {
+        #[arg(long)]
+        address: Option<String>,
+    },
+    Storage {
+        #[arg(long)]
+        cid: Option<String>,
+    },
+    Messaging {
+        #[arg(long)]
+        info_id: Option<String>,
+    },
+    Capabilities,
+    Channels {
+        #[arg(long)]
+        slot_from: u64,
+        #[arg(long)]
+        slot_to: u64,
+        #[command(flatten)]
+        endpoints: EndpointArgs,
+    },
+    SpelIdl {
+        idl: String,
     },
     Rpc {
         endpoint: String,
@@ -301,6 +339,46 @@ pub fn run(args: CliArgs) -> Result<()> {
             )?)
         }
         CliCommand::ProgramFile { path } => print_json(&program_file_info(path)?),
+        CliCommand::BlockchainNode(endpoints) => {
+            let endpoints = endpoints.endpoints()?;
+            let report = runtime.block_on(blockchain_node_report(&endpoints.node_endpoint));
+            print_json(&report)
+        }
+        CliCommand::BlockchainBlocks {
+            slot_from,
+            slot_to,
+            endpoints,
+        } => {
+            let endpoints = endpoints.endpoints()?;
+            let blocks = runtime.block_on(blockchain_blocks(
+                &endpoints.node_endpoint,
+                slot_from,
+                slot_to,
+            ))?;
+            print_json(&blocks)
+        }
+        CliCommand::LogoscoreStatus => print_json(&logoscore_status_report()),
+        CliCommand::Modules => print_json(&modules_report()),
+        CliCommand::BlockchainModule { address } => {
+            print_json(&blockchain_module_report(address.as_deref()))
+        }
+        CliCommand::Storage { cid } => print_json(&storage_report(cid.as_deref())),
+        CliCommand::Messaging { info_id } => print_json(&delivery_report(info_id.as_deref())),
+        CliCommand::Capabilities => print_json(&capabilities_report()),
+        CliCommand::Channels {
+            slot_from,
+            slot_to,
+            endpoints,
+        } => {
+            let endpoints = endpoints.endpoints()?;
+            let report =
+                runtime.block_on(channel_scan(&endpoints.node_endpoint, slot_from, slot_to))?;
+            print_json(&report)
+        }
+        CliCommand::SpelIdl { idl } => {
+            let idl_json = read_idl(&idl)?;
+            print_json(&spel_idl_report(&idl_json)?)
+        }
         CliCommand::Rpc {
             endpoint,
             method,

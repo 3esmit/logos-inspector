@@ -1,4 +1,11 @@
 /target/
+/.direnv/
+/result
+/result-*
+node_modules/
+dist/
+coverage/
+tmp/
 /.env
 __pycache__/
 *.log

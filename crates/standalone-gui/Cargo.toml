@@ -1,0 +1,27 @@
+[package]
+name = "logos-inspector-standalone-gui"
+version = "0.2.0-rc6"
+edition = "2024"
+rust-version = "1.94"
+license = "MIT"
+publish = false
+
+[features]
+default = []
+static-rapidsnark-link = ["dep:rust-rapidsnark"]
+
+[dependencies]
+anyhow = "1.0.98"
+cxx = "1.0"
+cxx-qt = "0.9"
+cxx-qt-lib = { version = "0.9", features = ["qt_gui", "qt_qml"] }
+logos-inspector = { path = "../.." }
+rust-rapidsnark = { git = "https://github.com/logos-blockchain/logos-blockchain-rust-rapidsnark.git", rev = "e91187f8ccb5bbfc7bb00dac88169112428da78f", features = [
+    "static-rapidsnark",
+], optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread"] }
+
+[build-dependencies]
+cxx-qt-build = { version = "0.9", features = ["link_qt_object_files"] }

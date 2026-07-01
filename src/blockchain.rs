@@ -1,0 +1,85 @@
+use anyhow::{Context as _, Result, bail};
+use serde::Serialize;
+use serde_json::Value;
+
+use crate::{ProbeReport, raw_http_json};
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BlockchainNodeReport {
+    pub endpoint: String,
+    pub cryptarchia_info: ProbeReport,
+    pub headers: ProbeReport,
+    pub network_info: ProbeReport,
+    pub mantle_metrics: ProbeReport,
+}
+
+pub async fn blockchain_node_report(endpoint: &str) -> BlockchainNodeReport {
+    let (cryptarchia_info, headers, network_info, mantle_metrics) = tokio::join!(
+        raw_http_json(endpoint, "/cryptarchia/info"),
+        raw_http_json(endpoint, "/cryptarchia/headers"),
+        raw_http_json(endpoint, "/network/info"),
+        raw_http_json(endpoint, "/mantle/metrics"),
+    );
+
+    BlockchainNodeReport {
+        endpoint: endpoint.to_owned(),
+        cryptarchia_info: ProbeReport::from_result(
+            "cryptarchia info",
+            "/cryptarchia/info",
+            cryptarchia_info,
+        ),
+        headers: ProbeReport::from_result("headers", "/cryptarchia/headers", headers),
+        network_info: ProbeReport::from_result("network info", "/network/info", network_info),
+        mantle_metrics: ProbeReport::from_result(
+            "mantle metrics",
+            "/mantle/metrics",
+            mantle_metrics,
+        ),
+    }
+}
+
+pub async fn blockchain_blocks(endpoint: &str, slot_from: u64, slot_to: u64) -> Result<Value> {
+    if slot_from > slot_to {
+        bail!("slot_from must be less than or equal to slot_to");
+    }
+    raw_http_json(
+        endpoint,
+        &format!("/cryptarchia/blocks?slot_from={slot_from}&slot_to={slot_to}"),
+    )
+    .await
+}
+
+pub async fn mantle_status(endpoint: &str, item_ids: Value) -> Result<Value> {
+    post_json(endpoint, "/mantle/status", &item_ids).await
+}
+
+pub async fn storage_block(endpoint: &str, header_id: Value) -> Result<Value> {
+    post_json(endpoint, "/storage/block", &header_id).await
+}
+
+async fn post_json(endpoint: &str, path: &str, body: &Value) -> Result<Value> {
+    let endpoint = endpoint.trim_end_matches('/');
+    let path = path.trim_start_matches('/');
+    let url = format!("{endpoint}/{path}");
+    let response = reqwest::Client::new()
+        .post(&url)
+        .json(body)
+        .send()
+        .await
+        .with_context(|| format!("failed to call {url}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .await
+        .context("failed to read http response body")?;
+    let value: Value = serde_json::from_str(&text).with_context(|| {
+        format!(
+            "invalid JSON response: {}",
+            text.chars().take(400).collect::<String>()
+        )
+    })?;
+    if !status.is_success() {
+        bail!("http call `{url}` failed with status {status}: {value}");
+    }
+    Ok(value)
+}

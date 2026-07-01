@@ -1,7 +1,7 @@
 {
-  "name": "lez-inspect-ui",
+  "name": "logos-inspector-ui",
   "version": "0.1.0",
-  "description": "Local web UI for LEZ Inspect",
+  "description": "Local web UI for Logos Inspector",
   "license": "MIT",
   "type": "module",
   "scripts": {

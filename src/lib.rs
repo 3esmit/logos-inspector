@@ -1,3 +1,11 @@
+pub mod blockchain;
+pub mod bridge;
+pub mod channels;
+pub mod logoscore;
+pub mod modules;
+mod probe;
+pub mod spel;
+
 use std::{collections::BTreeMap, fs, path::Path};
 
 use anyhow::{Context as _, Result, bail};
@@ -17,6 +25,8 @@ use sequencer_service_rpc::{RpcClient as _, SequencerClientBuilder};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
+
+pub use probe::ProbeReport;
 
 pub const TESTNET_SEQUENCER_ENDPOINT: &str = "https://testnet.lez.logos.co/";
 pub const LOCAL_SEQUENCER_ENDPOINT: &str = "http://127.0.0.1:3040/";
@@ -182,12 +192,12 @@ pub fn inspector_scopes() -> Vec<InspectorScope> {
         InspectorScope {
             name: "Logos Messaging",
             area: "message transport and routing inspection",
-            status: "planned",
+            status: "active",
         },
         InspectorScope {
             name: "Logos Storage",
             area: "storage node and content inspection",
-            status: "planned",
+            status: "active",
         },
     ]
 }

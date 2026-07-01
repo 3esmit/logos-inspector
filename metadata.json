@@ -1,0 +1,25 @@
+{
+  "name": "logos_inspector_ui",
+  "version": "0.2.0-rc6",
+  "description": "QML frontend for Logos Inspector",
+  "type": "ui_qml",
+  "view": "qml/Main.qml",
+  "dependencies": [
+    "logos_inspector"
+  ],
+  "category": "tools",
+  "icon": "icons/inspector.svg",
+  "nix": {
+    "packages": {
+      "build": [],
+      "runtime": []
+    },
+    "external_libraries": [],
+    "cmake": {
+      "find_packages": [],
+      "extra_sources": [],
+      "extra_include_dirs": [],
+      "extra_link_libraries": []
+    }
+  }
+}
