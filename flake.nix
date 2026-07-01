@@ -231,6 +231,8 @@ EOF
           preFixup = ''
             qtWrapperArgs+=(
               --set LOGOS_INSPECTOR_QML_DIR "$out/share/logos-inspector/qml"
+              --set-default QT_QUICK_BACKEND software
+              --set-default QSG_RHI_BACKEND software
             )
           '';
           meta.mainProgram = "logos-inspector-standalone-gui";
