@@ -87,6 +87,18 @@ Item {
                     sourceComponent: root.pageFor(appModel.currentView)
                 }
             }
+
+            Rectangle {
+                color: theme.outlineMuted
+                Layout.fillWidth: true
+                Layout.preferredHeight: 1
+            }
+
+            StatusFooter {
+                theme: theme
+                model: appModel
+                Layout.fillWidth: true
+            }
         }
     }
 
