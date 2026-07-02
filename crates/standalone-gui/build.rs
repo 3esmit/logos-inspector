@@ -14,8 +14,11 @@ fn main() {
 fn emit_qt_rpath() {
     println!("cargo:rerun-if-env-changed=QMAKE");
     println!("cargo:rerun-if-env-changed=PATH");
+    println!("cargo:rerun-if-env-changed=NIX_BUILD_TOP");
 
-    if env::var("CARGO_CFG_TARGET_FAMILY").as_deref() != Ok("unix") {
+    if env::var("CARGO_CFG_TARGET_FAMILY").as_deref() != Ok("unix")
+        || env::var_os("NIX_BUILD_TOP").is_some()
+    {
         return;
     }
 
