@@ -24,14 +24,6 @@ ColumnLayout {
         Layout.fillWidth: true
 
         Text {
-            text: root.detail ? qsTr("Home / Accounts / %1").arg(root.shortId(root.detail.account_id)) : ""
-            color: root.theme.textMuted
-            textFormat: Text.PlainText
-            font.pixelSize: 12
-            Layout.fillWidth: true
-        }
-
-        Text {
             text: root.detail && root.detail.decode_only ? qsTr("Account data decode") : qsTr("Account")
             color: root.theme.text
             textFormat: Text.PlainText

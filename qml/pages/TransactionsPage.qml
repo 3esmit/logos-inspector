@@ -22,28 +22,19 @@ ColumnLayout {
         }
     }
 
-    PageHeader {
+    ListToolbar {
         theme: root.theme
-        breadcrumb: qsTr("Home / Transactions")
-        title: qsTr("Transactions")
-        subtitle: qsTr("Newest first. Open a hash for decoded operations or jump to the containing block.")
+        loadCount: root.model.transactionsPageLimit
+        rangeText: root.transactionRangeText()
+        canGoNewer: root.canLoadNewer()
+        canGoOlder: root.model.transactionsPageNextBeforeBlock > 0
+        busy: root.model.busy
         Layout.fillWidth: true
-
-        ActionButton {
-            theme: root.theme
-            text: qsTr("Latest")
-            primary: true
-            enabled: !root.model.busy
-            Layout.preferredWidth: 104
-            onClicked: root.model.refreshTransactionsPage()
-        }
-
-        ActionButton {
-            theme: root.theme
-            text: qsTr("Older >")
-            enabled: !root.model.busy && root.model.transactionsPageNextBeforeBlock > 0
-            Layout.preferredWidth: 104
-            onClicked: root.model.olderTransactionsPage()
+        onRefresh: root.model.refreshTransactionsPage()
+        onNewer: root.model.newerTransactionsPage()
+        onOlder: root.model.olderTransactionsPage()
+        onLoadCountSelected: function (count) {
+            root.model.setTransactionsPageLimit(count)
         }
     }
 
@@ -151,6 +142,26 @@ ColumnLayout {
             return text.length ? text : "-";
         }
         return text.slice(0, 8) + "..." + text.slice(-6);
+    }
+
+    function transactionRangeText() {
+        if (root.model.transactionsPageBeforeBlock <= 0) {
+            return qsTr("No range loaded")
+        }
+        return qsTr("Before block %1").arg(root.numberText(root.model.transactionsPageBeforeBlock))
+    }
+
+    function canLoadNewer() {
+        const current = root.chainSlot("lib_slot")
+        return root.model.transactionsPageBeforeBlock > 0 && current > 0 && root.model.transactionsPageBeforeBlock < current
+    }
+
+    function chainSlot(field) {
+        const info = root.model.blockchainInfo()
+        if (!info || info[field] === undefined || info[field] === null) {
+            return 0
+        }
+        return Number(info[field] || 0)
     }
 
     component TransactionRow: Item {

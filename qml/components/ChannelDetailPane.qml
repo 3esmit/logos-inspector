@@ -24,14 +24,6 @@ ColumnLayout {
         Layout.fillWidth: true
 
         Text {
-            text: root.detail ? qsTr("Home / Channels / %1").arg(root.shortId(root.detail.channel)) : ""
-            color: root.theme.textMuted
-            textFormat: Text.PlainText
-            font.pixelSize: 12
-            Layout.fillWidth: true
-        }
-
-        Text {
             text: qsTr("Channel")
             color: root.theme.text
             textFormat: Text.PlainText

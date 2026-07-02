@@ -24,14 +24,6 @@ ColumnLayout {
         Layout.fillWidth: true
 
         Text {
-            text: root.detail ? qsTr("Home / Transactions / %1").arg(root.shortHash(root.detail.hash)) : ""
-            color: root.theme.textMuted
-            textFormat: Text.PlainText
-            font.pixelSize: 12
-            Layout.fillWidth: true
-        }
-
-        Text {
             text: qsTr("Transaction")
             color: root.theme.text
             textFormat: Text.PlainText

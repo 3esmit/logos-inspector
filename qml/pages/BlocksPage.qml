@@ -22,69 +22,19 @@ ColumnLayout {
         }
     }
 
-    PageHeader {
+    ListToolbar {
         theme: root.theme
-        breadcrumb: qsTr("Home / Blocks")
-        title: qsTr("Blocks")
-        subtitle: qsTr("Newest first from the configured blockchain node. Open a slot or header to inspect consensus fields and transactions.")
+        loadCount: root.model.blocksPageLimit
+        rangeText: root.slotRangeText()
+        canGoNewer: root.canLoadNewer()
+        canGoOlder: root.model.blocksPageSlotFrom > 0
+        busy: root.model.busy
         Layout.fillWidth: true
-
-        ActionButton {
-            theme: root.theme
-            text: qsTr("Latest")
-            primary: true
-            enabled: !root.model.busy
-            Layout.preferredWidth: 104
-            onClicked: root.model.refreshBlocksPage()
-        }
-
-        ActionButton {
-            theme: root.theme
-            text: qsTr("Older >")
-            enabled: !root.model.busy && root.model.blocksPageSlotFrom > 0
-            Layout.preferredWidth: 104
-            onClicked: root.model.olderBlocksPage()
-        }
-    }
-
-    GridLayout {
-        columns: root.width < 760 ? 2 : 4
-        columnSpacing: 12
-        rowSpacing: 12
-        Layout.fillWidth: true
-
-        MetricCard {
-            theme: root.theme
-            compact: true
-            label: qsTr("Node")
-            value: root.endpointLabel(root.model.nodeUrl)
-            delta: root.shortEndpoint(root.model.nodeUrl)
-        }
-
-        MetricCard {
-            theme: root.theme
-            compact: true
-            label: qsTr("Finalized")
-            value: root.numberText(root.chainSlot("lib_slot"))
-            delta: qsTr("LIB slot")
-            deltaColor: root.chainSlot("lib_slot") > 0 ? root.theme.success : root.theme.textMuted
-        }
-
-        MetricCard {
-            theme: root.theme
-            compact: true
-            label: qsTr("Head")
-            value: root.numberText(root.chainSlot("slot"))
-            delta: qsTr("Node slot")
-            deltaColor: root.chainSlot("slot") > 0 ? root.theme.warning : root.theme.textMuted
-        }
-
-        MetricCard {
-            theme: root.theme
-            compact: true
-            label: qsTr("Loaded")
-            value: root.numberText((root.model.blocksPageRows || []).length)
-            delta: root.slotRangeText()
+        onRefresh: root.model.refreshBlocksPage()
+        onNewer: root.model.newerBlocksPage()
+        onOlder: root.model.olderBlocksPage()
+        onLoadCountSelected: function (count) {
+            root.model.setBlocksPageLimit(count)
         }
     }
 
@@ -208,26 +158,9 @@ ColumnLayout {
         return qsTr("Slots %1-%2").arg(root.numberText(root.model.blocksPageSlotFrom)).arg(root.numberText(root.model.blocksPageSlotTo));
     }
 
-    function endpointLabel(value) {
-        const text = String(value || "");
-        if (!text.length) {
-            return "-";
-        }
-        if (text.indexOf("127.0.0.1") >= 0 || text.indexOf("localhost") >= 0) {
-            return qsTr("Local");
-        }
-        if (text.indexOf("testnet") >= 0) {
-            return qsTr("Testnet");
-        }
-        return qsTr("Custom");
-    }
-
-    function shortEndpoint(value) {
-        const text = String(value || "");
-        if (!text.length) {
-            return qsTr("Not configured");
-        }
-        return text.replace(/^https?:\/\//, "").replace(/\/$/, "");
+    function canLoadNewer() {
+        const current = root.chainSlot("lib_slot")
+        return root.model.blocksPageSlotTo > 0 && current > 0 && root.model.blocksPageSlotTo < current
     }
 
     function isSelectedBlock(hash) {

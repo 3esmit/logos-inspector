@@ -22,28 +22,19 @@ ColumnLayout {
         }
     }
 
-    PageHeader {
+    ListToolbar {
         theme: root.theme
-        breadcrumb: qsTr("Home / Wallets")
-        title: qsTr("Wallets")
-        subtitle: qsTr("Ordered by total inbound transfer volume. Reconstructed from Transfer op outputs; the node API does not expose a wallet directory.")
+        loadCount: root.model.walletsPageLimit
+        rangeText: root.walletRangeText()
+        canGoNewer: root.model.walletsPageHistory.length > 0
+        canGoOlder: root.model.walletsPageNextBeforeBlock > 0
+        busy: root.model.busy
         Layout.fillWidth: true
-
-        ActionButton {
-            theme: root.theme
-            text: qsTr("Latest")
-            primary: true
-            enabled: !root.model.busy
-            Layout.preferredWidth: 104
-            onClicked: root.model.refreshWalletsPage()
-        }
-
-        ActionButton {
-            theme: root.theme
-            text: qsTr("Next >")
-            enabled: !root.model.busy && root.model.walletsPageNextBeforeBlock > 0
-            Layout.preferredWidth: 104
-            onClicked: root.model.nextWalletsPage()
+        onRefresh: root.model.refreshWalletsPage()
+        onNewer: root.model.previousWalletsPage()
+        onOlder: root.model.nextWalletsPage()
+        onLoadCountSelected: function (count) {
+            root.model.setWalletsPageLimit(count)
         }
     }
 
@@ -128,6 +119,13 @@ ColumnLayout {
                 lastSlot: root.numberText(wallet.last_slot)
             };
         });
+    }
+
+    function walletRangeText() {
+        if (root.model.walletsPageBeforeBlock > 0) {
+            return qsTr("Before block %1").arg(root.numberText(root.model.walletsPageBeforeBlock));
+        }
+        return qsTr("Latest indexed wallets");
     }
 
     function receivedText(wallet) {
