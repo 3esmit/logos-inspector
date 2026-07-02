@@ -24,14 +24,6 @@ ColumnLayout {
         Layout.fillWidth: true
 
         Text {
-            text: root.detail ? qsTr("Home / Wallets / %1").arg(root.shortWallet(root.detail.address)) : ""
-            color: root.theme.textMuted
-            textFormat: Text.PlainText
-            font.pixelSize: 12
-            Layout.fillWidth: true
-        }
-
-        Text {
             text: qsTr("Wallet")
             color: root.theme.text
             textFormat: Text.PlainText

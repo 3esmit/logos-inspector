@@ -12,60 +12,91 @@ Pane {
     required property Theme theme
     required property AppModel model
 
-    padding: 0
+    readonly property bool compact: width < 900
+
+    leftPadding: root.theme.gap
+    rightPadding: root.theme.gap
+    topPadding: 5
+    bottomPadding: 5
     Layout.fillWidth: true
-    Layout.preferredHeight: 34
+    Layout.preferredHeight: footerGrid.implicitHeight + topPadding + bottomPadding
 
     background: Rectangle {
         color: root.theme.sidebar
     }
 
-    contentItem: Flickable {
-        id: scroller
+    contentItem: GridLayout {
+        id: footerGrid
 
-        clip: true
-        boundsBehavior: Flickable.StopAtBounds
-        contentWidth: statusRow.implicitWidth + root.theme.gapLarge
-        contentHeight: height
-        interactive: contentWidth > width
+        columns: root.compact ? 1 : 2
+        columnSpacing: root.theme.gapLarge
+        rowSpacing: root.theme.gapTiny
 
         RowLayout {
-            id: statusRow
-
-            x: root.theme.gap
-            height: scroller.height
             spacing: root.theme.gapSmall
+            Layout.fillWidth: true
+            Layout.alignment: Qt.AlignLeft | Qt.AlignVCenter
 
             Repeater {
-                model: root.statusItems()
+                model: root.contextItems()
+
+                StatusToken {
+                    required property var modelData
+
+                    visible: !root.compact || String(modelData.priority || "normal") !== "low"
+                    theme: root.theme
+                    label: String(modelData.label || "")
+                    value: String(modelData.value || "")
+                    accessibleValue: String(modelData.accessibleValue || modelData.value || "-")
+                    tone: String(modelData.tone || "neutral")
+                    fullName: String(modelData.fullName || modelData.label || "")
+                    maximumTokenWidth: modelData.maximumWidth || 150
+                    Layout.alignment: Qt.AlignVCenter
+                }
+            }
+        }
+
+        RowLayout {
+            spacing: root.theme.gapSmall
+            Layout.fillWidth: root.compact
+            Layout.alignment: (root.compact ? Qt.AlignLeft : Qt.AlignRight) | Qt.AlignVCenter
+
+            Repeater {
+                model: root.healthItems()
 
                 StatusToken {
                     required property var modelData
 
                     theme: root.theme
                     label: String(modelData.label || "")
-                    value: String(modelData.value || "-")
+                    value: String(modelData.value || "")
+                    accessibleValue: String(modelData.accessibleValue || modelData.value || "-")
                     tone: String(modelData.tone || "neutral")
                     fullName: String(modelData.fullName || modelData.label || "")
+                    maximumTokenWidth: modelData.maximumWidth || 132
                     Layout.alignment: Qt.AlignVCenter
                 }
             }
         }
     }
 
-    function statusItems() {
+    function contextItems() {
         return [
             { label: qsTr("Net"), fullName: qsTr("Current network"), value: root.networkLabel(), tone: "info" },
-            { label: qsTr("Bedrock"), fullName: qsTr("Bedrock health"), value: root.healthText("node", "consensus"), tone: root.toneForProbe("node", "consensus") },
-            { label: qsTr("Sync"), fullName: qsTr("Bedrock sync state"), value: root.bedrockSyncState(), tone: "info" },
+            { label: qsTr("Sync"), fullName: qsTr("Bedrock sync state"), value: root.bedrockSyncState(), tone: root.syncTone(), maximumWidth: 170 },
             { label: qsTr("Peers"), fullName: qsTr("Bedrock peer count"), value: root.numberText(root.networkValue("n_peers")), tone: root.numberTone(root.networkValue("n_peers")) },
-            { label: qsTr("LIB"), fullName: qsTr("Bedrock LIB"), value: root.numberText(root.cryptarchiaValue("lib_slot")), tone: "neutral" },
-            { label: qsTr("TIP"), fullName: qsTr("Bedrock TIP"), value: root.numberText(root.cryptarchiaValue("slot")), tone: "neutral" },
-            { label: qsTr("LEZ"), fullName: qsTr("LEZ health"), value: root.healthText("sequencer", "health"), tone: root.toneForProbe("sequencer", "health") },
-            { label: qsTr("Final"), fullName: qsTr("LEZ finalized height"), value: root.numberText(root.probeValue("sequencer", "head")), tone: root.numberTone(root.probeValue("sequencer", "head")) },
-            { label: qsTr("Height"), fullName: qsTr("LEZ block height"), value: root.numberText(root.lezBlockHeight()), tone: root.numberTone(root.lezBlockHeight()) },
-            { label: qsTr("Indexer"), fullName: qsTr("Indexer health"), value: root.healthText("indexer", "health"), tone: root.toneForProbe("indexer", "health") },
-            { label: qsTr("State"), fullName: qsTr("Indexer status"), value: root.indexerStatus(), tone: root.indexerStatusTone() }
+            { label: qsTr("LIB"), fullName: qsTr("Bedrock LIB"), value: root.numberText(root.cryptarchiaValue("lib_slot")), tone: "neutral", priority: "low" },
+            { label: qsTr("TIP"), fullName: qsTr("Bedrock TIP"), value: root.numberText(root.cryptarchiaValue("slot")), tone: "neutral", priority: "low" },
+            { label: qsTr("Final"), fullName: qsTr("LEZ finalized height"), value: root.numberText(root.lezBlockHeight()), tone: root.numberTone(root.lezBlockHeight()) },
+            { label: qsTr("Height"), fullName: qsTr("LEZ block height"), value: root.numberText(root.probeValue("sequencer", "head")), tone: root.numberTone(root.probeValue("sequencer", "head")) }
+        ]
+    }
+
+    function healthItems() {
+        return [
+            { label: qsTr("Bedrock"), fullName: qsTr("Bedrock health"), value: root.healthDisplayText("node", "consensus"), accessibleValue: root.healthAccessibleText("node", "consensus"), tone: root.toneForProbe("node", "consensus") },
+            { label: qsTr("LEZ"), fullName: qsTr("LEZ health"), value: root.healthDisplayText("sequencer", "health"), accessibleValue: root.healthAccessibleText("sequencer", "health"), tone: root.toneForProbe("sequencer", "health") },
+            { label: qsTr("Indexer"), fullName: qsTr("Indexer status"), value: root.indexerDisplayStatus(), accessibleValue: root.indexerStatus(), tone: root.indexerStatusTone(), maximumWidth: 148 }
         ]
     }
 
@@ -101,6 +132,17 @@ Pane {
             return qsTr("unknown")
         }
         return root.probeOk(section, field) ? qsTr("ok") : qsTr("error")
+    }
+
+    function healthDisplayText(section, field) {
+        if (!root.probeKnown(section, field)) {
+            return qsTr("unknown")
+        }
+        return root.probeOk(section, field) ? "" : qsTr("error")
+    }
+
+    function healthAccessibleText(section, field) {
+        return root.healthText(section, field)
     }
 
     function toneForProbe(section, field) {
@@ -153,6 +195,17 @@ Pane {
         return qsTr("unknown")
     }
 
+    function syncTone() {
+        const value = String(root.bedrockSyncState() || "").toLowerCase()
+        if (value === "unknown") {
+            return "neutral"
+        }
+        if (value.indexOf("sync") >= 0 || value.indexOf("catch") >= 0 || value.indexOf("start") >= 0) {
+            return "warning"
+        }
+        return "success"
+    }
+
     function lezBlockHeight() {
         const blocks = root.model.dashboardBlocks || []
         if (blocks.length > 0) {
@@ -191,6 +244,11 @@ Pane {
             return "error"
         }
         return "neutral"
+    }
+
+    function indexerDisplayStatus() {
+        const value = root.indexerStatus()
+        return value === qsTr("running") ? "" : value
     }
 
     function networkLabel() {
@@ -233,26 +291,29 @@ Pane {
         required property Theme theme
         property string label: ""
         property string value: "-"
+        property string accessibleValue: value
         property string tone: "neutral"
         property string fullName: ""
+        property int maximumTokenWidth: 140
 
         hoverEnabled: true
         padding: 0
-        implicitWidth: tokenRow.implicitWidth
-        implicitHeight: 24
+        implicitWidth: Math.min(tokenRow.implicitWidth, maximumTokenWidth)
+        implicitHeight: 22
 
         background: Item {}
 
         contentItem: RowLayout {
             id: tokenRow
 
+            clip: true
             spacing: token.theme.gapTiny
 
             Rectangle {
                 color: token.toneColor()
-                radius: 3
-                Layout.preferredWidth: 6
-                Layout.preferredHeight: 6
+                radius: width / 2
+                Layout.preferredWidth: 7
+                Layout.preferredHeight: 7
                 Layout.alignment: Qt.AlignVCenter
                 Accessible.ignored: true
             }
@@ -264,23 +325,28 @@ Pane {
                 font.pixelSize: token.theme.labelText
                 font.weight: Font.DemiBold
                 font.capitalization: Font.AllUppercase
+                elide: Text.ElideRight
+                Layout.maximumWidth: 74
             }
 
             Text {
                 text: token.value
+                visible: token.value.length > 0
                 color: token.valueColor()
                 textFormat: Text.PlainText
                 font.pixelSize: token.theme.dataText
                 font.family: "monospace"
                 font.weight: Font.Medium
+                elide: Text.ElideRight
+                Layout.maximumWidth: Math.max(44, token.maximumTokenWidth - 84)
             }
         }
 
         ToolTip.visible: hovered && token.fullName.length > 0
-        ToolTip.text: qsTr("%1: %2").arg(token.fullName).arg(token.value)
+        ToolTip.text: qsTr("%1: %2").arg(token.fullName).arg(token.accessibleValue)
 
         Accessible.role: Accessible.StaticText
-        Accessible.name: qsTr("%1: %2").arg(token.fullName.length > 0 ? token.fullName : token.label).arg(token.value)
+        Accessible.name: qsTr("%1: %2").arg(token.fullName.length > 0 ? token.fullName : token.label).arg(token.accessibleValue)
 
         function toneColor() {
             if (token.tone === "success") {

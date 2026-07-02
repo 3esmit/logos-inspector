@@ -144,50 +144,6 @@ ColumnLayout {
         }
     }
 
-    Frame {
-        padding: 0
-        Layout.fillWidth: true
-
-        background: Rectangle {
-            color: root.theme.surface
-            radius: root.theme.radius
-            border.width: 1
-            border.color: root.theme.outlineMuted
-        }
-
-        contentItem: ColumnLayout {
-            spacing: 0
-
-            DashboardHeader {
-                theme: root.theme
-                title: qsTr("Connections")
-                action: qsTr("Settings")
-                onActivated: root.model.selectView("settings")
-            }
-
-            DashboardDetail {
-                theme: root.theme
-                label: qsTr("Sequencer")
-                value: root.model.sequencerUrl
-                status: root.serviceStatus("sequencer", "health")
-            }
-
-            DashboardDetail {
-                theme: root.theme
-                label: qsTr("Indexer")
-                value: root.model.indexerUrl
-                status: root.serviceStatus("indexer", "health")
-            }
-
-            DashboardDetail {
-                theme: root.theme
-                label: qsTr("Blockchain node")
-                value: root.model.nodeUrl
-                status: root.serviceStatus("node", "consensus")
-            }
-        }
-    }
-
     StatusMessage {
         visible: root.model.dashboardError.length > 0
         theme: root.theme
@@ -203,16 +159,6 @@ ColumnLayout {
 
     function nodeReport() {
         return model.dashboardNode || {};
-    }
-
-    function serviceOk(section, field) {
-        const target = overview()[section];
-        const probe = target ? target[field] : null;
-        return !!(probe && probe.ok);
-    }
-
-    function serviceStatus(section, field) {
-        return serviceOk(section, field) ? qsTr("ok") : qsTr("error");
     }
 
     function chainLabel() {
@@ -481,52 +427,4 @@ ColumnLayout {
         }
     }
 
-    component DashboardDetail: Item {
-        id: detailRoot
-
-        required property Theme theme
-        property string label: ""
-        property string value: ""
-        property string status: ""
-
-        Layout.fillWidth: true
-        Layout.preferredHeight: 42
-
-        GridLayout {
-            anchors.fill: parent
-            anchors.leftMargin: 14
-            anchors.rightMargin: 14
-            columns: 3
-            columnSpacing: 12
-
-            Text {
-                text: detailRoot.label
-                color: detailRoot.theme.textMuted
-                textFormat: Text.PlainText
-                font.pixelSize: 11
-                font.capitalization: Font.AllUppercase
-                Layout.preferredWidth: 130
-            }
-
-            Text {
-                text: detailRoot.value
-                color: detailRoot.theme.text
-                textFormat: Text.PlainText
-                font.family: "monospace"
-                font.pixelSize: 12
-                elide: Text.ElideRight
-                Layout.fillWidth: true
-            }
-
-            Text {
-                text: detailRoot.status
-                color: detailRoot.status === "ok" ? detailRoot.theme.success : detailRoot.theme.warning
-                textFormat: Text.PlainText
-                font.pixelSize: 12
-                font.weight: Font.DemiBold
-                horizontalAlignment: Text.AlignRight
-                Layout.preferredWidth: 64
-            }
-        }
-    }
 }

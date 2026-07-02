@@ -22,68 +22,19 @@ ColumnLayout {
         }
     }
 
-    PageHeader {
+    ListToolbar {
         theme: root.theme
-        breadcrumb: qsTr("Home / Channels")
-        title: qsTr("Channels")
-        subtitle: qsTr("Detected channel operations from the configured blockchain node. Open a channel to inspect activity, balances, and stored keys.")
+        loadCount: root.model.channelsPageLimit
+        rangeText: root.slotRangeText()
+        canGoNewer: root.canLoadNewer()
+        canGoOlder: root.model.channelsPageSlotFrom > 0
+        busy: root.model.busy
         Layout.fillWidth: true
-
-        ActionButton {
-            theme: root.theme
-            text: qsTr("Latest")
-            primary: true
-            enabled: !root.model.busy
-            Layout.preferredWidth: 104
-            onClicked: root.model.refreshChannelsPage()
-        }
-
-        ActionButton {
-            theme: root.theme
-            text: qsTr("Older >")
-            enabled: !root.model.busy && root.model.channelsPageSlotFrom > 0
-            Layout.preferredWidth: 104
-            onClicked: root.model.olderChannelsPage()
-        }
-    }
-
-    GridLayout {
-        columns: root.width < 760 ? 2 : 4
-        columnSpacing: 12
-        rowSpacing: 12
-        Layout.fillWidth: true
-
-        MetricCard {
-            theme: root.theme
-            compact: true
-            label: qsTr("Node")
-            value: root.endpointLabel(root.model.nodeUrl)
-            delta: root.shortEndpoint(root.model.nodeUrl)
-        }
-
-        MetricCard {
-            theme: root.theme
-            compact: true
-            label: qsTr("Loaded")
-            value: root.numberText((root.model.channelsPageRows || []).length)
-            delta: root.slotRangeText()
-        }
-
-        MetricCard {
-            theme: root.theme
-            compact: true
-            label: qsTr("Operations")
-            value: root.numberText(root.channelOperations())
-            delta: qsTr("Displayed channels")
-            deltaColor: root.channelOperations() > 0 ? root.theme.success : root.theme.textMuted
-        }
-
-        MetricCard {
-            theme: root.theme
-            compact: true
-            label: qsTr("Keys")
-            value: root.numberText(root.channelKeys())
-            delta: qsTr("Stored key count")
+        onRefresh: root.model.refreshChannelsPage()
+        onNewer: root.model.newerChannelsPage()
+        onOlder: root.model.olderChannelsPage()
+        onLoadCountSelected: function (count) {
+            root.model.setChannelsPageLimit(count)
         }
     }
 
@@ -201,44 +152,17 @@ ColumnLayout {
         return qsTr("Slots %1-%2").arg(root.numberText(root.model.channelsPageSlotFrom)).arg(root.numberText(root.model.channelsPageSlotTo));
     }
 
-    function endpointLabel(value) {
-        const text = String(value || "");
-        if (!text.length) {
-            return "-";
-        }
-        if (text.indexOf("127.0.0.1") >= 0 || text.indexOf("localhost") >= 0) {
-            return qsTr("Local");
-        }
-        if (text.indexOf("testnet") >= 0) {
-            return qsTr("Testnet");
-        }
-        return qsTr("Custom");
+    function canLoadNewer() {
+        const current = root.chainSlot("slot")
+        return root.model.channelsPageSlotTo > 0 && current > 0 && root.model.channelsPageSlotTo < current
     }
 
-    function shortEndpoint(value) {
-        const text = String(value || "");
-        if (!text.length) {
-            return qsTr("Not configured");
+    function chainSlot(field) {
+        const info = root.model.blockchainInfo()
+        if (!info || info[field] === undefined || info[field] === null) {
+            return 0
         }
-        return text.replace(/^https?:\/\//, "").replace(/\/$/, "");
-    }
-
-    function channelOperations() {
-        const channels = root.model.channelsPageRows || [];
-        let count = 0;
-        for (let i = 0; i < channels.length; ++i) {
-            count += Number(channels[i].operations || 0);
-        }
-        return count;
-    }
-
-    function channelKeys() {
-        const channels = root.model.channelsPageRows || [];
-        let count = 0;
-        for (let i = 0; i < channels.length; ++i) {
-            count += Number(channels[i].keys || 0);
-        }
-        return count;
+        return Number(info[field] || 0)
     }
 
     function isSelectedChannel(channel) {

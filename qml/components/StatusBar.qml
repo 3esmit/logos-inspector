@@ -36,28 +36,14 @@ Pane {
                 Accessible.ignored: true
             }
 
-            ColumnLayout {
-                spacing: 1
+            Text {
+                text: root.model.viewTitle()
+                color: root.theme.text
+                textFormat: Text.PlainText
+                font.pixelSize: root.theme.secondaryText
+                font.weight: Font.DemiBold
+                elide: Text.ElideRight
                 Layout.fillWidth: true
-
-                Text {
-                    text: root.model.viewTitle()
-                    color: root.theme.text
-                    textFormat: Text.PlainText
-                    font.pixelSize: root.theme.secondaryText
-                    font.weight: Font.DemiBold
-                    elide: Text.ElideRight
-                    Layout.fillWidth: true
-                }
-
-                Text {
-                    text: root.statusLine()
-                    color: root.theme.textMuted
-                    textFormat: Text.PlainText
-                    font.pixelSize: root.theme.dataText
-                    elide: Text.ElideRight
-                    Layout.fillWidth: true
-                }
             }
         }
 
@@ -72,13 +58,13 @@ Pane {
                 id: lookupField
 
                 color: root.theme.text
-                placeholderText: qsTr("Open hash, block, account, or page")
+                placeholderText: qsTr("Open block, transaction, or account")
                 placeholderTextColor: root.theme.textDim
                 selectionColor: root.theme.accent
                 selectedTextColor: root.theme.selectedText
                 font.pixelSize: root.theme.secondaryText
                 leftPadding: 12
-                rightPadding: 12
+                rightPadding: 60
                 hoverEnabled: true
                 enabled: !root.model.busy
                 Layout.fillWidth: true
@@ -94,30 +80,27 @@ Pane {
 
                 Accessible.role: Accessible.EditableText
                 Accessible.name: qsTr("Global reference lookup")
-            }
 
-            Rectangle {
-                visible: root.width >= 1040
-                color: root.theme.field
-                radius: root.theme.radius
-                border.width: 1
-                border.color: root.theme.outlineMuted
-                Layout.preferredWidth: 132
-                Layout.preferredHeight: root.theme.controlHeight
-                Layout.alignment: Qt.AlignVCenter
+                Rectangle {
+                    anchors.right: parent.right
+                    anchors.rightMargin: 8
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 42
+                    height: 24
+                    radius: root.theme.radius
+                    color: root.lookupBadgeFill(root.lookupCode(lookupField.text))
+                    border.width: 1
+                    border.color: root.lookupBadgeStroke(root.lookupCode(lookupField.text))
 
-                Text {
-                    anchors.fill: parent
-                    anchors.leftMargin: 10
-                    anchors.rightMargin: 10
-                    text: root.lookupKind(lookupField.text)
-                    color: lookupField.text.trim().length > 0 ? root.theme.info : root.theme.textDim
-                    textFormat: Text.PlainText
-                    font.pixelSize: root.theme.dataText
-                    font.capitalization: Font.AllUppercase
-                    verticalAlignment: Text.AlignVCenter
-                    horizontalAlignment: Text.AlignHCenter
-                    elide: Text.ElideRight
+                    Text {
+                        anchors.centerIn: parent
+                        text: root.lookupLabel(root.lookupCode(lookupField.text))
+                        color: root.lookupBadgeText(root.lookupCode(lookupField.text))
+                        textFormat: Text.PlainText
+                        font.pixelSize: root.theme.labelText
+                        font.family: "monospace"
+                        font.weight: Font.DemiBold
+                    }
                 }
             }
 
@@ -125,7 +108,7 @@ Pane {
                 theme: root.theme
                 text: qsTr("Open")
                 primary: true
-                enabled: !root.model.busy && lookupField.text.trim().length > 0
+                enabled: !root.model.busy && root.lookupCanOpen(lookupField.text)
                 Layout.preferredWidth: 82
                 accessibleName: qsTr("Open reference")
                 onClicked: root.openLookup()
@@ -144,9 +127,20 @@ Pane {
                 Layout.preferredHeight: 30
             }
 
+            Text {
+                visible: root.model.busy
+                text: qsTr("Working")
+                color: root.theme.warning
+                textFormat: Text.PlainText
+                font.pixelSize: root.theme.secondaryText
+                font.weight: Font.DemiBold
+                Layout.alignment: Qt.AlignVCenter
+            }
+
             ActionButton {
+                visible: root.currentPageHasError()
                 theme: root.theme
-                text: root.model.busy ? qsTr("Working") : root.resultText()
+                text: root.resultText()
                 enabled: false
                 Layout.preferredWidth: 104
             }
@@ -160,38 +154,79 @@ Pane {
 
     function openLookup() {
         const value = lookupField.text.trim()
-        if (!value.length || root.model.busy) {
+        if (!value.length || root.model.busy || !root.lookupCanOpen(value)) {
             return
         }
         root.model.routeSearch(value)
         lookupField.text = ""
     }
 
-    function lookupKind(query) {
+    function lookupCode(query) {
         const value = String(query || "").trim()
         if (!value.length) {
-            return qsTr("All refs")
-        }
-        if (root.model.viewKeyForQuery(value).length > 0) {
-            return qsTr("Page")
+            return "any"
         }
         if (/^[0-9]+$/.test(value)) {
-            return qsTr("Block")
+            return "block"
         }
         if (/^(0x)?[0-9a-fA-F]{64}$/.test(value)) {
-            return qsTr("Hash")
+            return "transaction"
         }
-        if (/^(0x)?[0-9a-fA-F]{40}$/.test(value)) {
-            return qsTr("Address")
+        if (/^(0x)?[0-9a-fA-F]{40}$/.test(value) || /^[1-9A-HJ-NP-Za-km-z]{32,64}$/.test(value)) {
+            return "account"
         }
-        return qsTr("Account")
+        return "invalid"
     }
 
-    function statusLine() {
-        if (root.model.busy) {
-            return root.model.statusText
+    function lookupLabel(code) {
+        if (code === "block") {
+            return qsTr("BLK")
         }
-        return qsTr("%1 profile / %2").arg(root.model.networkProfile).arg(root.model.statusText)
+        if (code === "transaction") {
+            return qsTr("TX")
+        }
+        if (code === "account") {
+            return qsTr("ACC")
+        }
+        if (code === "invalid") {
+            return qsTr("N/A")
+        }
+        return qsTr("ANY")
+    }
+
+    function lookupCanOpen(query) {
+        const code = root.lookupCode(query)
+        return code !== "any" && code !== "invalid"
+    }
+
+    function lookupBadgeFill(code) {
+        if (code === "invalid") {
+            return root.theme.errorMuted
+        }
+        if (code === "any") {
+            return root.theme.field
+        }
+        return root.theme.infoMuted
+    }
+
+    function lookupBadgeStroke(code) {
+        if (code === "invalid") {
+            return root.theme.error
+        }
+        if (code === "any") {
+            return root.theme.outlineMuted
+        }
+        return root.theme.info
+    }
+
+    function lookupBadgeText(code) {
+        if (code === "invalid") {
+            return root.theme.error
+        }
+        if (code === "any") {
+            return root.theme.textDim
+        }
+        return root.theme.info
     }
 
     function resultText() {

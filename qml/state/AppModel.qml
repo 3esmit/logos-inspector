@@ -48,6 +48,7 @@ QtObject {
     property int walletsPageNextBeforeBlock: 0
     property int walletsPageBlockBatch: 50
     property int walletsPageLimit: 20
+    property var walletsPageHistory: []
     property string walletsPageError: ""
     property var channelsPageRows: []
     property int channelsPageSlotFrom: 0
@@ -172,7 +173,8 @@ QtObject {
         const infoProbe = node.value ? node.value.cryptarchia_info : null
         const info = infoProbe && infoProbe.value ? infoProbe.value.cryptarchia_info : null
         const fallbackSlot = info ? (info.lib_slot || info.slot || 0) : 0
-        const slotTo = Math.max(0, Number(anchorSlot === undefined || anchorSlot === null ? fallbackSlot : anchorSlot))
+        const requestedSlot = Math.max(0, Number(anchorSlot === undefined || anchorSlot === null ? fallbackSlot : anchorSlot))
+        const slotTo = fallbackSlot > 0 ? Math.min(requestedSlot, Number(fallbackSlot)) : requestedSlot
         const slotFrom = Math.max(0, slotTo - blocksPageWindow)
         const blocks = requestModule(inspectorModule, "blockchainBlocks", [nodeUrl, slotFrom, slotTo], qsTr("Blocks"), false)
         if (!blocks.ok) {
@@ -190,6 +192,19 @@ QtObject {
 
     function olderBlocksPage() {
         refreshBlocksPage(Math.max(0, blocksPageSlotFrom - 1))
+    }
+
+    function newerBlocksPage() {
+        refreshBlocksPage(blocksPageSlotTo + blocksPageWindow + 1)
+    }
+
+    function setBlocksPageLimit(limit) {
+        const value = Math.max(1, Number(limit || blocksPageLimit))
+        if (blocksPageLimit === value) {
+            return
+        }
+        blocksPageLimit = value
+        refreshBlocksPage(blocksPageSlotTo > 0 ? blocksPageSlotTo : null)
     }
 
     function sortedBlocks(blocks) {
@@ -349,7 +364,8 @@ QtObject {
         const infoProbe = node.value ? node.value.cryptarchia_info : null
         const info = infoProbe && infoProbe.value ? infoProbe.value.cryptarchia_info : null
         const fallbackSlot = info ? (info.lib_slot || info.slot || 0) : 0
-        const slotTo = Math.max(0, Number(beforeBlock === undefined || beforeBlock === null ? fallbackSlot : beforeBlock))
+        const requestedSlot = Math.max(0, Number(beforeBlock === undefined || beforeBlock === null ? fallbackSlot : beforeBlock))
+        const slotTo = fallbackSlot > 0 ? Math.min(requestedSlot, Number(fallbackSlot)) : requestedSlot
         const slotFrom = Math.max(0, slotTo - transactionsPageBlockBatch)
         const blocks = requestModule(inspectorModule, "blockchainBlocks", [nodeUrl, slotFrom, slotTo], qsTr("Transactions"), false)
         if (!blocks.ok) {
@@ -367,6 +383,19 @@ QtObject {
 
     function olderTransactionsPage() {
         refreshTransactionsPage(transactionsPageNextBeforeBlock)
+    }
+
+    function newerTransactionsPage() {
+        refreshTransactionsPage(transactionsPageBeforeBlock + transactionsPageBlockBatch + 1)
+    }
+
+    function setTransactionsPageLimit(limit) {
+        const value = Math.max(1, Number(limit || transactionsPageLimit))
+        if (transactionsPageLimit === value) {
+            return
+        }
+        transactionsPageLimit = value
+        refreshTransactionsPage(transactionsPageBeforeBlock > 0 ? transactionsPageBeforeBlock : null)
     }
 
     function transactionRowsFromBlocks(blocks) {
@@ -461,8 +490,11 @@ QtObject {
         return qsTr("Unknown")
     }
 
-    function refreshWalletsPage(beforeBlock) {
+    function refreshWalletsPage(beforeBlock, preserveHistory) {
         const before = beforeBlock === undefined || beforeBlock === null ? null : beforeBlock
+        if (!preserveHistory) {
+            walletsPageHistory = []
+        }
         const wallets = requestModule(inspectorModule, "indexerWallets", [indexerUrl, before, walletsPageBlockBatch], qsTr("Wallets"), false)
         if (!wallets.ok) {
             walletsPageError = wallets.error
@@ -478,7 +510,29 @@ QtObject {
     }
 
     function nextWalletsPage() {
-        refreshWalletsPage(walletsPageNextBeforeBlock)
+        const history = Array.isArray(walletsPageHistory) ? walletsPageHistory.slice(0) : []
+        history.push(walletsPageBeforeBlock)
+        walletsPageHistory = history
+        refreshWalletsPage(walletsPageNextBeforeBlock, true)
+    }
+
+    function previousWalletsPage() {
+        const history = Array.isArray(walletsPageHistory) ? walletsPageHistory.slice(0) : []
+        if (!history.length) {
+            return
+        }
+        const before = history.pop()
+        walletsPageHistory = history
+        refreshWalletsPage(before || null, true)
+    }
+
+    function setWalletsPageLimit(limit) {
+        const value = Math.max(1, Number(limit || walletsPageLimit))
+        if (walletsPageLimit === value) {
+            return
+        }
+        walletsPageLimit = value
+        refreshWalletsPage(walletsPageBeforeBlock || null, true)
     }
 
     function nextWalletPageBlock(wallets) {
@@ -534,7 +588,8 @@ QtObject {
         const infoProbe = node.value ? node.value.cryptarchia_info : null
         const info = infoProbe && infoProbe.value ? infoProbe.value.cryptarchia_info : null
         const fallbackSlot = info ? (info.slot || info.lib_slot || 0) : 0
-        const slotTo = Math.max(0, Number(anchorSlot === undefined || anchorSlot === null ? fallbackSlot : anchorSlot))
+        const requestedSlot = Math.max(0, Number(anchorSlot === undefined || anchorSlot === null ? fallbackSlot : anchorSlot))
+        const slotTo = fallbackSlot > 0 ? Math.min(requestedSlot, Number(fallbackSlot)) : requestedSlot
         const slotFrom = Math.max(0, slotTo - channelsPageWindow)
         const report = requestModule(inspectorModule, "channelScan", [nodeUrl, slotFrom, slotTo], qsTr("Channels"), false)
         if (!report.ok) {
@@ -552,6 +607,19 @@ QtObject {
 
     function olderChannelsPage() {
         refreshChannelsPage(Math.max(0, channelsPageSlotFrom - 1))
+    }
+
+    function newerChannelsPage() {
+        refreshChannelsPage(channelsPageSlotTo + channelsPageWindow + 1)
+    }
+
+    function setChannelsPageLimit(limit) {
+        const value = Math.max(1, Number(limit || channelsPageLimit))
+        if (channelsPageLimit === value) {
+            return
+        }
+        channelsPageLimit = value
+        refreshChannelsPage(channelsPageSlotTo > 0 ? channelsPageSlotTo : null)
     }
 
     function channelDetail(row) {

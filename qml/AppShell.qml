@@ -34,71 +34,77 @@ Item {
         color: theme.background
     }
 
-    RowLayout {
+    ColumnLayout {
         anchors.fill: parent
         spacing: 0
 
-        NavRail {
-            theme: theme
-            model: appModel
-            compact: root.compact
-            Layout.preferredWidth: compact ? 96 : 228
-            Layout.fillHeight: true
-        }
-
-        Rectangle {
-            color: theme.outline
-            Layout.preferredWidth: 1
-            Layout.fillHeight: true
-        }
-
-        ColumnLayout {
+        RowLayout {
             spacing: 0
             Layout.fillWidth: true
             Layout.fillHeight: true
 
-            StatusBar {
-                id: statusBar
-
+            NavRail {
                 theme: theme
                 model: appModel
                 compact: root.compact
-                Layout.fillWidth: true
+                Layout.preferredWidth: compact ? 96 : 228
+                Layout.fillHeight: true
             }
 
             Rectangle {
-                color: theme.outlineMuted
-                Layout.fillWidth: true
-                Layout.preferredHeight: 1
+                color: theme.outline
+                Layout.preferredWidth: 1
+                Layout.fillHeight: true
             }
 
-            ScrollView {
-                id: pageScroll
-                contentWidth: availableWidth
-                ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+            ColumnLayout {
+                spacing: 0
                 Layout.fillWidth: true
                 Layout.fillHeight: true
 
-                Loader {
-                    id: pageLoader
-                    active: true
-                    asynchronous: true
-                    width: pageScroll.availableWidth
-                    sourceComponent: root.pageFor(appModel.currentView)
+                StatusBar {
+                    id: statusBar
+
+                    theme: theme
+                    model: appModel
+                    compact: root.compact
+                    Layout.fillWidth: true
+                }
+
+                Rectangle {
+                    color: theme.outlineMuted
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 1
+                }
+
+                ScrollView {
+                    id: pageScroll
+                    contentWidth: availableWidth
+                    ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+
+                    Loader {
+                        id: pageLoader
+                        active: true
+                        asynchronous: true
+                        width: pageScroll.availableWidth
+                        sourceComponent: root.pageFor(appModel.currentView)
+                    }
                 }
             }
+        }
 
-            Rectangle {
-                color: theme.outlineMuted
-                Layout.fillWidth: true
-                Layout.preferredHeight: 1
-            }
+        Rectangle {
+            color: theme.outlineMuted
+            Layout.fillWidth: true
+            Layout.preferredHeight: 1
+        }
 
-            StatusFooter {
-                theme: theme
-                model: appModel
-                Layout.fillWidth: true
-            }
+        StatusFooter {
+            theme: theme
+            model: appModel
+            Layout.fillWidth: true
         }
     }
 
