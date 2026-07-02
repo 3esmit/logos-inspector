@@ -22,95 +22,92 @@ ColumnLayout {
         }
     }
 
-    RowLayout {
-        spacing: 12
-        Layout.fillWidth: true
+    Panel {
+        theme: root.theme
+        title: ""
 
-        ColumnLayout {
-            spacing: 6
+        RowLayout {
+            spacing: 14
             Layout.fillWidth: true
 
-            RowLayout {
-                spacing: 10
+            Image {
+                source: Qt.resolvedUrl("../../icons/inspector.svg")
+                sourceSize.width: 46
+                sourceSize.height: 46
+                fillMode: Image.PreserveAspectFit
+                asynchronous: true
+                Layout.preferredWidth: 46
+                Layout.preferredHeight: 46
+            }
+
+            ColumnLayout {
+                spacing: 4
                 Layout.fillWidth: true
 
-                Text {
-                    text: qsTr("Logos")
-                    color: root.theme.text
-                    textFormat: Text.PlainText
-                    font.pixelSize: 28
-                    font.weight: Font.Bold
-                }
+                RowLayout {
+                    spacing: 10
+                    Layout.fillWidth: true
 
-                Rectangle {
-                    color: root.theme.surfaceRaised
-                    radius: 12
-                    Layout.preferredWidth: 88
-                    Layout.preferredHeight: 26
+                    Text {
+                        text: qsTr("Dashboard")
+                        color: root.theme.text
+                        textFormat: Text.PlainText
+                        font.pixelSize: 28
+                        font.weight: Font.Bold
+                        Layout.fillWidth: true
+                    }
 
-                    Row {
-                        anchors.centerIn: parent
-                        spacing: 6
-
-                        Rectangle {
-                            width: 7
-                            height: 7
-                            radius: 4
-                            color: root.serviceOk("sequencer", "health") ? root.theme.success : root.theme.warning
-                            anchors.verticalCenter: parent.verticalCenter
-                        }
-
-                        Text {
-                            text: root.chainLabel()
-                            color: root.theme.textMuted
-                            textFormat: Text.PlainText
-                            font.pixelSize: 11
-                            font.weight: Font.DemiBold
-                            anchors.verticalCenter: parent.verticalCenter
-                        }
+                    StatusPill {
+                        theme: root.theme
+                        label: root.chainLabel()
+                        ok: root.serviceOk("sequencer", "health")
                     }
                 }
+
+                Text {
+                    text: qsTr("%1 | sequencer %2 | indexer %3 | node %4")
+                        .arg(root.model.networkProfile)
+                        .arg(root.serviceStatus("sequencer", "health"))
+                        .arg(root.serviceStatus("indexer", "health"))
+                        .arg(root.serviceStatus("node", "consensus"))
+                    color: root.theme.textMuted
+                    textFormat: Text.PlainText
+                    wrapMode: Text.Wrap
+                    font.pixelSize: 13
+                    Layout.fillWidth: true
+                }
             }
 
-            Text {
-                text: qsTr("Explorer-style dashboard for node state, LEZ indexer data, and inspection shortcuts.")
-                color: root.theme.textMuted
-                textFormat: Text.PlainText
-                wrapMode: Text.Wrap
-                font.pixelSize: 14
+            ActionButton {
+                theme: root.theme
+                text: qsTr("Refresh")
+                primary: true
+                enabled: !root.model.busy
+                Layout.preferredWidth: 116
+                onClicked: root.model.refreshDashboard()
+            }
+        }
+
+        RowLayout {
+            spacing: 10
+            Layout.fillWidth: true
+
+            FieldRow {
+                id: searchField
+                theme: root.theme
+                label: qsTr("Open")
+                placeholderText: qsTr("Block, transaction, wallet, channel, account")
                 Layout.fillWidth: true
             }
-        }
 
-        ActionButton {
-            theme: root.theme
-            text: qsTr("Refresh")
-            primary: true
-            enabled: !root.model.busy
-            Layout.preferredWidth: 116
-            onClicked: root.model.refreshDashboard()
-        }
-    }
-
-    RowLayout {
-        spacing: 10
-        Layout.fillWidth: true
-
-        FieldRow {
-            id: searchField
-            theme: root.theme
-            label: qsTr("Search")
-            placeholderText: qsTr("Block id, transaction hash, or account address")
-            Layout.fillWidth: true
-        }
-
-        ActionButton {
-            theme: root.theme
-            text: qsTr("Open")
-            primary: true
-            enabled: searchField.text.trim().length > 0 && !root.model.busy
-            Layout.preferredWidth: 104
-            onClicked: root.model.routeSearch(searchField.text)
+            ActionButton {
+                theme: root.theme
+                text: qsTr("Open")
+                primary: true
+                enabled: searchField.text.trim().length > 0 && !root.model.busy
+                Layout.preferredWidth: 104
+                onClicked: root.model.routeSearch(searchField.text)
+            }
         }
     }
 
@@ -148,6 +145,11 @@ ColumnLayout {
 
                     theme: root.theme
                     columns: [modelData.slot, modelData.header, modelData.tx, modelData.status]
+                    linkKinds: ["indexerBlock", "indexerBlock", "", ""]
+                    linkValues: [modelData.blockHash, modelData.blockHash, "", ""]
+                    onCellActivated: function (column) {
+                        root.model.openReference(column === 0 || column === 1 ? "indexerBlock" : "", modelData.blockHash)
+                    }
                 }
             }
         }
@@ -239,6 +241,15 @@ ColumnLayout {
 
                     theme: root.theme
                     columns: [modelData.slot, modelData.hash, modelData.block, modelData.ops]
+                    linkKinds: ["", "transaction", "indexerBlock", ""]
+                    linkValues: ["", modelData.txHash, modelData.blockHash, ""]
+                    onCellActivated: function (column) {
+                        if (column === 1) {
+                            root.model.openReference("transaction", modelData.txHash)
+                        } else if (column === 2) {
+                            root.model.openReference("indexerBlock", modelData.blockHash)
+                        }
+                    }
                 }
             }
         }
@@ -295,11 +306,6 @@ ColumnLayout {
         wrapMode: Text.Wrap
         font.pixelSize: 12
         Layout.fillWidth: true
-    }
-
-    ResultPane {
-        theme: root.theme
-        model: root.model
     }
 
     function overview() {
@@ -406,9 +412,11 @@ ColumnLayout {
             return blocks.slice(0, 10).map(function (block) {
                 return {
                     slot: root.numberText(block.block_id),
+                    slotRaw: String(block.block_id || ""),
                     header: root.shortHash(block.header_hash),
                     tx: root.numberText(block.tx_count),
-                    status: block.bedrock_status || "-"
+                    status: block.bedrock_status || "-",
+                    blockHash: String(block.header_hash || "")
                 };
             });
         }
@@ -417,13 +425,15 @@ ColumnLayout {
                 slot: root.numberText(root.cryptarchiaValue("slot")),
                 header: root.shortHash(root.cryptarchiaValue("tip")),
                 tx: "-",
-                status: qsTr("Tip")
+                status: qsTr("Tip"),
+                blockHash: String(root.cryptarchiaValue("tip") || "")
             },
             {
                 slot: root.numberText(root.cryptarchiaValue("lib_slot")),
                 header: root.shortHash(root.cryptarchiaValue("lib")),
                 tx: "-",
-                status: qsTr("LIB")
+                status: qsTr("LIB"),
+                blockHash: String(root.cryptarchiaValue("lib") || "")
             }
         ];
     }
@@ -440,7 +450,9 @@ ColumnLayout {
                     slot: root.numberText(block.block_id),
                     hash: root.shortHash(tx.hash),
                     block: root.shortHash(block.header_hash),
-                    ops: root.numberText((tx.instruction_data || []).length)
+                    ops: root.numberText((tx.instruction_data || []).length),
+                    txHash: String(tx.hash || ""),
+                    blockHash: String(block.header_hash || "")
                 });
             }
         }
@@ -452,9 +464,46 @@ ColumnLayout {
                 slot: "-",
                 hash: qsTr("No indexed transactions"),
                 block: "-",
-                ops: "-"
+                ops: "-",
+                txHash: "",
+                blockHash: ""
             }
         ];
+    }
+
+    component StatusPill: Rectangle {
+        id: pillRoot
+
+        required property Theme theme
+        property string label: ""
+        property bool ok: false
+
+        color: pillRoot.theme.surfaceRaised
+        radius: 12
+        Layout.preferredWidth: 88
+        Layout.preferredHeight: 26
+
+        Row {
+            anchors.centerIn: parent
+            spacing: 6
+
+            Rectangle {
+                width: 7
+                height: 7
+                radius: 4
+                color: pillRoot.ok ? pillRoot.theme.success : pillRoot.theme.warning
+                anchors.verticalCenter: parent.verticalCenter
+            }
+
+            Text {
+                text: pillRoot.label
+                color: pillRoot.theme.textMuted
+                textFormat: Text.PlainText
+                font.pixelSize: 11
+                font.weight: Font.DemiBold
+                anchors.verticalCenter: parent.verticalCenter
+            }
+        }
     }
 
     component DashboardHeader: Item {
@@ -497,7 +546,10 @@ ColumnLayout {
 
         required property Theme theme
         property var columns: []
+        property var linkKinds: ["", "", "", ""]
+        property var linkValues: ["", "", "", ""]
         property bool header: false
+        signal cellActivated(int column)
 
         Layout.fillWidth: true
         Layout.preferredHeight: rowRoot.header ? 34 : 38
@@ -522,16 +574,32 @@ ColumnLayout {
                     required property int index
 
                     text: String(rowRoot.columns[index] || "-")
-                    color: rowRoot.header ? rowRoot.theme.textMuted : rowRoot.theme.text
+                    color: rowRoot.linkFor(index) ? rowRoot.theme.accent : (rowRoot.header ? rowRoot.theme.textMuted : rowRoot.theme.text)
                     textFormat: Text.PlainText
                     font.family: rowRoot.header ? "" : "monospace"
                     font.pixelSize: rowRoot.header ? 11 : 12
                     font.weight: rowRoot.header ? Font.DemiBold : Font.Normal
                     font.capitalization: rowRoot.header ? Font.AllUppercase : Font.MixedCase
+                    font.underline: rowRoot.linkFor(index)
                     elide: Text.ElideRight
                     Layout.fillWidth: true
+
+                    MouseArea {
+                        anchors.fill: parent
+                        enabled: rowRoot.linkFor(parent.index)
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: rowRoot.cellActivated(parent.index)
+                    }
                 }
             }
+        }
+
+        function linkFor(index) {
+            return !rowRoot.header
+                && index >= 0
+                && index < rowRoot.linkKinds.length
+                && String(rowRoot.linkKinds[index] || "").length > 0
+                && String(rowRoot.linkValues[index] || "").length > 0
         }
     }
 

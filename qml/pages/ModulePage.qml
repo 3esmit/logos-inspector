@@ -24,7 +24,7 @@ ColumnLayout {
 
         Text {
             text: root.subtitle
-            color: theme.textMuted
+            color: root.theme.textMuted
             wrapMode: Text.Wrap
             textFormat: Text.PlainText
             font.pixelSize: 14
@@ -39,6 +39,7 @@ ColumnLayout {
     }
 
     ResultPane {
+        visible: root.model.pageHasOutput(root.moduleKind)
         theme: root.theme
         model: root.model
     }

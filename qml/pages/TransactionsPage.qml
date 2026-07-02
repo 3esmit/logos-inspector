@@ -126,9 +126,26 @@ ColumnLayout {
         Layout.fillWidth: true
     }
 
-    ResultPane {
+    TransactionDetailPane {
+        value: root.model.transactionDetailValue
         theme: root.theme
         model: root.model
+    }
+
+    Panel {
+        visible: root.model.transactionDetailValue === null
+        theme: root.theme
+        title: qsTr("Transaction detail")
+        Layout.fillWidth: true
+
+        Text {
+            text: qsTr("Select a transaction hash to inspect operations, decoded instruction data, account references, and linked block context.")
+            color: root.theme.textMuted
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            font.pixelSize: 14
+            Layout.fillWidth: true
+        }
     }
 
     function transactionRows() {
@@ -148,7 +165,7 @@ ColumnLayout {
                 block: root.shortHash(tx.block),
                 ops: root.numberText(tx.ops),
                 txHash: String(tx.hash || ""),
-                blockHash: ""
+                blockHash: String(tx.block || "")
             };
         });
     }

@@ -227,8 +227,16 @@ EOF
           postInstall = ''
             mkdir -p "$out/share/logos-inspector"
             cp -r qml "$out/share/logos-inspector/qml"
+            cp -r icons "$out/share/logos-inspector/icons"
           '';
           preFixup = ''
+            ${lib.optionalString pkgs.stdenv.isLinux ''
+              if [ -x "$out/bin/logos-inspector-standalone-gui" ]; then
+                ${pkgs.patchelf}/bin/patchelf \
+                  --set-rpath "${lib.makeLibraryPath (qtInputs ++ [ pkgs.stdenv.cc.cc.lib ])}" \
+                  "$out/bin/logos-inspector-standalone-gui"
+              fi
+            ''}
             qtWrapperArgs+=(
               --set LOGOS_INSPECTOR_QML_DIR "$out/share/logos-inspector/qml"
               --set-default QT_QUICK_BACKEND software

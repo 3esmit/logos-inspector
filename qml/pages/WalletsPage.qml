@@ -120,9 +120,26 @@ ColumnLayout {
         Layout.fillWidth: true
     }
 
-    ResultPane {
+    WalletDetailPane {
+        value: root.model.walletDetailValue
         theme: root.theme
         model: root.model
+    }
+
+    Panel {
+        visible: root.model.walletDetailValue === null
+        theme: root.theme
+        title: qsTr("Wallet detail")
+        Layout.fillWidth: true
+
+        Text {
+            text: qsTr("Select a wallet to inspect receive-side transfer outputs, source transactions, and linked blocks.")
+            color: root.theme.textMuted
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            font.pixelSize: 14
+            Layout.fillWidth: true
+        }
     }
 
     function walletRows() {

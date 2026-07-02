@@ -30,19 +30,20 @@ ColumnLayout {
 
         TabSwitch {
             theme: root.theme
-            current: model.programTab
+            current: root.model.programTab
             options: programTabs
-            onSelected: value => model.programTab = value
+            onSelected: value => root.model.programTab = value
         }
 
         Loader {
             active: true
-            sourceComponent: root.formFor(model.programTab)
+            sourceComponent: root.formFor(root.model.programTab)
             Layout.fillWidth: true
         }
     }
 
     ResultPane {
+        visible: root.model.pageHasOutput("programs")
         theme: root.theme
         model: root.model
     }
@@ -126,7 +127,7 @@ ColumnLayout {
                 text: root.model.registeredIdls.count
                     ? qsTr("Registered IDLs: %1").arg(root.model.registeredIdls.count)
                     : qsTr("No IDLs registered")
-                color: theme.textMuted
+                color: root.theme.textMuted
                 textFormat: Text.PlainText
                 font.pixelSize: 13
                 Layout.fillWidth: true
