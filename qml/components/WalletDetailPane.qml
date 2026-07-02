@@ -24,7 +24,7 @@ ColumnLayout {
         Layout.fillWidth: true
 
         Text {
-            text: root.detail ? qsTr("Home > Wallets > %1").arg(root.shortWallet(root.detail.address)) : ""
+            text: root.detail ? qsTr("Home / Wallets / %1").arg(root.shortWallet(root.detail.address)) : ""
             color: root.theme.textMuted
             textFormat: Text.PlainText
             font.pixelSize: 12
@@ -215,7 +215,7 @@ ColumnLayout {
         }
         const numeric = Number(value)
         if (Number.isFinite(numeric)) {
-            return numeric.toLocaleString(Qt.locale())
+            return numeric.toLocaleString(Qt.locale(), "f", 0)
         }
         return String(value)
     }
@@ -265,27 +265,17 @@ ColumnLayout {
             Repeater {
                 model: 4
 
-                Text {
+                LinkCell {
                     required property int index
 
+                    theme: rowRoot.theme
                     text: String(rowRoot.columns[index] || "-")
-                    color: rowRoot.linkFor(index) ? rowRoot.theme.accent : (rowRoot.header ? rowRoot.theme.textMuted : rowRoot.theme.text)
-                    textFormat: Text.PlainText
-                    font.family: rowRoot.header ? "" : "monospace"
-                    font.pixelSize: rowRoot.header ? 11 : 12
-                    font.weight: rowRoot.header ? Font.DemiBold : Font.Normal
-                    font.capitalization: rowRoot.header ? Font.AllUppercase : Font.MixedCase
-                    font.underline: rowRoot.linkFor(index)
-                    elide: Text.ElideRight
+                    header: rowRoot.header
+                    link: rowRoot.linkFor(index)
+                    monospace: !rowRoot.header
                     Layout.preferredWidth: rowRoot.columnWidth(index)
                     Layout.fillWidth: index === 1 || index === 2
-
-                    MouseArea {
-                        anchors.fill: parent
-                        enabled: rowRoot.linkFor(parent.index)
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: rowRoot.cellActivated(parent.index)
-                    }
+                    onActivated: rowRoot.cellActivated(index)
                 }
             }
         }

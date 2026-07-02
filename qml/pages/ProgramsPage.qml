@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
+import QtQuick.Controls.Basic
 import QtQml.Models
 import QtQuick.Layouts
 import "../components"
@@ -12,6 +13,8 @@ ColumnLayout {
 
     required property Theme theme
     required property AppModel model
+    readonly property bool hasResponse: root.model.pageHasOutput("programs")
+    readonly property var responseValue: root.hasResponse ? root.model.resultValue : null
 
     width: parent ? parent.width : 900
     spacing: 16
@@ -24,15 +27,81 @@ ColumnLayout {
         ListElement { value: "events"; label: "Events" }
     }
 
+    PageHeader {
+        theme: root.theme
+        breadcrumb: qsTr("Home / SPEL")
+        title: qsTr("SPEL")
+        subtitle: qsTr("Register IDLs, inspect binaries, and decode program events without hardcoded program assumptions.")
+        Layout.fillWidth: true
+
+        ActionButton {
+            theme: root.theme
+            text: qsTr("Fetch IDs")
+            primary: true
+            enabled: !root.model.busy
+            Layout.preferredWidth: 112
+            onClicked: root.model.callInspector("programs", [root.model.sequencerUrl], qsTr("Program IDs"))
+        }
+    }
+
+    GridLayout {
+        columns: root.width < 760 ? 2 : 4
+        columnSpacing: root.theme.gap
+        rowSpacing: root.theme.gap
+        Layout.fillWidth: true
+
+        MetricCard {
+            theme: root.theme
+            compact: true
+            label: qsTr("Registered")
+            value: root.numberText(root.model.registeredIdls.count)
+            delta: qsTr("Local IDLs")
+            deltaColor: root.model.registeredIdls.count > 0 ? root.theme.success : root.theme.textMuted
+        }
+
+        MetricCard {
+            theme: root.theme
+            compact: true
+            label: qsTr("Tool")
+            value: root.activeTabLabel()
+            delta: root.activeTabDelta()
+        }
+
+        MetricCard {
+            theme: root.theme
+            compact: true
+            label: qsTr("Sequencer")
+            value: root.endpointLabel(root.model.sequencerUrl)
+            delta: root.shortEndpoint(root.model.sequencerUrl)
+        }
+
+        MetricCard {
+            theme: root.theme
+            compact: true
+            label: qsTr("Last result")
+            value: root.lastResultText()
+            delta: root.lastResultDelta()
+            deltaColor: root.lastResultColor()
+        }
+    }
+
     Panel {
         theme: root.theme
-        title: qsTr("SPEL")
+        title: qsTr("%1 tools").arg(root.activeTabLabel())
 
         TabSwitch {
             theme: root.theme
             current: root.model.programTab
             options: programTabs
             onSelected: value => root.model.programTab = value
+        }
+
+        StatusMessage {
+            theme: root.theme
+            tone: "info"
+            title: root.activeTabLabel()
+            message: root.activeTabMessage()
+            Layout.fillWidth: true
         }
 
         Loader {
@@ -42,10 +111,179 @@ ColumnLayout {
         }
     }
 
-    ResultPane {
-        visible: root.model.pageHasOutput("programs")
+    Panel {
         theme: root.theme
-        model: root.model
+        title: qsTr("Registered IDLs")
+
+        StatusMessage {
+            visible: root.model.registeredIdls.count === 0
+            theme: root.theme
+            tone: "info"
+            title: qsTr("Registry empty")
+            message: qsTr("Save an IDL to reuse it while inspecting transactions, accounts, and event payloads.")
+            Layout.fillWidth: true
+        }
+
+        Frame {
+            visible: root.model.registeredIdls.count > 0
+            padding: 0
+            Layout.fillWidth: true
+
+            background: Rectangle {
+                color: root.theme.field
+                radius: root.theme.radius
+                border.width: 1
+                border.color: root.theme.outlineMuted
+            }
+
+            contentItem: ColumnLayout {
+                spacing: 0
+
+                Repeater {
+                    model: root.model.registeredIdls
+
+                    IdlRow {
+                        required property int index
+                        required property string name
+                        required property string programId
+                        required property string json
+
+                        theme: root.theme
+                        idlName: name
+                        programIdText: programId
+                        fieldCount: root.idlFieldCount(json)
+                        onRemoveRequested: root.model.removeIdl(index)
+                    }
+                }
+            }
+        }
+    }
+
+    Panel {
+        visible: root.hasResponse
+        theme: root.theme
+        title: root.model.resultIsError ? qsTr("Program error") : qsTr("Program response")
+
+        RowLayout {
+            spacing: root.theme.gapSmall
+            Layout.fillWidth: true
+
+            Text {
+                text: root.model.resultTitle
+                color: root.model.resultIsError ? root.theme.error : root.theme.textMuted
+                textFormat: Text.PlainText
+                font.pixelSize: root.theme.secondaryText
+                font.weight: Font.Medium
+                elide: Text.ElideRight
+                Layout.fillWidth: true
+            }
+
+            ActionButton {
+                theme: root.theme
+                text: qsTr("Clear")
+                enabled: root.model.resultText.length > 0 || root.model.resultValue !== null
+                Layout.preferredWidth: 84
+                onClicked: root.model.clearResult()
+            }
+        }
+
+        StatusMessage {
+            visible: root.model.resultIsError
+            theme: root.theme
+            tone: "warning"
+            title: qsTr("Call failed")
+            message: root.model.resultText
+            Layout.fillWidth: true
+        }
+
+        GridLayout {
+            visible: !root.model.resultIsError
+            columns: root.width < 760 ? 2 : 4
+            columnSpacing: root.theme.gap
+            rowSpacing: root.theme.gap
+            Layout.fillWidth: true
+
+            MetricCard {
+                theme: root.theme
+                compact: true
+                label: qsTr("Status")
+                value: qsTr("OK")
+                delta: root.model.resultTitle
+                deltaColor: root.theme.success
+            }
+
+            MetricCard {
+                theme: root.theme
+                compact: true
+                label: qsTr("Payload")
+                value: root.responsePayloadText()
+                delta: root.responseKindText()
+            }
+
+            MetricCard {
+                theme: root.theme
+                compact: true
+                label: qsTr("Instructions")
+                value: root.numberText(root.idlCount("instructions"))
+                delta: root.responseIdlName()
+                deltaColor: root.idlCount("instructions") > 0 ? root.theme.success : root.theme.textMuted
+            }
+
+            MetricCard {
+                theme: root.theme
+                compact: true
+                label: qsTr("Program")
+                value: root.responseProgramText()
+                delta: root.responseProgramDelta()
+            }
+        }
+
+        ProgramIdList {
+            visible: root.programRows().length > 0
+            theme: root.theme
+            rows: root.programRows()
+            modelRef: root.model
+        }
+
+        IdlSummary {
+            visible: root.isIdlReport(root.responseValue)
+            theme: root.theme
+            instructions: root.idlInstructionRows()
+            accounts: root.idlAccountRows()
+            warnings: root.idlWarningRows()
+        }
+
+        ProgramFileSummary {
+            visible: root.isProgramFile(root.responseValue)
+            theme: root.theme
+            rows: root.programFileRows()
+            modelRef: root.model
+        }
+
+        TextArea {
+            readOnly: true
+            text: root.model.resultText.length ? root.model.resultText : qsTr("No response body.")
+            wrapMode: TextArea.Wrap
+            color: root.model.resultText.length ? root.theme.text : root.theme.textMuted
+            selectedTextColor: root.theme.selectedText
+            selectionColor: root.theme.accent
+            textFormat: Text.PlainText
+            font.family: "monospace"
+            font.pixelSize: root.theme.secondaryText
+            leftPadding: 12
+            rightPadding: 12
+            topPadding: 10
+            bottomPadding: 10
+            Layout.fillWidth: true
+            Layout.preferredHeight: root.model.resultIsError ? 120 : 220
+
+            background: Rectangle {
+                color: root.model.resultIsError ? root.theme.errorMuted : root.theme.field
+                radius: root.theme.radius
+                border.width: 1
+                border.color: root.model.resultIsError ? root.theme.error : root.theme.outline
+            }
+        }
     }
 
     function formFor(tab) {
@@ -65,8 +303,10 @@ ColumnLayout {
         ColumnLayout {
             spacing: 12
 
-            RowLayout {
-                spacing: 10
+            GridLayout {
+                columns: root.width < 680 ? 1 : 2
+                columnSpacing: root.theme.gap
+                rowSpacing: root.theme.gap
                 Layout.fillWidth: true
 
                 FieldRow {
@@ -93,8 +333,10 @@ ColumnLayout {
                 rows: 8
             }
 
-            RowLayout {
-                spacing: 10
+            GridLayout {
+                columns: root.width < 680 ? 1 : 3
+                columnSpacing: root.theme.gapSmall
+                rowSpacing: root.theme.gapSmall
                 Layout.fillWidth: true
 
                 ActionButton {
@@ -102,7 +344,7 @@ ColumnLayout {
                     text: qsTr("Save IDL")
                     primary: true
                     enabled: idlJson.text.trim().length > 0
-                    Layout.preferredWidth: 116
+                    Layout.fillWidth: true
                     onClicked: root.model.registerIdl(idlName.text, programId.text, idlJson.text)
                 }
 
@@ -110,7 +352,7 @@ ColumnLayout {
                     theme: root.theme
                     text: qsTr("Summarize")
                     enabled: !root.model.busy && idlJson.text.trim().length > 0
-                    Layout.preferredWidth: 120
+                    Layout.fillWidth: true
                     onClicked: root.model.callInspector("spelIdl", [idlJson.text], qsTr("SPEL IDL"))
                 }
 
@@ -118,19 +360,9 @@ ColumnLayout {
                     theme: root.theme
                     text: qsTr("Load programs")
                     enabled: !root.model.busy
-                    Layout.preferredWidth: 140
+                    Layout.fillWidth: true
                     onClicked: root.model.callInspector("programs", [root.model.sequencerUrl], qsTr("Program IDs"))
                 }
-            }
-
-            Text {
-                text: root.model.registeredIdls.count
-                    ? qsTr("Registered IDLs: %1").arg(root.model.registeredIdls.count)
-                    : qsTr("No IDLs registered")
-                color: root.theme.textMuted
-                textFormat: Text.PlainText
-                font.pixelSize: 13
-                Layout.fillWidth: true
             }
         }
     }
@@ -153,7 +385,7 @@ ColumnLayout {
                 text: qsTr("Inspect")
                 primary: true
                 enabled: !root.model.busy && programPath.text.trim().length > 0
-                Layout.preferredWidth: 116
+                Layout.preferredWidth: 124
                 onClicked: root.model.callInspector("programFile", [programPath.text], qsTr("Program file"))
             }
         }
@@ -191,9 +423,648 @@ ColumnLayout {
                 text: qsTr("Decode event")
                 primary: true
                 enabled: !root.model.busy && eventData.text.trim().length > 0 && eventIdl.text.trim().length > 0
-                Layout.preferredWidth: 132
+                Layout.preferredWidth: 140
                 onClicked: root.model.callInspector("decodeEvent", [eventData.text, eventIdl.text, eventName.text], qsTr("Event decode"))
             }
         }
+    }
+
+    component IdlRow: Item {
+        id: rowRoot
+
+        required property Theme theme
+        property string idlName: ""
+        property string programIdText: ""
+        property int fieldCount: 0
+        signal removeRequested()
+
+        Layout.fillWidth: true
+        implicitHeight: Math.max(52, rowLayout.implicitHeight + rowRoot.theme.gapLarge)
+
+        GridLayout {
+            id: rowLayout
+
+            anchors.fill: parent
+            anchors.leftMargin: rowRoot.theme.gap
+            anchors.rightMargin: rowRoot.theme.gap
+            anchors.topMargin: rowRoot.theme.gapSmall
+            anchors.bottomMargin: rowRoot.theme.gapSmall
+            columns: root.width < 720 ? 2 : 4
+            columnSpacing: rowRoot.theme.gap
+            rowSpacing: rowRoot.theme.gapTiny
+
+            ColumnLayout {
+                spacing: rowRoot.theme.gapTiny
+                Layout.fillWidth: true
+
+                Text {
+                    text: rowRoot.idlName.length ? rowRoot.idlName : qsTr("Unnamed IDL")
+                    color: rowRoot.theme.text
+                    textFormat: Text.PlainText
+                    font.pixelSize: rowRoot.theme.secondaryText
+                    font.weight: Font.DemiBold
+                    elide: Text.ElideRight
+                    Layout.fillWidth: true
+                }
+
+                Text {
+                    text: rowRoot.programIdText.length ? rowRoot.programIdText : qsTr("No program binding")
+                    color: rowRoot.programIdText.length ? rowRoot.theme.textMuted : rowRoot.theme.textDim
+                    textFormat: Text.PlainText
+                    font.family: "monospace"
+                    font.pixelSize: rowRoot.theme.dataText
+                    elide: Text.ElideRight
+                    Layout.fillWidth: true
+                }
+            }
+
+            Text {
+                text: qsTr("%1 field(s)").arg(rowRoot.fieldCount)
+                color: rowRoot.theme.textMuted
+                textFormat: Text.PlainText
+                font.pixelSize: rowRoot.theme.dataText
+                Layout.preferredWidth: 96
+                Layout.alignment: Qt.AlignVCenter | Qt.AlignRight
+            }
+
+            ActionButton {
+                theme: rowRoot.theme
+                text: qsTr("Remove")
+                Layout.preferredWidth: 96
+                Layout.alignment: Qt.AlignVCenter | Qt.AlignRight
+                onClicked: rowRoot.removeRequested()
+            }
+        }
+    }
+
+    component ProgramIdList: ColumnLayout {
+        id: listRoot
+
+        required property Theme theme
+        property var rows: []
+        property AppModel modelRef
+
+        spacing: 6
+        Layout.fillWidth: true
+
+        Text {
+            text: qsTr("Sequencer programs")
+            color: listRoot.theme.text
+            textFormat: Text.PlainText
+            font.pixelSize: listRoot.theme.primaryText
+            font.weight: Font.DemiBold
+            Layout.fillWidth: true
+        }
+
+        Frame {
+            padding: 0
+            Layout.fillWidth: true
+
+            background: Rectangle {
+                color: listRoot.theme.field
+                radius: listRoot.theme.radius
+                border.width: 1
+                border.color: listRoot.theme.outlineMuted
+            }
+
+            contentItem: ColumnLayout {
+                spacing: 0
+
+                ProgramRow {
+                    theme: listRoot.theme
+                    header: true
+                    label: qsTr("Label")
+                    hex: qsTr("Program ID")
+                    base58: qsTr("Base58")
+                }
+
+                Repeater {
+                    model: listRoot.rows
+
+                    ProgramRow {
+                        required property var modelData
+
+                        theme: listRoot.theme
+                        label: String(modelData.label || "-")
+                        hex: String(modelData.hex || "")
+                        base58: String(modelData.base58 || "")
+                        modelRef: listRoot.modelRef
+                    }
+                }
+            }
+        }
+    }
+
+    component ProgramRow: Item {
+        id: rowRoot
+
+        required property Theme theme
+        property string label: ""
+        property string hex: ""
+        property string base58: ""
+        property bool header: false
+        property AppModel modelRef
+
+        Layout.fillWidth: true
+        Layout.preferredHeight: rowRoot.header ? 34 : 42
+
+        Rectangle {
+            anchors.fill: parent
+            color: rowRoot.header ? rowRoot.theme.field : "transparent"
+            border.width: 0
+        }
+
+        GridLayout {
+            anchors.fill: parent
+            anchors.leftMargin: rowRoot.theme.gap
+            anchors.rightMargin: rowRoot.theme.gap
+            columns: 3
+            columnSpacing: rowRoot.theme.gap
+
+            LinkCell {
+                theme: rowRoot.theme
+                text: rowRoot.label
+                header: rowRoot.header
+                monospace: false
+                Layout.preferredWidth: 140
+            }
+
+            LinkCell {
+                theme: rowRoot.theme
+                text: rowRoot.header ? rowRoot.hex : root.shortHash(rowRoot.hex)
+                header: rowRoot.header
+                link: !rowRoot.header && rowRoot.hex.length > 0
+                Layout.fillWidth: true
+                onActivated: rowRoot.modelRef.openReference("program", rowRoot.hex)
+            }
+
+            LinkCell {
+                theme: rowRoot.theme
+                text: rowRoot.header ? rowRoot.base58 : root.shortHash(rowRoot.base58)
+                header: rowRoot.header
+                monospace: !rowRoot.header
+                Layout.fillWidth: true
+            }
+        }
+    }
+
+    component IdlSummary: ColumnLayout {
+        id: summaryRoot
+
+        required property Theme theme
+        property var instructions: []
+        property var accounts: []
+        property var warnings: []
+
+        spacing: summaryRoot.theme.gap
+        Layout.fillWidth: true
+
+        SummarySection {
+            theme: summaryRoot.theme
+            title: qsTr("Instructions")
+            rows: summaryRoot.instructions
+        }
+
+        SummarySection {
+            theme: summaryRoot.theme
+            title: qsTr("Accounts")
+            rows: summaryRoot.accounts
+        }
+
+        SummarySection {
+            visible: summaryRoot.warnings.length > 0
+            theme: summaryRoot.theme
+            title: qsTr("Warnings")
+            rows: summaryRoot.warnings
+        }
+    }
+
+    component SummarySection: ColumnLayout {
+        id: sectionRoot
+
+        required property Theme theme
+        property string title: ""
+        property var rows: []
+
+        visible: rows.length > 0
+        spacing: 6
+        Layout.fillWidth: true
+
+        Text {
+            text: sectionRoot.title
+            color: sectionRoot.theme.text
+            textFormat: Text.PlainText
+            font.pixelSize: sectionRoot.theme.primaryText
+            font.weight: Font.DemiBold
+            Layout.fillWidth: true
+        }
+
+        Frame {
+            padding: 0
+            Layout.fillWidth: true
+
+            background: Rectangle {
+                color: sectionRoot.theme.field
+                radius: sectionRoot.theme.radius
+                border.width: 1
+                border.color: sectionRoot.theme.outlineMuted
+            }
+
+            contentItem: ColumnLayout {
+                spacing: 0
+
+                Repeater {
+                    model: sectionRoot.rows
+
+                    SummaryRow {
+                        required property var modelData
+
+                        theme: sectionRoot.theme
+                        title: String(modelData.title || "-")
+                        detail: String(modelData.detail || "")
+                    }
+                }
+            }
+        }
+    }
+
+    component SummaryRow: Item {
+        id: rowRoot
+
+        required property Theme theme
+        property string title: ""
+        property string detail: ""
+
+        Layout.fillWidth: true
+        implicitHeight: Math.max(40, body.implicitHeight + rowRoot.theme.gapLarge)
+
+        ColumnLayout {
+            id: body
+
+            anchors.fill: parent
+            anchors.leftMargin: rowRoot.theme.gap
+            anchors.rightMargin: rowRoot.theme.gap
+            anchors.topMargin: rowRoot.theme.gapSmall
+            anchors.bottomMargin: rowRoot.theme.gapSmall
+            spacing: rowRoot.theme.gapTiny
+
+            Text {
+                text: rowRoot.title
+                color: rowRoot.theme.text
+                textFormat: Text.PlainText
+                font.pixelSize: rowRoot.theme.secondaryText
+                font.weight: Font.DemiBold
+                elide: Text.ElideRight
+                Layout.fillWidth: true
+            }
+
+            Text {
+                visible: rowRoot.detail.length > 0
+                text: rowRoot.detail
+                color: rowRoot.theme.textMuted
+                textFormat: Text.PlainText
+                font.family: "monospace"
+                font.pixelSize: rowRoot.theme.dataText
+                wrapMode: Text.WrapAnywhere
+                Layout.fillWidth: true
+            }
+        }
+    }
+
+    component ProgramFileSummary: ColumnLayout {
+        id: fileRoot
+
+        required property Theme theme
+        property var rows: []
+        property AppModel modelRef
+
+        spacing: 6
+        Layout.fillWidth: true
+
+        Text {
+            text: qsTr("Program file")
+            color: fileRoot.theme.text
+            textFormat: Text.PlainText
+            font.pixelSize: fileRoot.theme.primaryText
+            font.weight: Font.DemiBold
+            Layout.fillWidth: true
+        }
+
+        Frame {
+            padding: 0
+            Layout.fillWidth: true
+
+            background: Rectangle {
+                color: fileRoot.theme.field
+                radius: fileRoot.theme.radius
+                border.width: 1
+                border.color: fileRoot.theme.outlineMuted
+            }
+
+            contentItem: ColumnLayout {
+                spacing: 0
+
+                Repeater {
+                    model: fileRoot.rows
+
+                    FileRow {
+                        required property var modelData
+
+                        theme: fileRoot.theme
+                        label: String(modelData.label || "")
+                        value: String(modelData.value || "-")
+                        linkKind: String(modelData.linkKind || "")
+                        modelRef: fileRoot.modelRef
+                    }
+                }
+            }
+        }
+    }
+
+    component FileRow: Item {
+        id: rowRoot
+
+        required property Theme theme
+        property string label: ""
+        property string value: ""
+        property string linkKind: ""
+        property AppModel modelRef
+
+        Layout.fillWidth: true
+        implicitHeight: Math.max(40, rowGrid.implicitHeight + rowRoot.theme.gapLarge)
+
+        GridLayout {
+            id: rowGrid
+
+            anchors.fill: parent
+            anchors.leftMargin: rowRoot.theme.gap
+            anchors.rightMargin: rowRoot.theme.gap
+            anchors.topMargin: rowRoot.theme.gapSmall
+            anchors.bottomMargin: rowRoot.theme.gapSmall
+            columns: 2
+            columnSpacing: rowRoot.theme.gap
+
+            Text {
+                text: rowRoot.label
+                color: rowRoot.theme.textMuted
+                textFormat: Text.PlainText
+                font.pixelSize: rowRoot.theme.labelText
+                font.weight: Font.DemiBold
+                font.capitalization: Font.AllUppercase
+                Layout.preferredWidth: 132
+            }
+
+            LinkCell {
+                theme: rowRoot.theme
+                text: rowRoot.value
+                link: rowRoot.linkKind.length > 0
+                wrap: true
+                Layout.fillWidth: true
+                onActivated: rowRoot.modelRef.openReference(rowRoot.linkKind, rowRoot.value)
+            }
+        }
+    }
+
+    function activeTabLabel() {
+        if (root.model.programTab === "binaries") {
+            return qsTr("Binaries")
+        }
+        if (root.model.programTab === "events") {
+            return qsTr("Events")
+        }
+        return qsTr("IDLs")
+    }
+
+    function activeTabDelta() {
+        if (root.model.programTab === "binaries") {
+            return qsTr("File inspection")
+        }
+        if (root.model.programTab === "events") {
+            return qsTr("IDL decode")
+        }
+        return qsTr("Registry")
+    }
+
+    function activeTabMessage() {
+        if (root.model.programTab === "binaries") {
+            return qsTr("Inspect compiled program bytecode to derive program IDs and deployment transaction hashes.")
+        }
+        if (root.model.programTab === "events") {
+            return qsTr("Decode an event payload with a supplied IDL. The page keeps decoding program-agnostic.")
+        }
+        return qsTr("Save local IDLs, summarize their instruction/account shape, or load program IDs from the sequencer.")
+    }
+
+    function lastResultText() {
+        if (!root.hasResponse) {
+            return qsTr("Idle")
+        }
+        return root.model.resultIsError ? qsTr("Error") : qsTr("OK")
+    }
+
+    function lastResultDelta() {
+        if (!root.hasResponse) {
+            return qsTr("No output")
+        }
+        return root.model.resultTitle.length ? root.model.resultTitle : qsTr("Program call")
+    }
+
+    function lastResultColor() {
+        if (!root.hasResponse) {
+            return root.theme.textMuted
+        }
+        return root.model.resultIsError ? root.theme.warning : root.theme.success
+    }
+
+    function responsePayloadText() {
+        const value = root.responseValue
+        if (value === null || value === undefined) {
+            return "-"
+        }
+        if (Array.isArray(value)) {
+            return root.numberText(value.length)
+        }
+        if (typeof value === "object") {
+            return root.numberText(Object.keys(value).length)
+        }
+        return root.valueText(value)
+    }
+
+    function responseKindText() {
+        const value = root.responseValue
+        if (Array.isArray(value)) {
+            return qsTr("Array items")
+        }
+        if (value && typeof value === "object") {
+            return qsTr("Object fields")
+        }
+        return qsTr("Scalar value")
+    }
+
+    function responseIdlName() {
+        const value = root.responseValue
+        if (value && typeof value === "object" && value.name !== undefined) {
+            return root.valueText(value.name)
+        }
+        return qsTr("IDL summary")
+    }
+
+    function responseProgramText() {
+        const value = root.responseValue
+        if (Array.isArray(value)) {
+            return root.numberText(value.length)
+        }
+        if (root.isProgramFile(value)) {
+            return root.shortHash(value.program_id_hex)
+        }
+        return "-"
+    }
+
+    function responseProgramDelta() {
+        const value = root.responseValue
+        if (Array.isArray(value)) {
+            return qsTr("Program IDs")
+        }
+        if (root.isProgramFile(value)) {
+            return qsTr("%1 bytes").arg(root.numberText(value.bytecode_len))
+        }
+        return qsTr("Sequencer")
+    }
+
+    function programRows() {
+        return Array.isArray(root.responseValue) ? root.responseValue.slice(0, 12) : []
+    }
+
+    function isIdlReport(value) {
+        return value && typeof value === "object" && !Array.isArray(value)
+            && value.instructions !== undefined
+            && value.accounts !== undefined
+            && value.counts !== undefined
+    }
+
+    function isProgramFile(value) {
+        return value && typeof value === "object" && !Array.isArray(value)
+            && value.program_id_hex !== undefined
+            && value.deployment_tx_hash !== undefined
+    }
+
+    function idlCount(key) {
+        const value = root.responseValue
+        if (root.isIdlReport(value) && value.counts && value.counts[key] !== undefined) {
+            return Number(value.counts[key] || 0)
+        }
+        return 0
+    }
+
+    function idlInstructionRows() {
+        const value = root.responseValue
+        const instructions = root.isIdlReport(value) && Array.isArray(value.instructions) ? value.instructions : []
+        return instructions.slice(0, 6).map(function (item) {
+            const args = Array.isArray(item.args) ? item.args.length : 0
+            const accounts = Array.isArray(item.accounts) ? item.accounts.length : 0
+            return {
+                title: root.valueText(item.name),
+                detail: qsTr("%1 account(s), %2 arg(s)").arg(root.numberText(accounts)).arg(root.numberText(args))
+            }
+        })
+    }
+
+    function idlAccountRows() {
+        const value = root.responseValue
+        const accounts = root.isIdlReport(value) && Array.isArray(value.accounts) ? value.accounts : []
+        return accounts.slice(0, 6).map(function (item) {
+            return {
+                title: root.valueText(item.name),
+                detail: root.valueText(item.type_label)
+            }
+        })
+    }
+
+    function idlWarningRows() {
+        const value = root.responseValue
+        const warnings = root.isIdlReport(value) && Array.isArray(value.warnings) ? value.warnings : []
+        return warnings.slice(0, 4).map(function (item) {
+            return {
+                title: qsTr("Warning"),
+                detail: root.valueText(item)
+            }
+        })
+    }
+
+    function programFileRows() {
+        const value = root.responseValue || {}
+        if (!root.isProgramFile(value)) {
+            return []
+        }
+        return [
+            { label: qsTr("Path"), value: root.valueText(value.path), linkKind: "" },
+            { label: qsTr("Bytecode"), value: qsTr("%1 bytes").arg(root.numberText(value.bytecode_len)), linkKind: "" },
+            { label: qsTr("Program hex"), value: root.valueText(value.program_id_hex), linkKind: "program" },
+            { label: qsTr("Program base58"), value: root.valueText(value.program_id_base58), linkKind: "" },
+            { label: qsTr("Deployment tx"), value: root.valueText(value.deployment_tx_hash), linkKind: "transaction" }
+        ]
+    }
+
+    function idlFieldCount(json) {
+        try {
+            const parsed = JSON.parse(json || "{}")
+            return parsed && typeof parsed === "object" ? Object.keys(parsed).length : 0
+        } catch (error) {
+            return 0
+        }
+    }
+
+    function endpointLabel(value) {
+        const text = String(value || "")
+        if (!text.length) {
+            return "-"
+        }
+        if (text.indexOf("127.0.0.1") >= 0 || text.indexOf("localhost") >= 0) {
+            return qsTr("Local")
+        }
+        if (text.indexOf("testnet") >= 0) {
+            return qsTr("Testnet")
+        }
+        return qsTr("Custom")
+    }
+
+    function shortEndpoint(value) {
+        const text = String(value || "")
+        if (!text.length) {
+            return qsTr("Not configured")
+        }
+        return text.replace(/^https?:\/\//, "").replace(/\/$/, "")
+    }
+
+    function shortHash(value) {
+        const text = String(value || "")
+        if (text.length <= 16) {
+            return text.length ? text : "-"
+        }
+        return text.slice(0, 8) + "..." + text.slice(-6)
+    }
+
+    function valueText(value) {
+        if (value === undefined || value === null || value === "") {
+            return "-"
+        }
+        if (typeof value === "number") {
+            return value % 1 === 0 ? value.toLocaleString(Qt.locale(), "f", 0) : String(value)
+        }
+        if (typeof value === "object") {
+            return JSON.stringify(value)
+        }
+        return String(value)
+    }
+
+    function numberText(value) {
+        if (value === undefined || value === null || value === "") {
+            return "-"
+        }
+        const numeric = Number(value)
+        if (Number.isFinite(numeric)) {
+            return numeric % 1 === 0 ? numeric.toLocaleString(Qt.locale(), "f", 0) : String(value)
+        }
+        return String(value)
     }
 }

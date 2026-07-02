@@ -74,24 +74,48 @@ Pane {
 
             ColumnLayout {
                 width: parent ? parent.width : 180
-                spacing: 6
+                spacing: 4
 
                 Repeater {
                     model: root.model.navItems
 
                     delegate: Component {
-                        ActionButton {
-                            id: navButton
+                        ColumnLayout {
+                            id: navItem
 
                             required property int index
                             required property string key
                             required property string label
+                            required property string section
 
-                            theme: root.theme
-                            text: root.compact ? String(index + 1) : label
-                            selected: root.model.currentView === key
                             Layout.fillWidth: true
-                            onClicked: root.model.selectView(key)
+                            spacing: 4
+
+                            Text {
+                                visible: !root.compact && root.startsSection(navItem.index, navItem.section)
+                                text: navItem.section
+                                color: root.theme.textDim
+                                textFormat: Text.PlainText
+                                font.pixelSize: root.theme.labelText
+                                font.weight: Font.DemiBold
+                                font.capitalization: Font.AllUppercase
+                                elide: Text.ElideRight
+                                Layout.fillWidth: true
+                                Layout.topMargin: navItem.index === 0 ? 0 : root.theme.gapSmall
+                            }
+
+                            ActionButton {
+                                id: navButton
+
+                                theme: root.theme
+                                text: root.compact ? root.navToken(navItem.key, navItem.label) : navItem.label
+                                accessibleName: navItem.label
+                                selected: root.model.currentView === navItem.key
+                                Layout.fillWidth: true
+                                onClicked: root.model.selectView(navItem.key)
+                                ToolTip.visible: hovered && root.compact
+                                ToolTip.text: navItem.label
+                            }
                         }
                     }
                 }
@@ -107,5 +131,44 @@ Pane {
             font.pixelSize: 12
             Layout.fillWidth: true
         }
+    }
+
+    function startsSection(index, section) {
+        if (index <= 0) {
+            return true;
+        }
+        const previous = root.model.navItems.get(index - 1);
+        return !previous || String(previous.section || "") !== String(section || "");
+    }
+
+    function navToken(key, label) {
+        const lookup = {
+            overview: "DAS",
+            blocks: "BLK",
+            transactions: "TX",
+            wallets: "WLT",
+            channels: "CHN",
+            sequencer: "SEQ",
+            accounts: "ACC",
+            programs: "SPL",
+            indexer: "IDX",
+            blockchain: "BCH",
+            storage: "STO",
+            messaging: "MSG",
+            capabilities: "CAP",
+            settings: "SET"
+        };
+        if (lookup[key]) {
+            return lookup[key];
+        }
+        const words = String(label || "").split(/\s+/).filter(function (word) { return word.length > 0; });
+        if (!words.length) {
+            return "--";
+        }
+        if (words.length > 1) {
+            return String(words[0].charAt(0) + words[1].charAt(0)).toUpperCase();
+        }
+        const word = words[0];
+        return String(word.slice(0, Math.min(3, word.length))).toUpperCase();
     }
 }

@@ -24,7 +24,7 @@ ColumnLayout {
         Layout.fillWidth: true
 
         Text {
-            text: root.detail ? qsTr("Home > Transactions > %1").arg(root.shortHash(root.detail.hash)) : ""
+            text: root.detail ? qsTr("Home / Transactions / %1").arg(root.shortHash(root.detail.hash)) : ""
             color: root.theme.textMuted
             textFormat: Text.PlainText
             font.pixelSize: 12
@@ -114,7 +114,7 @@ ColumnLayout {
                             text: root.formatValue(operationBlock.modelData.payload)
                             wrapMode: TextArea.Wrap
                             color: root.theme.textMuted
-                            selectedTextColor: "#21160F"
+                            selectedTextColor: root.theme.selectedText
                             selectionColor: root.theme.accent
                             textFormat: Text.PlainText
                             font.family: "monospace"
@@ -421,7 +421,7 @@ ColumnLayout {
             return "-"
         }
         if (typeof value === "number") {
-            return value.toLocaleString(Qt.locale())
+            return value % 1 === 0 ? value.toLocaleString(Qt.locale(), "f", 0) : String(value)
         }
         return String(value)
     }
@@ -547,22 +547,14 @@ ColumnLayout {
                 spacing: 2
                 Layout.fillWidth: true
 
-                Text {
+                LinkCell {
                     text: rowRoot.value
-                    color: rowRoot.linkKind.length ? rowRoot.theme.accent : rowRoot.theme.text
-                    textFormat: Text.PlainText
-                    wrapMode: Text.WrapAnywhere
-                    font.family: rowRoot.monospace ? "monospace" : ""
-                    font.pixelSize: 12
-                    font.underline: rowRoot.linkKind.length > 0
+                    theme: rowRoot.theme
+                    link: rowRoot.linkKind.length > 0
+                    monospace: rowRoot.monospace
+                    wrap: true
                     Layout.fillWidth: true
-
-                    MouseArea {
-                        anchors.fill: parent
-                        enabled: rowRoot.linkKind.length > 0
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: rowRoot.activated()
-                    }
+                    onActivated: rowRoot.activated()
                 }
 
                 Text {

@@ -58,8 +58,11 @@ Item {
             Layout.fillHeight: true
 
             StatusBar {
+                id: statusBar
+
                 theme: theme
                 model: appModel
+                compact: root.compact
                 Layout.fillWidth: true
             }
 
@@ -85,6 +88,26 @@ Item {
                 }
             }
         }
+    }
+
+    Connections {
+        target: appModel
+
+        function onCurrentViewChanged() {
+            if (pageScroll.contentItem) {
+                pageScroll.contentItem.contentY = 0
+            }
+        }
+    }
+
+    Shortcut {
+        sequence: "Ctrl+L"
+        onActivated: statusBar.focusLookup()
+    }
+
+    Shortcut {
+        sequence: "Ctrl+K"
+        onActivated: statusBar.focusLookup()
     }
 
     function pageFor(view) {

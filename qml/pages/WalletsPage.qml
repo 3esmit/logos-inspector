@@ -22,40 +22,12 @@ ColumnLayout {
         }
     }
 
-    RowLayout {
-        spacing: 12
+    PageHeader {
+        theme: root.theme
+        breadcrumb: qsTr("Home / Wallets")
+        title: qsTr("Wallets")
+        subtitle: qsTr("Ordered by total inbound transfer volume. Reconstructed from Transfer op outputs; the node API does not expose a wallet directory.")
         Layout.fillWidth: true
-
-        ColumnLayout {
-            spacing: 6
-            Layout.fillWidth: true
-
-            Text {
-                text: qsTr("Home > Wallets")
-                color: root.theme.textMuted
-                textFormat: Text.PlainText
-                font.pixelSize: 12
-                Layout.fillWidth: true
-            }
-
-            Text {
-                text: qsTr("Wallets")
-                color: root.theme.text
-                textFormat: Text.PlainText
-                font.pixelSize: 28
-                font.weight: Font.Bold
-                Layout.fillWidth: true
-            }
-
-            Text {
-                text: qsTr("Ordered by total inbound transfer volume. Reconstructed from Transfer op outputs; the node API does not expose a wallet directory.")
-                color: root.theme.textMuted
-                textFormat: Text.PlainText
-                wrapMode: Text.Wrap
-                font.pixelSize: 14
-                Layout.fillWidth: true
-            }
-        }
 
         ActionButton {
             theme: root.theme
@@ -110,13 +82,12 @@ ColumnLayout {
         }
     }
 
-    Text {
+    StatusMessage {
         visible: root.model.walletsPageError.length > 0
-        text: root.model.walletsPageError
-        color: root.theme.warning
-        textFormat: Text.PlainText
-        wrapMode: Text.Wrap
-        font.pixelSize: 12
+        theme: root.theme
+        tone: "warning"
+        title: qsTr("Wallets unavailable")
+        message: root.model.walletsPageError
         Layout.fillWidth: true
     }
 
@@ -126,20 +97,13 @@ ColumnLayout {
         model: root.model
     }
 
-    Panel {
+    StatusMessage {
         visible: root.model.walletDetailValue === null
         theme: root.theme
+        tone: "info"
         title: qsTr("Wallet detail")
+        message: qsTr("Select a wallet to inspect receive-side transfer outputs, source transactions, and linked blocks.")
         Layout.fillWidth: true
-
-        Text {
-            text: qsTr("Select a wallet to inspect receive-side transfer outputs, source transactions, and linked blocks.")
-            color: root.theme.textMuted
-            textFormat: Text.PlainText
-            wrapMode: Text.Wrap
-            font.pixelSize: 14
-            Layout.fillWidth: true
-        }
     }
 
     function walletRows() {
@@ -187,7 +151,7 @@ ColumnLayout {
         }
         const numeric = Number(value);
         if (Number.isFinite(numeric)) {
-            return numeric.toLocaleString(Qt.locale());
+            return numeric.toLocaleString(Qt.locale(), "f", 0);
         }
         return String(value);
     }
@@ -228,27 +192,18 @@ ColumnLayout {
             Repeater {
                 model: 5
 
-                Text {
+                LinkCell {
                     required property int index
 
+                    theme: rowRoot.theme
                     text: String(rowRoot.columns[index] || "-")
-                    color: rowRoot.textColor(index)
-                    textFormat: Text.PlainText
-                    font.family: rowRoot.header ? "" : "monospace"
-                    font.pixelSize: rowRoot.header ? 11 : 12
-                    font.weight: rowRoot.header ? Font.DemiBold : Font.Normal
-                    font.capitalization: rowRoot.header ? Font.AllUppercase : Font.MixedCase
-                    font.underline: rowRoot.linkFor(index)
-                    elide: Text.ElideRight
+                    header: rowRoot.header
+                    link: rowRoot.linkFor(index)
+                    monospace: !rowRoot.header
+                    textColor: rowRoot.textColor(index)
                     Layout.preferredWidth: rowRoot.columnWidth(index)
                     Layout.fillWidth: index === 0
-
-                    MouseArea {
-                        anchors.fill: parent
-                        enabled: rowRoot.linkFor(parent.index)
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: rowRoot.walletActivated()
-                    }
+                    onActivated: rowRoot.walletActivated()
                 }
             }
         }

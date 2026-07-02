@@ -28,6 +28,7 @@ QtObject {
     property string dashboardError: ""
     property var blockDetailValue: null
     property var transactionDetailValue: null
+    property var accountDetailValue: null
     property var walletDetailValue: null
     property var channelDetailValue: null
     property var blocksPageRows: []
@@ -68,20 +69,20 @@ QtObject {
     property ListModel registeredIdls: ListModel {}
 
     property ListModel navItems: ListModel {
-        ListElement { key: "overview"; label: "Dashboard" }
-        ListElement { key: "blocks"; label: "Blocks" }
-        ListElement { key: "transactions"; label: "Transactions" }
-        ListElement { key: "wallets"; label: "Wallets" }
-        ListElement { key: "blockchain"; label: "Blockchain" }
-        ListElement { key: "channels"; label: "Channels" }
-        ListElement { key: "storage"; label: "Storage" }
-        ListElement { key: "messaging"; label: "Messaging" }
-        ListElement { key: "capabilities"; label: "Capabilities" }
-        ListElement { key: "sequencer"; label: "Sequencer" }
-        ListElement { key: "accounts"; label: "Accounts" }
-        ListElement { key: "programs"; label: "SPEL" }
-        ListElement { key: "indexer"; label: "Indexer" }
-        ListElement { key: "settings"; label: "Settings" }
+        ListElement { key: "overview"; label: "Dashboard"; section: "Explore" }
+        ListElement { key: "blocks"; label: "Blocks"; section: "Explore" }
+        ListElement { key: "transactions"; label: "Transactions"; section: "Explore" }
+        ListElement { key: "wallets"; label: "Wallets"; section: "Explore" }
+        ListElement { key: "channels"; label: "Channels"; section: "Explore" }
+        ListElement { key: "sequencer"; label: "Sequencer"; section: "Execution" }
+        ListElement { key: "accounts"; label: "Accounts"; section: "Execution" }
+        ListElement { key: "programs"; label: "SPEL"; section: "Execution" }
+        ListElement { key: "indexer"; label: "Indexer"; section: "Execution" }
+        ListElement { key: "blockchain"; label: "Blockchain"; section: "Modules" }
+        ListElement { key: "storage"; label: "Storage"; section: "Modules" }
+        ListElement { key: "messaging"; label: "Messaging"; section: "Modules" }
+        ListElement { key: "capabilities"; label: "Capabilities"; section: "Modules" }
+        ListElement { key: "settings"; label: "Settings"; section: "System" }
     }
 
     function viewTitle() {
@@ -152,6 +153,9 @@ QtObject {
                 setResult(label, response.text, false, response.value)
             }
         } else if (showResult) {
+            if (method === "account" || method === "decodeAccount") {
+                accountDetailValue = null
+            }
             setResult(label, response.error, true, null)
         }
         return response
@@ -624,12 +628,20 @@ QtObject {
             dashboardNode = value
         } else if (method === "indexerBlocks") {
             dashboardBlocks = value || []
+        } else if (method === "account" || method === "decodeAccount") {
+            accountDetailValue = value || null
         }
     }
 
     function routeSearch(query) {
         const value = query.trim()
         if (!value.length) {
+            return
+        }
+
+        const view = viewKeyForQuery(value)
+        if (view.length > 0) {
+            selectView(view)
             return
         }
 
@@ -678,6 +690,58 @@ QtObject {
         currentView = "accounts"
         accountTab = "lookup"
         callInspector("account", [sequencerUrl, indexerUrl, value], qsTr("Account lookup"))
+    }
+
+    function viewKeyForQuery(query) {
+        const normalized = String(query || "").trim().toLowerCase()
+        if (!normalized.length) {
+            return ""
+        }
+        for (let i = 0; i < navItems.count; ++i) {
+            const item = navItems.get(i)
+            const key = String(item.key || "").toLowerCase()
+            const label = String(item.label || "").toLowerCase()
+            if (normalized === key || normalized === label) {
+                return item.key
+            }
+        }
+        if (normalized === "home" || normalized === "dashboard" || normalized === "overview") {
+            return "overview"
+        }
+        if (normalized === "block" || normalized === "latest blocks") {
+            return "blocks"
+        }
+        if (normalized === "transaction" || normalized === "tx" || normalized === "txs" || normalized === "latest transactions") {
+            return "transactions"
+        }
+        if (normalized === "wallet") {
+            return "wallets"
+        }
+        if (normalized === "channel") {
+            return "channels"
+        }
+        if (normalized === "account") {
+            return "accounts"
+        }
+        if (normalized === "sequencer node") {
+            return "sequencer"
+        }
+        if (normalized === "spel" || normalized === "program" || normalized === "programs") {
+            return "programs"
+        }
+        if (normalized === "chain" || normalized === "base chain" || normalized === "node" || normalized === "consensus") {
+            return "blockchain"
+        }
+        if (normalized === "messages") {
+            return "messaging"
+        }
+        if (normalized === "capability") {
+            return "capabilities"
+        }
+        if (normalized === "config" || normalized === "profile") {
+            return "settings"
+        }
+        return ""
     }
 
     function openReference(kind, value, payload) {
