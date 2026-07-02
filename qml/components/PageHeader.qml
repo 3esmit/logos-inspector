@@ -9,6 +9,7 @@ GridLayout {
     property string breadcrumb: ""
     property string title: ""
     property string subtitle: ""
+    property bool showTitle: false
     default property alias actions: actionSlot.data
     readonly property bool stacked: width < 680
 
@@ -36,6 +37,7 @@ GridLayout {
         }
 
         Text {
+            visible: root.showTitle && root.title.length > 0
             text: root.title
             color: root.theme.text
             textFormat: Text.PlainText
@@ -66,4 +68,7 @@ GridLayout {
         Layout.fillWidth: root.stacked
         Layout.alignment: root.stacked ? Qt.AlignLeft : (Qt.AlignTop | Qt.AlignRight)
     }
+
+    Accessible.role: Accessible.StaticText
+    Accessible.name: root.title.length > 0 ? root.title : root.breadcrumb
 }
