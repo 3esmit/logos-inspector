@@ -7,15 +7,24 @@ use std::{
 use anyhow::{Context as _, Result};
 use clap::{Args as ClapArgs, Parser, Subcommand};
 use logos_inspector::{
-    account_lookup, account_lookup_with_idl, blockchain::blockchain_blocks,
-    blockchain::blockchain_node_report, channels::channel_scan, decode_account_data_hex_with_idl,
-    decode_event_data_hex_with_idl, decode_instruction_words_with_idl, last_sequencer_block_id,
-    modules::blockchain_module_report, modules::capabilities_report, modules::delivery_report,
-    modules::logoscore_status_report, modules::modules_report, modules::storage_report, overview,
-    program_file_info, raw_rpc_report, resolve_network_endpoints, sequencer_block,
+    account_lookup, account_lookup_with_idl,
+    blockchain::blockchain_blocks,
+    blockchain::blockchain_node_report,
+    channels::channel_scan,
+    decode_account_data_hex_with_idl, decode_event_data_hex_with_idl,
+    decode_instruction_words_with_idl, last_sequencer_block_id,
+    local_indexer::{bootstrap_default_local_indexer, is_default_local_indexer_endpoint},
+    modules::blockchain_module_report,
+    modules::capabilities_report,
+    modules::delivery_report,
+    modules::logoscore_status_report,
+    modules::modules_report,
+    modules::storage_report,
+    overview, program_file_info, raw_rpc_report, resolve_network_endpoints, sequencer_block,
     sequencer_health, sequencer_program_ids, sequencer_transaction,
     sequencer_transaction_inspection, sequencer_transaction_inspection_with_idl,
-    sequencer_transaction_trace, sequencer_transaction_trace_with_idl, spel::spel_idl_report,
+    sequencer_transaction_trace, sequencer_transaction_trace_with_idl,
+    spel::spel_idl_report,
 };
 use serde_json::Value;
 
@@ -171,12 +180,16 @@ pub struct SequencerArgs {
 
 impl EndpointArgs {
     fn endpoints(&self) -> Result<logos_inspector::NetworkEndpoints> {
-        resolve_network_endpoints(
+        let endpoints = resolve_network_endpoints(
             self.profile.as_deref(),
             self.sequencer_url.as_deref(),
             self.indexer_url.as_deref(),
             self.node_url.as_deref(),
-        )
+        )?;
+        if is_default_local_indexer_endpoint(&endpoints.indexer_endpoint) {
+            bootstrap_default_local_indexer()?;
+        }
+        Ok(endpoints)
     }
 }
 

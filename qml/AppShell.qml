@@ -89,6 +89,12 @@ Item {
 
     function pageFor(view) {
         switch (view) {
+        case "blocks":
+            return blocksPage
+        case "transactions":
+            return transactionsPage
+        case "wallets":
+            return walletsPage
         case "blockchain":
             return blockchainPage
         case "channels":
@@ -123,6 +129,30 @@ Item {
     }
 
     Component {
+        id: blocksPage
+        BlocksPage {
+            theme: theme
+            model: appModel
+        }
+    }
+
+    Component {
+        id: transactionsPage
+        TransactionsPage {
+            theme: theme
+            model: appModel
+        }
+    }
+
+    Component {
+        id: walletsPage
+        WalletsPage {
+            theme: theme
+            model: appModel
+        }
+    }
+
+    Component {
         id: blockchainPage
         ModulePage {
             theme: theme
@@ -135,12 +165,9 @@ Item {
 
     Component {
         id: channelsPage
-        ModulePage {
+        ChannelsPage {
             theme: theme
             model: appModel
-            moduleKind: "channels"
-            title: qsTr("Channels")
-            subtitle: qsTr("Scan blockchain slots for channel activity.")
         }
     }
 

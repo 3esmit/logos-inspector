@@ -1,12 +1,17 @@
 pub mod blockchain;
 pub mod bridge;
 pub mod channels;
+pub mod local_indexer;
 pub mod logoscore;
 pub mod modules;
 mod probe;
 pub mod spel;
 
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::Path,
+};
 
 use anyhow::{Context as _, Result, bail};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
@@ -34,6 +39,7 @@ pub const DEFAULT_SEQUENCER_ENDPOINT: &str = TESTNET_SEQUENCER_ENDPOINT;
 pub const DEFAULT_INDEXER_ENDPOINT: &str = "http://127.0.0.1:8779/";
 pub const DEFAULT_NODE_ENDPOINT: &str = "http://127.0.0.1:8080/";
 pub const DEFAULT_NETWORK_PROFILE: &str = "default";
+pub const LOCAL_NODE_NETWORK_PROFILE: &str = "local-node";
 pub const CUSTOM_NETWORK_PROFILE: &str = "custom";
 pub const ACCOUNT_TRANSACTION_LIMIT: usize = 20;
 
@@ -65,6 +71,13 @@ const NETWORK_PROFILES: &[NetworkProfile] = &[
     NetworkProfile {
         id: "testnet-indexer-local",
         label: "Testnet + local indexer",
+        sequencer_endpoint: DEFAULT_SEQUENCER_ENDPOINT,
+        indexer_endpoint: DEFAULT_INDEXER_ENDPOINT,
+        node_endpoint: DEFAULT_NODE_ENDPOINT,
+    },
+    NetworkProfile {
+        id: LOCAL_NODE_NETWORK_PROFILE,
+        label: "Local Logos node",
         sequencer_endpoint: DEFAULT_SEQUENCER_ENDPOINT,
         indexer_endpoint: DEFAULT_INDEXER_ENDPOINT,
         node_endpoint: DEFAULT_NODE_ENDPOINT,
@@ -390,6 +403,30 @@ pub struct IndexerBlockReport {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct WalletSummary {
+    pub wallet: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub received: Option<String>,
+    pub txs: usize,
+    pub outputs: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_slot: Option<u64>,
+    pub source: String,
+    pub transfers: Vec<WalletTransferSummary>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WalletTransferSummary {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slot: Option<u64>,
+    pub tx_hash: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub block_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct DecodedField {
     pub path: String,
     pub value: String,
@@ -585,6 +622,15 @@ pub async fn indexer_blocks(
         .as_array()
         .context("getBlocks result was not an array")?;
     Ok(blocks.iter().map(summarize_indexer_block).collect())
+}
+
+pub async fn indexer_wallets(
+    endpoint: &str,
+    before: Option<u64>,
+    limit: u64,
+) -> Result<Vec<WalletSummary>> {
+    let blocks = indexer_blocks(endpoint, before, limit).await?;
+    Ok(wallet_summaries_from_blocks(&blocks))
 }
 
 pub async fn sequencer_transaction(
@@ -1011,18 +1057,11 @@ pub async fn raw_json_rpc(endpoint: &str, method: &str, params: Value) -> Result
         .text()
         .await
         .context("failed to read rpc response body")?;
-    let json: Value = serde_json::from_str(&text).with_context(|| {
-        format!(
-            "invalid JSON-RPC response: {}",
-            text.chars().take(400).collect::<String>()
-        )
-    })?;
     if !status.is_success() {
-        bail!(
-            "rpc HTTP {status}: {}",
-            text.chars().take(400).collect::<String>()
-        );
+        bail!("rpc HTTP {status}: {}", response_excerpt(&text));
     }
+    let json: Value = serde_json::from_str(&text)
+        .with_context(|| format!("invalid JSON-RPC response: {}", response_excerpt(&text)))?;
     Ok(json)
 }
 
@@ -1044,16 +1083,19 @@ pub async fn raw_http_json(endpoint: &str, path: &str) -> Result<Value> {
         .text()
         .await
         .context("failed to read http response body")?;
-    let json: Value = serde_json::from_str(&text).with_context(|| {
-        format!(
-            "invalid JSON response: {}",
-            text.chars().take(400).collect::<String>()
-        )
-    })?;
     if !status.is_success() {
-        bail!("http call `{url}` failed with status {status}: {json}");
+        bail!(
+            "http call `{url}` failed with status {status}: {}",
+            response_excerpt(&text)
+        );
     }
+    let json: Value = serde_json::from_str(&text)
+        .with_context(|| format!("invalid JSON response: {}", response_excerpt(&text)))?;
     Ok(json)
+}
+
+pub(crate) fn response_excerpt(text: &str) -> String {
+    text.chars().take(400).collect()
 }
 
 fn json_rpc_result<'a>(response: &'a Value, method: &str) -> Result<Option<&'a Value>> {
@@ -1253,6 +1295,187 @@ fn summarize_indexer_transaction(value: &Value, index: usize) -> AccountTransact
         bytecode_len,
         raw: value.clone(),
     }
+}
+
+#[derive(Debug, Clone)]
+struct TransferOutput {
+    wallet: String,
+    amount: u128,
+}
+
+#[derive(Debug, Default)]
+struct WalletAggregate {
+    received: Option<u128>,
+    tx_hashes: BTreeSet<String>,
+    outputs: usize,
+    last_slot: Option<u64>,
+    transfers: Vec<WalletTransferSummary>,
+}
+
+fn wallet_summaries_from_blocks(blocks: &[IndexerBlockReport]) -> Vec<WalletSummary> {
+    let mut transfers = BTreeMap::new();
+    for block in blocks {
+        for tx in &block.transactions {
+            let outputs = transfer_outputs_from_value(&tx.raw);
+            for output in outputs {
+                let aggregate = transfers
+                    .entry(output.wallet)
+                    .or_insert_with(WalletAggregate::default);
+                aggregate.received = Some(aggregate.received.unwrap_or_default() + output.amount);
+                aggregate.tx_hashes.insert(tx.hash.clone());
+                aggregate.outputs += 1;
+                aggregate.last_slot = max_slot(aggregate.last_slot, block.block_id);
+                aggregate.transfers.push(WalletTransferSummary {
+                    slot: block.block_id,
+                    tx_hash: tx.hash.clone(),
+                    block_hash: block.header_hash.clone(),
+                    value: Some(output.amount.to_string()),
+                });
+            }
+        }
+    }
+    if !transfers.is_empty() {
+        return wallet_summaries_from_aggregates(transfers, "transfer_outputs");
+    }
+
+    let mut account_refs = BTreeMap::new();
+    for block in blocks {
+        for tx in &block.transactions {
+            for account_id in &tx.account_ids {
+                let aggregate = account_refs
+                    .entry(account_id.clone())
+                    .or_insert_with(WalletAggregate::default);
+                aggregate.tx_hashes.insert(tx.hash.clone());
+                aggregate.outputs += 1;
+                aggregate.last_slot = max_slot(aggregate.last_slot, block.block_id);
+            }
+        }
+    }
+    wallet_summaries_from_aggregates(account_refs, "account_refs")
+}
+
+fn wallet_summaries_from_aggregates(
+    aggregates: BTreeMap<String, WalletAggregate>,
+    source: &str,
+) -> Vec<WalletSummary> {
+    let mut rows = aggregates
+        .into_iter()
+        .map(|(wallet, mut aggregate)| {
+            aggregate.transfers.sort_by(|left, right| {
+                right
+                    .slot
+                    .cmp(&left.slot)
+                    .then_with(|| right.tx_hash.cmp(&left.tx_hash))
+                    .then_with(|| right.value.cmp(&left.value))
+            });
+            WalletSummary {
+                wallet,
+                received: aggregate.received.map(|value| value.to_string()),
+                txs: aggregate.tx_hashes.len(),
+                outputs: aggregate.outputs,
+                last_slot: aggregate.last_slot,
+                source: source.to_owned(),
+                transfers: aggregate.transfers,
+            }
+        })
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| {
+        wallet_sort_key(right)
+            .cmp(&wallet_sort_key(left))
+            .then_with(|| left.wallet.cmp(&right.wallet))
+    });
+    rows
+}
+
+fn wallet_sort_key(row: &WalletSummary) -> (u128, usize, u64) {
+    (
+        row.received
+            .as_deref()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or_default(),
+        row.outputs,
+        row.last_slot.unwrap_or_default(),
+    )
+}
+
+fn max_slot(left: Option<u64>, right: Option<u64>) -> Option<u64> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
+    }
+}
+
+fn transfer_outputs_from_value(value: &Value) -> Vec<TransferOutput> {
+    let mut outputs = Vec::new();
+    collect_transfer_outputs(value, &mut outputs);
+    outputs
+}
+
+fn collect_transfer_outputs(value: &Value, outputs: &mut Vec<TransferOutput>) {
+    match value {
+        Value::Object(object) => {
+            if let Some(output) = transfer_output_from_object(object) {
+                outputs.push(output);
+            }
+            for child in object.values() {
+                collect_transfer_outputs(child, outputs);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_transfer_outputs(item, outputs);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+}
+
+fn transfer_output_from_object(object: &Map<String, Value>) -> Option<TransferOutput> {
+    let wallet = string_for_keys(
+        object,
+        &[
+            "wallet",
+            "wallet_id",
+            "address",
+            "recipient",
+            "recipient_wallet",
+            "recipient_public_key",
+            "public_key",
+            "pubkey",
+            "to",
+        ],
+    )?;
+    if !plausible_wallet_id(&wallet) {
+        return None;
+    }
+    let amount = u128_for_keys(object, &["amount", "value", "received", "quantity"])?;
+    Some(TransferOutput { wallet, amount })
+}
+
+fn string_for_keys(object: &Map<String, Value>, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        object.get(*key).and_then(|value| {
+            let text = value_to_string(value);
+            (!text.is_empty() && text != "null").then_some(text)
+        })
+    })
+}
+
+fn u128_for_keys(object: &Map<String, Value>, keys: &[&str]) -> Option<u128> {
+    keys.iter().find_map(|key| {
+        object.get(*key).and_then(|value| {
+            value
+                .as_u64()
+                .map(u128::from)
+                .or_else(|| value.as_str().and_then(|value| value.trim().parse().ok()))
+        })
+    })
+}
+
+fn plausible_wallet_id(value: &str) -> bool {
+    let value = value.trim();
+    value.len() >= 16 && value.chars().all(|char| char.is_ascii_alphanumeric())
 }
 
 fn enum_payload(value: &Value) -> (&str, &Value) {
@@ -2799,6 +3022,105 @@ mod tests {
     }
 
     #[test]
+    fn wallet_summaries_use_transfer_outputs_when_available() {
+        let wallet_a = "aa".repeat(32);
+        let wallet_b = "bb".repeat(32);
+        let raw = serde_json::json!({
+            "Public": {
+                "hash": "tx-a",
+                "message": {
+                    "outputs": [
+                        { "recipient": wallet_a.clone(), "amount": 7 },
+                        { "recipient": wallet_a.clone(), "amount": "5" },
+                        { "recipient": wallet_b.clone(), "amount": 9 }
+                    ]
+                }
+            }
+        });
+        let block = IndexerBlockReport {
+            block_id: Some(9),
+            header_hash: Some("block-a".to_owned()),
+            parent_hash: None,
+            timestamp: None,
+            bedrock_status: None,
+            tx_count: 1,
+            transactions: vec![summarize_indexer_transaction(&raw, 0)],
+            raw: serde_json::json!({}),
+        };
+
+        let wallets = wallet_summaries_from_blocks(&[block]);
+
+        assert_eq!(wallets.len(), 2);
+        assert_eq!(
+            wallets.first().map(|wallet| wallet.wallet.as_str()),
+            Some(wallet_a.as_str())
+        );
+        assert_eq!(
+            wallets
+                .first()
+                .and_then(|wallet| wallet.received.as_deref()),
+            Some("12")
+        );
+        assert_eq!(wallets.first().map(|wallet| wallet.txs), Some(1));
+        assert_eq!(wallets.first().map(|wallet| wallet.outputs), Some(2));
+        assert_eq!(wallets.first().and_then(|wallet| wallet.last_slot), Some(9));
+        assert_eq!(
+            wallets.first().map(|wallet| wallet.transfers.len()),
+            Some(2)
+        );
+        assert_eq!(
+            wallets
+                .first()
+                .and_then(|wallet| wallet.transfers.first())
+                .map(|transfer| transfer.tx_hash.as_str()),
+            Some("tx-a")
+        );
+        assert_eq!(
+            wallets
+                .first()
+                .and_then(|wallet| wallet.transfers.first())
+                .and_then(|transfer| transfer.block_hash.as_deref()),
+            Some("block-a")
+        );
+        assert_eq!(
+            wallets.first().map(|wallet| wallet.source.as_str()),
+            Some("transfer_outputs")
+        );
+    }
+
+    #[test]
+    fn wallet_summaries_fall_back_to_account_refs() {
+        let raw = serde_json::json!({
+            "Public": {
+                "hash": "tx-a",
+                "message": {
+                    "account_ids": ["account-111111111111", "account-222222222222"]
+                }
+            }
+        });
+        let block = IndexerBlockReport {
+            block_id: Some(8),
+            header_hash: None,
+            parent_hash: None,
+            timestamp: None,
+            bedrock_status: None,
+            tx_count: 1,
+            transactions: vec![summarize_indexer_transaction(&raw, 0)],
+            raw: serde_json::json!({}),
+        };
+
+        let wallets = wallet_summaries_from_blocks(&[block]);
+
+        assert_eq!(wallets.len(), 2);
+        assert!(wallets.iter().all(|wallet| wallet.received.is_none()));
+        assert!(wallets.iter().all(|wallet| wallet.txs == 1));
+        assert!(wallets.iter().all(|wallet| wallet.outputs == 1));
+        assert!(wallets.iter().all(|wallet| wallet.transfers.is_empty()));
+        assert!(wallets.iter().all(|wallet| wallet.last_slot == Some(8)));
+        assert!(wallets.iter().all(|wallet| wallet.source == "account_refs"));
+    }
+
+    #[test]
     fn account_report_serializes_loaded_empty_related_transactions() {
         let report = AccountReport {
             account_id: "acct-a".to_owned(),
@@ -2843,6 +3165,21 @@ mod tests {
             return;
         };
         assert_eq!(endpoints.profile, "testnet-indexer-local");
+        assert_eq!(endpoints.sequencer_endpoint, DEFAULT_SEQUENCER_ENDPOINT);
+        assert_eq!(endpoints.indexer_endpoint, DEFAULT_INDEXER_ENDPOINT);
+        assert_eq!(endpoints.node_endpoint, DEFAULT_NODE_ENDPOINT);
+    }
+
+    #[test]
+    fn resolve_network_endpoints_uses_local_node_profile() {
+        let endpoints =
+            resolve_network_endpoints(Some(LOCAL_NODE_NETWORK_PROFILE), None, None, None);
+
+        assert!(endpoints.is_ok(), "{endpoints:?}");
+        let Ok(endpoints) = endpoints else {
+            return;
+        };
+        assert_eq!(endpoints.profile, LOCAL_NODE_NETWORK_PROFILE);
         assert_eq!(endpoints.sequencer_endpoint, DEFAULT_SEQUENCER_ENDPOINT);
         assert_eq!(endpoints.indexer_endpoint, DEFAULT_INDEXER_ENDPOINT);
         assert_eq!(endpoints.node_endpoint, DEFAULT_NODE_ENDPOINT);

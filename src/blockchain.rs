@@ -2,7 +2,7 @@ use anyhow::{Context as _, Result, bail};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::{ProbeReport, raw_http_json};
+use crate::{ProbeReport, raw_http_json, response_excerpt};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct BlockchainNodeReport {
@@ -72,14 +72,13 @@ async fn post_json(endpoint: &str, path: &str, body: &Value) -> Result<Value> {
         .text()
         .await
         .context("failed to read http response body")?;
-    let value: Value = serde_json::from_str(&text).with_context(|| {
-        format!(
-            "invalid JSON response: {}",
-            text.chars().take(400).collect::<String>()
-        )
-    })?;
     if !status.is_success() {
-        bail!("http call `{url}` failed with status {status}: {value}");
+        bail!(
+            "http call `{url}` failed with status {status}: {}",
+            response_excerpt(&text)
+        );
     }
+    let value: Value = serde_json::from_str(&text)
+        .with_context(|| format!("invalid JSON response: {}", response_excerpt(&text)))?;
     Ok(value)
 }
