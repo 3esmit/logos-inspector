@@ -17,14 +17,19 @@ QtObject {
     property string currentView: "overview"
     property string statusText: qsTr("Ready")
     property bool busy: false
-    property string resultTitle: qsTr("Result")
+    property string resultTitle: qsTr("Output")
     property string resultText: ""
     property var resultValue: null
     property bool resultIsError: false
+    property string resultOwner: ""
     property var dashboardOverview: null
     property var dashboardNode: null
     property var dashboardBlocks: []
     property string dashboardError: ""
+    property var blockDetailValue: null
+    property var transactionDetailValue: null
+    property var walletDetailValue: null
+    property var channelDetailValue: null
     property var blocksPageRows: []
     property int blocksPageSlotFrom: 0
     property int blocksPageSlotTo: 0
@@ -95,10 +100,11 @@ QtObject {
     }
 
     function clearResult() {
-        resultTitle = qsTr("Result")
+        resultTitle = qsTr("Output")
         resultText = ""
         resultValue = null
         resultIsError = false
+        resultOwner = ""
     }
 
     function setResult(title, text, isError, value) {
@@ -106,7 +112,12 @@ QtObject {
         resultText = text
         resultValue = value === undefined ? null : value
         resultIsError = isError
+        resultOwner = currentView
         statusText = isError ? qsTr("Error") : qsTr("Ready")
+    }
+
+    function pageHasOutput(view) {
+        return resultOwner === view && (resultText.length > 0 || resultValue !== null)
     }
 
     function callInspector(method, args, label) {
@@ -628,9 +639,7 @@ QtObject {
                 openBlockchainBlock(value)
                 return
             }
-            currentView = "sequencer"
-            sequencerTab = "blocks"
-            callInspector("block", [sequencerUrl, Number(value)], qsTr("Block lookup"))
+            openBlockchainBlock(value)
             return
         }
 
@@ -671,6 +680,53 @@ QtObject {
         callInspector("account", [sequencerUrl, indexerUrl, value], qsTr("Account lookup"))
     }
 
+    function openReference(kind, value, payload) {
+        const target = String(value || "").trim()
+        if (!target.length && payload === undefined) {
+            return
+        }
+
+        switch (kind) {
+        case "block":
+        case "blockHash":
+        case "blockNumber":
+        case "slot":
+            openBlockchainBlock(payload === undefined ? target : payload)
+            return
+        case "indexerBlock":
+            openIndexerBlock(target)
+            return
+        case "transaction":
+        case "transactionHash":
+        case "tx":
+            openTransaction(target)
+            return
+        case "wallet":
+            openWallet(target)
+            return
+        case "channel":
+            openChannel(payload === undefined ? target : payload)
+            return
+        case "account":
+        case "program":
+        case "signer":
+            openAccount(target)
+            return
+        default:
+            routeSearch(target)
+        }
+    }
+
+    function openAccount(account) {
+        const value = String(account || "").trim()
+        if (!value.length) {
+            return
+        }
+        currentView = "accounts"
+        accountTab = "lookup"
+        callInspector("account", [sequencerUrl, indexerUrl, value], qsTr("Account lookup"))
+    }
+
     function openTransaction(hash) {
         const value = String(hash || "").trim()
         if (!value.length) {
@@ -680,13 +736,32 @@ QtObject {
         currentView = "transactions"
         const detail = transactionDetail(value)
         if (detail) {
+            transactionDetailValue = detail
             setResult(qsTr("Transaction"), BridgeHelpers.formatValue(detail), false, detail)
             return
         }
 
-        currentView = "sequencer"
-        sequencerTab = "transactions"
-        callInspector("inspectTransaction", [sequencerUrl, value], qsTr("Transaction inspection"))
+        inspectTransaction(value, "")
+    }
+
+    function inspectTransaction(hash, idl) {
+        const value = String(hash || "").trim()
+        if (!value.length) {
+            return
+        }
+
+        currentView = "transactions"
+        const trimmedIdl = String(idl || "").trim()
+        const args = trimmedIdl.length ? [sequencerUrl, value, trimmedIdl] : [sequencerUrl, value]
+        const response = requestModule(inspectorModule, "inspectTransaction", args, qsTr("Transaction inspection"), false)
+        if (response.ok) {
+            transactionDetailValue = response.value
+            transactionsPageError = ""
+            setResult(qsTr("Transaction"), response.text, false, response.value)
+        } else {
+            transactionsPageError = response.error
+            setResult(qsTr("Transaction"), response.error, true)
+        }
     }
 
     function openBlockchainBlock(blockOrId) {
@@ -698,12 +773,36 @@ QtObject {
         }
         if (!detail) {
             const fallback = blockOrId && typeof blockOrId === "object" ? blockHash(blockOrId) : blockOrId
+            if (/^[0-9]+$/.test(String(fallback || "").trim())) {
+                loadBlockchainBlockBySlot(Number(fallback))
+                return
+            }
             openIndexerBlock(fallback)
             return
         }
 
         currentView = "blocks"
+        blockDetailValue = detail
         setResult(qsTr("Block"), BridgeHelpers.formatValue(detail), false, detail)
+    }
+
+    function loadBlockchainBlockBySlot(slot) {
+        const value = Math.max(0, Number(slot || 0))
+        currentView = "blocks"
+        const response = requestModule(inspectorModule, "blockchainBlocks", [nodeUrl, value, value], qsTr("Block lookup"), false)
+        if (response.ok) {
+            const blocks = Array.isArray(response.value) ? response.value : []
+            if (blocks.length > 0) {
+                blockDetailValue = blockchainBlockDetail(blocks[0])
+                setResult(qsTr("Block"), BridgeHelpers.formatValue(blockDetailValue), false, blockDetailValue)
+                return
+            }
+            blocksPageError = qsTr("No block found at slot %1.").arg(value)
+            setResult(qsTr("Block"), blocksPageError, true)
+        } else {
+            blocksPageError = response.error
+            setResult(qsTr("Block"), response.error, true)
+        }
     }
 
     function openBlockchainTransaction(transaction, block) {
@@ -719,6 +818,7 @@ QtObject {
             raw: tx.raw || null
         }
         currentView = "transactions"
+        transactionDetailValue = detail
         setResult(qsTr("Transaction"), BridgeHelpers.formatValue(detail), false, detail)
     }
 
@@ -748,9 +848,57 @@ QtObject {
             return
         }
 
-        currentView = "sequencer"
-        sequencerTab = "blocks"
-        callInspector("indexerBlockByHash", [indexerUrl, value], qsTr("Block lookup"))
+        currentView = "blocks"
+        const cached = blockchainBlockDetailById(value)
+        if (cached) {
+            blockDetailValue = cached
+            setResult(qsTr("Block"), BridgeHelpers.formatValue(cached), false, cached)
+            return
+        }
+
+        const response = requestModule(inspectorModule, "indexerBlockByHash", [indexerUrl, value], qsTr("Block lookup"), false)
+        if (response.ok) {
+            if (response.value === null || response.value === undefined) {
+                blocksPageError = qsTr("No block found for %1.").arg(value)
+                setResult(qsTr("Block"), blocksPageError, true)
+                return
+            }
+            blockDetailValue = indexerBlockDetail(response.value)
+            blocksPageError = ""
+            setResult(qsTr("Block"), response.text, false, blockDetailValue)
+        } else {
+            blocksPageError = response.error
+            setResult(qsTr("Block"), response.error, true)
+        }
+    }
+
+    function indexerBlockDetail(value) {
+        const block = value || {}
+        const transactions = Array.isArray(block.transactions) ? block.transactions : []
+        return {
+            type: "indexer_block",
+            hash: String(block.header_hash || ""),
+            parent: String(block.parent_hash || ""),
+            slot: block.block_id,
+            height: block.block_id,
+            status: String(block.bedrock_status || ""),
+            version: "",
+            block_root: "",
+            voucher_cm: "",
+            entropy: "",
+            signature: "",
+            leader_key: "",
+            transactions: transactions.map(function (tx, index) {
+                return {
+                    index: tx.index !== undefined ? tx.index : index,
+                    hash: String(tx.hash || ""),
+                    ops: Array.isArray(tx.instruction_data) ? tx.instruction_data.length : 0,
+                    operations: [],
+                    raw: tx.raw || tx
+                }
+            }),
+            raw: block.raw || block
+        }
     }
 
     function openWallet(wallet) {
@@ -762,25 +910,26 @@ QtObject {
         const detail = walletDetailById(value)
         if (detail) {
             currentView = "wallets"
+            walletDetailValue = detail
             setResult(qsTr("Wallet"), BridgeHelpers.formatValue(detail), false, detail)
             return
         }
 
-        currentView = "accounts"
-        accountTab = "lookup"
-        callInspector("account", [sequencerUrl, indexerUrl, value], qsTr("Account lookup"))
+        openAccount(value)
     }
 
     function openChannel(channel) {
         const detail = typeof channel === "object" ? channelDetail(channel) : channelDetailById(channel)
         if (detail) {
             currentView = "channels"
+            channelDetailValue = detail
             setResult(qsTr("Channel"), BridgeHelpers.formatValue(detail), false, detail)
             return
         }
 
         const value = { type: "channel", channel: String(channel || "") }
         currentView = "channels"
+        channelDetailValue = value
         setResult(qsTr("Channel"), BridgeHelpers.formatValue(value), false, value)
     }
 

@@ -119,9 +119,26 @@ ColumnLayout {
         Layout.fillWidth: true
     }
 
-    ResultPane {
+    ChannelDetailPane {
+        value: root.model.channelDetailValue
         theme: root.theme
         model: root.model
+    }
+
+    Panel {
+        visible: root.model.channelDetailValue === null
+        theme: root.theme
+        title: qsTr("Channel detail")
+        Layout.fillWidth: true
+
+        Text {
+            text: qsTr("Select a channel to inspect first and last activity, live state, balances, and stored keys.")
+            color: root.theme.textMuted
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            font.pixelSize: 14
+            Layout.fillWidth: true
+        }
     }
 
     function channelRows() {

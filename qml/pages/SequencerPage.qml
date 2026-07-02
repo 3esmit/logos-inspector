@@ -29,19 +29,20 @@ ColumnLayout {
 
         TabSwitch {
             theme: root.theme
-            current: model.sequencerTab
+            current: root.model.sequencerTab
             options: sequencerTabs
-            onSelected: value => model.sequencerTab = value
+            onSelected: value => root.model.sequencerTab = value
         }
 
         Loader {
             active: true
-            sourceComponent: model.sequencerTab === "blocks" ? blocksForm : transactionsForm
+            sourceComponent: root.model.sequencerTab === "blocks" ? blocksForm : transactionsForm
             Layout.fillWidth: true
         }
     }
 
     ResultPane {
+        visible: root.model.pageHasOutput("sequencer")
         theme: root.theme
         model: root.model
     }
@@ -65,7 +66,7 @@ ColumnLayout {
                 primary: true
                 enabled: !root.model.busy && blockId.text.trim().length > 0
                 Layout.preferredWidth: 128
-                onClicked: root.model.callInspector("block", [root.model.sequencerUrl, blockId.text], qsTr("Block detail"))
+                onClicked: root.model.openReference("block", blockId.text)
             }
         }
     }
@@ -101,7 +102,7 @@ ColumnLayout {
                     primary: true
                     enabled: !root.model.busy && txHash.text.trim().length > 0
                     Layout.preferredWidth: 116
-                    onClicked: root.model.callInspector("transaction", [root.model.sequencerUrl, txHash.text], qsTr("Transaction summary"))
+                    onClicked: root.model.openReference("transaction", txHash.text)
                 }
 
                 ActionButton {
@@ -109,7 +110,7 @@ ColumnLayout {
                     text: qsTr("Inspect")
                     enabled: !root.model.busy && txHash.text.trim().length > 0
                     Layout.preferredWidth: 116
-                    onClicked: root.model.callInspector("inspectTransaction", [root.model.sequencerUrl, txHash.text, txIdl.text], qsTr("Transaction inspection"))
+                    onClicked: root.model.inspectTransaction(txHash.text, txIdl.text)
                 }
 
                 ActionButton {

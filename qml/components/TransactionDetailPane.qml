@@ -145,6 +145,20 @@ ColumnLayout {
         rows: root.decodedRows()
     }
 
+    SectionBlock {
+        visible: root.detail && root.detail.decoded !== null
+        theme: root.theme
+        title: qsTr("Decoded accounts")
+        rows: root.decodedAccountRows()
+    }
+
+    SectionBlock {
+        visible: root.detail && root.detail.decoded !== null
+        theme: root.theme
+        title: qsTr("Decoded args")
+        rows: root.decodedArgRows()
+    }
+
     Repeater {
         model: root.detail && root.detail.mode === "lez" ? root.detail.sections : []
 
@@ -213,7 +227,7 @@ ColumnLayout {
         }
         if (root.detail.mode === "blockchain") {
             return [
-                { label: qsTr("Block"), value: root.blockText(root.detail), monospace: true },
+                { label: qsTr("Block"), value: root.blockText(root.detail), monospace: true, linkKind: "block", linkValue: root.detail.block },
                 { label: qsTr("Index in block"), value: root.valueText(root.detail.index), monospace: true },
                 { label: qsTr("Ops"), value: root.valueText(root.detail.ops.length), monospace: true }
             ]
@@ -222,10 +236,10 @@ ColumnLayout {
         const summary = root.detail.summary || {}
         const rows = [
             { label: qsTr("Kind"), value: root.valueText(summary.kind), monospace: false },
-            { label: qsTr("Hash"), value: root.valueText(summary.hash), monospace: true }
+            { label: qsTr("Hash"), value: root.valueText(summary.hash), monospace: true, linkKind: "transaction", linkValue: summary.hash }
         ]
         if (summary.program_id_hex) {
-            rows.push({ label: qsTr("Program"), value: summary.program_id_hex, monospace: true })
+            rows.push({ label: qsTr("Program"), value: summary.program_id_hex, monospace: true, linkKind: "program", linkValue: summary.program_id_hex })
         }
         rows.push({ label: qsTr("Accounts"), value: root.valueText(root.count(summary.account_ids)), monospace: true })
         rows.push({ label: qsTr("Nonces"), value: root.valueText(root.count(summary.nonces)), monospace: true })
@@ -248,13 +262,13 @@ ColumnLayout {
             { label: qsTr("Opcode"), value: root.opcodeText(operation), monospace: true }
         ]
         if (operation.channel) {
-            rows.push({ label: qsTr("Channel"), value: operation.channel, monospace: true })
+            rows.push({ label: qsTr("Channel"), value: operation.channel, monospace: true, linkKind: "channel", linkValue: operation.channel })
         }
         if (operation.signer) {
-            rows.push({ label: qsTr("Signer"), value: operation.signer, monospace: true })
+            rows.push({ label: qsTr("Signer"), value: operation.signer, monospace: true, linkKind: "account", linkValue: operation.signer })
         }
         if (operation.parent) {
-            rows.push({ label: qsTr("Parent"), value: operation.parent, monospace: true })
+            rows.push({ label: qsTr("Parent"), value: operation.parent, monospace: true, linkKind: "block", linkValue: operation.parent })
         }
         if (operation.proof) {
             rows.push({ label: qsTr("Proof"), value: root.formatValue(operation.proof), monospace: true })
@@ -270,7 +284,9 @@ ColumnLayout {
                 label: root.indexedLabel(row.label, row.index),
                 value: root.valueText(row.value),
                 subvalue: root.rowSubvalue(row),
-                monospace: true
+                monospace: true,
+                linkKind: root.referenceKind(row.label, row.value, row),
+                linkValue: root.referenceValue(row)
             })
         }
         return result
@@ -284,12 +300,40 @@ ColumnLayout {
         return [
             { label: qsTr("Instruction"), value: root.valueText(decoded.instruction), monospace: false },
             { label: qsTr("Variant"), value: root.valueText(decoded.variant_index), monospace: true },
-            { label: qsTr("Program"), value: root.valueText(decoded.program_id), monospace: true },
+            { label: qsTr("Program"), value: root.valueText(decoded.program_id), monospace: true, linkKind: "program", linkValue: decoded.program_id },
             { label: qsTr("IDL"), value: root.valueText(decoded.idl_name), monospace: false },
             { label: qsTr("Accounts"), value: root.valueText(root.count(decoded.accounts)), monospace: true },
             { label: qsTr("Args"), value: root.valueText(root.count(decoded.args)), monospace: true },
             { label: qsTr("Remaining words"), value: root.valueText(root.count(decoded.remaining_words)), monospace: true }
         ]
+    }
+
+    function decodedAccountRows() {
+        const decoded = root.detail ? root.detail.decoded : null
+        const accounts = decoded && Array.isArray(decoded.accounts) ? decoded.accounts : []
+        return accounts.map(function (row) {
+            return {
+                label: String(row.path || qsTr("Account")),
+                value: root.valueText(row.value),
+                monospace: true,
+                linkKind: "account",
+                linkValue: row.value
+            }
+        })
+    }
+
+    function decodedArgRows() {
+        const decoded = root.detail ? root.detail.decoded : null
+        const args = decoded && Array.isArray(decoded.args) ? decoded.args : []
+        return args.map(function (row) {
+            return {
+                label: String(row.path || qsTr("Arg")),
+                value: root.valueText(row.value),
+                monospace: true,
+                linkKind: root.referenceKind(row.path, row.value, row),
+                linkValue: root.referenceValue(row)
+            }
+        })
     }
 
     function rowSubvalue(row) {
@@ -311,6 +355,35 @@ ColumnLayout {
             return String(label || "")
         }
         return qsTr("%1 %2").arg(String(label || "")).arg(index)
+    }
+
+    function referenceKind(label, value, row) {
+        const text = root.valueText(value)
+        const lowered = String(label || "").toLowerCase()
+        if (lowered.indexOf("channel") >= 0 && root.isLongHex(text)) {
+            return "channel"
+        }
+        if ((lowered.indexOf("account") >= 0 || lowered.indexOf("owner") >= 0 || lowered.indexOf("signer") >= 0 || lowered.indexOf("program") >= 0) && text !== "-") {
+            return lowered.indexOf("program") >= 0 ? "program" : "account"
+        }
+        if ((lowered.indexOf("tx") >= 0 || lowered.indexOf("transaction") >= 0 || lowered.indexOf("hash") >= 0) && root.isLongHex(text)) {
+            return "transaction"
+        }
+        if (row && row.base58) {
+            return "account"
+        }
+        return ""
+    }
+
+    function referenceValue(row) {
+        if (row && row.base58) {
+            return row.base58
+        }
+        return row ? root.valueText(row.value) : ""
+    }
+
+    function isLongHex(value) {
+        return /^(0x)?[0-9a-fA-F]{64}$/.test(String(value || ""))
     }
 
     function opcodeText(operation) {
@@ -416,7 +489,10 @@ ColumnLayout {
                         label: String(modelData.label || "")
                         value: String(modelData.value || "-")
                         subvalue: String(modelData.subvalue || "")
+                        linkKind: String(modelData.linkKind || "")
+                        linkValue: String(modelData.linkValue || "")
                         monospace: modelData.monospaced !== undefined ? modelData.monospaced : (modelData.monospace !== undefined ? modelData.monospace : true)
+                        onActivated: root.model.openReference(modelData.linkKind, modelData.linkValue)
                     }
                 }
             }
@@ -430,7 +506,10 @@ ColumnLayout {
         property string label: ""
         property string value: ""
         property string subvalue: ""
+        property string linkKind: ""
+        property string linkValue: ""
         property bool monospace: true
+        signal activated()
 
         Layout.fillWidth: true
         implicitHeight: Math.max(42, rowGrid.implicitHeight + 18)
@@ -470,12 +549,20 @@ ColumnLayout {
 
                 Text {
                     text: rowRoot.value
-                    color: rowRoot.theme.text
+                    color: rowRoot.linkKind.length ? rowRoot.theme.accent : rowRoot.theme.text
                     textFormat: Text.PlainText
                     wrapMode: Text.WrapAnywhere
                     font.family: rowRoot.monospace ? "monospace" : ""
                     font.pixelSize: 12
+                    font.underline: rowRoot.linkKind.length > 0
                     Layout.fillWidth: true
+
+                    MouseArea {
+                        anchors.fill: parent
+                        enabled: rowRoot.linkKind.length > 0
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: rowRoot.activated()
+                    }
                 }
 
                 Text {

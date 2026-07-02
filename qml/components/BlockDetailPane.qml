@@ -118,7 +118,7 @@ ColumnLayout {
     }
 
     function normalize(value) {
-        if (!value || typeof value !== "object" || Array.isArray(value) || value.type !== "blockchain_block") {
+        if (!value || typeof value !== "object" || Array.isArray(value) || (value.type !== "blockchain_block" && value.type !== "indexer_block")) {
             return null
         }
         return {
@@ -143,8 +143,8 @@ ColumnLayout {
             return []
         }
         return [
-            { label: qsTr("Parent"), value: root.valueText(root.detail.parent), monospace: true },
-            { label: qsTr("Slot"), value: root.valueText(root.detail.slot), monospace: true },
+            { label: qsTr("Parent"), value: root.valueText(root.detail.parent), monospace: true, linkKind: "block", linkValue: root.detail.parent },
+            { label: qsTr("Slot"), value: root.valueText(root.detail.slot), monospace: true, linkKind: "block", linkValue: root.valueText(root.detail.slot) },
             { label: qsTr("Height"), value: root.valueText(root.detail.height), monospace: true },
             { label: qsTr("Status"), value: root.valueText(root.detail.status), monospace: false },
             { label: qsTr("Version"), value: root.valueText(root.detail.version), monospace: true },
@@ -238,7 +238,10 @@ ColumnLayout {
                         theme: sectionRoot.theme
                         label: String(modelData.label || "")
                         value: String(modelData.value || "-")
+                        linkKind: String(modelData.linkKind || "")
+                        linkValue: String(modelData.linkValue || "")
                         monospace: modelData.monospace !== undefined ? modelData.monospace : true
+                        onActivated: root.model.openReference(modelData.linkKind, modelData.linkValue)
                     }
                 }
             }
@@ -251,7 +254,10 @@ ColumnLayout {
         required property Theme theme
         property string label: ""
         property string value: ""
+        property string linkKind: ""
+        property string linkValue: ""
         property bool monospace: true
+        signal activated()
 
         Layout.fillWidth: true
         implicitHeight: Math.max(42, rowGrid.implicitHeight + 18)
@@ -281,12 +287,20 @@ ColumnLayout {
 
             Text {
                 text: rowRoot.value
-                color: rowRoot.theme.text
+                color: rowRoot.linkKind.length ? rowRoot.theme.accent : rowRoot.theme.text
                 textFormat: Text.PlainText
                 wrapMode: Text.WrapAnywhere
                 font.family: rowRoot.monospace ? "monospace" : ""
                 font.pixelSize: 12
+                font.underline: rowRoot.linkKind.length > 0
                 Layout.fillWidth: true
+
+                MouseArea {
+                    anchors.fill: parent
+                    enabled: rowRoot.linkKind.length > 0
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: rowRoot.activated()
+                }
             }
         }
     }

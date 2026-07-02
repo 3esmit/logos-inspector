@@ -16,7 +16,7 @@ Pane {
     padding: 18
 
     background: Rectangle {
-        color: theme.sidebar
+        color: root.theme.sidebar
     }
 
     contentItem: ColumnLayout {
@@ -26,19 +26,18 @@ Pane {
             spacing: 10
             Layout.fillWidth: true
 
-            Rectangle {
-                radius: 8
-                color: theme.accent
+            Item {
                 Layout.preferredWidth: 34
                 Layout.preferredHeight: 34
 
-                Text {
+                Image {
                     anchors.centerIn: parent
-                    text: qsTr("LI")
-                    color: "#21160F"
-                    textFormat: Text.PlainText
-                    font.pixelSize: 13
-                    font.weight: Font.Bold
+                    source: Qt.resolvedUrl("../../icons/inspector.svg")
+                    sourceSize.width: 34
+                    sourceSize.height: 34
+                    fillMode: Image.PreserveAspectFit
+                    asynchronous: true
+                    Accessible.ignored: true
                 }
             }
 
@@ -49,7 +48,7 @@ Pane {
 
                 Text {
                     text: qsTr("Logos Inspector")
-                    color: theme.text
+                    color: root.theme.text
                     textFormat: Text.PlainText
                     font.pixelSize: 16
                     font.weight: Font.DemiBold
@@ -58,7 +57,7 @@ Pane {
 
                 Text {
                     text: root.model.statusText
-                    color: theme.textMuted
+                    color: root.theme.textMuted
                     elide: Text.ElideRight
                     textFormat: Text.PlainText
                     font.pixelSize: 12
@@ -102,7 +101,7 @@ Pane {
         Text {
             visible: !root.compact
             text: root.model.networkProfile
-            color: theme.textMuted
+            color: root.theme.textMuted
             elide: Text.ElideRight
             textFormat: Text.PlainText
             font.pixelSize: 12

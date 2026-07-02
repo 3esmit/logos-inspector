@@ -106,8 +106,8 @@ ColumnLayout {
                     rawBlock: modelData.rawBlock
                     status: modelData.status
                     onCellActivated: function (column) {
-                        if (column === 2) {
-                            root.model.openBlockchainBlock(modelData.rawBlock);
+                        if (column === 0 || column === 2) {
+                            root.model.openReference("block", modelData.slotRaw, modelData.rawBlock);
                         }
                     }
                 }
@@ -125,9 +125,26 @@ ColumnLayout {
         Layout.fillWidth: true
     }
 
-    ResultPane {
+    BlockDetailPane {
+        value: root.model.blockDetailValue
         theme: root.theme
         model: root.model
+    }
+
+    Panel {
+        visible: root.model.blockDetailValue === null
+        theme: root.theme
+        title: qsTr("Block detail")
+        Layout.fillWidth: true
+
+        Text {
+            text: qsTr("Select a block header or slot to inspect its parent, consensus fields, and transaction list.")
+            color: root.theme.textMuted
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            font.pixelSize: 14
+            Layout.fillWidth: true
+        }
     }
 
     function blockRows() {
@@ -135,6 +152,7 @@ ColumnLayout {
         if (!blocks.length) {
             return [{
                 slot: "-",
+                slotRaw: "",
                 height: "-",
                 header: qsTr("No blocks in loaded range"),
                 tx: "-",
@@ -151,6 +169,7 @@ ColumnLayout {
             const hash = root.model.blockHash(block);
             return {
                 slot: root.numberText(header.slot),
+                slotRaw: String(header.slot || ""),
                 height: root.numberText(block.height || header.height),
                 header: root.shortHash(hash),
                 tx: root.numberText(transactions.length),
@@ -257,7 +276,10 @@ ColumnLayout {
         }
 
         function linkFor(index) {
-            return !rowRoot.header && index === 2 && rowRoot.blockHash.length > 0 && rowRoot.rawBlock !== null;
+            return !rowRoot.header
+                && rowRoot.rawBlock !== null
+                && ((index === 0 && String(rowRoot.columns[0] || "").length > 0)
+                    || (index === 2 && rowRoot.blockHash.length > 0));
         }
 
         function columnWidth(index) {

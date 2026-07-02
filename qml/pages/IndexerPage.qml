@@ -29,19 +29,20 @@ ColumnLayout {
 
         TabSwitch {
             theme: root.theme
-            current: model.indexerTab
+            current: root.model.indexerTab
             options: indexerTabs
-            onSelected: value => model.indexerTab = value
+            onSelected: value => root.model.indexerTab = value
         }
 
         Loader {
             active: true
-            sourceComponent: model.indexerTab === "status" ? statusForm : rpcForm
+            sourceComponent: root.model.indexerTab === "status" ? statusForm : rpcForm
             Layout.fillWidth: true
         }
     }
 
     ResultPane {
+        visible: root.model.pageHasOutput("indexer")
         theme: root.theme
         model: root.model
     }

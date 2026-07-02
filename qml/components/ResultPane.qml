@@ -9,8 +9,9 @@ Panel {
     id: root
 
     required property AppModel model
+    readonly property bool structured: !root.model.resultIsError && root.hasStructuredDetail(root.model.resultValue)
 
-    title: root.model.resultTitle
+    title: root.model.resultTitle.length ? root.model.resultTitle : qsTr("Output")
 
     RowLayout {
         spacing: 8
@@ -35,12 +36,13 @@ Panel {
     }
 
     Loader {
-        active: !root.model.resultIsError && root.hasStructuredDetail(root.model.resultValue)
+        active: root.structured
         sourceComponent: root.detailComponent(root.model.resultValue)
         Layout.fillWidth: true
     }
 
     TextArea {
+        visible: !root.structured || root.model.resultIsError
         readOnly: true
         text: root.model.resultText.length ? root.model.resultText : qsTr("Run an inspection to see structured output.")
         wrapMode: TextArea.Wrap
@@ -105,8 +107,18 @@ Panel {
         }
     }
 
+    Component {
+        id: accountDetail
+
+        AccountDetailPane {
+            theme: root.theme
+            model: root.model
+            value: root.model.resultValue
+        }
+    }
+
     function hasStructuredDetail(value) {
-        return hasBlockDetail(value) || hasTransactionDetail(value) || hasWalletDetail(value) || hasChannelDetail(value)
+        return hasBlockDetail(value) || hasTransactionDetail(value) || hasWalletDetail(value) || hasChannelDetail(value) || hasAccountDetail(value)
     }
 
     function detailComponent(value) {
@@ -119,6 +131,9 @@ Panel {
         if (hasChannelDetail(value)) {
             return channelDetail
         }
+        if (hasAccountDetail(value)) {
+            return accountDetail
+        }
         return transactionDetail
     }
 
@@ -126,7 +141,7 @@ Panel {
         if (!value || typeof value !== "object" || Array.isArray(value)) {
             return false
         }
-        return value.type === "blockchain_block"
+        return value.type === "blockchain_block" || value.type === "indexer_block"
     }
 
     function hasTransactionDetail(value) {
@@ -151,5 +166,14 @@ Panel {
             return false
         }
         return value.type === "channel"
+    }
+
+    function hasAccountDetail(value) {
+        if (!value || typeof value !== "object" || Array.isArray(value)) {
+            return false
+        }
+        return (value.account_id !== undefined && value.account !== undefined && value.data_hex !== undefined)
+            || (value.account !== undefined && value.account.account_id !== undefined)
+            || (value.account_type !== undefined && value.rows !== undefined && value.decoded !== undefined)
     }
 }

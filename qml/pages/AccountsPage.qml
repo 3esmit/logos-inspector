@@ -29,19 +29,20 @@ ColumnLayout {
 
         TabSwitch {
             theme: root.theme
-            current: model.accountTab
+            current: root.model.accountTab
             options: accountTabs
-            onSelected: value => model.accountTab = value
+            onSelected: value => root.model.accountTab = value
         }
 
         Loader {
             active: true
-            sourceComponent: model.accountTab === "lookup" ? lookupForm : decodeForm
+            sourceComponent: root.model.accountTab === "lookup" ? lookupForm : decodeForm
             Layout.fillWidth: true
         }
     }
 
     ResultPane {
+        visible: root.model.pageHasOutput("accounts")
         theme: root.theme
         model: root.model
     }

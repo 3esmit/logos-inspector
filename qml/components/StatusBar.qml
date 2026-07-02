@@ -10,34 +10,33 @@ Pane {
     required property Theme theme
     required property AppModel model
 
-    padding: 16
+    padding: 12
 
     background: Rectangle {
-        color: theme.background
+        color: root.theme.background
     }
 
     contentItem: RowLayout {
         spacing: 12
 
-        ColumnLayout {
-            spacing: 2
+        RowLayout {
+            spacing: 10
             Layout.fillWidth: true
 
-            Text {
-                text: qsTr("Blockchain explorer")
-                color: theme.textMuted
-                textFormat: Text.PlainText
-                font.pixelSize: 12
-                font.weight: Font.Medium
-                Layout.fillWidth: true
+            Rectangle {
+                color: root.model.busy ? root.theme.warning : root.theme.success
+                radius: 4
+                Layout.preferredWidth: 8
+                Layout.preferredHeight: 8
+                Layout.alignment: Qt.AlignVCenter
             }
 
             Text {
-                text: root.model.viewTitle()
-                color: theme.text
+                text: root.model.busy ? root.model.statusText : qsTr("%1 | %2").arg(root.model.networkProfile).arg(root.model.statusText)
+                color: root.theme.text
                 elide: Text.ElideRight
                 textFormat: Text.PlainText
-                font.pixelSize: 24
+                font.pixelSize: 13
                 font.weight: Font.DemiBold
                 Layout.fillWidth: true
             }

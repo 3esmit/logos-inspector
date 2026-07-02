@@ -65,24 +65,93 @@ ColumnLayout {
 
             ActionButton {
                 theme: root.theme
-                text: qsTr("Reconnect")
+                text: qsTr("Refresh status")
                 primary: true
                 enabled: !root.model.busy
-                Layout.preferredWidth: 128
-                onClicked: root.model.callInspector("overview", [root.model.sequencerUrl, root.model.indexerUrl, root.model.nodeUrl], qsTr("Reconnect"))
-            }
-
-            ActionButton {
-                theme: root.theme
-                text: qsTr("Clear result")
-                Layout.preferredWidth: 118
-                onClicked: root.model.clearResult()
+                Layout.preferredWidth: 136
+                onClicked: root.model.refreshDashboard()
             }
         }
     }
 
-    ResultPane {
+    Panel {
         theme: root.theme
-        model: root.model
+        title: qsTr("Status")
+        Layout.fillWidth: true
+
+        StatusLine {
+            theme: root.theme
+            label: qsTr("Sequencer")
+            value: root.model.sequencerUrl
+            ok: root.serviceOk("sequencer", "health")
+        }
+
+        StatusLine {
+            theme: root.theme
+            label: qsTr("Indexer")
+            value: root.model.indexerUrl
+            ok: root.serviceOk("indexer", "health")
+        }
+
+        StatusLine {
+            theme: root.theme
+            label: qsTr("Blockchain node")
+            value: root.model.nodeUrl
+            ok: root.serviceOk("node", "consensus")
+        }
+    }
+
+    function overview() {
+        return root.model.dashboardOverview || {}
+    }
+
+    function serviceOk(section, field) {
+        const target = root.overview()[section]
+        const probe = target ? target[field] : null
+        return !!(probe && probe.ok)
+    }
+
+    component StatusLine: Item {
+        id: lineRoot
+
+        required property Theme theme
+        property string label: ""
+        property string value: ""
+        property bool ok: false
+
+        Layout.fillWidth: true
+        Layout.preferredHeight: 34
+
+        RowLayout {
+            anchors.fill: parent
+            spacing: 10
+
+            Rectangle {
+                color: lineRoot.ok ? lineRoot.theme.success : lineRoot.theme.warning
+                radius: 4
+                Layout.preferredWidth: 8
+                Layout.preferredHeight: 8
+            }
+
+            Text {
+                text: lineRoot.label
+                color: lineRoot.theme.textMuted
+                textFormat: Text.PlainText
+                font.pixelSize: 11
+                font.weight: Font.DemiBold
+                font.capitalization: Font.AllUppercase
+                Layout.preferredWidth: 130
+            }
+
+            Text {
+                text: lineRoot.value
+                color: lineRoot.theme.text
+                textFormat: Text.PlainText
+                font.family: "monospace"
+                font.pixelSize: 12
+                elide: Text.ElideRight
+                Layout.fillWidth: true
+            }
+        }
     }
 }
