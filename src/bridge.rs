@@ -4,8 +4,8 @@ use tokio::runtime::Runtime;
 
 use crate::{
     account_lookup, account_lookup_with_idl, blockchain, channels,
-    decode_account_data_hex_with_idl, decode_event_data_hex_with_idl, last_sequencer_block_id,
-    logoscore,
+    decode_account_data_hex_with_idl, decode_event_data_hex_with_idl, indexer_block_by_hash,
+    indexer_blocks, indexer_wallets, last_sequencer_block_id, logoscore,
     modules::{
         blockchain_module_report, capabilities_report, delivery_report, logoscore_status_report,
         modules_report, storage_report,
@@ -136,6 +136,33 @@ impl InspectorBridge {
                     args.string(0, "indexer endpoint")?,
                     "getLastFinalizedBlockId",
                     Value::Array(vec![]),
+                ))?)
+            }
+            "indexerBlocks" => {
+                let args = Args::new(args)?;
+                let before = args.value(1).and_then(Value::as_u64);
+                let limit = args.value(2).and_then(Value::as_u64).unwrap_or(10).min(50);
+                to_value(self.runtime.block_on(indexer_blocks(
+                    args.string(0, "indexer endpoint")?,
+                    before,
+                    limit,
+                ))?)
+            }
+            "indexerBlockByHash" => {
+                let args = Args::new(args)?;
+                to_value(self.runtime.block_on(indexer_block_by_hash(
+                    args.string(0, "indexer endpoint")?,
+                    args.string(1, "block header hash")?,
+                ))?)
+            }
+            "indexerWallets" => {
+                let args = Args::new(args)?;
+                let before = args.value(1).and_then(Value::as_u64);
+                let limit = args.value(2).and_then(Value::as_u64).unwrap_or(50).min(50);
+                to_value(self.runtime.block_on(indexer_wallets(
+                    args.string(0, "indexer endpoint")?,
+                    before,
+                    limit,
                 ))?)
             }
             "rawRpc" => {

@@ -10,4 +10,5 @@ tmp/
 __pycache__/
 *.log
 *.tmp
+.qmlls.ini
 .DS_Store

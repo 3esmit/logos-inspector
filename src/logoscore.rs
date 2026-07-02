@@ -1,4 +1,10 @@
-use std::{env, process::Command};
+use std::{
+    env,
+    io::ErrorKind,
+    process::{Command, Stdio},
+    thread,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context as _, Result, bail};
 use serde::Serialize;
@@ -28,7 +34,7 @@ pub fn module_info(module: &str) -> Result<LogosCoreOutput> {
     if module.trim().is_empty() {
         bail!("module name is required");
     }
-    run_json(["module-info", module, "--json"])
+    run_json_prefer_service(["module-info", module, "--json"])
 }
 
 pub fn call(module: &str, method: &str, args: &[String]) -> Result<LogosCoreOutput> {
@@ -46,7 +52,7 @@ pub fn call(module: &str, method: &str, args: &[String]) -> Result<LogosCoreOutp
     command_args.extend(args.iter().cloned());
     command_args.push("--json".to_owned());
 
-    let mut output = run_json(command_args)?;
+    let mut output = run_json_prefer_service(command_args)?;
     normalize_call_value(&mut output.value);
     Ok(output)
 }
@@ -57,7 +63,22 @@ where
     S: AsRef<str>,
 {
     let mut errors = Vec::new();
-    for runner in runners() {
+    for runner in ordered_runners(false) {
+        match run_json_with(&runner, args.clone()) {
+            Ok(output) => return Ok(output),
+            Err(error) => errors.push(format!("{error:#}")),
+        }
+    }
+    bail!("logoscore failed: {}", errors.join("; "))
+}
+
+fn run_json_prefer_service<I, S>(args: I) -> Result<LogosCoreOutput>
+where
+    I: IntoIterator<Item = S> + Clone,
+    S: AsRef<str>,
+{
+    let mut errors = Vec::new();
+    for runner in ordered_runners(true) {
         match run_json_with(&runner, args.clone()) {
             Ok(output) => return Ok(output),
             Err(error) => errors.push(format!("{error:#}")),
@@ -71,9 +92,48 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
-    let output = command_for_runner(runner, args)
-        .output()
+    let mut command = command_for_runner(runner, args);
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
         .with_context(|| format!("failed to run {}", runner.label))?;
+    let timeout = command_timeout();
+    let started = Instant::now();
+    loop {
+        if child
+            .try_wait()
+            .with_context(|| format!("failed to poll {}", runner.label))?
+            .is_some()
+        {
+            break;
+        }
+        if started.elapsed() >= timeout {
+            match child.kill() {
+                Ok(()) => {}
+                Err(error) if error.kind() == ErrorKind::InvalidInput => {}
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("failed to kill timed-out {}", runner.label));
+                }
+            }
+            let output = child
+                .wait_with_output()
+                .with_context(|| format!("failed to collect timed-out {}", runner.label))?;
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+            let message = if stderr.is_empty() { &stdout } else { &stderr };
+            bail!(
+                "{} timed out after {} ms: {}",
+                runner.label,
+                timeout.as_millis(),
+                message
+            );
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+    let output = child
+        .wait_with_output()
+        .with_context(|| format!("failed to collect {}", runner.label))?;
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
     if !output.status.success() {
@@ -98,6 +158,36 @@ where
         value,
         stderr,
     })
+}
+
+fn command_timeout() -> Duration {
+    env::var("LOGOSCORE_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .map(Duration::from_millis)
+        .unwrap_or_else(|| Duration::from_secs(5))
+}
+
+fn ordered_runners(prefer_service: bool) -> Vec<LogosCoreRunner> {
+    let runners = runners();
+    if !prefer_service {
+        return runners;
+    }
+
+    let mut configured = Vec::new();
+    let mut service = Vec::new();
+    let mut plain = Vec::new();
+    for runner in runners {
+        if runner.label == "configured logoscore" {
+            configured.push(runner);
+        } else if runner.sudo_user.is_some() {
+            service.push(runner);
+        } else {
+            plain.push(runner);
+        }
+    }
+    configured.into_iter().chain(service).chain(plain).collect()
 }
 
 fn command_for_runner<I, S>(runner: &LogosCoreRunner, args: I) -> Command

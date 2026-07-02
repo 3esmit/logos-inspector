@@ -22,7 +22,7 @@ ColumnLayout {
 
         Text {
             text: qsTr("Endpoint edits stay in the QML state and are passed to inspection actions.")
-            color: theme.textMuted
+            color: root.theme.textMuted
             wrapMode: Text.Wrap
             textFormat: Text.PlainText
             font.pixelSize: 14
@@ -31,32 +31,32 @@ ColumnLayout {
 
         ComboBox {
             id: profile
-            model: [qsTr("Default"), qsTr("Testnet with local indexer"), qsTr("Local")]
-            currentIndex: model.networkProfile === "local" ? 2 : (model.networkProfile === "testnet-indexer-local" ? 1 : 0)
+            model: [qsTr("Default"), qsTr("Testnet with local indexer"), qsTr("Local Logos node"), qsTr("Local")]
+            currentIndex: root.model.profileIndex()
             Layout.fillWidth: true
-            Layout.preferredHeight: theme.controlHeight
+            Layout.preferredHeight: root.theme.controlHeight
             onActivated: index => root.model.applyProfile(index)
         }
 
         FieldRow {
             theme: root.theme
             label: qsTr("Sequencer URL")
-            text: model.sequencerUrl
-            onTextChanged: model.sequencerUrl = text
+            text: root.model.sequencerUrl
+            onTextChanged: root.model.sequencerUrl = text
         }
 
         FieldRow {
             theme: root.theme
             label: qsTr("Indexer URL")
-            text: model.indexerUrl
-            onTextChanged: model.indexerUrl = text
+            text: root.model.indexerUrl
+            onTextChanged: root.model.indexerUrl = text
         }
 
         FieldRow {
             theme: root.theme
             label: qsTr("Blockchain node URL")
-            text: model.nodeUrl
-            onTextChanged: model.nodeUrl = text
+            text: root.model.nodeUrl
+            onTextChanged: root.model.nodeUrl = text
         }
 
         RowLayout {
@@ -67,16 +67,16 @@ ColumnLayout {
                 theme: root.theme
                 text: qsTr("Reconnect")
                 primary: true
-                enabled: !model.busy
+                enabled: !root.model.busy
                 Layout.preferredWidth: 128
-                onClicked: model.callInspector("overview", [model.sequencerUrl, model.indexerUrl, model.nodeUrl], qsTr("Reconnect"))
+                onClicked: root.model.callInspector("overview", [root.model.sequencerUrl, root.model.indexerUrl, root.model.nodeUrl], qsTr("Reconnect"))
             }
 
             ActionButton {
                 theme: root.theme
                 text: qsTr("Clear result")
                 Layout.preferredWidth: 118
-                onClicked: model.clearResult()
+                onClicked: root.model.clearResult()
             }
         }
     }

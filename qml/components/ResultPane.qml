@@ -1,3 +1,5 @@
+pragma ComponentBehavior: Bound
+
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
@@ -15,8 +17,8 @@ Panel {
         Layout.fillWidth: true
 
         Text {
-            text: model.resultIsError ? qsTr("Error") : qsTr("Output")
-            color: model.resultIsError ? theme.error : theme.textMuted
+            text: root.model.resultIsError ? qsTr("Error") : qsTr("Output")
+            color: root.model.resultIsError ? root.theme.error : root.theme.textMuted
             textFormat: Text.PlainText
             font.pixelSize: 13
             font.weight: Font.Medium
@@ -26,19 +28,25 @@ Panel {
         ActionButton {
             theme: root.theme
             text: qsTr("Clear")
-            enabled: model.resultText.length > 0
+            enabled: root.model.resultText.length > 0 || root.model.resultValue !== null
             Layout.preferredWidth: 84
-            onClicked: model.clearResult()
+            onClicked: root.model.clearResult()
         }
+    }
+
+    Loader {
+        active: !root.model.resultIsError && root.hasStructuredDetail(root.model.resultValue)
+        sourceComponent: root.detailComponent(root.model.resultValue)
+        Layout.fillWidth: true
     }
 
     TextArea {
         readOnly: true
-        text: model.resultText.length ? model.resultText : qsTr("Run an inspection to see structured output.")
+        text: root.model.resultText.length ? root.model.resultText : qsTr("Run an inspection to see structured output.")
         wrapMode: TextArea.Wrap
-        color: model.resultText.length ? theme.text : theme.textMuted
+        color: root.model.resultText.length ? root.theme.text : root.theme.textMuted
         selectedTextColor: "#21160F"
-        selectionColor: theme.accent
+        selectionColor: root.theme.accent
         textFormat: Text.PlainText
         font.family: "monospace"
         font.pixelSize: 13
@@ -50,10 +58,98 @@ Panel {
         Layout.preferredHeight: 260
 
         background: Rectangle {
-            color: model.resultIsError ? "#2D1917" : theme.field
-            radius: theme.radius
+            color: root.model.resultIsError ? "#2D1917" : root.theme.field
+            radius: root.theme.radius
             border.width: 1
-            border.color: model.resultIsError ? theme.error : theme.outline
+            border.color: root.model.resultIsError ? root.theme.error : root.theme.outline
         }
+    }
+
+    Component {
+        id: transactionDetail
+
+        TransactionDetailPane {
+            theme: root.theme
+            model: root.model
+            value: root.model.resultValue
+        }
+    }
+
+    Component {
+        id: blockDetail
+
+        BlockDetailPane {
+            theme: root.theme
+            model: root.model
+            value: root.model.resultValue
+        }
+    }
+
+    Component {
+        id: walletDetail
+
+        WalletDetailPane {
+            theme: root.theme
+            model: root.model
+            value: root.model.resultValue
+        }
+    }
+
+    Component {
+        id: channelDetail
+
+        ChannelDetailPane {
+            theme: root.theme
+            model: root.model
+            value: root.model.resultValue
+        }
+    }
+
+    function hasStructuredDetail(value) {
+        return hasBlockDetail(value) || hasTransactionDetail(value) || hasWalletDetail(value) || hasChannelDetail(value)
+    }
+
+    function detailComponent(value) {
+        if (hasBlockDetail(value)) {
+            return blockDetail
+        }
+        if (hasWalletDetail(value)) {
+            return walletDetail
+        }
+        if (hasChannelDetail(value)) {
+            return channelDetail
+        }
+        return transactionDetail
+    }
+
+    function hasBlockDetail(value) {
+        if (!value || typeof value !== "object" || Array.isArray(value)) {
+            return false
+        }
+        return value.type === "blockchain_block"
+    }
+
+    function hasTransactionDetail(value) {
+        if (!value || typeof value !== "object" || Array.isArray(value)) {
+            return false
+        }
+        return value.type === "blockchain_transaction"
+            || value.raw_summary !== undefined
+            || value.inspection !== undefined
+            || (value.hash !== undefined && value.kind !== undefined)
+    }
+
+    function hasWalletDetail(value) {
+        if (!value || typeof value !== "object" || Array.isArray(value)) {
+            return false
+        }
+        return value.type === "wallet"
+    }
+
+    function hasChannelDetail(value) {
+        if (!value || typeof value !== "object" || Array.isArray(value)) {
+            return false
+        }
+        return value.type === "channel"
     }
 }
