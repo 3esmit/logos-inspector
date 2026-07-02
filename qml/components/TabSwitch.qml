@@ -1,11 +1,10 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
-import QtQml.Models
 import QtQuick.Layouts
 import "../theme"
 
-RowLayout {
+Flow {
     id: root
 
     required property Theme theme
@@ -13,7 +12,7 @@ RowLayout {
     property string current: ""
     signal selected(string value)
 
-    spacing: 8
+    spacing: root.theme.gapSmall
     Layout.fillWidth: true
 
     Repeater {
@@ -29,7 +28,8 @@ RowLayout {
                 theme: root.theme
                 text: label
                 selected: root.current === value
-                Layout.preferredWidth: Math.max(118, implicitWidth)
+                accessibleName: selected ? qsTr("%1 selected").arg(label) : label
+                width: Math.min(Math.max(118, implicitWidth), root.width > 0 ? root.width : Math.max(118, implicitWidth))
                 onClicked: root.selected(value)
             }
         }

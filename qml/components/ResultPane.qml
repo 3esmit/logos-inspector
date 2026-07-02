@@ -14,14 +14,14 @@ Panel {
     title: root.model.resultTitle.length ? root.model.resultTitle : qsTr("Output")
 
     RowLayout {
-        spacing: 8
+        spacing: root.theme.gapSmall
         Layout.fillWidth: true
 
         Text {
             text: root.model.resultIsError ? qsTr("Error") : qsTr("Output")
             color: root.model.resultIsError ? root.theme.error : root.theme.textMuted
             textFormat: Text.PlainText
-            font.pixelSize: 13
+            font.pixelSize: root.theme.secondaryText
             font.weight: Font.Medium
             Layout.fillWidth: true
         }
@@ -47,11 +47,11 @@ Panel {
         text: root.model.resultText.length ? root.model.resultText : qsTr("Run an inspection to see structured output.")
         wrapMode: TextArea.Wrap
         color: root.model.resultText.length ? root.theme.text : root.theme.textMuted
-        selectedTextColor: "#21160F"
+        selectedTextColor: root.theme.selectedText
         selectionColor: root.theme.accent
         textFormat: Text.PlainText
         font.family: "monospace"
-        font.pixelSize: 13
+        font.pixelSize: root.theme.secondaryText
         leftPadding: 12
         rightPadding: 12
         topPadding: 10
@@ -60,7 +60,7 @@ Panel {
         Layout.preferredHeight: 260
 
         background: Rectangle {
-            color: root.model.resultIsError ? "#2D1917" : root.theme.field
+            color: root.model.resultIsError ? root.theme.errorMuted : root.theme.field
             radius: root.theme.radius
             border.width: 1
             border.color: root.model.resultIsError ? root.theme.error : root.theme.outline

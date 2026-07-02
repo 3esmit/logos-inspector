@@ -22,39 +22,12 @@ ColumnLayout {
         }
     }
 
-    RowLayout {
-        spacing: 12
+    PageHeader {
+        theme: root.theme
+        breadcrumb: qsTr("Home / Blocks")
+        title: qsTr("Blocks")
+        subtitle: qsTr("Newest first from the configured blockchain node. Open a slot or header to inspect consensus fields and transactions.")
         Layout.fillWidth: true
-
-        ColumnLayout {
-            spacing: 6
-            Layout.fillWidth: true
-
-            Text {
-                text: qsTr("Home > Blocks")
-                color: root.theme.textMuted
-                textFormat: Text.PlainText
-                font.pixelSize: 12
-                Layout.fillWidth: true
-            }
-
-            Text {
-                text: qsTr("Blocks")
-                color: root.theme.text
-                textFormat: Text.PlainText
-                font.pixelSize: 28
-                font.weight: Font.Bold
-                Layout.fillWidth: true
-            }
-
-            Text {
-                text: qsTr("Newest first.")
-                color: root.theme.textMuted
-                textFormat: Text.PlainText
-                font.pixelSize: 14
-                Layout.fillWidth: true
-            }
-        }
 
         ActionButton {
             theme: root.theme
@@ -71,6 +44,47 @@ ColumnLayout {
             enabled: !root.model.busy && root.model.blocksPageSlotFrom > 0
             Layout.preferredWidth: 104
             onClicked: root.model.olderBlocksPage()
+        }
+    }
+
+    GridLayout {
+        columns: root.width < 760 ? 2 : 4
+        columnSpacing: 12
+        rowSpacing: 12
+        Layout.fillWidth: true
+
+        MetricCard {
+            theme: root.theme
+            compact: true
+            label: qsTr("Node")
+            value: root.endpointLabel(root.model.nodeUrl)
+            delta: root.shortEndpoint(root.model.nodeUrl)
+        }
+
+        MetricCard {
+            theme: root.theme
+            compact: true
+            label: qsTr("Finalized")
+            value: root.numberText(root.chainSlot("lib_slot"))
+            delta: qsTr("LIB slot")
+            deltaColor: root.chainSlot("lib_slot") > 0 ? root.theme.success : root.theme.textMuted
+        }
+
+        MetricCard {
+            theme: root.theme
+            compact: true
+            label: qsTr("Head")
+            value: root.numberText(root.chainSlot("slot"))
+            delta: qsTr("Node slot")
+            deltaColor: root.chainSlot("slot") > 0 ? root.theme.warning : root.theme.textMuted
+        }
+
+        MetricCard {
+            theme: root.theme
+            compact: true
+            label: qsTr("Loaded")
+            value: root.numberText((root.model.blocksPageRows || []).length)
+            delta: root.slotRangeText()
         }
     }
 
@@ -105,6 +119,7 @@ ColumnLayout {
                     blockHash: modelData.blockHash
                     rawBlock: modelData.rawBlock
                     status: modelData.status
+                    selected: root.isSelectedBlock(modelData.blockHash)
                     onCellActivated: function (column) {
                         if (column === 0 || column === 2) {
                             root.model.openReference("block", modelData.slotRaw, modelData.rawBlock);
@@ -115,13 +130,12 @@ ColumnLayout {
         }
     }
 
-    Text {
+    StatusMessage {
         visible: root.model.blocksPageError.length > 0
-        text: root.model.blocksPageError
-        color: root.theme.warning
-        textFormat: Text.PlainText
-        wrapMode: Text.Wrap
-        font.pixelSize: 12
+        theme: root.theme
+        tone: "warning"
+        title: qsTr("Blocks unavailable")
+        message: root.model.blocksPageError
         Layout.fillWidth: true
     }
 
@@ -131,20 +145,13 @@ ColumnLayout {
         model: root.model
     }
 
-    Panel {
+    StatusMessage {
         visible: root.model.blockDetailValue === null
         theme: root.theme
+        tone: "info"
         title: qsTr("Block detail")
+        message: qsTr("Select a block header or slot to inspect its parent, consensus fields, and transaction list.")
         Layout.fillWidth: true
-
-        Text {
-            text: qsTr("Select a block header or slot to inspect its parent, consensus fields, and transaction list.")
-            color: root.theme.textMuted
-            textFormat: Text.PlainText
-            wrapMode: Text.Wrap
-            font.pixelSize: 14
-            Layout.fillWidth: true
-        }
     }
 
     function blockRows() {
@@ -167,6 +174,7 @@ ColumnLayout {
             const proof = header.proof_of_leadership || {};
             const transactions = block.transactions || [];
             const hash = root.model.blockHash(block);
+            const status = root.model.blockStatus(block);
             return {
                 slot: root.numberText(header.slot),
                 slotRaw: String(header.slot || ""),
@@ -174,32 +182,57 @@ ColumnLayout {
                 header: root.shortHash(hash),
                 tx: root.numberText(transactions.length),
                 leader: root.shortHash(proof.leader_key),
-                status: root.statusText(header.slot),
+                status: status,
                 blockHash: hash,
                 rawBlock: block
             };
         });
     }
 
-    function statusText(slot) {
-        const value = Number(slot || 0);
-        const info = root.blockchainInfo();
-        if (!value || !info) {
-            return "-";
-        }
-        if (info.lib_slot !== undefined && value <= Number(info.lib_slot)) {
-            return qsTr("confirmed");
-        }
-        if (info.slot !== undefined && value <= Number(info.slot)) {
-            return qsTr("pending");
-        }
-        return "-";
+    function blockchainInfo() {
+        return root.model.blockchainInfo();
     }
 
-    function blockchainInfo() {
-        const report = root.model.dashboardNode;
-        const probe = report ? report.cryptarchia_info : null;
-        return probe && probe.value ? probe.value.cryptarchia_info : null;
+    function chainSlot(field) {
+        const info = root.blockchainInfo();
+        if (!info || info[field] === undefined) {
+            return 0;
+        }
+        return Number(info[field] || 0);
+    }
+
+    function slotRangeText() {
+        if (root.model.blocksPageSlotTo <= 0) {
+            return qsTr("No range loaded");
+        }
+        return qsTr("Slots %1-%2").arg(root.numberText(root.model.blocksPageSlotFrom)).arg(root.numberText(root.model.blocksPageSlotTo));
+    }
+
+    function endpointLabel(value) {
+        const text = String(value || "");
+        if (!text.length) {
+            return "-";
+        }
+        if (text.indexOf("127.0.0.1") >= 0 || text.indexOf("localhost") >= 0) {
+            return qsTr("Local");
+        }
+        if (text.indexOf("testnet") >= 0) {
+            return qsTr("Testnet");
+        }
+        return qsTr("Custom");
+    }
+
+    function shortEndpoint(value) {
+        const text = String(value || "");
+        if (!text.length) {
+            return qsTr("Not configured");
+        }
+        return text.replace(/^https?:\/\//, "").replace(/\/$/, "");
+    }
+
+    function isSelectedBlock(hash) {
+        const detail = root.model.blockDetailValue;
+        return detail !== null && String(detail.hash || "") === String(hash || "");
     }
 
     function numberText(value) {
@@ -207,7 +240,7 @@ ColumnLayout {
             return "-";
         }
         if (typeof value === "number") {
-            return value.toLocaleString(Qt.locale());
+            return value.toLocaleString(Qt.locale(), "f", 0);
         }
         return String(value);
     }
@@ -229,6 +262,7 @@ ColumnLayout {
         property var rawBlock: null
         property string status: ""
         property bool header: false
+        property bool selected: false
         signal cellActivated(int column)
 
         Layout.fillWidth: true
@@ -236,8 +270,16 @@ ColumnLayout {
 
         Rectangle {
             anchors.fill: parent
-            color: rowRoot.header ? rowRoot.theme.field : "transparent"
+            color: rowRoot.header ? rowRoot.theme.field : (rowRoot.selected ? rowRoot.theme.accentMuted : "transparent")
             border.width: 0
+        }
+
+        Rectangle {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            height: 1
+            color: rowRoot.theme.outlineMuted
         }
 
         GridLayout {
@@ -250,27 +292,18 @@ ColumnLayout {
             Repeater {
                 model: 6
 
-                Text {
+                LinkCell {
                     required property int index
 
+                    theme: rowRoot.theme
                     text: String(rowRoot.columns[index] || "-")
-                    color: rowRoot.linkFor(index) ? rowRoot.theme.accent : rowRoot.textColor(index)
-                    textFormat: Text.PlainText
-                    font.family: rowRoot.header ? "" : "monospace"
-                    font.pixelSize: rowRoot.header ? 11 : 12
-                    font.weight: rowRoot.header ? Font.DemiBold : Font.Normal
-                    font.capitalization: rowRoot.header ? Font.AllUppercase : Font.MixedCase
-                    font.underline: rowRoot.linkFor(index)
-                    elide: Text.ElideRight
+                    header: rowRoot.header
+                    link: rowRoot.linkFor(index)
+                    monospace: !rowRoot.header
+                    textColor: rowRoot.textColor(index)
                     Layout.preferredWidth: rowRoot.columnWidth(index)
                     Layout.fillWidth: index === 2 || index === 4
-
-                    MouseArea {
-                        anchors.fill: parent
-                        enabled: rowRoot.linkFor(parent.index)
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: rowRoot.cellActivated(parent.index)
-                    }
+                    onActivated: rowRoot.cellActivated(index)
                 }
             }
         }
@@ -299,7 +332,7 @@ ColumnLayout {
             if (index !== 5) {
                 return rowRoot.theme.text;
             }
-            if (rowRoot.status === "confirmed") {
+            if (rowRoot.status === "finalized" || rowRoot.status === "confirmed") {
                 return rowRoot.theme.success;
             }
             if (rowRoot.status === "pending") {

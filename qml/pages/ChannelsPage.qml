@@ -22,39 +22,12 @@ ColumnLayout {
         }
     }
 
-    RowLayout {
-        spacing: 12
+    PageHeader {
+        theme: root.theme
+        breadcrumb: qsTr("Home / Channels")
+        title: qsTr("Channels")
+        subtitle: qsTr("Detected channel operations from the configured blockchain node. Open a channel to inspect activity, balances, and stored keys.")
         Layout.fillWidth: true
-
-        ColumnLayout {
-            spacing: 6
-            Layout.fillWidth: true
-
-            Text {
-                text: qsTr("Home > Channels")
-                color: root.theme.textMuted
-                textFormat: Text.PlainText
-                font.pixelSize: 12
-                Layout.fillWidth: true
-            }
-
-            Text {
-                text: qsTr("Channels")
-                color: root.theme.text
-                textFormat: Text.PlainText
-                font.pixelSize: 28
-                font.weight: Font.Bold
-                Layout.fillWidth: true
-            }
-
-            Text {
-                text: qsTr("Sorted by last activity.")
-                color: root.theme.textMuted
-                textFormat: Text.PlainText
-                font.pixelSize: 14
-                Layout.fillWidth: true
-            }
-        }
 
         ActionButton {
             theme: root.theme
@@ -71,6 +44,46 @@ ColumnLayout {
             enabled: !root.model.busy && root.model.channelsPageSlotFrom > 0
             Layout.preferredWidth: 104
             onClicked: root.model.olderChannelsPage()
+        }
+    }
+
+    GridLayout {
+        columns: root.width < 760 ? 2 : 4
+        columnSpacing: 12
+        rowSpacing: 12
+        Layout.fillWidth: true
+
+        MetricCard {
+            theme: root.theme
+            compact: true
+            label: qsTr("Node")
+            value: root.endpointLabel(root.model.nodeUrl)
+            delta: root.shortEndpoint(root.model.nodeUrl)
+        }
+
+        MetricCard {
+            theme: root.theme
+            compact: true
+            label: qsTr("Loaded")
+            value: root.numberText((root.model.channelsPageRows || []).length)
+            delta: root.slotRangeText()
+        }
+
+        MetricCard {
+            theme: root.theme
+            compact: true
+            label: qsTr("Operations")
+            value: root.numberText(root.channelOperations())
+            delta: qsTr("Displayed channels")
+            deltaColor: root.channelOperations() > 0 ? root.theme.success : root.theme.textMuted
+        }
+
+        MetricCard {
+            theme: root.theme
+            compact: true
+            label: qsTr("Keys")
+            value: root.numberText(root.channelKeys())
+            delta: qsTr("Stored key count")
         }
     }
 
@@ -103,19 +116,19 @@ ColumnLayout {
                     theme: root.theme
                     columns: [modelData.channel, modelData.label, modelData.lastSlot, modelData.balance, modelData.keys]
                     channel: modelData.channelRaw
+                    selected: root.isSelectedChannel(modelData.channelRaw)
                     onChannelActivated: root.model.openChannel(modelData.raw)
                 }
             }
         }
     }
 
-    Text {
+    StatusMessage {
         visible: root.model.channelsPageError.length > 0
-        text: root.model.channelsPageError
-        color: root.theme.warning
-        textFormat: Text.PlainText
-        wrapMode: Text.Wrap
-        font.pixelSize: 12
+        theme: root.theme
+        tone: "warning"
+        title: qsTr("Channels unavailable")
+        message: root.model.channelsPageError
         Layout.fillWidth: true
     }
 
@@ -125,20 +138,13 @@ ColumnLayout {
         model: root.model
     }
 
-    Panel {
+    StatusMessage {
         visible: root.model.channelDetailValue === null
         theme: root.theme
+        tone: "info"
         title: qsTr("Channel detail")
+        message: qsTr("Select a channel to inspect first and last activity, live state, balances, and stored keys.")
         Layout.fillWidth: true
-
-        Text {
-            text: qsTr("Select a channel to inspect first and last activity, live state, balances, and stored keys.")
-            color: root.theme.textMuted
-            textFormat: Text.PlainText
-            wrapMode: Text.Wrap
-            font.pixelSize: 14
-            Layout.fillWidth: true
-        }
     }
 
     function channelRows() {
@@ -179,13 +185,65 @@ ColumnLayout {
             return "-";
         }
         if (typeof value === "number") {
-            return value.toLocaleString(Qt.locale());
+            return value.toLocaleString(Qt.locale(), "f", 0);
         }
         const numeric = Number(value);
         if (Number.isFinite(numeric)) {
-            return numeric.toLocaleString(Qt.locale());
+            return numeric.toLocaleString(Qt.locale(), "f", 0);
         }
         return String(value);
+    }
+
+    function slotRangeText() {
+        if (root.model.channelsPageSlotTo <= 0) {
+            return qsTr("No range loaded");
+        }
+        return qsTr("Slots %1-%2").arg(root.numberText(root.model.channelsPageSlotFrom)).arg(root.numberText(root.model.channelsPageSlotTo));
+    }
+
+    function endpointLabel(value) {
+        const text = String(value || "");
+        if (!text.length) {
+            return "-";
+        }
+        if (text.indexOf("127.0.0.1") >= 0 || text.indexOf("localhost") >= 0) {
+            return qsTr("Local");
+        }
+        if (text.indexOf("testnet") >= 0) {
+            return qsTr("Testnet");
+        }
+        return qsTr("Custom");
+    }
+
+    function shortEndpoint(value) {
+        const text = String(value || "");
+        if (!text.length) {
+            return qsTr("Not configured");
+        }
+        return text.replace(/^https?:\/\//, "").replace(/\/$/, "");
+    }
+
+    function channelOperations() {
+        const channels = root.model.channelsPageRows || [];
+        let count = 0;
+        for (let i = 0; i < channels.length; ++i) {
+            count += Number(channels[i].operations || 0);
+        }
+        return count;
+    }
+
+    function channelKeys() {
+        const channels = root.model.channelsPageRows || [];
+        let count = 0;
+        for (let i = 0; i < channels.length; ++i) {
+            count += Number(channels[i].keys || 0);
+        }
+        return count;
+    }
+
+    function isSelectedChannel(channel) {
+        const detail = root.model.channelDetailValue;
+        return detail !== null && String(detail.channel || "") === String(channel || "");
     }
 
     function shortId(value) {
@@ -203,6 +261,7 @@ ColumnLayout {
         property var columns: []
         property string channel: ""
         property bool header: false
+        property bool selected: false
         signal channelActivated()
 
         Layout.fillWidth: true
@@ -210,8 +269,16 @@ ColumnLayout {
 
         Rectangle {
             anchors.fill: parent
-            color: rowRoot.header ? rowRoot.theme.field : "transparent"
+            color: rowRoot.header ? rowRoot.theme.field : (rowRoot.selected ? rowRoot.theme.accentMuted : "transparent")
             border.width: 0
+        }
+
+        Rectangle {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            height: 1
+            color: rowRoot.theme.outlineMuted
         }
 
         GridLayout {
@@ -224,27 +291,18 @@ ColumnLayout {
             Repeater {
                 model: 5
 
-                Text {
+                LinkCell {
                     required property int index
 
+                    theme: rowRoot.theme
                     text: String(rowRoot.columns[index] || "-")
-                    color: rowRoot.textColor(index)
-                    textFormat: Text.PlainText
-                    font.family: rowRoot.header ? "" : "monospace"
-                    font.pixelSize: rowRoot.header ? 11 : 12
-                    font.weight: rowRoot.header ? Font.DemiBold : Font.Normal
-                    font.capitalization: rowRoot.header ? Font.AllUppercase : Font.MixedCase
-                    font.underline: rowRoot.linkFor(index)
-                    elide: Text.ElideRight
+                    header: rowRoot.header
+                    link: rowRoot.linkFor(index)
+                    monospace: !rowRoot.header
+                    textColor: rowRoot.textColor(index)
                     Layout.preferredWidth: rowRoot.columnWidth(index)
                     Layout.fillWidth: index === 0
-
-                    MouseArea {
-                        anchors.fill: parent
-                        enabled: rowRoot.linkFor(parent.index)
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: rowRoot.channelActivated()
-                    }
+                    onActivated: rowRoot.channelActivated()
                 }
             }
         }

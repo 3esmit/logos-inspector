@@ -24,7 +24,7 @@ ColumnLayout {
         Layout.fillWidth: true
 
         Text {
-            text: root.detail ? qsTr("Home > Channels > %1").arg(root.shortId(root.detail.channel)) : ""
+            text: root.detail ? qsTr("Home / Channels / %1").arg(root.shortId(root.detail.channel)) : ""
             color: root.theme.textMuted
             textFormat: Text.PlainText
             font.pixelSize: 12
@@ -48,6 +48,48 @@ ColumnLayout {
             font.family: "monospace"
             font.pixelSize: 12
             Layout.fillWidth: true
+        }
+    }
+
+    GridLayout {
+        visible: root.detail !== null
+        columns: root.width < 760 ? 2 : 4
+        columnSpacing: 12
+        rowSpacing: 12
+        Layout.fillWidth: true
+
+        MetricCard {
+            theme: root.theme
+            compact: true
+            label: qsTr("Last slot")
+            value: root.detail ? root.numberText(root.detail.last_slot) : "-"
+            delta: root.detail && root.detail.last_tx_hash.length ? root.shortId(root.detail.last_tx_hash) : qsTr("No transaction")
+            deltaColor: root.detail && root.detail.last_tx_hash.length ? root.theme.accent : root.theme.textMuted
+        }
+
+        MetricCard {
+            theme: root.theme
+            compact: true
+            label: qsTr("Operations")
+            value: root.detail ? root.numberText(root.detail.operations) : "-"
+            delta: qsTr("Detected")
+            deltaColor: root.detail && Number(root.detail.operations || 0) > 0 ? root.theme.success : root.theme.textMuted
+        }
+
+        MetricCard {
+            theme: root.theme
+            compact: true
+            label: qsTr("Balance")
+            value: root.detail ? root.valueText(root.detail.balance) : "-"
+            delta: qsTr("Latest snapshot")
+        }
+
+        MetricCard {
+            theme: root.theme
+            compact: true
+            label: qsTr("Keys")
+            value: root.detail ? root.numberText(root.detail.keys) : "-"
+            delta: root.detail && root.detail.key_values.length ? qsTr("Stored values") : qsTr("Count only")
         }
     }
 
@@ -100,7 +142,10 @@ ColumnLayout {
                         theme: root.theme
                         label: String(modelData.label || "")
                         value: String(modelData.value || "-")
+                        linkKind: String(modelData.linkKind || "")
+                        linkValue: String(modelData.linkValue || "")
                         monospace: true
+                        onActivated: root.model.openReference(modelData.linkKind, modelData.linkValue)
                     }
                 }
             }
@@ -135,18 +180,12 @@ ColumnLayout {
             return []
         }
         return [
-            {
-                label: qsTr("First seen"),
-                value: root.txText(root.detail.first_tx_hash, root.detail.first_slot),
-                link: root.detail.first_tx_hash,
-                monospace: true
-            },
-            {
-                label: qsTr("Last seen"),
-                value: root.txText(root.detail.last_tx_hash, root.detail.last_slot),
-                link: root.detail.last_tx_hash,
-                monospace: true
-            }
+            { label: qsTr("First slot"), value: root.numberText(root.detail.first_slot), linkKind: root.hasValue(root.detail.first_slot) ? "block" : "", linkValue: root.numberText(root.detail.first_slot), monospace: true },
+            { label: qsTr("First transaction"), value: root.valueText(root.detail.first_tx_hash), linkKind: root.detail.first_tx_hash.length ? "transaction" : "", linkValue: root.detail.first_tx_hash, monospace: true },
+            { label: qsTr("First block"), value: root.valueText(root.detail.first_block_hash), linkKind: root.detail.first_block_hash.length ? "block" : "", linkValue: root.detail.first_block_hash, monospace: true },
+            { label: qsTr("Last slot"), value: root.numberText(root.detail.last_slot), linkKind: root.hasValue(root.detail.last_slot) ? "block" : "", linkValue: root.numberText(root.detail.last_slot), monospace: true },
+            { label: qsTr("Last transaction"), value: root.valueText(root.detail.last_tx_hash), linkKind: root.detail.last_tx_hash.length ? "transaction" : "", linkValue: root.detail.last_tx_hash, monospace: true },
+            { label: qsTr("Last block"), value: root.valueText(root.detail.last_block_hash), linkKind: root.detail.last_block_hash.length ? "block" : "", linkValue: root.detail.last_block_hash, monospace: true }
         ]
     }
 
@@ -155,9 +194,11 @@ ColumnLayout {
             return []
         }
         return [
+            { label: qsTr("Label"), value: root.valueText(root.detail.label), monospace: false },
             { label: qsTr("Tip"), value: root.valueText(root.detail.tip), monospace: true },
             { label: qsTr("Balance"), value: root.valueText(root.detail.balance), monospace: true },
-            { label: qsTr("Withdraw threshold"), value: root.valueText(root.detail.withdraw_threshold), monospace: true }
+            { label: qsTr("Withdraw threshold"), value: root.valueText(root.detail.withdraw_threshold), monospace: true },
+            { label: qsTr("Operations"), value: root.numberText(root.detail.operations), monospace: true }
         ]
     }
 
@@ -171,21 +212,16 @@ ColumnLayout {
         }
         return keys.map(function (key, index) {
             return {
-                label: qsTr("Key %1").arg(index),
-                value: String(key || "-")
+                label: qsTr("Key %1").arg(index + 1),
+                value: String(key || "-"),
+                linkKind: root.isLikelyAccount(key) ? "account" : "",
+                linkValue: String(key || "")
             }
         })
     }
 
-    function txText(hash, slot) {
-        const parts = []
-        if (hash) {
-            parts.push(root.shortId(hash))
-        }
-        if (slot !== undefined && slot !== null && slot !== "") {
-            parts.push(qsTr("slot %1").arg(root.numberText(slot)))
-        }
-        return parts.length ? parts.join(" ") : "-"
+    function hasValue(value) {
+        return value !== undefined && value !== null && value !== ""
     }
 
     function valueText(value) {
@@ -201,7 +237,7 @@ ColumnLayout {
         }
         const numeric = Number(value)
         if (Number.isFinite(numeric)) {
-            return numeric.toLocaleString(Qt.locale())
+            return numeric % 1 === 0 ? numeric.toLocaleString(Qt.locale(), "f", 0) : String(value)
         }
         return String(value)
     }
@@ -212,6 +248,11 @@ ColumnLayout {
             return text.length ? text : "-"
         }
         return text.slice(0, 8) + "..." + text.slice(-6)
+    }
+
+    function isLikelyAccount(value) {
+        const text = String(value || "")
+        return text.length >= 32 && text.length <= 128 && /^[1-9A-HJ-NP-Za-km-z]+$/.test(text)
     }
 
     component SectionBlock: ColumnLayout {
@@ -258,9 +299,10 @@ ColumnLayout {
                         theme: sectionRoot.theme
                         label: String(modelData.label || "")
                         value: String(modelData.value || "-")
-                        link: String(modelData.link || "")
+                        linkKind: String(modelData.linkKind || "")
+                        linkValue: String(modelData.linkValue || "")
                         monospace: modelData.monospace !== undefined ? modelData.monospace : true
-                        onActivated: root.model.openTransaction(modelData.link)
+                        onActivated: root.model.openReference(modelData.linkKind, modelData.linkValue)
                     }
                 }
             }
@@ -273,7 +315,8 @@ ColumnLayout {
         required property Theme theme
         property string label: ""
         property string value: ""
-        property string link: ""
+        property string linkKind: ""
+        property string linkValue: ""
         property bool monospace: true
         signal activated()
 
@@ -303,22 +346,14 @@ ColumnLayout {
                 Layout.alignment: Qt.AlignTop
             }
 
-            Text {
+            LinkCell {
                 text: rowRoot.value
-                color: rowRoot.link.length ? rowRoot.theme.accent : rowRoot.theme.text
-                textFormat: Text.PlainText
-                wrapMode: Text.WrapAnywhere
-                font.family: rowRoot.monospace ? "monospace" : ""
-                font.pixelSize: 12
-                font.underline: rowRoot.link.length > 0
+                theme: rowRoot.theme
+                link: rowRoot.linkKind.length > 0
+                monospace: rowRoot.monospace
+                wrap: true
                 Layout.fillWidth: true
-
-                MouseArea {
-                    anchors.fill: parent
-                    enabled: rowRoot.link.length > 0
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: rowRoot.activated()
-                }
+                onActivated: rowRoot.activated()
             }
         }
     }

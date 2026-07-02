@@ -22,39 +22,12 @@ ColumnLayout {
         }
     }
 
-    RowLayout {
-        spacing: 12
+    PageHeader {
+        theme: root.theme
+        breadcrumb: qsTr("Home / Transactions")
+        title: qsTr("Transactions")
+        subtitle: qsTr("Newest first. Open a hash for decoded operations or jump to the containing block.")
         Layout.fillWidth: true
-
-        ColumnLayout {
-            spacing: 6
-            Layout.fillWidth: true
-
-            Text {
-                text: qsTr("Home > Transactions")
-                color: root.theme.textMuted
-                textFormat: Text.PlainText
-                font.pixelSize: 12
-                Layout.fillWidth: true
-            }
-
-            Text {
-                text: qsTr("Transactions")
-                color: root.theme.text
-                textFormat: Text.PlainText
-                font.pixelSize: 28
-                font.weight: Font.Bold
-                Layout.fillWidth: true
-            }
-
-            Text {
-                text: qsTr("Newest first.")
-                color: root.theme.textMuted
-                textFormat: Text.PlainText
-                font.pixelSize: 14
-                Layout.fillWidth: true
-            }
-        }
 
         ActionButton {
             theme: root.theme
@@ -116,13 +89,12 @@ ColumnLayout {
         }
     }
 
-    Text {
+    StatusMessage {
         visible: root.model.transactionsPageError.length > 0
-        text: root.model.transactionsPageError
-        color: root.theme.warning
-        textFormat: Text.PlainText
-        wrapMode: Text.Wrap
-        font.pixelSize: 12
+        theme: root.theme
+        tone: "warning"
+        title: qsTr("Transactions unavailable")
+        message: root.model.transactionsPageError
         Layout.fillWidth: true
     }
 
@@ -132,20 +104,13 @@ ColumnLayout {
         model: root.model
     }
 
-    Panel {
+    StatusMessage {
         visible: root.model.transactionDetailValue === null
         theme: root.theme
+        tone: "info"
         title: qsTr("Transaction detail")
+        message: qsTr("Select a transaction hash to inspect operations, decoded instruction data, account references, and linked block context.")
         Layout.fillWidth: true
-
-        Text {
-            text: qsTr("Select a transaction hash to inspect operations, decoded instruction data, account references, and linked block context.")
-            color: root.theme.textMuted
-            textFormat: Text.PlainText
-            wrapMode: Text.Wrap
-            font.pixelSize: 14
-            Layout.fillWidth: true
-        }
     }
 
     function transactionRows() {
@@ -175,7 +140,7 @@ ColumnLayout {
             return "-";
         }
         if (typeof value === "number") {
-            return value.toLocaleString(Qt.locale());
+            return value.toLocaleString(Qt.locale(), "f", 0);
         }
         return String(value);
     }
@@ -217,27 +182,17 @@ ColumnLayout {
             Repeater {
                 model: 4
 
-                Text {
+                LinkCell {
                     required property int index
 
+                    theme: rowRoot.theme
                     text: String(rowRoot.columns[index] || "-")
-                    color: rowRoot.linkFor(index) ? rowRoot.theme.accent : (rowRoot.header ? rowRoot.theme.textMuted : rowRoot.theme.text)
-                    textFormat: Text.PlainText
-                    font.family: rowRoot.header ? "" : "monospace"
-                    font.pixelSize: rowRoot.header ? 11 : 12
-                    font.weight: rowRoot.header ? Font.DemiBold : Font.Normal
-                    font.capitalization: rowRoot.header ? Font.AllUppercase : Font.MixedCase
-                    font.underline: rowRoot.linkFor(index)
-                    elide: Text.ElideRight
+                    header: rowRoot.header
+                    link: rowRoot.linkFor(index)
+                    monospace: !rowRoot.header
                     Layout.preferredWidth: rowRoot.columnWidth(index)
                     Layout.fillWidth: index === 1 || index === 2
-
-                    MouseArea {
-                        anchors.fill: parent
-                        enabled: rowRoot.linkFor(parent.index)
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: rowRoot.cellActivated(parent.index)
-                    }
+                    onActivated: rowRoot.cellActivated(index)
                 }
             }
         }

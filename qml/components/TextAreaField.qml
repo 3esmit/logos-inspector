@@ -17,9 +17,9 @@ ColumnLayout {
 
     Text {
         text: root.label
-        color: theme.textMuted
+        color: root.theme.textMuted
         textFormat: Text.PlainText
-        font.pixelSize: 13
+        font.pixelSize: root.theme.secondaryText
         font.weight: Font.Medium
         Layout.fillWidth: true
     }
@@ -27,24 +27,27 @@ ColumnLayout {
     TextArea {
         id: field
         wrapMode: TextArea.Wrap
-        color: theme.text
-        placeholderTextColor: theme.textDim
-        selectionColor: theme.accent
-        selectedTextColor: "#21160F"
+        color: root.theme.text
+        placeholderTextColor: root.theme.textDim
+        selectionColor: root.theme.accent
+        selectedTextColor: root.theme.selectedText
         font.family: "monospace"
-        font.pixelSize: 13
+        font.pixelSize: root.theme.secondaryText
         leftPadding: 12
         rightPadding: 12
         topPadding: 10
         bottomPadding: 10
+        hoverEnabled: true
         Layout.fillWidth: true
         Layout.preferredHeight: Math.max(96, root.rows * 24)
 
         background: Rectangle {
-            radius: theme.radius
-            color: theme.field
-            border.width: 1
-            border.color: field.activeFocus ? theme.accent : theme.outline
+            radius: root.theme.radius
+            color: field.hovered || field.activeFocus ? root.theme.surfaceRaised : root.theme.field
+            border.width: field.activeFocus ? 2 : 1
+            border.color: field.activeFocus ? root.theme.accent : root.theme.outlineMuted
         }
+
+        Accessible.name: root.label.length > 0 ? root.label : root.placeholderText
     }
 }

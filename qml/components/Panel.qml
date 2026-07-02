@@ -10,32 +10,32 @@ Frame {
     property string title: ""
     default property alias content: body.data
 
-    padding: 16
+    padding: theme.gapLarge
     Layout.fillWidth: true
 
     background: Rectangle {
-        color: theme.surface
-        radius: theme.radius
+        color: root.theme.surface
+        radius: root.theme.radiusLarge
         border.width: 1
-        border.color: theme.outlineMuted
+        border.color: root.theme.outlineMuted
     }
 
     contentItem: ColumnLayout {
-        spacing: 12
+        spacing: root.theme.gap
 
         Text {
             visible: root.title.length > 0
             text: root.title
-            color: theme.text
+            color: root.theme.text
             textFormat: Text.PlainText
-            font.pixelSize: 18
+            font.pixelSize: root.theme.panelTitleText
             font.weight: Font.DemiBold
             Layout.fillWidth: true
         }
 
         ColumnLayout {
             id: body
-            spacing: 12
+            spacing: root.theme.gap
             Layout.fillWidth: true
         }
     }

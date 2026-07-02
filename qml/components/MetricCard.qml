@@ -11,11 +11,12 @@ Frame {
     property string value: "-"
     property string delta: ""
     property color deltaColor: theme.textMuted
+    property bool compact: false
 
-    padding: 14
+    padding: compact ? 12 : 14
     Layout.fillWidth: true
     Layout.minimumWidth: 150
-    Layout.preferredHeight: 116
+    Layout.preferredHeight: compact ? 100 : 116
 
     background: Rectangle {
         color: root.theme.surface
@@ -25,7 +26,7 @@ Frame {
     }
 
     contentItem: ColumnLayout {
-        spacing: 8
+        spacing: root.compact ? 6 : 8
 
         Text {
             text: root.label
@@ -43,7 +44,7 @@ Frame {
             color: root.theme.text
             textFormat: Text.PlainText
             font.family: "monospace"
-            font.pixelSize: 24
+            font.pixelSize: root.compact ? 22 : 24
             font.weight: Font.DemiBold
             elide: Text.ElideRight
             Layout.fillWidth: true
@@ -58,6 +59,7 @@ Frame {
                 radius: 3
                 Layout.preferredWidth: 6
                 Layout.preferredHeight: 6
+                Accessible.ignored: true
             }
 
             Text {
@@ -71,4 +73,7 @@ Frame {
             }
         }
     }
+
+    Accessible.role: Accessible.StaticText
+    Accessible.name: qsTr("%1: %2. %3").arg(root.label).arg(root.value).arg(root.delta.length ? root.delta : qsTr("No data"))
 }

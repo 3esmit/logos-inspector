@@ -24,7 +24,7 @@ ColumnLayout {
         Layout.fillWidth: true
 
         Text {
-            text: root.detail ? qsTr("Home > Blocks > %1").arg(root.shortHash(root.detail.hash)) : ""
+            text: root.detail ? qsTr("Home / Blocks / %1").arg(root.shortHash(root.detail.hash)) : ""
             color: root.theme.textMuted
             textFormat: Text.PlainText
             font.pixelSize: 12
@@ -51,19 +51,59 @@ ColumnLayout {
         }
     }
 
+    GridLayout {
+        visible: root.detail !== null
+        columns: root.width < 760 ? 2 : 4
+        columnSpacing: 12
+        rowSpacing: 12
+        Layout.fillWidth: true
+
+        MetricCard {
+            theme: root.theme
+            compact: true
+            label: qsTr("Source")
+            value: root.sourceText()
+            delta: root.detail && root.detail.type === "indexer_block" ? qsTr("Indexer lookup") : qsTr("Node block")
+        }
+
+        MetricCard {
+            theme: root.theme
+            compact: true
+            label: qsTr("Status")
+            value: root.detail ? root.valueText(root.detail.status) : "-"
+            delta: root.detail ? qsTr("Slot %1").arg(root.valueText(root.detail.slot)) : qsTr("Slot")
+            deltaColor: root.statusColor(root.detail ? root.detail.status : "")
+        }
+
+        MetricCard {
+            theme: root.theme
+            compact: true
+            label: qsTr("Transactions")
+            value: root.detail ? root.valueText(root.detail.transactions.length) : "-"
+            delta: qsTr("In this block")
+        }
+
+        MetricCard {
+            theme: root.theme
+            compact: true
+            label: qsTr("Height")
+            value: root.detail ? root.valueText(root.detail.height) : "-"
+            delta: qsTr("Chain height")
+        }
+    }
+
     SectionBlock {
         theme: root.theme
         title: qsTr("Overview")
         rows: root.overviewRows()
     }
 
-    Text {
-        visible: root.detail !== null
-        text: qsTr("Cryptarchia PoL leader key - not a wallet address. By design it cannot be linked to a stable operator identity.")
-        color: root.theme.textDim
-        textFormat: Text.PlainText
-        wrapMode: Text.Wrap
-        font.pixelSize: 12
+    StatusMessage {
+        visible: root.detail !== null && root.detail.leader_key.length > 0
+        theme: root.theme
+        tone: "info"
+        title: qsTr("Leader key")
+        message: qsTr("Cryptarchia PoL leader key is not a wallet address and cannot be linked to a stable operator identity.")
         Layout.fillWidth: true
     }
 
@@ -122,6 +162,7 @@ ColumnLayout {
             return null
         }
         return {
+            type: String(value.type || ""),
             hash: String(value.hash || ""),
             parent: String(value.parent || ""),
             slot: value.slot,
@@ -143,8 +184,8 @@ ColumnLayout {
             return []
         }
         return [
-            { label: qsTr("Parent"), value: root.valueText(root.detail.parent), monospace: true, linkKind: "block", linkValue: root.detail.parent },
-            { label: qsTr("Slot"), value: root.valueText(root.detail.slot), monospace: true, linkKind: "block", linkValue: root.valueText(root.detail.slot) },
+            { label: qsTr("Parent"), value: root.valueText(root.detail.parent), monospace: true, linkKind: root.detail.parent.length ? "block" : "", linkValue: root.detail.parent },
+            { label: qsTr("Slot"), value: root.valueText(root.detail.slot), monospace: true, linkKind: root.valueText(root.detail.slot) !== "-" ? "block" : "", linkValue: root.valueText(root.detail.slot) },
             { label: qsTr("Height"), value: root.valueText(root.detail.height), monospace: true },
             { label: qsTr("Status"), value: root.valueText(root.detail.status), monospace: false },
             { label: qsTr("Version"), value: root.valueText(root.detail.version), monospace: true },
@@ -181,7 +222,7 @@ ColumnLayout {
             return "-"
         }
         if (typeof value === "number") {
-            return value.toLocaleString(Qt.locale())
+            return value % 1 === 0 ? value.toLocaleString(Qt.locale(), "f", 0) : String(value)
         }
         return String(value)
     }
@@ -192,6 +233,24 @@ ColumnLayout {
             return text.length ? text : "-"
         }
         return text.slice(0, 8) + "..." + text.slice(-6)
+    }
+
+    function sourceText() {
+        if (!root.detail) {
+            return "-"
+        }
+        return root.detail.type === "indexer_block" ? qsTr("Indexer") : qsTr("Node")
+    }
+
+    function statusColor(value) {
+        const status = String(value || "")
+        if (status === "finalized" || status === "confirmed") {
+            return root.theme.success
+        }
+        if (status === "pending") {
+            return root.theme.warning
+        }
+        return root.theme.textMuted
     }
 
     component SectionBlock: ColumnLayout {
@@ -285,22 +344,14 @@ ColumnLayout {
                 Layout.alignment: Qt.AlignTop
             }
 
-            Text {
+            LinkCell {
                 text: rowRoot.value
-                color: rowRoot.linkKind.length ? rowRoot.theme.accent : rowRoot.theme.text
-                textFormat: Text.PlainText
-                wrapMode: Text.WrapAnywhere
-                font.family: rowRoot.monospace ? "monospace" : ""
-                font.pixelSize: 12
-                font.underline: rowRoot.linkKind.length > 0
+                theme: rowRoot.theme
+                link: rowRoot.linkKind.length > 0
+                monospace: rowRoot.monospace
+                wrap: true
                 Layout.fillWidth: true
-
-                MouseArea {
-                    anchors.fill: parent
-                    enabled: rowRoot.linkKind.length > 0
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: rowRoot.activated()
-                }
+                onActivated: rowRoot.activated()
             }
         }
     }
@@ -333,27 +384,17 @@ ColumnLayout {
             Repeater {
                 model: 3
 
-                Text {
+                LinkCell {
                     required property int index
 
+                    theme: rowRoot.theme
                     text: String(rowRoot.columns[index] || "-")
-                    color: rowRoot.linkFor(index) ? rowRoot.theme.accent : (rowRoot.header ? rowRoot.theme.textMuted : rowRoot.theme.text)
-                    textFormat: Text.PlainText
-                    font.family: rowRoot.header ? "" : "monospace"
-                    font.pixelSize: rowRoot.header ? 11 : 12
-                    font.weight: rowRoot.header ? Font.DemiBold : Font.Normal
-                    font.capitalization: rowRoot.header ? Font.AllUppercase : Font.MixedCase
-                    font.underline: rowRoot.linkFor(index)
-                    elide: Text.ElideRight
+                    header: rowRoot.header
+                    link: rowRoot.linkFor(index)
+                    monospace: !rowRoot.header
                     Layout.preferredWidth: rowRoot.columnWidth(index)
                     Layout.fillWidth: index === 1
-
-                    MouseArea {
-                        anchors.fill: parent
-                        enabled: rowRoot.linkFor(parent.index)
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: rowRoot.activated()
-                    }
+                    onActivated: rowRoot.activated()
                 }
             }
         }

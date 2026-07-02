@@ -24,7 +24,7 @@ ColumnLayout {
         Layout.fillWidth: true
 
         Text {
-            text: root.detail ? qsTr("Home > Accounts > %1").arg(root.shortId(root.detail.account_id)) : ""
+            text: root.detail ? qsTr("Home / Accounts / %1").arg(root.shortId(root.detail.account_id)) : ""
             color: root.theme.textMuted
             textFormat: Text.PlainText
             font.pixelSize: 12
@@ -363,7 +363,7 @@ ColumnLayout {
             return "-"
         }
         if (typeof value === "number") {
-            return value.toLocaleString(Qt.locale())
+            return value % 1 === 0 ? value.toLocaleString(Qt.locale(), "f", 0) : String(value)
         }
         if (typeof value === "object") {
             return JSON.stringify(value)
@@ -377,7 +377,7 @@ ColumnLayout {
         }
         const numeric = Number(value)
         if (Number.isFinite(numeric)) {
-            return numeric.toLocaleString(Qt.locale())
+            return numeric % 1 === 0 ? numeric.toLocaleString(Qt.locale(), "f", 0) : String(value)
         }
         return String(value)
     }
@@ -495,22 +495,14 @@ ColumnLayout {
                 spacing: 2
                 Layout.fillWidth: true
 
-                Text {
+                LinkCell {
                     text: rowRoot.value
-                    color: rowRoot.linkKind.length ? rowRoot.theme.accent : rowRoot.theme.text
-                    textFormat: Text.PlainText
-                    wrapMode: Text.WrapAnywhere
-                    font.family: rowRoot.monospace ? "monospace" : ""
-                    font.pixelSize: 12
-                    font.underline: rowRoot.linkKind.length > 0
+                    theme: rowRoot.theme
+                    link: rowRoot.linkKind.length > 0
+                    monospace: rowRoot.monospace
+                    wrap: true
                     Layout.fillWidth: true
-
-                    MouseArea {
-                        anchors.fill: parent
-                        enabled: rowRoot.linkKind.length > 0
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: rowRoot.activated()
-                    }
+                    onActivated: rowRoot.activated()
                 }
 
                 Text {
@@ -556,27 +548,17 @@ ColumnLayout {
             Repeater {
                 model: 4
 
-                Text {
+                LinkCell {
                     required property int index
 
+                    theme: rowRoot.theme
                     text: String(rowRoot.columns[index] || "-")
-                    color: rowRoot.linkFor(index) ? rowRoot.theme.accent : (rowRoot.header ? rowRoot.theme.textMuted : rowRoot.theme.text)
-                    textFormat: Text.PlainText
-                    font.family: rowRoot.header ? "" : "monospace"
-                    font.pixelSize: rowRoot.header ? 11 : 12
-                    font.weight: rowRoot.header ? Font.DemiBold : Font.Normal
-                    font.capitalization: rowRoot.header ? Font.AllUppercase : Font.MixedCase
-                    font.underline: rowRoot.linkFor(index)
-                    elide: Text.ElideRight
+                    header: rowRoot.header
+                    link: rowRoot.linkFor(index)
+                    monospace: !rowRoot.header
                     Layout.preferredWidth: rowRoot.columnWidth(index)
                     Layout.fillWidth: index === 0 || index === 2
-
-                    MouseArea {
-                        anchors.fill: parent
-                        enabled: rowRoot.linkFor(parent.index)
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: rowRoot.cellActivated(parent.index)
-                    }
+                    onActivated: rowRoot.cellActivated(index)
                 }
             }
         }

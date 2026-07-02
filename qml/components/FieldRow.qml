@@ -16,30 +16,33 @@ ColumnLayout {
 
     Text {
         text: root.label
-        color: theme.textMuted
+        color: root.theme.textMuted
         textFormat: Text.PlainText
-        font.pixelSize: 13
+        font.pixelSize: root.theme.secondaryText
         font.weight: Font.Medium
         Layout.fillWidth: true
     }
 
     TextField {
         id: field
-        color: theme.text
-        placeholderTextColor: theme.textDim
-        selectionColor: theme.accent
-        selectedTextColor: "#21160F"
-        font.pixelSize: 14
+        color: root.theme.text
+        placeholderTextColor: root.theme.textDim
+        selectionColor: root.theme.accent
+        selectedTextColor: root.theme.selectedText
+        font.pixelSize: root.theme.primaryText
         leftPadding: 12
         rightPadding: 12
+        hoverEnabled: true
         Layout.fillWidth: true
-        Layout.preferredHeight: theme.controlHeight
+        Layout.preferredHeight: root.theme.controlHeight
 
         background: Rectangle {
-            radius: theme.radius
-            color: theme.field
-            border.width: 1
-            border.color: field.activeFocus ? theme.accent : theme.outline
+            radius: root.theme.radius
+            color: field.hovered || field.activeFocus ? root.theme.surfaceRaised : root.theme.field
+            border.width: field.activeFocus ? 2 : 1
+            border.color: field.activeFocus ? root.theme.accent : root.theme.outlineMuted
         }
+
+        Accessible.name: root.label.length > 0 ? root.label : root.placeholderText
     }
 }
