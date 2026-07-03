@@ -94,7 +94,7 @@ ColumnLayout {
         MetricCard {
             theme: root.theme
             label: root.detail && root.detail.source === "account_refs" ? qsTr("References") : qsTr("Outputs")
-            value: root.detail ? root.numberText(root.detail.outputs) : "-"
+            value: root.detail ? root.numberText(root.detail.source === "account_refs" ? root.detail.references : root.detail.outputs) : "-"
             delta: root.detail && root.detail.source === "account_refs" ? qsTr("Account mentions") : qsTr("Transfer outputs")
             deltaColor: root.theme.success
         }
@@ -195,10 +195,11 @@ ColumnLayout {
             return null
         }
         return {
-            address: String(value.address || value.recipient || ""),
+            address: String(value.address || value.account_ref || value.recipient || ""),
             total_received: value.total_received,
             txs: value.txs,
             outputs: value.outputs,
+            references: value.references,
             last_slot: value.last_slot,
             source: String(value.source || ""),
             transfers: Array.isArray(value.transfers) ? value.transfers : [],

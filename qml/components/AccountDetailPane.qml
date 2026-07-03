@@ -551,7 +551,7 @@ ColumnLayout {
 
         const serial = root.decodeRequestSerial + 1
         root.decodeRequestSerial = serial
-        root.model.autoDecodeAccountData(root.detail.data_hex, root.accountCacheId(), function (response) {
+        root.model.autoDecodeAccountData(root.detail.data_hex, root.accountCacheId(), root.ownerProgramId(), function (response) {
             if (serial !== root.decodeRequestSerial) {
                 return
             }
@@ -560,7 +560,7 @@ ColumnLayout {
                 root.activeDecodeError = ""
                 root.activeIdlLabel = String(response.entry.name || qsTr("IDL"))
                 root.selectedIdlTypeIndex = root.indexForTypeInIdlKey(response.entry.key, response.value.account_type)
-                root.model.cacheAccountIdlSelection(root.accountCacheId(), response.entry, response.value.account_type)
+                root.model.cacheAccountIdlSelection(root.accountCacheId(), response.entry, response.value.account_type, root.ownerProgramId())
             } else {
                 root.activeDecodeError = response.error || ""
             }
@@ -584,7 +584,7 @@ ColumnLayout {
                 root.activeDecode = response.value
                 root.activeDecodeError = ""
                 if (root.model.accountDecodeFullyConsumed(response.value)) {
-                    root.model.cacheAccountIdlSelection(root.accountCacheId(), option, response.value.account_type || option.accountType)
+                    root.model.cacheAccountIdlSelection(root.accountCacheId(), option, response.value.account_type || option.accountType, root.ownerProgramId())
                 }
             } else {
                 root.activeDecode = null
@@ -647,6 +647,13 @@ ColumnLayout {
             return ""
         }
         return root.detail.account_id_base58.length ? root.detail.account_id_base58 : root.detail.account_id
+    }
+
+    function ownerProgramId() {
+        if (!root.detail) {
+            return ""
+        }
+        return root.detail.owner_hex.length ? root.detail.owner_hex : root.detail.owner_base58
     }
 
     function activeIdlTypeLabel() {

@@ -148,8 +148,8 @@ pub fn summarize_channel_operations(matches: &[ChannelOperationMatch]) -> Vec<Ch
             entry.last_block_hash = matched.block_hash.clone();
             entry.operation_type = matched.operation_type.clone();
             entry.last_operation_type = matched.operation_type.clone();
-            if matched.tip.is_some() || matched.parent.is_some() {
-                entry.tip = matched.tip.clone().or_else(|| matched.parent.clone());
+            if matched.tip.is_some() {
+                entry.tip = matched.tip.clone();
             }
             if matched.balance.is_some() {
                 entry.balance = matched.balance.clone();
@@ -742,7 +742,7 @@ mod tests {
         );
         assert_eq!(
             summaries.first().and_then(|summary| summary.tip.as_deref()),
-            Some("tip-a")
+            None
         );
         assert_eq!(
             summaries
