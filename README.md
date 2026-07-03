@@ -90,6 +90,13 @@ Running without arguments also starts the GUI:
 cargo run
 ```
 
+GUI startup does not build or restart the local indexer automatically. To opt in
+to that helper, set:
+
+```bash
+LOGOS_INSPECTOR_ENABLE_INDEXER_AUTO_BOOTSTRAP=1 cargo run -- gui
+```
+
 Run the Basecamp QML plugin directly:
 
 ```bash

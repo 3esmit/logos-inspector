@@ -457,12 +457,6 @@ ColumnLayout {
         if (value === "local") {
             return qsTr("Local")
         }
-        if (value === "local-node") {
-            return qsTr("Local node")
-        }
-        if (value === "testnet-indexer-local") {
-            return qsTr("Mixed")
-        }
         return qsTr("Default")
     }
 

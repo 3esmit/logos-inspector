@@ -286,10 +286,10 @@ fn scan_value(
 }
 
 fn slot_from_object(value: &Value) -> Option<u64> {
-    first_u64(value, &["slot", "block_id", "height"]).or_else(|| {
+    first_u64(value, &["slot"]).or_else(|| {
         value
             .get("header")
-            .and_then(|header| first_u64(header, &["slot", "block_id", "height"]))
+            .and_then(|header| first_u64(header, &["slot"]))
     })
 }
 
@@ -490,6 +490,32 @@ mod tests {
                 .and_then(|matched| matched.block_hash.as_deref()),
             Some("block-a")
         );
+    }
+
+    #[test]
+    fn nested_lez_block_id_does_not_override_l1_slot() {
+        let value = json!({
+            "blocks": [{
+                "header": { "slot": 44, "id": "block-a" },
+                "transactions": [{
+                    "mantle_tx": {
+                        "hash": "tx-a",
+                        "ops": [{
+                            "block_id": 99,
+                            "height": 100,
+                            "payload": {
+                                "channel_id": "abc"
+                            }
+                        }]
+                    }
+                }]
+            }]
+        });
+
+        let matches = extract_channel_operations(&value);
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches.first().and_then(|matched| matched.slot), Some(44));
     }
 
     #[test]

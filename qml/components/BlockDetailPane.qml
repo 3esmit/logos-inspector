@@ -24,7 +24,7 @@ ColumnLayout {
         Layout.fillWidth: true
 
         Text {
-            text: root.detail ? qsTr("Block at slot %1").arg(root.valueText(root.detail.slot)) : ""
+            text: root.detail ? root.titleText() : ""
             color: root.theme.text
             textFormat: Text.PlainText
             font.pixelSize: 22
@@ -43,7 +43,7 @@ ColumnLayout {
             textColor: root.theme.textMuted
             textPixelSize: 12
             Layout.fillWidth: true
-            onActivated: root.model.openReference("block", root.detail.hash)
+            onActivated: root.model.openReference(root.isIndexerBlock() ? "indexerBlock" : "block", root.detail.hash)
         }
     }
 
@@ -67,7 +67,7 @@ ColumnLayout {
             compact: true
             label: qsTr("Status")
             value: root.detail ? root.valueText(root.detail.status) : "-"
-            delta: root.detail ? qsTr("Slot %1").arg(root.valueText(root.detail.slot)) : qsTr("Slot")
+            delta: root.detail ? root.positionText() : qsTr("Slot")
             deltaColor: root.statusColor(root.detail ? root.detail.status : "")
         }
 
@@ -82,9 +82,9 @@ ColumnLayout {
         MetricCard {
             theme: root.theme
             compact: true
-            label: qsTr("Height")
+            label: root.isIndexerBlock() ? qsTr("Block ID") : qsTr("Height")
             value: root.detail ? root.valueText(root.detail.height) : "-"
-            delta: qsTr("Chain height")
+            delta: root.isIndexerBlock() ? qsTr("LEZ block id") : qsTr("Chain height")
         }
     }
 
@@ -95,7 +95,7 @@ ColumnLayout {
     }
 
     StatusMessage {
-        visible: root.detail !== null && root.detail.leader_key.length > 0
+        visible: root.detail !== null && !root.isIndexerBlock() && root.detail.leader_key.length > 0
         theme: root.theme
         tone: "info"
         title: qsTr("Leader key")
@@ -146,7 +146,13 @@ ColumnLayout {
                         theme: root.theme
                         columns: [modelData.index, modelData.hashText, modelData.ops]
                         transaction: modelData.transaction
-                        onActivated: root.model.openBlockchainTransaction(modelData.transaction, root.detail)
+                        onActivated: {
+                            if (root.isIndexerBlock()) {
+                                root.model.openTransaction(modelData.transaction.hash)
+                            } else {
+                                root.model.openBlockchainTransaction(modelData.transaction, root.detail)
+                            }
+                        }
                     }
                 }
             }
@@ -161,6 +167,7 @@ ColumnLayout {
             type: String(value.type || ""),
             hash: String(value.hash || ""),
             parent: String(value.parent || ""),
+            block_id: value.block_id,
             slot: value.slot,
             height: value.height,
             status: String(value.status || ""),
@@ -180,11 +187,11 @@ ColumnLayout {
             return []
         }
         return [
-            { label: qsTr("Parent"), value: root.valueText(root.detail.parent), monospace: true, linkKind: root.detail.parent.length ? "block" : "", linkValue: root.detail.parent, copyable: root.detail.parent.length > 0 },
-            { label: qsTr("Slot"), value: root.valueText(root.detail.slot), monospace: true, linkKind: root.valueText(root.detail.slot) !== "-" ? "block" : "", linkValue: root.valueText(root.detail.slot) },
+            { label: root.isIndexerBlock() ? qsTr("Parent LEZ block") : qsTr("Parent"), value: root.valueText(root.detail.parent), monospace: true, linkKind: root.detail.parent.length ? (root.isIndexerBlock() ? "indexerBlock" : "block") : "", linkValue: root.detail.parent, copyable: root.detail.parent.length > 0 },
+            { label: root.isIndexerBlock() ? qsTr("LEZ block ID") : qsTr("Slot"), value: root.valueText(root.detail.slot), monospace: true, linkKind: root.valueText(root.detail.slot) !== "-" && !root.isIndexerBlock() ? "block" : "", linkValue: root.valueText(root.detail.slot) },
             { label: qsTr("Height"), value: root.valueText(root.detail.height), monospace: true },
             { label: qsTr("Status"), value: root.valueText(root.detail.status), monospace: false },
-            { label: qsTr("Version"), value: root.valueText(root.detail.version), monospace: true },
+            { label: qsTr("Version"), value: root.isIndexerBlock() ? qsTr("- (not in this source)") : root.valueText(root.detail.version), monospace: true },
             { label: qsTr("Block root"), value: root.valueText(root.detail.block_root), monospace: true, copyable: root.detail.block_root.length > 0 },
             { label: qsTr("Voucher cm"), value: root.valueText(root.detail.voucher_cm), monospace: true, copyable: root.detail.voucher_cm.length > 0 },
             { label: qsTr("Entropy"), value: root.valueText(root.detail.entropy), monospace: true, copyable: root.detail.entropy.length > 0 },
@@ -236,6 +243,28 @@ ColumnLayout {
             return "-"
         }
         return root.detail.type === "indexer_block" ? qsTr("Indexer") : qsTr("Node")
+    }
+
+    function isIndexerBlock() {
+        return root.detail !== null && root.detail.type === "indexer_block"
+    }
+
+    function titleText() {
+        if (!root.detail) {
+            return ""
+        }
+        return root.isIndexerBlock()
+            ? qsTr("LEZ block %1").arg(root.valueText(root.detail.block_id))
+            : qsTr("Block at slot %1").arg(root.valueText(root.detail.slot))
+    }
+
+    function positionText() {
+        if (!root.detail) {
+            return qsTr("Slot")
+        }
+        return root.isIndexerBlock()
+            ? qsTr("Block ID %1").arg(root.valueText(root.detail.block_id))
+            : qsTr("Slot %1").arg(root.valueText(root.detail.slot))
     }
 
     function statusColor(value) {

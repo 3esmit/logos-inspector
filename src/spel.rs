@@ -98,7 +98,7 @@ pub fn spel_idl_report(idl_json: &str) -> Result<SpelIdlReport> {
         accounts,
         types,
         errors,
-        warnings: compatibility_warnings(),
+        warnings: Vec::new(),
     })
 }
 
@@ -229,16 +229,6 @@ fn value_label(value: &Value) -> String {
         .as_str()
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| value.to_string())
-}
-
-fn compatibility_warnings() -> Vec<String> {
-    vec![
-        "logos-co/spel main has open LEZ v0.2.0-rc6 compatibility work in PR 238".to_owned(),
-        "public transaction signing failures are tracked in logos-co/spel#234".to_owned(),
-        "wallet storage/env compatibility issues are tracked in logos-co/spel#235 and #236"
-            .to_owned(),
-        "use 0x-r4bbit/spel refactor/lez-v020-compat if an external spel binary is required before PR 238 lands".to_owned(),
-    ]
 }
 
 #[cfg(test)]

@@ -66,7 +66,9 @@ ColumnLayout {
 
     Text {
         visible: root.detail !== null
-        text: qsTr("Indexer-derived L2 transfer activity. This is not a local wallet directory; local/private wallet state requires explicit wallet integration.")
+        text: root.detail && root.detail.source === "account_refs"
+            ? qsTr("Indexer fallback from account references. Values here are not decoded transfer receipts.")
+            : qsTr("Indexer-derived L2 transfer activity. This is not a local wallet directory; local/private wallet state requires explicit wallet integration.")
         color: root.theme.textMuted
         textFormat: Text.PlainText
         wrapMode: Text.Wrap
@@ -83,17 +85,17 @@ ColumnLayout {
 
         MetricCard {
             theme: root.theme
-            label: qsTr("Total received")
-            value: root.detail ? root.coinText(root.detail.total_received) : "-"
-            delta: qsTr("Observed amount")
+            label: root.detail && root.detail.source === "account_refs" ? qsTr("Referenced balance") : qsTr("Total received")
+            value: root.detail && root.detail.source === "account_refs" ? root.valueText(root.detail.total_received) : (root.detail ? root.coinText(root.detail.total_received) : "-")
+            delta: root.detail && root.detail.source === "account_refs" ? qsTr("Not decoded as transfer") : qsTr("Observed amount")
             deltaColor: root.theme.accent
         }
 
         MetricCard {
             theme: root.theme
-            label: qsTr("Outputs")
+            label: root.detail && root.detail.source === "account_refs" ? qsTr("References") : qsTr("Outputs")
             value: root.detail ? root.numberText(root.detail.outputs) : "-"
-            delta: qsTr("Transfer outputs")
+            delta: root.detail && root.detail.source === "account_refs" ? qsTr("Account mentions") : qsTr("Transfer outputs")
             deltaColor: root.theme.success
         }
 
@@ -106,9 +108,9 @@ ColumnLayout {
 
         MetricCard {
             theme: root.theme
-            label: qsTr("Last L2 block")
+            label: root.detail && root.detail.source === "account_refs" ? qsTr("Newest reference") : qsTr("Last L2 block")
             value: root.detail ? root.numberText(root.detail.last_slot) : "-"
-            delta: qsTr("Newest observed transfer")
+            delta: root.detail && root.detail.source === "account_refs" ? qsTr("Loaded account window") : qsTr("Newest observed transfer")
         }
     }
 
@@ -223,7 +225,7 @@ ColumnLayout {
                 slot: root.numberText(transfer.slot),
                 tx: root.shortHash(txHash),
                 block: root.shortHash(blockHash),
-                value: root.coinText(transfer.value),
+                value: root.detail && root.detail.source === "account_refs" ? root.valueText(transfer.value) : root.coinText(transfer.value),
                 txHash: txHash,
                 blockHash: blockHash
             }
@@ -278,6 +280,16 @@ ColumnLayout {
         const numeric = Number(value)
         if (Number.isFinite(numeric)) {
             return (numeric / 100).toLocaleString(Qt.locale(), "f", 2) + "E"
+        }
+        return String(value)
+    }
+
+    function valueText(value) {
+        if (value === undefined || value === null || value === "") {
+            return "-"
+        }
+        if (typeof value === "number") {
+            return value.toLocaleString(Qt.locale(), "f", Number.isInteger(value) ? 0 : 2)
         }
         return String(value)
     }
