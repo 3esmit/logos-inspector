@@ -41,7 +41,7 @@ pub fn modules_report() -> LogosModulesReport {
     LogosModulesReport {
         status: logoscore_status_report(),
         blockchain: blockchain_module_report(None),
-        storage: storage_report(None),
+        storage: storage_report(None, false),
         delivery: delivery_report(None),
         capabilities: capabilities_report(),
     }
@@ -73,7 +73,7 @@ pub fn blockchain_module_report(address: Option<&str>) -> ModuleReport {
     }
 }
 
-pub fn storage_report(cid: Option<&str>) -> ModuleReport {
+pub fn storage_report(cid: Option<&str>, privileged_debug_enabled: bool) -> ModuleReport {
     let mut probes = vec![
         call_probe(STORAGE_MODULE, "version", &[]),
         call_probe(STORAGE_MODULE, "moduleVersion", &[]),
@@ -83,8 +83,10 @@ pub fn storage_report(cid: Option<&str>) -> ModuleReport {
         call_probe(STORAGE_MODULE, "space", &[]),
         call_probe(STORAGE_MODULE, "manifests", &[]),
         call_probe(STORAGE_MODULE, "collectMetrics", &[]),
-        call_probe(STORAGE_MODULE, "debug", &[]),
     ];
+    if privileged_debug_enabled {
+        probes.push(call_probe(STORAGE_MODULE, "debug", &[]));
+    }
     if let Some(cid) = optional(cid) {
         probes.push(call_probe(STORAGE_MODULE, "exists", &[cid]));
     }
@@ -103,7 +105,7 @@ pub async fn storage_source_report(
     privileged_debug_enabled: bool,
 ) -> ModuleReport {
     match normalized_storage_source_mode(source_mode) {
-        "module" => storage_report(cid),
+        "module" => storage_report(cid, privileged_debug_enabled),
         "rest" => {
             storage_rest_report(
                 rest_endpoint,

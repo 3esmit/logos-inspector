@@ -131,6 +131,15 @@ ColumnLayout {
         Layout.fillWidth: true
     }
 
+    StatusMessage {
+        visible: settingsRoot.model.settingsStateError.length > 0
+        theme: settingsRoot.theme
+        tone: "error"
+        title: qsTr("Settings load failed")
+        message: settingsRoot.model.settingsStateError
+        Layout.fillWidth: true
+    }
+
     TabSwitch {
         theme: settingsRoot.theme
         current: settingsRoot.model.settingsSection
@@ -449,7 +458,10 @@ ColumnLayout {
     function connectionStatusDetail(kind) {
         const status = settingsRoot.connectionStatus(kind)
         if (!status.known) {
-            return qsTr("Not queried. Auto refresh runs every %1 seconds.").arg(settingsRoot.model.networkConnectionRate(kind))
+            const rate = settingsRoot.model.networkConnectionRate(kind)
+            return rate > 0
+                ? qsTr("Not queried. Auto refresh runs every %1 seconds.").arg(rate)
+                : qsTr("Not queried. Auto refresh is off.")
         }
         const checked = status.checkedAt && status.checkedAt.length ? qsTr(" at %1").arg(status.checkedAt) : ""
         return qsTr("%1%2").arg(status.detail || "").arg(checked)
@@ -1071,12 +1083,22 @@ ColumnLayout {
             }
 
             FieldRow {
+                visible: settingsRoot.model.storageLocalDiagnosticsEnabled === true
                 theme: storageRoot.theme
                 label: qsTr("Data directory")
                 sourceText: settingsRoot.model.storageDataDir
                 syncSourceText: true
                 placeholderText: qsTr("Optional local diagnostics path")
                 onTextEdited: text => settingsRoot.model.storageDataDir = String(text || "").trim()
+            }
+
+            InfoField {
+                visible: settingsRoot.model.storageLocalDiagnosticsEnabled !== true
+                theme: storageRoot.theme
+                label: qsTr("Data directory")
+                value: settingsRoot.model.storageDataDir.length
+                    ? settingsRoot.model.storageDisplayPath(settingsRoot.model.storageDataDir)
+                    : qsTr("Local diagnostics disabled")
             }
 
             FieldRow {
@@ -1316,9 +1338,12 @@ ColumnLayout {
             }
             valueFromText: function (text, locale) {
                 const parsed = Number(String(text || "").replace(/[^0-9]/g, ""))
-                return Number.isFinite(parsed) ? parsed : 0
+                if (!Number.isFinite(parsed) || parsed === 0) {
+                    return 0
+                }
+                return Math.max(5, Math.min(3600, parsed))
             }
-            onValueModified: rateRoot.rateEdited(value)
+            onValueModified: rateRoot.rateEdited(value === 0 ? 0 : Math.max(5, value))
 
             contentItem: TextInput {
                 text: refreshSpin.textFromValue(refreshSpin.value, refreshSpin.locale)

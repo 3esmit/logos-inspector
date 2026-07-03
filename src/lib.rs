@@ -437,6 +437,13 @@ pub struct TransferRecipientSummary {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct TransferActivityPage {
+    pub recipients: Vec<TransferRecipientSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_before_block: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct RecipientTransferSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub slot: Option<u64>,
@@ -550,14 +557,9 @@ pub async fn overview(
         Ok(value) => ProbeField::ok(value),
         Err(err) => ProbeField::err(err),
     };
-    let indexer_health = if indexer_head.ok {
-        ProbeField::ok("reachable")
-    } else {
-        ProbeField {
-            ok: false,
-            value: None,
-            error: indexer_head.error.clone(),
-        }
+    let indexer_health = match indexer_health(indexer_endpoint).await {
+        Ok(value) => ProbeField::ok(value),
+        Err(err) => ProbeField::err(err),
     };
 
     let indexer = ServiceProbe {
@@ -645,13 +647,22 @@ pub async fn indexer_blocks(
     Ok(blocks.iter().map(summarize_indexer_block).collect())
 }
 
+pub async fn indexer_health(endpoint: &str) -> Result<Value> {
+    raw_json_rpc_optional_result(endpoint, "checkHealth", Value::Array(vec![]))
+        .await
+        .context("failed to check indexer health")
+}
+
 pub async fn indexer_transfer_recipients(
     endpoint: &str,
     before: Option<u64>,
     limit: u64,
-) -> Result<Vec<TransferRecipientSummary>> {
+) -> Result<TransferActivityPage> {
     let blocks = indexer_blocks(endpoint, before, limit).await?;
-    Ok(transfer_recipient_summaries_from_blocks(&blocks))
+    Ok(TransferActivityPage {
+        next_before_block: next_indexer_blocks_cursor(&blocks),
+        recipients: transfer_recipient_summaries_from_blocks(&blocks),
+    })
 }
 
 pub async fn sequencer_transaction(
@@ -1541,7 +1552,10 @@ fn summarize_indexer_transaction(value: &Value, index: usize) -> AccountTransact
             .unwrap_or_else(|| "-".to_owned()),
         kind: kind.to_owned(),
         direction: None,
-        program_id_hex: message.get("program_id").map(value_to_string),
+        program_id_hex: message
+            .get("program_id")
+            .map(value_to_string)
+            .map(|program_id| normalize_program_id_hex(&program_id).unwrap_or(program_id)),
         account_ids: value_list_strings(message.get("account_ids")),
         nonces: value_list_strings(message.get("nonces")),
         instruction_data: value_list_u32(message.get("instruction_data")),
@@ -1611,12 +1625,6 @@ fn transaction_signature_public_key(signature: &Value) -> Option<String> {
     }
 }
 
-#[derive(Debug, Clone)]
-struct TransferOutput {
-    recipient: String,
-    amount: u128,
-}
-
 #[derive(Debug, Default)]
 struct RecipientAggregate {
     received: Option<u128>,
@@ -1629,31 +1637,6 @@ struct RecipientAggregate {
 fn transfer_recipient_summaries_from_blocks(
     blocks: &[IndexerBlockReport],
 ) -> Vec<TransferRecipientSummary> {
-    let mut transfers = BTreeMap::new();
-    for block in blocks {
-        for tx in &block.transactions {
-            let outputs = transfer_outputs_from_value(&tx.raw);
-            for output in outputs {
-                let aggregate = transfers
-                    .entry(output.recipient)
-                    .or_insert_with(RecipientAggregate::default);
-                aggregate.received = Some(aggregate.received.unwrap_or_default() + output.amount);
-                aggregate.tx_hashes.insert(tx.hash.clone());
-                aggregate.outputs += 1;
-                aggregate.last_slot = max_slot(aggregate.last_slot, block.block_id);
-                aggregate.transfers.push(RecipientTransferSummary {
-                    slot: block.block_id,
-                    tx_hash: tx.hash.clone(),
-                    block_hash: block.header_hash.clone(),
-                    value: Some(output.amount.to_string()),
-                });
-            }
-        }
-    }
-    if !transfers.is_empty() {
-        return transfer_recipient_summaries_from_aggregates(transfers, "transfer_outputs");
-    }
-
     let mut account_refs = BTreeMap::new();
     for block in blocks {
         for tx in &block.transactions {
@@ -1674,6 +1657,10 @@ fn transfer_recipient_summaries_from_blocks(
         }
     }
     transfer_recipient_summaries_from_aggregates(account_refs, "account_refs")
+}
+
+fn next_indexer_blocks_cursor(blocks: &[IndexerBlockReport]) -> Option<u64> {
+    blocks.iter().filter_map(|block| block.block_id).min()
 }
 
 fn transfer_recipient_summaries_from_aggregates(
@@ -1726,75 +1713,6 @@ fn max_slot(left: Option<u64>, right: Option<u64>) -> Option<u64> {
         (Some(value), None) | (None, Some(value)) => Some(value),
         (None, None) => None,
     }
-}
-
-fn transfer_outputs_from_value(value: &Value) -> Vec<TransferOutput> {
-    let mut outputs = Vec::new();
-    collect_transfer_outputs(value, &mut outputs);
-    outputs
-}
-
-fn collect_transfer_outputs(value: &Value, outputs: &mut Vec<TransferOutput>) {
-    match value {
-        Value::Object(object) => {
-            if let Some(output) = transfer_output_from_object(object) {
-                outputs.push(output);
-            }
-            for child in object.values() {
-                collect_transfer_outputs(child, outputs);
-            }
-        }
-        Value::Array(items) => {
-            for item in items {
-                collect_transfer_outputs(item, outputs);
-            }
-        }
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
-    }
-}
-
-fn transfer_output_from_object(object: &Map<String, Value>) -> Option<TransferOutput> {
-    let recipient = string_for_keys(
-        object,
-        &[
-            "address",
-            "recipient",
-            "recipient_public_key",
-            "public_key",
-            "pubkey",
-            "to",
-        ],
-    )?;
-    if !plausible_recipient_id(&recipient) {
-        return None;
-    }
-    let amount = u128_for_keys(object, &["amount", "value", "received", "quantity"])?;
-    Some(TransferOutput { recipient, amount })
-}
-
-fn string_for_keys(object: &Map<String, Value>, keys: &[&str]) -> Option<String> {
-    keys.iter().find_map(|key| {
-        object.get(*key).and_then(|value| {
-            let text = value_to_string(value);
-            (!text.is_empty() && text != "null").then_some(text)
-        })
-    })
-}
-
-fn u128_for_keys(object: &Map<String, Value>, keys: &[&str]) -> Option<u128> {
-    keys.iter().find_map(|key| {
-        object.get(*key).and_then(|value| {
-            value
-                .as_u64()
-                .map(u128::from)
-                .or_else(|| value.as_str().and_then(|value| value.trim().parse().ok()))
-        })
-    })
-}
-
-fn plausible_recipient_id(value: &str) -> bool {
-    let value = value.trim();
-    value.len() >= 16 && value.chars().all(|char| char.is_ascii_alphanumeric())
 }
 
 fn enum_payload(value: &Value) -> (&str, &Value) {
@@ -3583,6 +3501,9 @@ mod tests {
         let header_hash = "ab".repeat(32);
         let parent_hash = "cd".repeat(32);
         let tx_hash = "ef".repeat(32);
+        let program_id = [1_u32; 8];
+        let program_id_base58 = program_id_base58(program_id);
+        let program_id_hex = program_id_hex(program_id);
         let raw = serde_json::json!({
             "header": {
                 "block_id": 44,
@@ -3595,7 +3516,7 @@ mod tests {
                     "Public": {
                         "hash": tx_hash.clone(),
                         "message": {
-                            "program_id": "program-1",
+                            "program_id": program_id_base58,
                             "account_ids": ["acct-a"],
                             "instruction_data": [1, 2]
                         }
@@ -3617,6 +3538,13 @@ mod tests {
             summary.transactions.first().map(|tx| tx.hash.as_str()),
             Some(tx_hash.as_str())
         );
+        assert_eq!(
+            summary
+                .transactions
+                .first()
+                .and_then(|tx| tx.program_id_hex.as_deref()),
+            Some(program_id_hex.as_str())
+        );
         assert_eq!(summary.raw, raw);
     }
 
@@ -3636,17 +3564,15 @@ mod tests {
     }
 
     #[test]
-    fn transfer_recipient_summaries_use_transfer_outputs_when_available() {
-        let recipient_a = "aa".repeat(32);
-        let recipient_b = "bb".repeat(32);
+    fn transfer_recipient_summaries_ignore_untyped_transfer_outputs() {
         let raw = serde_json::json!({
             "Public": {
                 "hash": "tx-a",
                 "message": {
+                    "account_ids": ["account-111111111111"],
                     "outputs": [
-                        { "recipient": recipient_a.clone(), "amount": 7 },
-                        { "recipient": recipient_a.clone(), "amount": "5" },
-                        { "recipient": recipient_b.clone(), "amount": 9 }
+                        { "recipient": "aa".repeat(32), "amount": 7 },
+                        { "recipient": "aa".repeat(32), "amount": "5" }
                     ]
                 }
             }
@@ -3664,23 +3590,23 @@ mod tests {
 
         let recipients = transfer_recipient_summaries_from_blocks(&[block]);
 
-        assert_eq!(recipients.len(), 2);
+        assert_eq!(recipients.len(), 1);
         assert_eq!(
             recipients
                 .first()
                 .map(|recipient| recipient.recipient.as_str()),
-            Some(recipient_a.as_str())
+            Some("account-111111111111")
         );
         assert_eq!(
             recipients
                 .first()
                 .and_then(|recipient| recipient.received.as_deref()),
-            Some("12")
+            None
         );
         assert_eq!(recipients.first().map(|recipient| recipient.txs), Some(1));
         assert_eq!(
             recipients.first().map(|recipient| recipient.outputs),
-            Some(2)
+            Some(1)
         );
         assert_eq!(
             recipients.first().and_then(|recipient| recipient.last_slot),
@@ -3690,7 +3616,7 @@ mod tests {
             recipients
                 .first()
                 .map(|recipient| recipient.transfers.len()),
-            Some(2)
+            Some(1)
         );
         assert_eq!(
             recipients
@@ -3710,8 +3636,36 @@ mod tests {
             recipients
                 .first()
                 .map(|recipient| recipient.source.as_str()),
-            Some("transfer_outputs")
+            Some("account_refs")
         );
+    }
+
+    #[test]
+    fn next_indexer_blocks_cursor_uses_oldest_fetched_block() {
+        let blocks = vec![
+            IndexerBlockReport {
+                block_id: Some(100),
+                header_hash: None,
+                parent_hash: None,
+                timestamp: None,
+                bedrock_status: None,
+                tx_count: 0,
+                transactions: Vec::new(),
+                raw: serde_json::json!({}),
+            },
+            IndexerBlockReport {
+                block_id: Some(51),
+                header_hash: None,
+                parent_hash: None,
+                timestamp: None,
+                bedrock_status: None,
+                tx_count: 0,
+                transactions: Vec::new(),
+                raw: serde_json::json!({}),
+            },
+        ];
+
+        assert_eq!(next_indexer_blocks_cursor(&blocks), Some(51));
     }
 
     #[test]

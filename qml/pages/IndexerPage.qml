@@ -207,7 +207,7 @@ ColumnLayout {
                 theme: root.theme
                 tone: "info"
                 title: qsTr("JSON-RPC POST")
-                message: qsTr("Health and finalized head both call getLastFinalizedBlockId on the configured indexer endpoint.")
+                message: qsTr("Deep health calls checkHealth. Finalized head calls getLastFinalizedBlockId.")
                 Layout.fillWidth: true
             }
 
@@ -300,10 +300,11 @@ ColumnLayout {
         const probe = root.activeIndexerProbe()
         const value = root.activeValue()
         if (probe && probe.health) {
-            return probe.health.ok ? qsTr("Reachable") : qsTr("Error")
+            return probe.health.ok ? qsTr("Healthy") : qsTr("Error")
         }
         if (value && typeof value === "object" && !Array.isArray(value) && value.status !== undefined) {
-            return root.valueText(value.status)
+            const status = root.valueText(value.status)
+            return status === "healthy" ? qsTr("Healthy") : status
         }
         if (root.model.pageHasOutput("indexer") && root.model.resultIsError) {
             return qsTr("Error")
@@ -319,12 +320,12 @@ ColumnLayout {
         if (root.model.pageHasOutput("indexer") && root.model.resultIsError) {
             return root.model.resultText
         }
-        return qsTr("RPC reachability")
+        return qsTr("checkHealth")
     }
 
     function indexerHealthColor() {
         const text = root.indexerHealthText()
-        if (text === qsTr("Reachable") || text === "reachable") {
+        if (text === qsTr("Healthy") || text === "healthy") {
             return root.theme.success
         }
         if (text === qsTr("Error")) {

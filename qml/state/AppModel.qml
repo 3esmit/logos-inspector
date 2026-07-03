@@ -96,6 +96,7 @@ QtObject {
     property int storageRefreshRate: 30
     property var networkConnectionStatus: ({})
     property int networkConnectionStatusRevision: 0
+    property int networkConfigurationRevision: 0
     property var footerFieldSelections: defaultFooterFieldSelections()
     property int footerFieldRevision: 0
     property var dashboardGraphSelections: defaultDashboardGraphSelections()
@@ -113,6 +114,7 @@ QtObject {
     property bool idlStateLoaded: false
     property bool walletStateLoaded: false
     property bool settingsStateLoaded: false
+    property string settingsStateError: ""
     property string walletProfileLabel: "Local wallet"
     property string walletBinary: ""
     property string walletHome: ""
@@ -135,28 +137,27 @@ QtObject {
     property int navRevision: 0
 
     onCurrentViewChanged: expandNavGroupForView(currentView)
-    onNetworkProfileChanged: saveSettingsState()
-    onSequencerUrlChanged: saveSettingsState()
-    onIndexerUrlChanged: saveSettingsState()
-    onNodeUrlChanged: saveSettingsState()
-    onMessagingNodeInfoIdChanged: saveSettingsState()
-    onMessagingSourceModeChanged: saveSettingsState()
-    onMessagingRestUrlChanged: saveSettingsState()
-    onMessagingMetricsUrlChanged: saveSettingsState()
-    onMessagingNetworkPresetChanged: saveSettingsState()
+    onNetworkProfileChanged: handleNetworkConfigurationChanged()
+    onSequencerUrlChanged: handleNetworkConfigurationChanged()
+    onIndexerUrlChanged: handleNetworkConfigurationChanged()
+    onNodeUrlChanged: handleNetworkConfigurationChanged()
+    onMessagingNodeInfoIdChanged: handleNetworkConfigurationChanged()
+    onMessagingSourceModeChanged: handleNetworkConfigurationChanged()
+    onMessagingRestUrlChanged: handleNetworkConfigurationChanged()
+    onMessagingMetricsUrlChanged: handleNetworkConfigurationChanged()
+    onMessagingNetworkPresetChanged: handleNetworkConfigurationChanged()
     onMessagingRollingWindowChanged: saveSettingsState()
     onMessagingAdminRestEnabledChanged: saveSettingsState()
     onMessagingMutatingDiagnosticsEnabledChanged: saveSettingsState()
-    onStorageSourceModeChanged: saveSettingsState()
-    onStorageRestUrlChanged: saveSettingsState()
-    onStorageMetricsUrlChanged: saveSettingsState()
-    onStorageNetworkPresetChanged: saveSettingsState()
-    onStorageDataDirChanged: saveSettingsState()
+    onStorageSourceModeChanged: handleNetworkConfigurationChanged()
+    onStorageRestUrlChanged: handleNetworkConfigurationChanged()
+    onStorageMetricsUrlChanged: handleNetworkConfigurationChanged()
+    onStorageNetworkPresetChanged: handleNetworkConfigurationChanged()
+    onStorageDataDirChanged: handleNetworkConfigurationChanged()
     onStorageRollingWindowChanged: saveSettingsState()
-    onStorageLocalDiagnosticsEnabledChanged: saveSettingsState()
-    onStoragePrivilegedDebugEnabledChanged: saveSettingsState()
+    onStorageLocalDiagnosticsEnabledChanged: handleNetworkConfigurationChanged()
+    onStoragePrivilegedDebugEnabledChanged: handleNetworkConfigurationChanged()
     onStorageMutatingDiagnosticsEnabledChanged: saveSettingsState()
-    onStorageCidProbeChanged: saveSettingsState()
     onBlockchainRefreshRateChanged: saveSettingsState()
     onIndexerRefreshRateChanged: saveSettingsState()
     onExecutionRefreshRateChanged: saveSettingsState()
@@ -164,6 +165,23 @@ QtObject {
     onStorageRefreshRateChanged: saveSettingsState()
     onFooterFieldRevisionChanged: saveSettingsState()
     onDashboardGraphRevisionChanged: saveSettingsState()
+
+    function handleNetworkConfigurationChanged() {
+        networkConfigurationRevision += 1
+        networkConnectionStatus = ({})
+        networkConnectionStatusRevision += 1
+        networkConnectionPending = ({})
+        networkConnectionPendingRevision += 1
+        dashboardOverview = null
+        dashboardNode = null
+        dashboardBlocks = []
+        dashboardError = ""
+        dashboardRefreshing = false
+        dashboardRefreshSerial += 1
+        storageModuleReport = null
+        messagingModuleReport = null
+        saveSettingsState()
+    }
 
     function navTreeItems() {
         return [
@@ -479,7 +497,7 @@ QtObject {
         return response
     }
 
-    function requestModuleAsync(moduleName, method, args, label, showResult, callback) {
+    function requestModuleAsync(moduleName, method, args, label, showResult, callback, acceptResponse) {
         const targetModule = moduleName === inspectorModule ? moduleName : inspectorModule
         const targetMethod = moduleName === inspectorModule ? method : "callModule"
         const targetArgs = moduleName === inspectorModule ? args : [moduleName, method, args || []]
@@ -489,6 +507,9 @@ QtObject {
         }
 
         return bridge.callModuleAsync(targetModule, targetMethod, targetArgs, function (response) {
+            if (acceptResponse && !acceptResponse(response)) {
+                return
+            }
             if (response.ok) {
                 root.updateDashboardCache(method, response.value)
                 if (showResult) {
@@ -568,44 +589,47 @@ QtObject {
 
     function loadSettingsState() {
         const response = bridge.callModule(inspectorModule, "loadSettingsState", [])
-        if (response.ok && response.value && typeof response.value === "object") {
-            const value = response.value
-            const storedNetworkProfile = root.normalizedNetworkProfile(root.stringSetting(value, "network_profile", networkProfile))
-            sequencerUrl = root.stringSetting(value, "sequencer_url", sequencerUrl)
-            indexerUrl = root.stringSetting(value, "indexer_url", indexerUrl)
-            nodeUrl = root.stringSetting(value, "node_url", nodeUrl)
-            networkProfile = root.resolvedNetworkProfile(storedNetworkProfile, sequencerUrl, indexerUrl, nodeUrl)
-            messagingSourceMode = root.stringSetting(value, "messaging_source_mode", messagingSourceMode)
-            messagingRestUrl = root.stringSetting(value, "messaging_rest_url", messagingRestUrl)
-            messagingMetricsUrl = root.stringSetting(value, "messaging_metrics_url", messagingMetricsUrl)
-            messagingNetworkPreset = root.normalizedMessagingNetworkPreset(root.stringSetting(value, "messaging_network_preset", messagingNetworkPreset))
-            messagingNodeInfoId = root.stringSetting(value, "messaging_node_info_id", messagingNodeInfoId)
-            messagingRollingWindow = root.numberSetting(value, "messaging_rolling_window", messagingRollingWindow)
-            messagingAdminRestEnabled = root.boolSetting(value, "messaging_admin_rest_enabled", messagingAdminRestEnabled)
-            messagingMutatingDiagnosticsEnabled = root.boolSetting(value, "messaging_mutating_diagnostics_enabled", messagingMutatingDiagnosticsEnabled)
-            storageSourceMode = root.stringSetting(value, "storage_source_mode", storageSourceMode)
-            storageRestUrl = root.stringSetting(value, "storage_rest_url", storageRestUrl)
-            storageMetricsUrl = root.stringSetting(value, "storage_metrics_url", storageMetricsUrl)
-            storageNetworkPreset = root.stringSetting(value, "storage_network_preset", storageNetworkPreset)
-            storageDataDir = root.stringSetting(value, "storage_data_dir", storageDataDir)
-            storageCidProbe = root.stringSetting(value, "storage_cid_probe", storageCidProbe)
-            storageRollingWindow = root.numberSetting(value, "storage_rolling_window", storageRollingWindow)
-            storageLocalDiagnosticsEnabled = root.boolSetting(value, "storage_local_diagnostics_enabled", storageLocalDiagnosticsEnabled)
-            storagePrivilegedDebugEnabled = root.boolSetting(value, "storage_privileged_debug_enabled", storagePrivilegedDebugEnabled)
-            storageMutatingDiagnosticsEnabled = root.boolSetting(value, "storage_mutating_diagnostics_enabled", storageMutatingDiagnosticsEnabled)
-            blockchainRefreshRate = root.numberSetting(value, "blockchain_refresh_rate", blockchainRefreshRate)
-            indexerRefreshRate = root.numberSetting(value, "indexer_refresh_rate", indexerRefreshRate)
-            executionRefreshRate = root.numberSetting(value, "execution_refresh_rate", executionRefreshRate)
-            messagingRefreshRate = root.numberSetting(value, "messaging_refresh_rate", messagingRefreshRate)
-            storageRefreshRate = root.numberSetting(value, "storage_refresh_rate", storageRefreshRate)
-            if (value.footer_fields && typeof value.footer_fields === "object" && !Array.isArray(value.footer_fields)) {
-                footerFieldSelections = root.mergeMap(root.defaultFooterFieldSelections(), value.footer_fields)
-                footerFieldRevision += 1
-            }
-            if (value.dashboard_graphs && typeof value.dashboard_graphs === "object" && !Array.isArray(value.dashboard_graphs)) {
-                dashboardGraphSelections = root.mergeMap(root.defaultDashboardGraphSelections(), value.dashboard_graphs)
-                dashboardGraphRevision += 1
-            }
+        if (!response.ok || !response.value || typeof response.value !== "object") {
+            settingsStateError = response && response.error ? response.error : qsTr("Settings state is not readable.")
+            return
+        }
+
+        settingsStateError = ""
+        const value = response.value
+        const storedNetworkProfile = root.normalizedNetworkProfile(root.stringSetting(value, "network_profile", networkProfile))
+        sequencerUrl = root.stringSetting(value, "sequencer_url", sequencerUrl)
+        indexerUrl = root.stringSetting(value, "indexer_url", indexerUrl)
+        nodeUrl = root.stringSetting(value, "node_url", nodeUrl)
+        networkProfile = root.resolvedNetworkProfile(storedNetworkProfile, sequencerUrl, indexerUrl, nodeUrl)
+        messagingSourceMode = root.stringSetting(value, "messaging_source_mode", messagingSourceMode)
+        messagingRestUrl = root.stringSetting(value, "messaging_rest_url", messagingRestUrl)
+        messagingMetricsUrl = root.stringSetting(value, "messaging_metrics_url", messagingMetricsUrl)
+        messagingNetworkPreset = root.normalizedMessagingNetworkPreset(root.stringSetting(value, "messaging_network_preset", messagingNetworkPreset))
+        messagingNodeInfoId = root.stringSetting(value, "messaging_node_info_id", messagingNodeInfoId)
+        messagingRollingWindow = root.numberSetting(value, "messaging_rolling_window", messagingRollingWindow)
+        messagingAdminRestEnabled = root.boolSetting(value, "messaging_admin_rest_enabled", messagingAdminRestEnabled)
+        messagingMutatingDiagnosticsEnabled = root.boolSetting(value, "messaging_mutating_diagnostics_enabled", messagingMutatingDiagnosticsEnabled)
+        storageSourceMode = root.stringSetting(value, "storage_source_mode", storageSourceMode)
+        storageRestUrl = root.stringSetting(value, "storage_rest_url", storageRestUrl)
+        storageMetricsUrl = root.stringSetting(value, "storage_metrics_url", storageMetricsUrl)
+        storageNetworkPreset = root.stringSetting(value, "storage_network_preset", storageNetworkPreset)
+        storageDataDir = root.stringSetting(value, "storage_data_dir", storageDataDir)
+        storageRollingWindow = root.numberSetting(value, "storage_rolling_window", storageRollingWindow)
+        storageLocalDiagnosticsEnabled = root.boolSetting(value, "storage_local_diagnostics_enabled", storageLocalDiagnosticsEnabled)
+        storagePrivilegedDebugEnabled = root.boolSetting(value, "storage_privileged_debug_enabled", storagePrivilegedDebugEnabled)
+        storageMutatingDiagnosticsEnabled = root.boolSetting(value, "storage_mutating_diagnostics_enabled", storageMutatingDiagnosticsEnabled)
+        blockchainRefreshRate = root.canonicalRefreshRate(root.numberSetting(value, "blockchain_refresh_rate", blockchainRefreshRate))
+        indexerRefreshRate = root.canonicalRefreshRate(root.numberSetting(value, "indexer_refresh_rate", indexerRefreshRate))
+        executionRefreshRate = root.canonicalRefreshRate(root.numberSetting(value, "execution_refresh_rate", executionRefreshRate))
+        messagingRefreshRate = root.canonicalRefreshRate(root.numberSetting(value, "messaging_refresh_rate", messagingRefreshRate))
+        storageRefreshRate = root.canonicalRefreshRate(root.numberSetting(value, "storage_refresh_rate", storageRefreshRate))
+        if (value.footer_fields && typeof value.footer_fields === "object" && !Array.isArray(value.footer_fields)) {
+            footerFieldSelections = root.mergeMap(root.defaultFooterFieldSelections(), value.footer_fields)
+            footerFieldRevision += 1
+        }
+        if (value.dashboard_graphs && typeof value.dashboard_graphs === "object" && !Array.isArray(value.dashboard_graphs)) {
+            dashboardGraphSelections = root.mergeMap(root.defaultDashboardGraphSelections(), value.dashboard_graphs)
+            dashboardGraphRevision += 1
         }
         settingsStateLoaded = true
     }
@@ -637,17 +661,16 @@ QtObject {
             storage_rest_url: String(storageRestUrl || ""),
             storage_metrics_url: String(storageMetricsUrl || ""),
             storage_network_preset: String(storageNetworkPreset || ""),
-            storage_data_dir: String(storageDataDir || ""),
-            storage_cid_probe: String(storageCidProbe || ""),
+            storage_data_dir: storageLocalDiagnosticsEnabled === true ? String(storageDataDir || "") : "",
             storage_rolling_window: Number(storageRollingWindow || 0),
             storage_local_diagnostics_enabled: storageLocalDiagnosticsEnabled === true,
             storage_privileged_debug_enabled: storagePrivilegedDebugEnabled === true,
             storage_mutating_diagnostics_enabled: storageMutatingDiagnosticsEnabled === true,
-            blockchain_refresh_rate: Number(blockchainRefreshRate || 0),
-            indexer_refresh_rate: Number(indexerRefreshRate || 0),
-            execution_refresh_rate: Number(executionRefreshRate || 0),
-            messaging_refresh_rate: Number(messagingRefreshRate || 0),
-            storage_refresh_rate: Number(storageRefreshRate || 0),
+            blockchain_refresh_rate: root.canonicalRefreshRate(blockchainRefreshRate),
+            indexer_refresh_rate: root.canonicalRefreshRate(indexerRefreshRate),
+            execution_refresh_rate: root.canonicalRefreshRate(executionRefreshRate),
+            messaging_refresh_rate: root.canonicalRefreshRate(messagingRefreshRate),
+            storage_refresh_rate: root.canonicalRefreshRate(storageRefreshRate),
             footer_fields: footerFieldSelections || {},
             dashboard_graphs: dashboardGraphSelections || {}
         }
@@ -720,7 +743,7 @@ QtObject {
 
     function walletHomeFallbackLabel() {
         if (String(walletHome || "").trim().length > 0) {
-            return String(walletHome || "")
+            return root.redactedPath(walletHome)
         }
         const source = String(localWalletStatus && localWalletStatus.home_source ? localWalletStatus.home_source : "")
         if (source === "LEE_WALLET_HOME_DIR") {
@@ -733,6 +756,42 @@ QtObject {
             return "$LEE_WALLET_HOME_DIR, $NSSA_WALLET_HOME_DIR, or $HOME/.lee/wallet"
         }
         return "$HOME/.lee/wallet"
+    }
+
+    function walletBinaryDisplayLabel() {
+        return root.redactedPath(walletBinary)
+    }
+
+    function walletHomeDisplayLabel() {
+        return root.walletHomeFallbackLabel()
+    }
+
+    function redactedPath(path) {
+        const text = String(path || "").trim()
+        if (!text.length) {
+            return ""
+        }
+        const normalized = text.replace(/\\/g, "/")
+        const parts = normalized.split("/").filter(part => part.length > 0)
+        const isDriveRoot = /^[A-Za-z]:\/?$/.test(normalized)
+        const absolutePath = normalized.startsWith("/") || /^[A-Za-z]:\//.test(normalized)
+        if (isDriveRoot) {
+            return "..."
+        }
+        if (parts.length === 0 && absolutePath) {
+            return "..."
+        }
+        if (parts.length === 1 && absolutePath) {
+            return qsTr(".../%1").arg(parts[0])
+        }
+        if (parts.length <= 1) {
+            return "..."
+        }
+        return qsTr(".../%1").arg(parts[parts.length - 1])
+    }
+
+    function storageDisplayPath(path) {
+        return storageLocalDiagnosticsEnabled === true ? String(path || "") : root.redactedPath(path)
     }
 
     function checkLocalWalletProfile(showResult) {
@@ -1129,25 +1188,33 @@ QtObject {
         return Math.max(5, Number(seconds || 0)) * 1000
     }
 
+    function canonicalRefreshRate(seconds) {
+        const value = Math.max(0, Number(seconds || 0))
+        if (value === 0) {
+            return 0
+        }
+        return Math.max(5, Math.min(3600, value))
+    }
+
     function networkConnectionRate(kind) {
         switch (kind) {
         case "blockchain":
-            return blockchainRefreshRate
+            return root.canonicalRefreshRate(blockchainRefreshRate)
         case "indexer":
-            return indexerRefreshRate
+            return root.canonicalRefreshRate(indexerRefreshRate)
         case "execution":
-            return executionRefreshRate
+            return root.canonicalRefreshRate(executionRefreshRate)
         case "messaging":
-            return messagingRefreshRate
+            return root.canonicalRefreshRate(messagingRefreshRate)
         case "storage":
-            return storageRefreshRate
+            return root.canonicalRefreshRate(storageRefreshRate)
         default:
             return 30
         }
     }
 
     function setNetworkConnectionRate(kind, seconds) {
-        const value = Math.max(0, Number(seconds || 0))
+        const value = root.canonicalRefreshRate(seconds)
         switch (kind) {
         case "blockchain":
             blockchainRefreshRate = value
@@ -1166,9 +1233,10 @@ QtObject {
         }
     }
 
-    function queryNetworkConnection(kind, showResult) {
+    function queryNetworkConnection(kind, showResult, includeSensitiveProbe) {
         const target = String(kind || "")
-        const request = root.networkConnectionRequest(target)
+        const configRevision = networkConfigurationRevision
+        const request = root.networkConnectionRequest(target, includeSensitiveProbe === true)
         if (!request) {
             return {
                 ok: false,
@@ -1190,10 +1258,12 @@ QtObject {
             root.setNetworkConnectionPending(target, false)
             root.updateNetworkConnectionStatus(target, response)
             root.recordDashboardSnapshot()
+        }, function () {
+            return configRevision === networkConfigurationRevision
         })
     }
 
-    function networkConnectionRequest(kind) {
+    function networkConnectionRequest(kind, includeSensitiveProbe) {
         switch (kind) {
         case "blockchain":
             return { module: inspectorModule, method: "blockchainNode", args: [nodeUrl], label: qsTr("Blockchain node") }
@@ -1204,7 +1274,7 @@ QtObject {
         case "messaging":
             return { module: inspectorModule, method: "deliverySourceReport", args: root.deliverySourceReportArgs(), label: qsTr("Delivery source") }
         case "storage":
-            return { module: inspectorModule, method: "storageSourceReport", args: root.storageSourceReportArgs(), label: qsTr("Storage source") }
+            return { module: inspectorModule, method: "storageSourceReport", args: root.storageSourceReportArgs(includeSensitiveProbe), label: qsTr("Storage source") }
         default:
             return null
         }
@@ -1329,6 +1399,11 @@ QtObject {
         return probe.value
     }
 
+    function reportProbeOk(report, method) {
+        const probe = root.reportProbe(report, method)
+        return probe !== null && probe.ok === true
+    }
+
     function reportProbe(report, method) {
         if (!report || typeof report !== "object") {
             return null
@@ -1355,6 +1430,19 @@ QtObject {
     }
 
     function deliveryReportHealthy(report) {
+        const moduleName = String(report && report.module ? report.module : "")
+        if (moduleName === "delivery_metrics") {
+            return true
+        }
+        if (moduleName === "delivery_rest" && !root.reportProbeOk(report, "health")) {
+            return false
+        }
+        if (moduleName === deliveryModule
+                && !root.reportProbeOk(report, "getNodeInfo")
+                && !root.reportProbeOk(report, "getAvailableConfigs")
+                && !root.reportProbeOk(report, "getAvailableNodeInfoIDs")) {
+            return false
+        }
         const nodeProbe = root.reportProbe(report, "nodeHealth")
         const connectionProbe = root.reportProbe(report, "connectionStatus")
         if (!nodeProbe && !connectionProbe) {
@@ -1379,12 +1467,12 @@ QtObject {
         }
         const normalized = text.replace(/[^a-z0-9]+/g, "")
         if (normalized === "ready" || normalized === "healthy" || normalized === "ok"
-                || normalized === "connected" || normalized === "partiallyconnected" || normalized === "true") {
+                || normalized === "connected" || normalized === "true") {
             return true
         }
         if (normalized === "initializing" || normalized === "synchronizing" || normalized === "notready"
                 || normalized === "notmounted" || normalized === "shuttingdown" || normalized === "eventlooplagging"
-                || normalized === "disconnected" || normalized === "false"
+                || normalized === "disconnected" || normalized === "partiallyconnected" || normalized === "false"
                 || text.indexOf("not") >= 0 || text.indexOf("unhealthy") >= 0 || text.indexOf("error") >= 0
                 || text.indexOf("fail") >= 0 || text.indexOf("down") >= 0 || text.indexOf("disconnect") >= 0) {
             return false
@@ -1447,12 +1535,12 @@ QtObject {
         }
     }
 
-    function storageSourceReportArgs() {
+    function storageSourceReportArgs(includeCidProbe) {
         return [
             String(storageSourceMode || "module"),
             String(storageRestUrl || ""),
             String(storageMetricsUrl || ""),
-            String(storageCidProbe || ""),
+            includeCidProbe === true ? String(storageCidProbe || "") : "",
             storagePrivilegedDebugEnabled === true
         ]
     }
@@ -1946,6 +2034,35 @@ QtObject {
         return null
     }
 
+    function moduleMetricSum(kind, names) {
+        const wanted = Array.isArray(names) ? names : [names]
+        let total = 0
+        let found = false
+        for (let i = 0; i < wanted.length; ++i) {
+            const value = root.moduleMetricValue(kind, wanted[i])
+            if (value !== null) {
+                total += Number(value)
+                found = true
+            }
+        }
+        return found ? total : null
+    }
+
+    function storageManifestCount() {
+        const manifests = root.moduleProbeValue("storage", "manifests")
+        if (Array.isArray(manifests)) {
+            return manifests.length
+        }
+        if (manifests && typeof manifests === "object" && Array.isArray(manifests.content)) {
+            return manifests.content.length
+        }
+        const scalar = root.scalarValue(manifests)
+        if (typeof scalar === "number") {
+            return scalar
+        }
+        return root.moduleMetricValue("storage", ["storage_manifest_count", "manifest_count"])
+    }
+
     function dashboardMetricValue(key) {
         switch (key) {
         case "bedrock.peer_count":
@@ -1976,7 +2093,7 @@ QtObject {
         case "storage.shared_files_count":
             return root.moduleMetricValue("storage", ["storage_shared_files_count", "shared_files_count"])
         case "storage.manifest_count":
-            return root.moduleMetricValue("storage", ["storage_manifest_count", "manifest_count"])
+            return root.storageManifestCount()
         case "storage.local_storage_used":
             return root.moduleMetricValue("storage", ["storage_local_storage_used_bytes", "local_storage_used_bytes", "storage_used_bytes", "storage_repostore_bytes_used"])
         case "storage.active_uploads":
@@ -1986,7 +2103,7 @@ QtObject {
         case "storage.failed_transfers_recent":
             return root.moduleMetricValue("storage", ["storage_failed_transfers_recent", "failed_transfers_recent"])
         case "storage.failed_transfers_total":
-            return root.moduleMetricValue("storage", ["storage_block_exchange_requests_failed_total", "storage_block_exchange_peer_timeouts_total"])
+            return root.moduleMetricSum("storage", ["storage_block_exchange_requests_failed_total", "storage_block_exchange_peer_timeouts_total"])
         case "messaging.peer_count":
             return root.moduleMetricValue("messaging", ["libp2p_peers", "waku_peers", "messaging_peer_count", "peer_count"])
         case "messaging.active_subscriptions":
@@ -2464,9 +2581,12 @@ QtObject {
             return
         }
 
+        const page = recipients.value || {}
+        const rows = Array.isArray(page.recipients) ? page.recipients : (Array.isArray(recipients.value) ? recipients.value : [])
         transferActivityBeforeBlock = before || 0
-        transferActivityRows = (recipients.value || []).slice(0, transferActivityLimit)
-        transferActivityNextBeforeBlock = nextTransferActivityBlock(transferActivityRows)
+        transferActivityRows = rows.slice(0, transferActivityLimit)
+        const next = Number(page.next_before_block || 0)
+        transferActivityNextBeforeBlock = next > 0 ? next : nextTransferActivityBlock(transferActivityRows)
         transferActivityError = ""
         setResult(qsTr("Transfer activity"), BridgeHelpers.formatValue(transferActivityRows), false, transferActivityRows)
     }
@@ -2637,6 +2757,7 @@ QtObject {
 
     function refreshDashboard() {
         const refreshId = dashboardRefreshSerial + 1
+        const configRevision = networkConfigurationRevision
         dashboardRefreshSerial = refreshId
         dashboardRefreshing = true
         dashboardError = ""
@@ -2644,7 +2765,7 @@ QtObject {
             { module: inspectorModule, method: "overview", args: [sequencerUrl, indexerUrl, nodeUrl], label: qsTr("Dashboard overview") },
             { module: inspectorModule, method: "blockchainNode", args: [nodeUrl], label: qsTr("Blockchain node") },
             { module: inspectorModule, method: "indexerBlocks", args: [indexerUrl, null, 10], label: qsTr("Latest blocks") },
-            { module: inspectorModule, method: "storageSourceReport", args: root.storageSourceReportArgs(), label: qsTr("Storage source") },
+            { module: inspectorModule, method: "storageSourceReport", args: root.storageSourceReportArgs(false), label: qsTr("Storage source") },
             { module: inspectorModule, method: "deliverySourceReport", args: root.deliverySourceReportArgs(), label: qsTr("Delivery source") }
         ]
         const errors = []
@@ -2654,7 +2775,7 @@ QtObject {
         for (let i = 0; i < requests.length; ++i) {
             const request = requests[i]
             requestModuleAsync(request.module, request.method, request.args, request.label, false, function (response) {
-                if (refreshId !== dashboardRefreshSerial) {
+                if (refreshId !== dashboardRefreshSerial || configRevision !== networkConfigurationRevision) {
                     return
                 }
                 if (response.ok) {
@@ -2686,6 +2807,8 @@ QtObject {
                         setResult(qsTr("Dashboard"), dashboardError, true)
                     }
                 }
+            }, function () {
+                return refreshId === dashboardRefreshSerial && configRevision === networkConfigurationRevision
             })
         }
     }

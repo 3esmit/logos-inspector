@@ -376,7 +376,7 @@ pub fn run(args: CliArgs) -> Result<()> {
         CliCommand::BlockchainModule { address } => {
             print_json(&blockchain_module_report(address.as_deref()))
         }
-        CliCommand::Storage { cid } => print_json(&storage_report(cid.as_deref())),
+        CliCommand::Storage { cid } => print_json(&storage_report(cid.as_deref(), false)),
         CliCommand::Messaging { info_id } => print_json(&delivery_report(info_id.as_deref())),
         CliCommand::Capabilities => print_json(&capabilities_report()),
         CliCommand::Channels {

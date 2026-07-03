@@ -388,7 +388,7 @@ Pane {
         case "storage.module":
             return root.moduleDisplayStatus("storage")
         case "storage.network":
-            return root.networkLabel()
+            return root.model.storageNetworkPreset || root.model.storageSourceTarget()
         case "storage.node_reachable":
             return root.connectionReachableStatus("storage")
         case "storage.nat_mode":
