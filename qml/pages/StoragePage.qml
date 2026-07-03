@@ -155,7 +155,7 @@ ColumnLayout {
                     compact: true
                     label: qsTr("Transfers")
                     value: root.transferSummary()
-                    delta: qsTr("%1 failure counter").arg(root.metricDisplay("storage.failed_transfers_recent"))
+                    delta: qsTr("%1 historical failures").arg(root.metricDisplay("storage.failed_transfers_total"))
                     deltaColor: root.transferFailureTone()
                 }
 
@@ -419,10 +419,11 @@ ColumnLayout {
                     FieldRow {
                         theme: root.theme
                         label: qsTr("CID")
-                        text: root.model.storageCidProbe
+                        sourceText: root.model.storageCidProbe
+                        syncSourceText: true
                         placeholderText: qsTr("Storage CID")
                         Layout.fillWidth: true
-                        onTextChanged: root.model.storageCidProbe = String(text || "").trim()
+                        onTextEdited: text => root.model.storageCidProbe = String(text || "").trim()
                     }
 
                     ActionButton {
@@ -831,8 +832,8 @@ ColumnLayout {
         if (root.failedProbeCount() > 0) {
             return qsTr("Degraded")
         }
-        if (root.metricKnown("storage.failed_transfers_recent")) {
-            return Number(root.model.dashboardMetricValue("storage.failed_transfers_recent")) > 0 ? qsTr("Observed") : qsTr("No failures")
+        if (root.metricKnown("storage.failed_transfers_total")) {
+            return Number(root.model.dashboardMetricValue("storage.failed_transfers_total")) > 0 ? qsTr("Historical failures") : qsTr("No failures")
         }
         return qsTr("Unknown")
     }
@@ -841,14 +842,17 @@ ColumnLayout {
         if (root.failedProbeCount() > 0) {
             return root.theme.error
         }
-        return root.transferFailureTone()
+        if (root.metricKnown("storage.failed_transfers_total")) {
+            return Number(root.model.dashboardMetricValue("storage.failed_transfers_total")) > 0 ? root.theme.textMuted : root.theme.success
+        }
+        return root.theme.textMuted
     }
 
     function transferFailureTone() {
-        if (!root.metricKnown("storage.failed_transfers_recent")) {
+        if (!root.metricKnown("storage.failed_transfers_total")) {
             return root.theme.textMuted
         }
-        return Number(root.model.dashboardMetricValue("storage.failed_transfers_recent")) > 0 ? root.theme.warning : root.theme.success
+        return Number(root.model.dashboardMetricValue("storage.failed_transfers_total")) > 0 ? root.theme.textMuted : root.theme.success
     }
 
     function healthRows() {
@@ -860,7 +864,7 @@ ColumnLayout {
             root.statusRow(qsTr("DHT / discovery"), root.probeKnown("debug") ? qsTr("observed") : qsTr("unknown"), root.probeKnown("debug") ? root.valueSummary(root.probeValue("debug")) : qsTr("Debug source unavailable."), root.probeKnown("debug") ? "success" : "neutral"),
             root.statusRow(qsTr("Connected peers"), root.metricKnown("storage.peer_count") ? qsTr("observed") : qsTr("unknown"), root.metricDisplay("storage.peer_count"), root.metricKnown("storage.peer_count") ? "success" : "neutral"),
             root.statusRow(qsTr("Repository and host disk"), root.probeKnown("space") || root.metricKnown("storage.local_storage_used") ? qsTr("observed") : qsTr("unknown"), root.capacitySummary(), root.probeKnown("space") || root.metricKnown("storage.local_storage_used") ? "success" : "neutral"),
-            root.statusRow(qsTr("Transfer failures"), root.metricKnown("storage.failed_transfers_recent") ? root.metricDisplay("storage.failed_transfers_recent") : qsTr("unknown"), root.metricKnown("storage.failed_transfers_recent") ? qsTr("Counter total") : qsTr("Metric not exposed by current source."), root.metricKnown("storage.failed_transfers_recent") ? (Number(root.model.dashboardMetricValue("storage.failed_transfers_recent")) > 0 ? "warning" : "success") : "neutral"),
+            root.statusRow(qsTr("Historical transfer failures"), root.metricKnown("storage.failed_transfers_total") ? root.metricDisplay("storage.failed_transfers_total") : qsTr("unknown"), root.metricKnown("storage.failed_transfers_total") ? qsTr("Counter total") : qsTr("Metric not exposed by current source."), root.metricKnown("storage.failed_transfers_total") ? (Number(root.model.dashboardMetricValue("storage.failed_transfers_total")) > 0 ? "neutral" : "success") : "neutral"),
             root.statusRow(qsTr("Mix / private queries"), qsTr("not queried"), qsTr("No passive metric selected."), "neutral")
         ]
     }
@@ -869,7 +873,7 @@ ColumnLayout {
         return [
             root.metricRow(qsTr("Upload requests"), "storage.active_uploads"),
             root.metricRow(qsTr("Download requests"), "storage.active_downloads"),
-            root.metricRow(qsTr("Transfer failures"), "storage.failed_transfers_recent"),
+            root.metricRow(qsTr("Historical transfer failures"), "storage.failed_transfers_total"),
             root.statusRow(qsTr("Provider lookup"), qsTr("idle"), qsTr("Explicit diagnostic only."), "neutral"),
             root.statusRow(qsTr("Network download"), qsTr("idle"), qsTr("No operation created by background polling."), "success")
         ]
@@ -907,7 +911,7 @@ ColumnLayout {
         return [
             root.metricRow(qsTr("Upload requests"), "storage.active_uploads"),
             root.metricRow(qsTr("Download requests"), "storage.active_downloads"),
-            root.metricRow(qsTr("Transfer failures"), "storage.failed_transfers_recent"),
+            root.metricRow(qsTr("Historical transfer failures"), "storage.failed_transfers_total"),
             root.statusRow(qsTr("Upload diagnostics"), qsTr("disabled"), qsTr("Mutating diagnostics require explicit backend support."), root.model.storageMutatingDiagnosticsEnabled ? "warning" : "neutral"),
             root.statusRow(qsTr("Download diagnostics"), qsTr("idle"), qsTr("Future download probes run asynchronously with progress and cancel."), "neutral")
         ]
@@ -991,7 +995,7 @@ ColumnLayout {
         switch (String(key || "")) {
         case "storage.active_uploads":
         case "storage.active_downloads":
-        case "storage.failed_transfers_recent":
+        case "storage.failed_transfers_total":
             return qsTr("Counter total")
         default:
             return qsTr("%1 s window").arg(root.model.storageRollingWindow)

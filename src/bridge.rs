@@ -134,12 +134,26 @@ impl InspectorBridge {
                     args.string(1, "block id")?,
                 ))?)
             }
+            "blockchainTransaction" => {
+                let args = Args::new(args)?;
+                to_value(self.runtime.block_on(blockchain::blockchain_transaction(
+                    args.string(0, "node endpoint")?,
+                    args.string(1, "transaction id")?,
+                ))?)
+            }
             "channelScan" => {
                 let args = Args::new(args)?;
                 to_value(self.runtime.block_on(channels::channel_scan(
                     args.string(0, "node endpoint")?,
                     args.u64(1, "slot from")?,
                     args.u64(2, "slot to")?,
+                ))?)
+            }
+            "channelState" => {
+                let args = Args::new(args)?;
+                to_value(self.runtime.block_on(channels::channel_state(
+                    args.string(0, "node endpoint")?,
+                    args.string(1, "channel id")?,
                 ))?)
             }
             "indexerHealth" => {
@@ -257,6 +271,7 @@ impl InspectorBridge {
                     args.optional_string(1),
                     args.optional_string(2),
                     args.optional_string(3),
+                    args.optional_bool(4),
                 )))
             }
             "deliveryReport" => {
@@ -549,6 +564,17 @@ impl Args {
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty())
+    }
+
+    fn optional_bool(&self, index: usize) -> bool {
+        match self.value(index) {
+            Some(Value::Bool(value)) => *value,
+            Some(Value::String(value)) => matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            ),
+            _ => false,
+        }
     }
 
     fn u64(&self, index: usize, label: &str) -> Result<u64> {

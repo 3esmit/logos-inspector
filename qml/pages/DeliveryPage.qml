@@ -725,10 +725,11 @@ ColumnLayout {
         const status = root.status()
         const peerId = root.identityValue("peerId")
         const nodeHealth = root.probeValue("nodeHealth")
+        const connectionStatus = root.probeValue("connectionStatus")
         return [
             root.statusRow(qsTr("Source and lifecycle"), status.known ? (status.ok ? qsTr("reachable") : qsTr("problem")) : qsTr("unknown"), status.detail || qsTr("Not queried"), root.statusTone()),
             root.statusRow(qsTr("Identity"), peerId !== null ? qsTr("present") : qsTr("unknown"), root.valueSummary(peerId), peerId !== null ? "success" : "neutral"),
-            root.statusRow(qsTr("Node health"), nodeHealth !== null ? qsTr("reported") : qsTr("unknown"), root.valueSummary(nodeHealth), nodeHealth !== null ? "success" : "neutral"),
+            root.statusRow(qsTr("Node health"), nodeHealth !== null ? root.valueSummary(nodeHealth) : qsTr("unknown"), root.valueSummary(connectionStatus), root.healthValueTone(nodeHealth)),
             root.statusRow(qsTr("Preset, cluster, shards"), root.model.messagingNetworkPreset.length ? qsTr("configured") : qsTr("unknown"), root.model.normalizedMessagingNetworkPreset(root.model.messagingNetworkPreset) || qsTr("No preset"), root.model.messagingNetworkPreset.length ? "success" : "neutral"),
             root.statusRow(qsTr("REST and metrics access"), root.restMetricsState(), root.restMetricsEvidence(), root.restMetricsTone()),
             root.statusRow(qsTr("Relay"), root.metricKnown("messaging.pubsub_peers") ? qsTr("observed") : qsTr("unknown"), root.metricDisplay("messaging.pubsub_peers"), root.metricKnown("messaging.pubsub_peers") ? "success" : "neutral"),
@@ -778,6 +779,10 @@ ColumnLayout {
     }
 
     function protocolRows() {
+        const healthRows = root.protocolHealthRows()
+        if (healthRows.length > 0) {
+            return healthRows
+        }
         return [
             root.protocolRow(qsTr("Relay"), "/vac/waku/relay/2.0.0", "messaging.pubsub_peers"),
             root.protocolRow(qsTr("Store"), "/vac/waku/store/3.0.0", "messaging.store_peers"),
@@ -788,6 +793,103 @@ ColumnLayout {
             root.protocolRow(qsTr("Discv5"), "discv5", ""),
             root.protocolRow(qsTr("RLN relay"), "/vac/waku/rln-relay/2.0.0", "")
         ]
+    }
+
+    function protocolHealthRows() {
+        const value = root.probeValue("protocolsHealth")
+        if (!value || typeof value !== "object") {
+            return []
+        }
+        const rows = []
+        if (Array.isArray(value)) {
+            for (let i = 0; i < value.length; ++i) {
+                const item = root.protocolHealthEntry(value[i])
+                if (item) {
+                    rows.push(root.statusRow(root.protocolLabel(item.protocol), root.valueSummary(item.health), item.detail, root.healthValueTone(item.health)))
+                }
+            }
+            return rows
+        }
+        if (value.protocol !== undefined || value.name !== undefined || value.health !== undefined || value.status !== undefined) {
+            const single = root.protocolHealthEntry(value)
+            rows.push(root.statusRow(root.protocolLabel(single.protocol), root.valueSummary(single.health), single.detail, root.healthValueTone(single.health)))
+            return rows
+        }
+        const keys = Object.keys(value).sort()
+        for (let i = 0; i < keys.length; ++i) {
+            const key = keys[i]
+            if (key === "desc" || key === "description") {
+                continue
+            }
+            const state = value[key]
+            rows.push(root.statusRow(root.protocolLabel(key), root.valueSummary(state), key, root.healthValueTone(state)))
+        }
+        return rows
+    }
+
+    function protocolHealthEntry(item) {
+        if (!item || typeof item !== "object" || Array.isArray(item)) {
+            return null
+        }
+        const explicitProtocol = item.protocol !== undefined ? item.protocol : item.name
+        const explicitHealth = item.health !== undefined ? item.health : item.status
+        if (explicitProtocol !== undefined || explicitHealth !== undefined) {
+            const protocol = explicitProtocol !== undefined ? explicitProtocol : qsTr("Protocol")
+            return {
+                protocol: protocol,
+                health: explicitHealth,
+                detail: root.protocolHealthDetail(protocol, item.desc !== undefined ? item.desc : item.description)
+            }
+        }
+        const keys = Object.keys(item).filter(key => key !== "desc" && key !== "description").sort()
+        if (!keys.length) {
+            return null
+        }
+        const protocolKey = keys[0]
+        return {
+            protocol: protocolKey,
+            health: item[protocolKey],
+            detail: root.protocolHealthDetail(protocolKey, item.desc !== undefined ? item.desc : item.description)
+        }
+    }
+
+    function protocolHealthDetail(protocol, description) {
+        const detail = root.valueSummary(description)
+        if (!detail.length || detail === qsTr("unknown")) {
+            return String(protocol || "")
+        }
+        return "%1: %2".arg(String(protocol || "")).arg(detail)
+    }
+
+    function protocolLabel(key) {
+        const text = String(key || "")
+        const normalized = text.toLowerCase()
+        if (normalized.indexOf("lightpush") >= 0) {
+            return qsTr("Lightpush")
+        }
+        if (normalized.indexOf("filter") >= 0) {
+            return qsTr("Filter")
+        }
+        if (normalized.indexOf("store") >= 0) {
+            return qsTr("Store")
+        }
+        if (normalized.indexOf("relay") >= 0) {
+            return qsTr("Relay")
+        }
+        if (normalized.indexOf("metadata") >= 0) {
+            return qsTr("Metadata")
+        }
+        if (normalized.indexOf("peer") >= 0) {
+            return qsTr("Peer exchange")
+        }
+        return text.length ? text : qsTr("Protocol")
+    }
+
+    function healthValueTone(value) {
+        if (value === undefined || value === null) {
+            return "neutral"
+        }
+        return root.model.deliveryHealthValueOk(value, false) ? "success" : "error"
     }
 
     function topicRows() {

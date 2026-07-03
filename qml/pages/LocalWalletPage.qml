@@ -78,7 +78,7 @@ ColumnLayout {
                     copyable: true
                     copyText: root.model.localWalletLookupTarget
                     monospace: true
-                    textColor: root.model.walletProfileUsable() ? root.theme.text : root.theme.warning
+                    textColor: root.model.localWalletTab === "bedrockNotes" && root.model.bedrockWalletSourceConfigured() ? root.theme.text : (root.model.walletProfileUsable() ? root.theme.text : root.theme.warning)
                     Layout.fillWidth: true
                     Layout.alignment: root.width < 760 ? Qt.AlignLeft : Qt.AlignRight
                 }
@@ -93,8 +93,8 @@ ColumnLayout {
                 StatusChip {
                     theme: root.theme
                     label: qsTr("Profile")
-                    value: root.model.walletProfileUsable() ? root.shortText(root.model.walletProfileLabel, 22) : qsTr("Required")
-                    tone: root.model.walletProfileUsable() ? "success" : "warning"
+                    value: root.model.walletProfileUsable() ? root.shortText(root.model.walletProfileLabel, 22) : (root.model.localWalletTab === "bedrockNotes" && root.model.bedrockWalletSourceConfigured() ? qsTr("Bedrock") : qsTr("Required"))
+                    tone: root.model.walletProfileUsable() || (root.model.localWalletTab === "bedrockNotes" && root.model.bedrockWalletSourceConfigured()) ? "success" : "warning"
                     Layout.fillWidth: true
                 }
 
@@ -129,7 +129,7 @@ ColumnLayout {
     }
 
     StatusMessage {
-        visible: !root.model.walletProfileUsable()
+        visible: root.model.localWalletTab !== "bedrockNotes" && !root.model.walletProfileUsable()
         theme: root.theme
         tone: "warning"
         title: qsTr("Local wallet profile required")
@@ -164,54 +164,60 @@ ColumnLayout {
                     FieldRow {
                         theme: root.theme
                         label: qsTr("Label")
-                        text: root.model.walletProfileLabel
-                        onTextChanged: if (root.model.walletProfileLabel !== text) root.model.walletProfileLabel = text
+                        sourceText: root.model.walletProfileLabel
+                        syncSourceText: true
+                        onTextEdited: text => { if (root.model.walletProfileLabel !== text) root.model.walletProfileLabel = text }
                     }
 
                     FieldRow {
                         theme: root.theme
                         label: qsTr("Wallet binary")
                         placeholderText: qsTr("/path/to/wallet")
-                        text: root.model.walletBinary
-                        onTextChanged: if (root.model.walletBinary !== text) {
+                        sourceText: root.model.walletBinary
+                        syncSourceText: true
+                        onTextEdited: text => { if (root.model.walletBinary !== text) {
                             root.model.walletBinary = text
                             root.model.clearLocalWalletStatus()
-                        }
+                        } }
                     }
 
                     FieldRow {
                         theme: root.theme
                         label: qsTr("Wallet home")
                         placeholderText: qsTr("$LEE_WALLET_HOME_DIR")
-                        text: root.model.walletHome
-                        onTextChanged: if (root.model.walletHome !== text) {
+                        sourceText: root.model.walletHome
+                        syncSourceText: true
+                        onTextEdited: text => { if (root.model.walletHome !== text) {
                             root.model.walletHome = text
                             root.model.clearLocalWalletStatus()
-                        }
+                        } }
                     }
 
                     FieldRow {
                         theme: root.theme
                         label: qsTr("Sequencer RPC")
-                        text: root.model.walletSequencerUrl
+                        sourceText: root.model.walletSequencerUrl
+                        syncSourceText: true
                         placeholderText: root.model.sequencerUrl
-                        onTextChanged: if (root.model.walletSequencerUrl !== text) root.model.walletSequencerUrl = text
+                        onTextEdited: text => { if (root.model.walletSequencerUrl !== text) root.model.walletSequencerUrl = text }
                     }
 
                     FieldRow {
                         theme: root.theme
                         label: qsTr("Indexer RPC")
-                        text: root.model.walletIndexerUrl
+                        sourceText: root.model.walletIndexerUrl
+                        syncSourceText: true
                         placeholderText: root.model.indexerUrl
-                        onTextChanged: if (root.model.walletIndexerUrl !== text) root.model.walletIndexerUrl = text
+                        onTextEdited: text => { if (root.model.walletIndexerUrl !== text) root.model.walletIndexerUrl = text }
                     }
 
                     FieldRow {
                         theme: root.theme
                         label: qsTr("Bedrock node")
-                        text: root.model.walletBedrockNodeUrl
+                        sourceText: root.model.walletBedrockNodeUrl
+                        syncSourceText: true
                         placeholderText: root.model.nodeUrl
-                        onTextChanged: if (root.model.walletBedrockNodeUrl !== text) root.model.walletBedrockNodeUrl = text
+                        onTextEdited: text => { if (root.model.walletBedrockNodeUrl !== text) root.model.walletBedrockNodeUrl = text }
                     }
                 }
 
@@ -381,18 +387,20 @@ ColumnLayout {
                     FieldRow {
                         theme: root.theme
                         label: qsTr("Public key")
-                        text: root.model.walletPublicKeyProbe
+                        sourceText: root.model.walletPublicKeyProbe
+                        syncSourceText: true
                         placeholderText: qsTr("Public/<key> or <key>")
                         Layout.columnSpan: root.width < 760 ? 1 : 2
-                        onTextChanged: if (root.model.walletPublicKeyProbe !== text) root.model.walletPublicKeyProbe = text
+                        onTextEdited: text => { if (root.model.walletPublicKeyProbe !== text) root.model.walletPublicKeyProbe = text }
                     }
 
                     FieldRow {
                         theme: root.theme
                         label: qsTr("Tip")
-                        text: root.model.bedrockWalletBalanceTip
+                        sourceText: root.model.bedrockWalletBalanceTip
+                        syncSourceText: true
                         placeholderText: qsTr("Optional")
-                        onTextChanged: if (root.model.bedrockWalletBalanceTip !== text) root.model.bedrockWalletBalanceTip = text
+                        onTextEdited: text => { if (root.model.bedrockWalletBalanceTip !== text) root.model.bedrockWalletBalanceTip = text }
                     }
                 }
 

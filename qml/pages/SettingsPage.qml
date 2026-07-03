@@ -653,7 +653,7 @@ ColumnLayout {
                 { key: "storage.local_storage_used", label: qsTr("local_storage_used"), detail: qsTr("Local storage usage") },
                 { key: "storage.active_uploads", label: qsTr("upload_requests_total"), detail: qsTr("Upload request counter total") },
                 { key: "storage.active_downloads", label: qsTr("download_requests_total"), detail: qsTr("Download request counter total") },
-                { key: "storage.failed_transfers_recent", label: qsTr("transfer_failures_total"), detail: qsTr("Transfer failure counter total") },
+                { key: "storage.failed_transfers_total", label: qsTr("transfer_failures_total"), detail: qsTr("Historical transfer failure counter total") },
                 { key: "storage.cid_fetch_test", label: qsTr("cid_fetch_test"), detail: qsTr("CID fetch probe result") },
                 { key: "storage.last_error", label: qsTr("last_error"), detail: qsTr("Latest storage error") }
             ] },
@@ -704,7 +704,7 @@ ColumnLayout {
                 { key: "storage.local_storage_used", label: qsTr("local_storage_used"), detail: qsTr("Local storage usage") },
                 { key: "storage.active_uploads", label: qsTr("upload_requests_total"), detail: qsTr("Upload request counter total") },
                 { key: "storage.active_downloads", label: qsTr("download_requests_total"), detail: qsTr("Download request counter total") },
-                { key: "storage.failed_transfers_recent", label: qsTr("transfer_failures_total"), detail: qsTr("Transfer failure counter total") }
+                { key: "storage.failed_transfers_total", label: qsTr("transfer_failures_total"), detail: qsTr("Historical transfer failure counter total") }
             ] },
             { title: qsTr("Messaging / Delivery"), fields: [
                 { key: "messaging.peer_count", label: qsTr("peer_count"), detail: qsTr("Delivery peers") },
@@ -787,9 +787,10 @@ ColumnLayout {
                 visible: panelRoot.primaryFieldVisible
                 theme: panelRoot.theme
                 label: panelRoot.endpointLabel
-                text: panelRoot.endpoint
+                sourceText: panelRoot.endpoint
+                syncSourceText: true
                 placeholderText: qsTr("Endpoint URL")
-                onTextChanged: panelRoot.endpointEdited(text)
+                onTextEdited: text => panelRoot.endpointEdited(text)
             }
 
             InfoField {
@@ -803,9 +804,10 @@ ColumnLayout {
                 visible: panelRoot.auxiliaryFieldVisible
                 theme: panelRoot.theme
                 label: panelRoot.auxiliaryLabel
-                text: panelRoot.auxiliaryText
+                sourceText: panelRoot.auxiliaryText
+                syncSourceText: true
                 placeholderText: panelRoot.auxiliaryPlaceholder
-                onTextChanged: panelRoot.auxiliaryEdited(text)
+                onTextEdited: text => panelRoot.auxiliaryEdited(text)
             }
         }
 
@@ -888,33 +890,37 @@ ColumnLayout {
             FieldRow {
                 theme: deliveryRoot.theme
                 label: qsTr("Waku REST URL")
-                text: settingsRoot.model.messagingRestUrl
+                sourceText: settingsRoot.model.messagingRestUrl
+                syncSourceText: true
                 placeholderText: qsTr("http://127.0.0.1:8645")
-                onTextChanged: settingsRoot.model.messagingRestUrl = String(text || "").trim()
+                onTextEdited: text => settingsRoot.model.messagingRestUrl = String(text || "").trim()
             }
 
             FieldRow {
                 theme: deliveryRoot.theme
                 label: qsTr("Metrics URL")
-                text: settingsRoot.model.messagingMetricsUrl
+                sourceText: settingsRoot.model.messagingMetricsUrl
+                syncSourceText: true
                 placeholderText: qsTr("http://127.0.0.1:8008/metrics")
-                onTextChanged: settingsRoot.model.messagingMetricsUrl = String(text || "").trim()
+                onTextEdited: text => settingsRoot.model.messagingMetricsUrl = String(text || "").trim()
             }
 
             FieldRow {
                 theme: deliveryRoot.theme
                 label: qsTr("Network preset")
-                text: settingsRoot.model.messagingNetworkPreset
+                sourceText: settingsRoot.model.messagingNetworkPreset
+                syncSourceText: true
                 placeholderText: qsTr("logos.test")
-                onTextChanged: settingsRoot.model.messagingNetworkPreset = settingsRoot.model.normalizedMessagingNetworkPreset(text)
+                onTextEdited: text => settingsRoot.model.messagingNetworkPreset = settingsRoot.model.normalizedMessagingNetworkPreset(text)
             }
 
             FieldRow {
                 theme: deliveryRoot.theme
                 label: qsTr("Node info id")
-                text: settingsRoot.model.messagingNodeInfoId
+                sourceText: settingsRoot.model.messagingNodeInfoId
+                syncSourceText: true
                 placeholderText: qsTr("Optional getNodeInfo id")
-                onTextChanged: settingsRoot.model.messagingNodeInfoId = String(text || "").trim()
+                onTextEdited: text => settingsRoot.model.messagingNodeInfoId = String(text || "").trim()
             }
 
             RefreshRateField {
@@ -1040,41 +1046,46 @@ ColumnLayout {
             FieldRow {
                 theme: storageRoot.theme
                 label: qsTr("REST URL")
-                text: settingsRoot.model.storageRestUrl
+                sourceText: settingsRoot.model.storageRestUrl
+                syncSourceText: true
                 placeholderText: qsTr("http://127.0.0.1:8080/api/storage/v1")
-                onTextChanged: settingsRoot.model.storageRestUrl = String(text || "").trim()
+                onTextEdited: text => settingsRoot.model.storageRestUrl = String(text || "").trim()
             }
 
             FieldRow {
                 theme: storageRoot.theme
                 label: qsTr("Metrics URL")
-                text: settingsRoot.model.storageMetricsUrl
+                sourceText: settingsRoot.model.storageMetricsUrl
+                syncSourceText: true
                 placeholderText: qsTr("http://127.0.0.1:8008/metrics")
-                onTextChanged: settingsRoot.model.storageMetricsUrl = String(text || "").trim()
+                onTextEdited: text => settingsRoot.model.storageMetricsUrl = String(text || "").trim()
             }
 
             FieldRow {
                 theme: storageRoot.theme
                 label: qsTr("Network preset")
-                text: settingsRoot.model.storageNetworkPreset
+                sourceText: settingsRoot.model.storageNetworkPreset
+                syncSourceText: true
                 placeholderText: qsTr("logos.test")
-                onTextChanged: settingsRoot.model.storageNetworkPreset = String(text || "").trim()
+                onTextEdited: text => settingsRoot.model.storageNetworkPreset = String(text || "").trim()
             }
 
             FieldRow {
                 theme: storageRoot.theme
                 label: qsTr("Data directory")
-                text: settingsRoot.model.storageDataDir
+                sourceText: settingsRoot.model.storageDataDir
+                syncSourceText: true
                 placeholderText: qsTr("Optional local diagnostics path")
-                onTextChanged: settingsRoot.model.storageDataDir = String(text || "").trim()
+                onTextEdited: text => settingsRoot.model.storageDataDir = String(text || "").trim()
             }
 
             FieldRow {
                 theme: storageRoot.theme
                 label: qsTr("CID local exists")
-                text: settingsRoot.model.storageCidProbe
+                sourceText: settingsRoot.model.storageCidProbe
+                syncSourceText: true
                 placeholderText: qsTr("Optional CID")
-                onTextChanged: settingsRoot.model.storageCidProbe = String(text || "").trim()
+                onTextEdited: text => settingsRoot.model.storageCidProbe = String(text || "").trim()
             }
 
             RefreshRateField {

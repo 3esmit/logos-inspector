@@ -703,6 +703,10 @@ QtObject {
         return String(walletBinary || "").trim().length > 0
     }
 
+    function bedrockWalletSourceConfigured() {
+        return String(walletBedrockNodeUrl || nodeUrl || "").trim().length > 0
+    }
+
     function walletProfileUsable() {
         return walletProfileConfigured()
             && localWalletStatus
@@ -1273,6 +1277,11 @@ QtObject {
             if (!root.moduleReportReachable(value)) {
                 return root.moduleReportError(value) || qsTr("source unavailable")
             }
+            if (!root.deliveryReportHealthy(value)) {
+                const nodeHealth = root.reportProbeValue(value, "nodeHealth")
+                const connectionStatus = root.reportProbeValue(value, "connectionStatus")
+                return qsTr("health %1 / %2").arg(root.valueText(nodeHealth)).arg(root.valueText(connectionStatus))
+            }
             const version = root.moduleProbeValue("messaging", "version")
             return version !== null ? qsTr("version %1").arg(root.valueText(version)) : qsTr("%1 reachable").arg(root.deliverySourceLabel())
         }
@@ -1287,7 +1296,10 @@ QtObject {
     }
 
     function connectionValueOk(kind, value) {
-        if (kind === "messaging" || kind === "storage") {
+        if (kind === "messaging") {
+            return root.moduleReportReachable(value) && root.deliveryReportHealthy(value)
+        }
+        if (kind === "storage") {
             return root.moduleReportReachable(value)
         }
         return true
@@ -1307,6 +1319,77 @@ QtObject {
             }
         }
         return false
+    }
+
+    function reportProbeValue(report, method) {
+        const probe = root.reportProbe(report, method)
+        if (!probe || probe.ok !== true || probe.value === undefined || probe.value === null) {
+            return null
+        }
+        return probe.value
+    }
+
+    function reportProbe(report, method) {
+        if (!report || typeof report !== "object") {
+            return null
+        }
+        const wanted = String(method || "")
+        const moduleInfo = report.module_info || null
+        if (moduleInfo) {
+            const label = String(moduleInfo.label || "")
+            const source = String(moduleInfo.source || "")
+            if (label.indexOf("." + wanted) >= 0 || source.indexOf(" " + wanted) >= 0) {
+                return moduleInfo
+            }
+        }
+        const probes = Array.isArray(report.probes) ? report.probes : []
+        for (let i = 0; i < probes.length; ++i) {
+            const probe = probes[i] || {}
+            const label = String(probe.label || "")
+            const source = String(probe.source || "")
+            if (label.indexOf("." + wanted) >= 0 || source.indexOf(" " + wanted) >= 0) {
+                return probe
+            }
+        }
+        return null
+    }
+
+    function deliveryReportHealthy(report) {
+        const nodeProbe = root.reportProbe(report, "nodeHealth")
+        const connectionProbe = root.reportProbe(report, "connectionStatus")
+        if (!nodeProbe && !connectionProbe) {
+            return true
+        }
+        const nodeHealth = nodeProbe && nodeProbe.ok === true ? nodeProbe.value : null
+        const connectionStatus = connectionProbe && connectionProbe.ok === true ? connectionProbe.value : null
+        return root.deliveryHealthValueOk(nodeHealth, false) && root.deliveryHealthValueOk(connectionStatus, false)
+    }
+
+    function deliveryHealthValueOk(value, unknownOk) {
+        if (value === undefined || value === null) {
+            return unknownOk === true
+        }
+        const scalar = root.scalarValue(value)
+        if (typeof scalar === "boolean") {
+            return scalar
+        }
+        const text = String(scalar === null ? value : scalar).trim().toLowerCase()
+        if (!text.length) {
+            return unknownOk === true
+        }
+        const normalized = text.replace(/[^a-z0-9]+/g, "")
+        if (normalized === "ready" || normalized === "healthy" || normalized === "ok"
+                || normalized === "connected" || normalized === "partiallyconnected" || normalized === "true") {
+            return true
+        }
+        if (normalized === "initializing" || normalized === "synchronizing" || normalized === "notready"
+                || normalized === "notmounted" || normalized === "shuttingdown" || normalized === "eventlooplagging"
+                || normalized === "disconnected" || normalized === "false"
+                || text.indexOf("not") >= 0 || text.indexOf("unhealthy") >= 0 || text.indexOf("error") >= 0
+                || text.indexOf("fail") >= 0 || text.indexOf("down") >= 0 || text.indexOf("disconnect") >= 0) {
+            return false
+        }
+        return unknownOk === true
     }
 
     function moduleReportError(report) {
@@ -1369,7 +1452,8 @@ QtObject {
             String(storageSourceMode || "module"),
             String(storageRestUrl || ""),
             String(storageMetricsUrl || ""),
-            String(storageCidProbe || "")
+            String(storageCidProbe || ""),
+            storagePrivilegedDebugEnabled === true
         ]
     }
 
@@ -1649,18 +1733,31 @@ QtObject {
             if (!line.length || line[0] === "#") {
                 continue
             }
-            const name = line.split(/[{\s]/)[0]
+            const match = line.match(/^([^{\s]+)(?:\{([^}]*)\})?\s+(-?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:e[+-]?[0-9]+)?)/i)
+            if (!match) {
+                continue
+            }
+            const name = match[1]
+            const labels = root.openMetricLabels(match[2] || "")
             for (let j = 0; j < wanted.length; ++j) {
-                if (name === wanted[j]) {
-                    const match = line.match(/^[^\s]+\s+(-?[0-9]+(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?)/i)
-                    if (match) {
-                        const number = Number(match[1])
-                        return Number.isFinite(number) ? number : null
-                    }
+                if (name === root.metricSpecName(wanted[j]) && root.metricLabelsMatch(labels, root.metricSpecLabels(wanted[j]))) {
+                    const number = Number(match[3])
+                    return Number.isFinite(number) ? number : null
                 }
             }
         }
         return null
+    }
+
+    function openMetricLabels(text) {
+        const labels = {}
+        const pattern = /([A-Za-z_:][A-Za-z0-9_:]*)\s*=\s*"((?:\\.|[^"\\])*)"/g
+        let match = pattern.exec(String(text || ""))
+        while (match !== null) {
+            labels[match[1]] = match[2].replace(/\\"/g, "\"").replace(/\\\\/g, "\\")
+            match = pattern.exec(String(text || ""))
+        }
+        return labels
     }
 
     function metricJsonValue(value, names) {
@@ -1685,15 +1782,48 @@ QtObject {
         }
         const metricName = String(value.name || value.metric || value.key || "")
         for (let i = 0; i < wanted.length; ++i) {
-            const wantedName = String(wanted[i] || "")
-            if (metricName === wantedName) {
+            const wantedName = root.metricSpecName(wanted[i])
+            const wantedLabels = root.metricSpecLabels(wanted[i])
+            if (metricName === wantedName && root.metricLabelsMatch(root.metricJsonLabels(value), wantedLabels)) {
                 return root.metricNumber(value.value !== undefined ? value.value : (value.count !== undefined ? value.count : value.total))
             }
-            if (value[wantedName] !== undefined) {
+            if (Object.keys(wantedLabels).length === 0 && value[wantedName] !== undefined) {
                 return root.metricNumber(value[wantedName])
             }
         }
         return null
+    }
+
+    function metricSpecName(spec) {
+        return spec && typeof spec === "object" ? String(spec.name || spec.metric || spec.key || "") : String(spec || "")
+    }
+
+    function metricSpecLabels(spec) {
+        return spec && typeof spec === "object" && spec.labels && typeof spec.labels === "object" ? spec.labels : {}
+    }
+
+    function metricJsonLabels(value) {
+        if (!value || typeof value !== "object") {
+            return {}
+        }
+        if (value.labels && typeof value.labels === "object") {
+            return value.labels
+        }
+        if (value.label && typeof value.label === "object") {
+            return value.label
+        }
+        return value
+    }
+
+    function metricLabelsMatch(actual, wanted) {
+        const keys = Object.keys(wanted || {})
+        for (let i = 0; i < keys.length; ++i) {
+            const key = keys[i]
+            if (String(actual && actual[key] !== undefined ? actual[key] : "") !== String(wanted[key])) {
+                return false
+            }
+        }
+        return true
     }
 
     function metricNumber(value) {
@@ -1837,7 +1967,12 @@ QtObject {
         case "indexer.indexer_lag_vs_sequencer_head":
             return root.indexerLag()
         case "storage.peer_count":
-            return root.moduleMetricValue("storage", ["storage_peer_count", "storage_libp2p_peers", "libp2p_peers", "peers"])
+            return root.moduleMetricValue("storage", [
+                { name: "libp2p_peers", labels: { type: "connected" } },
+                "storage_peer_count",
+                "storage_libp2p_peers",
+                "peers"
+            ])
         case "storage.shared_files_count":
             return root.moduleMetricValue("storage", ["storage_shared_files_count", "shared_files_count"])
         case "storage.manifest_count":
@@ -1849,7 +1984,9 @@ QtObject {
         case "storage.active_downloads":
             return root.moduleMetricValue("storage", ["storage_active_downloads", "active_downloads", "storage_api_downloads"])
         case "storage.failed_transfers_recent":
-            return root.moduleMetricValue("storage", ["storage_failed_transfers_recent", "failed_transfers_recent", "storage_block_exchange_requests_failed_total", "storage_block_exchange_peer_timeouts_total"])
+            return root.moduleMetricValue("storage", ["storage_failed_transfers_recent", "failed_transfers_recent"])
+        case "storage.failed_transfers_total":
+            return root.moduleMetricValue("storage", ["storage_block_exchange_requests_failed_total", "storage_block_exchange_peer_timeouts_total"])
         case "messaging.peer_count":
             return root.moduleMetricValue("messaging", ["libp2p_peers", "waku_peers", "messaging_peer_count", "peer_count"])
         case "messaging.active_subscriptions":
@@ -1904,7 +2041,7 @@ QtObject {
             "storage.local_storage_used",
             "storage.active_uploads",
             "storage.active_downloads",
-            "storage.failed_transfers_recent",
+            "storage.failed_transfers_total",
             "messaging.peer_count",
             "messaging.active_subscriptions",
             "messaging.content_topics",
@@ -1961,7 +2098,7 @@ QtObject {
             "storage.module": true,
             "storage.node_reachable": true,
             "storage.peer_count": true,
-            "storage.failed_transfers_recent": true,
+            "storage.failed_transfers_total": true,
             "overall.status": true,
             "overall.main_risk": true,
             "overall.operator_action": true
@@ -2611,29 +2748,16 @@ QtObject {
                 openBlockchainBlock(value)
                 return
             }
-            const recipient = transferRecipientDetailById(value)
-            if (recipient) {
-                openRecipient(value)
-                return
-            }
-            const channel = channelDetailById(value)
-            if (channel) {
-                openChannel(value)
+            if (root.programIdKnown(value)) {
+                openProgram(value)
                 return
             }
             resolveSearchHash(value)
             return
         }
 
-        const recipient = transferRecipientDetailById(value)
-        if (recipient) {
-            openRecipient(value)
-            return
-        }
-
-        const channel = channelDetailById(value)
-        if (channel) {
-            openChannel(value)
+        if (root.programIdKnown(value)) {
+            openProgram(value)
             return
         }
 
@@ -3002,14 +3126,27 @@ QtObject {
             return
         }
 
+        const response = requestModule(inspectorModule, "blockchainTransaction", [nodeUrl, root.normalizedHashOrValue(value)], qsTr("Mantle transaction"), false)
+        if (response.ok) {
+            const fetched = root.blockchainTransactionDetail(response.value, value)
+            transactionDetailValue = fetched
+            transactionsPageError = ""
+            setResult(qsTr("Mantle transaction"), BridgeHelpers.formatValue(fetched), false, fetched)
+            return
+        }
+
         transactionDetailValue = null
-        transactionsPageError = qsTr("Mantle transaction %1 is not in the loaded L1 slot window.").arg(value)
+        transactionsPageError = response.error || qsTr("Mantle transaction %1 was not found.").arg(value)
         setResult(qsTr("Mantle transaction"), transactionsPageError, true)
     }
 
     function openAccount(account) {
         const value = String(account || "").trim()
         if (!value.length) {
+            return
+        }
+        if (value.indexOf("Private/") === 0 || value.indexOf("private/") === 0) {
+            openPrivateAccountReference(value)
             return
         }
         const serial = searchResolveSerial + 1
@@ -3256,6 +3393,20 @@ QtObject {
         return null
     }
 
+    function blockchainTransactionDetail(value, fallbackHash) {
+        const tx = value || {}
+        const hash = String(tx.hash || tx.tx_hash || tx.transaction_hash || fallbackHash || "")
+        return {
+            type: "blockchain_transaction",
+            hash: hash,
+            block: String(tx.block || tx.block_hash || tx.header_hash || ""),
+            slot: tx.slot,
+            index: tx.index,
+            ops: Array.isArray(tx.operations) ? tx.operations : [],
+            raw: tx.raw || tx
+        }
+    }
+
     function openIndexerBlock(headerHash) {
         const value = String(headerHash || "").trim()
         if (!value.length) {
@@ -3314,7 +3465,17 @@ QtObject {
     function openLocalWallet(wallet, tab) {
         const target = String(wallet || "").trim()
         const targetTab = String(tab || "").length ? String(tab || "") : "profiles"
-        if (!walletProfileConfigured()) {
+        const bedrockOnly = targetTab === "bedrockNotes"
+        if (bedrockOnly && !bedrockWalletSourceConfigured()) {
+            setResult(
+                qsTr("Bedrock wallet"),
+                qsTr("Configure a Bedrock node endpoint before querying wallet notes."),
+                true,
+                null
+            )
+            return
+        }
+        if (!bedrockOnly && !walletProfileConfigured()) {
             setResult(
                 qsTr("Local wallet"),
                 qsTr("Configure an explicit local wallet profile. Transfer recipients use recipient:<id>; wallet:<id> is reserved for local wallet state."),
@@ -3323,8 +3484,8 @@ QtObject {
             )
             return
         }
-        const profileStatus = checkedLocalWalletProfile()
-        if (!profileStatus.ok) {
+        const profileStatus = bedrockOnly ? { ok: true, detail: "" } : checkedLocalWalletProfile()
+        if (!bedrockOnly && !profileStatus.ok) {
             setResult(
                 qsTr("Local wallet"),
                 profileStatus.detail.length ? profileStatus.detail : qsTr("Local wallet profile is not usable."),
@@ -3341,8 +3502,8 @@ QtObject {
             walletPublicKeyProbe = target
         }
         setResult(
-            qsTr("Local wallet"),
-            target.length ? qsTr("Local wallet context: %1").arg(target) : qsTr("Local wallet profile configured."),
+            bedrockOnly ? qsTr("Bedrock wallet") : qsTr("Local wallet"),
+            target.length ? (bedrockOnly ? qsTr("Bedrock wallet context: %1").arg(target) : qsTr("Local wallet context: %1").arg(target)) : (bedrockOnly ? qsTr("Bedrock wallet source configured.") : qsTr("Local wallet profile configured.")),
             false,
             walletProfile()
         )
@@ -3395,10 +3556,48 @@ QtObject {
             return
         }
 
-        const value = { type: "channel", channel: String(channel || "") }
+        const channelId = String(channel || "").trim()
+        const response = requestModule(inspectorModule, "channelState", [nodeUrl, channelId], qsTr("Channel"), false)
+        if (response.ok) {
+            const raw = response.value && typeof response.value === "object" ? response.value : {}
+            const value = root.channelDetail(Object.assign({}, raw, {
+                channel: String(raw.channel || raw.channel_id || channelId),
+                channel_id: String(raw.channel_id || raw.channel || channelId),
+                source_confidence: "node"
+            }))
+            currentView = "channels"
+            channelDetailValue = value
+            setResult(qsTr("Channel"), BridgeHelpers.formatValue(value), false, value)
+            return
+        }
+
+        const value = { type: "channel", channel: channelId, error: response.error || "" }
         currentView = "channels"
         channelDetailValue = value
-        setResult(qsTr("Channel"), BridgeHelpers.formatValue(value), false, value)
+        setResult(qsTr("Channel"), response.error || BridgeHelpers.formatValue(value), response.ok !== true, value)
+    }
+
+    function programIdKnown(programId) {
+        const normalized = root.canonicalProgramIdHex(programId) || root.normalizedHexText(programId)
+        if (!normalized.length) {
+            return false
+        }
+        for (let i = 0; i < registeredIdls.count; ++i) {
+            const entry = root.idlEntryAt(i)
+            const entryProgram = String(entry.programIdHex || "") || root.canonicalProgramIdHex(entry.programId) || root.normalizedHexText(entry.programId)
+            if (entryProgram === normalized) {
+                return true
+            }
+        }
+        const rows = Array.isArray(resultValue) ? resultValue : []
+        for (let j = 0; j < rows.length; ++j) {
+            const row = rows[j] || {}
+            const rowProgram = String(row.hex || row.programIdHex || "") || root.canonicalProgramIdHex(row.base58 || row.programId || row.program_id)
+            if (rowProgram === normalized) {
+                return true
+            }
+        }
+        return false
     }
 
     function registerIdl(name, programId, json) {

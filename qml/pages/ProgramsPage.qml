@@ -23,7 +23,7 @@ ColumnLayout {
     ListModel {
         id: programTabs
 
-        ListElement { value: "programIds"; label: "Program IDs" }
+        ListElement { value: "programIds"; label: "Known IDs" }
         ListElement { value: "idls"; label: "IDLs" }
         ListElement { value: "binaries"; label: "Binaries" }
     }
@@ -31,9 +31,9 @@ ColumnLayout {
     PageHeader {
         theme: root.theme
         breadcrumb: qsTr("Home / L2 LEZ / Programs")
-        title: qsTr("L2 Programs")
+        title: qsTr("Known L2 Programs")
         layerLabel: qsTr("L2 LEZ")
-        subtitle: qsTr("Sequencer program IDs with local SPEL / IDL bindings and binary inspection.")
+        subtitle: qsTr("Sequencer known program IDs with local SPEL / IDL bindings and binary inspection.")
         Layout.fillWidth: true
     }
 
@@ -306,17 +306,17 @@ ColumnLayout {
 
             SourceStrip {
                 theme: root.theme
-                sources: [qsTr("L2 LEZ"), qsTr("sequencer getProgramIds"), qsTr("program id")]
+                sources: [qsTr("L2 LEZ"), qsTr("sequencer known table"), qsTr("program id")]
                 Layout.fillWidth: true
             }
 
             ActionButton {
                 theme: root.theme
-                text: qsTr("Load program IDs")
+                text: qsTr("Load known IDs")
                 primary: true
                 enabled: !root.model.busy
                 Layout.preferredWidth: 190
-                onClicked: root.model.callInspector("programs", [root.model.sequencerUrl], qsTr("Program IDs"))
+                onClicked: root.model.callInspector("programs", [root.model.sequencerUrl], qsTr("Known program IDs"))
             }
         }
     }
@@ -382,10 +382,10 @@ ColumnLayout {
 
                 ActionButton {
                     theme: root.theme
-                    text: qsTr("Load program IDs")
+                    text: qsTr("Load known IDs")
                     enabled: !root.model.busy
                     Layout.fillWidth: true
-                    onClicked: root.model.callInspector("programs", [root.model.sequencerUrl], qsTr("Program IDs"))
+                    onClicked: root.model.callInspector("programs", [root.model.sequencerUrl], qsTr("Known program IDs"))
                 }
             }
         }
@@ -616,7 +616,7 @@ ColumnLayout {
                 ProgramRow {
                     theme: listRoot.theme
                     header: true
-                    programIdText: qsTr("Program ID")
+                    programIdText: qsTr("Known program ID")
                     knownIdl: qsTr("Known IDL")
                     binaryMatch: qsTr("Binary match")
                     recentTx: qsTr("Recent tx")
@@ -1010,7 +1010,7 @@ ColumnLayout {
 
     function activeTabLabel() {
         if (root.model.programTab === "programIds") {
-            return qsTr("Program IDs")
+            return qsTr("Known IDs")
         }
         if (root.model.programTab === "binaries") {
             return qsTr("Binaries")
@@ -1020,7 +1020,7 @@ ColumnLayout {
 
     function activeTabDelta() {
         if (root.model.programTab === "programIds") {
-            return qsTr("Sequencer")
+            return qsTr("Static table")
         }
         if (root.model.programTab === "binaries") {
             return qsTr("File inspection")
@@ -1030,7 +1030,7 @@ ColumnLayout {
 
     function activeTabMessage() {
         if (root.model.programTab === "programIds") {
-            return qsTr("Load program identities from the sequencer before binding local IDLs or binaries.")
+            return qsTr("Load the sequencer known-program table before binding local IDLs or binaries.")
         }
         if (root.model.programTab === "binaries") {
             return qsTr("Inspect compiled program bytecode to derive program IDs and deployment transaction hashes.")
@@ -1106,7 +1106,7 @@ ColumnLayout {
     function responseProgramDelta() {
         const value = root.responseValue
         if (Array.isArray(value)) {
-            return qsTr("Program IDs")
+            return qsTr("Known program IDs")
         }
         if (root.isProgramFile(value)) {
             return qsTr("%1 bytes").arg(root.numberText(value.bytecode_len))

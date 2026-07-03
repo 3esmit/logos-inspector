@@ -287,11 +287,11 @@ ColumnLayout {
 
                 ActionButton {
                     theme: root.theme
-                    text: qsTr("Version")
+                    text: qsTr("Node info")
                     enabled: !root.model.busy
                     Layout.fillWidth: true
-                    accessibleName: qsTr("Fetch blockchain module version")
-                    onClicked: root.model.callModule(root.model.blockchainModule, "moduleVersion", [], qsTr("Blockchain module"))
+                    accessibleName: qsTr("Fetch blockchain node info")
+                    onClicked: root.model.callModule(root.model.blockchainModule, "get_cryptarchia_info", [], qsTr("Blockchain module"))
                 }
             }
         }

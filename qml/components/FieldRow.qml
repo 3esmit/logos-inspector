@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls.Basic
+import QtQml
 import QtQuick.Layouts
 import "../theme"
 
@@ -9,7 +10,19 @@ ColumnLayout {
     required property Theme theme
     property string label: ""
     property alias text: field.text
+    property string sourceText: ""
+    property bool syncSourceText: false
     property alias placeholderText: field.placeholderText
+    signal textEdited(string text)
+
+    function syncFromSourceText() {
+        if (root.syncSourceText && !field.activeFocus && field.text !== root.sourceText) {
+            field.text = root.sourceText
+        }
+    }
+
+    onSourceTextChanged: syncFromSourceText()
+    onSyncSourceTextChanged: syncFromSourceText()
 
     spacing: 6
     Layout.fillWidth: true
@@ -35,6 +48,16 @@ ColumnLayout {
         hoverEnabled: true
         Layout.fillWidth: true
         Layout.preferredHeight: root.theme.controlHeight
+        Component.onCompleted: root.syncFromSourceText()
+        onActiveFocusChanged: root.syncFromSourceText()
+        onTextEdited: root.textEdited(text)
+
+        Binding {
+            target: field
+            property: "text"
+            value: root.sourceText
+            when: root.syncSourceText && !field.activeFocus
+        }
 
         background: Rectangle {
             radius: root.theme.radius

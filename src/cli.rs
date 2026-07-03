@@ -106,6 +106,7 @@ enum CliCommand {
         accounts: Option<String>,
     },
     DecodeEvent {
+        /// Decode a nonstandard Inspector event extension, not official SPEL IDL.
         #[arg(long)]
         data_hex: String,
         #[arg(long)]
