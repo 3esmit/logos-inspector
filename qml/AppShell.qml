@@ -33,6 +33,12 @@ Item {
         appModel.loadSettingsState()
         appModel.loadIdlState()
         appModel.loadWalletState()
+        const initialReference = root.initialReferenceFromArguments()
+        if (initialReference.length > 0) {
+            Qt.callLater(function () {
+                appModel.routeSearch(initialReference)
+            })
+        }
     }
 
     Timer {
@@ -224,6 +230,16 @@ Item {
         default:
             return overviewPage
         }
+    }
+
+    function initialReferenceFromArguments() {
+        const args = Qt.application.arguments || []
+        for (let i = 0; i < args.length - 1; i += 1) {
+            if (args[i] === "--open-ref") {
+                return String(args[i + 1] || "").trim()
+            }
+        }
+        return ""
     }
 
     Component {

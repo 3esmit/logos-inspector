@@ -1020,7 +1020,7 @@ QtObject {
 
     function transactionDecodeFullyConsumed(value) {
         const decoded = root.transactionDecodedInstruction(value)
-        return decoded !== null && Array.isArray(decoded.remaining_words) && decoded.remaining_words.length === 0
+        return decoded !== null && !decoded.decode_error && Array.isArray(decoded.remaining_words) && decoded.remaining_words.length === 0
     }
 
     function transactionDecodedInstruction(value) {
