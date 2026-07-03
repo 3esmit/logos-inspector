@@ -23,22 +23,43 @@ ColumnLayout {
         spacing: 6
         Layout.fillWidth: true
 
-        Text {
-            text: qsTr("Transfer recipient")
-            color: root.theme.text
-            textFormat: Text.PlainText
-            font.pixelSize: 22
-            font.weight: Font.DemiBold
+        RowLayout {
+            spacing: root.theme.gap
+            Layout.fillWidth: true
+
+            Text {
+                text: root.detail && root.detail.source === "account_refs" ? qsTr("Account reference") : qsTr("Transfer recipient")
+                color: root.theme.text
+                textFormat: Text.PlainText
+                font.pixelSize: 22
+                font.weight: Font.DemiBold
+                Layout.fillWidth: true
+            }
+
+            ActionButton {
+                visible: root.detail !== null && root.detail.address.length > 0
+                theme: root.theme
+                text: qsTr("Open account state")
+                Layout.preferredWidth: 156
+                onClicked: root.model.openAccount(root.detail.address)
+            }
+        }
+
+        SourceStrip {
+            theme: root.theme
+            sources: root.detail ? [qsTr("L2 Indexer"), root.sourceLabel(root.detail.source), qsTr("key: %1").arg(root.detail.source === "account_refs" ? qsTr("account id") : qsTr("recipient"))] : []
             Layout.fillWidth: true
         }
 
-        Text {
+        LinkCell {
+            theme: root.theme
             text: root.detail ? root.detail.address : ""
-            color: root.theme.textMuted
-            textFormat: Text.PlainText
-            wrapMode: Text.WrapAnywhere
-            font.family: "monospace"
-            font.pixelSize: 12
+            copyable: root.detail !== null && root.detail.address.length > 0
+            copyText: root.detail ? root.detail.address : ""
+            monospace: true
+            wrap: true
+            textColor: root.theme.textMuted
+            textPixelSize: 12
             Layout.fillWidth: true
         }
     }
@@ -80,7 +101,7 @@ ColumnLayout {
             theme: root.theme
             label: qsTr("Source txs")
             value: root.detail ? root.numberText(root.detail.txs) : "-"
-            delta: qsTr("Distinct hashes")
+            delta: qsTr("Loaded window")
         }
 
         MetricCard {
@@ -96,8 +117,21 @@ ColumnLayout {
         spacing: 10
         Layout.fillWidth: true
 
+        DetailSection {
+            theme: root.theme
+            title: qsTr("Source")
+            rows: root.sourceRows()
+        }
+
+        DetailSection {
+            visible: root.detail && root.detail.source === "account_refs"
+            theme: root.theme
+            title: qsTr("Account references")
+            rows: root.accountReferenceRows()
+        }
+
         Text {
-            text: qsTr("Observed transfers")
+            text: root.detail && root.detail.source === "account_refs" ? qsTr("Transactions") : qsTr("Transactions")
             color: root.theme.text
             textFormat: Text.PlainText
             font.pixelSize: 14
@@ -122,7 +156,7 @@ ColumnLayout {
                 TransferRow {
                     theme: root.theme
                     header: true
-                    columns: [qsTr("L2 block"), qsTr("Tx hash"), qsTr("Header"), qsTr("Value")]
+                    columns: [qsTr("Tx"), qsTr("L2 block"), qsTr("Header"), qsTr("Amount")]
                 }
 
                 Repeater {
@@ -132,11 +166,11 @@ ColumnLayout {
                         required property var modelData
 
                         theme: root.theme
-                        columns: [modelData.slot, modelData.tx, modelData.block, modelData.value]
+                        columns: [modelData.tx, modelData.slot, modelData.block, modelData.value]
                         txHash: modelData.txHash
                         blockHash: modelData.blockHash
                         onCellActivated: function (column) {
-                            if (column === 1) {
+                            if (column === 0) {
                                 root.model.openTransaction(modelData.txHash)
                             } else if (column === 2) {
                                 root.model.openIndexerBlock(modelData.blockHash)
@@ -145,6 +179,12 @@ ColumnLayout {
                     }
                 }
             }
+        }
+
+        DetailSection {
+            theme: root.theme
+            title: qsTr("Raw extraction")
+            rows: root.rawRows()
         }
     }
 
@@ -188,6 +228,47 @@ ColumnLayout {
                 blockHash: blockHash
             }
         })
+    }
+
+    function sourceRows() {
+        if (!root.detail) {
+            return []
+        }
+        return [
+            { label: qsTr("Scan method"), value: root.sourceLabel(root.detail.source), copyText: "" },
+            { label: qsTr("Block window"), value: root.model.transferActivityBeforeBlock > 0 ? qsTr("Before L2 block %1").arg(root.numberText(root.model.transferActivityBeforeBlock)) : qsTr("Latest finalized L2 blocks"), copyText: "" },
+            { label: qsTr("Confidence"), value: root.detail.source === "transfer_outputs" ? qsTr("decoded transfer output") : qsTr("fallback account reference"), copyText: "" }
+        ]
+    }
+
+    function accountReferenceRows() {
+        if (!root.detail || !root.detail.address.length) {
+            return []
+        }
+        return [
+            { label: qsTr("Affected"), value: root.detail.address, copyText: root.detail.address, linkKind: "account", linkValue: root.detail.address }
+        ]
+    }
+
+    function rawRows() {
+        if (!root.detail) {
+            return []
+        }
+        return [
+            { label: qsTr("Source"), value: root.detail.source || "-", copyText: "" },
+            { label: qsTr("Loaded rows"), value: qsTr("%1 transaction row(s)").arg(root.numberText(root.detail.transfers.length)), copyText: "" }
+        ]
+    }
+
+    function sourceLabel(source) {
+        const value = String(source || "")
+        if (value === "transfer_outputs") {
+            return qsTr("transfer-output scan")
+        }
+        if (value === "account_refs") {
+            return qsTr("account-ref fallback")
+        }
+        return value.length ? value : qsTr("unknown source")
     }
 
     function coinText(value) {
@@ -264,6 +345,7 @@ ColumnLayout {
                     text: String(rowRoot.columns[index] || "-")
                     header: rowRoot.header
                     link: rowRoot.linkFor(index)
+                    copyable: rowRoot.copyValueFor(index).length > 0 && !rowRoot.header
                     copyText: rowRoot.copyValueFor(index)
                     monospace: !rowRoot.header
                     Layout.preferredWidth: rowRoot.columnWidth(index)
@@ -275,12 +357,12 @@ ColumnLayout {
 
         function linkFor(index) {
             return !rowRoot.header
-                && ((index === 1 && rowRoot.txHash.length > 0)
+                && ((index === 0 && rowRoot.txHash.length > 0)
                     || (index === 2 && rowRoot.blockHash.length > 0))
         }
 
         function copyValueFor(index) {
-            if (index === 1 && rowRoot.txHash.length > 0) {
+            if (index === 0 && rowRoot.txHash.length > 0) {
                 return rowRoot.txHash
             }
             if (index === 2 && rowRoot.blockHash.length > 0) {
@@ -290,13 +372,115 @@ ColumnLayout {
         }
 
         function columnWidth(index) {
-            if (index === 0) {
-                return 96
-            }
             if (index === 3) {
                 return 92
             }
+            if (index === 1) {
+                return 96
+            }
             return 180
+        }
+    }
+
+    component DetailSection: ColumnLayout {
+        id: sectionRoot
+
+        required property Theme theme
+        property string title: ""
+        property var rows: []
+
+        visible: rows.length > 0
+        spacing: 6
+        Layout.fillWidth: true
+
+        Text {
+            text: sectionRoot.title
+            color: sectionRoot.theme.text
+            textFormat: Text.PlainText
+            font.pixelSize: sectionRoot.theme.primaryText
+            font.weight: Font.DemiBold
+            Layout.fillWidth: true
+        }
+
+        Frame {
+            padding: 0
+            Layout.fillWidth: true
+
+            background: Rectangle {
+                color: sectionRoot.theme.surface
+                radius: sectionRoot.theme.radius
+                border.width: 1
+                border.color: sectionRoot.theme.outlineMuted
+            }
+
+            contentItem: ColumnLayout {
+                spacing: 0
+
+                Repeater {
+                    model: sectionRoot.rows
+
+                    DetailRow {
+                        required property var modelData
+
+                        theme: sectionRoot.theme
+                        label: String(modelData.label || "")
+                        value: String(modelData.value || "-")
+                        copyText: String(modelData.copyText !== undefined ? modelData.copyText : modelData.value || "")
+                        linkKind: String(modelData.linkKind || "")
+                        linkValue: String(modelData.linkValue || "")
+                        onActivated: root.model.openReference(linkKind, linkValue)
+                    }
+                }
+            }
+        }
+    }
+
+    component DetailRow: Item {
+        id: detailRowRoot
+
+        required property Theme theme
+        property string label: ""
+        property string value: "-"
+        property string copyText: value
+        property string linkKind: ""
+        property string linkValue: ""
+        signal activated()
+
+        Layout.fillWidth: true
+        implicitHeight: Math.max(40, rowBody.implicitHeight + 16)
+
+        GridLayout {
+            id: rowBody
+
+            anchors.fill: parent
+            anchors.leftMargin: 12
+            anchors.rightMargin: 12
+            anchors.topMargin: 8
+            anchors.bottomMargin: 8
+            columns: 2
+            columnSpacing: 12
+
+            Text {
+                text: detailRowRoot.label
+                color: detailRowRoot.theme.textMuted
+                textFormat: Text.PlainText
+                font.pixelSize: detailRowRoot.theme.labelText
+                font.weight: Font.DemiBold
+                font.capitalization: Font.AllUppercase
+                Layout.preferredWidth: 132
+            }
+
+            LinkCell {
+                theme: detailRowRoot.theme
+                text: detailRowRoot.value
+                link: detailRowRoot.linkKind.length > 0
+                copyable: detailRowRoot.copyText.length > 0
+                copyText: detailRowRoot.copyText
+                monospace: true
+                wrap: true
+                Layout.fillWidth: true
+                onActivated: detailRowRoot.activated()
+            }
         }
     }
 }

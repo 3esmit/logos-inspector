@@ -11,8 +11,8 @@ use crate::{
     inspect_transaction_summary_with_idl, last_sequencer_block_id, local_wallet_profile_status,
     logoscore,
     modules::{
-        blockchain_module_report, capabilities_report, delivery_report, logoscore_status_report,
-        modules_report, storage_report,
+        blockchain_module_report, capabilities_report, delivery_report, delivery_source_report,
+        logoscore_status_report, modules_report, storage_report, storage_source_report,
     },
     overview, program_file_info, raw_json_rpc_result, raw_rpc_report, sequencer_block,
     sequencer_program_ids, sequencer_transaction, sequencer_transaction_inspection,
@@ -234,9 +234,27 @@ impl InspectorBridge {
                 let args = Args::new(args)?;
                 to_value(storage_report(args.optional_string(0)))
             }
+            "storageSourceReport" => {
+                let args = Args::new(args)?;
+                to_value(self.runtime.block_on(storage_source_report(
+                    args.optional_string(0).unwrap_or("module"),
+                    args.optional_string(1),
+                    args.optional_string(2),
+                    args.optional_string(3),
+                )))
+            }
             "deliveryReport" => {
                 let args = Args::new(args)?;
                 to_value(delivery_report(args.optional_string(0)))
+            }
+            "deliverySourceReport" => {
+                let args = Args::new(args)?;
+                to_value(self.runtime.block_on(delivery_source_report(
+                    args.optional_string(0).unwrap_or("module"),
+                    args.optional_string(1),
+                    args.optional_string(2),
+                    args.optional_string(3),
+                )))
             }
             "capabilitiesReport" => to_value(capabilities_report()),
             "callModule" => {

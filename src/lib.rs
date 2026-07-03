@@ -1634,6 +1634,12 @@ fn transfer_recipient_summaries_from_blocks(
                 aggregate.tx_hashes.insert(tx.hash.clone());
                 aggregate.outputs += 1;
                 aggregate.last_slot = max_slot(aggregate.last_slot, block.block_id);
+                aggregate.transfers.push(RecipientTransferSummary {
+                    slot: block.block_id,
+                    tx_hash: tx.hash.clone(),
+                    block_hash: block.header_hash.clone(),
+                    value: None,
+                });
             }
         }
     }
@@ -3539,8 +3545,14 @@ mod tests {
         assert!(
             recipients
                 .iter()
-                .all(|recipient| recipient.transfers.is_empty())
+                .all(|recipient| recipient.transfers.len() == 1)
         );
+        assert!(recipients.iter().all(|recipient| {
+            recipient
+                .transfers
+                .first()
+                .is_some_and(|transfer| transfer.tx_hash == "tx-a")
+        }));
         assert!(
             recipients
                 .iter()

@@ -62,11 +62,27 @@ QtObject {
     property string indexerUrl: "http://127.0.0.1:8779/"
     property string nodeUrl: "http://127.0.0.1:8080/"
     property string messagingNodeInfoId: ""
+    property string messagingSourceMode: "module"
+    property string messagingRestUrl: "http://127.0.0.1:8645"
+    property string messagingMetricsUrl: "http://127.0.0.1:8008/metrics"
+    property string messagingNetworkPreset: "testnet"
+    property int messagingRollingWindow: 120
+    property bool messagingAdminRestEnabled: false
+    property bool messagingMutatingDiagnosticsEnabled: false
+    property string storageSourceMode: "module"
+    property string storageRestUrl: "http://127.0.0.1:8080/api/storage/v1"
+    property string storageMetricsUrl: "http://127.0.0.1:8008/metrics"
+    property string storageNetworkPreset: "logos.test"
+    property string storageDataDir: ""
+    property int storageRollingWindow: 120
+    property bool storageLocalDiagnosticsEnabled: false
+    property bool storagePrivilegedDebugEnabled: false
+    property bool storageMutatingDiagnosticsEnabled: false
     property string storageCidProbe: ""
 
     property string sequencerTab: "blocks"
     property string accountTab: "lookup"
-    property string programTab: "idls"
+    property string programTab: "programIds"
     property string indexerTab: "status"
     property string localWalletTab: "profiles"
     property string localWalletLookupTarget: ""
@@ -114,7 +130,7 @@ QtObject {
     property int accountAutoDecodeSerial: 0
     property int transactionAutoDecodeSerial: 0
     property int searchResolveSerial: 0
-    property var navExpanded: ({ l1: true, l2: true, modules: false, local: true, system: true })
+    property var navExpanded: ({ l1: true, l2: true, network: false, local: true, system: true })
     property int navRevision: 0
 
     onCurrentViewChanged: expandNavGroupForView(currentView)
@@ -151,13 +167,13 @@ QtObject {
             },
             {
                 type: "group",
-                key: "modules",
-                label: qsTr("Modules"),
-                token: "MOD",
+                key: "network",
+                label: qsTr("Network"),
+                token: "NET",
                 layer: "module",
                 children: [
                     { key: "storage", view: "storage", label: qsTr("Storage"), token: "STO", layer: "module" },
-                    { key: "messaging", view: "messaging", label: qsTr("Messaging"), token: "MSG", layer: "module" },
+                    { key: "messaging", view: "messaging", label: qsTr("Delivery"), token: "DLV", layer: "module" },
                     { key: "capabilities", view: "capabilities", label: qsTr("Capabilities"), token: "CAP", layer: "module" }
                 ]
             },
@@ -1004,9 +1020,9 @@ QtObject {
         case "execution":
             return { module: inspectorModule, method: "head", args: [sequencerUrl], label: qsTr("Sequencer head") }
         case "messaging":
-            return { module: inspectorModule, method: "deliveryReport", args: [messagingNodeInfoId], label: qsTr("Messaging node") }
+            return { module: inspectorModule, method: "deliverySourceReport", args: root.deliverySourceReportArgs(), label: qsTr("Delivery source") }
         case "storage":
-            return { module: inspectorModule, method: "storageReport", args: [storageCidProbe], label: qsTr("Storage node") }
+            return { module: inspectorModule, method: "storageSourceReport", args: root.storageSourceReportArgs(), label: qsTr("Storage source") }
         default:
             return null
         }
@@ -1028,8 +1044,10 @@ QtObject {
         case "head":
             return "execution"
         case "deliveryReport":
+        case "deliverySourceReport":
             return "messaging"
         case "storageReport":
+        case "storageSourceReport":
             return "storage"
         default:
             return ""
@@ -1043,13 +1061,19 @@ QtObject {
         networkConnectionPendingRevision += 1
     }
 
+    function networkConnectionIsPending(kind) {
+        const revision = networkConnectionPendingRevision
+        return networkConnectionPending[String(kind || "")] === true
+    }
+
     function updateNetworkConnectionStatus(kind, response) {
         const next = copyMap(networkConnectionStatus)
         const value = response && response.value !== undefined ? response.value : null
+        const ok = response && response.ok === true && root.connectionValueOk(kind, value)
         next[kind] = {
             known: true,
-            ok: response ? response.ok === true : false,
-            text: response && response.ok ? qsTr("OK") : qsTr("Error"),
+            ok: ok,
+            text: ok ? qsTr("OK") : qsTr("Error"),
             detail: response && response.ok ? networkConnectionSummary(kind, value) : (response && response.error ? response.error : qsTr("No response")),
             value: value,
             checkedAt: new Date().toLocaleTimeString(Qt.locale(), "hh:mm:ss")
@@ -1068,14 +1092,136 @@ QtObject {
             return scalar !== null ? qsTr("head %1").arg(root.valueText(scalar)) : qsTr("reachable")
         }
         if (kind === "messaging") {
+            if (!root.moduleReportReachable(value)) {
+                return root.moduleReportError(value) || qsTr("source unavailable")
+            }
             const version = root.moduleProbeValue("messaging", "version")
-            return version !== null ? qsTr("version %1").arg(root.valueText(version)) : qsTr("module reachable")
+            return version !== null ? qsTr("version %1").arg(root.valueText(version)) : qsTr("%1 reachable").arg(root.deliverySourceLabel())
         }
         if (kind === "storage") {
+            if (!root.moduleReportReachable(value)) {
+                return root.moduleReportError(value) || qsTr("source unavailable")
+            }
             const version = root.moduleProbeValue("storage", "version") || root.moduleProbeValue("storage", "moduleVersion")
-            return version !== null ? qsTr("version %1").arg(root.valueText(version)) : qsTr("module reachable")
+            return version !== null ? qsTr("version %1").arg(root.valueText(version)) : qsTr("%1 reachable").arg(root.storageSourceLabel())
         }
         return qsTr("reachable")
+    }
+
+    function connectionValueOk(kind, value) {
+        if (kind === "messaging" || kind === "storage") {
+            return root.moduleReportReachable(value)
+        }
+        return true
+    }
+
+    function moduleReportReachable(report) {
+        if (!report || typeof report !== "object") {
+            return false
+        }
+        if (report.module_info && report.module_info.ok === true) {
+            return true
+        }
+        const probes = Array.isArray(report.probes) ? report.probes : []
+        for (let i = 0; i < probes.length; ++i) {
+            if (probes[i] && probes[i].ok === true) {
+                return true
+            }
+        }
+        return false
+    }
+
+    function moduleReportError(report) {
+        if (!report || typeof report !== "object") {
+            return ""
+        }
+        if (report.module_info && report.module_info.ok === false && report.module_info.error) {
+            return String(report.module_info.error)
+        }
+        const probes = Array.isArray(report.probes) ? report.probes : []
+        for (let i = 0; i < probes.length; ++i) {
+            if (probes[i] && probes[i].ok === false && probes[i].error) {
+                return String(probes[i].error)
+            }
+        }
+        return ""
+    }
+
+    function deliverySourceReportArgs() {
+        return [
+            String(messagingSourceMode || "module"),
+            String(messagingRestUrl || ""),
+            String(messagingMetricsUrl || ""),
+            String(messagingNodeInfoId || "")
+        ]
+    }
+
+    function deliverySourceLabel() {
+        switch (String(messagingSourceMode || "module")) {
+        case "rest":
+            return qsTr("Direct Waku REST")
+        case "metrics":
+            return qsTr("Metrics only")
+        case "network-monitor":
+            return qsTr("Network monitor")
+        case "discovery-crawler":
+            return qsTr("Discovery crawler")
+        default:
+            return qsTr("Basecamp module")
+        }
+    }
+
+    function deliverySourceTarget() {
+        switch (String(messagingSourceMode || "module")) {
+        case "rest":
+            return String(messagingRestUrl || "")
+        case "metrics":
+            return String(messagingMetricsUrl || "")
+        case "network-monitor":
+            return String(messagingRestUrl || "")
+        case "discovery-crawler":
+            return String(messagingNetworkPreset || "")
+        default:
+            return String(deliveryModule || "")
+        }
+    }
+
+    function storageSourceReportArgs() {
+        return [
+            String(storageSourceMode || "module"),
+            String(storageRestUrl || ""),
+            String(storageMetricsUrl || ""),
+            String(storageCidProbe || "")
+        ]
+    }
+
+    function storageSourceLabel() {
+        switch (String(storageSourceMode || "module")) {
+        case "rest":
+            return qsTr("Standalone REST")
+        case "metrics":
+            return qsTr("Metrics only")
+        case "c-library":
+            return qsTr("C library")
+        case "local-os":
+            return qsTr("Local OS diagnostics")
+        default:
+            return qsTr("Basecamp module")
+        }
+    }
+
+    function storageSourceTarget() {
+        switch (String(storageSourceMode || "module")) {
+        case "rest":
+            return String(storageRestUrl || "")
+        case "metrics":
+            return String(storageMetricsUrl || "")
+        case "c-library":
+        case "local-os":
+            return String(storageDataDir || storageNetworkPreset || "")
+        default:
+            return String(storageModule || "")
+        }
     }
 
     function networkConnectionState(kind) {
@@ -1494,19 +1640,21 @@ QtObject {
     function defaultFooterFieldSelections() {
         return {
             "network.network": true,
-            "network.report_time": true,
             "bedrock.node_health": true,
-            "bedrock.peer_count": true,
             "bedrock.sync_state": true,
             "bedrock.tip_height": true,
-            "bedrock.lib_height": true,
             "bedrock.tip_minus_lib": true,
             "lez.rpc_health": true,
             "lez.last_lez_block_id": true,
-            "lez.last_finalized_callback_height": true,
             "indexer.rpc_health": true,
             "indexer.indexed_finalized_height": true,
-            "indexer.ingestion_status": true,
+            "messaging.connection_state": true,
+            "messaging.peer_count": true,
+            "messaging.message_error_events_recent": true,
+            "storage.module": true,
+            "storage.node_reachable": true,
+            "storage.peer_count": true,
+            "storage.failed_transfers_recent": true,
             "overall.status": true,
             "overall.main_risk": true,
             "overall.operator_action": true
@@ -2043,8 +2191,8 @@ QtObject {
             { module: inspectorModule, method: "overview", args: [sequencerUrl, indexerUrl, nodeUrl], label: qsTr("Dashboard overview") },
             { module: inspectorModule, method: "blockchainNode", args: [nodeUrl], label: qsTr("Blockchain node") },
             { module: inspectorModule, method: "indexerBlocks", args: [indexerUrl, null, 10], label: qsTr("Latest blocks") },
-            { module: inspectorModule, method: "storageReport", args: [storageCidProbe], label: qsTr("Storage node") },
-            { module: inspectorModule, method: "deliveryReport", args: [messagingNodeInfoId], label: qsTr("Messaging node") }
+            { module: inspectorModule, method: "storageSourceReport", args: root.storageSourceReportArgs(), label: qsTr("Storage source") },
+            { module: inspectorModule, method: "deliverySourceReport", args: root.deliverySourceReportArgs(), label: qsTr("Delivery source") }
         ]
         const errors = []
         let remaining = requests.length
@@ -2063,9 +2211,9 @@ QtObject {
                 }
                 if (request.method === "blockchainNode") {
                     root.updateNetworkConnectionStatus("blockchain", response)
-                } else if (request.method === "storageReport") {
+                } else if (request.method === "storageReport" || request.method === "storageSourceReport") {
                     root.updateNetworkConnectionStatus("storage", response)
-                } else if (request.method === "deliveryReport") {
+                } else if (request.method === "deliverySourceReport") {
                     root.updateNetworkConnectionStatus("messaging", response)
                 }
                 remaining -= 1
@@ -2098,9 +2246,9 @@ QtObject {
             dashboardBlocks = value || []
         } else if (method === "account" || method === "decodeAccount") {
             accountDetailValue = value || null
-        } else if (method === "storageReport") {
+        } else if (method === "storageReport" || method === "storageSourceReport") {
             storageModuleReport = value || null
-        } else if (method === "deliveryReport") {
+        } else if (method === "deliveryReport" || method === "deliverySourceReport") {
             messagingModuleReport = value || null
         }
     }
@@ -2235,7 +2383,7 @@ QtObject {
             return true
         }
         if (prefix === "private") {
-            openLocalWallet(target.length > 0 && target.indexOf("Private/") !== 0 ? "Private/" + target : target, "privateSync")
+            openPrivateAccountReference(target.length > 0 && target.indexOf("Private/") !== 0 ? "Private/" + target : target)
             return true
         }
         if (prefix === "recipient") {
@@ -2406,7 +2554,7 @@ QtObject {
         if (normalized === "chain" || normalized === "base chain" || normalized === "node" || normalized === "consensus") {
             return "blockchain"
         }
-        if (normalized === "messages") {
+        if (normalized === "messages" || normalized === "messaging" || normalized === "delivery") {
             return "messaging"
         }
         if (normalized === "capability") {
@@ -2435,7 +2583,7 @@ QtObject {
         if (normalized === "execution" || normalized === "execution zone" || normalized === "lez rpc" || normalized === "sequencer node" || normalized === "sequencer rpc") {
             return { section: "network", subsection: "execution" }
         }
-        if (normalized === "messaging rpc" || normalized === "delivery rpc") {
+        if (normalized === "messaging rpc" || normalized === "delivery rpc" || normalized === "delivery settings") {
             return { section: "network", subsection: "messaging" }
         }
         if (normalized === "storage rpc" || normalized === "storage network") {
@@ -2485,7 +2633,7 @@ QtObject {
             return
         case "private":
         case "privateAccount":
-            openLocalWallet(target, "privateSync")
+            openPrivateAccountReference(target)
             return
         case "bedrockWallet":
         case "note":
@@ -2552,6 +2700,18 @@ QtObject {
                 setResult(qsTr("Account lookup"), response.error, true, null)
             }
         })
+    }
+
+    function openPrivateAccountReference(account) {
+        const value = String(account || "").trim()
+        currentView = "accounts"
+        accountTab = "lookup"
+        accountDetailValue = {
+            type: "private_account_reference",
+            account_id: value.length && value.indexOf("Private/") !== 0 ? "Private/" + value : value,
+            source: "local_wallet_required"
+        }
+        setResult(qsTr("Private account reference"), qsTr("Private account state is local wallet state. Public RPC can only expose public effects, commitments, nullifiers, or proofs when available."), false, accountDetailValue)
     }
 
     function openTransaction(hash) {
@@ -2829,7 +2989,7 @@ QtObject {
             return
         }
         currentView = "programs"
-        programTab = "idls"
+        programTab = "programIds"
         const detail = {
             type: "program",
             program_id: value,

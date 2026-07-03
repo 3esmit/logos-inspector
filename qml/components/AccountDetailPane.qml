@@ -75,6 +75,46 @@ ColumnLayout {
         }
     }
 
+    SourceStrip {
+        visible: root.detail !== null
+        theme: root.theme
+        sources: root.sourceItems()
+        Layout.fillWidth: true
+    }
+
+    StatusMessage {
+        visible: root.detail && root.detail.private_reference
+        theme: root.theme
+        tone: "info"
+        title: qsTr("Private account reference")
+        message: qsTr("Private account state is local wallet state. Public RPC can only expose public effects, commitments, nullifiers, or proofs when available.")
+        Layout.fillWidth: true
+    }
+
+    RowLayout {
+        visible: root.detail && root.detail.private_reference
+        spacing: root.theme.gapSmall
+        Layout.fillWidth: true
+
+        ActionButton {
+            theme: root.theme
+            text: qsTr("Configure local wallet")
+            Layout.preferredWidth: 172
+            onClicked: root.model.openLocalWallet(root.detail ? root.detail.account_id : "", "privateSync")
+        }
+
+        ActionButton {
+            theme: root.theme
+            text: qsTr("Search public effects")
+            enabled: false
+            Layout.preferredWidth: 166
+        }
+
+        Item {
+            Layout.fillWidth: true
+        }
+    }
+
     SectionBlock {
         theme: root.theme
         title: ""
@@ -82,7 +122,7 @@ ColumnLayout {
     }
 
     ColumnLayout {
-        visible: root.detail !== null
+        visible: root.detail !== null && !root.detail.private_reference
         spacing: 8
         Layout.fillWidth: true
 
@@ -259,7 +299,7 @@ ColumnLayout {
     }
 
     Text {
-        visible: root.detail && root.detail.related_transactions_error.length > 0
+        visible: root.detail && !root.detail.private_reference && root.detail.related_transactions_error.length > 0
         text: root.detail ? root.detail.related_transactions_error : ""
         color: root.theme.warning
         textFormat: Text.PlainText
@@ -269,7 +309,7 @@ ColumnLayout {
     }
 
     ColumnLayout {
-        visible: root.detail !== null
+        visible: root.detail !== null && !root.detail.private_reference
         spacing: 8
         Layout.fillWidth: true
 
@@ -334,8 +374,14 @@ ColumnLayout {
         let decode = null
         let decodeError = ""
         let decodeOnly = false
+        let privateReference = false
 
-        if (value.account && value.account.account_id !== undefined) {
+        if (value.type === "private_account_reference") {
+            privateReference = true
+            account = {
+                account_id: String(value.account_id || "")
+            }
+        } else if (value.account && value.account.account_id !== undefined) {
             account = value.account
             decode = value.decode || null
             decodeError = String(value.decode_error || "")
@@ -364,11 +410,15 @@ ColumnLayout {
             decode: decode,
             decode_error: decodeError,
             decode_only: decodeOnly,
+            private_reference: privateReference,
             raw: value
         }
     }
 
     function accountHeader(detail) {
+        if (detail && detail.private_reference) {
+            return qsTr("Private account reference")
+        }
         if (detail && (detail.account_id_base58.length || detail.account_id_hex.length)) {
             return root.addressLabel(detail.account_id_base58, detail.account_id_hex)
         }
@@ -378,6 +428,9 @@ ColumnLayout {
     function accountAlternate(detail) {
         if (!detail) {
             return ""
+        }
+        if (detail.private_reference) {
+            return detail.account_id
         }
         if (detail.account_id_hex.length) {
             return root.hexAddressText(detail.account_id_hex)
@@ -429,9 +482,19 @@ ColumnLayout {
         if (root.selectedIdlTypeIndex >= 0) {
             root.activeIdlLabel = root.idlTypeOptions[root.selectedIdlTypeIndex].idlName
         }
-        if (!root.activeDecode) {
+        if (!root.detail.private_reference && !root.activeDecode) {
             root.autoSelectDecode()
         }
+    }
+
+    function sourceItems() {
+        if (!root.detail) {
+            return []
+        }
+        if (root.detail.private_reference) {
+            return [qsTr("Local Wallet"), qsTr("private account reference"), qsTr("wallet state required")]
+        }
+        return [qsTr("L2 LEZ"), qsTr("sequencer latest"), qsTr("account id"), qsTr("L2 Indexer"), qsTr("finalized related txs"), qsTr("Local IDL"), qsTr("decode schema")]
     }
 
     function rebuildIdlTypeOptions() {
@@ -598,7 +661,7 @@ ColumnLayout {
             return qsTr("No account data is available.")
         }
         if (root.model.registeredIdls.count === 0) {
-            return qsTr("Register an account IDL in SPEL to decode this data.")
+            return qsTr("Register an account IDL in Programs to decode this data.")
         }
         return qsTr("No registered IDL type decoded this data.")
     }
@@ -609,6 +672,14 @@ ColumnLayout {
         }
 
         const rows = []
+        if (root.detail.private_reference) {
+            rows.push({
+                label: qsTr("Reference"),
+                value: root.detail.account_id.length ? root.detail.account_id : qsTr("Private/<id>"),
+                monospace: true
+            })
+            return rows
+        }
         if (root.detail.balance.length) {
             rows.push({
                 label: qsTr("Balance"),

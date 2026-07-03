@@ -19,37 +19,73 @@ Pane {
     topPadding: 5
     bottomPadding: 5
     Layout.fillWidth: true
-    Layout.preferredHeight: footerFlow.implicitHeight + topPadding + bottomPadding
+    Layout.preferredHeight: footerGrid.implicitHeight + topPadding + bottomPadding
 
     background: Rectangle {
         color: root.theme.sidebar
     }
 
-    contentItem: Flow {
-        id: footerFlow
+    contentItem: GridLayout {
+        id: footerGrid
 
-        spacing: root.theme.gapSmall
+        columns: root.compact ? 1 : 2
+        columnSpacing: root.theme.gap
+        rowSpacing: root.theme.gapTiny
 
-        Repeater {
-            model: root.footerGroups()
+        Flow {
+            id: leftFlow
 
-            SourceGroup {
-                required property var modelData
+            spacing: root.theme.gapSmall
+            Layout.fillWidth: true
 
-                theme: root.theme
-                compact: root.compact
-                first: modelData.first === true
-                items: modelData.items || []
+            Repeater {
+                model: root.footerGroups("left")
+
+                SourceGroup {
+                    required property var modelData
+
+                    theme: root.theme
+                    compact: root.compact
+                    first: modelData.first === true
+                    items: modelData.items || []
+                }
+            }
+        }
+
+        Flow {
+            id: rightFlow
+
+            visible: root.footerGroups("right").length > 0
+            spacing: root.theme.gapSmall
+            Layout.fillWidth: root.compact
+            Layout.alignment: root.compact ? Qt.AlignLeft : Qt.AlignRight
+
+            Repeater {
+                model: root.footerGroups("right")
+
+                SourceGroup {
+                    required property var modelData
+
+                    theme: root.theme
+                    compact: root.compact
+                    first: modelData.first === true
+                    items: modelData.items || []
+                }
             }
         }
     }
 
-    function footerGroups() {
+    function footerGroups(region) {
         const revision = root.model.footerFieldRevision
         const groups = root.footerSourceGroups()
         const rows = []
         for (let i = 0; i < groups.length; ++i) {
-            const items = root.footerGroupItems(groups[i])
+            const group = groups[i]
+            const alignRight = group.alignRight === true
+            if ((String(region || "left") === "right") !== alignRight) {
+                continue
+            }
+            const items = root.footerGroupItems(group)
             if (items.length > 0) {
                 rows.push({
                     first: rows.length === 0,
@@ -65,12 +101,18 @@ Pane {
         const keys = group.keys || []
         const statusKey = String(group.statusKey || "")
         if (statusKey.length > 0 && root.footerGroupVisible(keys)) {
-            rows.push(root.footerFieldItem(statusKey))
+            const statusItem = root.footerFieldItem(statusKey)
+            if (!statusItem.hidden) {
+                rows.push(statusItem)
+            }
         }
         for (let i = 0; i < keys.length; ++i) {
             const key = keys[i]
             if (key !== statusKey && root.model.footerFieldEnabled(key)) {
-                rows.push(root.footerFieldItem(key))
+                const item = root.footerFieldItem(key)
+                if (!item.hidden) {
+                    rows.push(item)
+                }
             }
         }
         return rows
@@ -78,7 +120,7 @@ Pane {
 
     function footerGroupVisible(keys) {
         for (let i = 0; i < keys.length; ++i) {
-            if (root.model.footerFieldEnabled(keys[i])) {
+            if (root.model.footerFieldEnabled(keys[i]) && !root.footerFieldHidden(keys[i])) {
                 return true
             }
         }
@@ -167,7 +209,7 @@ Pane {
                 "messaging.receive_latency_ms",
                 "messaging.last_error"
             ] },
-            { statusKey: "overall.status", keys: [
+            { statusKey: "overall.status", alignRight: true, keys: [
                 "overall.status",
                 "overall.main_risk",
                 "overall.operator_action"
@@ -184,7 +226,9 @@ Pane {
             tone: root.footerFieldTone(key),
             maximumWidth: root.footerFieldWidth(key),
             priority: root.footerFieldPriority(key),
-            valueVisible: !root.footerFieldUsesColorOnly(key)
+            valueVisible: !root.footerFieldUsesColorOnly(key),
+            showDot: root.footerFieldShowsDot(key),
+            hidden: root.footerFieldHidden(key)
         }
     }
 
@@ -246,7 +290,7 @@ Pane {
             "storage.last_error": qsTr("ST error"),
             "messaging.module": qsTr("Delivery"),
             "messaging.connection_state": qsTr("Conn"),
-            "messaging.peer_count": qsTr("MSG peers"),
+            "messaging.peer_count": qsTr("DLV peers"),
             "messaging.bootstrap_connected": qsTr("Bootstrap"),
             "messaging.active_subscriptions": qsTr("Subs"),
             "messaging.content_topics": qsTr("Topics"),
@@ -254,10 +298,10 @@ Pane {
             "messaging.message_sent_events_recent": qsTr("Sent"),
             "messaging.message_propagated_events_recent": qsTr("Prop"),
             "messaging.message_received_events_recent": qsTr("Recv"),
-            "messaging.message_error_events_recent": qsTr("Msg err"),
+            "messaging.message_error_events_recent": qsTr("Errors"),
             "messaging.publish_latency_ms": qsTr("Pub ms"),
             "messaging.receive_latency_ms": qsTr("Recv ms"),
-            "messaging.last_error": qsTr("Msg error"),
+            "messaging.last_error": qsTr("Delivery error"),
             "overall.status": qsTr("Overall"),
             "overall.main_risk": qsTr("Risk"),
             "overall.operator_action": qsTr("Action")
@@ -435,7 +479,7 @@ Pane {
             return root.toneForProbe("node", "consensus")
         }
         if (key === "bedrock.peer_count") {
-            return root.numberTone(root.networkValue("n_peers"))
+            return "neutral"
         }
         if (key === "bedrock.sync_state") {
             return root.syncTone()
@@ -458,11 +502,11 @@ Pane {
         if (key === "messaging.connection_state" || key === "messaging.bootstrap_connected") {
             return root.booleanTone(root.footerFieldValue(key))
         }
-        if (key.indexOf("storage.") === 0) {
-            return root.moduleTone("storage")
+        if (key === "storage.failed_transfers_recent" || key === "messaging.message_error_events_recent") {
+            return root.countProblemTone(root.footerFieldValue(key))
         }
-        if (key.indexOf("messaging.") === 0) {
-            return root.moduleTone("messaging")
+        if (key === "storage.last_error" || key === "messaging.last_error") {
+            return root.footerFieldValue(key) === qsTr("n/a") ? "neutral" : "error"
         }
         if (key === "overall.status") {
             return root.overallTone()
@@ -481,7 +525,12 @@ Pane {
     }
 
     function footerFieldPriority(key) {
-        return key.indexOf("_hash") >= 0 || key.indexOf("_time") >= 0 ? "low" : "normal"
+        return key.indexOf("_hash") >= 0
+                || key.indexOf("_time") >= 0
+                || key.indexOf("version") >= 0
+                || key.indexOf("last_error") >= 0
+                || key === "network.report_time"
+                || key === "overall.operator_action" ? "low" : "normal"
     }
 
     function footerFieldUsesColorOnly(key) {
@@ -507,6 +556,20 @@ Pane {
         return lookup[key] === true
     }
 
+    function footerFieldShowsDot(key) {
+        return key === "network.network" || root.footerFieldUsesColorOnly(key)
+    }
+
+    function footerFieldHidden(key) {
+        if (key === "overall.main_risk") {
+            return root.overallTone() === "success" && root.mainRisk() === qsTr("none")
+        }
+        if (key === "overall.operator_action") {
+            return root.overallTone() === "success" && root.operatorAction() === qsTr("monitor")
+        }
+        return false
+    }
+
     function overview() {
         return root.model.dashboardOverview || {}
     }
@@ -523,6 +586,11 @@ Pane {
     function probeValue(section, field) {
         const target = root.probe(section, field)
         return target && target.value !== undefined && target.value !== null ? root.model.scalarValue(target.value) : null
+    }
+
+    function probeRawValue(section, field) {
+        const target = root.probe(section, field)
+        return target && target.value !== undefined && target.value !== null ? target.value : null
     }
 
     function probeOk(section, field) {
@@ -560,7 +628,10 @@ Pane {
     }
 
     function consensusValue() {
-        const value = root.probeValue("node", "consensus")
+        const value = root.probeRawValue("node", "consensus")
+        if (value && typeof value.value === "object") {
+            return value.value
+        }
         return value && typeof value === "object" ? value : {}
     }
 
@@ -607,7 +678,13 @@ Pane {
         if (value === "unknown") {
             return "neutral"
         }
-        if (value.indexOf("sync") >= 0 || value.indexOf("catch") >= 0 || value.indexOf("start") >= 0) {
+        if (value === "stalled" || value.indexOf("fail") >= 0 || value.indexOf("error") >= 0) {
+            return "error"
+        }
+        if (value === "synced" || value === "ready" || value === "running") {
+            return "success"
+        }
+        if (value.indexOf("syncing") >= 0 || value.indexOf("catch") >= 0 || value.indexOf("start") >= 0) {
             return "warning"
         }
         return "success"
@@ -900,6 +977,14 @@ Pane {
         return Number.isFinite(number) && number > 0 ? "success" : "neutral"
     }
 
+    function countProblemTone(value) {
+        const number = Number(root.model.scalarValue(value))
+        if (!Number.isFinite(number) || number <= 0) {
+            return "neutral"
+        }
+        return "warning"
+    }
+
     function booleanTone(value) {
         const text = String(value || "").toLowerCase()
         if (text === String(qsTr("yes")).toLowerCase()
@@ -953,7 +1038,7 @@ Pane {
         spacing: groupRoot.theme.gapSmall
 
         Rectangle {
-            visible: !groupRoot.first
+            visible: !groupRoot.first && !groupRoot.compact
             color: groupRoot.theme.outline
             radius: width / 2
             Layout.preferredWidth: 1
@@ -977,6 +1062,7 @@ Pane {
                 fullName: String(modelData.fullName || modelData.label || "")
                 maximumTokenWidth: modelData.maximumWidth || 150
                 valueVisible: modelData.valueVisible !== false
+                showDot: modelData.showDot !== false
                 Layout.alignment: Qt.AlignVCenter
             }
         }
@@ -993,6 +1079,7 @@ Pane {
         property string fullName: ""
         property int maximumTokenWidth: 140
         property bool valueVisible: true
+        property bool showDot: true
 
         hoverEnabled: true
         padding: 0
@@ -1007,6 +1094,7 @@ Pane {
             spacing: token.theme.gapTiny
 
             Rectangle {
+                visible: token.showDot
                 color: token.toneColor()
                 radius: width / 2
                 Layout.preferredWidth: 7

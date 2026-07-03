@@ -10,9 +10,9 @@ GridLayout {
     property string title: ""
     property string subtitle: ""
     property string layerLabel: ""
-    property bool showTitle: false
-    property bool showBreadcrumb: false
-    property bool showSubtitle: false
+    property bool showTitle: true
+    property bool showBreadcrumb: true
+    property bool showSubtitle: true
     default property alias actions: actionSlot.data
     readonly property bool stacked: width < 680
     readonly property bool hasText: layerLabel.length > 0

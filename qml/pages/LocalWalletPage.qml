@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
+import QtQuick.Controls.Basic
 import QtQml.Models
 import QtQuick.Layouts
 import "../components"
@@ -35,52 +36,96 @@ ColumnLayout {
         Layout.fillWidth: true
     }
 
-    SourceStrip {
+    TabSwitch {
         theme: root.theme
-        sources: [qsTr("Local Wallet"), qsTr("Explicit Profile"), qsTr("NSSA_WALLET_HOME_DIR")]
+        current: root.model.localWalletTab
+        options: walletTabs
         Layout.fillWidth: true
+        onSelected: value => root.model.localWalletTab = value
     }
 
-    GridLayout {
-        columns: root.width < 760 ? 2 : 4
-        columnSpacing: root.theme.gap
-        rowSpacing: root.theme.gap
+    Frame {
+        id: walletStateShelf
+
+        padding: root.theme.gap
         Layout.fillWidth: true
 
-        MetricCard {
-            theme: root.theme
-            compact: true
-            label: qsTr("Profile")
-            value: root.model.walletProfileConfigured() ? root.shortText(root.model.walletProfileLabel, 18) : qsTr("Config")
-            delta: root.model.walletProfileConfigured() ? qsTr("Explicit source") : qsTr("Required")
-            deltaColor: root.model.walletProfileConfigured() ? root.theme.success : root.theme.warning
+        background: Rectangle {
+            color: root.theme.surface
+            radius: root.theme.radius
+            border.width: 1
+            border.color: root.theme.outlineMuted
         }
 
-        MetricCard {
-            theme: root.theme
-            compact: true
-            label: qsTr("Status")
-            value: root.localStatusText()
-            delta: root.localStatusDetail()
-            deltaColor: root.localStatusColor()
-        }
+        contentItem: ColumnLayout {
+            spacing: root.theme.gapSmall
 
-        MetricCard {
-            theme: root.theme
-            compact: true
-            label: qsTr("Home")
-            value: root.model.walletHome.length ? qsTr("Set") : qsTr("Env")
-            delta: root.model.walletHome.length ? root.shortText(root.model.walletHome, 22) : qsTr("NSSA_WALLET_HOME_DIR")
-            deltaColor: root.model.walletHome.length ? root.theme.textMuted : root.theme.warning
-        }
+            GridLayout {
+                columns: root.width < 760 ? 1 : 2
+                columnSpacing: root.theme.gap
+                rowSpacing: root.theme.gapSmall
+                Layout.fillWidth: true
 
-        MetricCard {
-            theme: root.theme
-            compact: true
-            label: qsTr("Bedrock")
-            value: root.model.bedrockWalletBalanceValue !== null ? qsTr("Loaded") : qsTr("Idle")
-            delta: root.shortText(root.model.walletBedrockNodeUrl || root.model.nodeUrl, 24)
-            deltaColor: root.model.bedrockWalletBalanceValue !== null ? root.theme.success : root.theme.textMuted
+                SourceStrip {
+                    theme: root.theme
+                    sources: [qsTr("Local Wallet"), qsTr("Explicit Profile"), qsTr("NSSA_WALLET_HOME_DIR")]
+                    Layout.fillWidth: true
+                }
+
+                LinkCell {
+                    visible: root.model.localWalletLookupTarget.length > 0
+                    theme: root.theme
+                    text: root.model.localWalletLookupTarget
+                    copyable: true
+                    copyText: root.model.localWalletLookupTarget
+                    monospace: true
+                    textColor: root.model.walletProfileConfigured() ? root.theme.text : root.theme.warning
+                    Layout.fillWidth: true
+                    Layout.alignment: root.width < 760 ? Qt.AlignLeft : Qt.AlignRight
+                }
+            }
+
+            GridLayout {
+                columns: root.width < 720 ? 2 : 4
+                columnSpacing: root.theme.gapSmall
+                rowSpacing: root.theme.gapSmall
+                Layout.fillWidth: true
+
+                StatusChip {
+                    theme: root.theme
+                    label: qsTr("Profile")
+                    value: root.model.walletProfileConfigured() ? root.shortText(root.model.walletProfileLabel, 22) : qsTr("Required")
+                    tone: root.model.walletProfileConfigured() ? "success" : "warning"
+                    Layout.fillWidth: true
+                }
+
+                StatusChip {
+                    theme: root.theme
+                    label: qsTr("Check")
+                    value: root.localStatusText()
+                    detail: root.localStatusDetail()
+                    tone: root.localStatusTone()
+                    Layout.fillWidth: true
+                }
+
+                StatusChip {
+                    theme: root.theme
+                    label: qsTr("Home")
+                    value: root.model.walletHome.length ? root.shortText(root.model.walletHome, 22) : qsTr("Env")
+                    detail: root.model.walletHome.length ? root.model.walletHome : qsTr("NSSA_WALLET_HOME_DIR")
+                    tone: root.model.walletHome.length ? "neutral" : "warning"
+                    Layout.fillWidth: true
+                }
+
+                StatusChip {
+                    theme: root.theme
+                    label: qsTr("Bedrock")
+                    value: root.model.bedrockWalletBalanceValue !== null ? qsTr("Loaded") : qsTr("Idle")
+                    detail: root.shortText(root.model.walletBedrockNodeUrl || root.model.nodeUrl, 42)
+                    tone: root.model.bedrockWalletBalanceValue !== null ? "success" : "neutral"
+                    Layout.fillWidth: true
+                }
+            }
         }
     }
 
@@ -91,23 +136,6 @@ ColumnLayout {
         title: qsTr("Local wallet profile required")
         message: qsTr("wallet:<id> uses explicit local wallet state. Indexer-derived transfers are under recipient:<id>.")
         Layout.fillWidth: true
-    }
-
-    StatusMessage {
-        visible: root.model.localWalletLookupTarget.length > 0
-        theme: root.theme
-        tone: root.model.walletProfileConfigured() ? "info" : "warning"
-        title: qsTr("Wallet context")
-        message: root.model.localWalletLookupTarget
-        Layout.fillWidth: true
-    }
-
-    TabSwitch {
-        theme: root.theme
-        current: root.model.localWalletTab
-        options: walletTabs
-        Layout.fillWidth: true
-        onSelected: value => root.model.localWalletTab = value
     }
 
     Loader {
@@ -500,19 +528,19 @@ ColumnLayout {
         return qsTr("Not checked")
     }
 
-    function localStatusColor() {
+    function localStatusTone() {
         const status = root.model.localWalletStatus || null
         const value = status && status.status ? String(status.status) : ""
         if (root.model.localWalletStatusError.length || value === "down") {
-            return root.theme.error
+            return "error"
         }
-        if (value === "degraded" || value === "unknown") {
-            return root.theme.warning
+        if (!value.length || value === "degraded" || value === "unknown") {
+            return "warning"
         }
         if (value === "ok") {
-            return root.theme.success
+            return "success"
         }
-        return root.theme.textMuted
+        return "neutral"
     }
 
     function balanceJson() {
@@ -571,6 +599,100 @@ ColumnLayout {
             monospace: true
             wrap: true
             Layout.fillWidth: true
+        }
+    }
+
+    component StatusChip: Rectangle {
+        id: chipRoot
+
+        required property Theme theme
+        property string label: ""
+        property string value: "-"
+        property string detail: ""
+        property string tone: "neutral"
+
+        radius: chipRoot.theme.radius
+        color: chipRoot.fillColor()
+        border.width: 1
+        border.color: chipRoot.borderColor()
+        implicitHeight: 46
+        Layout.minimumWidth: 150
+
+        RowLayout {
+            anchors.fill: parent
+            anchors.margins: chipRoot.theme.gapSmall
+            spacing: chipRoot.theme.gapSmall
+
+            Rectangle {
+                radius: width / 2
+                color: chipRoot.accentColor()
+                Layout.preferredWidth: 8
+                Layout.preferredHeight: 8
+                Layout.alignment: Qt.AlignTop
+                Layout.topMargin: 5
+            }
+
+            ColumnLayout {
+                spacing: 1
+                Layout.fillWidth: true
+
+                Text {
+                    text: chipRoot.label
+                    color: chipRoot.theme.textMuted
+                    textFormat: Text.PlainText
+                    font.pixelSize: chipRoot.theme.labelText
+                    font.weight: Font.DemiBold
+                    font.capitalization: Font.AllUppercase
+                    elide: Text.ElideRight
+                    Layout.fillWidth: true
+                }
+
+                Text {
+                    text: chipRoot.value.length ? chipRoot.value : "-"
+                    color: chipRoot.theme.text
+                    textFormat: Text.PlainText
+                    font.pixelSize: chipRoot.theme.secondaryText
+                    font.family: chipRoot.value.length > 18 ? "monospace" : ""
+                    elide: Text.ElideMiddle
+                    Layout.fillWidth: true
+                }
+            }
+        }
+
+        Accessible.role: Accessible.StaticText
+        Accessible.name: chipRoot.detail.length ? "%1: %2, %3".arg(chipRoot.label).arg(chipRoot.value).arg(chipRoot.detail) : "%1: %2".arg(chipRoot.label).arg(chipRoot.value)
+
+        function accentColor() {
+            if (chipRoot.tone === "success") {
+                return chipRoot.theme.success
+            }
+            if (chipRoot.tone === "warning") {
+                return chipRoot.theme.warning
+            }
+            if (chipRoot.tone === "error") {
+                return chipRoot.theme.error
+            }
+            return chipRoot.theme.textDim
+        }
+
+        function fillColor() {
+            if (chipRoot.tone === "success") {
+                return chipRoot.theme.successMuted
+            }
+            if (chipRoot.tone === "warning") {
+                return chipRoot.theme.warningMuted
+            }
+            if (chipRoot.tone === "error") {
+                return chipRoot.theme.errorMuted
+            }
+            return chipRoot.theme.field
+        }
+
+        function borderColor() {
+            if (chipRoot.tone === "success" || chipRoot.tone === "warning" || chipRoot.tone === "error") {
+                return chipRoot.accentColor()
+            }
+            return chipRoot.theme.outlineMuted
         }
     }
 
