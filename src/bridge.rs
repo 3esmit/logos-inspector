@@ -5,10 +5,11 @@ use serde_json::{Value, json};
 use tokio::runtime::Runtime;
 
 use crate::{
-    TransactionSummary, account_lookup, account_lookup_with_idl, blockchain, channels,
-    decode_account_data_hex_with_idl, decode_event_data_hex_with_idl, indexer_block_by_hash,
-    indexer_blocks, indexer_transfer_recipients, inspect_transaction_summary_with_idl,
-    last_sequencer_block_id, logoscore,
+    TransactionSummary, account_lookup, account_lookup_with_idl, bedrock_wallet_balance,
+    blockchain, channels, decode_account_data_hex_with_idl, decode_event_data_hex_with_idl,
+    indexer_block_by_hash, indexer_blocks, indexer_transfer_recipients,
+    inspect_transaction_summary_with_idl, last_sequencer_block_id, local_wallet_profile_status,
+    logoscore,
     modules::{
         blockchain_module_report, capabilities_report, delivery_report, logoscore_status_report,
         modules_report, storage_report,
@@ -197,10 +198,31 @@ impl InspectorBridge {
                 let args = Args::new(args)?;
                 to_value(program_file_info(args.string(0, "program path")?)?)
             }
+            "localWalletProfileStatus" => {
+                let args = Args::new(args)?;
+                to_value(local_wallet_profile_status(
+                    args.value(0)
+                        .cloned()
+                        .context("local wallet profile is required")?,
+                )?)
+            }
+            "bedrockWalletBalance" => {
+                let args = Args::new(args)?;
+                to_value(self.runtime.block_on(bedrock_wallet_balance(
+                    args.string(0, "node endpoint")?,
+                    args.string(1, "wallet public key")?,
+                    args.optional_string(2),
+                ))?)
+            }
             "loadIdlState" => load_idl_state(),
             "saveIdlState" => {
                 let args = Args::new(args)?;
                 save_idl_state(args.value(0).context("IDL state is required")?)
+            }
+            "loadWalletState" => load_wallet_state(),
+            "saveWalletState" => {
+                let args = Args::new(args)?;
+                save_wallet_state(args.value(0).context("wallet state is required")?)
             }
             "modules" => to_value(modules_report()),
             "logoscoreStatus" => to_value(logoscore_status_report()),
@@ -344,6 +366,55 @@ fn default_idl_state() -> Value {
 
 fn idl_state_path() -> Result<PathBuf> {
     Ok(config_dir()?.join("idls.json"))
+}
+
+fn load_wallet_state() -> Result<Value> {
+    let path = wallet_state_path()?;
+    if !path.is_file() {
+        return Ok(default_wallet_state());
+    }
+
+    let text = fs::read_to_string(&path)
+        .with_context(|| format!("failed to read wallet state from {}", path.display()))?;
+    serde_json::from_str(&text)
+        .with_context(|| format!("failed to parse wallet state from {}", path.display()))
+}
+
+fn save_wallet_state(state: &Value) -> Result<Value> {
+    let path = wallet_state_path()?;
+    let parent = path
+        .parent()
+        .context("wallet state path has no parent directory")?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("failed to create config directory {}", parent.display()))?;
+    let text = serde_json::to_string_pretty(state).context("failed to serialize wallet state")?;
+    fs::write(&path, text)
+        .with_context(|| format!("failed to write wallet state to {}", path.display()))?;
+    Ok(json!({
+        "saved": true,
+        "path": path.display().to_string(),
+    }))
+}
+
+fn default_wallet_state() -> Value {
+    json!({
+        "version": 1,
+        "profile": {
+            "label": "Local wallet",
+            "wallet_binary": "",
+            "wallet_home": "",
+            "network_profile": "",
+            "sequencer_url": "",
+            "indexer_url": "",
+            "bedrock_node_url": "",
+            "public_key_probe": ""
+        },
+        "operations": []
+    })
+}
+
+fn wallet_state_path() -> Result<PathBuf> {
+    Ok(config_dir()?.join("wallet.json"))
 }
 
 fn config_dir() -> Result<PathBuf> {
