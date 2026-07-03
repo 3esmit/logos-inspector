@@ -67,7 +67,7 @@ ColumnLayout {
 
                 SourceStrip {
                     theme: root.theme
-                    sources: [qsTr("Local Wallet"), qsTr("Explicit Profile"), qsTr("NSSA_WALLET_HOME_DIR")]
+                    sources: [qsTr("Local Wallet"), qsTr("Explicit Profile"), qsTr("Default Home")]
                     Layout.fillWidth: true
                 }
 
@@ -78,7 +78,7 @@ ColumnLayout {
                     copyable: true
                     copyText: root.model.localWalletLookupTarget
                     monospace: true
-                    textColor: root.model.walletProfileConfigured() ? root.theme.text : root.theme.warning
+                    textColor: root.model.walletProfileUsable() ? root.theme.text : root.theme.warning
                     Layout.fillWidth: true
                     Layout.alignment: root.width < 760 ? Qt.AlignLeft : Qt.AlignRight
                 }
@@ -93,8 +93,8 @@ ColumnLayout {
                 StatusChip {
                     theme: root.theme
                     label: qsTr("Profile")
-                    value: root.model.walletProfileConfigured() ? root.shortText(root.model.walletProfileLabel, 22) : qsTr("Required")
-                    tone: root.model.walletProfileConfigured() ? "success" : "warning"
+                    value: root.model.walletProfileUsable() ? root.shortText(root.model.walletProfileLabel, 22) : qsTr("Required")
+                    tone: root.model.walletProfileUsable() ? "success" : "warning"
                     Layout.fillWidth: true
                 }
 
@@ -110,9 +110,9 @@ ColumnLayout {
                 StatusChip {
                     theme: root.theme
                     label: qsTr("Home")
-                    value: root.model.walletHome.length ? root.shortText(root.model.walletHome, 22) : qsTr("Env")
-                    detail: root.model.walletHome.length ? root.model.walletHome : qsTr("NSSA_WALLET_HOME_DIR")
-                    tone: root.model.walletHome.length ? "neutral" : "warning"
+                    value: root.model.walletHome.length ? root.shortText(root.model.walletHome, 22) : qsTr("Default")
+                    detail: root.model.walletHomeFallbackLabel()
+                    tone: "neutral"
                     Layout.fillWidth: true
                 }
 
@@ -129,7 +129,7 @@ ColumnLayout {
     }
 
     StatusMessage {
-        visible: !root.model.walletProfileConfigured()
+        visible: !root.model.walletProfileUsable()
         theme: root.theme
         tone: "warning"
         title: qsTr("Local wallet profile required")
@@ -173,15 +173,21 @@ ColumnLayout {
                         label: qsTr("Wallet binary")
                         placeholderText: qsTr("/path/to/wallet")
                         text: root.model.walletBinary
-                        onTextChanged: if (root.model.walletBinary !== text) root.model.walletBinary = text
+                        onTextChanged: if (root.model.walletBinary !== text) {
+                            root.model.walletBinary = text
+                            root.model.clearLocalWalletStatus()
+                        }
                     }
 
                     FieldRow {
                         theme: root.theme
                         label: qsTr("Wallet home")
-                        placeholderText: qsTr("$NSSA_WALLET_HOME_DIR")
+                        placeholderText: qsTr("$LEE_WALLET_HOME_DIR")
                         text: root.model.walletHome
-                        onTextChanged: if (root.model.walletHome !== text) root.model.walletHome = text
+                        onTextChanged: if (root.model.walletHome !== text) {
+                            root.model.walletHome = text
+                            root.model.clearLocalWalletStatus()
+                        }
                     }
 
                     FieldRow {
@@ -250,7 +256,7 @@ ColumnLayout {
                     CopyRow {
                         theme: root.theme
                         label: qsTr("Wallet home")
-                        value: root.model.walletHome.length ? root.model.walletHome : qsTr("NSSA_WALLET_HOME_DIR")
+                        value: root.model.walletHomeFallbackLabel()
                         copyText: root.model.walletHome
                     }
 
@@ -347,7 +353,7 @@ ColumnLayout {
                     CopyRow {
                         theme: root.theme
                         label: qsTr("Wallet home")
-                        value: root.model.walletHome.length ? root.model.walletHome : qsTr("NSSA_WALLET_HOME_DIR")
+                        value: root.model.walletHomeFallbackLabel()
                         copyText: root.model.walletHome
                     }
                 }

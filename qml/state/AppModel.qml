@@ -65,7 +65,7 @@ QtObject {
     property string messagingSourceMode: "module"
     property string messagingRestUrl: "http://127.0.0.1:8645"
     property string messagingMetricsUrl: "http://127.0.0.1:8008/metrics"
-    property string messagingNetworkPreset: "testnet"
+    property string messagingNetworkPreset: "logos.test"
     property int messagingRollingWindow: 120
     property bool messagingAdminRestEnabled: false
     property bool messagingMutatingDiagnosticsEnabled: false
@@ -578,7 +578,7 @@ QtObject {
             messagingSourceMode = root.stringSetting(value, "messaging_source_mode", messagingSourceMode)
             messagingRestUrl = root.stringSetting(value, "messaging_rest_url", messagingRestUrl)
             messagingMetricsUrl = root.stringSetting(value, "messaging_metrics_url", messagingMetricsUrl)
-            messagingNetworkPreset = root.stringSetting(value, "messaging_network_preset", messagingNetworkPreset)
+            messagingNetworkPreset = root.normalizedMessagingNetworkPreset(root.stringSetting(value, "messaging_network_preset", messagingNetworkPreset))
             messagingNodeInfoId = root.stringSetting(value, "messaging_node_info_id", messagingNodeInfoId)
             messagingRollingWindow = root.numberSetting(value, "messaging_rolling_window", messagingRollingWindow)
             messagingAdminRestEnabled = root.boolSetting(value, "messaging_admin_rest_enabled", messagingAdminRestEnabled)
@@ -628,7 +628,7 @@ QtObject {
             messaging_source_mode: String(messagingSourceMode || ""),
             messaging_rest_url: String(messagingRestUrl || ""),
             messaging_metrics_url: String(messagingMetricsUrl || ""),
-            messaging_network_preset: String(messagingNetworkPreset || ""),
+            messaging_network_preset: root.normalizedMessagingNetworkPreset(messagingNetworkPreset),
             messaging_node_info_id: String(messagingNodeInfoId || ""),
             messaging_rolling_window: Number(messagingRollingWindow || 0),
             messaging_admin_rest_enabled: messagingAdminRestEnabled === true,
@@ -701,7 +701,34 @@ QtObject {
 
     function walletProfileConfigured() {
         return String(walletBinary || "").trim().length > 0
-            || String(walletHome || "").trim().length > 0
+    }
+
+    function walletProfileUsable() {
+        return walletProfileConfigured()
+            && localWalletStatus
+            && String(localWalletStatus.status || "") === "ok"
+    }
+
+    function clearLocalWalletStatus() {
+        localWalletStatus = null
+        localWalletStatusError = ""
+    }
+
+    function walletHomeFallbackLabel() {
+        if (String(walletHome || "").trim().length > 0) {
+            return String(walletHome || "")
+        }
+        const source = String(localWalletStatus && localWalletStatus.home_source ? localWalletStatus.home_source : "")
+        if (source === "LEE_WALLET_HOME_DIR") {
+            return "$LEE_WALLET_HOME_DIR"
+        }
+        if (source === "NSSA_WALLET_HOME_DIR") {
+            return "$NSSA_WALLET_HOME_DIR"
+        }
+        if (!source.length) {
+            return "$LEE_WALLET_HOME_DIR, $NSSA_WALLET_HOME_DIR, or $HOME/.lee/wallet"
+        }
+        return "$HOME/.lee/wallet"
     }
 
     function checkLocalWalletProfile(showResult) {
@@ -718,6 +745,25 @@ QtObject {
                 appendLocalWalletOperation(qsTr("Profile status"), "down", localWalletStatusError)
             }
         })
+    }
+
+    function checkedLocalWalletProfile() {
+        const response = requestModule(inspectorModule, "localWalletProfileStatus", [walletProfile()], qsTr("Local wallet"), false)
+        if (response.ok) {
+            localWalletStatus = response.value || null
+            localWalletStatusError = ""
+            const status = String(response.value && response.value.status ? response.value.status : "")
+            return {
+                ok: status === "ok",
+                detail: String(response.value && response.value.detail ? response.value.detail : "")
+            }
+        }
+        localWalletStatus = null
+        localWalletStatusError = response.error || qsTr("Profile status failed.")
+        return {
+            ok: false,
+            detail: localWalletStatusError
+        }
     }
 
     function queryBedrockWalletBalance() {
@@ -1312,7 +1358,7 @@ QtObject {
         case "network-monitor":
             return String(messagingRestUrl || "")
         case "discovery-crawler":
-            return String(messagingNetworkPreset || "")
+            return root.normalizedMessagingNetworkPreset(messagingNetworkPreset)
         default:
             return String(deliveryModule || "")
         }
@@ -1469,6 +1515,14 @@ QtObject {
 
     function normalizeEndpoint(value) {
         return String(value || "").trim().replace(/\/+$/, "")
+    }
+
+    function normalizedMessagingNetworkPreset(value) {
+        const preset = String(value || "").trim()
+        if (!preset.length || preset === "testnet") {
+            return "logos.test"
+        }
+        return preset
     }
 
     function scalarValue(value) {
@@ -1785,7 +1839,7 @@ QtObject {
         case "storage.peer_count":
             return root.moduleMetricValue("storage", ["storage_peer_count", "storage_libp2p_peers", "libp2p_peers", "peers"])
         case "storage.shared_files_count":
-            return root.moduleMetricValue("storage", ["storage_shared_files_count", "shared_files_count", "storage_repostore_blocks"])
+            return root.moduleMetricValue("storage", ["storage_shared_files_count", "shared_files_count"])
         case "storage.manifest_count":
             return root.moduleMetricValue("storage", ["storage_manifest_count", "manifest_count"])
         case "storage.local_storage_used":
@@ -1797,25 +1851,33 @@ QtObject {
         case "storage.failed_transfers_recent":
             return root.moduleMetricValue("storage", ["storage_failed_transfers_recent", "failed_transfers_recent", "storage_block_exchange_requests_failed_total", "storage_block_exchange_peer_timeouts_total"])
         case "messaging.peer_count":
-            return root.moduleMetricValue("messaging", ["waku_peers", "libp2p_peers", "messaging_peer_count", "peer_count"])
+            return root.moduleMetricValue("messaging", ["libp2p_peers", "waku_peers", "messaging_peer_count", "peer_count"])
         case "messaging.active_subscriptions":
-            return root.moduleMetricValue("messaging", ["waku_active_subscriptions", "active_subscriptions"])
+            return root.moduleMetricValue("messaging", ["active_subscriptions"])
+        case "messaging.pubsub_peers":
+            return root.moduleMetricValue("messaging", ["libp2p_pubsub_peers"])
+        case "messaging.store_peers":
+            return root.moduleMetricValue("messaging", ["waku_store_peers"])
+        case "messaging.filter_peers":
+            return root.moduleMetricValue("messaging", ["waku_filter_peers"])
+        case "messaging.lightpush_peers":
+            return root.moduleMetricValue("messaging", ["waku_lightpush_peers"])
         case "messaging.content_topics":
-            return root.moduleMetricValue("messaging", ["waku_content_topics", "content_topics"])
+            return root.moduleMetricValue("messaging", ["content_topics"])
         case "messaging.outbound_queue":
-            return root.moduleMetricValue("messaging", ["waku_outbound_queue", "outbound_queue"])
+            return root.moduleMetricValue("messaging", ["outbound_queue"])
         case "messaging.message_sent_events_recent":
-            return root.moduleMetricValue("messaging", ["waku_message_sent_events_recent", "message_sent_events_recent"])
+            return null
         case "messaging.message_propagated_events_recent":
-            return root.moduleMetricValue("messaging", ["waku_message_propagated_events_recent", "message_propagated_events_recent"])
+            return null
         case "messaging.message_received_events_recent":
-            return root.moduleMetricValue("messaging", ["waku_message_received_events_recent", "message_received_events_recent"])
+            return root.moduleMetricValue("messaging", ["waku_node_messages_total", "waku_node_messages", "message_received_events_recent"])
         case "messaging.message_error_events_recent":
-            return root.moduleMetricValue("messaging", ["waku_message_error_events_recent", "message_error_events_recent"])
+            return root.moduleMetricValue("messaging", ["waku_node_errors_total", "waku_node_errors", "message_error_events_recent"])
         case "messaging.publish_latency_ms":
-            return root.moduleMetricValue("messaging", ["waku_publish_latency_ms", "publish_latency_ms"])
+            return null
         case "messaging.receive_latency_ms":
-            return root.moduleMetricValue("messaging", ["waku_receive_latency_ms", "receive_latency_ms"])
+            return null
         default:
             return null
         }
@@ -2223,11 +2285,20 @@ QtObject {
     }
 
     function operationName(opcode) {
-        if (opcode === 0 || opcode === 17) {
+        if (opcode === 0) {
+            return "Transfer"
+        }
+        if (opcode === 16) {
+            return "ChannelConfig"
+        }
+        if (opcode === 17) {
             return "ChannelInscribe"
         }
-        if (opcode === 2) {
-            return "ChannelSetKeys"
+        if (opcode === 18) {
+            return "ChannelDeposit"
+        }
+        if (opcode === 19) {
+            return "ChannelWithdraw"
         }
         if (opcode === 32) {
             return "SDPDeclare"
@@ -2521,6 +2592,10 @@ QtObject {
         }
 
         if (/^[0-9]+$/.test(value)) {
+            if (root.numericSearchUsesLezBlock()) {
+                openLezBlock(value)
+                return
+            }
             const detail = blockchainBlockDetailById(value)
             if (detail) {
                 openBlockchainBlock(value)
@@ -2563,6 +2638,15 @@ QtObject {
         }
 
         openAccount(value)
+    }
+
+    function numericSearchUsesLezBlock() {
+        const view = String(currentView || "")
+        if (root.layerForView(view) === "l2") {
+            return true
+        }
+        return view === "sequencer" || view === "accounts" || view === "programs"
+            || view === "transferActivity" || view === "indexer"
     }
 
     function routePrefixedSearch(query) {
@@ -3229,13 +3313,7 @@ QtObject {
 
     function openLocalWallet(wallet, tab) {
         const target = String(wallet || "").trim()
-        currentView = "localWallet"
-        localWalletTab = String(tab || "").length ? String(tab || "") : "profiles"
-        localWalletLookupTarget = target
-        transferRecipientDetailValue = null
-        if (localWalletTab === "bedrockNotes" && target.length > 0 && walletPublicKeyProbe.length === 0) {
-            walletPublicKeyProbe = target
-        }
+        const targetTab = String(tab || "").length ? String(tab || "") : "profiles"
         if (!walletProfileConfigured()) {
             setResult(
                 qsTr("Local wallet"),
@@ -3244,6 +3322,23 @@ QtObject {
                 null
             )
             return
+        }
+        const profileStatus = checkedLocalWalletProfile()
+        if (!profileStatus.ok) {
+            setResult(
+                qsTr("Local wallet"),
+                profileStatus.detail.length ? profileStatus.detail : qsTr("Local wallet profile is not usable."),
+                true,
+                localWalletStatus
+            )
+            return
+        }
+        currentView = "localWallet"
+        localWalletTab = targetTab
+        localWalletLookupTarget = target
+        transferRecipientDetailValue = null
+        if (localWalletTab === "bedrockNotes" && target.length > 0 && walletPublicKeyProbe.length === 0) {
+            walletPublicKeyProbe = target
         }
         setResult(
             qsTr("Local wallet"),
@@ -3383,5 +3478,6 @@ QtObject {
         sequencerUrl = "https://testnet.lez.logos.co/"
         indexerUrl = "http://127.0.0.1:8779/"
         nodeUrl = "http://127.0.0.1:8080/"
+        messagingNetworkPreset = "logos.test"
     }
 }

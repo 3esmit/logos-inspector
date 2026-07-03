@@ -737,7 +737,7 @@ ColumnLayout {
             return [
                 { label: qsTr("L2 block ID"), value: blockRoot.valueText(value.block_id), monospace: true, linkKind: "lezBlock", linkValue: blockRoot.valueText(value.block_id) },
                 { label: qsTr("Header hash"), value: blockRoot.valueText(value.header_hash), monospace: true, linkKind: "indexerBlock", linkValue: blockRoot.valueText(value.header_hash) },
-                { label: qsTr("Bedrock parent"), value: blockRoot.valueText(value.parent_hash), monospace: true, linkKind: "indexerBlock", linkValue: blockRoot.valueText(value.parent_hash) },
+                { label: qsTr("Previous LEZ block"), value: blockRoot.valueText(value.parent_hash), monospace: true, linkKind: "indexerBlock", linkValue: blockRoot.valueText(value.parent_hash) },
                 { label: qsTr("Timestamp"), value: blockRoot.valueText(value.timestamp), monospace: true },
                 { label: qsTr("Bedrock status"), value: blockRoot.valueText(value.bedrock_status), monospace: false },
                 { label: qsTr("Transactions"), value: blockRoot.valueText(value.tx_count), monospace: true }

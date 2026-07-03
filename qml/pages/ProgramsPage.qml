@@ -26,7 +26,6 @@ ColumnLayout {
         ListElement { value: "programIds"; label: "Program IDs" }
         ListElement { value: "idls"; label: "IDLs" }
         ListElement { value: "binaries"; label: "Binaries" }
-        ListElement { value: "events"; label: "Events" }
     }
 
     PageHeader {
@@ -34,7 +33,7 @@ ColumnLayout {
         breadcrumb: qsTr("Home / L2 LEZ / Programs")
         title: qsTr("L2 Programs")
         layerLabel: qsTr("L2 LEZ")
-        subtitle: qsTr("Sequencer program IDs with local SPEL / IDL bindings, binary inspection, and event decoding.")
+        subtitle: qsTr("Sequencer program IDs with local SPEL / IDL bindings and binary inspection.")
         Layout.fillWidth: true
     }
 
@@ -292,8 +291,6 @@ ColumnLayout {
         switch (tab) {
         case "binaries":
             return binaryForm
-        case "events":
-            return eventForm
         case "idls":
             return idlForm
         default:
@@ -1018,9 +1015,6 @@ ColumnLayout {
         if (root.model.programTab === "binaries") {
             return qsTr("Binaries")
         }
-        if (root.model.programTab === "events") {
-            return qsTr("Events")
-        }
         return qsTr("IDLs")
     }
 
@@ -1031,9 +1025,6 @@ ColumnLayout {
         if (root.model.programTab === "binaries") {
             return qsTr("File inspection")
         }
-        if (root.model.programTab === "events") {
-            return qsTr("IDL decode")
-        }
         return qsTr("Registry")
     }
 
@@ -1043,9 +1034,6 @@ ColumnLayout {
         }
         if (root.model.programTab === "binaries") {
             return qsTr("Inspect compiled program bytecode to derive program IDs and deployment transaction hashes.")
-        }
-        if (root.model.programTab === "events") {
-            return qsTr("Decode an event payload with a supplied IDL. The page keeps decoding program-agnostic.")
         }
         return qsTr("Save local IDLs, summarize their instruction/account shape, or load program IDs from the sequencer.")
     }

@@ -9,6 +9,7 @@ pub mod spel;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
+    ffi::OsStr,
     fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -43,7 +44,8 @@ pub const DEFAULT_NODE_ENDPOINT: &str = "http://127.0.0.1:8080/";
 pub const DEFAULT_NETWORK_PROFILE: &str = "default";
 pub const CUSTOM_NETWORK_PROFILE: &str = "custom";
 pub const ACCOUNT_TRANSACTION_LIMIT: usize = 20;
-pub const LOCAL_WALLET_HOME_ENV: &str = "NSSA_WALLET_HOME_DIR";
+pub const LOCAL_WALLET_HOME_ENV: &str = "LEE_WALLET_HOME_DIR";
+const LEGACY_LOCAL_WALLET_HOME_ENV: &str = "NSSA_WALLET_HOME_DIR";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LocalWalletProfileStatus {
@@ -445,7 +447,7 @@ pub struct RecipientTransferSummary {
     pub value: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DecodedField {
     pub path: String,
     pub value: String,
@@ -966,6 +968,12 @@ pub fn decode_instruction_words_with_idl(
     account_ids: &[String],
 ) -> Result<InstructionDecodeReport> {
     let idl: Value = serde_json::from_str(idl_json).context("failed to parse IDL JSON")?;
+    if let Some(instruction_type) = idl.get("instruction_type").filter(|value| !value.is_null()) {
+        bail!(
+            "IDL uses external instruction_type `{}`; positional instruction decode is unsafe without explicit variant metadata",
+            idl_type_label(instruction_type)
+        );
+    }
     let variant_index = *instruction_words
         .first()
         .context("instruction data is empty")?;
@@ -1122,18 +1130,31 @@ pub fn local_wallet_profile_status(profile: Value) -> Result<LocalWalletProfileS
         serde_json::from_value(profile).context("failed to parse local wallet profile")?;
     let wallet_binary = profile.wallet_binary.trim();
     let explicit_home = profile.wallet_home.trim();
-    let env_home = std::env::var(LOCAL_WALLET_HOME_ENV).unwrap_or_default();
-    let wallet_home = if explicit_home.is_empty() {
-        env_home.trim()
+    let canonical_env_home = std::env::var(LOCAL_WALLET_HOME_ENV).unwrap_or_default();
+    let legacy_env_home = std::env::var(LEGACY_LOCAL_WALLET_HOME_ENV).unwrap_or_default();
+    let (env_home, env_home_source) = if !canonical_env_home.trim().is_empty() {
+        (canonical_env_home, Some(LOCAL_WALLET_HOME_ENV))
+    } else if !legacy_env_home.trim().is_empty() {
+        (legacy_env_home, Some(LEGACY_LOCAL_WALLET_HOME_ENV))
     } else {
-        explicit_home
+        (String::new(), None)
+    };
+    let default_home = local_wallet_default_home()
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let wallet_home = if !explicit_home.is_empty() {
+        explicit_home.to_owned()
+    } else if env_home_source.is_some() {
+        env_home.trim().to_owned()
+    } else {
+        default_home
     };
     let home_source = if !explicit_home.is_empty() {
         "profile"
-    } else if !wallet_home.is_empty() {
-        LOCAL_WALLET_HOME_ENV
+    } else if !wallet_home.is_empty() && env_home_source.is_none() {
+        "default"
     } else {
-        "none"
+        env_home_source.unwrap_or("none")
     };
 
     if wallet_binary.is_empty() && wallet_home.is_empty() {
@@ -1153,11 +1174,17 @@ pub fn local_wallet_profile_status(profile: Value) -> Result<LocalWalletProfileS
     let mut version = None;
 
     if wallet_home.is_empty() {
-        details.push(format!("{LOCAL_WALLET_HOME_ENV} not configured"));
+        details.push("wallet home directory not configured".to_owned());
         status = local_wallet_worst_status(status, "degraded");
-    } else if !PathBuf::from(wallet_home).is_dir() {
+    } else if !PathBuf::from(&wallet_home).is_dir() {
         details.push("wallet home directory is not reachable".to_owned());
         status = local_wallet_worst_status(status, "down");
+    } else if home_source == LEGACY_LOCAL_WALLET_HOME_ENV {
+        details.push(format!(
+            "{LEGACY_LOCAL_WALLET_HOME_ENV} configured (legacy fallback)"
+        ));
+    } else if home_source == "default" {
+        details.push("default wallet home configured".to_owned());
     } else {
         details.push(format!("{LOCAL_WALLET_HOME_ENV} configured"));
     }
@@ -1169,7 +1196,7 @@ pub fn local_wallet_profile_status(profile: Value) -> Result<LocalWalletProfileS
         details.push("wallet binary is not reachable".to_owned());
         status = local_wallet_worst_status(status, "down");
     } else if status != "down" {
-        match local_wallet_binary_version(wallet_binary, wallet_home) {
+        match local_wallet_binary_version(wallet_binary, &wallet_home) {
             Ok(value) => {
                 details.push("wallet binary responded".to_owned());
                 version = (!value.is_empty()).then_some(value);
@@ -1190,6 +1217,15 @@ pub fn local_wallet_profile_status(profile: Value) -> Result<LocalWalletProfileS
         home_source: home_source.to_owned(),
         network_profile: profile.network_profile.trim().to_owned(),
     })
+}
+
+fn local_wallet_default_home() -> Option<PathBuf> {
+    default_wallet_home_from_home(std::env::var_os("HOME").as_deref())
+}
+
+fn default_wallet_home_from_home(home: Option<&OsStr>) -> Option<PathBuf> {
+    let home = PathBuf::from(home?);
+    (!home.as_os_str().is_empty()).then(|| home.join(".lee").join("wallet"))
 }
 
 pub async fn bedrock_wallet_balance(
@@ -1415,17 +1451,7 @@ fn summarize_indexer_block(value: &Value) -> IndexerBlockReport {
         header_hash: value_string_any(header, &["hash", "header_hash", "header_id"])
             .or_else(|| value_string_any(value, &["hash", "header_hash", "header_id"])),
         parent_hash: value_string_any(header, &["prev_block_hash", "parent_hash", "parent_id"])
-            .or_else(|| {
-                value_string_any(
-                    value,
-                    &[
-                        "prev_block_hash",
-                        "parent_hash",
-                        "parent_id",
-                        "bedrock_parent_id",
-                    ],
-                )
-            }),
+            .or_else(|| value_string_any(value, &["prev_block_hash", "parent_hash", "parent_id"])),
         timestamp: value_u64_any(header, &["timestamp", "time"])
             .or_else(|| value_u64_any(value, &["timestamp", "time"])),
         bedrock_status: value_string_any(value, &["bedrock_status", "status"]),
@@ -2743,6 +2769,20 @@ fn decode_borsh_type(
         });
     }
 
+    if let Some((inner, len)) = fixed_array_type(object)? {
+        let mut cursor = offset;
+        let mut values = Vec::with_capacity(len);
+        for _ in 0..len {
+            let decoded = decode_borsh_type(inner, bytes, cursor, idl, depth + 1)?;
+            cursor += decoded.consumed;
+            values.push(decoded.value);
+        }
+        return Ok(DecodedValue {
+            value: Value::Array(values),
+            consumed: cursor - offset,
+        });
+    }
+
     if let Some(name) = object.get("defined").and_then(Value::as_str) {
         let shape = find_defined_shape(idl, name)
             .with_context(|| format!("defined IDL type `{name}` not found"))?;
@@ -2857,6 +2897,21 @@ fn decode_instruction_type(
         return Ok(InstructionDecoded {
             value: format!("Some({})", decoded.value),
             consumed: decoded.consumed + 1,
+            type_label: label,
+        });
+    }
+
+    if let Some((inner, len)) = fixed_array_type(object)? {
+        let mut cursor = offset;
+        let mut values = Vec::with_capacity(len);
+        for _ in 0..len {
+            let decoded = decode_instruction_type(inner, words, cursor, depth + 1)?;
+            cursor += decoded.consumed;
+            values.push(decoded.value);
+        }
+        return Ok(InstructionDecoded {
+            value: format!("[{}]", values.join(", ")),
+            consumed: cursor - offset,
             type_label: label,
         });
     }
@@ -3099,10 +3154,60 @@ fn idl_type_label(ty: &Value) -> String {
     if let Some(inner) = ty.get("vec") {
         return format!("vec<{}>", idl_type_label(inner));
     }
+    if let Some(object) = ty.as_object()
+        && let Ok(Some((inner, len))) = fixed_array_type(object)
+    {
+        return format!("array<{}, {len}>", idl_type_label(inner));
+    }
     if let Some(name) = ty.get("defined").and_then(Value::as_str) {
         return name.to_owned();
     }
     ty.to_string()
+}
+
+fn fixed_array_type(object: &Map<String, Value>) -> Result<Option<(&Value, usize)>> {
+    let Some(array) = object.get("array") else {
+        return Ok(None);
+    };
+    match array {
+        Value::Array(items) => {
+            if items.len() != 2 {
+                bail!("array type must be [element_type, len]");
+            }
+            let inner = items
+                .first()
+                .context("array type missing element type after length check")?;
+            let len_value = items
+                .get(1)
+                .context("array type missing length after length check")?;
+            Ok(Some((inner, array_len(len_value)?)))
+        }
+        Value::Object(array_object) => {
+            let inner = array_object
+                .get("type")
+                .or_else(|| array_object.get("inner"))
+                .or_else(|| array_object.get("element"))
+                .context("array type object missing element type")?;
+            let len_value = array_object
+                .get("len")
+                .or_else(|| array_object.get("length"))
+                .context("array type object missing length")?;
+            Ok(Some((inner, array_len(len_value)?)))
+        }
+        _ => bail!("array type must be [element_type, len] or object"),
+    }
+}
+
+fn array_len(value: &Value) -> Result<usize> {
+    let len = value
+        .as_u64()
+        .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
+        .context("array length must be an unsigned integer")?;
+    let len = usize::try_from(len).context("array length does not fit usize")?;
+    if len > 100_000 {
+        bail!("array length too large: {len}");
+    }
+    Ok(len)
 }
 
 fn parse_hex_bytes(value: &str) -> Result<Vec<u8>> {
@@ -3290,6 +3395,19 @@ mod tests {
     }
 
     #[test]
+    fn default_wallet_home_uses_upstream_lee_wallet_path() {
+        let home = OsStr::new("/tmp/logos-inspector-home");
+
+        let wallet_home = default_wallet_home_from_home(Some(home));
+
+        assert_eq!(
+            wallet_home.as_deref(),
+            Some(Path::new("/tmp/logos-inspector-home/.lee/wallet"))
+        );
+        assert_eq!(default_wallet_home_from_home(None), None);
+    }
+
+    #[test]
     fn bedrock_wallet_public_key_normalization_rejects_path_fragments() {
         let normalized = normalize_bedrock_wallet_public_key("Public/abc123");
         assert!(normalized.is_ok(), "{normalized:?}");
@@ -3451,6 +3569,21 @@ mod tests {
             Some(tx_hash.as_str())
         );
         assert_eq!(summary.raw, raw);
+    }
+
+    #[test]
+    fn summarize_indexer_block_does_not_treat_bedrock_parent_as_lez_parent() {
+        let raw = serde_json::json!({
+            "header": {
+                "block_id": 44,
+                "hash": "ab".repeat(32)
+            },
+            "bedrock_parent_id": "cd".repeat(32)
+        });
+
+        let summary = summarize_indexer_block(&raw);
+
+        assert_eq!(summary.parent_hash, None);
     }
 
     #[test]
@@ -4030,6 +4163,48 @@ mod tests {
     }
 
     #[test]
+    fn decode_account_data_hex_with_idl_decodes_fixed_arrays() {
+        let idl = r#"{
+            "name": "test_program",
+            "accounts": [
+                {
+                    "name": "ArrayAccount",
+                    "type": {
+                        "kind": "struct",
+                        "fields": [
+                            { "name": "bytes", "type": { "array": ["u8", 3] } },
+                            { "name": "tail", "type": { "array": { "type": "u8", "len": 2 } } }
+                        ]
+                    }
+                }
+            ]
+        }"#;
+
+        let report =
+            decode_account_data_hex_with_idl(idl, Some("ArrayAccount"), "0102030405", Some("acct"));
+
+        assert!(report.is_ok(), "{report:?}");
+        let Ok(report) = report else {
+            return;
+        };
+        assert_eq!(report.consumed_bytes, 5);
+        assert_eq!(
+            report.rows.iter().find(|row| row.path == "bytes[0]"),
+            Some(&DecodedField {
+                path: "bytes[0]".to_owned(),
+                value: "1".to_owned()
+            })
+        );
+        assert_eq!(
+            report.rows.iter().find(|row| row.path == "tail[1]"),
+            Some(&DecodedField {
+                path: "tail[1]".to_owned(),
+                value: "5".to_owned()
+            })
+        );
+    }
+
+    #[test]
     fn account_report_with_optional_idl_decode_preserves_account_when_decode_fails() {
         let account = AccountReport {
             account_id: "acct".to_owned(),
@@ -4178,6 +4353,56 @@ mod tests {
             return;
         };
         assert_eq!(value.value, "9");
+    }
+
+    #[test]
+    fn decode_instruction_words_with_idl_decodes_fixed_array_args() {
+        let idl = r#"{
+            "name": "test_program",
+            "instructions": [
+                {
+                    "name": "set_values",
+                    "args": [
+                        { "name": "values", "type": { "array": ["u32", 3] } }
+                    ]
+                }
+            ]
+        }"#;
+
+        let report = decode_instruction_words_with_idl(idl, "program", &[0, 10, 20, 30], &[]);
+
+        assert!(report.is_ok(), "{report:?}");
+        let Ok(report) = report else {
+            return;
+        };
+        assert_eq!(report.instruction, "set_values");
+        assert_eq!(
+            report.args.first(),
+            Some(&DecodedField {
+                path: "values: array<u32, 3>".to_owned(),
+                value: "[10, 20, 30]".to_owned()
+            })
+        );
+    }
+
+    #[test]
+    fn decode_instruction_words_with_idl_rejects_external_instruction_type() {
+        let idl = r#"{
+            "name": "test_program",
+            "instruction_type": { "defined": "Instruction" },
+            "instructions": [
+                { "name": "set_value", "args": [] }
+            ]
+        }"#;
+
+        let report = decode_instruction_words_with_idl(idl, "program", &[0], &[]);
+
+        assert!(report.is_err());
+        assert!(report.err().is_some_and(|error| {
+            error
+                .to_string()
+                .contains("positional instruction decode is unsafe")
+        }));
     }
 
     #[test]

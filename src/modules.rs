@@ -127,8 +127,12 @@ async fn storage_rest_report(
         raw_http_value(endpoint, "/data"),
         raw_http_value(endpoint, "/debug/info"),
     );
+    let spr = spr.map(normalize_storage_spr);
+    let peer_id = peer_id.map(normalize_storage_peer_id);
     let manifests = data.map(normalize_storage_manifests);
+    let space_probe = ProbeReport::from_result("storage_rest.space", space_source.clone(), space);
     let mut probes = vec![
+        space_probe.clone(),
         ProbeReport::from_result("storage_rest.spr", spr_source, spr),
         ProbeReport::from_result("storage_rest.peerId", peer_id_source, peer_id),
         ProbeReport::from_result("storage_rest.manifests", data_source, manifests),
@@ -139,7 +143,9 @@ async fn storage_rest_report(
         probes.push(ProbeReport::from_result(
             "storage_rest.exists",
             http_url(endpoint, &path),
-            raw_http_value(endpoint, &path).await,
+            raw_http_value(endpoint, &path)
+                .await
+                .map(|value| normalize_storage_exists(value, cid)),
         ));
     }
     if let Some(metrics_endpoint) = optional(metrics_endpoint) {
@@ -147,7 +153,7 @@ async fn storage_rest_report(
     }
     ModuleReport {
         module: "storage_rest".to_owned(),
-        module_info: ProbeReport::from_result("storage_rest.space", space_source, space),
+        module_info: space_probe,
         probes,
     }
 }
@@ -232,6 +238,18 @@ fn normalize_storage_manifests(value: Value) -> Value {
     }
 }
 
+fn normalize_storage_spr(value: Value) -> Value {
+    scalar_field(&value, &["spr", "value", "result"]).unwrap_or(value)
+}
+
+fn normalize_storage_peer_id(value: Value) -> Value {
+    scalar_field(&value, &["peerId", "peer_id", "id", "value", "result"]).unwrap_or(value)
+}
+
+fn normalize_storage_exists(value: Value, cid: &str) -> Value {
+    scalar_field(&value, &[cid, "exists", "has", "value", "result"]).unwrap_or(value)
+}
+
 pub fn delivery_report(info_id: Option<&str>) -> ModuleReport {
     let mut probes = vec![
         call_probe(DELIVERY_MODULE, "version", &[]),
@@ -245,8 +263,6 @@ pub fn delivery_report(info_id: Option<&str>) -> ModuleReport {
         "MyMultiaddresses",
         "MyENR",
         "MyPeerId",
-        "MyBoundPorts",
-        "MyMixPubKey",
     ] {
         probes.push(call_probe(DELIVERY_MODULE, "getNodeInfo", &[info_id]));
     }
@@ -287,17 +303,131 @@ async fn delivery_rest_report(
         raw_http_value(endpoint, "/info"),
         raw_http_value(endpoint, "/version"),
     );
+    let health_probe = ProbeReport::from_result(
+        "delivery_rest.health",
+        health_source.clone(),
+        health.map(normalize_delivery_health),
+    );
+    let info_probe = ProbeReport::from_result(
+        "delivery_rest.info",
+        info_source.clone(),
+        info.map(normalize_delivery_info),
+    );
+    let version_probe = ProbeReport::from_result(
+        "delivery_rest.version",
+        version_source.clone(),
+        version.map(normalize_delivery_version),
+    );
     let mut probes = vec![
-        ProbeReport::from_result("delivery_rest.info", info_source, info),
-        ProbeReport::from_result("delivery_rest.version", version_source, version),
+        info_probe.clone(),
+        version_probe.clone(),
+        health_probe.clone(),
     ];
+    if let Some(value) = health_probe.value.as_ref() {
+        push_delivery_probe(
+            &mut probes,
+            "nodeHealth",
+            &health_source,
+            value,
+            &["nodeHealth"],
+        );
+        push_delivery_probe(
+            &mut probes,
+            "protocolsHealth",
+            &health_source,
+            value,
+            &["protocolsHealth"],
+        );
+    }
+    if let Some(value) = info_probe.value.as_ref() {
+        push_delivery_probe(
+            &mut probes,
+            "peerId",
+            &info_source,
+            value,
+            &["peerId", "peer_id"],
+        );
+        push_delivery_probe(
+            &mut probes,
+            "listenAddresses",
+            &info_source,
+            value,
+            &[
+                "listenAddresses",
+                "listen_addresses",
+                "multiaddrs",
+                "multiAddresses",
+            ],
+        );
+        push_delivery_probe(
+            &mut probes,
+            "enrUri",
+            &info_source,
+            value,
+            &["enrUri", "enr_uri"],
+        );
+        push_delivery_probe(
+            &mut probes,
+            "Version",
+            &info_source,
+            value,
+            &["version", "Version"],
+        );
+    }
     if let Some(metrics_endpoint) = optional(metrics_endpoint) {
         probes.push(metrics_probe(metrics_endpoint).await);
     }
     ModuleReport {
         module: "delivery_rest".to_owned(),
-        module_info: ProbeReport::from_result("delivery_rest.health", health_source, health),
+        module_info: health_probe,
         probes,
+    }
+}
+
+fn normalize_delivery_health(value: Value) -> Value {
+    match value {
+        Value::Object(mut object) => {
+            if let Some(value) = object.remove("health") {
+                object.insert("nodeHealth".to_owned(), value);
+            }
+            Value::Object(object)
+        }
+        value => value,
+    }
+}
+
+fn normalize_delivery_info(value: Value) -> Value {
+    match value {
+        Value::Object(mut object) => {
+            if let Some(value) = object.remove("enr") {
+                object.insert("enrUri".to_owned(), value);
+            }
+            if let Some(value) = object.remove("addresses") {
+                object.insert("listenAddresses".to_owned(), value);
+            }
+            Value::Object(object)
+        }
+        value => value,
+    }
+}
+
+fn normalize_delivery_version(value: Value) -> Value {
+    scalar_field(&value, &["version", "Version", "value", "result"]).unwrap_or(value)
+}
+
+fn push_delivery_probe(
+    probes: &mut Vec<ProbeReport>,
+    method: &str,
+    source: &str,
+    value: &Value,
+    keys: &[&str],
+) {
+    if let Some(value) = scalar_field(value, keys) {
+        probes.push(ProbeReport::ok(
+            format!("delivery_rest.{method}"),
+            source,
+            value,
+        ));
     }
 }
 
@@ -442,4 +572,74 @@ fn call_probe(module: &str, method: &str, args: &[&str]) -> ProbeReport {
 
 fn optional(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn scalar_field(value: &Value, keys: &[&str]) -> Option<Value> {
+    match value {
+        Value::Object(object) => {
+            for key in keys {
+                if let Some(value) = object.get(*key) {
+                    return match value {
+                        Value::Object(_) => {
+                            scalar_field(value, keys).or_else(|| Some(value.clone()))
+                        }
+                        _ => Some(value.clone()),
+                    };
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn storage_rest_normalizers_unwrap_current_scalar_shapes() {
+        assert_eq!(
+            normalize_storage_peer_id(json!({ "id": "peer-a" })),
+            json!("peer-a")
+        );
+        assert_eq!(
+            normalize_storage_spr(json!({ "spr": "spr-a" })),
+            json!("spr-a")
+        );
+        assert_eq!(
+            normalize_storage_exists(json!({ "cid-a": true }), "cid-a"),
+            json!(true)
+        );
+        assert_eq!(
+            normalize_storage_exists(json!({ "has": false }), "cid-a"),
+            json!(false)
+        );
+    }
+
+    #[test]
+    fn delivery_rest_normalizers_expose_current_api_fields() {
+        let health = normalize_delivery_health(json!({
+            "nodeHealth": "Ready",
+            "protocolsHealth": { "relay": "Ready" }
+        }));
+        assert_eq!(
+            scalar_field(&health, &["nodeHealth"]).as_ref(),
+            Some(&json!("Ready"))
+        );
+
+        let info = normalize_delivery_info(json!({
+            "peerId": "peer-a",
+            "listenAddresses": ["/ip4/127.0.0.1/tcp/0"],
+            "enrUri": "enr:-abc"
+        }));
+        assert_eq!(
+            scalar_field(&info, &["peerId"]).as_ref(),
+            Some(&json!("peer-a"))
+        );
+        assert_eq!(
+            scalar_field(&info, &["enrUri"]).as_ref(),
+            Some(&json!("enr:-abc"))
+        );
+    }
 }
