@@ -323,7 +323,7 @@ ColumnLayout {
                     enabled: !root.model.busy
                     Layout.fillWidth: true
                     accessibleName: qsTr("Run storage module report")
-                    onClicked: root.model.callInspector("storageReport", [cid.text], qsTr("Storage report"))
+                    onClicked: root.model.callInspector("storageReport", [cid.text.trim()], qsTr("Storage report"))
                 }
 
                 ActionButton {
@@ -341,7 +341,7 @@ ColumnLayout {
                     enabled: !root.model.busy && cid.text.trim().length > 0
                     Layout.fillWidth: true
                     accessibleName: qsTr("Check storage CID existence")
-                    onClicked: root.model.callModule(root.model.storageModule, "exists", [cid.text], qsTr("Storage CID"))
+                    onClicked: root.model.callModule(root.model.storageModule, "exists", [cid.text.trim()], qsTr("Storage CID"))
                 }
             }
         }

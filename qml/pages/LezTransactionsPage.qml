@@ -55,7 +55,7 @@ ColumnLayout {
             TransactionRow {
                 theme: root.theme
                 header: true
-                columns: [qsTr("L2 block"), qsTr("Tx hash"), qsTr("Kind"), qsTr("Words")]
+                columns: [qsTr("L2 block"), qsTr("Tx hash"), qsTr("Kind"), qsTr("Words / bytes")]
             }
 
             Repeater {

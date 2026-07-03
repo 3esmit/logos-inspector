@@ -1065,6 +1065,13 @@ ColumnLayout {
             return root.probeValue("collectMetrics") !== null ? qsTr("metrics") : qsTr("module")
         }
         if (root.model.storageSourceMode === "rest") {
+            const metricsProbe = root.model.moduleProbe("storage", "collectMetrics")
+            if (root.metricsEndpointConfigured() && metricsProbe && metricsProbe.ok === false) {
+                return qsTr("metrics error")
+            }
+            if (root.metricsEndpointConfigured() && (!metricsProbe || metricsProbe.ok !== true)) {
+                return root.status().ok ? qsTr("REST only") : qsTr("unknown")
+            }
             return root.status().ok ? qsTr("reachable") : qsTr("unknown")
         }
         if (root.model.storageSourceMode === "metrics") {
@@ -1080,6 +1087,18 @@ ColumnLayout {
         if (root.model.storageSourceMode === "metrics") {
             return root.shortText(root.model.storageMetricsUrl, 48)
         }
+        if (root.model.storageSourceMode === "rest" && root.metricsEndpointConfigured()) {
+            const metricsProbe = root.model.moduleProbe("storage", "collectMetrics")
+            if (metricsProbe && metricsProbe.ok === false && metricsProbe.error) {
+                return qsTr("REST %1; metrics %2: %3")
+                    .arg(root.shortText(root.model.storageRestUrl, 24))
+                    .arg(root.shortText(root.model.storageMetricsUrl, 24))
+                    .arg(root.shortText(metricsProbe.error, 36))
+            }
+            return qsTr("REST %1; metrics %2")
+                .arg(root.shortText(root.model.storageRestUrl, 28))
+                .arg(root.shortText(root.model.storageMetricsUrl, 28))
+        }
         return root.shortText(root.model.storageRestUrl, 48)
     }
 
@@ -1087,7 +1106,20 @@ ColumnLayout {
         if (root.model.storageSourceMode === "c-library" || root.model.storageSourceMode === "local-os") {
             return "warning"
         }
+        if (root.model.storageSourceMode === "rest") {
+            const metricsProbe = root.model.moduleProbe("storage", "collectMetrics")
+            if (root.metricsEndpointConfigured() && metricsProbe && metricsProbe.ok === false) {
+                return "error"
+            }
+            if (root.metricsEndpointConfigured() && (!metricsProbe || metricsProbe.ok !== true)) {
+                return "warning"
+            }
+        }
         return root.statusTone()
+    }
+
+    function metricsEndpointConfigured() {
+        return String(root.model.storageMetricsUrl || "").trim().length > 0
     }
 
     function valueSummary(value) {

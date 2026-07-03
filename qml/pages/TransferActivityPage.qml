@@ -21,13 +21,13 @@ ColumnLayout {
         breadcrumb: qsTr("Home / L2 LEZ / Transfer Activity")
         title: qsTr("L2 Transfer Activity")
         layerLabel: qsTr("L2 LEZ")
-        subtitle: qsTr("Indexer-derived transfer recipients and account-reference fallbacks from finalized L2 blocks.")
+        subtitle: qsTr("Indexer-derived transfer activity and account-reference fallbacks from finalized L2 blocks.")
         Layout.fillWidth: true
     }
 
     SourceStrip {
         theme: root.theme
-        sources: [qsTr("L2 Indexer"), qsTr("transfer-output scan"), qsTr("finalized blocks")]
+        sources: [qsTr("L2 Indexer"), qsTr("account-reference scan"), qsTr("finalized blocks")]
         Layout.fillWidth: true
     }
 
@@ -70,7 +70,9 @@ ColumnLayout {
             RecipientRow {
                 theme: root.theme
                 header: true
-                columns: [qsTr("Recipient"), qsTr("Source"), qsTr("Observed amount"), qsTr("Txs"), qsTr("Outputs"), qsTr("Last L2 block")]
+                columns: root.showAccountRefFallback()
+                    ? [qsTr("Account"), qsTr("Source"), qsTr("Observed amount"), qsTr("Txs"), qsTr("References"), qsTr("Last L2 block")]
+                    : [qsTr("Recipient"), qsTr("Source"), qsTr("Observed amount"), qsTr("Txs"), qsTr("Outputs"), qsTr("Last L2 block")]
             }
 
             Repeater {
@@ -117,8 +119,10 @@ ColumnLayout {
         visible: root.model.transferRecipientDetailValue === null
         theme: root.theme
         tone: "info"
-        title: qsTr("Transfer recipient")
-        message: qsTr("Select a recipient to inspect observed transfer outputs, source transactions, and linked L2 blocks. This is indexer-derived activity, not a local wallet directory.")
+        title: root.showAccountRefFallback() ? qsTr("Account reference") : qsTr("Transfer recipient")
+        message: root.showAccountRefFallback()
+            ? qsTr("Select an account reference to inspect source transactions and linked L2 blocks. This is not decoded transfer output data.")
+            : qsTr("Select a recipient to inspect observed transfer outputs, source transactions, and linked L2 blocks. This is indexer-derived activity, not a local wallet directory.")
         Layout.fillWidth: true
     }
 
@@ -126,7 +130,7 @@ ColumnLayout {
         const recipients = root.model.transferActivityRows || [];
         if (!recipients.length) {
             return [{
-                recipient: qsTr("No transfer recipients in loaded range"),
+                recipient: qsTr("No account references in loaded range"),
                 recipientRaw: "",
                 source: "-",
                 sourceRaw: "",
@@ -138,13 +142,13 @@ ColumnLayout {
         }
         return recipients.map(function (recipient) {
             return {
-                recipient: root.shortRecipient(recipient.recipient),
-                recipientRaw: String(recipient.recipient || ""),
+                recipient: root.shortRecipient(recipient.account_ref || recipient.recipient),
+                recipientRaw: String(recipient.account_ref || recipient.recipient || ""),
                 source: root.sourceLabel(recipient.source),
                 sourceRaw: String(recipient.source || ""),
                 received: root.receivedText(recipient),
                 txs: root.numberText(recipient.txs),
-                outputs: root.numberText(recipient.outputs),
+                outputs: root.numberText(recipient.source === "account_refs" ? recipient.references : recipient.outputs),
                 lastSlot: root.numberText(recipient.last_slot)
             };
         });

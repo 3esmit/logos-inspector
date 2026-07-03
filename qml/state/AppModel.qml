@@ -623,6 +623,7 @@ QtObject {
     function loadSettingsState() {
         const response = bridge.callModule(inspectorModule, "loadSettingsState", [])
         if (!response.ok || !response.value || typeof response.value !== "object") {
+            settingsStateLoaded = true
             settingsStateError = response && response.error ? response.error : qsTr("Settings state is not readable.")
             return
         }
@@ -868,9 +869,18 @@ QtObject {
             bedrockWalletBalanceError = qsTr("Wallet public key is required.")
             return
         }
+        if (!root.isBedrockHexId(publicKey)) {
+            bedrockWalletBalanceError = qsTr("Wallet public key must be 64 hex characters.")
+            return
+        }
+        const tip = String(bedrockWalletBalanceTip || "").trim()
+        if (tip.length > 0 && !root.isBedrockHexId(tip)) {
+            bedrockWalletBalanceError = qsTr("Balance tip must be a 64-hex header id.")
+            return
+        }
         bedrockWalletBalanceError = ""
         statusText = qsTr("Bedrock wallet")
-        return requestModuleAsync(inspectorModule, "bedrockWalletBalance", [String(walletBedrockNodeUrl || nodeUrl || ""), publicKey, String(bedrockWalletBalanceTip || "")], qsTr("Bedrock wallet"), false, function (response) {
+        return requestModuleAsync(inspectorModule, "bedrockWalletBalance", [String(walletBedrockNodeUrl || nodeUrl || ""), publicKey, tip], qsTr("Bedrock wallet"), false, function (response) {
             if (response.ok) {
                 bedrockWalletBalanceValue = response.value
                 bedrockWalletBalanceError = ""
@@ -881,6 +891,10 @@ QtObject {
                 appendLocalWalletOperation(qsTr("Bedrock balance"), "down", bedrockWalletBalanceError)
             }
         })
+    }
+
+    function isBedrockHexId(value) {
+        return /^(0x)?[0-9a-fA-F]{64}$/.test(String(value || "").trim())
     }
 
     function appendLocalWalletOperation(label, status, detail) {
@@ -971,8 +985,8 @@ QtObject {
         return entries
     }
 
-    function cacheAccountIdlSelection(accountId, idlEntry, accountType) {
-        const key = root.accountCacheKey(accountId)
+    function cacheAccountIdlSelection(accountId, idlEntry, accountType, ownerProgramId) {
+        const key = root.accountCacheKey(accountId, ownerProgramId)
         const entry = idlEntry || {}
         const entryKey = String(entry.key || entry.idlKey || "")
         if (!key.length || !entryKey.length) {
@@ -981,31 +995,45 @@ QtObject {
         const next = copyMap(accountIdlSelections)
         next[key] = {
             idlKey: entryKey,
-            accountType: String(accountType || "")
+            accountType: String(accountType || ""),
+            ownerProgram: root.accountOwnerCacheKey(ownerProgramId),
+            network: root.accountNetworkCacheScope()
         }
         accountIdlSelections = next
         accountIdlSelectionRevision += 1
         saveIdlState()
     }
 
-    function accountIdlSelection(accountId) {
+    function accountIdlSelection(accountId, ownerProgramId) {
         const revision = accountIdlSelectionRevision
-        const key = root.accountCacheKey(accountId)
+        const key = root.accountCacheKey(accountId, ownerProgramId)
         return key.length ? (accountIdlSelections || {})[key] || null : null
     }
 
-    function cachedIdlEntryForAccount(accountId) {
-        const selection = accountIdlSelection(accountId)
+    function cachedIdlEntryForAccount(accountId, ownerProgramId) {
+        const selection = accountIdlSelection(accountId, ownerProgramId)
         return selection ? root.idlEntryForKey(selection.idlKey) : null
     }
 
-    function cachedAccountType(accountId) {
-        const selection = accountIdlSelection(accountId)
+    function cachedAccountType(accountId, ownerProgramId) {
+        const selection = accountIdlSelection(accountId, ownerProgramId)
         return selection ? String(selection.accountType || "") : ""
     }
 
-    function accountCacheKey(accountId) {
-        return String(accountId || "").trim()
+    function accountCacheKey(accountId, ownerProgramId) {
+        const account = String(accountId || "").trim()
+        if (!account.length) {
+            return ""
+        }
+        return [root.accountNetworkCacheScope(), account, root.accountOwnerCacheKey(ownerProgramId)].join("|")
+    }
+
+    function accountNetworkCacheScope() {
+        return [String(networkProfile || ""), String(sequencerUrl || "")].join("|")
+    }
+
+    function accountOwnerCacheKey(ownerProgramId) {
+        return root.canonicalProgramIdHex(ownerProgramId) || root.normalizedHexText(ownerProgramId)
     }
 
     function accountDecodeFullyConsumed(value) {
@@ -1068,10 +1096,10 @@ QtObject {
         return response.ok && response.value !== undefined && response.value !== null ? String(response.value) : ""
     }
 
-    function autoDecodeAccountData(dataHex, accountId, callback) {
+    function autoDecodeAccountData(dataHex, accountId, ownerProgramId, callback) {
         const serial = accountAutoDecodeSerial + 1
         accountAutoDecodeSerial = serial
-        const candidates = root.accountDecodeCandidates(accountId)
+        const candidates = root.accountDecodeCandidates(accountId, ownerProgramId)
         if (!String(dataHex || "").length || candidates.length === 0) {
             callback({ ok: false, error: "", value: null, entry: null })
             return serial
@@ -1081,15 +1109,27 @@ QtObject {
         return serial
     }
 
-    function accountDecodeCandidates(accountId) {
+    function accountDecodeCandidates(accountId, ownerProgramId) {
         const candidates = []
-        const cached = root.cachedIdlEntryForAccount(accountId)
+        const cached = root.cachedIdlEntryForAccount(accountId, ownerProgramId)
         if (cached) {
             candidates.push({
                 entry: cached,
-                accountType: root.cachedAccountType(accountId),
+                accountType: root.cachedAccountType(accountId, ownerProgramId),
                 cached: true
             })
+        }
+        const ownerEntries = root.idlEntriesForProgram(ownerProgramId)
+        for (let ownerIndex = 0; ownerIndex < ownerEntries.length; ++ownerIndex) {
+            const ownerEntry = ownerEntries[ownerIndex]
+            if (!root.candidateListHasEntry(candidates, ownerEntry.key)) {
+                candidates.push({
+                    entry: ownerEntry,
+                    accountType: "",
+                    cached: false,
+                    ownerMatched: true
+                })
+            }
         }
         for (let i = 0; i < registeredIdls.count; ++i) {
             const entry = root.idlEntryAt(i)
@@ -1153,7 +1193,7 @@ QtObject {
         const candidates = []
         const accountIds = Array.isArray(summary.account_ids) ? summary.account_ids : []
         for (let i = 0; i < accountIds.length; ++i) {
-            const cached = root.cachedIdlEntryForAccount(accountIds[i])
+            const cached = root.cachedIdlEntryForAccount(accountIds[i], summary.program_id_hex)
             if (cached && !root.candidateListHasEntry(candidates, cached.key)) {
                 candidates.push({
                     entry: cached,
@@ -1415,6 +1455,10 @@ QtObject {
             if (!root.deliveryReportHealthy(value)) {
                 const nodeHealth = root.reportProbeValue(value, "nodeHealth")
                 const connectionStatus = root.reportProbeValue(value, "connectionStatus")
+                const moduleName = String(value && value.module ? value.module : "")
+                if (moduleName === deliveryModule && nodeHealth === null && connectionStatus === null) {
+                    return qsTr("runtime health unavailable")
+                }
                 return qsTr("health %1 / %2").arg(root.valueText(nodeHealth)).arg(root.valueText(connectionStatus))
             }
             const version = root.moduleProbeValue("messaging", "version")
@@ -1502,20 +1546,44 @@ QtObject {
         if (moduleName === "delivery_rest" && !root.reportProbeOk(report, "health")) {
             return false
         }
-        if (moduleName === deliveryModule
-                && !root.reportProbeOk(report, "getNodeInfo")
-                && !root.reportProbeOk(report, "getAvailableConfigs")
-                && !root.reportProbeOk(report, "getAvailableNodeInfoIDs")) {
-            return false
-        }
         const nodeProbe = root.reportProbe(report, "nodeHealth")
         const connectionProbe = root.reportProbe(report, "connectionStatus")
+        if (moduleName === deliveryModule && !nodeProbe && !connectionProbe) {
+            return root.deliveryModuleRuntimeHealthy(report)
+        }
         if (!nodeProbe && !connectionProbe) {
             return true
         }
         const nodeHealth = nodeProbe && nodeProbe.ok === true ? nodeProbe.value : null
         const connectionStatus = connectionProbe && connectionProbe.ok === true ? connectionProbe.value : null
         return root.deliveryHealthValueOk(nodeHealth, false) && root.deliveryHealthValueOk(connectionStatus, false)
+    }
+
+    function deliveryModuleRuntimeHealthy(report) {
+        const runtimeMethods = ["MyPeerId", "MyENR", "MyMultiaddresses", "Metrics", "collectOpenMetricsText"]
+        for (let i = 0; i < runtimeMethods.length; ++i) {
+            if (root.deliveryProbeHasRuntimeValue(root.reportProbe(report, runtimeMethods[i]))) {
+                return true
+            }
+        }
+        return false
+    }
+
+    function deliveryProbeHasRuntimeValue(probe) {
+        if (!probe || probe.ok !== true || probe.value === undefined || probe.value === null) {
+            return false
+        }
+        if (Array.isArray(probe.value)) {
+            return probe.value.length > 0
+        }
+        if (typeof probe.value === "object") {
+            return Object.keys(probe.value).length > 0
+        }
+        const scalar = root.scalarValue(probe.value)
+        if (typeof scalar === "boolean") {
+            return scalar
+        }
+        return scalar !== null && String(scalar).trim().length > 0
     }
 
     function deliveryHealthValueOk(value, unknownOk) {
@@ -2128,7 +2196,7 @@ QtObject {
         return root.moduleMetricValue("storage", ["storage_manifest_count", "manifest_count"])
     }
 
-    function dashboardMetricValue(key) {
+    function dashboardMetricRawValue(key) {
         switch (key) {
         case "bedrock.peer_count":
             return root.networkValue("n_peers")
@@ -2202,6 +2270,34 @@ QtObject {
         }
     }
 
+    function dashboardMetricValue(key) {
+        switch (key) {
+        case "messaging.message_received_events_recent":
+        case "messaging.message_error_events_recent":
+            return root.dashboardMetricWindowDelta(key)
+        default:
+            return root.dashboardMetricRawValue(key)
+        }
+    }
+
+    function dashboardMetricUsesWindow(key) {
+        return key === "messaging.message_received_events_recent"
+            || key === "messaging.message_error_events_recent"
+    }
+
+    function dashboardMetricWindowDelta(key) {
+        const current = Number(root.dashboardMetricRawValue(key))
+        if (!Number.isFinite(current)) {
+            return null
+        }
+        const timestamp = Date.now()
+        const samples = root.normalizedDashboardSamples(dashboardMetricHistory[String(key || "")]).slice()
+        if (samples.length === 0 || Number(samples[samples.length - 1].value) !== current) {
+            samples.push({ timestamp: timestamp, value: current })
+        }
+        return root.windowDeltaFromSamples(samples, timestamp, Math.max(1, Number(messagingRollingWindow || 0)) * 1000)
+    }
+
     function dashboardMetricText(key) {
         return root.valueText(root.dashboardMetricValue(key))
     }
@@ -2239,7 +2335,7 @@ QtObject {
         const timestamp = Date.now()
         let changed = false
         for (let i = 0; i < keys.length; ++i) {
-            const value = Number(root.dashboardMetricValue(keys[i]))
+            const value = Number(root.dashboardMetricRawValue(keys[i]))
             if (!Number.isFinite(value)) {
                 continue
             }
@@ -2260,6 +2356,9 @@ QtObject {
 
     function dashboardMetricSamples(key) {
         const revision = dashboardMetricHistoryRevision
+        if (root.dashboardMetricUsesWindow(key)) {
+            return root.dashboardMetricWindowSamples(key)
+        }
         const samples = root.normalizedDashboardSamples(dashboardMetricHistory[String(key || "")])
         if (Array.isArray(samples) && samples.length > 0) {
             return samples
@@ -2284,6 +2383,45 @@ QtObject {
             })
         }
         return rows
+    }
+
+    function dashboardMetricWindowSamples(key) {
+        const samples = root.normalizedDashboardSamples(dashboardMetricHistory[String(key || "")])
+        const windowMs = Math.max(1, Number(messagingRollingWindow || 0)) * 1000
+        const rows = []
+        for (let i = 0; i < samples.length; ++i) {
+            const delta = root.windowDeltaFromSamples(samples.slice(0, i + 1), samples[i].timestamp, windowMs)
+            if (delta !== null) {
+                rows.push({
+                    timestamp: samples[i].timestamp,
+                    value: delta
+                })
+            }
+        }
+        return rows
+    }
+
+    function windowDeltaFromSamples(samples, timestamp, windowMs) {
+        const rows = root.normalizedDashboardSamples(samples)
+        if (rows.length < 2) {
+            return null
+        }
+        const cutoff = timestamp - windowMs
+        let baseline = null
+        for (let i = rows.length - 1; i >= 0; --i) {
+            if (rows[i].timestamp <= cutoff) {
+                baseline = rows[i]
+                break
+            }
+            if (i === 0) {
+                baseline = rows[i]
+            }
+        }
+        const latest = rows[rows.length - 1]
+        if (!baseline || latest.timestamp === baseline.timestamp) {
+            return null
+        }
+        return Math.max(0, latest.value - baseline.value)
     }
 
     function defaultFooterFieldSelections() {
@@ -2866,10 +3004,11 @@ QtObject {
         const recipient = row || {}
         return {
             type: "transfer_recipient",
-            address: String(recipient.recipient || recipient.address || ""),
+            address: String(recipient.account_ref || recipient.recipient || recipient.address || ""),
             total_received: recipient.received,
             txs: recipient.txs || 0,
             outputs: recipient.outputs || 0,
+            references: recipient.references || recipient.outputs || 0,
             last_slot: recipient.last_slot,
             source: String(recipient.source || ""),
             transfers: Array.isArray(recipient.transfers) ? recipient.transfers : [],
@@ -2942,6 +3081,9 @@ QtObject {
         const channelId = String(channel.channel || channel.channel_id || "")
         const lastTxHash = String(channel.last_tx_hash || channel.tx_hash || "")
         const lastBlockHash = String(channel.last_block_hash || channel.header || channel.block_hash || "")
+        const keyValues = Array.isArray(channel.key_values)
+            ? channel.key_values
+            : (Array.isArray(channel.accredited_keys) ? channel.accredited_keys.map(function (key) { return String(key) }) : [])
         return {
             type: "channel",
             channel: channelId,
@@ -2959,14 +3101,14 @@ QtObject {
             first_slot: channel.first_slot,
             first_tx_hash: channel.first_tx_hash,
             first_block_hash: channel.first_block_hash,
-            last_slot: channel.last_slot,
+            last_slot: channel.last_slot || channel.tip_slot,
             last_tx_hash: lastTxHash,
             last_block_hash: lastBlockHash,
-            tip: channel.tip,
+            tip: channel.tip || channel.tip_message,
             balance: channel.balance,
             withdraw_threshold: channel.withdraw_threshold,
-            keys: channel.keys,
-            key_values: Array.isArray(channel.key_values) ? channel.key_values : [],
+            keys: channel.keys !== undefined && channel.keys !== null ? channel.keys : keyValues.length,
+            key_values: keyValues,
             operations: channel.operations || 0,
             raw_json: channel.raw || channel,
             raw: channel
@@ -3762,14 +3904,17 @@ QtObject {
 
     function blockchainTransactionDetail(value, fallbackHash) {
         const tx = value || {}
-        const hash = String(tx.hash || tx.tx_hash || tx.transaction_hash || fallbackHash || "")
+        const hash = transactionHash(tx) || String(tx.hash || tx.tx_hash || tx.transaction_hash || fallbackHash || "")
+        const ops = transactionOps(tx)
         return {
             type: "blockchain_transaction",
             hash: hash,
             block: String(tx.block || tx.block_hash || tx.header_hash || ""),
             slot: tx.slot,
             index: tx.index,
-            ops: Array.isArray(tx.operations) ? tx.operations : [],
+            ops: ops.map(function (op, index) {
+                return operationSummary(op, tx, index)
+            }),
             raw: tx.raw || tx
         }
     }
@@ -3930,9 +4075,11 @@ QtObject {
         const response = requestModule(inspectorModule, "channelState", [nodeUrl, channelId], qsTr("Channel"), false)
         if (response.ok) {
             const raw = response.value && typeof response.value === "object" ? response.value : {}
-            const value = root.channelDetail(Object.assign({}, raw, {
-                channel: String(raw.channel || raw.channel_id || channelId),
-                channel_id: String(raw.channel_id || raw.channel || channelId),
+            const state = raw.channel && typeof raw.channel === "object" && !Array.isArray(raw.channel) ? raw.channel : raw
+            const value = root.channelDetail(Object.assign({}, state, {
+                channel: String(raw.channel_id || state.channel_id || channelId),
+                channel_id: String(raw.channel_id || state.channel_id || channelId),
+                raw: raw,
                 source_confidence: "node"
             }))
             currentView = "channels"

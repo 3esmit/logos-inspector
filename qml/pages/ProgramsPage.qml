@@ -26,6 +26,7 @@ ColumnLayout {
         ListElement { value: "programIds"; label: "Known IDs" }
         ListElement { value: "idls"; label: "IDLs" }
         ListElement { value: "binaries"; label: "Binaries" }
+        ListElement { value: "events"; label: "Events" }
     }
 
     PageHeader {
@@ -293,6 +294,8 @@ ColumnLayout {
             return binaryForm
         case "idls":
             return idlForm
+        case "events":
+            return eventForm
         default:
             return programIdsForm
         }
@@ -1103,7 +1106,7 @@ ColumnLayout {
     }
 
     function programRows() {
-        return Array.isArray(root.responseValue) ? root.responseValue.slice(0, 12) : []
+        return Array.isArray(root.responseValue) ? root.responseValue : []
     }
 
     function isProgramContext(value) {

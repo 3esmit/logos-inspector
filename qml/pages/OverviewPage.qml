@@ -415,6 +415,10 @@ ColumnLayout {
 
     function dashboardMetricLabel(key) {
         switch (String(key || "")) {
+        case "messaging.message_received_events_recent":
+            return qsTr("messages in window")
+        case "messaging.message_error_events_recent":
+            return qsTr("errors in window")
         case "storage.active_uploads":
             return qsTr("upload requests total")
         case "storage.active_downloads":

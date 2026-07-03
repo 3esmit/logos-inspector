@@ -443,10 +443,12 @@ pub struct IndexerBlockReport {
 #[derive(Debug, Clone, Serialize)]
 pub struct TransferRecipientSummary {
     pub recipient: String,
+    pub account_ref: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub received: Option<String>,
     pub txs: usize,
     pub outputs: usize,
+    pub references: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_slot: Option<u64>,
     pub source: String,
@@ -1228,7 +1230,8 @@ pub fn local_wallet_profile_status(profile: Value) -> Result<LocalWalletProfileS
     if wallet_binary.is_empty() {
         details.push("wallet binary not configured".to_owned());
         status = local_wallet_worst_status(status, "degraded");
-    } else if !PathBuf::from(wallet_binary).is_file() {
+    } else if local_wallet_binary_is_path_like(wallet_binary) && !Path::new(wallet_binary).is_file()
+    {
         details.push("wallet binary is not reachable".to_owned());
         status = local_wallet_worst_status(status, "down");
     } else if status != "down" {
@@ -1259,6 +1262,14 @@ fn local_wallet_default_home() -> Option<PathBuf> {
     default_wallet_home_from_home(std::env::var_os("HOME").as_deref())
 }
 
+fn local_wallet_binary_is_path_like(binary: &str) -> bool {
+    let binary = binary.trim();
+    Path::new(binary).is_absolute()
+        || binary.contains(std::path::MAIN_SEPARATOR)
+        || binary.contains('/')
+        || binary.contains('\\')
+}
+
 fn default_wallet_home_from_home(home: Option<&OsStr>) -> Option<PathBuf> {
     let home = PathBuf::from(home?);
     (!home.as_os_str().is_empty()).then(|| home.join(".lee").join("wallet"))
@@ -1272,11 +1283,9 @@ pub async fn bedrock_wallet_balance(
     let public_key = normalize_bedrock_wallet_public_key(public_key)?;
     let mut path = format!("/wallet/{public_key}/balance");
     if let Some(tip) = tip.map(str::trim).filter(|tip| !tip.is_empty()) {
-        if !tip.chars().all(|ch| ch.is_ascii_alphanumeric()) {
-            bail!("balance tip must be alphanumeric")
-        }
+        let tip = normalize_bedrock_hex_id(tip, "balance tip")?;
         path.push_str("?tip=");
-        path.push_str(tip);
+        path.push_str(&tip);
     }
     raw_http_json(endpoint, &path).await
 }
@@ -1369,17 +1378,19 @@ fn local_wallet_status_name(rank: u8) -> &'static str {
 }
 
 fn normalize_bedrock_wallet_public_key(value: &str) -> Result<String> {
-    let mut text = value.trim();
-    if let Some(rest) = text.strip_prefix("Public/") {
-        text = rest;
-    }
+    normalize_bedrock_hex_id(value, "wallet public key")
+}
+
+fn normalize_bedrock_hex_id(value: &str, label: &str) -> Result<String> {
+    let text = value.trim();
+    let text = text.strip_prefix("0x").unwrap_or(text);
     if text.is_empty() {
-        bail!("wallet public key is required")
+        bail!("{label} is required")
     }
-    if text.contains('/') || text.contains('?') || text.contains('#') {
-        bail!("wallet public key contains unsupported URL characters")
+    if text.len() != 64 || !text.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        bail!("{label} must be 64 hex characters")
     }
-    Ok(text.to_owned())
+    Ok(text.to_ascii_lowercase())
 }
 
 fn unix_time_text() -> String {
@@ -1566,7 +1577,7 @@ fn summarize_indexer_transaction(value: &Value, index: usize) -> AccountTransact
     let message = payload.get("message").unwrap_or(&empty);
     let bytecode_len = message.get("bytecode").and_then(|bytecode| match bytecode {
         Value::Array(items) => Some(items.len()),
-        Value::String(value) => Some(value.len()),
+        Value::String(value) => BASE64_STANDARD.decode(value).ok().map(|bytes| bytes.len()),
         _ => None,
     });
     AccountTransactionSummary {
@@ -1581,12 +1592,22 @@ fn summarize_indexer_transaction(value: &Value, index: usize) -> AccountTransact
             .get("program_id")
             .map(value_to_string)
             .map(|program_id| normalize_program_id_hex(&program_id).unwrap_or(program_id)),
-        account_ids: value_list_strings(message.get("account_ids")),
+        account_ids: indexer_transaction_account_ids(message),
         nonces: value_list_strings(message.get("nonces")),
         instruction_data: value_list_u32(message.get("instruction_data")),
         bytecode_len,
         raw: value.clone(),
     }
+}
+
+fn indexer_transaction_account_ids(message: &Value) -> Vec<String> {
+    let mut account_ids = value_list_strings(message.get("account_ids"));
+    for account_id in value_list_strings(message.get("public_account_ids")) {
+        if !account_ids.iter().any(|value| value == &account_id) {
+            account_ids.push(account_id);
+        }
+    }
+    account_ids
 }
 
 fn summarize_account_transaction(
@@ -1654,7 +1675,7 @@ fn transaction_signature_public_key(signature: &Value) -> Option<String> {
 struct RecipientAggregate {
     received: Option<u128>,
     tx_hashes: BTreeSet<String>,
-    outputs: usize,
+    references: usize,
     last_slot: Option<u64>,
     transfers: Vec<RecipientTransferSummary>,
 }
@@ -1670,7 +1691,7 @@ fn transfer_recipient_summaries_from_blocks(
                     .entry(account_id.clone())
                     .or_insert_with(RecipientAggregate::default);
                 aggregate.tx_hashes.insert(tx.hash.clone());
-                aggregate.outputs += 1;
+                aggregate.references += 1;
                 aggregate.last_slot = max_slot(aggregate.last_slot, block.block_id);
                 aggregate.transfers.push(RecipientTransferSummary {
                     slot: block.block_id,
@@ -1702,11 +1723,14 @@ fn transfer_recipient_summaries_from_aggregates(
                     .then_with(|| right.tx_hash.cmp(&left.tx_hash))
                     .then_with(|| right.value.cmp(&left.value))
             });
+            let account_ref = recipient;
             TransferRecipientSummary {
-                recipient,
+                recipient: account_ref.clone(),
+                account_ref,
                 received: aggregate.received.map(|value| value.to_string()),
                 txs: aggregate.tx_hashes.len(),
-                outputs: aggregate.outputs,
+                outputs: 0,
+                references: aggregate.references,
                 last_slot: aggregate.last_slot,
                 source: source.to_owned(),
                 transfers: aggregate.transfers,
@@ -1727,7 +1751,7 @@ fn transfer_recipient_sort_key(row: &TransferRecipientSummary) -> (u128, usize, 
             .as_deref()
             .and_then(|value| value.parse().ok())
             .unwrap_or_default(),
-        row.outputs,
+        row.references,
         row.last_slot.unwrap_or_default(),
     )
 }
@@ -3383,10 +3407,12 @@ mod tests {
     }
 
     #[test]
-    fn bedrock_wallet_public_key_normalization_rejects_path_fragments() {
-        let normalized = normalize_bedrock_wallet_public_key("Public/abc123");
+    fn bedrock_wallet_public_key_normalization_requires_64_hex() {
+        let normalized = normalize_bedrock_wallet_public_key(&format!("0x{}", "ab".repeat(32)));
         assert!(normalized.is_ok(), "{normalized:?}");
-        assert_eq!(normalized.unwrap_or_default(), "abc123");
+        assert_eq!(normalized.unwrap_or_default(), "ab".repeat(32));
+        assert!(normalize_bedrock_wallet_public_key("Public/abc123").is_err());
+        assert!(normalize_bedrock_wallet_public_key("abc123").is_err());
         assert!(normalize_bedrock_wallet_public_key("abc/123").is_err());
         assert!(normalize_bedrock_wallet_public_key("abc?tip=1").is_err());
     }
@@ -3589,6 +3615,38 @@ mod tests {
     }
 
     #[test]
+    fn summarize_indexer_transaction_preserves_privacy_public_account_ids() {
+        let raw = serde_json::json!({
+            "PrivacyPreserving": {
+                "hash": "tx-a",
+                "message": {
+                    "public_account_ids": ["account-111111111111"]
+                }
+            }
+        });
+
+        let summary = summarize_indexer_transaction(&raw, 0);
+
+        assert_eq!(summary.account_ids, vec!["account-111111111111"]);
+    }
+
+    #[test]
+    fn summarize_indexer_transaction_counts_decoded_bytecode_bytes() {
+        let raw = serde_json::json!({
+            "ProgramDeployment": {
+                "hash": "tx-a",
+                "message": {
+                    "bytecode": "AQIDBA=="
+                }
+            }
+        });
+
+        let summary = summarize_indexer_transaction(&raw, 0);
+
+        assert_eq!(summary.bytecode_len, Some(4));
+    }
+
+    #[test]
     fn transfer_recipient_summaries_ignore_untyped_transfer_outputs() {
         let raw = serde_json::json!({
             "Public": {
@@ -3631,6 +3689,10 @@ mod tests {
         assert_eq!(recipients.first().map(|recipient| recipient.txs), Some(1));
         assert_eq!(
             recipients.first().map(|recipient| recipient.outputs),
+            Some(0)
+        );
+        assert_eq!(
+            recipients.first().map(|recipient| recipient.references),
             Some(1)
         );
         assert_eq!(
@@ -3694,7 +3756,7 @@ mod tests {
     }
 
     #[test]
-    fn transfer_recipient_summaries_fall_back_to_account_refs() {
+    fn transfer_recipient_summaries_report_account_refs_not_outputs() {
         let raw = serde_json::json!({
             "Public": {
                 "hash": "tx-a",
@@ -3723,7 +3785,8 @@ mod tests {
                 .all(|recipient| recipient.received.is_none())
         );
         assert!(recipients.iter().all(|recipient| recipient.txs == 1));
-        assert!(recipients.iter().all(|recipient| recipient.outputs == 1));
+        assert!(recipients.iter().all(|recipient| recipient.outputs == 0));
+        assert!(recipients.iter().all(|recipient| recipient.references == 1));
         assert!(
             recipients
                 .iter()

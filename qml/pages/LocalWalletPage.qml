@@ -389,7 +389,7 @@ ColumnLayout {
                         label: qsTr("Public key")
                         sourceText: root.model.walletPublicKeyProbe
                         syncSourceText: true
-                        placeholderText: qsTr("Public/<key> or <key>")
+                        placeholderText: qsTr("64 hex characters")
                         Layout.columnSpan: root.width < 760 ? 1 : 2
                         onTextEdited: text => { if (root.model.walletPublicKeyProbe !== text) root.model.walletPublicKeyProbe = text }
                     }
@@ -399,7 +399,7 @@ ColumnLayout {
                         label: qsTr("Tip")
                         sourceText: root.model.bedrockWalletBalanceTip
                         syncSourceText: true
-                        placeholderText: qsTr("Optional")
+                        placeholderText: qsTr("Optional 64-hex header id")
                         onTextEdited: text => { if (root.model.bedrockWalletBalanceTip !== text) root.model.bedrockWalletBalanceTip = text }
                     }
                 }

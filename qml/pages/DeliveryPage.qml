@@ -770,8 +770,8 @@ ColumnLayout {
         return [
             root.metricRow(qsTr("Peer count"), "messaging.peer_count"),
             root.metricRow(qsTr("Pubsub peers"), "messaging.pubsub_peers"),
-            root.metricRow(qsTr("Messages total"), "messaging.message_received_events_recent"),
-            root.metricRow(qsTr("Errors total"), "messaging.message_error_events_recent"),
+            root.metricRow(qsTr("Messages in window"), "messaging.message_received_events_recent"),
+            root.metricRow(qsTr("Errors in window"), "messaging.message_error_events_recent"),
             root.metricRow(qsTr("Store peers"), "messaging.store_peers"),
             root.metricRow(qsTr("Filter peers"), "messaging.filter_peers"),
             root.metricRow(qsTr("Lightpush peers"), "messaging.lightpush_peers")
