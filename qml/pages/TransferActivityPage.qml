@@ -17,24 +17,24 @@ ColumnLayout {
     spacing: 16
 
     Component.onCompleted: {
-        if (!model.walletsPageRows.length) {
-            model.refreshWalletsPage();
+        if (!model.transferActivityRows.length) {
+            model.refreshTransferActivityPage();
         }
     }
 
     ListToolbar {
         theme: root.theme
-        loadCount: root.model.walletsPageLimit
-        rangeText: root.walletRangeText()
-        canGoNewer: root.model.walletsPageHistory.length > 0
-        canGoOlder: root.model.walletsPageNextBeforeBlock > 0
+        loadCount: root.model.transferActivityLimit
+        rangeText: root.transferActivityRangeText()
+        canGoNewer: root.model.transferActivityHistory.length > 0
+        canGoOlder: root.model.transferActivityNextBeforeBlock > 0
         busy: root.model.busy
         Layout.fillWidth: true
-        onRefresh: root.model.refreshWalletsPage()
-        onNewer: root.model.previousWalletsPage()
-        onOlder: root.model.nextWalletsPage()
+        onRefresh: root.model.refreshTransferActivityPage()
+        onNewer: root.model.previousTransferActivityPage()
+        onOlder: root.model.nextTransferActivityPage()
         onLoadCountSelected: function (count) {
-            root.model.setWalletsPageLimit(count)
+            root.model.setTransferActivityPageLimit(count)
         }
     }
 
@@ -52,87 +52,87 @@ ColumnLayout {
         contentItem: ColumnLayout {
             spacing: 0
 
-            WalletRow {
+            RecipientRow {
                 theme: root.theme
                 header: true
-                columns: [qsTr("Wallet"), qsTr("Received"), qsTr("Txs"), qsTr("Outputs"), qsTr("Last slot")]
+                columns: [qsTr("Recipient"), qsTr("Observed amount"), qsTr("Txs"), qsTr("Outputs"), qsTr("Last L2 block")]
             }
 
             Repeater {
-                model: root.walletRows()
+                model: root.recipientRows()
 
-                WalletRow {
+                RecipientRow {
                     required property var modelData
 
                     theme: root.theme
-                    columns: [modelData.wallet, modelData.received, modelData.txs, modelData.outputs, modelData.lastSlot]
-                    wallet: modelData.walletRaw
-                    onWalletActivated: root.model.openWallet(modelData.walletRaw)
+                    columns: [modelData.recipient, modelData.received, modelData.txs, modelData.outputs, modelData.lastSlot]
+                    recipient: modelData.recipientRaw
+                    onRecipientActivated: root.model.openRecipient(modelData.recipientRaw)
                 }
             }
         }
     }
 
     StatusMessage {
-        visible: root.model.walletsPageError.length > 0
+        visible: root.model.transferActivityError.length > 0
         theme: root.theme
         tone: "warning"
-        title: qsTr("Wallets unavailable")
-        message: root.model.walletsPageError
+        title: qsTr("Transfer activity unavailable")
+        message: root.model.transferActivityError
         Layout.fillWidth: true
     }
 
-    WalletDetailPane {
-        value: root.model.walletDetailValue
+    TransferRecipientDetailPane {
+        value: root.model.transferRecipientDetailValue
         theme: root.theme
         model: root.model
     }
 
     StatusMessage {
-        visible: root.model.walletDetailValue === null
+        visible: root.model.transferRecipientDetailValue === null
         theme: root.theme
         tone: "info"
-        title: qsTr("Wallet detail")
-        message: qsTr("Select a wallet to inspect receive-side transfer outputs, source transactions, and linked blocks.")
+        title: qsTr("Transfer recipient")
+        message: qsTr("Select a recipient to inspect observed transfer outputs, source transactions, and linked L2 blocks. This is indexer-derived activity, not a local wallet directory.")
         Layout.fillWidth: true
     }
 
-    function walletRows() {
-        const wallets = root.model.walletsPageRows || [];
-        if (!wallets.length) {
+    function recipientRows() {
+        const recipients = root.model.transferActivityRows || [];
+        if (!recipients.length) {
             return [{
-                wallet: qsTr("No wallets in loaded range"),
-                walletRaw: "",
+                recipient: qsTr("No transfer recipients in loaded range"),
+                recipientRaw: "",
                 received: "-",
                 txs: "-",
                 outputs: "-",
                 lastSlot: "-"
             }];
         }
-        return wallets.map(function (wallet) {
+        return recipients.map(function (recipient) {
             return {
-                wallet: root.shortWallet(wallet.wallet),
-                walletRaw: String(wallet.wallet || ""),
-                received: root.receivedText(wallet),
-                txs: root.numberText(wallet.txs),
-                outputs: root.numberText(wallet.outputs),
-                lastSlot: root.numberText(wallet.last_slot)
+                recipient: root.shortRecipient(recipient.recipient),
+                recipientRaw: String(recipient.recipient || ""),
+                received: root.receivedText(recipient),
+                txs: root.numberText(recipient.txs),
+                outputs: root.numberText(recipient.outputs),
+                lastSlot: root.numberText(recipient.last_slot)
             };
         });
     }
 
-    function walletRangeText() {
-        if (root.model.walletsPageBeforeBlock > 0) {
-            return qsTr("Before block %1").arg(root.numberText(root.model.walletsPageBeforeBlock));
+    function transferActivityRangeText() {
+        if (root.model.transferActivityBeforeBlock > 0) {
+            return qsTr("Before L2 block %1").arg(root.numberText(root.model.transferActivityBeforeBlock));
         }
-        return qsTr("Latest indexed wallets");
+        return qsTr("Latest finalized L2 transfer activity");
     }
 
-    function receivedText(wallet) {
-        if (wallet.received === undefined || wallet.received === null || wallet.received === "") {
+    function receivedText(recipient) {
+        if (recipient.received === undefined || recipient.received === null || recipient.received === "") {
             return "-";
         }
-        return root.coinText(wallet.received);
+        return root.coinText(recipient.received);
     }
 
     function coinText(value) {
@@ -154,7 +154,7 @@ ColumnLayout {
         return String(value);
     }
 
-    function shortWallet(value) {
+    function shortRecipient(value) {
         const text = String(value || "");
         if (text.length <= 18) {
             return text.length ? text : "-";
@@ -162,14 +162,14 @@ ColumnLayout {
         return text.slice(0, 12) + "..." + text.slice(-8);
     }
 
-    component WalletRow: Item {
+    component RecipientRow: Item {
         id: rowRoot
 
         required property Theme theme
         property var columns: []
-        property string wallet: ""
+        property string recipient: ""
         property bool header: false
-        signal walletActivated()
+        signal recipientActivated()
 
         Layout.fillWidth: true
         Layout.preferredHeight: rowRoot.header ? 36 : 42
@@ -197,17 +197,18 @@ ColumnLayout {
                     text: String(rowRoot.columns[index] || "-")
                     header: rowRoot.header
                     link: rowRoot.linkFor(index)
+                    copyText: rowRoot.recipient.length > 0 ? rowRoot.recipient : String(rowRoot.columns[index] || "")
                     monospace: !rowRoot.header
                     textColor: rowRoot.textColor(index)
                     Layout.preferredWidth: rowRoot.columnWidth(index)
                     Layout.fillWidth: index === 0
-                    onActivated: rowRoot.walletActivated()
+                    onActivated: rowRoot.recipientActivated()
                 }
             }
         }
 
         function linkFor(index) {
-            return !rowRoot.header && index === 0 && rowRoot.wallet.length > 0;
+            return !rowRoot.header && index === 0 && rowRoot.recipient.length > 0;
         }
 
         function textColor(index) {

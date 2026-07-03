@@ -2,6 +2,7 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Controls.Basic
+import QtQuick.Dialogs
 import QtQml.Models
 import QtQuick.Layouts
 import "../components"
@@ -29,19 +30,11 @@ ColumnLayout {
 
     PageHeader {
         theme: root.theme
-        breadcrumb: qsTr("Home / SPEL")
-        title: qsTr("SPEL")
+        breadcrumb: qsTr("Home / L2 LEZ / SPEL")
+        title: qsTr("SPEL / IDL")
+        layerLabel: qsTr("L2 LEZ")
         subtitle: qsTr("Register IDLs, inspect binaries, and decode program events without hardcoded program assumptions.")
         Layout.fillWidth: true
-
-        ActionButton {
-            theme: root.theme
-            text: qsTr("Fetch IDs")
-            primary: true
-            enabled: !root.model.busy
-            Layout.preferredWidth: 112
-            onClicked: root.model.callInspector("programs", [root.model.sequencerUrl], qsTr("Program IDs"))
-        }
     }
 
     GridLayout {
@@ -373,11 +366,70 @@ ColumnLayout {
         ColumnLayout {
             spacing: 12
 
-            FieldRow {
-                id: programPath
-                theme: root.theme
-                label: qsTr("Path")
-                placeholderText: qsTr("program.bin")
+            FileDialog {
+                id: programFileDialog
+
+                title: qsTr("Select SPEL binary")
+                fileMode: FileDialog.OpenFile
+                nameFilters: [qsTr("Binary files (*.bin *.wasm)"), qsTr("All files (*)")]
+                onAccepted: {
+                    const path = root.localPathFromFileUrl(selectedFile)
+                    if (path.length > 0) {
+                        programPath.text = path
+                    }
+                }
+            }
+
+            ColumnLayout {
+                spacing: 6
+                Layout.fillWidth: true
+
+                Text {
+                    text: qsTr("Path")
+                    color: root.theme.textMuted
+                    textFormat: Text.PlainText
+                    font.pixelSize: root.theme.secondaryText
+                    font.weight: Font.Medium
+                    Layout.fillWidth: true
+                }
+
+                RowLayout {
+                    spacing: root.theme.gapSmall
+                    Layout.fillWidth: true
+
+                    TextField {
+                        id: programPath
+
+                        color: root.theme.text
+                        placeholderText: qsTr("program.bin")
+                        placeholderTextColor: root.theme.textDim
+                        selectionColor: root.theme.accent
+                        selectedTextColor: root.theme.selectedText
+                        font.pixelSize: root.theme.primaryText
+                        leftPadding: 12
+                        rightPadding: 12
+                        hoverEnabled: true
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: root.theme.controlHeight
+
+                        background: Rectangle {
+                            radius: root.theme.radius
+                            color: programPath.hovered || programPath.activeFocus ? root.theme.surfaceRaised : root.theme.field
+                            border.width: programPath.activeFocus ? 2 : 1
+                            border.color: programPath.activeFocus ? root.theme.accent : root.theme.outlineMuted
+                        }
+
+                        Accessible.name: qsTr("Program binary path")
+                    }
+
+                    ActionButton {
+                        theme: root.theme
+                        text: qsTr("Browse")
+                        enabled: !root.model.busy
+                        Layout.preferredWidth: 96
+                        onClicked: programFileDialog.open()
+                    }
+                }
             }
 
             ActionButton {
@@ -594,6 +646,7 @@ ColumnLayout {
                 text: rowRoot.header ? rowRoot.hex : root.shortHash(rowRoot.hex)
                 header: rowRoot.header
                 link: !rowRoot.header && rowRoot.hex.length > 0
+                copyText: rowRoot.hex
                 Layout.fillWidth: true
                 onActivated: rowRoot.modelRef.openReference("program", rowRoot.hex)
             }
@@ -818,6 +871,7 @@ ColumnLayout {
                 theme: rowRoot.theme
                 text: rowRoot.value
                 link: rowRoot.linkKind.length > 0
+                copyText: rowRoot.value
                 wrap: true
                 Layout.fillWidth: true
                 onActivated: rowRoot.modelRef.openReference(rowRoot.linkKind, rowRoot.value)
@@ -1042,6 +1096,21 @@ ColumnLayout {
             return text.length ? text : "-"
         }
         return text.slice(0, 8) + "..." + text.slice(-6)
+    }
+
+    function localPathFromFileUrl(fileUrl) {
+        const text = String(fileUrl || "")
+        if (!text.length) {
+            return ""
+        }
+        if (text.indexOf("file://") === 0) {
+            let path = decodeURIComponent(text.slice(7))
+            if (/^\/[A-Za-z]:\//.test(path)) {
+                path = path.slice(1)
+            }
+            return path
+        }
+        return text
     }
 
     function valueText(value) {

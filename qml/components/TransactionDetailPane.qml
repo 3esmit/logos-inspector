@@ -543,6 +543,7 @@ ColumnLayout {
                     text: rowRoot.value
                     theme: rowRoot.theme
                     link: rowRoot.linkKind.length > 0
+                    copyText: rowRoot.linkValue.length > 0 ? rowRoot.linkValue : rowRoot.value
                     monospace: rowRoot.monospace
                     wrap: true
                     Layout.fillWidth: true

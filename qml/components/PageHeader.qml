@@ -9,12 +9,14 @@ GridLayout {
     property string breadcrumb: ""
     property string title: ""
     property string subtitle: ""
+    property string layerLabel: ""
     property bool showTitle: false
     property bool showBreadcrumb: false
     property bool showSubtitle: false
     default property alias actions: actionSlot.data
     readonly property bool stacked: width < 680
-    readonly property bool hasText: (showBreadcrumb && breadcrumb.length > 0)
+    readonly property bool hasText: layerLabel.length > 0
+        || (showBreadcrumb && breadcrumb.length > 0)
         || (showTitle && title.length > 0)
         || (showSubtitle && subtitle.length > 0)
 
@@ -30,16 +32,28 @@ GridLayout {
         Layout.column: 0
         Layout.row: 0
 
-        Text {
-            visible: root.showBreadcrumb && root.breadcrumb.length > 0
-            text: root.breadcrumb
-            color: root.theme.textDim
-            textFormat: Text.PlainText
-            elide: Text.ElideRight
-            font.pixelSize: root.theme.labelText
-            font.weight: Font.DemiBold
-            font.capitalization: Font.AllUppercase
+        RowLayout {
+            visible: root.layerLabel.length > 0 || (root.showBreadcrumb && root.breadcrumb.length > 0)
+            spacing: root.theme.gapSmall
             Layout.fillWidth: true
+
+            LayerBadge {
+                visible: root.layerLabel.length > 0
+                theme: root.theme
+                text: root.layerLabel
+            }
+
+            Text {
+                visible: root.showBreadcrumb && root.breadcrumb.length > 0
+                text: root.breadcrumb
+                color: root.theme.textDim
+                textFormat: Text.PlainText
+                elide: Text.ElideRight
+                font.pixelSize: root.theme.labelText
+                font.weight: Font.DemiBold
+                font.capitalization: Font.AllUppercase
+                Layout.fillWidth: true
+            }
         }
 
         Text {
@@ -81,5 +95,5 @@ GridLayout {
     }
 
     Accessible.role: Accessible.StaticText
-    Accessible.name: root.title.length > 0 ? root.title : root.breadcrumb
+    Accessible.name: root.title.length > 0 ? root.title : (root.breadcrumb.length > 0 ? root.breadcrumb : root.layerLabel)
 }

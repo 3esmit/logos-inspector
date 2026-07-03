@@ -97,29 +97,65 @@
 
       forAllSystems = forSystems qmlSystems;
 
+      workspaceRoot = toString ./.;
+
+      relativeToRoot = path:
+        let
+          pathString = toString path;
+          prefix = workspaceRoot + "/";
+        in
+        if pathString == workspaceRoot then "" else lib.removePrefix prefix pathString;
+
+      sourceFilter = path: type:
+        let
+          name = builtins.baseNameOf path;
+          ignoredDirectories = [
+            ".direnv"
+            "coverage"
+            "dist"
+            "node_modules"
+            "target"
+            "tmp"
+          ];
+          isIgnoredDirectory = type == "directory" && builtins.elem name ignoredDirectories;
+          isHiddenDirectory = type == "directory" && lib.hasPrefix "." name;
+          isResultLink = name == "result" || lib.hasPrefix "result-" name;
+          isLogFile = lib.hasSuffix ".log" name;
+        in
+        lib.cleanSourceFilter path type
+        && !isIgnoredDirectory
+        && !isHiddenDirectory
+        && !isResultLink
+        && !isLogFile;
+
       source = lib.cleanSourceWith {
+        src = ./.;
+        filter = sourceFilter;
+      };
+
+      standaloneRustSource = lib.cleanSourceWith {
         src = ./.;
         filter = path: type:
           let
-            name = builtins.baseNameOf path;
-            ignoredDirectories = [
-              ".direnv"
-              "coverage"
-              "dist"
-              "node_modules"
-              "target"
-              "tmp"
-            ];
-            isIgnoredDirectory = type == "directory" && builtins.elem name ignoredDirectories;
-            isHiddenDirectory = type == "directory" && lib.hasPrefix "." name;
-            isResultLink = name == "result" || lib.hasPrefix "result-" name;
-            isLogFile = lib.hasSuffix ".log" name;
+            rel = relativeToRoot path;
+            isRuntimeAsset =
+              rel == "qml" || lib.hasPrefix "qml/" rel
+              || rel == "icons" || lib.hasPrefix "icons/" rel;
           in
-          lib.cleanSourceFilter path type
-          && !isIgnoredDirectory
-          && !isHiddenDirectory
-          && !isResultLink
-          && !isLogFile;
+          sourceFilter path type && !isRuntimeAsset;
+      };
+
+      standaloneAssetSource = lib.cleanSourceWith {
+        src = ./.;
+        filter = path: type:
+          let
+            rel = relativeToRoot path;
+            isRuntimeAsset =
+              rel == ""
+              || rel == "qml" || lib.hasPrefix "qml/" rel
+              || rel == "icons" || lib.hasPrefix "icons/" rel;
+          in
+          sourceFilter path type && isRuntimeAsset;
       };
 
       qmlModule = logos-module-builder.lib.mkLogosQmlModule {
@@ -128,7 +164,7 @@
         flakeInputs = inputs;
       };
 
-      standalonePackages = forSystems standaloneSystems (pkgs:
+      mkStandaloneBinary = pkgs: { buildType, staticRapidsnarkFeature }:
         let
           circuitsArtifact = mkCircuitsArtifact pkgs;
           lezSource = pkgs.fetchzip {
@@ -145,9 +181,10 @@
           ];
         in
         pkgs.rustPlatform.buildRustPackage {
-          pname = "logos-inspector-standalone-gui";
+          pname = "logos-inspector-standalone-gui-bin";
           version = "0.2.0-rc6";
-          src = source;
+          src = standaloneRustSource;
+          inherit buildType;
           cargoLock = {
             lockFile = ./Cargo.lock;
             allowBuiltinFetchGit = true;
@@ -155,8 +192,8 @@
           cargoBuildFlags = [
             "--package"
             "logos-inspector-standalone-gui"
-            "--features"
-            "static-rapidsnark-link"
+          ] ++ lib.optionals staticRapidsnarkFeature [
+            "--features" "static-rapidsnark-link"
           ];
           cargoTestFlags = [ "--package" "logos-inspector-standalone-gui" ];
           nativeBuildInputs = [
@@ -166,10 +203,12 @@
             pkgs.qt6.wrapQtAppsHook
           ];
           buildInputs = qtInputs;
-          env.LBC_ROOT_DIR = "${circuitsArtifact}";
-          env.QT_VERSION_MAJOR = "6";
-          env.RAPIDSNARK_LIB_DIR = "${rapidsnark}";
-          env.RISC0_SKIP_BUILD = "1";
+          env = {
+            LBC_ROOT_DIR = "${circuitsArtifact}";
+            RAPIDSNARK_LIB_DIR = "${rapidsnark}";
+            QT_VERSION_MAJOR = "6";
+            RISC0_SKIP_BUILD = "1";
+          };
           doCheck = false;
           preBuild = ''
             rm -rf /build/cargo-vendor-dir/artifacts
@@ -224,11 +263,6 @@ EOF
             chmod +x "$qtBuildRoot/bin/qmake6"
             export QMAKE="$qtBuildRoot/bin/qmake6"
           '';
-          postInstall = ''
-            mkdir -p "$out/share/logos-inspector"
-            cp -r qml "$out/share/logos-inspector/qml"
-            cp -r icons "$out/share/logos-inspector/icons"
-          '';
           preFixup = ''
             ${lib.optionalString pkgs.stdenv.isLinux ''
               if [ -x "$out/bin/logos-inspector-standalone-gui" ]; then
@@ -238,19 +272,54 @@ EOF
               fi
             ''}
             qtWrapperArgs+=(
-              --set LOGOS_INSPECTOR_QML_DIR "$out/share/logos-inspector/qml"
               --set-default QT_QUICK_BACKEND software
               --set-default QSG_RHI_BACKEND software
             )
           '';
           meta.mainProgram = "logos-inspector-standalone-gui";
-        });
+        };
+
+      mkStandalonePackage = pkgs: binary:
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "logos-inspector-standalone-gui";
+          version = "0.2.0-rc6";
+          dontUnpack = true;
+          nativeBuildInputs = [ pkgs.makeWrapper ];
+          installPhase = ''
+            runHook preInstall
+
+            mkdir -p "$out/bin" "$out/share/logos-inspector"
+            cp -r ${standaloneAssetSource}/qml "$out/share/logos-inspector/qml"
+            cp -r ${standaloneAssetSource}/icons "$out/share/logos-inspector/icons"
+
+            makeWrapper ${binary}/bin/logos-inspector-standalone-gui \
+              "$out/bin/logos-inspector-standalone-gui" \
+              --set LOGOS_INSPECTOR_QML_DIR "$out/share/logos-inspector/qml"
+
+            runHook postInstall
+          '';
+          meta.mainProgram = "logos-inspector-standalone-gui";
+        };
+
+      standalonePackages = forSystems standaloneSystems (pkgs:
+        mkStandalonePackage pkgs (mkStandaloneBinary pkgs {
+          buildType = "release";
+          staticRapidsnarkFeature = true;
+        }));
+
+      standaloneDevPackages = forSystems standaloneSystems (pkgs:
+        mkStandalonePackage pkgs (mkStandaloneBinary pkgs {
+          buildType = "debug";
+          staticRapidsnarkFeature = false;
+        }));
     in
     qmlModule // {
       packages = builtins.mapAttrs
         (system: packages:
           packages // lib.optionalAttrs (builtins.hasAttr system standalonePackages) {
             standalone = standalonePackages.${system};
+          } // lib.optionalAttrs (builtins.hasAttr system standaloneDevPackages) {
+            standalone-dev = standaloneDevPackages.${system};
           })
         qmlModule.packages;
       apps = builtins.mapAttrs
@@ -260,6 +329,11 @@ EOF
             standalone = {
               type = "app";
               program = "${standalonePackages.${system}}/bin/logos-inspector-standalone-gui";
+            };
+          } // lib.optionalAttrs (builtins.hasAttr system standaloneDevPackages) {
+            standalone-dev = {
+              type = "app";
+              program = "${standaloneDevPackages.${system}}/bin/logos-inspector-standalone-gui";
             };
           })
         qmlModule.apps;

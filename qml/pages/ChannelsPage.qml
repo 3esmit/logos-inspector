@@ -55,7 +55,7 @@ ColumnLayout {
             ChannelRow {
                 theme: root.theme
                 header: true
-                columns: [qsTr("Channel"), qsTr("Label"), qsTr("Last slot"), qsTr("Balance"), qsTr("Keys")]
+                columns: [qsTr("Channel"), qsTr("Label"), qsTr("Last L1 slot"), qsTr("Balance"), qsTr("Keys")]
             }
 
             Repeater {
@@ -149,7 +149,7 @@ ColumnLayout {
         if (root.model.channelsPageSlotTo <= 0) {
             return qsTr("No range loaded");
         }
-        return qsTr("Slots %1-%2").arg(root.numberText(root.model.channelsPageSlotFrom)).arg(root.numberText(root.model.channelsPageSlotTo));
+        return qsTr("L1 slots %1-%2").arg(root.numberText(root.model.channelsPageSlotFrom)).arg(root.numberText(root.model.channelsPageSlotTo));
     }
 
     function canLoadNewer() {
@@ -222,6 +222,7 @@ ColumnLayout {
                     text: String(rowRoot.columns[index] || "-")
                     header: rowRoot.header
                     link: rowRoot.linkFor(index)
+                    copyText: rowRoot.channel.length > 0 ? rowRoot.channel : String(rowRoot.columns[index] || "")
                     monospace: !rowRoot.header
                     textColor: rowRoot.textColor(index)
                     Layout.preferredWidth: rowRoot.columnWidth(index)

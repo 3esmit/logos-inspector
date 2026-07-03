@@ -29,6 +29,43 @@ Item {
         bridge: bridge
     }
 
+    Component.onCompleted: appModel.loadIdlState()
+
+    Timer {
+        interval: appModel.refreshInterval(appModel.blockchainRefreshRate)
+        repeat: true
+        running: appModel.blockchainRefreshRate > 0
+        onTriggered: appModel.queryNetworkConnection("blockchain", false)
+    }
+
+    Timer {
+        interval: appModel.refreshInterval(appModel.indexerRefreshRate)
+        repeat: true
+        running: appModel.indexerRefreshRate > 0
+        onTriggered: appModel.queryNetworkConnection("indexer", false)
+    }
+
+    Timer {
+        interval: appModel.refreshInterval(appModel.executionRefreshRate)
+        repeat: true
+        running: appModel.executionRefreshRate > 0
+        onTriggered: appModel.queryNetworkConnection("execution", false)
+    }
+
+    Timer {
+        interval: appModel.refreshInterval(appModel.messagingRefreshRate)
+        repeat: true
+        running: appModel.messagingRefreshRate > 0
+        onTriggered: appModel.queryNetworkConnection("messaging", false)
+    }
+
+    Timer {
+        interval: appModel.refreshInterval(appModel.storageRefreshRate)
+        repeat: true
+        running: appModel.storageRefreshRate > 0
+        onTriggered: appModel.queryNetworkConnection("storage", false)
+    }
+
     Rectangle {
         anchors.fill: parent
         color: theme.background
@@ -134,8 +171,8 @@ Item {
             return blocksPage
         case "transactions":
             return transactionsPage
-        case "wallets":
-            return walletsPage
+        case "transferActivity":
+            return transferActivityPage
         case "blockchain":
             return blockchainPage
         case "channels":
@@ -186,8 +223,8 @@ Item {
     }
 
     Component {
-        id: walletsPage
-        WalletsPage {
+        id: transferActivityPage
+        TransferActivityPage {
             theme: theme
             model: appModel
         }
@@ -199,8 +236,8 @@ Item {
             theme: theme
             model: appModel
             moduleKind: "blockchain"
-            title: qsTr("Blockchain")
-            subtitle: qsTr("Inspect node state, block windows, and blockchain module calls.")
+            title: qsTr("L1 Node / Module")
+            subtitle: qsTr("Inspect Bedrock node state, L1 block windows, and blockchain module calls.")
         }
     }
 
@@ -218,7 +255,7 @@ Item {
             theme: theme
             model: appModel
             moduleKind: "storage"
-            title: qsTr("Storage")
+            title: qsTr("Storage Module")
             subtitle: qsTr("Query storage module metadata and optional CID state.")
         }
     }
@@ -229,7 +266,7 @@ Item {
             theme: theme
             model: appModel
             moduleKind: "messaging"
-            title: qsTr("Messaging")
+            title: qsTr("Messaging Module")
             subtitle: qsTr("Inspect delivery module metadata and node info.")
         }
     }
@@ -240,7 +277,7 @@ Item {
             theme: theme
             model: appModel
             moduleKind: "capabilities"
-            title: qsTr("Capabilities")
+            title: qsTr("Capabilities Module")
             subtitle: qsTr("Review capability inventory and module availability.")
         }
     }

@@ -32,14 +32,18 @@ ColumnLayout {
             Layout.fillWidth: true
         }
 
-        Text {
+        LinkCell {
             text: root.detail ? root.detail.hash : ""
-            color: root.theme.textMuted
-            textFormat: Text.PlainText
-            wrapMode: Text.WrapAnywhere
-            font.family: "monospace"
-            font.pixelSize: 12
+            theme: root.theme
+            link: root.detail !== null && root.detail.hash.length > 0
+            copyable: root.detail !== null && root.detail.hash.length > 0
+            copyText: root.detail ? root.detail.hash : ""
+            monospace: true
+            wrap: true
+            textColor: root.theme.textMuted
+            textPixelSize: 12
             Layout.fillWidth: true
+            onActivated: root.model.openReference("block", root.detail.hash)
         }
     }
 
@@ -176,16 +180,16 @@ ColumnLayout {
             return []
         }
         return [
-            { label: qsTr("Parent"), value: root.valueText(root.detail.parent), monospace: true, linkKind: root.detail.parent.length ? "block" : "", linkValue: root.detail.parent },
+            { label: qsTr("Parent"), value: root.valueText(root.detail.parent), monospace: true, linkKind: root.detail.parent.length ? "block" : "", linkValue: root.detail.parent, copyable: root.detail.parent.length > 0 },
             { label: qsTr("Slot"), value: root.valueText(root.detail.slot), monospace: true, linkKind: root.valueText(root.detail.slot) !== "-" ? "block" : "", linkValue: root.valueText(root.detail.slot) },
             { label: qsTr("Height"), value: root.valueText(root.detail.height), monospace: true },
             { label: qsTr("Status"), value: root.valueText(root.detail.status), monospace: false },
             { label: qsTr("Version"), value: root.valueText(root.detail.version), monospace: true },
-            { label: qsTr("Block root"), value: root.valueText(root.detail.block_root), monospace: true },
-            { label: qsTr("Voucher cm"), value: root.valueText(root.detail.voucher_cm), monospace: true },
-            { label: qsTr("Entropy"), value: root.valueText(root.detail.entropy), monospace: true },
-            { label: qsTr("Signature"), value: root.detail.signature.length ? root.detail.signature : qsTr("- (not in this source)"), monospace: true },
-            { label: qsTr("Leader key"), value: root.valueText(root.detail.leader_key), monospace: true }
+            { label: qsTr("Block root"), value: root.valueText(root.detail.block_root), monospace: true, copyable: root.detail.block_root.length > 0 },
+            { label: qsTr("Voucher cm"), value: root.valueText(root.detail.voucher_cm), monospace: true, copyable: root.detail.voucher_cm.length > 0 },
+            { label: qsTr("Entropy"), value: root.valueText(root.detail.entropy), monospace: true, copyable: root.detail.entropy.length > 0 },
+            { label: qsTr("Signature"), value: root.detail.signature.length ? root.detail.signature : qsTr("- (not in this source)"), monospace: true, copyable: root.detail.signature.length > 0 },
+            { label: qsTr("Leader key"), value: root.valueText(root.detail.leader_key), monospace: true, copyable: root.detail.leader_key.length > 0 }
         ]
     }
 
@@ -292,6 +296,7 @@ ColumnLayout {
                         linkKind: String(modelData.linkKind || "")
                         linkValue: String(modelData.linkValue || "")
                         monospace: modelData.monospace !== undefined ? modelData.monospace : true
+                        copyable: modelData.copyable !== undefined ? modelData.copyable : String(modelData.linkKind || "").length > 0
                         onActivated: root.model.openReference(modelData.linkKind, modelData.linkValue)
                     }
                 }
@@ -308,6 +313,7 @@ ColumnLayout {
         property string linkKind: ""
         property string linkValue: ""
         property bool monospace: true
+        property bool copyable: linkKind.length > 0
         signal activated()
 
         Layout.fillWidth: true
@@ -340,6 +346,8 @@ ColumnLayout {
                 text: rowRoot.value
                 theme: rowRoot.theme
                 link: rowRoot.linkKind.length > 0
+                copyable: rowRoot.copyable
+                copyText: rowRoot.linkValue.length > 0 ? rowRoot.linkValue : rowRoot.value
                 monospace: rowRoot.monospace
                 wrap: true
                 Layout.fillWidth: true
@@ -383,6 +391,7 @@ ColumnLayout {
                     text: String(rowRoot.columns[index] || "-")
                     header: rowRoot.header
                     link: rowRoot.linkFor(index)
+                    copyText: rowRoot.transaction && rowRoot.transaction.hash ? String(rowRoot.transaction.hash) : String(rowRoot.columns[index] || "")
                     monospace: !rowRoot.header
                     Layout.preferredWidth: rowRoot.columnWidth(index)
                     Layout.fillWidth: index === 1

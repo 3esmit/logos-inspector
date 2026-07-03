@@ -26,6 +26,7 @@ ColumnLayout {
         theme: root.theme
         breadcrumb: qsTr("Home / %1").arg(root.title)
         title: root.title
+        layerLabel: root.moduleLayer()
         subtitle: root.subtitle
         Layout.fillWidth: true
     }
@@ -596,8 +597,12 @@ ColumnLayout {
         case "capabilities":
             return qsTr("Capabilities")
         default:
-            return qsTr("Blockchain")
+            return qsTr("L1 Node")
         }
+    }
+
+    function moduleLayer() {
+        return root.moduleKind === "blockchain" ? qsTr("L1 Bedrock") : qsTr("Module")
     }
 
     function moduleName(kind) {

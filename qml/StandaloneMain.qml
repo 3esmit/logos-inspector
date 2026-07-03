@@ -6,6 +6,8 @@ Window {
 
     width: 1180
     height: 820
+    minimumWidth: 760
+    minimumHeight: 620
     visible: true
     title: qsTr("Logos Inspector")
 

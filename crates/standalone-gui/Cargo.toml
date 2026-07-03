@@ -15,7 +15,7 @@ anyhow = "1.0.98"
 cxx = "1.0"
 cxx-qt = "0.9"
 cxx-qt-lib = { version = "0.9", features = ["qt_gui", "qt_qml"] }
-logos-inspector = { path = "../.." }
+logos-inspector = { path = "../..", default-features = false }
 rust-rapidsnark = { git = "https://github.com/logos-blockchain/logos-blockchain-rust-rapidsnark.git", rev = "e91187f8ccb5bbfc7bb00dac88169112428da78f", features = [
     "static-rapidsnark",
 ], optional = true }

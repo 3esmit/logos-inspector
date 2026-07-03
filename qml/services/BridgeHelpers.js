@@ -23,12 +23,24 @@ function callModule(logosObject, moduleName, method, args) {
 }
 
 function callModuleJson(logosObject, moduleName, method, args) {
-    if (!logosObject || !logosObject.callModuleJson) {
+    if (!logosObject || !logosObject["callModuleJson"]) {
         return missingBridge()
     }
 
     try {
-        const raw = logosObject.callModuleJson(moduleName, method, JSON.stringify(args || []))
+        const raw = logosObject["callModuleJson"](moduleName, method, JSON.stringify(args || []))
+        return parseModuleResponseJson(raw)
+    } catch (error) {
+        return {
+            ok: false,
+            text: "",
+            error: "Logos bridge call failed: " + errorMessage(error)
+        }
+    }
+}
+
+function parseModuleResponseJson(raw) {
+    try {
         const parsed = JSON.parse(raw)
         if (typeof parsed.ok === "boolean") {
             return parsed

@@ -9,13 +9,38 @@ import "../state"
 import "../theme"
 
 ColumnLayout {
-    id: root
+    id: settingsRoot
 
     required property Theme theme
     required property AppModel model
 
     width: parent ? parent.width : 900
     spacing: 16
+
+    ListModel {
+        id: settingsSections
+
+        ListElement { value: "general"; label: "General" }
+        ListElement { value: "network"; label: "Network" }
+        ListElement { value: "ui"; label: "User Interface" }
+    }
+
+    ListModel {
+        id: networkSections
+
+        ListElement { value: "blockchain"; label: "Blockchain" }
+        ListElement { value: "indexer"; label: "Indexer" }
+        ListElement { value: "execution"; label: "Execution Zone" }
+        ListElement { value: "messaging"; label: "Messaging" }
+        ListElement { value: "storage"; label: "Storage" }
+    }
+
+    ListModel {
+        id: uiSections
+
+        ListElement { value: "footer"; label: "Footer" }
+        ListElement { value: "dashboard"; label: "Dashboard" }
+    }
 
     ListModel {
         id: profileOptions
@@ -48,401 +73,393 @@ ColumnLayout {
     }
 
     PageHeader {
-        theme: root.theme
+        theme: settingsRoot.theme
         breadcrumb: qsTr("Home / Settings")
         title: qsTr("Settings")
-        subtitle: qsTr("Configure network profiles and verify the sequencer, indexer, and blockchain node endpoints in use.")
+        layerLabel: qsTr("System")
+        subtitle: qsTr("Configure profiles, network connections, footer status fields, and dashboard graphs.")
         Layout.fillWidth: true
-
-        ActionButton {
-            theme: root.theme
-            text: qsTr("Refresh")
-            primary: true
-            enabled: !root.model.busy
-            Layout.preferredWidth: 104
-            accessibleName: qsTr("Refresh endpoint status")
-            onClicked: root.model.refreshDashboard()
-        }
-
-        ActionButton {
-            theme: root.theme
-            text: qsTr("Dashboard")
-            enabled: !root.model.busy
-            Layout.preferredWidth: 116
-            accessibleName: qsTr("Open dashboard")
-            onClicked: root.model.selectView("overview")
-        }
     }
 
-    GridLayout {
-        columns: root.width < 760 ? 2 : 4
-        columnSpacing: root.theme.gap
-        rowSpacing: root.theme.gap
+    TabSwitch {
+        theme: settingsRoot.theme
+        current: settingsRoot.model.settingsSection
+        options: settingsSections
         Layout.fillWidth: true
-
-        MetricCard {
-            theme: root.theme
-            compact: true
-            label: qsTr("Profile")
-            value: root.profileLabel(root.model.networkProfile)
-            delta: root.profileSummary(root.model.networkProfile)
-            deltaColor: root.model.networkProfile === "custom" ? root.theme.warning : root.theme.textMuted
-        }
-
-        MetricCard {
-            theme: root.theme
-            compact: true
-            label: qsTr("Sequencer")
-            value: root.probeStatusText("sequencer", "health")
-            delta: root.sequencerDelta()
-            deltaColor: root.probeStatusColor("sequencer", "health")
-        }
-
-        MetricCard {
-            theme: root.theme
-            compact: true
-            label: qsTr("Indexer")
-            value: root.probeStatusText("indexer", "health")
-            delta: root.indexerDelta()
-            deltaColor: root.probeStatusColor("indexer", "health")
-        }
-
-        MetricCard {
-            theme: root.theme
-            compact: true
-            label: qsTr("Node")
-            value: root.probeStatusText("node", "consensus")
-            delta: root.nodeDelta()
-            deltaColor: root.probeStatusColor("node", "consensus")
-        }
+        onSelected: value => settingsRoot.model.settingsSection = value
     }
 
-    Panel {
-        theme: root.theme
-        title: qsTr("Network profile")
+    Loader {
+        active: true
+        asynchronous: true
+        sourceComponent: settingsRoot.sectionComponent(settingsRoot.model.settingsSection)
+        Layout.fillWidth: true
+    }
+
+    Component {
+        id: generalSection
 
         ColumnLayout {
-            spacing: root.theme.gapSmall
+            spacing: settingsRoot.theme.gap
             Layout.fillWidth: true
 
-            Text {
-                text: qsTr("Profile")
-                color: root.theme.textMuted
-                textFormat: Text.PlainText
-                font.pixelSize: root.theme.secondaryText
-                font.weight: Font.Medium
+            GridLayout {
+                columns: settingsRoot.width < 760 ? 2 : 4
+                columnSpacing: settingsRoot.theme.gap
+                rowSpacing: settingsRoot.theme.gap
                 Layout.fillWidth: true
-            }
 
-            ProfileComboBox {
-                id: profilePicker
-
-                theme: root.theme
-                options: profileOptions
-                currentIndex: root.profileIndexFor(root.model.networkProfile)
-                Layout.fillWidth: true
-                onProfileActivated: index => root.applyProfileIndex(index)
-            }
-
-            StatusMessage {
-                theme: root.theme
-                tone: root.model.networkProfile === "custom" ? "warning" : "info"
-                title: root.profileLabel(root.model.networkProfile)
-                message: root.profileDetail()
-                Layout.fillWidth: true
-            }
-        }
-    }
-
-    Panel {
-        theme: root.theme
-        title: qsTr("Endpoints")
-
-        GridLayout {
-            columns: root.width < 880 ? 1 : 3
-            columnSpacing: root.theme.gap
-            rowSpacing: root.theme.gap
-            Layout.fillWidth: true
-
-            EndpointEditor {
-                theme: root.theme
-                title: qsTr("Sequencer")
-                endpoint: root.model.sequencerUrl
-                status: root.probeStatusText("sequencer", "health")
-                statusColor: root.probeStatusColor("sequencer", "health")
-                onEndpointEdited: value => root.updateSequencerUrl(value)
-            }
-
-            EndpointEditor {
-                theme: root.theme
-                title: qsTr("Indexer")
-                endpoint: root.model.indexerUrl
-                status: root.probeStatusText("indexer", "health")
-                statusColor: root.probeStatusColor("indexer", "health")
-                onEndpointEdited: value => root.updateIndexerUrl(value)
-            }
-
-            EndpointEditor {
-                theme: root.theme
-                title: qsTr("Blockchain node")
-                endpoint: root.model.nodeUrl
-                status: root.probeStatusText("node", "consensus")
-                statusColor: root.probeStatusColor("node", "consensus")
-                onEndpointEdited: value => root.updateNodeUrl(value)
-            }
-        }
-
-        GridLayout {
-            columns: root.width < 680 ? 1 : 4
-            columnSpacing: root.theme.gapSmall
-            rowSpacing: root.theme.gapSmall
-            Layout.fillWidth: true
-
-            ActionButton {
-                theme: root.theme
-                text: qsTr("Refresh status")
-                primary: true
-                enabled: !root.model.busy
-                Layout.fillWidth: true
-                accessibleName: qsTr("Refresh endpoint status")
-                onClicked: root.model.refreshDashboard()
-            }
-
-            ActionButton {
-                theme: root.theme
-                text: qsTr("Sequencer head")
-                enabled: !root.model.busy
-                Layout.fillWidth: true
-                accessibleName: qsTr("Fetch sequencer head")
-                onClicked: root.model.callInspector("head", [root.model.sequencerUrl], qsTr("Sequencer head"))
-            }
-
-            ActionButton {
-                theme: root.theme
-                text: qsTr("Indexer head")
-                enabled: !root.model.busy
-                Layout.fillWidth: true
-                accessibleName: qsTr("Fetch indexer finalized head")
-                onClicked: root.model.callInspector("indexerFinalizedHead", [root.model.indexerUrl], qsTr("Indexer head"))
-            }
-
-            ActionButton {
-                theme: root.theme
-                text: qsTr("Reset profile")
-                enabled: !root.model.busy
-                Layout.fillWidth: true
-                accessibleName: qsTr("Reset endpoints to selected profile")
-                onClicked: root.resetSelectedProfile()
-            }
-        }
-    }
-
-    Panel {
-        theme: root.theme
-        title: qsTr("Endpoint status")
-        Layout.fillWidth: true
-
-        StatusMessage {
-            visible: root.model.dashboardOverview === null
-            theme: root.theme
-            tone: "info"
-            title: qsTr("No probe loaded")
-            message: qsTr("Refresh status to populate live health, head, and consensus values.")
-            Layout.fillWidth: true
-        }
-
-        Frame {
-            padding: 0
-            Layout.fillWidth: true
-
-            background: Rectangle {
-                color: root.theme.surface
-                radius: root.theme.radius
-                border.width: 1
-                border.color: root.theme.outlineMuted
-            }
-
-            contentItem: ColumnLayout {
-                spacing: 0
-
-                StatusRow {
-                    theme: root.theme
-                    header: true
-                    columns: [qsTr("Service"), qsTr("Status"), qsTr("Endpoint"), qsTr("Observed")]
+                MetricCard {
+                    theme: settingsRoot.theme
+                    compact: true
+                    label: qsTr("Profile")
+                    value: settingsRoot.profileLabel(settingsRoot.model.networkProfile)
+                    delta: settingsRoot.profileSummary(settingsRoot.model.networkProfile)
+                    deltaColor: settingsRoot.model.networkProfile === "custom" ? settingsRoot.theme.warning : settingsRoot.theme.textMuted
                 }
 
-                StatusRow {
-                    theme: root.theme
-                    columns: [qsTr("Sequencer"), root.probeStatusText("sequencer", "health"), root.model.sequencerUrl, root.sequencerObserved()]
-                    statusColor: root.probeStatusColor("sequencer", "health")
+                MetricCard {
+                    theme: settingsRoot.theme
+                    compact: true
+                    label: qsTr("Blockchain")
+                    value: settingsRoot.connectionStatusText("blockchain")
+                    delta: settingsRoot.shortEndpoint(settingsRoot.model.nodeUrl)
+                    deltaColor: settingsRoot.connectionStatusColor("blockchain")
                 }
 
-                StatusRow {
-                    theme: root.theme
-                    columns: [qsTr("Indexer"), root.probeStatusText("indexer", "health"), root.model.indexerUrl, root.indexerObserved()]
-                    statusColor: root.probeStatusColor("indexer", "health")
+                MetricCard {
+                    theme: settingsRoot.theme
+                    compact: true
+                    label: qsTr("Execution Zone")
+                    value: settingsRoot.connectionStatusText("execution")
+                    delta: settingsRoot.shortEndpoint(settingsRoot.model.sequencerUrl)
+                    deltaColor: settingsRoot.connectionStatusColor("execution")
                 }
 
-                StatusRow {
-                    theme: root.theme
-                    columns: [qsTr("Blockchain node"), root.probeStatusText("node", "consensus"), root.model.nodeUrl, root.nodeObserved()]
-                    statusColor: root.probeStatusColor("node", "consensus")
+                MetricCard {
+                    theme: settingsRoot.theme
+                    compact: true
+                    label: qsTr("Indexer")
+                    value: settingsRoot.connectionStatusText("indexer")
+                    delta: settingsRoot.shortEndpoint(settingsRoot.model.indexerUrl)
+                    deltaColor: settingsRoot.connectionStatusColor("indexer")
+                }
+            }
+
+            Panel {
+                theme: settingsRoot.theme
+                title: qsTr("General")
+
+                ColumnLayout {
+                    spacing: settingsRoot.theme.gapSmall
+                    Layout.fillWidth: true
+
+                    Text {
+                        text: qsTr("Network profile")
+                        color: settingsRoot.theme.textMuted
+                        textFormat: Text.PlainText
+                        font.pixelSize: settingsRoot.theme.secondaryText
+                        font.weight: Font.Medium
+                        Layout.fillWidth: true
+                    }
+
+                    ProfileComboBox {
+                        theme: settingsRoot.theme
+                        options: profileOptions
+                        currentIndex: settingsRoot.profileIndexFor(settingsRoot.model.networkProfile)
+                        Layout.fillWidth: true
+                        onProfileActivated: index => settingsRoot.applyProfileIndex(index)
+                    }
+
+                    StatusMessage {
+                        theme: settingsRoot.theme
+                        tone: settingsRoot.model.networkProfile === "custom" ? "warning" : "info"
+                        title: settingsRoot.profileLabel(settingsRoot.model.networkProfile)
+                        message: settingsRoot.profileDetail()
+                        Layout.fillWidth: true
+                    }
                 }
             }
         }
     }
 
-    function overview() {
-        return root.model.dashboardOverview || {}
+    Component {
+        id: networkSection
+
+        ColumnLayout {
+            spacing: settingsRoot.theme.gap
+            Layout.fillWidth: true
+
+            TabSwitch {
+                theme: settingsRoot.theme
+                current: settingsRoot.model.settingsNetworkSection
+                options: networkSections
+                Layout.fillWidth: true
+                onSelected: value => settingsRoot.model.settingsNetworkSection = value
+            }
+
+            Loader {
+                active: true
+                asynchronous: true
+                sourceComponent: settingsRoot.networkComponent(settingsRoot.model.settingsNetworkSection)
+                Layout.fillWidth: true
+            }
+        }
     }
 
-    function probe(section, field) {
-        const target = root.overview()[section]
-        return target ? target[field] || null : null
+    Component {
+        id: blockchainNetwork
+
+        NetworkConnectionPanel {
+            theme: settingsRoot.theme
+            title: qsTr("Bedrock Blockchain")
+            subtitle: qsTr("RPC connection used for node health, consensus, blocks, and channel scans.")
+            kind: "blockchain"
+            connectionType: qsTr("RPC")
+            endpointLabel: qsTr("RPC URL")
+            endpoint: settingsRoot.model.nodeUrl
+            primaryFieldVisible: true
+            moduleFieldVisible: false
+            refreshRate: settingsRoot.model.blockchainRefreshRate
+            statusText: settingsRoot.connectionStatusText("blockchain")
+            statusDetail: settingsRoot.connectionStatusDetail("blockchain")
+            statusColor: settingsRoot.connectionStatusColor("blockchain")
+            onEndpointEdited: value => settingsRoot.updateNodeUrl(value)
+            onRefreshRateEdited: value => settingsRoot.model.setNetworkConnectionRate("blockchain", value)
+            onQueryClicked: settingsRoot.model.queryNetworkConnection("blockchain", true)
+        }
     }
 
-    function probeStatusText(section, field) {
-        const target = root.probe(section, field)
-        if (!target) {
+    Component {
+        id: indexerNetwork
+
+        NetworkConnectionPanel {
+            theme: settingsRoot.theme
+            title: qsTr("Indexer")
+            subtitle: qsTr("RPC connection used for finalized head, block lookup, transfer activity, and transaction history.")
+            kind: "indexer"
+            connectionType: qsTr("RPC")
+            endpointLabel: qsTr("RPC URL")
+            endpoint: settingsRoot.model.indexerUrl
+            primaryFieldVisible: true
+            moduleFieldVisible: false
+            refreshRate: settingsRoot.model.indexerRefreshRate
+            statusText: settingsRoot.connectionStatusText("indexer")
+            statusDetail: settingsRoot.connectionStatusDetail("indexer")
+            statusColor: settingsRoot.connectionStatusColor("indexer")
+            onEndpointEdited: value => settingsRoot.updateIndexerUrl(value)
+            onRefreshRateEdited: value => settingsRoot.model.setNetworkConnectionRate("indexer", value)
+            onQueryClicked: settingsRoot.model.queryNetworkConnection("indexer", true)
+        }
+    }
+
+    Component {
+        id: executionNetwork
+
+        NetworkConnectionPanel {
+            theme: settingsRoot.theme
+            title: qsTr("Logos Execution Zone")
+            subtitle: qsTr("Sequencer RPC used for LEZ blocks, accounts, transactions, and SPEL program inspection.")
+            kind: "execution"
+            connectionType: qsTr("RPC")
+            endpointLabel: qsTr("RPC URL")
+            endpoint: settingsRoot.model.sequencerUrl
+            primaryFieldVisible: true
+            moduleFieldVisible: false
+            refreshRate: settingsRoot.model.executionRefreshRate
+            statusText: settingsRoot.connectionStatusText("execution")
+            statusDetail: settingsRoot.connectionStatusDetail("execution")
+            statusColor: settingsRoot.connectionStatusColor("execution")
+            onEndpointEdited: value => settingsRoot.updateSequencerUrl(value)
+            onRefreshRateEdited: value => settingsRoot.model.setNetworkConnectionRate("execution", value)
+            onQueryClicked: settingsRoot.model.queryNetworkConnection("execution", true)
+        }
+    }
+
+    Component {
+        id: messagingNetwork
+
+        NetworkConnectionPanel {
+            theme: settingsRoot.theme
+            title: qsTr("Messaging / Delivery")
+            subtitle: qsTr("Local delivery module bridge used for messaging metadata and node information.")
+            kind: "messaging"
+            connectionType: qsTr("Module")
+            moduleName: settingsRoot.model.deliveryModule
+            moduleFieldVisible: true
+            primaryFieldVisible: false
+            auxiliaryFieldVisible: true
+            auxiliaryLabel: qsTr("Node info id")
+            auxiliaryText: settingsRoot.model.messagingNodeInfoId
+            auxiliaryPlaceholder: qsTr("Optional node id")
+            refreshRate: settingsRoot.model.messagingRefreshRate
+            statusText: settingsRoot.connectionStatusText("messaging")
+            statusDetail: settingsRoot.connectionStatusDetail("messaging")
+            statusColor: settingsRoot.connectionStatusColor("messaging")
+            onAuxiliaryEdited: value => settingsRoot.model.messagingNodeInfoId = String(value || "").trim()
+            onRefreshRateEdited: value => settingsRoot.model.setNetworkConnectionRate("messaging", value)
+            onQueryClicked: settingsRoot.model.queryNetworkConnection("messaging", true)
+        }
+    }
+
+    Component {
+        id: storageNetwork
+
+        NetworkConnectionPanel {
+            theme: settingsRoot.theme
+            title: qsTr("Storage")
+            subtitle: qsTr("Local storage module bridge used for CID probes, transfer status, and storage node metadata.")
+            kind: "storage"
+            connectionType: qsTr("Module")
+            moduleName: settingsRoot.model.storageModule
+            moduleFieldVisible: true
+            primaryFieldVisible: false
+            auxiliaryFieldVisible: true
+            auxiliaryLabel: qsTr("CID fetch test")
+            auxiliaryText: settingsRoot.model.storageCidProbe
+            auxiliaryPlaceholder: qsTr("Optional CID")
+            refreshRate: settingsRoot.model.storageRefreshRate
+            statusText: settingsRoot.connectionStatusText("storage")
+            statusDetail: settingsRoot.connectionStatusDetail("storage")
+            statusColor: settingsRoot.connectionStatusColor("storage")
+            onAuxiliaryEdited: value => settingsRoot.model.storageCidProbe = String(value || "").trim()
+            onRefreshRateEdited: value => settingsRoot.model.setNetworkConnectionRate("storage", value)
+            onQueryClicked: settingsRoot.model.queryNetworkConnection("storage", true)
+        }
+    }
+
+    Component {
+        id: uiSection
+
+        ColumnLayout {
+            spacing: settingsRoot.theme.gap
+            Layout.fillWidth: true
+
+            TabSwitch {
+                theme: settingsRoot.theme
+                current: settingsRoot.model.settingsUiSection
+                options: uiSections
+                Layout.fillWidth: true
+                onSelected: value => settingsRoot.model.settingsUiSection = value
+            }
+
+            Loader {
+                active: true
+                asynchronous: true
+                sourceComponent: settingsRoot.uiComponent(settingsRoot.model.settingsUiSection)
+                Layout.fillWidth: true
+            }
+        }
+    }
+
+    Component {
+        id: footerSettings
+
+        FieldSelector {
+            theme: settingsRoot.theme
+            title: qsTr("Footer fields")
+            description: qsTr("Choose concise status fields for the persistent footer. The footer groups network context on the left and health/action fields on the right.")
+            groups: settingsRoot.footerFieldGroups()
+            mode: "footer"
+        }
+    }
+
+    Component {
+        id: dashboardSettings
+
+        FieldSelector {
+            theme: settingsRoot.theme
+            title: qsTr("Dashboard graphs")
+            description: qsTr("Choose the live graph tiles shown above dashboard tables.")
+            groups: settingsRoot.dashboardGraphGroups()
+            mode: "dashboard"
+        }
+    }
+
+    function sectionComponent(section) {
+        switch (section) {
+        case "network":
+            return networkSection
+        case "ui":
+            return uiSection
+        default:
+            return generalSection
+        }
+    }
+
+    function networkComponent(section) {
+        switch (section) {
+        case "indexer":
+            return indexerNetwork
+        case "execution":
+            return executionNetwork
+        case "messaging":
+            return messagingNetwork
+        case "storage":
+            return storageNetwork
+        default:
+            return blockchainNetwork
+        }
+    }
+
+    function uiComponent(section) {
+        return section === "dashboard" ? dashboardSettings : footerSettings
+    }
+
+    function connectionStatus(kind) {
+        return settingsRoot.model.networkConnectionState(kind)
+    }
+
+    function connectionStatusText(kind) {
+        const status = settingsRoot.connectionStatus(kind)
+        if (!status.known) {
             return qsTr("Unknown")
         }
-        return target.ok ? qsTr("OK") : qsTr("Error")
+        return status.ok ? qsTr("OK") : qsTr("Error")
     }
 
-    function probeStatusColor(section, field) {
-        const target = root.probe(section, field)
-        if (!target) {
-            return root.theme.textMuted
+    function connectionStatusDetail(kind) {
+        const status = settingsRoot.connectionStatus(kind)
+        if (!status.known) {
+            return qsTr("Not queried. Auto refresh runs every %1 seconds.").arg(settingsRoot.model.networkConnectionRate(kind))
         }
-        return target.ok ? root.theme.success : root.theme.warning
+        const checked = status.checkedAt && status.checkedAt.length ? qsTr(" at %1").arg(status.checkedAt) : ""
+        return qsTr("%1%2").arg(status.detail || "").arg(checked)
     }
 
-    function probeValue(section, field) {
-        const target = root.probe(section, field)
-        return target && target.value !== undefined && target.value !== null ? target.value : null
-    }
-
-    function probeError(section, field) {
-        const target = root.probe(section, field)
-        return target && target.error ? String(target.error) : ""
-    }
-
-    function sequencerDelta() {
-        const error = root.probeError("sequencer", "health")
-        if (error.length > 0) {
-            return error
+    function connectionStatusColor(kind) {
+        const status = settingsRoot.connectionStatus(kind)
+        if (!status.known) {
+            return settingsRoot.theme.textMuted
         }
-        const head = root.probeValue("sequencer", "head")
-        if (head !== null) {
-            return qsTr("Head %1").arg(root.valueText(head))
-        }
-        return root.shortEndpoint(root.model.sequencerUrl)
-    }
-
-    function indexerDelta() {
-        const error = root.probeError("indexer", "health")
-        if (error.length > 0) {
-            return error
-        }
-        const head = root.probeValue("indexer", "head")
-        if (head !== null) {
-            return qsTr("Head %1").arg(root.valueText(head))
-        }
-        return root.shortEndpoint(root.model.indexerUrl)
-    }
-
-    function nodeDelta() {
-        const error = root.probeError("node", "consensus")
-        if (error.length > 0) {
-            return error
-        }
-        const consensus = root.probeValue("node", "consensus")
-        const info = consensus && consensus.cryptarchia_info ? consensus.cryptarchia_info : null
-        if (info && info.slot !== undefined) {
-            return qsTr("Slot %1").arg(root.valueText(info.slot))
-        }
-        return root.shortEndpoint(root.model.nodeUrl)
-    }
-
-    function sequencerObserved() {
-        const error = root.probeError("sequencer", "health")
-        if (error.length > 0) {
-            return error
-        }
-        const head = root.probeValue("sequencer", "head")
-        const programs = root.probeValue("sequencer", "programs")
-        const parts = []
-        if (head !== null) {
-            parts.push(qsTr("head %1").arg(root.valueText(head)))
-        }
-        if (programs !== null) {
-            parts.push(qsTr("%1 program(s)").arg(root.valueText(programs)))
-        }
-        return parts.length ? parts.join(" / ") : qsTr("No sequencer probe")
-    }
-
-    function indexerObserved() {
-        const error = root.probeError("indexer", "health")
-        if (error.length > 0) {
-            return error
-        }
-        const head = root.probeValue("indexer", "head")
-        const programs = root.probeValue("indexer", "programs")
-        const parts = []
-        if (head !== null) {
-            parts.push(qsTr("head %1").arg(root.valueText(head)))
-        }
-        if (programs !== null) {
-            parts.push(qsTr("%1 program(s)").arg(root.valueText(programs)))
-        }
-        return parts.length ? parts.join(" / ") : qsTr("No indexer probe")
-    }
-
-    function nodeObserved() {
-        const error = root.probeError("node", "consensus")
-        if (error.length > 0) {
-            return error
-        }
-        const consensus = root.probeValue("node", "consensus")
-        const info = consensus && consensus.cryptarchia_info ? consensus.cryptarchia_info : null
-        if (info) {
-            const slot = info.slot !== undefined ? root.valueText(info.slot) : "-"
-            const lib = info.lib_slot !== undefined ? root.valueText(info.lib_slot) : "-"
-            return qsTr("slot %1 / lib %2").arg(slot).arg(lib)
-        }
-        return qsTr("No consensus probe")
+        return status.ok ? settingsRoot.theme.success : settingsRoot.theme.warning
     }
 
     function updateSequencerUrl(value) {
-        root.model.sequencerUrl = String(value || "").trim()
-        root.syncProfileFromEndpoints()
+        settingsRoot.model.sequencerUrl = String(value || "").trim()
+        settingsRoot.syncProfileFromEndpoints()
     }
 
     function updateIndexerUrl(value) {
-        root.model.indexerUrl = String(value || "").trim()
-        root.syncProfileFromEndpoints()
+        settingsRoot.model.indexerUrl = String(value || "").trim()
+        settingsRoot.syncProfileFromEndpoints()
     }
 
     function updateNodeUrl(value) {
-        root.model.nodeUrl = String(value || "").trim()
-        root.syncProfileFromEndpoints()
+        settingsRoot.model.nodeUrl = String(value || "").trim()
+        settingsRoot.syncProfileFromEndpoints()
     }
 
     function syncProfileFromEndpoints() {
-        root.model.networkProfile = root.inferProfile(root.model.sequencerUrl, root.model.indexerUrl, root.model.nodeUrl)
+        settingsRoot.model.networkProfile = settingsRoot.inferProfile(settingsRoot.model.sequencerUrl, settingsRoot.model.indexerUrl, settingsRoot.model.nodeUrl)
     }
 
     function applyProfileIndex(index) {
         if (index === 4) {
-            root.model.networkProfile = "custom"
+            settingsRoot.model.networkProfile = "custom"
             return
         }
-        root.model.applyProfile(index)
-    }
-
-    function resetSelectedProfile() {
-        const index = root.profileIndexFor(root.model.networkProfile)
-        root.model.applyProfile(index === 4 ? 0 : index)
+        settingsRoot.model.applyProfile(index)
     }
 
     function profileIndexFor(value) {
@@ -462,19 +479,19 @@ ColumnLayout {
     }
 
     function inferProfile(sequencer, indexer, node) {
-        const seq = root.normalizeEndpoint(sequencer)
-        const idx = root.normalizeEndpoint(indexer)
-        const nod = root.normalizeEndpoint(node)
-        const testnetSeq = root.normalizeEndpoint("https://testnet.lez.logos.co/")
-        const localSeq = root.normalizeEndpoint("http://127.0.0.1:3040/")
-        const localIndexer = root.normalizeEndpoint("http://127.0.0.1:8779/")
-        const localNode = root.normalizeEndpoint("http://127.0.0.1:8080/")
+        const seq = settingsRoot.normalizeEndpoint(sequencer)
+        const idx = settingsRoot.normalizeEndpoint(indexer)
+        const nod = settingsRoot.normalizeEndpoint(node)
+        const testnetSeq = settingsRoot.normalizeEndpoint("https://testnet.lez.logos.co/")
+        const localSeq = settingsRoot.normalizeEndpoint("http://127.0.0.1:3040/")
+        const localIndexer = settingsRoot.normalizeEndpoint("http://127.0.0.1:8779/")
+        const localNode = settingsRoot.normalizeEndpoint("http://127.0.0.1:8080/")
 
         if (seq === localSeq && idx === localIndexer && nod === localNode) {
             return "local"
         }
         if (seq === testnetSeq && idx === localIndexer && nod === localNode) {
-            return root.model.networkProfile === "testnet-indexer-local" || root.model.networkProfile === "local-node" ? root.model.networkProfile : "default"
+            return settingsRoot.model.networkProfile === "testnet-indexer-local" || settingsRoot.model.networkProfile === "local-node" ? settingsRoot.model.networkProfile : "default"
         }
         return "custom"
     }
@@ -513,9 +530,9 @@ ColumnLayout {
 
     function profileDetail() {
         return qsTr("%1 / %2 / %3")
-            .arg(root.shortEndpoint(root.model.sequencerUrl))
-            .arg(root.shortEndpoint(root.model.indexerUrl))
-            .arg(root.shortEndpoint(root.model.nodeUrl))
+            .arg(settingsRoot.shortEndpoint(settingsRoot.model.sequencerUrl))
+            .arg(settingsRoot.shortEndpoint(settingsRoot.model.indexerUrl))
+            .arg(settingsRoot.shortEndpoint(settingsRoot.model.nodeUrl))
     }
 
     function normalizeEndpoint(value) {
@@ -530,17 +547,467 @@ ColumnLayout {
         return text.replace(/^https?:\/\//, "").replace(/\/$/, "")
     }
 
-    function valueText(value) {
-        if (value === undefined || value === null || value === "") {
-            return "-"
+    function footerFieldGroups() {
+        return [
+            { title: qsTr("Network"), fields: [
+                { key: "network.network", label: qsTr("network"), detail: qsTr("testnet, mainnet, local, or custom") },
+                { key: "network.chain_id", label: qsTr("chain_id"), detail: qsTr("Bedrock chain identifier") },
+                { key: "network.zone_id", label: qsTr("zone_id"), detail: qsTr("Execution zone identifier") },
+                { key: "network.channel_id", label: qsTr("channel_id"), detail: qsTr("Active delivery channel identifier") },
+                { key: "network.report_time", label: qsTr("report_time"), detail: qsTr("Last local report timestamp") }
+            ] },
+            { title: qsTr("Bedrock Blockchain"), fields: [
+                { key: "bedrock.node_health", label: qsTr("node_health"), detail: qsTr("ok, degraded, or down") },
+                { key: "bedrock.peer_count", label: qsTr("peer_count"), detail: qsTr("Connected Bedrock peers") },
+                { key: "bedrock.sync_state", label: qsTr("sync_state"), detail: qsTr("synced, syncing, or stalled") },
+                { key: "bedrock.tip_height", label: qsTr("tip_height"), detail: qsTr("Current tip height") },
+                { key: "bedrock.tip_hash", label: qsTr("tip_hash"), detail: qsTr("Current tip hash") },
+                { key: "bedrock.lib_height", label: qsTr("lib_height"), detail: qsTr("Last irreversible block height") },
+                { key: "bedrock.lib_hash", label: qsTr("lib_hash"), detail: qsTr("Last irreversible block hash") },
+                { key: "bedrock.tip_minus_lib", label: qsTr("tip_minus_lib"), detail: qsTr("Distance from tip to LIB") },
+                { key: "bedrock.last_tip_time", label: qsTr("last_tip_time"), detail: qsTr("Last tip observation time") },
+                { key: "bedrock.last_lib_time", label: qsTr("last_lib_time"), detail: qsTr("Last LIB observation time") },
+                { key: "bedrock.finality_lag_seconds", label: qsTr("finality_lag_seconds"), detail: qsTr("Approximate finality lag") }
+            ] },
+            { title: qsTr("LEZ Sequencer"), fields: [
+                { key: "lez.rpc_health", label: qsTr("rpc_health"), detail: qsTr("Sequencer RPC availability") },
+                { key: "lez.sequencer_version", label: qsTr("sequencer_version"), detail: qsTr("Sequencer version") },
+                { key: "lez.last_lez_block_id", label: qsTr("last_lez_block_id"), detail: qsTr("Latest LEZ block id") },
+                { key: "lez.last_lez_block_hash", label: qsTr("last_lez_block_hash"), detail: qsTr("Latest LEZ block hash") },
+                { key: "lez.last_lez_block_time", label: qsTr("last_lez_block_time"), detail: qsTr("Latest LEZ block time") },
+                { key: "lez.pending_tx_count", label: qsTr("pending_tx_count"), detail: qsTr("Pending sequencer transactions") },
+                { key: "lez.mempool_tx_count", label: qsTr("mempool_tx_count"), detail: qsTr("Mempool transaction count") },
+                { key: "lez.rejected_tx_count_recent", label: qsTr("rejected_tx_count_recent"), detail: qsTr("Recent rejected transactions") },
+                { key: "lez.blocks_produced_recent", label: qsTr("blocks_produced_recent"), detail: qsTr("Recent LEZ blocks produced") },
+                { key: "lez.publish_to_bedrock_status", label: qsTr("publish_to_bedrock_status"), detail: qsTr("Bedrock publish state") },
+                { key: "lez.last_published_channel_update", label: qsTr("last_published_channel_update"), detail: qsTr("Last channel update publication") },
+                { key: "lez.last_finalized_callback_height", label: qsTr("last_finalized_callback_height"), detail: qsTr("Last finalized callback height") },
+                { key: "lez.pending_blocks_count", label: qsTr("pending_blocks_count"), detail: qsTr("Pending LEZ blocks") }
+            ] },
+            { title: qsTr("Indexer"), fields: [
+                { key: "indexer.rpc_health", label: qsTr("rpc_health"), detail: qsTr("Indexer RPC availability") },
+                { key: "indexer.indexer_version", label: qsTr("indexer_version"), detail: qsTr("Indexer version") },
+                { key: "indexer.indexed_finalized_height", label: qsTr("indexed_finalized_height"), detail: qsTr("Indexed finalized height") },
+                { key: "indexer.indexed_finalized_hash", label: qsTr("indexed_finalized_hash"), detail: qsTr("Indexed finalized hash") },
+                { key: "indexer.indexed_channel_message", label: qsTr("indexed_channel_message"), detail: qsTr("Indexed channel message") },
+                { key: "indexer.indexer_lag_vs_sequencer_head", label: qsTr("indexer_lag_vs_sequencer_head"), detail: qsTr("Indexer lag versus sequencer") },
+                { key: "indexer.last_indexed_time", label: qsTr("last_indexed_time"), detail: qsTr("Last indexed timestamp") },
+                { key: "indexer.db_health", label: qsTr("db_health"), detail: qsTr("Database health") },
+                { key: "indexer.ingestion_status", label: qsTr("ingestion_status"), detail: qsTr("running, stalled, or backfilling") }
+            ] },
+            { title: qsTr("Storage"), fields: [
+                { key: "storage.module", label: qsTr("module"), detail: qsTr("loaded, running, or stopped") },
+                { key: "storage.network", label: qsTr("network"), detail: qsTr("Storage preset or network name") },
+                { key: "storage.node_reachable", label: qsTr("node_reachable"), detail: qsTr("Storage node reachability") },
+                { key: "storage.nat_mode", label: qsTr("nat_mode"), detail: qsTr("upnp, port-forward, or manual") },
+                { key: "storage.udp_discovery_port", label: qsTr("udp_discovery_port"), detail: qsTr("UDP discovery port state") },
+                { key: "storage.tcp_transfer_port", label: qsTr("tcp_transfer_port"), detail: qsTr("TCP transfer port state") },
+                { key: "storage.peer_count", label: qsTr("peer_count"), detail: qsTr("Storage peers") },
+                { key: "storage.dht_connected", label: qsTr("dht_connected"), detail: qsTr("DHT connectivity") },
+                { key: "storage.shared_files_count", label: qsTr("shared_files_count"), detail: qsTr("Shared files") },
+                { key: "storage.manifest_count", label: qsTr("manifest_count"), detail: qsTr("Manifest count") },
+                { key: "storage.local_storage_used", label: qsTr("local_storage_used"), detail: qsTr("Local storage usage") },
+                { key: "storage.active_uploads", label: qsTr("active_uploads"), detail: qsTr("Active uploads") },
+                { key: "storage.active_downloads", label: qsTr("active_downloads"), detail: qsTr("Active downloads") },
+                { key: "storage.failed_transfers_recent", label: qsTr("failed_transfers_recent"), detail: qsTr("Recent failed transfers") },
+                { key: "storage.cid_fetch_test", label: qsTr("cid_fetch_test"), detail: qsTr("CID fetch probe result") },
+                { key: "storage.last_error", label: qsTr("last_error"), detail: qsTr("Latest storage error") }
+            ] },
+            { title: qsTr("Messaging / Delivery"), fields: [
+                { key: "messaging.module", label: qsTr("module"), detail: qsTr("loaded, running, or stopped") },
+                { key: "messaging.connection_state", label: qsTr("connection_state"), detail: qsTr("connected, disconnected, or connecting") },
+                { key: "messaging.peer_count", label: qsTr("peer_count"), detail: qsTr("Messaging peers") },
+                { key: "messaging.bootstrap_connected", label: qsTr("bootstrap_connected"), detail: qsTr("Bootstrap connectivity") },
+                { key: "messaging.active_subscriptions", label: qsTr("active_subscriptions"), detail: qsTr("Active subscriptions") },
+                { key: "messaging.content_topics", label: qsTr("content_topics"), detail: qsTr("Subscribed content topics") },
+                { key: "messaging.outbound_queue", label: qsTr("outbound_queue"), detail: qsTr("Outbound message queue") },
+                { key: "messaging.message_sent_events_recent", label: qsTr("message_sent_events_recent"), detail: qsTr("Recent sent message events") },
+                { key: "messaging.message_propagated_events_recent", label: qsTr("message_propagated_events_recent"), detail: qsTr("Recent propagated message events") },
+                { key: "messaging.message_received_events_recent", label: qsTr("message_received_events_recent"), detail: qsTr("Recent received message events") },
+                { key: "messaging.message_error_events_recent", label: qsTr("message_error_events_recent"), detail: qsTr("Recent message errors") },
+                { key: "messaging.publish_latency_ms", label: qsTr("publish_latency_ms"), detail: qsTr("Publish latency") },
+                { key: "messaging.receive_latency_ms", label: qsTr("receive_latency_ms"), detail: qsTr("Receive latency") },
+                { key: "messaging.last_error", label: qsTr("last_error"), detail: qsTr("Latest messaging error") }
+            ] },
+            { title: qsTr("Overall"), fields: [
+                { key: "overall.status", label: qsTr("status"), detail: qsTr("healthy, degraded, or down") },
+                { key: "overall.main_risk", label: qsTr("main_risk"), detail: qsTr("Most important current risk") },
+                { key: "overall.operator_action", label: qsTr("operator_action"), detail: qsTr("Suggested operator action") }
+            ] }
+        ]
+    }
+
+    function dashboardGraphGroups() {
+        return [
+            { title: qsTr("Bedrock Blockchain"), fields: [
+                { key: "bedrock.peer_count", label: qsTr("peer_count"), detail: qsTr("Connected Bedrock peers") },
+                { key: "bedrock.tip_minus_lib", label: qsTr("tip_minus_lib"), detail: qsTr("Tip to LIB distance") },
+                { key: "bedrock.finality_lag_seconds", label: qsTr("finality_lag_seconds"), detail: qsTr("Finality lag in seconds") }
+            ] },
+            { title: qsTr("LEZ Sequencer"), fields: [
+                { key: "lez.pending_tx_count", label: qsTr("pending_tx_count"), detail: qsTr("Pending sequencer transactions") },
+                { key: "lez.mempool_tx_count", label: qsTr("mempool_tx_count"), detail: qsTr("Mempool transaction count") },
+                { key: "lez.rejected_tx_count_recent", label: qsTr("rejected_tx_count_recent"), detail: qsTr("Recent rejected transactions") },
+                { key: "lez.blocks_produced_recent", label: qsTr("blocks_produced_recent"), detail: qsTr("Recent produced blocks") },
+                { key: "lez.pending_blocks_count", label: qsTr("pending_blocks_count"), detail: qsTr("Pending LEZ blocks") }
+            ] },
+            { title: qsTr("Indexer"), fields: [
+                { key: "indexer.indexer_lag_vs_sequencer_head", label: qsTr("indexer_lag_vs_sequencer_head"), detail: qsTr("Indexer lag versus sequencer head") }
+            ] },
+            { title: qsTr("Storage"), fields: [
+                { key: "storage.peer_count", label: qsTr("peer_count"), detail: qsTr("Storage peers") },
+                { key: "storage.shared_files_count", label: qsTr("shared_files_count"), detail: qsTr("Shared files") },
+                { key: "storage.manifest_count", label: qsTr("manifest_count"), detail: qsTr("Manifests") },
+                { key: "storage.local_storage_used", label: qsTr("local_storage_used"), detail: qsTr("Local storage usage") },
+                { key: "storage.active_uploads", label: qsTr("active_uploads"), detail: qsTr("Active uploads") },
+                { key: "storage.active_downloads", label: qsTr("active_downloads"), detail: qsTr("Active downloads") },
+                { key: "storage.failed_transfers_recent", label: qsTr("failed_transfers_recent"), detail: qsTr("Recent failed transfers") }
+            ] },
+            { title: qsTr("Messaging / Delivery"), fields: [
+                { key: "messaging.peer_count", label: qsTr("peer_count"), detail: qsTr("Messaging peers") },
+                { key: "messaging.active_subscriptions", label: qsTr("active_subscriptions"), detail: qsTr("Active subscriptions") },
+                { key: "messaging.content_topics", label: qsTr("content_topics"), detail: qsTr("Content topics") },
+                { key: "messaging.outbound_queue", label: qsTr("outbound_queue"), detail: qsTr("Outbound queue") },
+                { key: "messaging.message_sent_events_recent", label: qsTr("message_sent_events_recent"), detail: qsTr("Recent sent message events") },
+                { key: "messaging.message_propagated_events_recent", label: qsTr("message_propagated_events_recent"), detail: qsTr("Recent propagated message events") },
+                { key: "messaging.message_received_events_recent", label: qsTr("message_received_events_recent"), detail: qsTr("Recent received message events") },
+                { key: "messaging.message_error_events_recent", label: qsTr("message_error_events_recent"), detail: qsTr("Recent message errors") },
+                { key: "messaging.publish_latency_ms", label: qsTr("publish_latency_ms"), detail: qsTr("Publish latency") },
+                { key: "messaging.receive_latency_ms", label: qsTr("receive_latency_ms"), detail: qsTr("Receive latency") }
+            ] }
+        ]
+    }
+
+    component NetworkConnectionPanel: Panel {
+        id: panelRoot
+
+        property string kind: ""
+        property string subtitle: ""
+        property string connectionType: ""
+        property string endpointLabel: qsTr("URL")
+        property string endpoint: ""
+        property string moduleName: ""
+        property bool primaryFieldVisible: true
+        property bool moduleFieldVisible: false
+        property bool auxiliaryFieldVisible: false
+        property string auxiliaryLabel: ""
+        property string auxiliaryText: ""
+        property string auxiliaryPlaceholder: ""
+        property int refreshRate: 30
+        property string statusText: qsTr("Unknown")
+        property string statusDetail: ""
+        property color statusColor: theme.textMuted
+        signal endpointEdited(string value)
+        signal auxiliaryEdited(string value)
+        signal refreshRateEdited(int value)
+        signal queryClicked()
+
+        RowLayout {
+            spacing: panelRoot.theme.gap
+            Layout.fillWidth: true
+
+            Text {
+                text: panelRoot.subtitle
+                color: panelRoot.theme.textMuted
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                font.pixelSize: panelRoot.theme.secondaryText
+                Layout.fillWidth: true
+            }
+
+            StatusPill {
+                theme: panelRoot.theme
+                text: panelRoot.statusText
+                colorToken: panelRoot.statusColor
+            }
         }
-        if (typeof value === "number") {
-            return value % 1 === 0 ? value.toLocaleString(Qt.locale(), "f", 0) : String(value)
+
+        GridLayout {
+            columns: settingsRoot.width < 760 ? 1 : 2
+            columnSpacing: panelRoot.theme.gap
+            rowSpacing: panelRoot.theme.gap
+            Layout.fillWidth: true
+
+            InfoField {
+                theme: panelRoot.theme
+                label: qsTr("Connection")
+                value: panelRoot.connectionType
+            }
+
+            RefreshRateField {
+                theme: panelRoot.theme
+                value: panelRoot.refreshRate
+                onRateEdited: value => panelRoot.refreshRateEdited(value)
+            }
+
+            FieldRow {
+                visible: panelRoot.primaryFieldVisible
+                theme: panelRoot.theme
+                label: panelRoot.endpointLabel
+                text: panelRoot.endpoint
+                placeholderText: qsTr("Endpoint URL")
+                onTextChanged: panelRoot.endpointEdited(text)
+            }
+
+            InfoField {
+                visible: panelRoot.moduleFieldVisible
+                theme: panelRoot.theme
+                label: qsTr("Module bridge")
+                value: panelRoot.moduleName
+            }
+
+            FieldRow {
+                visible: panelRoot.auxiliaryFieldVisible
+                theme: panelRoot.theme
+                label: panelRoot.auxiliaryLabel
+                text: panelRoot.auxiliaryText
+                placeholderText: panelRoot.auxiliaryPlaceholder
+                onTextChanged: panelRoot.auxiliaryEdited(text)
+            }
         }
-        if (typeof value === "object") {
-            return JSON.stringify(value)
+
+        RowLayout {
+            spacing: panelRoot.theme.gapSmall
+            Layout.fillWidth: true
+
+            ActionButton {
+                theme: panelRoot.theme
+                text: qsTr("Query status")
+                primary: true
+                enabled: !settingsRoot.model.busy
+                Layout.preferredWidth: 132
+                accessibleName: qsTr("Query %1 status").arg(panelRoot.title)
+                onClicked: panelRoot.queryClicked()
+            }
+
+            Text {
+                text: panelRoot.statusDetail
+                color: panelRoot.theme.textMuted
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                font.pixelSize: panelRoot.theme.dataText
+                Layout.fillWidth: true
+            }
         }
-        return String(value)
+    }
+
+    component FieldSelector: Panel {
+        id: selectorRoot
+
+        property string description: ""
+        property var groups: []
+        property string mode: "footer"
+
+        Text {
+            text: selectorRoot.description
+            color: selectorRoot.theme.textMuted
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            font.pixelSize: selectorRoot.theme.secondaryText
+            Layout.fillWidth: true
+        }
+
+        Repeater {
+            model: selectorRoot.groups
+
+            ColumnLayout {
+                id: fieldGroupRoot
+
+                required property var modelData
+
+                spacing: selectorRoot.theme.gapSmall
+                Layout.fillWidth: true
+
+                Text {
+                    text: String(fieldGroupRoot.modelData.title || "")
+                    color: selectorRoot.theme.text
+                    textFormat: Text.PlainText
+                    font.pixelSize: selectorRoot.theme.secondaryText
+                    font.weight: Font.DemiBold
+                    Layout.fillWidth: true
+                }
+
+                Flow {
+                    spacing: selectorRoot.theme.gapSmall
+                    Layout.fillWidth: true
+
+                    Repeater {
+                        model: fieldGroupRoot.modelData.fields || []
+
+                        FieldToggle {
+                            required property var modelData
+
+                            theme: selectorRoot.theme
+                            fieldKey: String(modelData.key || "")
+                            label: String(modelData.label || "")
+                            detail: String(modelData.detail || "")
+                            checked: selectorRoot.mode === "dashboard"
+                                ? settingsRoot.model.dashboardGraphEnabled(fieldKey)
+                                : settingsRoot.model.footerFieldEnabled(fieldKey)
+                            onToggled: {
+                                if (selectorRoot.mode === "dashboard") {
+                                    settingsRoot.model.setDashboardGraphEnabled(fieldKey, checked)
+                                } else {
+                                    settingsRoot.model.setFooterFieldEnabled(fieldKey, checked)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    component FieldToggle: CheckBox {
+        id: toggleRoot
+
+        required property Theme theme
+        property string fieldKey: ""
+        property string label: ""
+        property string detail: ""
+
+        text: toggleRoot.label
+        hoverEnabled: true
+        implicitWidth: 236
+        implicitHeight: 34
+
+        indicator: Rectangle {
+            x: 0
+            y: (toggleRoot.height - height) / 2
+            width: 18
+            height: 18
+            radius: 4
+            color: toggleRoot.checked ? toggleRoot.theme.accent : toggleRoot.theme.field
+            border.width: toggleRoot.activeFocus ? 2 : 1
+            border.color: toggleRoot.checked ? toggleRoot.theme.accentHover : toggleRoot.theme.outline
+
+            Rectangle {
+                visible: toggleRoot.checked
+                anchors.centerIn: parent
+                width: 8
+                height: 8
+                radius: 2
+                color: toggleRoot.theme.selectedText
+            }
+        }
+
+        contentItem: Text {
+            text: toggleRoot.text
+            color: toggleRoot.enabled ? toggleRoot.theme.text : toggleRoot.theme.textDim
+            textFormat: Text.PlainText
+            font.pixelSize: toggleRoot.theme.dataText
+            elide: Text.ElideRight
+            verticalAlignment: Text.AlignVCenter
+            leftPadding: 26
+        }
+
+        ToolTip.visible: hovered && toggleRoot.detail.length > 0
+        ToolTip.text: toggleRoot.detail
+        Accessible.role: Accessible.CheckBox
+        Accessible.name: toggleRoot.label
+    }
+
+    component RefreshRateField: ColumnLayout {
+        id: rateRoot
+
+        required property Theme theme
+        property int value: 30
+        signal rateEdited(int value)
+
+        spacing: 6
+        Layout.fillWidth: true
+
+        Text {
+            text: qsTr("Auto refresh")
+            color: rateRoot.theme.textMuted
+            textFormat: Text.PlainText
+            font.pixelSize: rateRoot.theme.secondaryText
+            font.weight: Font.Medium
+            Layout.fillWidth: true
+        }
+
+        SpinBox {
+            id: refreshSpin
+
+            from: 0
+            to: 3600
+            stepSize: 5
+            value: rateRoot.value
+            editable: true
+            hoverEnabled: true
+            Layout.fillWidth: true
+            Layout.preferredHeight: rateRoot.theme.controlHeight
+            textFromValue: function (value, locale) {
+                return value === 0 ? qsTr("Off") : qsTr("%1 s").arg(Number(value).toLocaleString(locale, "f", 0))
+            }
+            valueFromText: function (text, locale) {
+                const parsed = Number(String(text || "").replace(/[^0-9]/g, ""))
+                return Number.isFinite(parsed) ? parsed : 0
+            }
+            onValueModified: rateRoot.rateEdited(value)
+
+            contentItem: TextInput {
+                text: refreshSpin.textFromValue(refreshSpin.value, refreshSpin.locale)
+                color: rateRoot.theme.text
+                selectionColor: rateRoot.theme.accent
+                selectedTextColor: rateRoot.theme.selectedText
+                font.pixelSize: rateRoot.theme.primaryText
+                horizontalAlignment: Qt.AlignHCenter
+                verticalAlignment: Qt.AlignVCenter
+                readOnly: !refreshSpin.editable
+                validator: refreshSpin.validator
+                inputMethodHints: Qt.ImhDigitsOnly
+            }
+
+            background: Rectangle {
+                radius: rateRoot.theme.radius
+                color: refreshSpin.hovered || refreshSpin.activeFocus ? rateRoot.theme.surfaceRaised : rateRoot.theme.field
+                border.width: refreshSpin.activeFocus ? 2 : 1
+                border.color: refreshSpin.activeFocus ? rateRoot.theme.accent : rateRoot.theme.outlineMuted
+            }
+        }
+    }
+
+    component InfoField: ColumnLayout {
+        id: infoRoot
+
+        required property Theme theme
+        property string label: ""
+        property string value: ""
+
+        spacing: 6
+        Layout.fillWidth: true
+
+        Text {
+            text: infoRoot.label
+            color: infoRoot.theme.textMuted
+            textFormat: Text.PlainText
+            font.pixelSize: infoRoot.theme.secondaryText
+            font.weight: Font.Medium
+            Layout.fillWidth: true
+        }
+
+        Rectangle {
+            color: infoRoot.theme.field
+            radius: infoRoot.theme.radius
+            border.width: 1
+            border.color: infoRoot.theme.outlineMuted
+            Layout.fillWidth: true
+            Layout.preferredHeight: infoRoot.theme.controlHeight
+
+            Text {
+                anchors.fill: parent
+                anchors.leftMargin: 12
+                anchors.rightMargin: 12
+                text: infoRoot.value.length ? infoRoot.value : "-"
+                color: infoRoot.theme.text
+                textFormat: Text.PlainText
+                elide: Text.ElideRight
+                verticalAlignment: Text.AlignVCenter
+                font.family: "monospace"
+                font.pixelSize: infoRoot.theme.primaryText
+            }
+        }
     }
 
     component ProfileComboBox: ComboBox {
@@ -651,49 +1118,6 @@ ColumnLayout {
         }
     }
 
-    component EndpointEditor: ColumnLayout {
-        id: editorRoot
-
-        required property Theme theme
-        property string title: ""
-        property string endpoint: ""
-        property string status: ""
-        property color statusColor: theme.textMuted
-        signal endpointEdited(string value)
-
-        spacing: editorRoot.theme.gapSmall
-        Layout.fillWidth: true
-
-        RowLayout {
-            spacing: editorRoot.theme.gapSmall
-            Layout.fillWidth: true
-
-            Text {
-                text: editorRoot.title
-                color: editorRoot.theme.text
-                textFormat: Text.PlainText
-                font.pixelSize: editorRoot.theme.primaryText
-                font.weight: Font.DemiBold
-                elide: Text.ElideRight
-                Layout.fillWidth: true
-            }
-
-            StatusPill {
-                theme: editorRoot.theme
-                text: editorRoot.status
-                colorToken: editorRoot.statusColor
-            }
-        }
-
-        FieldRow {
-            theme: editorRoot.theme
-            label: qsTr("URL")
-            text: editorRoot.endpoint
-            placeholderText: qsTr("Endpoint URL")
-            onTextChanged: editorRoot.endpointEdited(text)
-        }
-    }
-
     component StatusPill: Rectangle {
         id: pillRoot
 
@@ -717,159 +1141,6 @@ ColumnLayout {
             textFormat: Text.PlainText
             font.pixelSize: pillRoot.theme.dataText
             font.weight: Font.DemiBold
-        }
-    }
-
-    component StatusRow: Item {
-        id: rowRoot
-
-        required property Theme theme
-        property var columns: []
-        property color statusColor: theme.textMuted
-        property bool header: false
-
-        visible: !(rowRoot.header && root.width < 620)
-        Layout.fillWidth: true
-        implicitHeight: !rowRoot.visible ? 0 : (rowRoot.header ? 36 : (root.width < 620 ? Math.max(92, narrowBody.implicitHeight + 16) : Math.max(46, rowGrid.implicitHeight + 16)))
-
-        Rectangle {
-            anchors.fill: parent
-            color: rowRoot.header ? rowRoot.theme.field : "transparent"
-            border.width: 0
-        }
-
-        GridLayout {
-            id: rowGrid
-
-            visible: root.width >= 620
-            anchors.fill: parent
-            anchors.leftMargin: 14
-            anchors.rightMargin: 14
-            anchors.topMargin: rowRoot.header ? 0 : 8
-            anchors.bottomMargin: rowRoot.header ? 0 : 8
-            columns: 4
-            columnSpacing: 10
-
-            Repeater {
-                model: 4
-
-                RowLayout {
-                    id: statusCell
-
-                    required property int index
-
-                    spacing: rowRoot.theme.gapSmall
-                    Layout.preferredWidth: rowRoot.columnWidth(statusCell.index)
-                    Layout.fillWidth: statusCell.index === 2 || statusCell.index === 3
-                    Layout.alignment: rowRoot.header ? Qt.AlignVCenter : Qt.AlignTop
-
-                    Rectangle {
-                        visible: !rowRoot.header && statusCell.index === 1
-                        color: rowRoot.statusColor
-                        radius: 3
-                        Layout.preferredWidth: 6
-                        Layout.preferredHeight: 6
-                        Layout.alignment: Qt.AlignVCenter
-                    }
-
-                    Text {
-                        text: String(rowRoot.columns[statusCell.index] || "-")
-                        color: rowRoot.textColor(statusCell.index)
-                        textFormat: Text.PlainText
-                        font.family: rowRoot.header || statusCell.index < 2 ? "" : "monospace"
-                        font.pixelSize: rowRoot.header ? rowRoot.theme.labelText : rowRoot.theme.dataText
-                        font.weight: rowRoot.header || statusCell.index === 0 ? Font.DemiBold : Font.Normal
-                        font.capitalization: rowRoot.header ? Font.AllUppercase : Font.MixedCase
-                        wrapMode: rowRoot.header ? Text.NoWrap : Text.WrapAnywhere
-                        elide: rowRoot.header ? Text.ElideRight : Text.ElideNone
-                        Layout.fillWidth: true
-                    }
-                }
-            }
-        }
-
-        ColumnLayout {
-            id: narrowBody
-
-            visible: !rowRoot.header && root.width < 620
-            anchors.fill: parent
-            anchors.leftMargin: 14
-            anchors.rightMargin: 14
-            anchors.topMargin: 8
-            anchors.bottomMargin: 8
-            spacing: rowRoot.theme.gapSmall
-
-            RowLayout {
-                spacing: rowRoot.theme.gapSmall
-                Layout.fillWidth: true
-
-                Text {
-                    text: String(rowRoot.columns[0] || "-")
-                    color: rowRoot.theme.text
-                    textFormat: Text.PlainText
-                    font.pixelSize: rowRoot.theme.secondaryText
-                    font.weight: Font.DemiBold
-                    elide: Text.ElideRight
-                    Layout.fillWidth: true
-                }
-
-                Rectangle {
-                    color: rowRoot.statusColor
-                    radius: 3
-                    Layout.preferredWidth: 6
-                    Layout.preferredHeight: 6
-                    Layout.alignment: Qt.AlignVCenter
-                }
-
-                Text {
-                    text: String(rowRoot.columns[1] || "-")
-                    color: rowRoot.statusColor === rowRoot.theme.textMuted ? rowRoot.theme.textMuted : rowRoot.theme.text
-                    textFormat: Text.PlainText
-                    font.pixelSize: rowRoot.theme.dataText
-                    font.weight: Font.DemiBold
-                    Layout.alignment: Qt.AlignVCenter
-                }
-            }
-
-            Text {
-                text: String(rowRoot.columns[2] || "-")
-                color: rowRoot.theme.textMuted
-                textFormat: Text.PlainText
-                font.family: "monospace"
-                font.pixelSize: rowRoot.theme.dataText
-                wrapMode: Text.WrapAnywhere
-                Layout.fillWidth: true
-            }
-
-            Text {
-                text: String(rowRoot.columns[3] || "-")
-                color: rowRoot.theme.textMuted
-                textFormat: Text.PlainText
-                font.family: "monospace"
-                font.pixelSize: rowRoot.theme.dataText
-                wrapMode: Text.WrapAnywhere
-                Layout.fillWidth: true
-            }
-        }
-
-        function textColor(index) {
-            if (rowRoot.header) {
-                return rowRoot.theme.textMuted
-            }
-            if (index === 1) {
-                return rowRoot.statusColor === rowRoot.theme.textMuted ? rowRoot.theme.textMuted : rowRoot.theme.text
-            }
-            return index === 0 ? rowRoot.theme.text : rowRoot.theme.textMuted
-        }
-
-        function columnWidth(index) {
-            if (index === 0) {
-                return 132
-            }
-            if (index === 1) {
-                return 92
-            }
-            return 220
         }
     }
 }

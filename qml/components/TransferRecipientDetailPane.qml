@@ -24,7 +24,7 @@ ColumnLayout {
         Layout.fillWidth: true
 
         Text {
-            text: qsTr("Wallet")
+            text: qsTr("Transfer recipient")
             color: root.theme.text
             textFormat: Text.PlainText
             font.pixelSize: 22
@@ -45,7 +45,7 @@ ColumnLayout {
 
     Text {
         visible: root.detail !== null
-        text: qsTr("Receive-side only. Logos transfers carry recipient public keys in outputs[].pk; the spend side references opaque note IDs, so we cannot yet show who sent these.")
+        text: qsTr("Indexer-derived L2 transfer activity. This is not a local wallet directory; local/private wallet state requires explicit wallet integration.")
         color: root.theme.textMuted
         textFormat: Text.PlainText
         wrapMode: Text.Wrap
@@ -64,7 +64,7 @@ ColumnLayout {
             theme: root.theme
             label: qsTr("Total received")
             value: root.detail ? root.coinText(root.detail.total_received) : "-"
-            delta: qsTr("Receive side")
+            delta: qsTr("Observed amount")
             deltaColor: root.theme.accent
         }
 
@@ -85,9 +85,9 @@ ColumnLayout {
 
         MetricCard {
             theme: root.theme
-            label: qsTr("Last seen slot")
+            label: qsTr("Last L2 block")
             value: root.detail ? root.numberText(root.detail.last_slot) : "-"
-            delta: qsTr("Newest transfer")
+            delta: qsTr("Newest observed transfer")
         }
     }
 
@@ -97,7 +97,7 @@ ColumnLayout {
         Layout.fillWidth: true
 
         Text {
-            text: qsTr("Incoming transfers")
+            text: qsTr("Observed transfers")
             color: root.theme.text
             textFormat: Text.PlainText
             font.pixelSize: 14
@@ -122,7 +122,7 @@ ColumnLayout {
                 TransferRow {
                     theme: root.theme
                     header: true
-                    columns: [qsTr("Slot"), qsTr("Tx hash"), qsTr("Block"), qsTr("Value")]
+                    columns: [qsTr("L2 block"), qsTr("Tx hash"), qsTr("Header"), qsTr("Value")]
                 }
 
                 Repeater {
@@ -149,11 +149,11 @@ ColumnLayout {
     }
 
     function normalize(value) {
-        if (!value || typeof value !== "object" || Array.isArray(value) || value.type !== "wallet") {
+        if (!value || typeof value !== "object" || Array.isArray(value) || value.type !== "transfer_recipient") {
             return null
         }
         return {
-            address: String(value.address || value.wallet || ""),
+            address: String(value.address || value.recipient || ""),
             total_received: value.total_received,
             txs: value.txs,
             outputs: value.outputs,
@@ -169,7 +169,7 @@ ColumnLayout {
         if (!rows.length) {
             return [{
                 slot: "-",
-                tx: qsTr("No incoming transfers in loaded range"),
+                tx: qsTr("No observed transfers in loaded range"),
                 block: "-",
                 value: "-",
                 txHash: "",
@@ -220,7 +220,7 @@ ColumnLayout {
         return text.slice(0, 8) + "..." + text.slice(-6)
     }
 
-    function shortWallet(value) {
+    function shortRecipient(value) {
         const text = String(value || "")
         if (text.length <= 18) {
             return text.length ? text : "-"
@@ -264,6 +264,7 @@ ColumnLayout {
                     text: String(rowRoot.columns[index] || "-")
                     header: rowRoot.header
                     link: rowRoot.linkFor(index)
+                    copyText: rowRoot.copyValueFor(index)
                     monospace: !rowRoot.header
                     Layout.preferredWidth: rowRoot.columnWidth(index)
                     Layout.fillWidth: index === 1 || index === 2
@@ -276,6 +277,16 @@ ColumnLayout {
             return !rowRoot.header
                 && ((index === 1 && rowRoot.txHash.length > 0)
                     || (index === 2 && rowRoot.blockHash.length > 0))
+        }
+
+        function copyValueFor(index) {
+            if (index === 1 && rowRoot.txHash.length > 0) {
+                return rowRoot.txHash
+            }
+            if (index === 2 && rowRoot.blockHash.length > 0) {
+                return rowRoot.blockHash
+            }
+            return String(rowRoot.columns[index] || "")
         }
 
         function columnWidth(index) {
