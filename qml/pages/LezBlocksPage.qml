@@ -17,24 +17,24 @@ ColumnLayout {
     spacing: 16
 
     Component.onCompleted: {
-        if (!model.transactionsPageRows.length) {
-            model.refreshTransactionsPage();
+        if (!model.lezBlocksPageRows.length) {
+            model.refreshLezBlocksPage();
         }
     }
 
     ListToolbar {
         theme: root.theme
-        loadCount: root.model.transactionsPageLimit
-        rangeText: root.transactionRangeText()
-        canGoNewer: root.canLoadNewer()
-        canGoOlder: root.model.transactionsPageNextBeforeBlock > 0
+        loadCount: root.model.lezBlocksPageLimit
+        rangeText: root.rangeText()
+        canGoNewer: root.model.lezBlocksPageBeforeBlock > 0
+        canGoOlder: root.model.lezBlocksPageNextBeforeBlock > 0
         busy: root.model.busy
         Layout.fillWidth: true
-        onRefresh: root.model.refreshTransactionsPage()
-        onNewer: root.model.newerTransactionsPage()
-        onOlder: root.model.olderTransactionsPage()
+        onRefresh: root.model.refreshLezBlocksPage(root.model.lezBlocksPageBeforeBlock > 0 ? root.model.lezBlocksPageBeforeBlock : null)
+        onNewer: root.model.newerLezBlocksPage()
+        onOlder: root.model.olderLezBlocksPage()
         onLoadCountSelected: function (count) {
-            root.model.setTransactionsPageLimit(count)
+            root.model.setLezBlocksPageLimit(count)
         }
     }
 
@@ -52,27 +52,24 @@ ColumnLayout {
         contentItem: ColumnLayout {
             spacing: 0
 
-            TransactionRow {
+            BlockRow {
                 theme: root.theme
                 header: true
-                columns: [qsTr("L1 slot"), qsTr("Tx hash"), qsTr("Header"), qsTr("Ops")]
+                columns: [qsTr("L2 block"), qsTr("Header"), qsTr("Tx"), qsTr("Bedrock")]
             }
 
             Repeater {
-                model: root.transactionRows()
+                model: root.blockRows()
 
-                TransactionRow {
+                BlockRow {
                     required property var modelData
 
                     theme: root.theme
-                    columns: [modelData.slot, modelData.hash, modelData.block, modelData.ops]
-                    txHash: modelData.txHash
+                    columns: [modelData.block, modelData.header, modelData.tx, modelData.status]
                     blockHash: modelData.blockHash
                     onCellActivated: function (column) {
-                        if (column === 1) {
-                            root.model.openMantleTransaction(modelData.txHash);
-                        } else if (column === 2) {
-                            root.model.openBlockchainBlock(modelData.blockHash);
+                        if ((column === 0 || column === 1) && modelData.blockHash.length > 0) {
+                            root.model.openReference("indexerBlock", modelData.blockHash)
                         }
                     }
                 }
@@ -81,34 +78,41 @@ ColumnLayout {
     }
 
     StatusMessage {
-        visible: root.model.transactionsPageError.length > 0
+        visible: root.model.lezBlocksPageError.length > 0
         theme: root.theme
         tone: "warning"
-        title: qsTr("Transactions unavailable")
-        message: root.model.transactionsPageError
+        title: qsTr("L2 blocks unavailable")
+        message: root.model.lezBlocksPageError
         Layout.fillWidth: true
     }
 
-    function transactionRows() {
-        const transactions = root.model.transactionsPageRows || [];
-        if (!transactions.length) {
+    function blockRows() {
+        const blocks = root.model.lezBlocksPageRows || [];
+        if (!blocks.length) {
             return [{
-                slot: "-",
-                hash: qsTr("No transactions in loaded range"),
                 block: "-",
-                ops: "-"
+                header: qsTr("No indexed blocks"),
+                tx: "-",
+                status: "-",
+                blockHash: ""
             }];
         }
-        return transactions.map(function (tx) {
+        return blocks.map(function (block) {
             return {
-                slot: root.numberText(tx.slot),
-                hash: root.shortHash(tx.hash),
-                block: root.shortHash(tx.block),
-                ops: root.numberText(tx.ops),
-                txHash: String(tx.hash || ""),
-                blockHash: String(tx.block || "")
+                block: root.numberText(block.block_id),
+                header: root.shortHash(block.header_hash),
+                tx: root.numberText(block.tx_count !== undefined ? block.tx_count : ((block.transactions || []).length)),
+                status: String(block.bedrock_status || "-"),
+                blockHash: String(block.header_hash || "")
             };
         });
+    }
+
+    function rangeText() {
+        if (root.model.lezBlocksPageBeforeBlock <= 0) {
+            return qsTr("Latest L2 blocks");
+        }
+        return qsTr("Before L2 block %1").arg(root.numberText(root.model.lezBlocksPageBeforeBlock));
     }
 
     function numberText(value) {
@@ -129,32 +133,11 @@ ColumnLayout {
         return text.slice(0, 8) + "..." + text.slice(-6);
     }
 
-    function transactionRangeText() {
-        if (root.model.transactionsPageBeforeBlock <= 0) {
-            return qsTr("No range loaded")
-        }
-        return qsTr("Before L1 slot %1").arg(root.numberText(root.model.transactionsPageBeforeBlock))
-    }
-
-    function canLoadNewer() {
-        const current = root.chainSlot("lib_slot")
-        return root.model.transactionsPageBeforeBlock > 0 && current > 0 && root.model.transactionsPageBeforeBlock < current
-    }
-
-    function chainSlot(field) {
-        const info = root.model.blockchainInfo()
-        if (!info || info[field] === undefined || info[field] === null) {
-            return 0
-        }
-        return Number(info[field] || 0)
-    }
-
-    component TransactionRow: Item {
+    component BlockRow: Item {
         id: rowRoot
 
         required property Theme theme
         property var columns: []
-        property string txHash: ""
         property string blockHash: ""
         property bool header: false
         signal cellActivated(int column)
@@ -166,6 +149,14 @@ ColumnLayout {
             anchors.fill: parent
             color: rowRoot.header ? rowRoot.theme.field : "transparent"
             border.width: 0
+        }
+
+        Rectangle {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            height: 1
+            color: rowRoot.theme.outlineMuted
         }
 
         GridLayout {
@@ -188,34 +179,34 @@ ColumnLayout {
                     copyText: rowRoot.copyValueFor(index)
                     monospace: !rowRoot.header
                     Layout.preferredWidth: rowRoot.columnWidth(index)
-                    Layout.fillWidth: index === 1 || index === 2
+                    Layout.fillWidth: index === 1
                     onActivated: rowRoot.cellActivated(index)
                 }
             }
         }
 
         function linkFor(index) {
-            return !rowRoot.header && ((index === 1 && rowRoot.txHash.length > 0) || (index === 2 && rowRoot.blockHash.length > 0));
+            return !rowRoot.header && rowRoot.blockHash.length > 0 && (index === 0 || index === 1);
         }
 
         function copyValueFor(index) {
-            if (index === 1 && rowRoot.txHash.length > 0) {
-                return rowRoot.txHash
+            if (index === 1 && rowRoot.blockHash.length > 0) {
+                return rowRoot.blockHash;
             }
-            if (index === 2 && rowRoot.blockHash.length > 0) {
-                return rowRoot.blockHash
-            }
-            return String(rowRoot.columns[index] || "")
+            return String(rowRoot.columns[index] || "");
         }
 
         function columnWidth(index) {
             if (index === 0) {
                 return 96;
             }
-            if (index === 3) {
+            if (index === 2) {
                 return 64;
             }
-            return 180;
+            if (index === 3) {
+                return 98;
+            }
+            return 220;
         }
     }
 }

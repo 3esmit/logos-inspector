@@ -23,13 +23,19 @@ ColumnLayout {
     property string activeDecodeError: detail ? detail.decode_error : ""
     property string activeIdlLabel: ""
     property int decodeRequestSerial: 0
+    property var relatedTransactionDecodeMap: ({})
+    property int relatedTransactionDecodeRevision: 0
+    property int relatedTransactionDecodeSerial: 0
     readonly property string nullAddressBase58: "11111111111111111111111111111111"
 
     visible: detail !== null
     spacing: 14
     Layout.fillWidth: true
 
-    onDetailChanged: Qt.callLater(root.resetDecodeState)
+    onDetailChanged: {
+        Qt.callLater(root.resetDecodeState)
+        Qt.callLater(root.resetRelatedTransactionDecodes)
+    }
 
     ListModel {
         id: dataTabs
@@ -43,6 +49,7 @@ ColumnLayout {
 
         function onCountChanged() {
             Qt.callLater(root.resetDecodeState)
+            Qt.callLater(root.resetRelatedTransactionDecodes)
         }
     }
 
@@ -339,7 +346,7 @@ ColumnLayout {
                 TransactionRow {
                     theme: root.theme
                     header: true
-                    columns: [qsTr("Tx hash"), qsTr("Direction"), qsTr("Kind"), qsTr("Program"), qsTr("Affected")]
+                    columns: [qsTr("Tx hash"), qsTr("Direction"), qsTr("Instruction"), qsTr("IDL / Program"), qsTr("Affected")]
                 }
 
                 Repeater {
@@ -349,7 +356,7 @@ ColumnLayout {
                         required property var modelData
 
                         theme: root.theme
-                        columns: [modelData.hashText, modelData.direction, modelData.kind, modelData.programText, modelData.accounts]
+                        columns: [modelData.hashText, modelData.direction, modelData.instruction, modelData.programText, modelData.accounts]
                         txHash: modelData.txHash
                         programId: modelData.programId
                         onCellActivated: function (column) {
@@ -741,12 +748,13 @@ ColumnLayout {
     }
 
     function relatedRows() {
+        const revision = root.relatedTransactionDecodeRevision
         const rows = root.detail ? root.detail.related_transactions : []
         if (!rows.length) {
             return [{
                 hashText: qsTr("No related transactions loaded"),
                 direction: "-",
-                kind: "-",
+                instruction: "-",
                 programText: "-",
                 accounts: "-",
                 txHash: "",
@@ -756,16 +764,117 @@ ColumnLayout {
         return rows.map(function (tx) {
             const txHash = String(tx.hash || "")
             const programId = String(tx.program_id_hex || "")
+            const decoded = root.relatedTransactionDecode(txHash)
             return {
                 hashText: root.shortId(txHash),
                 direction: root.directionText(tx.direction),
-                kind: String(tx.kind || "-"),
-                programText: root.shortId(programId),
+                instruction: decoded ? String(decoded.instruction || "-") : String(tx.kind || "-"),
+                programText: decoded && decoded.idl_name ? String(decoded.idl_name) : root.shortId(programId),
                 accounts: root.numberText(Array.isArray(tx.account_ids) ? tx.account_ids.length : 0),
                 txHash: txHash,
                 programId: programId
             }
         })
+    }
+
+    function resetRelatedTransactionDecodes() {
+        root.relatedTransactionDecodeSerial += 1
+        root.relatedTransactionDecodeMap = ({})
+        root.relatedTransactionDecodeRevision += 1
+        if (!root.detail || !root.detail.related_transactions.length || root.model.registeredIdls.count === 0) {
+            return
+        }
+        root.decodeRelatedTransactions(root.relatedTransactionDecodeSerial)
+    }
+
+    function decodeRelatedTransactions(serial) {
+        const rows = root.detail ? root.detail.related_transactions : []
+        for (let i = 0; i < rows.length; ++i) {
+            const summary = root.relatedTransactionSummary(rows[i])
+            if (!summary) {
+                continue
+            }
+            const candidates = root.model.transactionDecodeCandidates(summary)
+            if (candidates.length > 0) {
+                root.tryRelatedTransactionDecodeCandidate(serial, summary.hash, summary, candidates, 0, null)
+            }
+        }
+    }
+
+    function tryRelatedTransactionDecodeCandidate(serial, txHash, summary, candidates, index, partialDecoded) {
+        if (serial !== root.relatedTransactionDecodeSerial) {
+            return
+        }
+        if (index >= candidates.length) {
+            if (partialDecoded) {
+                root.storeRelatedTransactionDecode(txHash, partialDecoded)
+            }
+            return
+        }
+
+        const candidate = candidates[index]
+        root.model.decodeTransactionSummaryAsync(summary, candidate.entry.json, function (response) {
+            if (serial !== root.relatedTransactionDecodeSerial) {
+                return
+            }
+            if (response.ok && response.value && root.model.transactionDecodeFullyConsumed(response.value)) {
+                const decoded = root.model.transactionDecodedInstruction(response.value)
+                if (decoded) {
+                    root.storeRelatedTransactionDecode(txHash, decoded)
+                    return
+                }
+            }
+            const nextPartial = partialDecoded || (response.ok && response.value ? root.model.transactionDecodedInstruction(response.value) : null)
+            root.tryRelatedTransactionDecodeCandidate(serial, txHash, summary, candidates, index + 1, nextPartial)
+        })
+    }
+
+    function storeRelatedTransactionDecode(txHash, decoded) {
+        const key = String(txHash || "")
+        if (!key.length) {
+            return
+        }
+        const next = root.copyRelatedTransactionDecodeMap()
+        next[key] = decoded
+        root.relatedTransactionDecodeMap = next
+        root.relatedTransactionDecodeRevision += 1
+    }
+
+    function relatedTransactionDecode(txHash) {
+        const revision = root.relatedTransactionDecodeRevision
+        const key = String(txHash || "")
+        return key.length ? (root.relatedTransactionDecodeMap || {})[key] || null : null
+    }
+
+    function copyRelatedTransactionDecodeMap() {
+        const copy = {}
+        const current = root.relatedTransactionDecodeMap || {}
+        for (const key in current) {
+            copy[key] = current[key]
+        }
+        return copy
+    }
+
+    function relatedTransactionSummary(tx) {
+        if (!tx || typeof tx !== "object") {
+            return null
+        }
+        const words = Array.isArray(tx.instruction_data) ? tx.instruction_data : []
+        if (String(tx.kind || "") !== "Public" || words.length === 0) {
+            return null
+        }
+        return {
+            hash: String(tx.hash || ""),
+            kind: String(tx.kind || ""),
+            program_id_hex: String(tx.program_id_hex || ""),
+            account_ids: Array.isArray(tx.account_ids) ? tx.account_ids : [],
+            nonces: Array.isArray(tx.nonces) ? tx.nonces : [],
+            instruction_data: words,
+            bytecode_len: tx.bytecode_len === undefined ? null : tx.bytecode_len,
+            raw_signature_valid: null,
+            message_prehash: null,
+            prehash_signature_valid: null
+        }
     }
 
     function directionText(direction) {
@@ -1187,7 +1296,7 @@ ColumnLayout {
                     copyText: rowRoot.copyValueFor(index)
                     monospace: !rowRoot.header
                     Layout.preferredWidth: rowRoot.columnWidth(index)
-                    Layout.fillWidth: index === 0 || index === 3
+                    Layout.fillWidth: index === 0 || index === 2 || index === 3
                     onActivated: rowRoot.cellActivated(index)
                 }
             }
@@ -1200,8 +1309,11 @@ ColumnLayout {
         }
 
         function columnWidth(index) {
-            if (index === 1 || index === 2 || index === 4) {
+            if (index === 1 || index === 4) {
                 return 92
+            }
+            if (index === 2) {
+                return 160
             }
             return 180
         }

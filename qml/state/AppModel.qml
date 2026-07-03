@@ -43,6 +43,17 @@ QtObject {
     property int transactionsPageBlockBatch: 1000
     property int transactionsPageLimit: 20
     property string transactionsPageError: ""
+    property var lezBlocksPageRows: []
+    property int lezBlocksPageBeforeBlock: 0
+    property int lezBlocksPageNextBeforeBlock: 0
+    property int lezBlocksPageLimit: 20
+    property string lezBlocksPageError: ""
+    property var lezTransactionsPageRows: []
+    property int lezTransactionsPageBeforeBlock: 0
+    property int lezTransactionsPageNextBeforeBlock: 0
+    property int lezTransactionsBlockBatch: 50
+    property int lezTransactionsPageLimit: 20
+    property string lezTransactionsPageError: ""
     property var transferActivityRows: []
     property int transferActivityBeforeBlock: 0
     property int transferActivityNextBeforeBlock: 0
@@ -206,7 +217,8 @@ QtObject {
                 token: "L2",
                 layer: "l2",
                 children: [
-                    { key: "sequencer", view: "sequencer", label: qsTr("Blocks / Tx"), token: "L2X", layer: "l2" },
+                    { key: "l2Blocks", view: "l2Blocks", label: qsTr("Blocks"), token: "L2B", layer: "l2" },
+                    { key: "l2Transactions", view: "l2Transactions", label: qsTr("Transactions"), token: "L2T", layer: "l2" },
                     { key: "accounts", view: "accounts", label: qsTr("Accounts"), token: "ACC", layer: "l2" },
                     { key: "transferActivity", view: "transferActivity", label: qsTr("Transfer Activity"), token: "XFR", layer: "l2" },
                     { key: "programs", view: "programs", label: qsTr("Programs"), token: "PRG", layer: "l2" },
@@ -329,6 +341,12 @@ QtObject {
 
     function parentNavKeyForView(view) {
         const target = String(view || "")
+        if (target === "blockDetail" || target === "transactionDetail") {
+            return "l1"
+        }
+        if (target === "l2BlockDetail" || target === "l2TransactionDetail" || target === "sequencer") {
+            return "l2"
+        }
         const tree = navTreeItems()
         for (let i = 0; i < tree.length; ++i) {
             const item = tree[i]
@@ -356,6 +374,18 @@ QtObject {
                     return children[j]
                 }
             }
+        }
+        if (target === "blockDetail") {
+            return { key: "blockDetail", view: "blockDetail", label: qsTr("Block"), token: "L1B", layer: "l1" }
+        }
+        if (target === "transactionDetail") {
+            return { key: "transactionDetail", view: "transactionDetail", label: qsTr("Mantle Tx"), token: "L1T", layer: "l1" }
+        }
+        if (target === "l2BlockDetail") {
+            return { key: "l2BlockDetail", view: "l2BlockDetail", label: qsTr("LEZ Block"), token: "L2B", layer: "l2" }
+        }
+        if (target === "l2TransactionDetail") {
+            return { key: "l2TransactionDetail", view: "l2TransactionDetail", label: qsTr("LEZ Transaction"), token: "L2T", layer: "l2" }
         }
         return null
     }
@@ -409,7 +439,8 @@ QtObject {
     }
 
     function selectView(view) {
-        const target = String(view || "")
+        const requested = String(view || "")
+        const target = requested === "sequencer" ? "l2Blocks" : requested
         if (!target.length) {
             return
         }
@@ -464,7 +495,7 @@ QtObject {
         return requestModule(moduleName, method, args, label, true)
     }
 
-    function requestModule(moduleName, method, args, label, showResult) {
+    function requestModule(moduleName, method, args, label, showResult, cacheResult) {
         if (busy) {
             return {
                 ok: false,
@@ -483,12 +514,14 @@ QtObject {
         busy = false
 
         if (response.ok) {
-            updateDashboardCache(method, response.value)
+            if (cacheResult !== false) {
+                updateDashboardCache(method, response.value)
+            }
             if (showResult) {
                 setResult(label, response.text, false, response.value)
             }
         } else if (showResult) {
-            if (method === "account" || method === "decodeAccount") {
+            if (method === "account") {
                 accountDetailValue = null
             }
             setResult(label, response.error, true, null)
@@ -516,7 +549,7 @@ QtObject {
                     root.setResult(label, response.text, false, response.value)
                 }
             } else if (showResult) {
-                if (method === "account" || method === "decodeAccount") {
+                if (method === "account") {
                     accountDetailValue = null
                 }
                 root.setResult(label, response.error, true, null)
@@ -1113,7 +1146,7 @@ QtObject {
             return
         }
 
-        root.tryTransactionDecodeCandidate(serial, summary, candidates, 0)
+        root.tryTransactionDecodeCandidate(serial, summary, candidates, 0, null)
     }
 
     function transactionDecodeCandidates(summary) {
@@ -1161,11 +1194,20 @@ QtObject {
         return false
     }
 
-    function tryTransactionDecodeCandidate(serial, summary, candidates, index) {
+    function tryTransactionDecodeCandidate(serial, summary, candidates, index, partialValue) {
         if (serial !== transactionAutoDecodeSerial) {
             return
         }
         if (index >= candidates.length) {
+            if (partialValue) {
+                transactionDetailValue = partialValue
+                if (currentView === "l2TransactionDetail") {
+                    lezTransactionsPageError = ""
+                } else {
+                    transactionsPageError = ""
+                }
+                setResult(qsTr("Transaction"), BridgeHelpers.formatValue(partialValue), false, partialValue)
+            }
             return
         }
 
@@ -1176,16 +1218,39 @@ QtObject {
             }
             if (response.ok && response.value && root.transactionDecodeFullyConsumed(response.value)) {
                 transactionDetailValue = response.value
-                transactionsPageError = ""
+                if (currentView === "l2TransactionDetail") {
+                    lezTransactionsPageError = ""
+                } else {
+                    transactionsPageError = ""
+                }
                 setResult(qsTr("Transaction"), response.text, false, response.value)
                 return
             }
-            root.tryTransactionDecodeCandidate(serial, summary, candidates, index + 1)
+            const nextPartial = partialValue || (response.ok && response.value && root.transactionDecodedInstruction(response.value) ? response.value : null)
+            root.tryTransactionDecodeCandidate(serial, summary, candidates, index + 1, nextPartial)
         })
     }
 
     function refreshInterval(seconds) {
         return Math.max(5, Number(seconds || 0)) * 1000
+    }
+
+    function dashboardRefreshInterval() {
+        const rates = [
+            blockchainRefreshRate,
+            indexerRefreshRate,
+            executionRefreshRate,
+            messagingRefreshRate,
+            storageRefreshRate
+        ]
+        let selected = 0
+        for (let i = 0; i < rates.length; ++i) {
+            const value = root.canonicalRefreshRate(rates[i])
+            if (value > 0 && (selected === 0 || value < selected)) {
+                selected = value
+            }
+        }
+        return selected > 0 ? root.refreshInterval(selected) : 0
     }
 
     function canonicalRefreshRate(seconds) {
@@ -2171,14 +2236,19 @@ QtObject {
             "messaging.receive_latency_ms"
         ]
         const next = copyMap(dashboardMetricHistory)
+        const timestamp = Date.now()
         let changed = false
         for (let i = 0; i < keys.length; ++i) {
             const value = Number(root.dashboardMetricValue(keys[i]))
             if (!Number.isFinite(value)) {
                 continue
             }
-            const samples = Array.isArray(next[keys[i]]) ? next[keys[i]].slice(-23) : []
-            samples.push(value)
+            const samples = root.normalizedDashboardSamples(next[keys[i]]).slice(-95)
+            const last = samples.length > 0 ? samples[samples.length - 1] : null
+            if (last && Number(last.value) === value) {
+                continue
+            }
+            samples.push({ timestamp: timestamp, value: value })
             next[keys[i]] = samples
             changed = true
         }
@@ -2190,12 +2260,30 @@ QtObject {
 
     function dashboardMetricSamples(key) {
         const revision = dashboardMetricHistoryRevision
-        const samples = dashboardMetricHistory[String(key || "")]
+        const samples = root.normalizedDashboardSamples(dashboardMetricHistory[String(key || "")])
         if (Array.isArray(samples) && samples.length > 0) {
             return samples
         }
         const value = Number(root.dashboardMetricValue(key))
-        return Number.isFinite(value) ? [value] : []
+        return Number.isFinite(value) ? [{ timestamp: Date.now(), value: value }] : []
+    }
+
+    function normalizedDashboardSamples(samples) {
+        const rows = []
+        const raw = Array.isArray(samples) ? samples : []
+        for (let i = 0; i < raw.length; ++i) {
+            const sample = raw[i]
+            const value = Number(sample && typeof sample === "object" ? sample.value : sample)
+            if (!Number.isFinite(value)) {
+                continue
+            }
+            const timestamp = Number(sample && typeof sample === "object" ? sample.timestamp : i)
+            rows.push({
+                timestamp: Number.isFinite(timestamp) ? timestamp : i,
+                value: value
+            })
+        }
+        return rows
     }
 
     function defaultFooterFieldSelections() {
@@ -2466,6 +2554,151 @@ QtObject {
         }
         transactionsPageLimit = value
         refreshTransactionsPage(transactionsPageBeforeBlock > 0 ? transactionsPageBeforeBlock : null)
+    }
+
+    function refreshLezBlocksPage(beforeBlock) {
+        const before = root.normalizedPositiveInteger(beforeBlock)
+        const response = requestModule(inspectorModule, "indexerBlocks", [indexerUrl, before > 0 ? before : null, lezBlocksPageLimit], qsTr("L2 blocks"), false, false)
+        if (!response.ok) {
+            lezBlocksPageError = response.error
+            setResult(qsTr("L2 blocks"), lezBlocksPageError, true)
+            return
+        }
+
+        const blocks = sortedIndexerBlocks(response.value || [])
+        lezBlocksPageBeforeBlock = before
+        lezBlocksPageRows = blocks
+        lezBlocksPageNextBeforeBlock = nextIndexerBlocksCursor(blocks)
+        lezBlocksPageError = ""
+        setResult(qsTr("L2 blocks"), BridgeHelpers.formatValue(lezBlocksPageRows), false, lezBlocksPageRows)
+    }
+
+    function olderLezBlocksPage() {
+        if (lezBlocksPageNextBeforeBlock > 0) {
+            refreshLezBlocksPage(lezBlocksPageNextBeforeBlock)
+        }
+    }
+
+    function newerLezBlocksPage() {
+        refreshLezBlocksPage(null)
+    }
+
+    function setLezBlocksPageLimit(limit) {
+        const value = Math.max(1, Number(limit || lezBlocksPageLimit))
+        if (lezBlocksPageLimit === value) {
+            return
+        }
+        lezBlocksPageLimit = value
+        refreshLezBlocksPage(lezBlocksPageBeforeBlock > 0 ? lezBlocksPageBeforeBlock : null)
+    }
+
+    function refreshLezTransactionsPage(beforeBlock) {
+        const before = root.normalizedPositiveInteger(beforeBlock)
+        const blockLimit = Math.max(lezTransactionsBlockBatch, lezTransactionsPageLimit)
+        const response = requestModule(inspectorModule, "indexerBlocks", [indexerUrl, before > 0 ? before : null, blockLimit], qsTr("L2 transactions"), false, false)
+        if (!response.ok) {
+            lezTransactionsPageError = response.error
+            setResult(qsTr("L2 transactions"), lezTransactionsPageError, true)
+            return
+        }
+
+        const blocks = sortedIndexerBlocks(response.value || [])
+        lezTransactionsPageBeforeBlock = before
+        lezTransactionsPageRows = lezTransactionRowsFromBlocks(blocks).slice(0, lezTransactionsPageLimit)
+        lezTransactionsPageNextBeforeBlock = nextIndexerBlocksCursor(blocks)
+        lezTransactionsPageError = ""
+        setResult(qsTr("L2 transactions"), BridgeHelpers.formatValue(lezTransactionsPageRows), false, lezTransactionsPageRows)
+    }
+
+    function olderLezTransactionsPage() {
+        if (lezTransactionsPageNextBeforeBlock > 0) {
+            refreshLezTransactionsPage(lezTransactionsPageNextBeforeBlock)
+        }
+    }
+
+    function newerLezTransactionsPage() {
+        refreshLezTransactionsPage(null)
+    }
+
+    function setLezTransactionsPageLimit(limit) {
+        const value = Math.max(1, Number(limit || lezTransactionsPageLimit))
+        if (lezTransactionsPageLimit === value) {
+            return
+        }
+        lezTransactionsPageLimit = value
+        refreshLezTransactionsPage(lezTransactionsPageBeforeBlock > 0 ? lezTransactionsPageBeforeBlock : null)
+    }
+
+    function sortedIndexerBlocks(blocks) {
+        const copy = Array.isArray(blocks) ? blocks.slice(0) : []
+        copy.sort(function (left, right) {
+            return root.indexerBlockId(right) - root.indexerBlockId(left)
+        })
+        return copy
+    }
+
+    function indexerBlockId(block) {
+        return Number(block && block.block_id !== undefined ? block.block_id : 0)
+    }
+
+    function indexerBlockHash(block) {
+        return String(block && block.header_hash ? block.header_hash : "")
+    }
+
+    function nextIndexerBlocksCursor(blocks) {
+        let oldest = 0
+        const rows = Array.isArray(blocks) ? blocks : []
+        for (let i = 0; i < rows.length; ++i) {
+            const id = root.indexerBlockId(rows[i])
+            if (id > 0 && (oldest === 0 || id < oldest)) {
+                oldest = id
+            }
+        }
+        return oldest > 0 ? oldest : 0
+    }
+
+    function normalizedPositiveInteger(value) {
+        const number = Number(value === undefined || value === null ? 0 : value)
+        return Number.isFinite(number) && number > 0 ? Math.floor(number) : 0
+    }
+
+    function lezTransactionRowsFromBlocks(blocks) {
+        const rows = []
+        const sorted = sortedIndexerBlocks(blocks)
+        for (let i = 0; i < sorted.length; ++i) {
+            const block = sorted[i]
+            const transactions = Array.isArray(block.transactions) ? block.transactions : []
+            for (let j = 0; j < transactions.length; ++j) {
+                const tx = transactions[j]
+                rows.push({
+                    block_id: root.indexerBlockId(block),
+                    block_hash: root.indexerBlockHash(block),
+                    hash: root.lezTransactionHash(tx),
+                    index: tx && tx.index !== undefined ? tx.index : j,
+                    kind: String(tx && tx.kind ? tx.kind : ""),
+                    ops: root.lezTransactionOpCount(tx),
+                    raw: tx
+                })
+            }
+        }
+        return rows
+    }
+
+    function lezTransactionHash(tx) {
+        return String((tx && (tx.hash || tx.tx_hash || tx.transaction_hash)) || "")
+    }
+
+    function lezTransactionOpCount(tx) {
+        if (tx && Array.isArray(tx.instruction_data)) {
+            return tx.instruction_data.length
+        }
+        if (tx && Array.isArray(tx.ops)) {
+            return tx.ops.length
+        }
+        if (tx && tx.bytecode_len !== undefined && tx.bytecode_len !== null) {
+            return tx.bytecode_len
+        }
+        return 0
     }
 
     function transactionRowsFromBlocks(blocks) {
@@ -2756,6 +2989,9 @@ QtObject {
     }
 
     function refreshDashboard() {
+        if (dashboardRefreshing) {
+            return
+        }
         const refreshId = dashboardRefreshSerial + 1
         const configRevision = networkConfigurationRevision
         dashboardRefreshSerial = refreshId
@@ -2820,7 +3056,7 @@ QtObject {
             dashboardNode = value
         } else if (method === "indexerBlocks") {
             dashboardBlocks = value || []
-        } else if (method === "account" || method === "decodeAccount") {
+        } else if (method === "account") {
             accountDetailValue = value || null
         } else if (method === "storageReport" || method === "storageSourceReport") {
             storageModuleReport = value || null
@@ -2892,8 +3128,9 @@ QtObject {
         if (root.layerForView(view) === "l2") {
             return true
         }
-        return view === "sequencer" || view === "accounts" || view === "programs"
-            || view === "transferActivity" || view === "indexer"
+        return view === "l2Blocks" || view === "l2Transactions" || view === "l2BlockDetail"
+            || view === "l2TransactionDetail" || view === "sequencer" || view === "accounts"
+            || view === "programs" || view === "transferActivity" || view === "indexer"
     }
 
     function routePrefixedSearch(query) {
@@ -2928,8 +3165,7 @@ QtObject {
             if (target.length > 0) {
                 openLezSearchTarget(target)
             } else {
-                sequencerTab = "blocks"
-                selectView("sequencer")
+                selectView("l2Blocks")
             }
             return true
         }
@@ -2937,8 +3173,7 @@ QtObject {
             if (target.length > 0) {
                 openLezTransaction(target)
             } else {
-                sequencerTab = "transactions"
-                selectView("sequencer")
+                selectView("l2Transactions")
             }
             return true
         }
@@ -3044,9 +3279,9 @@ QtObject {
                 return
             }
             if (response.ok && response.value !== null && response.value !== undefined) {
-                sequencerTab = "blocks"
-                currentView = "sequencer"
-                setResult(qsTr("LEZ block"), response.text, false, response.value)
+                currentView = "l2BlockDetail"
+                blockDetailValue = root.indexerBlockDetail(response.value)
+                setResult(qsTr("LEZ block"), BridgeHelpers.formatValue(blockDetailValue), false, blockDetailValue)
                 return
             }
             root.resolveSearchTransaction(serial, value)
@@ -3059,10 +3294,9 @@ QtObject {
                 return
             }
             if (response.ok && response.value !== null && response.value !== undefined) {
-                sequencerTab = "transactions"
-                currentView = "sequencer"
+                currentView = "l2TransactionDetail"
                 transactionDetailValue = response.value
-                transactionsPageError = ""
+                lezTransactionsPageError = ""
                 setResult(qsTr("LEZ transaction"), response.text, false, response.value)
                 root.autoDecodeTransactionDetail(response.value)
                 return
@@ -3106,6 +3340,9 @@ QtObject {
         if (normalized === "transaction" || normalized === "tx" || normalized === "txs" || normalized === "latest transactions") {
             return "transactions"
         }
+        if (normalized === "l2 transaction" || normalized === "l2 transactions" || normalized === "lez transaction" || normalized === "lez transactions") {
+            return "l2Transactions"
+        }
         if (normalized === "wallet" || normalized === "local wallet" || normalized === "wallets") {
             return "localWallet"
         }
@@ -3121,8 +3358,8 @@ QtObject {
         if (normalized === "spel" || normalized === "program" || normalized === "programs") {
             return "programs"
         }
-        if (normalized === "l2" || normalized === "lez" || normalized === "sequencer") {
-            return "sequencer"
+        if (normalized === "l2" || normalized === "lez" || normalized === "sequencer" || normalized === "l2 blocks" || normalized === "lez blocks") {
+            return "l2Blocks"
         }
         if (normalized === "indexer") {
             return "indexer"
@@ -3241,7 +3478,7 @@ QtObject {
         }
 
         const detail = transactionDetail(value)
-        currentView = "transactions"
+        currentView = "transactionDetail"
         if (detail) {
             transactionDetailValue = detail
             transactionsPageError = ""
@@ -3327,17 +3564,19 @@ QtObject {
 
         const serial = searchResolveSerial + 1
         searchResolveSerial = serial
-        sequencerTab = "blocks"
-        currentView = "sequencer"
+        currentView = "l2BlockDetail"
+        blockDetailValue = null
         statusText = qsTr("LEZ block lookup")
         requestModuleAsync(inspectorModule, "block", [sequencerUrl, value], qsTr("LEZ block"), false, function (response) {
             if (serial !== searchResolveSerial) {
                 return
             }
-            if (response.ok) {
-                setResult(qsTr("LEZ block"), response.text, false, response.value)
+            if (response.ok && response.value !== null && response.value !== undefined) {
+                blockDetailValue = root.indexerBlockDetail(response.value)
+                setResult(qsTr("LEZ block"), BridgeHelpers.formatValue(blockDetailValue), false, blockDetailValue)
             } else {
-                setResult(qsTr("LEZ block"), response.error, true)
+                blockDetailValue = null
+                setResult(qsTr("LEZ block"), response.error || qsTr("LEZ block %1 was not found.").arg(value), true)
             }
         })
     }
@@ -3350,8 +3589,8 @@ QtObject {
 
         const serial = searchResolveSerial + 1
         searchResolveSerial = serial
-        sequencerTab = "blocks"
-        currentView = "sequencer"
+        currentView = "l2BlockDetail"
+        blockDetailValue = null
         statusText = qsTr("L2 lookup")
         requestModuleAsync(inspectorModule, "indexerBlockByHash", [indexerUrl, value], qsTr("LEZ block lookup"), false, function (response) {
             if (serial !== searchResolveSerial) {
@@ -3359,6 +3598,7 @@ QtObject {
             }
             if (response.ok && response.value !== null && response.value !== undefined) {
                 const detail = root.indexerBlockDetail(response.value)
+                blockDetailValue = detail
                 setResult(qsTr("LEZ block"), BridgeHelpers.formatValue(detail), false, detail)
                 return
             }
@@ -3373,8 +3613,7 @@ QtObject {
         }
 
         searchResolveSerial += 1
-        sequencerTab = "transactions"
-        currentView = "sequencer"
+        currentView = "l2TransactionDetail"
         inspectTransaction(value, "")
     }
 
@@ -3384,26 +3623,26 @@ QtObject {
             return
         }
 
-        sequencerTab = "transactions"
-        currentView = "sequencer"
+        currentView = "l2TransactionDetail"
         const trimmedIdl = String(idl || "").trim()
         const args = trimmedIdl.length ? [sequencerUrl, value, trimmedIdl] : [sequencerUrl, value]
         const serial = transactionAutoDecodeSerial + 1
         transactionAutoDecodeSerial = serial
+        transactionDetailValue = null
         requestModuleAsync(inspectorModule, "inspectTransaction", args, qsTr("Transaction inspection"), true, function (response) {
             if (serial !== transactionAutoDecodeSerial) {
                 return
             }
             if (response.ok) {
                 transactionDetailValue = response.value
-                transactionsPageError = ""
+                lezTransactionsPageError = ""
                 setResult(qsTr("Transaction"), response.text, false, response.value)
                 if (!trimmedIdl.length) {
                     root.autoDecodeTransactionDetail(response.value)
                 }
             } else {
                 transactionDetailValue = null
-                transactionsPageError = response.error
+                lezTransactionsPageError = response.error
                 setResult(qsTr("Transaction"), response.error, true)
             }
         })
@@ -3426,7 +3665,7 @@ QtObject {
             return
         }
 
-        currentView = "blocks"
+        currentView = "blockDetail"
         blockDetailValue = detail
         setResult(qsTr("Block"), BridgeHelpers.formatValue(detail), false, detail)
     }
@@ -3436,7 +3675,8 @@ QtObject {
         if (!value.length) {
             return
         }
-        currentView = "blocks"
+        currentView = "blockDetail"
+        blockDetailValue = null
         const response = requestModule(inspectorModule, "blockchainBlock", [nodeUrl, value], qsTr("Block lookup"), false)
         if (response.ok) {
             blockDetailValue = blockchainBlockDetail(response.value)
@@ -3455,14 +3695,16 @@ QtObject {
                 return
             }
         }
-        currentView = "blocks"
+        currentView = "blockDetail"
+        blockDetailValue = null
         blocksPageError = qsTr("L1 block %1 was not found.").arg(value)
         setResult(qsTr("Block"), blocksPageError, true)
     }
 
     function loadBlockchainBlockBySlot(slot) {
         const value = Math.max(0, Number(slot || 0))
-        currentView = "blocks"
+        currentView = "blockDetail"
+        blockDetailValue = null
         const response = requestModule(inspectorModule, "blockchainBlocks", [nodeUrl, value, value], qsTr("Block lookup"), false)
         if (response.ok) {
             const blocks = Array.isArray(response.value) ? response.value : []
@@ -3472,9 +3714,11 @@ QtObject {
                 return
             }
             blocksPageError = qsTr("No block found at slot %1.").arg(value)
+            blockDetailValue = null
             setResult(qsTr("Block"), blocksPageError, true)
         } else {
             blocksPageError = response.error
+            blockDetailValue = null
             setResult(qsTr("Block"), response.error, true)
         }
     }
@@ -3491,7 +3735,7 @@ QtObject {
             ops: Array.isArray(tx.operations) ? tx.operations : [],
             raw: tx.raw || null
         }
-        currentView = "transactions"
+        currentView = "transactionDetail"
         transactionDetailValue = detail
         setResult(qsTr("Transaction"), BridgeHelpers.formatValue(detail), false, detail)
     }
@@ -3536,22 +3780,25 @@ QtObject {
             return
         }
 
-        sequencerTab = "blocks"
-        currentView = "sequencer"
+        currentView = "l2BlockDetail"
+        blockDetailValue = null
 
         const response = requestModule(inspectorModule, "indexerBlockByHash", [indexerUrl, value], qsTr("Block lookup"), false)
         if (response.ok) {
             if (response.value === null || response.value === undefined) {
-                blocksPageError = qsTr("No block found for %1.").arg(value)
-                setResult(qsTr("LEZ block"), blocksPageError, true)
+                lezBlocksPageError = qsTr("No block found for %1.").arg(value)
+                blockDetailValue = null
+                setResult(qsTr("LEZ block"), lezBlocksPageError, true)
                 return
             }
-            blocksPageError = ""
+            lezBlocksPageError = ""
             const detail = root.indexerBlockDetail(response.value)
+            blockDetailValue = detail
             setResult(qsTr("LEZ block"), BridgeHelpers.formatValue(detail), false, detail)
         } else {
-            blocksPageError = response.error
-            setResult(qsTr("LEZ block"), response.error, true)
+            lezBlocksPageError = response.error
+            blockDetailValue = null
+            setResult(qsTr("LEZ block"), lezBlocksPageError, true)
         }
     }
 

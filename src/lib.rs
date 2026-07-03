@@ -979,7 +979,10 @@ pub fn decode_instruction_words_with_idl(
     account_ids: &[String],
 ) -> Result<InstructionDecodeReport> {
     let idl: Value = serde_json::from_str(idl_json).context("failed to parse IDL JSON")?;
-    if let Some(instruction_type) = idl.get("instruction_type").filter(|value| !value.is_null()) {
+    if let Some(instruction_type) = idl
+        .get("instruction_type")
+        .filter(|value| !value.is_null() && !value.is_string())
+    {
         bail!(
             "IDL uses external instruction_type `{}`; positional instruction decode is unsafe without explicit variant metadata",
             idl_type_label(instruction_type)
@@ -4417,7 +4420,38 @@ mod tests {
     }
 
     #[test]
-    fn decode_instruction_words_with_idl_rejects_external_instruction_type() {
+    fn decode_instruction_words_with_idl_allows_string_instruction_type() {
+        let idl = r#"{
+            "name": "test_program",
+            "instruction_type": "test_program::Instruction",
+            "instructions": [
+                {
+                    "name": "set_value",
+                    "args": [
+                        { "name": "value", "type": "u32" }
+                    ]
+                }
+            ]
+        }"#;
+
+        let report = decode_instruction_words_with_idl(idl, "program", &[0, 9], &[]);
+
+        assert!(report.is_ok(), "{report:?}");
+        let Ok(report) = report else {
+            return;
+        };
+        assert_eq!(report.instruction, "set_value");
+        assert_eq!(
+            report.args.first(),
+            Some(&DecodedField {
+                path: "value: u32".to_owned(),
+                value: "9".to_owned()
+            })
+        );
+    }
+
+    #[test]
+    fn decode_instruction_words_with_idl_rejects_structured_external_instruction_type() {
         let idl = r#"{
             "name": "test_program",
             "instruction_type": { "defined": "Instruction" },
