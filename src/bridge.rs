@@ -5,9 +5,10 @@ use serde_json::{Value, json};
 use tokio::runtime::Runtime;
 
 use crate::{
-    TransactionSummary, account_lookup, account_lookup_with_idl, bedrock_wallet_balance,
-    blockchain, channels, decode_account_data_hex_with_idl, decode_event_data_hex_with_idl,
-    indexer_block_by_hash, indexer_blocks, indexer_health, indexer_transfer_recipients,
+    AccountTransactionSummary, TransactionIdlInspectionReport, TransactionSummary, account_lookup,
+    account_lookup_with_idl, bedrock_wallet_balance, blockchain, channels,
+    decode_account_data_hex_with_idl, decode_event_data_hex_with_idl, indexer_block_by_hash,
+    indexer_blocks, indexer_health, indexer_transfer_recipients,
     inspect_transaction_summary_with_idl, last_sequencer_block_id, local_wallet_profile_status,
     logoscore,
     modules::{
@@ -326,23 +327,9 @@ impl InspectorBridge {
             return Ok(Value::Null);
         };
 
-        let summary = inspection.raw_summary.clone();
-        let mut partial = None;
-        for idl_json in registered_idl_jsons()? {
-            let Ok(report) = inspect_transaction_summary_with_idl(&summary, &idl_json) else {
-                continue;
-            };
-            if let Some(decoded) = &report.decoded_instruction {
-                if decoded.remaining_words.is_empty() {
-                    return to_value(Some(report));
-                }
-                if partial.is_none() {
-                    partial = Some(report);
-                }
-            }
-        }
-
-        if let Some(report) = partial {
+        if let Some(report) =
+            decode_transaction_summary_with_idls(&inspection.raw_summary, &registered_idl_jsons()?)
+        {
             return to_value(Some(report));
         }
 
@@ -373,20 +360,22 @@ impl InspectorBridge {
         let indexer = args.string(1, "indexer endpoint")?;
         let account = args.string(2, "account id")?;
         let idl = args.optional_string(3);
-        if let Some(idl) = idl {
+        let mut value = if let Some(idl) = idl {
             to_value(self.runtime.block_on(account_lookup_with_idl(
                 sequencer,
                 indexer,
                 account,
                 idl,
                 args.optional_string(4),
-            ))?)
+            ))?)?
         } else {
             to_value(
                 self.runtime
                     .block_on(account_lookup(sequencer, indexer, account))?,
-            )
-        }
+            )?
+        };
+        enrich_account_related_transaction_decodes(&mut value)?;
+        Ok(value)
     }
 
     fn call_logoscore_module(&self, module: &str, method: &str, args: Value) -> Result<Value> {
@@ -434,6 +423,79 @@ fn registered_idl_jsons() -> Result<Vec<String>> {
         })
         .filter(|json| !json.trim().is_empty())
         .collect())
+}
+
+fn decode_transaction_summary_with_idls(
+    summary: &TransactionSummary,
+    idl_jsons: &[String],
+) -> Option<TransactionIdlInspectionReport> {
+    let mut partial = None;
+    for idl_json in idl_jsons {
+        let Ok(report) = inspect_transaction_summary_with_idl(summary, idl_json) else {
+            continue;
+        };
+        if let Some(decoded) = &report.decoded_instruction {
+            if decoded.decode_error.is_none() && decoded.remaining_words.is_empty() {
+                return Some(report);
+            }
+            if partial.is_none() {
+                partial = Some(report);
+            }
+        }
+    }
+    partial
+}
+
+fn enrich_account_related_transaction_decodes(value: &mut Value) -> Result<()> {
+    let idl_jsons = registered_idl_jsons()?;
+    if idl_jsons.is_empty() {
+        return Ok(());
+    }
+    if let Some(account) = value.get_mut("account") {
+        enrich_account_report_related_transaction_decodes(account, &idl_jsons)?;
+    } else {
+        enrich_account_report_related_transaction_decodes(value, &idl_jsons)?;
+    }
+    Ok(())
+}
+
+fn enrich_account_report_related_transaction_decodes(
+    account: &mut Value,
+    idl_jsons: &[String],
+) -> Result<()> {
+    let Some(transactions) = account
+        .get_mut("related_transactions")
+        .and_then(Value::as_array_mut)
+    else {
+        return Ok(());
+    };
+
+    for transaction in transactions {
+        if transaction.get("decoded_instruction").is_some() {
+            continue;
+        }
+        let Ok(summary) = serde_json::from_value::<AccountTransactionSummary>(transaction.clone())
+        else {
+            continue;
+        };
+        let summary = TransactionSummary::from(&summary);
+        if summary.kind != "Public" || summary.instruction_data.is_empty() {
+            continue;
+        }
+        let Some(report) = decode_transaction_summary_with_idls(&summary, idl_jsons) else {
+            continue;
+        };
+        let Some(decoded) = report.decoded_instruction else {
+            continue;
+        };
+        if let Some(object) = transaction.as_object_mut() {
+            object.insert(
+                "decoded_instruction".to_owned(),
+                serde_json::to_value(decoded).context("failed to serialize transaction decode")?,
+            );
+        }
+    }
+    Ok(())
 }
 
 fn save_idl_state(state: &Value) -> Result<Value> {

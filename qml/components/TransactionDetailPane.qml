@@ -528,10 +528,12 @@ ColumnLayout {
                 text: rowRoot.label
                 color: rowRoot.theme.textMuted
                 textFormat: Text.PlainText
+                wrapMode: Text.WrapAnywhere
                 font.pixelSize: 11
                 font.weight: Font.DemiBold
                 font.capitalization: Font.AllUppercase
-                Layout.preferredWidth: 128
+                Layout.preferredWidth: 210
+                Layout.maximumWidth: 210
                 Layout.alignment: Qt.AlignTop
             }
 

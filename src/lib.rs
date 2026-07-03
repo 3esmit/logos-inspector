@@ -389,7 +389,7 @@ pub struct AccountReport {
     pub related_transactions_error: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AccountTransactionSummary {
     pub index: usize,
     pub hash: String,
@@ -404,6 +404,23 @@ pub struct AccountTransactionSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bytecode_len: Option<usize>,
     pub raw: Value,
+}
+
+impl From<&AccountTransactionSummary> for TransactionSummary {
+    fn from(summary: &AccountTransactionSummary) -> Self {
+        Self {
+            hash: summary.hash.clone(),
+            kind: summary.kind.clone(),
+            program_id_hex: summary.program_id_hex.clone(),
+            account_ids: summary.account_ids.clone(),
+            nonces: summary.nonces.clone(),
+            instruction_data: summary.instruction_data.clone(),
+            bytecode_len: summary.bytecode_len,
+            raw_signature_valid: None,
+            message_prehash: None,
+            prehash_signature_valid: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -499,6 +516,8 @@ pub struct InstructionDecodeReport {
     pub variant_index: u32,
     pub accounts: Vec<DecodedField>,
     pub args: Vec<DecodedField>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decode_error: Option<String>,
     pub remaining_words: Vec<u32>,
 }
 
@@ -1032,6 +1051,7 @@ pub fn decode_instruction_words_with_idl(
 
     let mut offset = 1;
     let mut args = Vec::new();
+    let mut decode_error = None;
     for arg in instruction
         .get("args")
         .and_then(Value::as_array)
@@ -1056,15 +1076,16 @@ pub fn decode_instruction_words_with_idl(
                 offset += decoded.consumed;
             }
             Err(err) => {
+                let error = format!("{err:#}");
                 args.push(DecodedField {
                     path: format!("{name}: {}", idl_type_label(ty)),
                     value: format!(
-                        "unsupported ({err:#}); raw words {}..{}",
+                        "unsupported ({error}); raw words {}..{}",
                         offset,
                         instruction_words.len().saturating_sub(1)
                     ),
                 });
-                offset = instruction_words.len();
+                decode_error = Some(error);
                 break;
             }
         }
@@ -1080,6 +1101,7 @@ pub fn decode_instruction_words_with_idl(
         variant_index,
         accounts,
         args,
+        decode_error,
         remaining_words: instruction_words.get(offset..).unwrap_or_default().to_vec(),
     })
 }
@@ -4415,6 +4437,38 @@ mod tests {
             Some(&DecodedField {
                 path: "values: array<u32, 3>".to_owned(),
                 value: "[10, 20, 30]".to_owned()
+            })
+        );
+    }
+
+    #[test]
+    fn decode_instruction_words_with_idl_reports_arg_decode_error() {
+        let idl = r#"{
+            "name": "test_program",
+            "instructions": [
+                {
+                    "name": "set_program",
+                    "args": [
+                        { "name": "program", "type": { "option": "program_id" } }
+                    ]
+                }
+            ]
+        }"#;
+
+        let report = decode_instruction_words_with_idl(idl, "program", &[0, 7, 42], &[]);
+
+        assert!(report.is_ok(), "{report:?}");
+        let Ok(report) = report else {
+            return;
+        };
+        assert_eq!(report.instruction, "set_program");
+        assert_eq!(report.decode_error.as_deref(), Some("invalid option tag 7"));
+        assert_eq!(report.remaining_words, vec![7, 42]);
+        assert_eq!(
+            report.args.first(),
+            Some(&DecodedField {
+                path: "program: option<program_id>".to_owned(),
+                value: "unsupported (invalid option tag 7); raw words 1..2".to_owned()
             })
         );
     }

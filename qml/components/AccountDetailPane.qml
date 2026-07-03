@@ -764,7 +764,7 @@ ColumnLayout {
         return rows.map(function (tx) {
             const txHash = String(tx.hash || "")
             const programId = String(tx.program_id_hex || "")
-            const decoded = root.relatedTransactionDecode(txHash)
+            const decoded = tx.decoded_instruction || root.relatedTransactionDecode(txHash)
             return {
                 hashText: root.shortId(txHash),
                 direction: root.directionText(tx.direction),
