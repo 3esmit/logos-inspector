@@ -88,9 +88,9 @@ Panel {
     }
 
     Component {
-        id: walletDetail
+        id: transferRecipientDetail
 
-        WalletDetailPane {
+        TransferRecipientDetailPane {
             theme: root.theme
             model: root.model
             value: root.model.resultValue
@@ -118,15 +118,15 @@ Panel {
     }
 
     function hasStructuredDetail(value) {
-        return hasBlockDetail(value) || hasTransactionDetail(value) || hasWalletDetail(value) || hasChannelDetail(value) || hasAccountDetail(value)
+        return hasBlockDetail(value) || hasTransactionDetail(value) || hasTransferRecipientDetail(value) || hasChannelDetail(value) || hasAccountDetail(value)
     }
 
     function detailComponent(value) {
         if (hasBlockDetail(value)) {
             return blockDetail
         }
-        if (hasWalletDetail(value)) {
-            return walletDetail
+        if (hasTransferRecipientDetail(value)) {
+            return transferRecipientDetail
         }
         if (hasChannelDetail(value)) {
             return channelDetail
@@ -154,11 +154,11 @@ Panel {
             || (value.hash !== undefined && value.kind !== undefined)
     }
 
-    function hasWalletDetail(value) {
+    function hasTransferRecipientDetail(value) {
         if (!value || typeof value !== "object" || Array.isArray(value)) {
             return false
         }
-        return value.type === "wallet"
+        return value.type === "transfer_recipient"
     }
 
     function hasChannelDetail(value) {

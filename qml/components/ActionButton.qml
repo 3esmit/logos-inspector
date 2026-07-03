@@ -8,23 +8,65 @@ Button {
     required property Theme theme
     property bool primary: false
     property bool selected: false
+    property bool iconOnly: false
+    property string iconName: ""
     property string accessibleName: text
 
     implicitHeight: theme.controlHeight
     padding: 10
     hoverEnabled: true
 
-    contentItem: Text {
-        text: root.text
-        color: root.enabled
-            ? (root.primary ? root.theme.selectedText : root.theme.text)
-            : root.theme.textDim
-        elide: Text.ElideRight
-        textFormat: Text.PlainText
-        verticalAlignment: Text.AlignVCenter
-        horizontalAlignment: Text.AlignHCenter
-        font.pixelSize: 14
-        font.weight: root.primary ? Font.DemiBold : Font.Medium
+    contentItem: Item {
+        implicitWidth: root.iconOnly ? 18 : label.implicitWidth
+        implicitHeight: 18
+
+        Text {
+            id: label
+
+            visible: !root.iconOnly
+            anchors.fill: parent
+            text: root.text
+            color: root.contentColor()
+            elide: Text.ElideRight
+            textFormat: Text.PlainText
+            verticalAlignment: Text.AlignVCenter
+            horizontalAlignment: Text.AlignHCenter
+            font.pixelSize: 14
+            font.weight: root.primary ? Font.DemiBold : Font.Medium
+        }
+
+        Item {
+            visible: root.iconOnly && root.iconName === "search"
+            width: 18
+            height: 18
+            anchors.centerIn: parent
+            Accessible.ignored: true
+
+            Rectangle {
+                x: 3
+                y: 2
+                width: 10
+                height: 10
+                radius: width / 2
+                color: "transparent"
+                border.width: 2
+                border.color: root.contentColor()
+            }
+
+            Rectangle {
+                x: 12
+                y: 11
+                width: 2
+                height: 7
+                radius: 1
+                color: root.contentColor()
+                transform: Rotation {
+                    origin.x: 1
+                    origin.y: 0
+                    angle: -45
+                }
+            }
+        }
     }
 
     background: Rectangle {
@@ -38,4 +80,11 @@ Button {
 
     Accessible.role: Accessible.Button
     Accessible.name: root.accessibleName
+
+    function contentColor() {
+        if (!root.enabled) {
+            return root.theme.textDim
+        }
+        return root.primary ? root.theme.selectedText : root.theme.text
+    }
 }

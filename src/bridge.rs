@@ -1,16 +1,19 @@
+use std::{env, fs, path::PathBuf};
+
 use anyhow::{Context as _, Result, bail};
 use serde_json::{Value, json};
 use tokio::runtime::Runtime;
 
 use crate::{
-    account_lookup, account_lookup_with_idl, blockchain, channels,
+    TransactionSummary, account_lookup, account_lookup_with_idl, blockchain, channels,
     decode_account_data_hex_with_idl, decode_event_data_hex_with_idl, indexer_block_by_hash,
-    indexer_blocks, indexer_wallets, last_sequencer_block_id, logoscore,
+    indexer_blocks, indexer_transfer_recipients, inspect_transaction_summary_with_idl,
+    last_sequencer_block_id, logoscore,
     modules::{
         blockchain_module_report, capabilities_report, delivery_report, logoscore_status_report,
         modules_report, storage_report,
     },
-    overview, program_file_info, raw_json_rpc, raw_rpc_report, sequencer_block,
+    overview, program_file_info, raw_json_rpc_result, raw_rpc_report, sequencer_block,
     sequencer_program_ids, sequencer_transaction, sequencer_transaction_inspection,
     sequencer_transaction_inspection_with_idl, sequencer_transaction_trace,
     sequencer_transaction_trace_with_idl,
@@ -78,6 +81,19 @@ impl InspectorBridge {
             }
             "inspectTransaction" => self.inspect_transaction(args),
             "traceTransaction" => self.trace_transaction(args),
+            "decodeTransactionSummary" => {
+                let args = Args::new(args)?;
+                let summary: TransactionSummary = serde_json::from_value(
+                    args.value(0)
+                        .cloned()
+                        .context("transaction summary is required")?,
+                )
+                .context("failed to parse transaction summary")?;
+                to_value(inspect_transaction_summary_with_idl(
+                    &summary,
+                    args.string(1, "IDL JSON")?,
+                )?)
+            }
             "account" => self.account(args),
             "decodeAccount" => {
                 let args = Args::new(args)?;
@@ -120,7 +136,7 @@ impl InspectorBridge {
             }
             "indexerHealth" => {
                 let args = Args::new(args)?;
-                let head = self.runtime.block_on(raw_json_rpc(
+                let head = self.runtime.block_on(raw_json_rpc_result(
                     args.string(0, "indexer endpoint")?,
                     "getLastFinalizedBlockId",
                     Value::Array(vec![]),
@@ -132,7 +148,7 @@ impl InspectorBridge {
             }
             "indexerFinalizedHead" => {
                 let args = Args::new(args)?;
-                to_value(self.runtime.block_on(raw_json_rpc(
+                to_value(self.runtime.block_on(raw_json_rpc_result(
                     args.string(0, "indexer endpoint")?,
                     "getLastFinalizedBlockId",
                     Value::Array(vec![]),
@@ -155,11 +171,11 @@ impl InspectorBridge {
                     args.string(1, "block header hash")?,
                 ))?)
             }
-            "indexerWallets" => {
+            "indexerTransferRecipients" => {
                 let args = Args::new(args)?;
                 let before = args.value(1).and_then(Value::as_u64);
                 let limit = args.value(2).and_then(Value::as_u64).unwrap_or(50).min(50);
-                to_value(self.runtime.block_on(indexer_wallets(
+                to_value(self.runtime.block_on(indexer_transfer_recipients(
                     args.string(0, "indexer endpoint")?,
                     before,
                     limit,
@@ -180,6 +196,11 @@ impl InspectorBridge {
             "programFile" => {
                 let args = Args::new(args)?;
                 to_value(program_file_info(args.string(0, "program path")?)?)
+            }
+            "loadIdlState" => load_idl_state(),
+            "saveIdlState" => {
+                let args = Args::new(args)?;
+                save_idl_state(args.value(0).context("IDL state is required")?)
             }
             "modules" => to_value(modules_report()),
             "logoscoreStatus" => to_value(logoscore_status_report()),
@@ -283,6 +304,72 @@ impl InspectorBridge {
 
 fn to_value(value: impl serde::Serialize) -> Result<Value> {
     serde_json::to_value(value).context("failed to serialize bridge response")
+}
+
+fn load_idl_state() -> Result<Value> {
+    let path = idl_state_path()?;
+    if !path.is_file() {
+        return Ok(default_idl_state());
+    }
+
+    let text = fs::read_to_string(&path)
+        .with_context(|| format!("failed to read IDL state from {}", path.display()))?;
+    serde_json::from_str(&text)
+        .with_context(|| format!("failed to parse IDL state from {}", path.display()))
+}
+
+fn save_idl_state(state: &Value) -> Result<Value> {
+    let path = idl_state_path()?;
+    let parent = path
+        .parent()
+        .context("IDL state path has no parent directory")?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("failed to create config directory {}", parent.display()))?;
+    let text = serde_json::to_string_pretty(state).context("failed to serialize IDL state")?;
+    fs::write(&path, text)
+        .with_context(|| format!("failed to write IDL state to {}", path.display()))?;
+    Ok(json!({
+        "saved": true,
+        "path": path.display().to_string(),
+    }))
+}
+
+fn default_idl_state() -> Value {
+    json!({
+        "version": 1,
+        "idls": [],
+        "account_idl_selections": {},
+    })
+}
+
+fn idl_state_path() -> Result<PathBuf> {
+    Ok(config_dir()?.join("idls.json"))
+}
+
+fn config_dir() -> Result<PathBuf> {
+    if let Some(value) = env::var_os("LOGOS_INSPECTOR_CONFIG_DIR") {
+        return Ok(PathBuf::from(value));
+    }
+    if let Some(value) = env::var_os("XDG_CONFIG_HOME") {
+        return Ok(PathBuf::from(value).join("logos-inspector"));
+    }
+    if cfg!(windows)
+        && let Some(value) = env::var_os("APPDATA")
+    {
+        return Ok(PathBuf::from(value).join("Logos Inspector"));
+    }
+    if cfg!(target_os = "macos")
+        && let Some(value) = env::var_os("HOME")
+    {
+        return Ok(PathBuf::from(value)
+            .join("Library")
+            .join("Application Support")
+            .join("Logos Inspector"));
+    }
+    if let Some(value) = env::var_os("HOME") {
+        return Ok(PathBuf::from(value).join(".config").join("logos-inspector"));
+    }
+    bail!("could not determine config directory")
 }
 
 struct Args {

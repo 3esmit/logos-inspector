@@ -28,8 +28,9 @@ ColumnLayout {
 
     PageHeader {
         theme: root.theme
-        breadcrumb: qsTr("Home / Sequencer")
-        title: qsTr("Sequencer")
+        breadcrumb: qsTr("Home / L2 LEZ")
+        title: qsTr("L2 LEZ Blocks / Transactions")
+        layerLabel: qsTr("L2 LEZ")
         subtitle: qsTr("Query LEZ blocks, transaction summaries, decoded instructions, and traces from the selected sequencer endpoint.")
         Layout.fillWidth: true
 
@@ -295,11 +296,11 @@ ColumnLayout {
 
                 ActionButton {
                     theme: root.theme
-                    text: qsTr("Open in Blocks")
+                    text: qsTr("Open L2")
                     enabled: !root.model.busy && blockId.text.trim().length > 0
                     Layout.fillWidth: true
-                    accessibleName: qsTr("Open block in Blocks screen")
-                    onClicked: root.model.openReference("block", blockId.text)
+                    accessibleName: qsTr("Open LEZ block")
+                    onClicked: root.model.openLezBlock(blockId.text)
                 }
 
                 ActionButton {
@@ -393,7 +394,7 @@ ColumnLayout {
         if (root.model.sequencerTab === "transactions") {
             return qsTr("Summary, decode, and trace calls stay on this page. Open follows the hash to the Transactions screen.")
         }
-        return qsTr("Sequencer block fetch requires a numeric LEZ block ID. Hash and slot navigation opens the Blocks screen.")
+        return qsTr("Sequencer block fetch requires a numeric LEZ block ID. Use l1:<slot> for Bedrock slots.")
     }
 
     function transactionArgs(hash, idl) {
@@ -734,9 +735,9 @@ ColumnLayout {
         function overviewRows() {
             const value = blockRoot.block || {}
             return [
-                { label: qsTr("Block ID"), value: blockRoot.valueText(value.block_id), monospace: true, linkKind: "block", linkValue: blockRoot.valueText(value.block_id) },
+                { label: qsTr("L2 block ID"), value: blockRoot.valueText(value.block_id), monospace: true, linkKind: "lezBlock", linkValue: blockRoot.valueText(value.block_id) },
                 { label: qsTr("Header hash"), value: blockRoot.valueText(value.header_hash), monospace: true, linkKind: "indexerBlock", linkValue: blockRoot.valueText(value.header_hash) },
-                { label: qsTr("Parent"), value: blockRoot.valueText(value.parent_hash), monospace: true, linkKind: "indexerBlock", linkValue: blockRoot.valueText(value.parent_hash) },
+                { label: qsTr("Bedrock parent"), value: blockRoot.valueText(value.parent_hash), monospace: true, linkKind: "indexerBlock", linkValue: blockRoot.valueText(value.parent_hash) },
                 { label: qsTr("Timestamp"), value: blockRoot.valueText(value.timestamp), monospace: true },
                 { label: qsTr("Bedrock status"), value: blockRoot.valueText(value.bedrock_status), monospace: false },
                 { label: qsTr("Transactions"), value: blockRoot.valueText(value.tx_count), monospace: true }
@@ -888,6 +889,7 @@ ColumnLayout {
                     text: String(programRow.columns[index] || "-")
                     header: programRow.header
                     link: !programRow.header && index > 0 && programRow.program.length > 0
+                    copyText: programRow.program.length > 0 ? programRow.program : String(programRow.columns[index] || "")
                     monospace: index > 0 && !programRow.header
                     Layout.preferredWidth: index === 0 ? 160 : 180
                     Layout.fillWidth: index > 0
@@ -1165,6 +1167,7 @@ ColumnLayout {
                     text: String(txRoot.columns[index] || "-")
                     header: txRoot.header
                     link: txRoot.linkFor(index)
+                    copyText: txRoot.copyValueFor(index)
                     monospace: !txRoot.header
                     Layout.preferredWidth: txRoot.columnWidth(index)
                     Layout.fillWidth: index === 1 || index === 3
@@ -1190,6 +1193,16 @@ ColumnLayout {
                 return txRoot.program.length > 0
             }
             return false
+        }
+
+        function copyValueFor(index) {
+            if (index === 1 && txRoot.hash.length > 0) {
+                return txRoot.hash
+            }
+            if (index === 3 && txRoot.program.length > 0) {
+                return txRoot.program
+            }
+            return String(txRoot.columns[index] || "")
         }
 
         function columnWidth(index) {
@@ -1299,6 +1312,7 @@ ColumnLayout {
                 text: rowRoot.value
                 theme: rowRoot.theme
                 link: rowRoot.linkKind.length > 0 && rowRoot.linkValue.length > 0 && rowRoot.linkValue !== "-"
+                copyText: rowRoot.linkValue.length > 0 ? rowRoot.linkValue : rowRoot.value
                 monospace: rowRoot.monospace
                 wrap: true
                 Layout.fillWidth: true

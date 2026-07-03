@@ -55,7 +55,7 @@ ColumnLayout {
             BlockRow {
                 theme: root.theme
                 header: true
-                columns: [qsTr("Slot"), qsTr("Height"), qsTr("Header"), qsTr("Tx"), qsTr("Leader"), qsTr("Status")]
+                columns: [qsTr("L1 slot"), qsTr("Height"), qsTr("Header"), qsTr("Tx"), qsTr("Leader"), qsTr("Status")]
             }
 
             Repeater {
@@ -67,6 +67,7 @@ ColumnLayout {
                     theme: root.theme
                     columns: [modelData.slot, modelData.height, modelData.header, modelData.tx, modelData.leader, modelData.status]
                     blockHash: modelData.blockHash
+                    leaderHash: modelData.leaderHash
                     rawBlock: modelData.rawBlock
                     status: modelData.status
                     selected: root.isSelectedBlock(modelData.blockHash)
@@ -116,6 +117,7 @@ ColumnLayout {
                 leader: "-",
                 status: "-",
                 blockHash: "",
+                leaderHash: "",
                 rawBlock: null
             }];
         }
@@ -134,6 +136,7 @@ ColumnLayout {
                 leader: root.shortHash(proof.leader_key),
                 status: status,
                 blockHash: hash,
+                leaderHash: String(proof.leader_key || ""),
                 rawBlock: block
             };
         });
@@ -155,7 +158,7 @@ ColumnLayout {
         if (root.model.blocksPageSlotTo <= 0) {
             return qsTr("No range loaded");
         }
-        return qsTr("Slots %1-%2").arg(root.numberText(root.model.blocksPageSlotFrom)).arg(root.numberText(root.model.blocksPageSlotTo));
+        return qsTr("L1 slots %1-%2").arg(root.numberText(root.model.blocksPageSlotFrom)).arg(root.numberText(root.model.blocksPageSlotTo));
     }
 
     function canLoadNewer() {
@@ -192,6 +195,7 @@ ColumnLayout {
         required property Theme theme
         property var columns: []
         property string blockHash: ""
+        property string leaderHash: ""
         property var rawBlock: null
         property string status: ""
         property bool header: false
@@ -232,6 +236,8 @@ ColumnLayout {
                     text: String(rowRoot.columns[index] || "-")
                     header: rowRoot.header
                     link: rowRoot.linkFor(index)
+                    copyable: rowRoot.copyableFor(index)
+                    copyText: rowRoot.copyValueFor(index)
                     monospace: !rowRoot.header
                     textColor: rowRoot.textColor(index)
                     Layout.preferredWidth: rowRoot.columnWidth(index)
@@ -246,6 +252,22 @@ ColumnLayout {
                 && rowRoot.rawBlock !== null
                 && ((index === 0 && String(rowRoot.columns[0] || "").length > 0)
                     || (index === 2 && rowRoot.blockHash.length > 0));
+        }
+
+        function copyableFor(index) {
+            return !rowRoot.header
+                && ((index === 2 && rowRoot.blockHash.length > 0)
+                    || (index === 4 && rowRoot.leaderHash.length > 0));
+        }
+
+        function copyValueFor(index) {
+            if (index === 2 && rowRoot.blockHash.length > 0) {
+                return rowRoot.blockHash
+            }
+            if (index === 4 && rowRoot.leaderHash.length > 0) {
+                return rowRoot.leaderHash
+            }
+            return String(rowRoot.columns[index] || "")
         }
 
         function columnWidth(index) {

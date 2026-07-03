@@ -55,7 +55,7 @@ ColumnLayout {
             TransactionRow {
                 theme: root.theme
                 header: true
-                columns: [qsTr("Slot"), qsTr("Tx hash"), qsTr("Block"), qsTr("Ops")]
+                columns: [qsTr("L1 slot"), qsTr("Tx hash"), qsTr("Header"), qsTr("Ops")]
             }
 
             Repeater {
@@ -70,9 +70,9 @@ ColumnLayout {
                     blockHash: modelData.blockHash
                     onCellActivated: function (column) {
                         if (column === 1) {
-                            root.model.openTransaction(modelData.txHash);
+                            root.model.openMantleTransaction(modelData.txHash);
                         } else if (column === 2) {
-                            root.model.openIndexerBlock(modelData.blockHash);
+                            root.model.openBlockchainBlock(modelData.blockHash);
                         }
                     }
                 }
@@ -148,7 +148,7 @@ ColumnLayout {
         if (root.model.transactionsPageBeforeBlock <= 0) {
             return qsTr("No range loaded")
         }
-        return qsTr("Before block %1").arg(root.numberText(root.model.transactionsPageBeforeBlock))
+        return qsTr("Before L1 slot %1").arg(root.numberText(root.model.transactionsPageBeforeBlock))
     }
 
     function canLoadNewer() {
@@ -200,6 +200,7 @@ ColumnLayout {
                     text: String(rowRoot.columns[index] || "-")
                     header: rowRoot.header
                     link: rowRoot.linkFor(index)
+                    copyText: rowRoot.copyValueFor(index)
                     monospace: !rowRoot.header
                     Layout.preferredWidth: rowRoot.columnWidth(index)
                     Layout.fillWidth: index === 1 || index === 2
@@ -210,6 +211,16 @@ ColumnLayout {
 
         function linkFor(index) {
             return !rowRoot.header && ((index === 1 && rowRoot.txHash.length > 0) || (index === 2 && rowRoot.blockHash.length > 0));
+        }
+
+        function copyValueFor(index) {
+            if (index === 1 && rowRoot.txHash.length > 0) {
+                return rowRoot.txHash
+            }
+            if (index === 2 && rowRoot.blockHash.length > 0) {
+                return rowRoot.blockHash
+            }
+            return String(rowRoot.columns[index] || "")
         }
 
         function columnWidth(index) {

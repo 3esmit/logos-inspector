@@ -27,7 +27,7 @@ use lee::{
 };
 use lee_core::program::ProgramId;
 use sequencer_service_rpc::{RpcClient as _, SequencerClientBuilder};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use sha2::{Digest as _, Sha256};
 
@@ -270,7 +270,7 @@ pub struct ProgramIdEntry {
     pub hex: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TransactionSummary {
     pub hash: String,
     pub kind: String,
@@ -362,7 +362,13 @@ pub struct BlockSummary {
 #[derive(Debug, Clone, Serialize)]
 pub struct AccountReport {
     pub account_id: String,
+    pub account_id_base58: String,
+    pub account_id_hex: String,
     pub account: Value,
+    pub balance: String,
+    pub nonce: String,
+    pub owner_base58: String,
+    pub owner_hex: String,
     pub data_hex: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub related_transactions: Option<Vec<AccountTransactionSummary>>,
@@ -375,6 +381,8 @@ pub struct AccountTransactionSummary {
     pub index: usize,
     pub hash: String,
     pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub direction: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub program_id_hex: Option<String>,
     pub account_ids: Vec<String>,
@@ -403,8 +411,8 @@ pub struct IndexerBlockReport {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct WalletSummary {
-    pub wallet: String,
+pub struct TransferRecipientSummary {
+    pub recipient: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub received: Option<String>,
     pub txs: usize,
@@ -412,11 +420,11 @@ pub struct WalletSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_slot: Option<u64>,
     pub source: String,
-    pub transfers: Vec<WalletTransferSummary>,
+    pub transfers: Vec<RecipientTransferSummary>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct WalletTransferSummary {
+pub struct RecipientTransferSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub slot: Option<u64>,
     pub tx_hash: String,
@@ -519,7 +527,7 @@ pub async fn overview(
         }),
     };
 
-    let indexer_head = match raw_json_rpc(
+    let indexer_head = match raw_json_rpc_result(
         indexer_endpoint,
         "getLastFinalizedBlockId",
         Value::Array(vec![]),
@@ -624,13 +632,13 @@ pub async fn indexer_blocks(
     Ok(blocks.iter().map(summarize_indexer_block).collect())
 }
 
-pub async fn indexer_wallets(
+pub async fn indexer_transfer_recipients(
     endpoint: &str,
     before: Option<u64>,
     limit: u64,
-) -> Result<Vec<WalletSummary>> {
+) -> Result<Vec<TransferRecipientSummary>> {
     let blocks = indexer_blocks(endpoint, before, limit).await?;
-    Ok(wallet_summaries_from_blocks(&blocks))
+    Ok(transfer_recipient_summaries_from_blocks(&blocks))
 }
 
 pub async fn sequencer_transaction(
@@ -689,9 +697,19 @@ pub async fn sequencer_account(endpoint: &str, account_id: &str) -> Result<Accou
         .with_context(|| format!("failed to fetch sequencer account {account_id}"))?;
     let account_json = serde_json::to_value(&account).context("failed to serialize account")?;
     let data_hex = hex::encode(account.data.into_inner());
+    let account_id_base58 = parsed_account_id.to_string();
+    let account_id_hex = hex::encode(parsed_account_id.value());
+    let owner_base58 = program_id_base58(account.program_owner);
+    let owner_hex = program_id_hex(account.program_owner);
     Ok(AccountReport {
-        account_id: account_id.to_owned(),
+        account_id: account_id_base58.clone(),
+        account_id_base58,
+        account_id_hex,
         account: account_json,
+        balance: account.balance.to_string(),
+        nonce: account.nonce.0.to_string(),
+        owner_base58,
+        owner_hex,
         data_hex,
         related_transactions: None,
         related_transactions_error: None,
@@ -706,7 +724,7 @@ pub async fn account_lookup(
     let mut account = sequencer_account(sequencer_endpoint, account_id).await?;
     match account_transactions_by_account(
         indexer_endpoint,
-        account_id,
+        &account.account_id_base58,
         0,
         ACCOUNT_TRANSACTION_LIMIT,
     )
@@ -783,11 +801,11 @@ pub async fn account_transactions_by_account(
     offset: usize,
     limit: usize,
 ) -> Result<Vec<AccountTransactionSummary>> {
-    parse_account_id(account_id)?;
+    let account_id = parse_account_id(account_id)?.to_string();
     let response = raw_json_rpc(
         indexer_endpoint,
         "getTransactionsByAccount",
-        json!([account_id, offset, limit]),
+        json!([account_id.as_str(), offset, limit]),
     )
     .await
     .with_context(|| format!("failed to fetch transactions for account {account_id}"))?;
@@ -800,7 +818,9 @@ pub async fn account_transactions_by_account(
     Ok(transactions
         .iter()
         .enumerate()
-        .map(|(index, transaction)| summarize_indexer_transaction(transaction, offset + index))
+        .map(|(index, transaction)| {
+            summarize_account_transaction(transaction, offset + index, &account_id)
+        })
         .collect())
 }
 
@@ -1065,6 +1085,13 @@ pub async fn raw_json_rpc(endpoint: &str, method: &str, params: Value) -> Result
     Ok(json)
 }
 
+pub async fn raw_json_rpc_result(endpoint: &str, method: &str, params: Value) -> Result<Value> {
+    let response = raw_json_rpc(endpoint, method, params).await?;
+    json_rpc_result(&response, method)?
+        .cloned()
+        .with_context(|| format!("{method} returned no result"))
+}
+
 pub async fn logos_node_cryptarchia_info(endpoint: &str) -> Result<Value> {
     raw_http_json(endpoint, "/cryptarchia/info").await
 }
@@ -1288,6 +1315,7 @@ fn summarize_indexer_transaction(value: &Value, index: usize) -> AccountTransact
             .map(value_to_string)
             .unwrap_or_else(|| "-".to_owned()),
         kind: kind.to_owned(),
+        direction: None,
         program_id_hex: message.get("program_id").map(value_to_string),
         account_ids: value_list_strings(message.get("account_ids")),
         nonces: value_list_strings(message.get("nonces")),
@@ -1297,35 +1325,98 @@ fn summarize_indexer_transaction(value: &Value, index: usize) -> AccountTransact
     }
 }
 
+fn summarize_account_transaction(
+    value: &Value,
+    index: usize,
+    account_id: &str,
+) -> AccountTransactionSummary {
+    let mut summary = summarize_indexer_transaction(value, index);
+    summary.direction = account_transaction_direction(value, account_id);
+    summary
+}
+
+fn account_transaction_direction(value: &Value, account_id: &str) -> Option<String> {
+    let normalized_account_id = normalize_account_id_text(account_id)?;
+    let (_, payload) = enum_payload(value);
+    let empty = Value::Null;
+    let message = payload.get("message").unwrap_or(&empty);
+    let account_ids = transaction_account_ids(message);
+    let signer_ids = transaction_signer_account_ids(payload);
+    if signer_ids.contains(&normalized_account_id) {
+        return Some("outgoing".to_owned());
+    }
+    if account_ids.contains(&normalized_account_id) {
+        return Some("incoming".to_owned());
+    }
+    None
+}
+
+fn transaction_account_ids(message: &Value) -> BTreeSet<String> {
+    value_list_strings(message.get("account_ids"))
+        .into_iter()
+        .chain(value_list_strings(message.get("public_account_ids")))
+        .filter_map(|account_id| normalize_account_id_text(&account_id))
+        .collect()
+}
+
+fn transaction_signer_account_ids(payload: &Value) -> BTreeSet<String> {
+    let Some(signatures) = payload
+        .get("witness_set")
+        .and_then(|witness_set| witness_set.get("signatures_and_public_keys"))
+        .and_then(Value::as_array)
+    else {
+        return BTreeSet::new();
+    };
+    signatures
+        .iter()
+        .filter_map(transaction_signature_public_key)
+        .filter_map(|public_key| public_key.parse::<PublicKey>().ok())
+        .map(|public_key| AccountId::from(&public_key).to_string())
+        .collect()
+}
+
+fn transaction_signature_public_key(signature: &Value) -> Option<String> {
+    match signature {
+        Value::Array(items) => items.get(1).map(value_to_string),
+        Value::Object(object) => object
+            .get("public_key")
+            .or_else(|| object.get("publicKey"))
+            .map(value_to_string),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone)]
 struct TransferOutput {
-    wallet: String,
+    recipient: String,
     amount: u128,
 }
 
 #[derive(Debug, Default)]
-struct WalletAggregate {
+struct RecipientAggregate {
     received: Option<u128>,
     tx_hashes: BTreeSet<String>,
     outputs: usize,
     last_slot: Option<u64>,
-    transfers: Vec<WalletTransferSummary>,
+    transfers: Vec<RecipientTransferSummary>,
 }
 
-fn wallet_summaries_from_blocks(blocks: &[IndexerBlockReport]) -> Vec<WalletSummary> {
+fn transfer_recipient_summaries_from_blocks(
+    blocks: &[IndexerBlockReport],
+) -> Vec<TransferRecipientSummary> {
     let mut transfers = BTreeMap::new();
     for block in blocks {
         for tx in &block.transactions {
             let outputs = transfer_outputs_from_value(&tx.raw);
             for output in outputs {
                 let aggregate = transfers
-                    .entry(output.wallet)
-                    .or_insert_with(WalletAggregate::default);
+                    .entry(output.recipient)
+                    .or_insert_with(RecipientAggregate::default);
                 aggregate.received = Some(aggregate.received.unwrap_or_default() + output.amount);
                 aggregate.tx_hashes.insert(tx.hash.clone());
                 aggregate.outputs += 1;
                 aggregate.last_slot = max_slot(aggregate.last_slot, block.block_id);
-                aggregate.transfers.push(WalletTransferSummary {
+                aggregate.transfers.push(RecipientTransferSummary {
                     slot: block.block_id,
                     tx_hash: tx.hash.clone(),
                     block_hash: block.header_hash.clone(),
@@ -1335,7 +1426,7 @@ fn wallet_summaries_from_blocks(blocks: &[IndexerBlockReport]) -> Vec<WalletSumm
         }
     }
     if !transfers.is_empty() {
-        return wallet_summaries_from_aggregates(transfers, "transfer_outputs");
+        return transfer_recipient_summaries_from_aggregates(transfers, "transfer_outputs");
     }
 
     let mut account_refs = BTreeMap::new();
@@ -1344,23 +1435,23 @@ fn wallet_summaries_from_blocks(blocks: &[IndexerBlockReport]) -> Vec<WalletSumm
             for account_id in &tx.account_ids {
                 let aggregate = account_refs
                     .entry(account_id.clone())
-                    .or_insert_with(WalletAggregate::default);
+                    .or_insert_with(RecipientAggregate::default);
                 aggregate.tx_hashes.insert(tx.hash.clone());
                 aggregate.outputs += 1;
                 aggregate.last_slot = max_slot(aggregate.last_slot, block.block_id);
             }
         }
     }
-    wallet_summaries_from_aggregates(account_refs, "account_refs")
+    transfer_recipient_summaries_from_aggregates(account_refs, "account_refs")
 }
 
-fn wallet_summaries_from_aggregates(
-    aggregates: BTreeMap<String, WalletAggregate>,
+fn transfer_recipient_summaries_from_aggregates(
+    aggregates: BTreeMap<String, RecipientAggregate>,
     source: &str,
-) -> Vec<WalletSummary> {
+) -> Vec<TransferRecipientSummary> {
     let mut rows = aggregates
         .into_iter()
-        .map(|(wallet, mut aggregate)| {
+        .map(|(recipient, mut aggregate)| {
             aggregate.transfers.sort_by(|left, right| {
                 right
                     .slot
@@ -1368,8 +1459,8 @@ fn wallet_summaries_from_aggregates(
                     .then_with(|| right.tx_hash.cmp(&left.tx_hash))
                     .then_with(|| right.value.cmp(&left.value))
             });
-            WalletSummary {
-                wallet,
+            TransferRecipientSummary {
+                recipient,
                 received: aggregate.received.map(|value| value.to_string()),
                 txs: aggregate.tx_hashes.len(),
                 outputs: aggregate.outputs,
@@ -1380,14 +1471,14 @@ fn wallet_summaries_from_aggregates(
         })
         .collect::<Vec<_>>();
     rows.sort_by(|left, right| {
-        wallet_sort_key(right)
-            .cmp(&wallet_sort_key(left))
-            .then_with(|| left.wallet.cmp(&right.wallet))
+        transfer_recipient_sort_key(right)
+            .cmp(&transfer_recipient_sort_key(left))
+            .then_with(|| left.recipient.cmp(&right.recipient))
     });
     rows
 }
 
-fn wallet_sort_key(row: &WalletSummary) -> (u128, usize, u64) {
+fn transfer_recipient_sort_key(row: &TransferRecipientSummary) -> (u128, usize, u64) {
     (
         row.received
             .as_deref()
@@ -1432,25 +1523,22 @@ fn collect_transfer_outputs(value: &Value, outputs: &mut Vec<TransferOutput>) {
 }
 
 fn transfer_output_from_object(object: &Map<String, Value>) -> Option<TransferOutput> {
-    let wallet = string_for_keys(
+    let recipient = string_for_keys(
         object,
         &[
-            "wallet",
-            "wallet_id",
             "address",
             "recipient",
-            "recipient_wallet",
             "recipient_public_key",
             "public_key",
             "pubkey",
             "to",
         ],
     )?;
-    if !plausible_wallet_id(&wallet) {
+    if !plausible_recipient_id(&recipient) {
         return None;
     }
     let amount = u128_for_keys(object, &["amount", "value", "received", "quantity"])?;
-    Some(TransferOutput { wallet, amount })
+    Some(TransferOutput { recipient, amount })
 }
 
 fn string_for_keys(object: &Map<String, Value>, keys: &[&str]) -> Option<String> {
@@ -1473,7 +1561,7 @@ fn u128_for_keys(object: &Map<String, Value>, keys: &[&str]) -> Option<u128> {
     })
 }
 
-fn plausible_wallet_id(value: &str) -> bool {
+fn plausible_recipient_id(value: &str) -> bool {
     let value = value.trim();
     value.len() >= 16 && value.chars().all(|char| char.is_ascii_alphanumeric())
 }
@@ -2178,9 +2266,37 @@ fn program_entries(programs: BTreeMap<String, ProgramId>) -> Vec<ProgramIdEntry>
 }
 
 fn parse_account_id(value: &str) -> Result<AccountId> {
+    let value = value.trim();
+    if let Some(account_id) = parse_account_id_hex(value)? {
+        return Ok(account_id);
+    }
     value
         .parse()
         .with_context(|| format!("invalid account id `{value}`"))
+}
+
+fn parse_account_id_hex(value: &str) -> Result<Option<AccountId>> {
+    let hex = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+        .unwrap_or(value);
+    let explicit_hex = hex.len() != value.len();
+    if hex.len() != 64 || !hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        if explicit_hex {
+            bail!("invalid account id `{value}`");
+        }
+        return Ok(None);
+    }
+    let bytes = hex::decode(hex).context("invalid account id hex")?;
+    let mut fixed = [0_u8; 32];
+    fixed.copy_from_slice(&bytes);
+    Ok(Some(AccountId::new(fixed)))
+}
+
+fn normalize_account_id_text(value: &str) -> Option<String> {
+    parse_account_id(value)
+        .ok()
+        .map(|account_id| account_id.to_string())
 }
 
 fn parse_hash(value: &str, label: &str) -> Result<HashType> {
@@ -2980,6 +3096,72 @@ mod tests {
     }
 
     #[test]
+    fn parse_account_id_accepts_hex_with_optional_prefix() {
+        let account_id = AccountId::new([7_u8; 32]);
+        let hex = hex::encode(account_id.value());
+
+        assert_eq!(parse_account_id(&hex).ok(), Some(account_id));
+        assert_eq!(parse_account_id(&format!("0x{hex}")).ok(), Some(account_id));
+    }
+
+    #[test]
+    fn summarize_account_transaction_marks_signer_outgoing() -> Result<()> {
+        let key = lee::PrivateKey::try_new([1_u8; 32]).context("valid private key")?;
+        let public_key = PublicKey::new_from_private_key(&key);
+        let account_id = AccountId::from(&public_key).to_string();
+        let raw = serde_json::json!({
+            "Public": {
+                "hash": "abcd",
+                "message": {
+                    "account_ids": [account_id.clone()],
+                    "nonces": [1]
+                },
+                "witness_set": {
+                    "signatures_and_public_keys": [[
+                        "00".repeat(64),
+                        public_key.to_string()
+                    ]]
+                }
+            }
+        });
+
+        let summary = summarize_account_transaction(&raw, 0, &account_id);
+
+        if summary.direction.as_deref() != Some("outgoing") {
+            bail!("expected outgoing direction, got {:?}", summary.direction);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn summarize_account_transaction_marks_touched_non_signer_incoming() -> Result<()> {
+        let key = lee::PrivateKey::try_new([1_u8; 32]).context("valid private key")?;
+        let public_key = PublicKey::new_from_private_key(&key);
+        let account_id = AccountId::new([7_u8; 32]).to_string();
+        let raw = serde_json::json!({
+            "Public": {
+                "hash": "abcd",
+                "message": {
+                    "account_ids": [account_id.clone()]
+                },
+                "witness_set": {
+                    "signatures_and_public_keys": [[
+                        "00".repeat(64),
+                        public_key.to_string()
+                    ]]
+                }
+            }
+        });
+
+        let summary = summarize_account_transaction(&raw, 0, &account_id);
+
+        if summary.direction.as_deref() != Some("incoming") {
+            bail!("expected incoming direction, got {:?}", summary.direction);
+        }
+        Ok(())
+    }
+
+    #[test]
     fn summarize_indexer_block_maps_header_hash_and_transactions() {
         let header_hash = "ab".repeat(32);
         let parent_hash = "cd".repeat(32);
@@ -3022,17 +3204,17 @@ mod tests {
     }
 
     #[test]
-    fn wallet_summaries_use_transfer_outputs_when_available() {
-        let wallet_a = "aa".repeat(32);
-        let wallet_b = "bb".repeat(32);
+    fn transfer_recipient_summaries_use_transfer_outputs_when_available() {
+        let recipient_a = "aa".repeat(32);
+        let recipient_b = "bb".repeat(32);
         let raw = serde_json::json!({
             "Public": {
                 "hash": "tx-a",
                 "message": {
                     "outputs": [
-                        { "recipient": wallet_a.clone(), "amount": 7 },
-                        { "recipient": wallet_a.clone(), "amount": "5" },
-                        { "recipient": wallet_b.clone(), "amount": 9 }
+                        { "recipient": recipient_a.clone(), "amount": 7 },
+                        { "recipient": recipient_a.clone(), "amount": "5" },
+                        { "recipient": recipient_b.clone(), "amount": 9 }
                     ]
                 }
             }
@@ -3048,48 +3230,60 @@ mod tests {
             raw: serde_json::json!({}),
         };
 
-        let wallets = wallet_summaries_from_blocks(&[block]);
+        let recipients = transfer_recipient_summaries_from_blocks(&[block]);
 
-        assert_eq!(wallets.len(), 2);
+        assert_eq!(recipients.len(), 2);
         assert_eq!(
-            wallets.first().map(|wallet| wallet.wallet.as_str()),
-            Some(wallet_a.as_str())
+            recipients
+                .first()
+                .map(|recipient| recipient.recipient.as_str()),
+            Some(recipient_a.as_str())
         );
         assert_eq!(
-            wallets
+            recipients
                 .first()
-                .and_then(|wallet| wallet.received.as_deref()),
+                .and_then(|recipient| recipient.received.as_deref()),
             Some("12")
         );
-        assert_eq!(wallets.first().map(|wallet| wallet.txs), Some(1));
-        assert_eq!(wallets.first().map(|wallet| wallet.outputs), Some(2));
-        assert_eq!(wallets.first().and_then(|wallet| wallet.last_slot), Some(9));
+        assert_eq!(recipients.first().map(|recipient| recipient.txs), Some(1));
         assert_eq!(
-            wallets.first().map(|wallet| wallet.transfers.len()),
+            recipients.first().map(|recipient| recipient.outputs),
             Some(2)
         );
         assert_eq!(
-            wallets
+            recipients.first().and_then(|recipient| recipient.last_slot),
+            Some(9)
+        );
+        assert_eq!(
+            recipients
                 .first()
-                .and_then(|wallet| wallet.transfers.first())
+                .map(|recipient| recipient.transfers.len()),
+            Some(2)
+        );
+        assert_eq!(
+            recipients
+                .first()
+                .and_then(|recipient| recipient.transfers.first())
                 .map(|transfer| transfer.tx_hash.as_str()),
             Some("tx-a")
         );
         assert_eq!(
-            wallets
+            recipients
                 .first()
-                .and_then(|wallet| wallet.transfers.first())
+                .and_then(|recipient| recipient.transfers.first())
                 .and_then(|transfer| transfer.block_hash.as_deref()),
             Some("block-a")
         );
         assert_eq!(
-            wallets.first().map(|wallet| wallet.source.as_str()),
+            recipients
+                .first()
+                .map(|recipient| recipient.source.as_str()),
             Some("transfer_outputs")
         );
     }
 
     #[test]
-    fn wallet_summaries_fall_back_to_account_refs() {
+    fn transfer_recipient_summaries_fall_back_to_account_refs() {
         let raw = serde_json::json!({
             "Public": {
                 "hash": "tx-a",
@@ -3109,22 +3303,44 @@ mod tests {
             raw: serde_json::json!({}),
         };
 
-        let wallets = wallet_summaries_from_blocks(&[block]);
+        let recipients = transfer_recipient_summaries_from_blocks(&[block]);
 
-        assert_eq!(wallets.len(), 2);
-        assert!(wallets.iter().all(|wallet| wallet.received.is_none()));
-        assert!(wallets.iter().all(|wallet| wallet.txs == 1));
-        assert!(wallets.iter().all(|wallet| wallet.outputs == 1));
-        assert!(wallets.iter().all(|wallet| wallet.transfers.is_empty()));
-        assert!(wallets.iter().all(|wallet| wallet.last_slot == Some(8)));
-        assert!(wallets.iter().all(|wallet| wallet.source == "account_refs"));
+        assert_eq!(recipients.len(), 2);
+        assert!(
+            recipients
+                .iter()
+                .all(|recipient| recipient.received.is_none())
+        );
+        assert!(recipients.iter().all(|recipient| recipient.txs == 1));
+        assert!(recipients.iter().all(|recipient| recipient.outputs == 1));
+        assert!(
+            recipients
+                .iter()
+                .all(|recipient| recipient.transfers.is_empty())
+        );
+        assert!(
+            recipients
+                .iter()
+                .all(|recipient| recipient.last_slot == Some(8))
+        );
+        assert!(
+            recipients
+                .iter()
+                .all(|recipient| recipient.source == "account_refs")
+        );
     }
 
     #[test]
     fn account_report_serializes_loaded_empty_related_transactions() {
         let report = AccountReport {
             account_id: "acct-a".to_owned(),
+            account_id_base58: "acct-a".to_owned(),
+            account_id_hex: "00".to_owned(),
             account: serde_json::json!({}),
+            balance: "0".to_owned(),
+            nonce: "0".to_owned(),
+            owner_base58: "owner".to_owned(),
+            owner_hex: "00".to_owned(),
             data_hex: String::new(),
             related_transactions: Some(Vec::new()),
             related_transactions_error: None,
@@ -3576,7 +3792,13 @@ mod tests {
     fn account_report_with_optional_idl_decode_preserves_account_when_decode_fails() {
         let account = AccountReport {
             account_id: "acct".to_owned(),
+            account_id_base58: "acct".to_owned(),
+            account_id_hex: "00".to_owned(),
             account: serde_json::json!({ "balance": "0" }),
+            balance: "0".to_owned(),
+            nonce: "0".to_owned(),
+            owner_base58: "owner".to_owned(),
+            owner_hex: "00".to_owned(),
             data_hex: "ff".to_owned(),
             related_transactions: Some(Vec::new()),
             related_transactions_error: None,

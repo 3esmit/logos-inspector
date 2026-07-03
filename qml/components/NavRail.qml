@@ -77,44 +77,44 @@ Pane {
                 spacing: 4
 
                 Repeater {
-                    model: root.model.navItems
+                    model: root.model.navRows()
 
                     delegate: Component {
-                        ColumnLayout {
-                            id: navItem
+                        RowLayout {
+                            id: navRow
 
                             required property int index
-                            required property string key
-                            required property string label
-                            required property string section
+                            required property var modelData
+
+                            readonly property bool isGroup: String(modelData.type || "") === "group"
+                            readonly property int depth: Number(modelData.depth || 0)
 
                             Layout.fillWidth: true
                             spacing: 4
 
-                            Text {
-                                visible: !root.compact && root.startsSection(navItem.index, navItem.section)
-                                text: navItem.section
-                                color: root.theme.textDim
-                                textFormat: Text.PlainText
-                                font.pixelSize: root.theme.labelText
-                                font.weight: Font.DemiBold
-                                font.capitalization: Font.AllUppercase
-                                elide: Text.ElideRight
-                                Layout.fillWidth: true
-                                Layout.topMargin: navItem.index === 0 ? 0 : root.theme.gapSmall
+                            Item {
+                                visible: !root.compact && navRow.depth > 0
+                                Layout.preferredWidth: navRow.depth * 12
+                                Layout.preferredHeight: 1
                             }
 
                             ActionButton {
                                 id: navButton
 
                                 theme: root.theme
-                                text: root.compact ? root.navToken(navItem.key, navItem.label) : navItem.label
-                                accessibleName: navItem.label
-                                selected: root.model.currentView === navItem.key
+                                text: root.navText(navRow.modelData)
+                                accessibleName: String(navRow.modelData.label || "")
+                                selected: navRow.modelData.active === true
                                 Layout.fillWidth: true
-                                onClicked: root.model.selectView(navItem.key)
+                                onClicked: {
+                                    if (navRow.isGroup) {
+                                        root.model.toggleNavGroup(navRow.modelData.key)
+                                    } else {
+                                        root.model.selectView(navRow.modelData.view)
+                                    }
+                                }
                                 ToolTip.visible: hovered && root.compact
-                                ToolTip.text: navItem.label
+                                ToolTip.text: String(navRow.modelData.label || "")
                             }
                         }
                     }
@@ -133,42 +133,14 @@ Pane {
         }
     }
 
-    function startsSection(index, section) {
-        if (index <= 0) {
-            return true;
+    function navText(row) {
+        if (root.compact) {
+            return String(row.token || "--")
         }
-        const previous = root.model.navItems.get(index - 1);
-        return !previous || String(previous.section || "") !== String(section || "");
-    }
-
-    function navToken(key, label) {
-        const lookup = {
-            overview: "DAS",
-            blocks: "BLK",
-            transactions: "TX",
-            wallets: "WLT",
-            channels: "CHN",
-            sequencer: "SEQ",
-            accounts: "ACC",
-            programs: "SPL",
-            indexer: "IDX",
-            blockchain: "BCH",
-            storage: "STO",
-            messaging: "MSG",
-            capabilities: "CAP",
-            settings: "SET"
-        };
-        if (lookup[key]) {
-            return lookup[key];
+        const label = String(row.label || "")
+        if (String(row.type || "") !== "group") {
+            return label
         }
-        const words = String(label || "").split(/\s+/).filter(function (word) { return word.length > 0; });
-        if (!words.length) {
-            return "--";
-        }
-        if (words.length > 1) {
-            return String(words[0].charAt(0) + words[1].charAt(0)).toUpperCase();
-        }
-        const word = words[0];
-        return String(word.slice(0, Math.min(3, word.length))).toUpperCase();
+        return (row.expanded === true ? "- " : "+ ") + label
     }
 }

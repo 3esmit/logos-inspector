@@ -29,7 +29,7 @@ QtObject {
     property var blockDetailValue: null
     property var transactionDetailValue: null
     property var accountDetailValue: null
-    property var walletDetailValue: null
+    property var transferRecipientDetailValue: null
     property var channelDetailValue: null
     property var blocksPageRows: []
     property int blocksPageSlotFrom: 0
@@ -43,13 +43,13 @@ QtObject {
     property int transactionsPageBlockBatch: 1000
     property int transactionsPageLimit: 20
     property string transactionsPageError: ""
-    property var walletsPageRows: []
-    property int walletsPageBeforeBlock: 0
-    property int walletsPageNextBeforeBlock: 0
-    property int walletsPageBlockBatch: 50
-    property int walletsPageLimit: 20
-    property var walletsPageHistory: []
-    property string walletsPageError: ""
+    property var transferActivityRows: []
+    property int transferActivityBeforeBlock: 0
+    property int transferActivityNextBeforeBlock: 0
+    property int transferActivityBlockBatch: 50
+    property int transferActivityLimit: 20
+    property var transferActivityHistory: []
+    property string transferActivityError: ""
     property var channelsPageRows: []
     property int channelsPageSlotFrom: 0
     property int channelsPageSlotTo: 0
@@ -61,43 +61,287 @@ QtObject {
     property string sequencerUrl: "https://testnet.lez.logos.co/"
     property string indexerUrl: "http://127.0.0.1:8779/"
     property string nodeUrl: "http://127.0.0.1:8080/"
+    property string messagingNodeInfoId: ""
+    property string storageCidProbe: ""
 
     property string sequencerTab: "blocks"
     property string accountTab: "lookup"
     property string programTab: "idls"
     property string indexerTab: "status"
+    property string settingsSection: "general"
+    property string settingsNetworkSection: "blockchain"
+    property string settingsUiSection: "footer"
+    property int blockchainRefreshRate: 30
+    property int indexerRefreshRate: 30
+    property int executionRefreshRate: 30
+    property int messagingRefreshRate: 30
+    property int storageRefreshRate: 30
+    property var networkConnectionStatus: ({})
+    property int networkConnectionStatusRevision: 0
+    property var footerFieldSelections: defaultFooterFieldSelections()
+    property int footerFieldRevision: 0
+    property var dashboardGraphSelections: defaultDashboardGraphSelections()
+    property int dashboardGraphRevision: 0
+    property var dashboardMetricHistory: ({})
+    property int dashboardMetricHistoryRevision: 0
+    property var networkConnectionPending: ({})
+    property int networkConnectionPendingRevision: 0
+    property bool dashboardRefreshing: false
+    property int dashboardRefreshSerial: 0
+    property var storageModuleReport: null
+    property var messagingModuleReport: null
 
     property ListModel registeredIdls: ListModel {}
+    property bool idlStateLoaded: false
+    property var accountIdlSelections: ({})
+    property int accountIdlSelectionRevision: 0
+    property int accountAutoDecodeSerial: 0
+    property int transactionAutoDecodeSerial: 0
+    property int searchResolveSerial: 0
+    property var navExpanded: ({ l1: true, l2: true, modules: false, system: true })
+    property int navRevision: 0
 
-    property ListModel navItems: ListModel {
-        ListElement { key: "overview"; label: "Dashboard"; section: "Explore" }
-        ListElement { key: "blocks"; label: "Blocks"; section: "Explore" }
-        ListElement { key: "transactions"; label: "Transactions"; section: "Explore" }
-        ListElement { key: "wallets"; label: "Wallets"; section: "Explore" }
-        ListElement { key: "channels"; label: "Channels"; section: "Explore" }
-        ListElement { key: "sequencer"; label: "Sequencer"; section: "Execution" }
-        ListElement { key: "accounts"; label: "Accounts"; section: "Execution" }
-        ListElement { key: "programs"; label: "SPEL"; section: "Execution" }
-        ListElement { key: "indexer"; label: "Indexer"; section: "Execution" }
-        ListElement { key: "blockchain"; label: "Blockchain"; section: "Modules" }
-        ListElement { key: "storage"; label: "Storage"; section: "Modules" }
-        ListElement { key: "messaging"; label: "Messaging"; section: "Modules" }
-        ListElement { key: "capabilities"; label: "Capabilities"; section: "Modules" }
-        ListElement { key: "settings"; label: "Settings"; section: "System" }
+    onCurrentViewChanged: expandNavGroupForView(currentView)
+
+    function navTreeItems() {
+        return [
+            { type: "item", key: "overview", view: "overview", label: qsTr("Dashboard"), token: "DAS", layer: "system" },
+            {
+                type: "group",
+                key: "l1",
+                label: qsTr("L1 Bedrock"),
+                token: "L1",
+                layer: "l1",
+                children: [
+                    { key: "blocks", view: "blocks", label: qsTr("Blocks"), token: "L1B", layer: "l1" },
+                    { key: "transactions", view: "transactions", label: qsTr("Mantle Tx"), token: "L1T", layer: "l1" },
+                    { key: "channels", view: "channels", label: qsTr("Channels"), token: "L1C", layer: "l1" },
+                    { key: "blockchain", view: "blockchain", label: qsTr("Node"), token: "L1N", layer: "l1" }
+                ]
+            },
+            {
+                type: "group",
+                key: "l2",
+                label: qsTr("L2 LEZ"),
+                token: "L2",
+                layer: "l2",
+                children: [
+                    { key: "sequencer", view: "sequencer", label: qsTr("Blocks / Tx"), token: "L2X", layer: "l2" },
+                    { key: "accounts", view: "accounts", label: qsTr("Accounts"), token: "ACC", layer: "l2" },
+                    { key: "transferActivity", view: "transferActivity", label: qsTr("Transfer Activity"), token: "XFR", layer: "l2" },
+                    { key: "programs", view: "programs", label: qsTr("Programs"), token: "PRG", layer: "l2" },
+                    { key: "indexer", view: "indexer", label: qsTr("Indexer"), token: "IDX", layer: "l2" }
+                ]
+            },
+            {
+                type: "group",
+                key: "modules",
+                label: qsTr("Modules"),
+                token: "MOD",
+                layer: "module",
+                children: [
+                    { key: "storage", view: "storage", label: qsTr("Storage"), token: "STO", layer: "module" },
+                    { key: "messaging", view: "messaging", label: qsTr("Messaging"), token: "MSG", layer: "module" },
+                    { key: "capabilities", view: "capabilities", label: qsTr("Capabilities"), token: "CAP", layer: "module" }
+                ]
+            },
+            {
+                type: "group",
+                key: "system",
+                label: qsTr("System"),
+                token: "SYS",
+                layer: "system",
+                children: [
+                    { key: "settings", view: "settings", label: qsTr("Settings"), token: "SET", layer: "system" }
+                ]
+            }
+        ]
+    }
+
+    function navRows() {
+        const revision = navRevision
+        const rows = []
+        const parentKey = parentNavKeyForView(currentView)
+        const tree = navTreeItems()
+        for (let i = 0; i < tree.length; ++i) {
+            const item = tree[i]
+            if (item.type === "group") {
+                rows.push({
+                    type: "group",
+                    key: item.key,
+                    label: item.label,
+                    token: item.token,
+                    layer: item.layer,
+                    expanded: navGroupExpanded(item.key),
+                    active: parentKey === item.key,
+                    depth: 0
+                })
+                if (!navGroupExpanded(item.key)) {
+                    continue
+                }
+                const children = item.children || []
+                for (let j = 0; j < children.length; ++j) {
+                    const child = children[j]
+                    rows.push({
+                        type: "item",
+                        key: child.key,
+                        view: child.view,
+                        label: child.label,
+                        token: child.token,
+                        layer: child.layer,
+                        parentKey: item.key,
+                        active: currentView === child.view,
+                        depth: 1
+                    })
+                }
+                continue
+            }
+            rows.push({
+                type: "item",
+                key: item.key,
+                view: item.view,
+                label: item.label,
+                token: item.token,
+                layer: item.layer,
+                active: currentView === item.view,
+                depth: 0
+            })
+        }
+        return rows
+    }
+
+    function navGroupExpanded(key) {
+        const revision = navRevision
+        return navExpanded[String(key || "")] === true
+    }
+
+    function toggleNavGroup(key) {
+        const groupKey = String(key || "")
+        if (!groupKey.length) {
+            return
+        }
+        const next = copyMap(navExpanded)
+        next[groupKey] = next[groupKey] !== true
+        navExpanded = next
+        navRevision += 1
+    }
+
+    function expandNavGroupForView(view) {
+        const parentKey = parentNavKeyForView(view)
+        if (!parentKey || navExpanded[parentKey] === true) {
+            return
+        }
+        const next = copyMap(navExpanded)
+        next[parentKey] = true
+        navExpanded = next
+        navRevision += 1
+    }
+
+    function parentNavKeyForView(view) {
+        const target = String(view || "")
+        const tree = navTreeItems()
+        for (let i = 0; i < tree.length; ++i) {
+            const item = tree[i]
+            const children = item.children || []
+            for (let j = 0; j < children.length; ++j) {
+                if (String(children[j].view || "") === target) {
+                    return item.key
+                }
+            }
+        }
+        return ""
+    }
+
+    function navItemForView(view) {
+        const target = String(view || "")
+        const tree = navTreeItems()
+        for (let i = 0; i < tree.length; ++i) {
+            const item = tree[i]
+            if (String(item.view || "") === target) {
+                return item
+            }
+            const children = item.children || []
+            for (let j = 0; j < children.length; ++j) {
+                if (String(children[j].view || "") === target) {
+                    return children[j]
+                }
+            }
+        }
+        return null
+    }
+
+    function layerForView(view) {
+        const item = navItemForView(view)
+        return item ? String(item.layer || "") : ""
+    }
+
+    function navLabelForView(view) {
+        const item = navItemForView(view)
+        return item ? String(item.label || "") : ""
+    }
+
+    function navTokenForView(view) {
+        const item = navItemForView(view)
+        return item ? String(item.token || "") : ""
+    }
+
+    function navItemForQuery(query) {
+        const normalized = String(query || "").trim().toLowerCase()
+        const tree = navTreeItems()
+        for (let i = 0; i < tree.length; ++i) {
+            const item = tree[i]
+            if (navItemMatches(item, normalized)) {
+                return item
+            }
+            const children = item.children || []
+            for (let j = 0; j < children.length; ++j) {
+                if (navItemMatches(children[j], normalized)) {
+                    return children[j]
+                }
+            }
+        }
+        return null
+    }
+
+    function navItemMatches(item, normalized) {
+        const key = String(item.key || "").toLowerCase()
+        const view = String(item.view || "").toLowerCase()
+        const label = String(item.label || "").toLowerCase()
+        return normalized === key || normalized === view || normalized === label
     }
 
     function viewTitle() {
-        for (let i = 0; i < navItems.count; ++i) {
-            const item = navItems.get(i)
-            if (item.key === currentView) {
-                return item.label
-            }
+        const item = navItemForView(currentView)
+        if (item) {
+            return item.label
         }
         return qsTr("Dashboard")
     }
 
     function selectView(view) {
-        currentView = view
+        const target = String(view || "")
+        if (!target.length) {
+            return
+        }
+        expandNavGroupForView(target)
+        currentView = target
+        statusText = qsTr("Ready")
+    }
+
+    function openSettings(section, subsection) {
+        currentView = "settings"
+        expandNavGroupForView(currentView)
+        const targetSection = String(section || "")
+        const targetSubsection = String(subsection || "")
+        if (targetSection.length) {
+            settingsSection = targetSection
+        }
+        if (targetSection === "network" && targetSubsection.length) {
+            settingsNetworkSection = targetSubsection
+        }
+        if (targetSection === "ui" && targetSubsection.length) {
+            settingsUiSection = targetSubsection
+        }
         statusText = qsTr("Ready")
     }
 
@@ -159,7 +403,998 @@ QtObject {
             }
             setResult(label, response.error, true, null)
         }
+        updateNetworkConnectionStatusForMethod(method, response)
         return response
+    }
+
+    function requestModuleAsync(moduleName, method, args, label, showResult, callback) {
+        const targetModule = moduleName === inspectorModule ? moduleName : inspectorModule
+        const targetMethod = moduleName === inspectorModule ? method : "callModule"
+        const targetArgs = moduleName === inspectorModule ? args : [moduleName, method, args || []]
+
+        if (showResult) {
+            statusText = label
+        }
+
+        return bridge.callModuleAsync(targetModule, targetMethod, targetArgs, function (response) {
+            if (response.ok) {
+                root.updateDashboardCache(method, response.value)
+                if (showResult) {
+                    root.setResult(label, response.text, false, response.value)
+                }
+            } else if (showResult) {
+                if (method === "account" || method === "decodeAccount") {
+                    accountDetailValue = null
+                }
+                root.setResult(label, response.error, true, null)
+            }
+            if (callback) {
+                callback(response)
+            }
+        })
+    }
+
+    function decodeAccountData(dataHex, idlJson, accountType) {
+        if (busy) {
+            return {
+                ok: false,
+                text: "",
+                value: null,
+                error: qsTr("Another inspection is already running.")
+            }
+        }
+
+        const args = [String(dataHex || ""), String(idlJson || ""), String(accountType || "")]
+        return bridge.callModule(inspectorModule, "decodeAccount", args)
+    }
+
+    function decodeAccountDataAsync(dataHex, idlJson, accountType, callback) {
+        const args = [String(dataHex || ""), String(idlJson || ""), String(accountType || "")]
+        return requestModuleAsync(inspectorModule, "decodeAccount", args, qsTr("Account decode"), false, callback)
+    }
+
+    function decodeTransactionSummaryAsync(summary, idlJson, callback) {
+        return requestModuleAsync(inspectorModule, "decodeTransactionSummary", [summary || {}, String(idlJson || "")], qsTr("Transaction decode"), false, callback)
+    }
+
+    function loadIdlState() {
+        const response = bridge.callModule(inspectorModule, "loadIdlState", [])
+        idlStateLoaded = true
+        if (!response.ok || !response.value || typeof response.value !== "object") {
+            return
+        }
+
+        registeredIdls.clear()
+        const idls = Array.isArray(response.value.idls) ? response.value.idls : []
+        for (let i = 0; i < idls.length; ++i) {
+            const entry = root.normalizedIdlEntry(idls[i], registeredIdls.count)
+            if (entry.json.length) {
+                registeredIdls.append(entry)
+            }
+        }
+
+        accountIdlSelections = response.value.account_idl_selections && typeof response.value.account_idl_selections === "object"
+            ? response.value.account_idl_selections
+            : ({})
+        accountIdlSelectionRevision += 1
+    }
+
+    function saveIdlState() {
+        if (!idlStateLoaded) {
+            return
+        }
+        bridge.callModule(inspectorModule, "saveIdlState", [idlStatePayload()])
+    }
+
+    function idlStatePayload() {
+        return {
+            version: 1,
+            idls: registeredIdlEntries(),
+            account_idl_selections: accountIdlSelections || {}
+        }
+    }
+
+    function registeredIdlEntries() {
+        const rows = []
+        for (let i = 0; i < registeredIdls.count; ++i) {
+            rows.push(root.idlEntryAt(i))
+        }
+        return rows
+    }
+
+    function normalizedIdlEntry(entry, fallbackIndex) {
+        const row = entry || {}
+        const json = String(row.json || "")
+        const name = String(row.name || root.idlNameFromJson(json) || qsTr("IDL %1").arg(Number(fallbackIndex || 0) + 1))
+        const programId = String(row.programId || row.program_id || "")
+        return {
+            key: String(row.key || root.idlKey(name, programId, json)),
+            name: name,
+            programId: programId,
+            json: json
+        }
+    }
+
+    function idlEntryAt(index) {
+        if (index < 0 || index >= registeredIdls.count) {
+            return { key: "", name: "", programId: "", json: "" }
+        }
+        const row = registeredIdls.get(index)
+        return root.normalizedIdlEntry(row, index)
+    }
+
+    function idlNameFromJson(json) {
+        const parsed = BridgeHelpers.parseJson(String(json || ""))
+        return parsed.ok && parsed.value && parsed.value.name ? String(parsed.value.name) : ""
+    }
+
+    function idlKey(name, programId, json) {
+        const text = String(name || "") + "\n" + String(programId || "") + "\n" + String(json || "")
+        let hash = 2166136261
+        for (let i = 0; i < text.length; ++i) {
+            hash ^= text.charCodeAt(i)
+            hash = Math.imul(hash, 16777619)
+        }
+        return (hash >>> 0).toString(16)
+    }
+
+    function idlEntryForKey(key) {
+        const text = String(key || "")
+        if (!text.length) {
+            return null
+        }
+        for (let i = 0; i < registeredIdls.count; ++i) {
+            const entry = root.idlEntryAt(i)
+            if (entry.key === text) {
+                return entry
+            }
+        }
+        return null
+    }
+
+    function idlEntriesForProgram(programId) {
+        const normalizedProgram = root.normalizedHexText(programId)
+        if (!normalizedProgram.length) {
+            return []
+        }
+        const entries = []
+        for (let i = 0; i < registeredIdls.count; ++i) {
+            const entry = root.idlEntryAt(i)
+            if (root.normalizedHexText(entry.programId) === normalizedProgram) {
+                entries.push(entry)
+            }
+        }
+        return entries
+    }
+
+    function cacheAccountIdlSelection(accountId, idlEntry, accountType) {
+        const key = root.accountCacheKey(accountId)
+        const entry = idlEntry || {}
+        const entryKey = String(entry.key || entry.idlKey || "")
+        if (!key.length || !entryKey.length) {
+            return
+        }
+        const next = copyMap(accountIdlSelections)
+        next[key] = {
+            idlKey: entryKey,
+            accountType: String(accountType || "")
+        }
+        accountIdlSelections = next
+        accountIdlSelectionRevision += 1
+        saveIdlState()
+    }
+
+    function accountIdlSelection(accountId) {
+        const revision = accountIdlSelectionRevision
+        const key = root.accountCacheKey(accountId)
+        return key.length ? (accountIdlSelections || {})[key] || null : null
+    }
+
+    function cachedIdlEntryForAccount(accountId) {
+        const selection = accountIdlSelection(accountId)
+        return selection ? root.idlEntryForKey(selection.idlKey) : null
+    }
+
+    function cachedAccountType(accountId) {
+        const selection = accountIdlSelection(accountId)
+        return selection ? String(selection.accountType || "") : ""
+    }
+
+    function accountCacheKey(accountId) {
+        return String(accountId || "").trim()
+    }
+
+    function accountDecodeFullyConsumed(value) {
+        if (!value) {
+            return false
+        }
+        const consumed = Number(value.consumed_bytes)
+        const total = Number(value.total_bytes)
+        const remaining = Number(value.remaining_bytes || 0)
+        return Number.isFinite(consumed) && Number.isFinite(total) && consumed === total && remaining === 0
+    }
+
+    function transactionDecodeFullyConsumed(value) {
+        const decoded = root.transactionDecodedInstruction(value)
+        return decoded !== null && Array.isArray(decoded.remaining_words) && decoded.remaining_words.length === 0
+    }
+
+    function transactionDecodedInstruction(value) {
+        if (!value || typeof value !== "object") {
+            return null
+        }
+        if (value.decoded_instruction) {
+            return value.decoded_instruction
+        }
+        if (value.decoded) {
+            return value.decoded
+        }
+        return null
+    }
+
+    function transactionSummaryFromDetail(value) {
+        if (!value || typeof value !== "object") {
+            return null
+        }
+        if (value.raw_summary) {
+            return value.raw_summary
+        }
+        if (value.inspection && value.inspection.raw_summary) {
+            return value.inspection.raw_summary
+        }
+        if (value.summary) {
+            return value.summary
+        }
+        return null
+    }
+
+    function normalizedHexText(value) {
+        return String(value || "").trim().replace(/^0x/i, "").toLowerCase()
+    }
+
+    function autoDecodeAccountData(dataHex, accountId, callback) {
+        const serial = accountAutoDecodeSerial + 1
+        accountAutoDecodeSerial = serial
+        const candidates = root.accountDecodeCandidates(accountId)
+        if (!String(dataHex || "").length || candidates.length === 0) {
+            callback({ ok: false, error: "", value: null, entry: null })
+            return serial
+        }
+
+        root.tryAccountDecodeCandidate(serial, String(dataHex || ""), candidates, 0, "", callback)
+        return serial
+    }
+
+    function accountDecodeCandidates(accountId) {
+        const candidates = []
+        const cached = root.cachedIdlEntryForAccount(accountId)
+        if (cached) {
+            candidates.push({
+                entry: cached,
+                accountType: root.cachedAccountType(accountId),
+                cached: true
+            })
+        }
+        for (let i = 0; i < registeredIdls.count; ++i) {
+            const entry = root.idlEntryAt(i)
+            if (!root.candidateListHasEntry(candidates, entry.key)) {
+                candidates.push({
+                    entry: entry,
+                    accountType: "",
+                    cached: false
+                })
+            }
+        }
+        return candidates
+    }
+
+    function tryAccountDecodeCandidate(serial, dataHex, candidates, index, firstError, callback) {
+        if (serial !== accountAutoDecodeSerial) {
+            return
+        }
+        if (index >= candidates.length) {
+            callback({ ok: false, error: firstError, value: null, entry: null })
+            return
+        }
+
+        const candidate = candidates[index]
+        decodeAccountDataAsync(dataHex, candidate.entry.json, candidate.accountType, function (response) {
+            if (serial !== accountAutoDecodeSerial) {
+                return
+            }
+            const error = firstError.length ? firstError : String(response.error || "")
+            if (response.ok && response.value && root.accountDecodeFullyConsumed(response.value)) {
+                callback({
+                    ok: true,
+                    error: "",
+                    value: response.value,
+                    entry: candidate.entry,
+                    accountType: response.value.account_type || candidate.accountType
+                })
+                return
+            }
+            root.tryAccountDecodeCandidate(serial, dataHex, candidates, index + 1, error, callback)
+        })
+    }
+
+    function autoDecodeTransactionDetail(detail) {
+        const summary = root.transactionSummaryFromDetail(detail)
+        if (!summary || String(summary.kind || "") !== "Public" || !Array.isArray(summary.instruction_data) || summary.instruction_data.length === 0) {
+            return
+        }
+
+        const serial = transactionAutoDecodeSerial + 1
+        transactionAutoDecodeSerial = serial
+        const candidates = root.transactionDecodeCandidates(summary)
+        if (candidates.length === 0) {
+            return
+        }
+
+        root.tryTransactionDecodeCandidate(serial, summary, candidates, 0)
+    }
+
+    function transactionDecodeCandidates(summary) {
+        const candidates = []
+        const accountIds = Array.isArray(summary.account_ids) ? summary.account_ids : []
+        for (let i = 0; i < accountIds.length; ++i) {
+            const cached = root.cachedIdlEntryForAccount(accountIds[i])
+            if (cached && !root.candidateListHasEntry(candidates, cached.key)) {
+                candidates.push({
+                    entry: cached,
+                    cached: true
+                })
+            }
+        }
+
+        const programEntries = root.idlEntriesForProgram(summary.program_id_hex)
+        for (let j = 0; j < programEntries.length; ++j) {
+            if (!root.candidateListHasEntry(candidates, programEntries[j].key)) {
+                candidates.push({
+                    entry: programEntries[j],
+                    cached: false
+                })
+            }
+        }
+
+        for (let k = 0; k < registeredIdls.count; ++k) {
+            const entry = root.idlEntryAt(k)
+            if (!root.candidateListHasEntry(candidates, entry.key)) {
+                candidates.push({
+                    entry: entry,
+                    cached: false
+                })
+            }
+        }
+        return candidates
+    }
+
+    function candidateListHasEntry(candidates, key) {
+        const text = String(key || "")
+        for (let i = 0; i < candidates.length; ++i) {
+            if (String(candidates[i].entry.key || "") === text) {
+                return true
+            }
+        }
+        return false
+    }
+
+    function tryTransactionDecodeCandidate(serial, summary, candidates, index) {
+        if (serial !== transactionAutoDecodeSerial) {
+            return
+        }
+        if (index >= candidates.length) {
+            return
+        }
+
+        const candidate = candidates[index]
+        decodeTransactionSummaryAsync(summary, candidate.entry.json, function (response) {
+            if (serial !== transactionAutoDecodeSerial) {
+                return
+            }
+            if (response.ok && response.value && root.transactionDecodeFullyConsumed(response.value)) {
+                transactionDetailValue = response.value
+                transactionsPageError = ""
+                setResult(qsTr("Transaction"), response.text, false, response.value)
+                return
+            }
+            root.tryTransactionDecodeCandidate(serial, summary, candidates, index + 1)
+        })
+    }
+
+    function refreshInterval(seconds) {
+        return Math.max(5, Number(seconds || 0)) * 1000
+    }
+
+    function networkConnectionRate(kind) {
+        switch (kind) {
+        case "blockchain":
+            return blockchainRefreshRate
+        case "indexer":
+            return indexerRefreshRate
+        case "execution":
+            return executionRefreshRate
+        case "messaging":
+            return messagingRefreshRate
+        case "storage":
+            return storageRefreshRate
+        default:
+            return 30
+        }
+    }
+
+    function setNetworkConnectionRate(kind, seconds) {
+        const value = Math.max(0, Number(seconds || 0))
+        switch (kind) {
+        case "blockchain":
+            blockchainRefreshRate = value
+            return
+        case "indexer":
+            indexerRefreshRate = value
+            return
+        case "execution":
+            executionRefreshRate = value
+            return
+        case "messaging":
+            messagingRefreshRate = value
+            return
+        case "storage":
+            storageRefreshRate = value
+        }
+    }
+
+    function queryNetworkConnection(kind, showResult) {
+        const target = String(kind || "")
+        const request = root.networkConnectionRequest(target)
+        if (!request) {
+            return {
+                ok: false,
+                text: "",
+                error: qsTr("Unknown connection.")
+            }
+        }
+
+        if (root.networkConnectionPending[target] === true) {
+            return {
+                ok: false,
+                text: "",
+                error: qsTr("Connection query already running.")
+            }
+        }
+
+        root.setNetworkConnectionPending(target, true)
+        return requestModuleAsync(request.module, request.method, request.args, request.label, showResult, function (response) {
+            root.setNetworkConnectionPending(target, false)
+            root.updateNetworkConnectionStatus(target, response)
+            root.recordDashboardSnapshot()
+        })
+    }
+
+    function networkConnectionRequest(kind) {
+        switch (kind) {
+        case "blockchain":
+            return { module: inspectorModule, method: "blockchainNode", args: [nodeUrl], label: qsTr("Blockchain node") }
+        case "indexer":
+            return { module: inspectorModule, method: "indexerFinalizedHead", args: [indexerUrl], label: qsTr("Indexer head") }
+        case "execution":
+            return { module: inspectorModule, method: "head", args: [sequencerUrl], label: qsTr("Sequencer head") }
+        case "messaging":
+            return { module: inspectorModule, method: "deliveryReport", args: [messagingNodeInfoId], label: qsTr("Messaging node") }
+        case "storage":
+            return { module: inspectorModule, method: "storageReport", args: [storageCidProbe], label: qsTr("Storage node") }
+        default:
+            return null
+        }
+    }
+
+    function updateNetworkConnectionStatusForMethod(method, response) {
+        const kind = root.networkConnectionKindForMethod(method)
+        if (kind.length > 0) {
+            root.updateNetworkConnectionStatus(kind, response)
+        }
+    }
+
+    function networkConnectionKindForMethod(method) {
+        switch (String(method || "")) {
+        case "blockchainNode":
+            return "blockchain"
+        case "indexerFinalizedHead":
+            return "indexer"
+        case "head":
+            return "execution"
+        case "deliveryReport":
+            return "messaging"
+        case "storageReport":
+            return "storage"
+        default:
+            return ""
+        }
+    }
+
+    function setNetworkConnectionPending(kind, pending) {
+        const next = copyMap(networkConnectionPending)
+        next[String(kind || "")] = pending === true
+        networkConnectionPending = next
+        networkConnectionPendingRevision += 1
+    }
+
+    function updateNetworkConnectionStatus(kind, response) {
+        const next = copyMap(networkConnectionStatus)
+        const value = response && response.value !== undefined ? response.value : null
+        next[kind] = {
+            known: true,
+            ok: response ? response.ok === true : false,
+            text: response && response.ok ? qsTr("OK") : qsTr("Error"),
+            detail: response && response.ok ? networkConnectionSummary(kind, value) : (response && response.error ? response.error : qsTr("No response")),
+            value: value,
+            checkedAt: new Date().toLocaleTimeString(Qt.locale(), "hh:mm:ss")
+        }
+        networkConnectionStatus = next
+        networkConnectionStatusRevision += 1
+    }
+
+    function networkConnectionSummary(kind, value) {
+        if (kind === "blockchain") {
+            const info = value && value.cryptarchia_info ? value.cryptarchia_info : null
+            return info && info.slot !== undefined ? qsTr("slot %1").arg(info.slot) : qsTr("node reachable")
+        }
+        if (kind === "indexer" || kind === "execution") {
+            const scalar = root.scalarValue(value)
+            return scalar !== null ? qsTr("head %1").arg(root.valueText(scalar)) : qsTr("reachable")
+        }
+        if (kind === "messaging") {
+            const version = root.moduleProbeValue("messaging", "version")
+            return version !== null ? qsTr("version %1").arg(root.valueText(version)) : qsTr("module reachable")
+        }
+        if (kind === "storage") {
+            const version = root.moduleProbeValue("storage", "version") || root.moduleProbeValue("storage", "moduleVersion")
+            return version !== null ? qsTr("version %1").arg(root.valueText(version)) : qsTr("module reachable")
+        }
+        return qsTr("reachable")
+    }
+
+    function networkConnectionState(kind) {
+        const revision = networkConnectionStatusRevision
+        const status = networkConnectionStatus[String(kind || "")]
+        if (!status) {
+            return {
+                known: false,
+                ok: false,
+                text: qsTr("Unknown"),
+                detail: qsTr("Not queried"),
+                checkedAt: ""
+            }
+        }
+        return status
+    }
+
+    function setFooterFieldEnabled(key, enabled) {
+        const next = copyMap(footerFieldSelections)
+        next[String(key || "")] = enabled === true
+        footerFieldSelections = next
+        footerFieldRevision += 1
+    }
+
+    function footerFieldEnabled(key) {
+        const revision = footerFieldRevision
+        const value = footerFieldSelections[String(key || "")]
+        return value === true
+    }
+
+    function setDashboardGraphEnabled(key, enabled) {
+        const next = copyMap(dashboardGraphSelections)
+        next[String(key || "")] = enabled === true
+        dashboardGraphSelections = next
+        dashboardGraphRevision += 1
+    }
+
+    function dashboardGraphEnabled(key) {
+        const revision = dashboardGraphRevision
+        const value = dashboardGraphSelections[String(key || "")]
+        return value === true
+    }
+
+    function copyMap(source) {
+        const next = {}
+        const current = source || {}
+        for (const key in current) {
+            next[key] = current[key]
+        }
+        return next
+    }
+
+    function scalarValue(value) {
+        if (value === undefined || value === null || value === "") {
+            return null
+        }
+        if (typeof value === "number" || typeof value === "string" || typeof value === "boolean") {
+            return value
+        }
+        if (Array.isArray(value)) {
+            return value.length
+        }
+        if (typeof value === "object") {
+            if (value.result !== undefined && value.result !== null) {
+                return root.scalarValue(value.result)
+            }
+            if (value.value !== undefined && value.value !== null) {
+                return root.scalarValue(value.value)
+            }
+            if (value.count !== undefined && value.count !== null) {
+                return root.scalarValue(value.count)
+            }
+            if (value.total !== undefined && value.total !== null) {
+                return root.scalarValue(value.total)
+            }
+        }
+        return null
+    }
+
+    function valueText(value) {
+        const scalar = root.scalarValue(value)
+        if (scalar === null) {
+            return "-"
+        }
+        if (typeof scalar === "number") {
+            return scalar.toLocaleString(Qt.locale(), "f", Number.isInteger(scalar) ? 0 : 2)
+        }
+        return String(scalar)
+    }
+
+    function moduleReport(kind) {
+        if (kind === "storage") {
+            return storageModuleReport || null
+        }
+        if (kind === "messaging") {
+            return messagingModuleReport || null
+        }
+        return null
+    }
+
+    function moduleProbe(kind, method) {
+        const report = root.moduleReport(kind)
+        const probes = report && Array.isArray(report.probes) ? report.probes : []
+        const wanted = String(method || "")
+        for (let i = 0; i < probes.length; ++i) {
+            const probe = probes[i] || {}
+            const label = String(probe.label || "")
+            const source = String(probe.source || "")
+            if (label.indexOf("." + wanted) >= 0 || source.indexOf(" " + wanted) >= 0) {
+                return probe
+            }
+        }
+        return null
+    }
+
+    function moduleProbeValue(kind, method) {
+        const probe = root.moduleProbe(kind, method)
+        if (!probe || probe.ok !== true || probe.value === undefined || probe.value === null) {
+            return null
+        }
+        return probe.value
+    }
+
+    function moduleProbeError(kind, method) {
+        const probe = root.moduleProbe(kind, method)
+        return probe && probe.error ? String(probe.error) : ""
+    }
+
+    function moduleLastError(kind) {
+        const report = root.moduleReport(kind)
+        if (!report) {
+            return ""
+        }
+        if (report.module_info && report.module_info.ok === false && report.module_info.error) {
+            return String(report.module_info.error)
+        }
+        const probes = Array.isArray(report.probes) ? report.probes : []
+        for (let i = 0; i < probes.length; ++i) {
+            const probe = probes[i] || {}
+            if (probe.ok === false && probe.error) {
+                return String(probe.error)
+            }
+        }
+        return ""
+    }
+
+    function openMetricsText(kind) {
+        const value = root.moduleProbeValue(kind, kind === "storage" ? "collectMetrics" : "collectOpenMetricsText")
+        if (typeof value === "string") {
+            return value
+        }
+        const scalar = root.scalarValue(value)
+        return scalar === null ? "" : String(scalar)
+    }
+
+    function openMetricValue(kind, names) {
+        const text = root.openMetricsText(kind)
+        if (!text.length) {
+            return null
+        }
+        const wanted = Array.isArray(names) ? names : [names]
+        const lines = text.split(/\r?\n/)
+        for (let i = 0; i < lines.length; ++i) {
+            const line = lines[i].trim()
+            if (!line.length || line[0] === "#") {
+                continue
+            }
+            const name = line.split(/[{\s]/)[0]
+            for (let j = 0; j < wanted.length; ++j) {
+                if (name === wanted[j]) {
+                    const match = line.match(/^[^\s]+\s+(-?[0-9]+(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?)/i)
+                    if (match) {
+                        const number = Number(match[1])
+                        return Number.isFinite(number) ? number : null
+                    }
+                }
+            }
+        }
+        return null
+    }
+
+    function overviewProbeValue(section, field) {
+        const sectionValue = dashboardOverview ? dashboardOverview[section] : null
+        const probe = sectionValue ? sectionValue[field] : null
+        return probe && probe.value !== undefined && probe.value !== null ? root.scalarValue(probe.value) : null
+    }
+
+    function indexerHeadValue() {
+        const overviewValue = root.overviewProbeValue("indexer", "head")
+        if (overviewValue !== null) {
+            return overviewValue
+        }
+        const status = networkConnectionStatus.indexer
+        const statusValue = status ? root.scalarValue(status.value) : null
+        if (statusValue !== null) {
+            return statusValue
+        }
+        const blocks = dashboardBlocks || []
+        if (blocks.length > 0) {
+            return root.scalarValue((blocks[0] || {}).block_id)
+        }
+        return null
+    }
+
+    function sequencerHeadValue() {
+        const overviewValue = root.overviewProbeValue("sequencer", "head")
+        if (overviewValue !== null) {
+            return overviewValue
+        }
+        const status = networkConnectionStatus.execution
+        return status ? root.scalarValue(status.value) : null
+    }
+
+    function nodeProbeValue(name) {
+        const report = dashboardNode || {}
+        const probe = report[name]
+        return probe && probe.value !== undefined && probe.value !== null ? probe.value : null
+    }
+
+    function cryptarchiaInfo() {
+        const fromOverview = dashboardOverview && dashboardOverview.node && dashboardOverview.node.consensus
+            ? dashboardOverview.node.consensus.value
+            : null
+        if (fromOverview && typeof fromOverview === "object") {
+            return fromOverview.cryptarchia_info || fromOverview
+        }
+        const fromNode = root.nodeProbeValue("cryptarchia_info")
+        if (fromNode && typeof fromNode === "object") {
+            return fromNode.cryptarchia_info || fromNode
+        }
+        return {}
+    }
+
+    function cryptarchiaValue(key) {
+        const value = root.cryptarchiaInfo()[key]
+        return value === undefined || value === null ? null : root.scalarValue(value)
+    }
+
+    function networkInfo() {
+        const value = root.nodeProbeValue("network_info")
+        return value && typeof value === "object" ? value : {}
+    }
+
+    function networkValue(key) {
+        const value = root.networkInfo()[key]
+        return value === undefined || value === null ? null : root.scalarValue(value)
+    }
+
+    function mantleMetrics() {
+        const value = root.nodeProbeValue("mantle_metrics")
+        return value && typeof value === "object" ? value : {}
+    }
+
+    function mantleValue(keys) {
+        const list = Array.isArray(keys) ? keys : [keys]
+        const metrics = root.mantleMetrics()
+        for (let i = 0; i < list.length; ++i) {
+            const value = metrics[list[i]]
+            if (value !== undefined && value !== null) {
+                return root.scalarValue(value)
+            }
+        }
+        return null
+    }
+
+    function tipMinusLib() {
+        const tip = Number(root.cryptarchiaValue("slot"))
+        const lib = Number(root.cryptarchiaValue("lib_slot"))
+        return Number.isFinite(tip) && Number.isFinite(lib) ? Math.max(0, tip - lib) : null
+    }
+
+    function finalityLagSeconds() {
+        const gap = root.tipMinusLib()
+        return gap === null ? null : gap * 2
+    }
+
+    function indexerLag() {
+        const sequencerValue = root.sequencerHeadValue()
+        const indexerValue = root.indexerHeadValue()
+        if (sequencerValue === null || indexerValue === null) {
+            return null
+        }
+        const sequencerHead = Number(sequencerValue)
+        const indexerHead = Number(indexerValue)
+        return Number.isFinite(sequencerHead) && Number.isFinite(indexerHead) ? Math.max(0, sequencerHead - indexerHead) : null
+    }
+
+    function moduleMetricValue(kind, names) {
+        const metric = root.openMetricValue(kind, names)
+        if (metric !== null) {
+            return metric
+        }
+        return null
+    }
+
+    function dashboardMetricValue(key) {
+        switch (key) {
+        case "bedrock.peer_count":
+            return root.networkValue("n_peers")
+        case "bedrock.tip_minus_lib":
+            return root.tipMinusLib()
+        case "bedrock.finality_lag_seconds":
+            return root.finalityLagSeconds()
+        case "lez.pending_tx_count":
+            return root.mantleValue(["pending_tx_count", "pending_txs", "pending_transactions"])
+        case "lez.mempool_tx_count":
+            return root.mantleValue(["mempool_tx_count", "mempool_txs", "mempool_size"])
+        case "lez.rejected_tx_count_recent":
+            return root.mantleValue(["rejected_tx_count_recent", "rejected_txs_recent"])
+        case "lez.blocks_produced_recent":
+            return Array.isArray(dashboardBlocks) ? dashboardBlocks.length : null
+        case "lez.pending_blocks_count":
+            return root.mantleValue(["pending_blocks_count", "pending_blocks"])
+        case "indexer.indexer_lag_vs_sequencer_head":
+            return root.indexerLag()
+        case "storage.peer_count":
+            return root.moduleMetricValue("storage", ["storage_peer_count", "libp2p_peers", "peers"])
+        case "storage.shared_files_count":
+            return root.moduleMetricValue("storage", ["storage_shared_files_count", "shared_files_count"])
+        case "storage.manifest_count":
+            return root.moduleMetricValue("storage", ["storage_manifest_count", "manifest_count"])
+        case "storage.local_storage_used":
+            return root.moduleMetricValue("storage", ["storage_local_storage_used_bytes", "local_storage_used_bytes", "storage_used_bytes"])
+        case "storage.active_uploads":
+            return root.moduleMetricValue("storage", ["storage_active_uploads", "active_uploads"])
+        case "storage.active_downloads":
+            return root.moduleMetricValue("storage", ["storage_active_downloads", "active_downloads"])
+        case "storage.failed_transfers_recent":
+            return root.moduleMetricValue("storage", ["storage_failed_transfers_recent", "failed_transfers_recent"])
+        case "messaging.peer_count":
+            return root.moduleMetricValue("messaging", ["waku_peers", "libp2p_peers", "messaging_peer_count", "peer_count"])
+        case "messaging.active_subscriptions":
+            return root.moduleMetricValue("messaging", ["waku_active_subscriptions", "active_subscriptions"])
+        case "messaging.content_topics":
+            return root.moduleMetricValue("messaging", ["waku_content_topics", "content_topics"])
+        case "messaging.outbound_queue":
+            return root.moduleMetricValue("messaging", ["waku_outbound_queue", "outbound_queue"])
+        case "messaging.message_sent_events_recent":
+            return root.moduleMetricValue("messaging", ["waku_message_sent_events_recent", "message_sent_events_recent"])
+        case "messaging.message_propagated_events_recent":
+            return root.moduleMetricValue("messaging", ["waku_message_propagated_events_recent", "message_propagated_events_recent"])
+        case "messaging.message_received_events_recent":
+            return root.moduleMetricValue("messaging", ["waku_message_received_events_recent", "message_received_events_recent"])
+        case "messaging.message_error_events_recent":
+            return root.moduleMetricValue("messaging", ["waku_message_error_events_recent", "message_error_events_recent"])
+        case "messaging.publish_latency_ms":
+            return root.moduleMetricValue("messaging", ["waku_publish_latency_ms", "publish_latency_ms"])
+        case "messaging.receive_latency_ms":
+            return root.moduleMetricValue("messaging", ["waku_receive_latency_ms", "receive_latency_ms"])
+        default:
+            return null
+        }
+    }
+
+    function dashboardMetricText(key) {
+        return root.valueText(root.dashboardMetricValue(key))
+    }
+
+    function recordDashboardSnapshot() {
+        const keys = [
+            "bedrock.peer_count",
+            "bedrock.tip_minus_lib",
+            "bedrock.finality_lag_seconds",
+            "lez.pending_tx_count",
+            "lez.mempool_tx_count",
+            "lez.rejected_tx_count_recent",
+            "lez.blocks_produced_recent",
+            "lez.pending_blocks_count",
+            "indexer.indexer_lag_vs_sequencer_head",
+            "storage.peer_count",
+            "storage.shared_files_count",
+            "storage.manifest_count",
+            "storage.local_storage_used",
+            "storage.active_uploads",
+            "storage.active_downloads",
+            "storage.failed_transfers_recent",
+            "messaging.peer_count",
+            "messaging.active_subscriptions",
+            "messaging.content_topics",
+            "messaging.outbound_queue",
+            "messaging.message_sent_events_recent",
+            "messaging.message_propagated_events_recent",
+            "messaging.message_received_events_recent",
+            "messaging.message_error_events_recent",
+            "messaging.publish_latency_ms",
+            "messaging.receive_latency_ms"
+        ]
+        const next = copyMap(dashboardMetricHistory)
+        let changed = false
+        for (let i = 0; i < keys.length; ++i) {
+            const value = Number(root.dashboardMetricValue(keys[i]))
+            if (!Number.isFinite(value)) {
+                continue
+            }
+            const samples = Array.isArray(next[keys[i]]) ? next[keys[i]].slice(-23) : []
+            samples.push(value)
+            next[keys[i]] = samples
+            changed = true
+        }
+        if (changed) {
+            dashboardMetricHistory = next
+            dashboardMetricHistoryRevision += 1
+        }
+    }
+
+    function dashboardMetricSamples(key) {
+        const revision = dashboardMetricHistoryRevision
+        const samples = dashboardMetricHistory[String(key || "")]
+        if (Array.isArray(samples) && samples.length > 0) {
+            return samples
+        }
+        const value = Number(root.dashboardMetricValue(key))
+        return Number.isFinite(value) ? [value] : []
+    }
+
+    function defaultFooterFieldSelections() {
+        return {
+            "network.network": true,
+            "network.report_time": true,
+            "bedrock.node_health": true,
+            "bedrock.peer_count": true,
+            "bedrock.sync_state": true,
+            "bedrock.tip_height": true,
+            "bedrock.lib_height": true,
+            "bedrock.tip_minus_lib": true,
+            "lez.rpc_health": true,
+            "lez.last_lez_block_id": true,
+            "lez.last_finalized_callback_height": true,
+            "indexer.rpc_health": true,
+            "indexer.indexed_finalized_height": true,
+            "indexer.ingestion_status": true,
+            "overall.status": true,
+            "overall.main_risk": true,
+            "overall.operator_action": true
+        }
+    }
+
+    function defaultDashboardGraphSelections() {
+        return {
+            "bedrock.peer_count": true,
+            "bedrock.tip_minus_lib": true,
+            "bedrock.finality_lag_seconds": true,
+            "lez.blocks_produced_recent": true,
+            "indexer.indexer_lag_vs_sequencer_head": true
+        }
     }
 
     function refreshBlocksPage(anchorSlot) {
@@ -490,53 +1725,53 @@ QtObject {
         return qsTr("Unknown")
     }
 
-    function refreshWalletsPage(beforeBlock, preserveHistory) {
+    function refreshTransferActivityPage(beforeBlock, preserveHistory) {
         const before = beforeBlock === undefined || beforeBlock === null ? null : beforeBlock
         if (!preserveHistory) {
-            walletsPageHistory = []
+            transferActivityHistory = []
         }
-        const wallets = requestModule(inspectorModule, "indexerWallets", [indexerUrl, before, walletsPageBlockBatch], qsTr("Wallets"), false)
-        if (!wallets.ok) {
-            walletsPageError = wallets.error
-            setResult(qsTr("Wallets"), walletsPageError, true)
+        const recipients = requestModule(inspectorModule, "indexerTransferRecipients", [indexerUrl, before, transferActivityBlockBatch], qsTr("Transfer activity"), false)
+        if (!recipients.ok) {
+            transferActivityError = recipients.error
+            setResult(qsTr("Transfer activity"), transferActivityError, true)
             return
         }
 
-        walletsPageBeforeBlock = before || 0
-        walletsPageRows = (wallets.value || []).slice(0, walletsPageLimit)
-        walletsPageNextBeforeBlock = nextWalletPageBlock(walletsPageRows)
-        walletsPageError = ""
-        setResult(qsTr("Wallets"), BridgeHelpers.formatValue(walletsPageRows), false, walletsPageRows)
+        transferActivityBeforeBlock = before || 0
+        transferActivityRows = (recipients.value || []).slice(0, transferActivityLimit)
+        transferActivityNextBeforeBlock = nextTransferActivityBlock(transferActivityRows)
+        transferActivityError = ""
+        setResult(qsTr("Transfer activity"), BridgeHelpers.formatValue(transferActivityRows), false, transferActivityRows)
     }
 
-    function nextWalletsPage() {
-        const history = Array.isArray(walletsPageHistory) ? walletsPageHistory.slice(0) : []
-        history.push(walletsPageBeforeBlock)
-        walletsPageHistory = history
-        refreshWalletsPage(walletsPageNextBeforeBlock, true)
+    function nextTransferActivityPage() {
+        const history = Array.isArray(transferActivityHistory) ? transferActivityHistory.slice(0) : []
+        history.push(transferActivityBeforeBlock)
+        transferActivityHistory = history
+        refreshTransferActivityPage(transferActivityNextBeforeBlock, true)
     }
 
-    function previousWalletsPage() {
-        const history = Array.isArray(walletsPageHistory) ? walletsPageHistory.slice(0) : []
+    function previousTransferActivityPage() {
+        const history = Array.isArray(transferActivityHistory) ? transferActivityHistory.slice(0) : []
         if (!history.length) {
             return
         }
         const before = history.pop()
-        walletsPageHistory = history
-        refreshWalletsPage(before || null, true)
+        transferActivityHistory = history
+        refreshTransferActivityPage(before || null, true)
     }
 
-    function setWalletsPageLimit(limit) {
-        const value = Math.max(1, Number(limit || walletsPageLimit))
-        if (walletsPageLimit === value) {
+    function setTransferActivityPageLimit(limit) {
+        const value = Math.max(1, Number(limit || transferActivityLimit))
+        if (transferActivityLimit === value) {
             return
         }
-        walletsPageLimit = value
-        refreshWalletsPage(walletsPageBeforeBlock || null, true)
+        transferActivityLimit = value
+        refreshTransferActivityPage(transferActivityBeforeBlock || null, true)
     }
 
-    function nextWalletPageBlock(wallets) {
-        const rows = Array.isArray(wallets) ? wallets : []
+    function nextTransferActivityBlock(recipients) {
+        const rows = Array.isArray(recipients) ? recipients : []
         let next = 0
         for (let i = 0; i < rows.length; ++i) {
             const slot = Number(rows[i].last_slot || 0)
@@ -547,31 +1782,31 @@ QtObject {
         return next
     }
 
-    function walletDetail(row) {
-        const wallet = row || {}
+    function transferRecipientDetail(row) {
+        const recipient = row || {}
         return {
-            type: "wallet",
-            address: String(wallet.wallet || wallet.address || ""),
-            total_received: wallet.received,
-            txs: wallet.txs || 0,
-            outputs: wallet.outputs || 0,
-            last_slot: wallet.last_slot,
-            source: String(wallet.source || ""),
-            transfers: Array.isArray(wallet.transfers) ? wallet.transfers : [],
-            raw: wallet
+            type: "transfer_recipient",
+            address: String(recipient.recipient || recipient.address || ""),
+            total_received: recipient.received,
+            txs: recipient.txs || 0,
+            outputs: recipient.outputs || 0,
+            last_slot: recipient.last_slot,
+            source: String(recipient.source || ""),
+            transfers: Array.isArray(recipient.transfers) ? recipient.transfers : [],
+            raw: recipient
         }
     }
 
-    function walletDetailById(value) {
+    function transferRecipientDetailById(value) {
         const wanted = normalizedHashOrValue(value)
         if (!wanted.length) {
             return null
         }
-        const rows = walletsPageRows || []
+        const rows = transferActivityRows || []
         for (let i = 0; i < rows.length; ++i) {
             const row = rows[i]
-            if (normalizedHashOrValue(row.wallet || row.address) === wanted) {
-                return walletDetail(row)
+            if (normalizedHashOrValue(row.recipient || row.address) === wanted) {
+                return transferRecipientDetail(row)
             }
         }
         return null
@@ -624,22 +1859,36 @@ QtObject {
 
     function channelDetail(row) {
         const channel = row || {}
+        const channelId = String(channel.channel || channel.channel_id || "")
+        const lastTxHash = String(channel.last_tx_hash || channel.tx_hash || "")
+        const lastBlockHash = String(channel.last_block_hash || channel.header || channel.block_hash || "")
         return {
             type: "channel",
-            channel: String(channel.channel || channel.channel_id || ""),
+            channel: channelId,
+            channel_id: channelId,
+            operation_type: String(channel.operation_type || channel.last_operation_type || ""),
+            l1_slot: channel.last_slot || channel.l1_slot,
+            header: lastBlockHash,
+            l1_header_hash: lastBlockHash,
+            tx_hash: lastTxHash,
+            transaction_hash: lastTxHash,
+            parent: String(channel.parent || channel.parent_hash || ""),
+            signer: String(channel.signer || channel.author || ""),
+            source_confidence: String(channel.source_confidence || channel.source || "scan"),
             label: channel.label,
             first_slot: channel.first_slot,
             first_tx_hash: channel.first_tx_hash,
             first_block_hash: channel.first_block_hash,
             last_slot: channel.last_slot,
-            last_tx_hash: channel.last_tx_hash,
-            last_block_hash: channel.last_block_hash,
+            last_tx_hash: lastTxHash,
+            last_block_hash: lastBlockHash,
             tip: channel.tip,
             balance: channel.balance,
             withdraw_threshold: channel.withdraw_threshold,
             keys: channel.keys,
             key_values: Array.isArray(channel.key_values) ? channel.key_values : [],
             operations: channel.operations || 0,
+            raw_json: channel.raw || channel,
             raw: channel
         }
     }
@@ -660,33 +1909,58 @@ QtObject {
     }
 
     function refreshDashboard() {
-        const overview = requestModule(inspectorModule, "overview", [sequencerUrl, indexerUrl, nodeUrl], qsTr("Dashboard overview"), false)
-        const node = requestModule(inspectorModule, "blockchainNode", [nodeUrl], qsTr("Blockchain node"), false)
-        const blocks = requestModule(inspectorModule, "indexerBlocks", [indexerUrl, null, 10], qsTr("Latest blocks"), false)
+        const refreshId = dashboardRefreshSerial + 1
+        dashboardRefreshSerial = refreshId
+        dashboardRefreshing = true
+        dashboardError = ""
+        const requests = [
+            { module: inspectorModule, method: "overview", args: [sequencerUrl, indexerUrl, nodeUrl], label: qsTr("Dashboard overview") },
+            { module: inspectorModule, method: "blockchainNode", args: [nodeUrl], label: qsTr("Blockchain node") },
+            { module: inspectorModule, method: "indexerBlocks", args: [indexerUrl, null, 10], label: qsTr("Latest blocks") },
+            { module: inspectorModule, method: "storageReport", args: [storageCidProbe], label: qsTr("Storage node") },
+            { module: inspectorModule, method: "deliveryReport", args: [messagingNodeInfoId], label: qsTr("Messaging node") }
+        ]
         const errors = []
+        let remaining = requests.length
+        let okCount = 0
 
-        if (!overview.ok) {
-            errors.push(overview.error)
+        for (let i = 0; i < requests.length; ++i) {
+            const request = requests[i]
+            requestModuleAsync(request.module, request.method, request.args, request.label, false, function (response) {
+                if (refreshId !== dashboardRefreshSerial) {
+                    return
+                }
+                if (response.ok) {
+                    okCount += 1
+                } else {
+                    errors.push(response.error)
+                }
+                if (request.method === "blockchainNode") {
+                    root.updateNetworkConnectionStatus("blockchain", response)
+                } else if (request.method === "storageReport") {
+                    root.updateNetworkConnectionStatus("storage", response)
+                } else if (request.method === "deliveryReport") {
+                    root.updateNetworkConnectionStatus("messaging", response)
+                }
+                remaining -= 1
+                if (remaining === 0) {
+                    dashboardRefreshing = false
+                    dashboardError = errors.join("\n")
+                    root.recordDashboardSnapshot()
+                    if (okCount > 0) {
+                        setResult(qsTr("Dashboard"), BridgeHelpers.formatValue({
+                            overview: dashboardOverview || null,
+                            node: dashboardNode || null,
+                            blocks: dashboardBlocks || [],
+                            storage: storageModuleReport || null,
+                            messaging: messagingModuleReport || null
+                        }), false)
+                    } else {
+                        setResult(qsTr("Dashboard"), dashboardError, true)
+                    }
+                }
+            })
         }
-        if (!node.ok) {
-            errors.push(node.error)
-        }
-        if (!blocks.ok) {
-            errors.push(blocks.error)
-        }
-
-        dashboardError = errors.join("\n")
-
-        if (overview.ok || node.ok || blocks.ok) {
-            setResult(qsTr("Dashboard"), BridgeHelpers.formatValue({
-                overview: overview.value || null,
-                node: node.value || null,
-                blocks: blocks.value || []
-            }), false)
-            return
-        }
-
-        setResult(qsTr("Dashboard"), dashboardError, true)
     }
 
     function updateDashboardCache(method, value) {
@@ -698,12 +1972,26 @@ QtObject {
             dashboardBlocks = value || []
         } else if (method === "account" || method === "decodeAccount") {
             accountDetailValue = value || null
+        } else if (method === "storageReport") {
+            storageModuleReport = value || null
+        } else if (method === "deliveryReport") {
+            messagingModuleReport = value || null
         }
     }
 
     function routeSearch(query) {
         const value = query.trim()
         if (!value.length) {
+            return
+        }
+
+        if (routePrefixedSearch(value)) {
+            return
+        }
+
+        const settingsTarget = settingsTargetForQuery(value)
+        if (settingsTarget.section.length > 0) {
+            openSettings(settingsTarget.section, settingsTarget.subsection)
             return
         }
 
@@ -729,9 +2017,9 @@ QtObject {
                 openBlockchainBlock(value)
                 return
             }
-            const wallet = walletDetailById(value)
-            if (wallet) {
-                openWallet(value)
+            const recipient = transferRecipientDetailById(value)
+            if (recipient) {
+                openRecipient(value)
                 return
             }
             const channel = channelDetailById(value)
@@ -739,13 +2027,13 @@ QtObject {
                 openChannel(value)
                 return
             }
-            openTransaction(value)
+            resolveSearchHash(value)
             return
         }
 
-        const wallet = walletDetailById(value)
-        if (wallet) {
-            openWallet(value)
+        const recipient = transferRecipientDetailById(value)
+        if (recipient) {
+            openRecipient(value)
             return
         }
 
@@ -755,9 +2043,182 @@ QtObject {
             return
         }
 
-        currentView = "accounts"
-        accountTab = "lookup"
-        callInspector("account", [sequencerUrl, indexerUrl, value], qsTr("Account lookup"))
+        openAccount(value)
+    }
+
+    function routePrefixedSearch(query) {
+        const parsed = searchPrefix(query)
+        if (!parsed.prefix.length) {
+            return false
+        }
+
+        const prefix = parsed.prefix
+        const target = parsed.target
+        if ((prefix === "l1" || prefix === "slot" || prefix === "bedrock" || prefix === "cryptarchia") && target.length > 0) {
+            openBlockchainBlock(target)
+            return true
+        }
+        if (prefix === "mantle") {
+            if (target.length > 0) {
+                openMantleTransaction(target)
+            } else {
+                selectView("transactions")
+            }
+            return true
+        }
+        if (prefix === "channel") {
+            if (target.length > 0) {
+                openChannel(target)
+            } else {
+                selectView("channels")
+            }
+            return true
+        }
+        if (prefix === "l2" || prefix === "lez" || prefix === "block") {
+            if (target.length > 0) {
+                openLezSearchTarget(target)
+            } else {
+                sequencerTab = "blocks"
+                selectView("sequencer")
+            }
+            return true
+        }
+        if (prefix === "tx" || prefix === "transaction") {
+            if (target.length > 0) {
+                openLezTransaction(target)
+            } else {
+                sequencerTab = "transactions"
+                selectView("sequencer")
+            }
+            return true
+        }
+        if (prefix === "account") {
+            if (target.length > 0) {
+                openAccount(target)
+            } else {
+                selectView("accounts")
+            }
+            return true
+        }
+        if (prefix === "recipient") {
+            if (target.length > 0) {
+                openRecipient(target)
+            } else {
+                selectView("transferActivity")
+            }
+            return true
+        }
+        if (prefix === "wallet") {
+            showLocalWalletRequired(target)
+            return true
+        }
+        if (prefix === "program") {
+            if (target.length > 0) {
+                openProgram(target)
+            } else {
+                selectView("programs")
+            }
+            return true
+        }
+        if (prefix === "module") {
+            routeModuleSearchTarget(target)
+            return true
+        }
+        return false
+    }
+
+    function searchPrefix(query) {
+        const text = String(query || "").trim()
+        let match = text.match(/^([A-Za-z][A-Za-z0-9_-]*)\s*:\s*(.*)$/)
+        if (match && isSearchPrefix(match[1])) {
+            return { prefix: String(match[1]).toLowerCase(), target: String(match[2] || "").trim() }
+        }
+        match = text.match(/^([A-Za-z][A-Za-z0-9_-]*)\s+(.+)$/)
+        if (match && isSearchPrefix(match[1])) {
+            return { prefix: String(match[1]).toLowerCase(), target: String(match[2] || "").trim() }
+        }
+        return { prefix: "", target: "" }
+    }
+
+    function isSearchPrefix(prefix) {
+        const value = String(prefix || "").toLowerCase()
+        return value === "l1" || value === "slot" || value === "bedrock" || value === "cryptarchia"
+            || value === "mantle" || value === "channel" || value === "l2" || value === "lez"
+            || value === "block" || value === "tx" || value === "transaction" || value === "account"
+            || value === "program" || value === "wallet" || value === "recipient" || value === "module"
+    }
+
+    function routeModuleSearchTarget(target) {
+        const value = String(target || "").trim().toLowerCase()
+        if (value === "storage") {
+            selectView("storage")
+        } else if (value === "messaging" || value === "delivery") {
+            selectView("messaging")
+        } else if (value === "capability" || value === "capabilities") {
+            selectView("capabilities")
+        } else if (value === "blockchain" || value === "bedrock" || value === "node") {
+            selectView("blockchain")
+        } else {
+            selectView("storage")
+        }
+    }
+
+    function resolveSearchHash(hash) {
+        const value = String(hash || "").trim()
+        if (!value.length) {
+            return
+        }
+
+        const serial = searchResolveSerial + 1
+        searchResolveSerial = serial
+        statusText = qsTr("Search")
+        requestModuleAsync(inspectorModule, "indexerBlockByHash", [indexerUrl, value], qsTr("Block lookup"), false, function (response) {
+            if (serial !== searchResolveSerial) {
+                return
+            }
+            if (response.ok && response.value !== null && response.value !== undefined) {
+                sequencerTab = "blocks"
+                currentView = "sequencer"
+                setResult(qsTr("LEZ block"), response.text, false, response.value)
+                return
+            }
+            root.resolveSearchTransaction(serial, value)
+        })
+    }
+
+    function resolveSearchTransaction(serial, hash) {
+        requestModuleAsync(inspectorModule, "inspectTransaction", [sequencerUrl, hash], qsTr("Transaction inspection"), false, function (response) {
+            if (serial !== searchResolveSerial) {
+                return
+            }
+            if (response.ok && response.value !== null && response.value !== undefined) {
+                sequencerTab = "transactions"
+                currentView = "sequencer"
+                transactionDetailValue = response.value
+                transactionsPageError = ""
+                setResult(qsTr("LEZ transaction"), response.text, false, response.value)
+                root.autoDecodeTransactionDetail(response.value)
+                return
+            }
+            root.resolveSearchAccount(serial, hash)
+        })
+    }
+
+    function resolveSearchAccount(serial, account) {
+        requestModuleAsync(inspectorModule, "account", [sequencerUrl, indexerUrl, account], qsTr("Account lookup"), false, function (response) {
+            if (serial !== searchResolveSerial) {
+                return
+            }
+            currentView = "accounts"
+            accountTab = "lookup"
+            if (response.ok) {
+                accountDetailValue = response.value || null
+                setResult(qsTr("Account lookup"), response.text, false, response.value)
+            } else {
+                accountDetailValue = null
+                setResult(qsTr("Search"), response.error || qsTr("No block, transaction, or account found."), true, null)
+            }
+        })
     }
 
     function viewKeyForQuery(query) {
@@ -765,25 +2226,24 @@ QtObject {
         if (!normalized.length) {
             return ""
         }
-        for (let i = 0; i < navItems.count; ++i) {
-            const item = navItems.get(i)
-            const key = String(item.key || "").toLowerCase()
-            const label = String(item.label || "").toLowerCase()
-            if (normalized === key || normalized === label) {
-                return item.key
-            }
+        const item = navItemForQuery(normalized)
+        if (item && String(item.view || "").length > 0) {
+            return item.view
         }
         if (normalized === "home" || normalized === "dashboard" || normalized === "overview") {
             return "overview"
         }
-        if (normalized === "block" || normalized === "latest blocks") {
+        if (normalized === "l1" || normalized === "l1 bedrock" || normalized === "bedrock" || normalized === "cryptarchia" || normalized === "block" || normalized === "latest blocks") {
             return "blocks"
         }
         if (normalized === "transaction" || normalized === "tx" || normalized === "txs" || normalized === "latest transactions") {
             return "transactions"
         }
         if (normalized === "wallet") {
-            return "wallets"
+            return ""
+        }
+        if (normalized === "recipient" || normalized === "recipients" || normalized === "transfer" || normalized === "transfers" || normalized === "transfer activity") {
+            return "transferActivity"
         }
         if (normalized === "channel") {
             return "channels"
@@ -791,11 +2251,14 @@ QtObject {
         if (normalized === "account") {
             return "accounts"
         }
-        if (normalized === "sequencer node") {
-            return "sequencer"
-        }
         if (normalized === "spel" || normalized === "program" || normalized === "programs") {
             return "programs"
+        }
+        if (normalized === "l2" || normalized === "lez" || normalized === "sequencer") {
+            return "sequencer"
+        }
+        if (normalized === "indexer") {
+            return "indexer"
         }
         if (normalized === "chain" || normalized === "base chain" || normalized === "node" || normalized === "consensus") {
             return "blockchain"
@@ -810,6 +2273,41 @@ QtObject {
             return "settings"
         }
         return ""
+    }
+
+    function settingsTargetForQuery(query) {
+        const normalized = String(query || "").trim().toLowerCase()
+        if (!normalized.length) {
+            return { section: "", subsection: "" }
+        }
+        if (normalized === "network") {
+            return { section: "network", subsection: settingsNetworkSection }
+        }
+        if (normalized === "blockchain rpc" || normalized === "node rpc" || normalized === "chain rpc" || normalized === "base chain rpc") {
+            return { section: "network", subsection: "blockchain" }
+        }
+        if (normalized === "indexer rpc") {
+            return { section: "network", subsection: "indexer" }
+        }
+        if (normalized === "execution" || normalized === "execution zone" || normalized === "lez rpc" || normalized === "sequencer node" || normalized === "sequencer rpc") {
+            return { section: "network", subsection: "execution" }
+        }
+        if (normalized === "messaging rpc" || normalized === "delivery rpc") {
+            return { section: "network", subsection: "messaging" }
+        }
+        if (normalized === "storage rpc" || normalized === "storage network") {
+            return { section: "network", subsection: "storage" }
+        }
+        if (normalized === "footer") {
+            return { section: "ui", subsection: "footer" }
+        }
+        if (normalized === "dashboard settings") {
+            return { section: "ui", subsection: "dashboard" }
+        }
+        if (normalized === "config" || normalized === "profile" || normalized === "settings") {
+            return { section: "general", subsection: "" }
+        }
+        return { section: "", subsection: "" }
     }
 
     function openReference(kind, value, payload) {
@@ -828,25 +2326,57 @@ QtObject {
         case "indexerBlock":
             openIndexerBlock(target)
             return
+        case "lezBlock":
+            openLezBlock(target)
+            return
         case "transaction":
         case "transactionHash":
         case "tx":
             openTransaction(target)
             return
+        case "mantleTransaction":
+            openMantleTransaction(target)
+            return
         case "wallet":
-            openWallet(target)
+            showLocalWalletRequired(target)
+            return
+        case "recipient":
+        case "transferRecipient":
+            openRecipient(target)
             return
         case "channel":
             openChannel(payload === undefined ? target : payload)
             return
         case "account":
-        case "program":
         case "signer":
             openAccount(target)
+            return
+        case "program":
+            openProgram(target)
             return
         default:
             routeSearch(target)
         }
+    }
+
+    function openMantleTransaction(hash) {
+        const value = String(hash || "").trim()
+        if (!value.length) {
+            return
+        }
+
+        const detail = transactionDetail(value)
+        currentView = "transactions"
+        if (detail) {
+            transactionDetailValue = detail
+            transactionsPageError = ""
+            setResult(qsTr("Mantle transaction"), BridgeHelpers.formatValue(detail), false, detail)
+            return
+        }
+
+        transactionDetailValue = null
+        transactionsPageError = qsTr("Mantle transaction %1 is not in the loaded L1 slot window.").arg(value)
+        setResult(qsTr("Mantle transaction"), transactionsPageError, true)
     }
 
     function openAccount(account) {
@@ -854,25 +2384,96 @@ QtObject {
         if (!value.length) {
             return
         }
+        const serial = searchResolveSerial + 1
+        searchResolveSerial = serial
         currentView = "accounts"
         accountTab = "lookup"
-        callInspector("account", [sequencerUrl, indexerUrl, value], qsTr("Account lookup"))
+        statusText = qsTr("Account lookup")
+        requestModuleAsync(inspectorModule, "account", [sequencerUrl, indexerUrl, value], qsTr("Account lookup"), false, function (response) {
+            if (serial !== searchResolveSerial) {
+                return
+            }
+            if (response.ok) {
+                accountDetailValue = response.value || null
+                setResult(qsTr("Account lookup"), response.text, false, response.value)
+            } else {
+                accountDetailValue = null
+                setResult(qsTr("Account lookup"), response.error, true, null)
+            }
+        })
     }
 
     function openTransaction(hash) {
+        openLezTransaction(hash)
+    }
+
+    function openLezSearchTarget(target) {
+        const value = String(target || "").trim()
+        if (!value.length) {
+            return
+        }
+        if (/^[0-9]+$/.test(value)) {
+            openLezBlock(value)
+            return
+        }
+        resolveLezHash(value)
+    }
+
+    function openLezBlock(blockId) {
+        const value = String(blockId || "").trim()
+        if (!value.length) {
+            return
+        }
+
+        const serial = searchResolveSerial + 1
+        searchResolveSerial = serial
+        sequencerTab = "blocks"
+        currentView = "sequencer"
+        statusText = qsTr("LEZ block lookup")
+        requestModuleAsync(inspectorModule, "block", [sequencerUrl, value], qsTr("LEZ block"), false, function (response) {
+            if (serial !== searchResolveSerial) {
+                return
+            }
+            if (response.ok) {
+                setResult(qsTr("LEZ block"), response.text, false, response.value)
+            } else {
+                setResult(qsTr("LEZ block"), response.error, true)
+            }
+        })
+    }
+
+    function resolveLezHash(hash) {
         const value = String(hash || "").trim()
         if (!value.length) {
             return
         }
 
-        currentView = "transactions"
-        const detail = transactionDetail(value)
-        if (detail) {
-            transactionDetailValue = detail
-            setResult(qsTr("Transaction"), BridgeHelpers.formatValue(detail), false, detail)
+        const serial = searchResolveSerial + 1
+        searchResolveSerial = serial
+        sequencerTab = "blocks"
+        currentView = "sequencer"
+        statusText = qsTr("L2 lookup")
+        requestModuleAsync(inspectorModule, "indexerBlockByHash", [indexerUrl, value], qsTr("LEZ block lookup"), false, function (response) {
+            if (serial !== searchResolveSerial) {
+                return
+            }
+            if (response.ok && response.value !== null && response.value !== undefined) {
+                setResult(qsTr("LEZ block"), response.text, false, response.value)
+                return
+            }
+            root.openLezTransaction(value)
+        })
+    }
+
+    function openLezTransaction(hash) {
+        const value = String(hash || "").trim()
+        if (!value.length) {
             return
         }
 
+        searchResolveSerial += 1
+        sequencerTab = "transactions"
+        currentView = "sequencer"
         inspectTransaction(value, "")
     }
 
@@ -882,18 +2483,29 @@ QtObject {
             return
         }
 
-        currentView = "transactions"
+        sequencerTab = "transactions"
+        currentView = "sequencer"
         const trimmedIdl = String(idl || "").trim()
         const args = trimmedIdl.length ? [sequencerUrl, value, trimmedIdl] : [sequencerUrl, value]
-        const response = requestModule(inspectorModule, "inspectTransaction", args, qsTr("Transaction inspection"), false)
-        if (response.ok) {
-            transactionDetailValue = response.value
-            transactionsPageError = ""
-            setResult(qsTr("Transaction"), response.text, false, response.value)
-        } else {
-            transactionsPageError = response.error
-            setResult(qsTr("Transaction"), response.error, true)
-        }
+        const serial = transactionAutoDecodeSerial + 1
+        transactionAutoDecodeSerial = serial
+        requestModuleAsync(inspectorModule, "inspectTransaction", args, qsTr("Transaction inspection"), true, function (response) {
+            if (serial !== transactionAutoDecodeSerial) {
+                return
+            }
+            if (response.ok) {
+                transactionDetailValue = response.value
+                transactionsPageError = ""
+                setResult(qsTr("Transaction"), response.text, false, response.value)
+                if (!trimmedIdl.length) {
+                    root.autoDecodeTransactionDetail(response.value)
+                }
+            } else {
+                transactionDetailValue = null
+                transactionsPageError = response.error
+                setResult(qsTr("Transaction"), response.error, true)
+            }
+        })
     }
 
     function openBlockchainBlock(blockOrId) {
@@ -909,7 +2521,9 @@ QtObject {
                 loadBlockchainBlockBySlot(Number(fallback))
                 return
             }
-            openIndexerBlock(fallback)
+            currentView = "blocks"
+            blocksPageError = qsTr("L1 block %1 is not in the loaded slot window.").arg(String(fallback || ""))
+            setResult(qsTr("Block"), blocksPageError, true)
             return
         }
 
@@ -980,27 +2594,21 @@ QtObject {
             return
         }
 
-        currentView = "blocks"
-        const cached = blockchainBlockDetailById(value)
-        if (cached) {
-            blockDetailValue = cached
-            setResult(qsTr("Block"), BridgeHelpers.formatValue(cached), false, cached)
-            return
-        }
+        sequencerTab = "blocks"
+        currentView = "sequencer"
 
         const response = requestModule(inspectorModule, "indexerBlockByHash", [indexerUrl, value], qsTr("Block lookup"), false)
         if (response.ok) {
             if (response.value === null || response.value === undefined) {
                 blocksPageError = qsTr("No block found for %1.").arg(value)
-                setResult(qsTr("Block"), blocksPageError, true)
+                setResult(qsTr("LEZ block"), blocksPageError, true)
                 return
             }
-            blockDetailValue = indexerBlockDetail(response.value)
             blocksPageError = ""
-            setResult(qsTr("Block"), response.text, false, blockDetailValue)
+            setResult(qsTr("LEZ block"), response.text, false, response.value)
         } else {
             blocksPageError = response.error
-            setResult(qsTr("Block"), response.error, true)
+            setResult(qsTr("LEZ block"), response.error, true)
         }
     }
 
@@ -1033,21 +2641,50 @@ QtObject {
         }
     }
 
-    function openWallet(wallet) {
-        const value = String(wallet || "").trim()
+    function showLocalWalletRequired(wallet) {
+        currentView = "settings"
+        settingsSection = "general"
+        transferRecipientDetailValue = null
+        setResult(
+            qsTr("Local wallet"),
+            qsTr("Local wallet integration is not configured. Indexer-derived transfer activity is available with recipient:<id>, not wallet:<id>."),
+            true,
+            null
+        )
+    }
+
+    function openProgram(programId) {
+        const value = String(programId || "").trim()
+        if (!value.length) {
+            selectView("programs")
+            return
+        }
+        currentView = "programs"
+        programTab = "idls"
+        const detail = {
+            type: "program",
+            program_id: value,
+            source: "search"
+        }
+        setResult(qsTr("Program"), BridgeHelpers.formatValue(detail), false, detail)
+    }
+
+    function openRecipient(recipient) {
+        const value = String(recipient || "").trim()
         if (!value.length) {
             return
         }
 
-        const detail = walletDetailById(value)
+        const detail = transferRecipientDetailById(value)
         if (detail) {
-            currentView = "wallets"
-            walletDetailValue = detail
-            setResult(qsTr("Wallet"), BridgeHelpers.formatValue(detail), false, detail)
+            currentView = "transferActivity"
+            transferRecipientDetailValue = detail
+            setResult(qsTr("Transfer recipient"), BridgeHelpers.formatValue(detail), false, detail)
             return
         }
-
-        openAccount(value)
+        currentView = "transferActivity"
+        transferRecipientDetailValue = null
+        setResult(qsTr("Transfer recipient"), qsTr("No transfer recipient found for %1 in the loaded finalized L2 block window.").arg(value), true, null)
     }
 
     function openChannel(channel) {
@@ -1079,16 +2716,38 @@ QtObject {
 
         const idl = parsed.value
         const resolvedName = name.trim().length ? name.trim() : (idl.name || qsTr("IDL %1").arg(registeredIdls.count + 1))
+        const resolvedProgramId = programId.trim()
         registeredIdls.append({
+            key: idlKey(resolvedName, resolvedProgramId, json),
             name: resolvedName,
-            programId: programId.trim(),
+            programId: resolvedProgramId,
             json: json
         })
+        saveIdlState()
+        if (currentView === "transactions" && transactionDetailValue !== null) {
+            autoDecodeTransactionDetail(transactionDetailValue)
+        }
         setResult(qsTr("IDL registry"), qsTr("Saved %1.").arg(resolvedName), false)
     }
 
     function removeIdl(index) {
+        if (index < 0 || index >= registeredIdls.count) {
+            return
+        }
+        const entry = idlEntryAt(index)
         registeredIdls.remove(index)
+        if (entry.key.length) {
+            const next = {}
+            const current = accountIdlSelections || {}
+            for (const accountId in current) {
+                if (String(current[accountId].idlKey || "") !== entry.key) {
+                    next[accountId] = current[accountId]
+                }
+            }
+            accountIdlSelections = next
+            accountIdlSelectionRevision += 1
+        }
+        saveIdlState()
     }
 
     function profileIndex() {

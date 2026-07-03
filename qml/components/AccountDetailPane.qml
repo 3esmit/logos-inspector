@@ -2,7 +2,9 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Controls.Basic
+import QtQml.Models
 import QtQuick.Layouts
+import "../services/BridgeHelpers.js" as BridgeHelpers
 import "../state"
 import "../theme"
 
@@ -13,96 +15,247 @@ ColumnLayout {
     required property AppModel model
     property var value: null
     readonly property var detail: normalize(value)
+    property string dataView: "decoded"
+    property var idlTypeOptions: []
+    property var idlTypeLabels: []
+    property int selectedIdlTypeIndex: -1
+    property var activeDecode: detail ? detail.decode : null
+    property string activeDecodeError: detail ? detail.decode_error : ""
+    property string activeIdlLabel: ""
+    property int decodeRequestSerial: 0
+    readonly property string nullAddressBase58: "11111111111111111111111111111111"
 
     visible: detail !== null
     spacing: 14
     Layout.fillWidth: true
+
+    onDetailChanged: Qt.callLater(root.resetDecodeState)
+
+    ListModel {
+        id: dataTabs
+
+        ListElement { value: "decoded"; label: "Decoded" }
+        ListElement { value: "raw"; label: "Raw" }
+    }
+
+    Connections {
+        target: root.model.registeredIdls
+
+        function onCountChanged() {
+            Qt.callLater(root.resetDecodeState)
+        }
+    }
 
     ColumnLayout {
         visible: root.detail !== null
         spacing: 6
         Layout.fillWidth: true
 
-        Text {
-            text: root.detail && root.detail.decode_only ? qsTr("Account data decode") : qsTr("Account")
-            color: root.theme.text
-            textFormat: Text.PlainText
-            font.pixelSize: 22
-            font.weight: Font.DemiBold
+        CopyTextLine {
+            text: root.detail ? root.accountHeader(root.detail) : ""
+            theme: root.theme
+            copyText: root.detail ? root.accountCopyValue(root.detail) : ""
+            tooltipText: root.detail ? root.accountHeaderTooltip(root.detail) : ""
+            monospace: true
+            textColor: root.theme.text
+            textPixelSize: 22
+            textWeight: Font.DemiBold
             Layout.fillWidth: true
         }
 
-        Text {
-            visible: root.detail && root.detail.account_id.length > 0
-            text: root.detail ? root.detail.account_id : ""
-            color: root.theme.textMuted
-            textFormat: Text.PlainText
-            wrapMode: Text.WrapAnywhere
-            font.family: "monospace"
-            font.pixelSize: 12
+        CopyTextLine {
+            visible: root.detail && root.accountAlternate(root.detail).length > 0
+            text: root.detail ? root.accountAlternate(root.detail) : ""
+            theme: root.theme
+            copyText: root.detail ? root.accountAlternate(root.detail) : ""
+            monospace: true
+            textColor: root.theme.textMuted
+            textPixelSize: 12
             Layout.fillWidth: true
-        }
-    }
-
-    GridLayout {
-        visible: root.detail !== null
-        columns: root.width < 760 ? 2 : 4
-        columnSpacing: 12
-        rowSpacing: 12
-        Layout.fillWidth: true
-
-        MetricCard {
-            theme: root.theme
-            label: qsTr("Data bytes")
-            value: root.detail ? root.numberText(root.dataBytes(root.detail.data_hex)) : "-"
-            delta: root.detail && root.detail.data_hex.length ? qsTr("Raw account data") : qsTr("No hex")
-        }
-
-        MetricCard {
-            theme: root.theme
-            label: qsTr("Related txs")
-            value: root.detail ? root.numberText(root.detail.related_transactions.length) : "-"
-            delta: root.detail && root.detail.related_transactions_error.length ? qsTr("Indexer error") : qsTr("Indexer links")
-            deltaColor: root.detail && root.detail.related_transactions_error.length ? root.theme.warning : root.theme.accent
-        }
-
-        MetricCard {
-            theme: root.theme
-            label: qsTr("IDL type")
-            value: root.detail && root.detail.decode ? root.detail.decode.account_type : "-"
-            delta: root.detail && root.detail.decode ? qsTr("Decoded") : qsTr("No decode")
-            deltaColor: root.detail && root.detail.decode ? root.theme.success : root.theme.textMuted
-        }
-
-        MetricCard {
-            theme: root.theme
-            label: qsTr("Consumed")
-            value: root.detail && root.detail.decode ? qsTr("%1/%2").arg(root.numberText(root.detail.decode.consumed_bytes)).arg(root.numberText(root.detail.decode.total_bytes)) : "-"
-            delta: root.detail && root.detail.decode ? qsTr("%1 remaining").arg(root.numberText(root.detail.decode.remaining_bytes)) : qsTr("Bytes")
         }
     }
 
     SectionBlock {
         theme: root.theme
-        title: qsTr("Account")
+        title: ""
         rows: root.accountRows()
     }
 
-    Text {
-        visible: root.detail && root.detail.decode_error.length > 0
-        text: root.detail ? root.detail.decode_error : ""
-        color: root.theme.warning
-        textFormat: Text.PlainText
-        wrapMode: Text.Wrap
-        font.pixelSize: 12
+    ColumnLayout {
+        visible: root.detail !== null
+        spacing: 8
         Layout.fillWidth: true
-    }
 
-    SectionBlock {
-        visible: root.detail && root.detail.decode !== null
-        theme: root.theme
-        title: qsTr("Decoded data")
-        rows: root.decodedRows()
+        RowLayout {
+            spacing: root.theme.gap
+            Layout.fillWidth: true
+
+            Text {
+                text: qsTr("Data [%1]").arg(root.detail ? root.numberText(root.dataBytes(root.detail.data_hex)) : "-")
+                color: root.theme.text
+                textFormat: Text.PlainText
+                font.pixelSize: 14
+                font.weight: Font.DemiBold
+                Layout.fillWidth: true
+            }
+
+            TabSwitch {
+                visible: root.detail && root.dataBytes(root.detail.data_hex) > 0
+                theme: root.theme
+                current: root.dataView
+                options: dataTabs
+                Layout.preferredWidth: 206
+                onSelected: value => root.dataView = value
+            }
+        }
+
+        Frame {
+            visible: root.detail && root.dataBytes(root.detail.data_hex) > 0
+            padding: 0
+            Layout.fillWidth: true
+
+            background: Rectangle {
+                color: root.theme.surface
+                radius: root.theme.radius
+                border.width: 1
+                border.color: root.theme.outlineMuted
+            }
+
+            contentItem: ColumnLayout {
+                spacing: 0
+
+                ColumnLayout {
+                    visible: root.dataView === "decoded"
+                    spacing: root.theme.gap
+                    Layout.fillWidth: true
+
+                    RowLayout {
+                        visible: root.idlTypeLabels.length > 0
+                        spacing: root.theme.gapSmall
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 12
+                        Layout.rightMargin: 12
+                        Layout.topMargin: 12
+
+                        Text {
+                            text: qsTr("IDL Type")
+                            color: root.theme.textMuted
+                            textFormat: Text.PlainText
+                            font.pixelSize: 11
+                            font.weight: Font.DemiBold
+                            font.capitalization: Font.AllUppercase
+                            Layout.preferredWidth: 92
+                            Layout.alignment: Qt.AlignVCenter
+                        }
+
+                        ComboBox {
+                            id: idlTypeCombo
+
+                            editable: true
+                            model: root.idlTypeLabels
+                            currentIndex: root.selectedIdlTypeIndex
+                            font.pixelSize: root.theme.secondaryText
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: root.theme.controlHeight
+                            onActivated: index => root.selectIdlType(index)
+                            onAccepted: root.selectTypedIdlType(editText)
+
+                            contentItem: TextField {
+                                text: idlTypeCombo.editText
+                                color: root.theme.text
+                                placeholderText: qsTr("Search IDL type")
+                                placeholderTextColor: root.theme.textDim
+                                selectionColor: root.theme.accent
+                                selectedTextColor: root.theme.selectedText
+                                font: idlTypeCombo.font
+                                leftPadding: 10
+                                rightPadding: 10
+                                readOnly: !idlTypeCombo.editable
+                                background: null
+                            }
+
+                            background: Rectangle {
+                                radius: root.theme.radius
+                                color: idlTypeCombo.hovered || idlTypeCombo.activeFocus ? root.theme.surfaceRaised : root.theme.field
+                                border.width: idlTypeCombo.activeFocus ? 2 : 1
+                                border.color: idlTypeCombo.activeFocus ? root.theme.accent : root.theme.outlineMuted
+                            }
+
+                            Accessible.role: Accessible.ComboBox
+                            Accessible.name: qsTr("IDL type")
+                        }
+                    }
+
+                    Text {
+                        visible: root.activeDecode !== null
+                        text: qsTr("IDL Type: %1").arg(root.activeIdlTypeLabel())
+                        color: root.theme.textMuted
+                        textFormat: Text.PlainText
+                        wrapMode: Text.WrapAnywhere
+                        font.pixelSize: root.theme.dataText
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 12
+                        Layout.rightMargin: 12
+                    }
+
+                    StatusMessage {
+                        visible: root.activeDecode === null
+                        theme: root.theme
+                        tone: root.activeDecodeError.length > 0 ? "warning" : "info"
+                        title: root.activeDecodeError.length > 0 ? qsTr("Decode unavailable") : qsTr("No decoded data")
+                        message: root.decodeMessage()
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 12
+                        Layout.rightMargin: 12
+                        Layout.bottomMargin: 12
+                    }
+
+                    Repeater {
+                        model: root.decodedRows()
+
+                        DetailRow {
+                            required property var modelData
+
+                            theme: root.theme
+                            label: String(modelData.label || "")
+                            value: String(modelData.value || "-")
+                            subvalue: String(modelData.subvalue || "")
+                            subvalueCopyText: String(modelData.subvalueCopyText || "")
+                            linkKind: String(modelData.linkKind || "")
+                            linkValue: String(modelData.linkValue || "")
+                            tooltipText: String(modelData.tooltipText || "")
+                            monospace: modelData.monospace !== undefined ? modelData.monospace : true
+                            onActivated: root.model.openReference(modelData.linkKind, modelData.linkValue)
+                        }
+                    }
+                }
+
+                TextArea {
+                    visible: root.dataView === "raw"
+                    readOnly: true
+                    text: root.detail ? root.detail.data_hex : ""
+                    wrapMode: TextArea.Wrap
+                    color: root.detail && root.detail.data_hex.length ? root.theme.text : root.theme.textMuted
+                    selectedTextColor: root.theme.selectedText
+                    selectionColor: root.theme.accent
+                    textFormat: Text.PlainText
+                    font.family: "monospace"
+                    font.pixelSize: root.theme.dataText
+                    leftPadding: 12
+                    rightPadding: 12
+                    topPadding: 10
+                    bottomPadding: 10
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 150
+
+                    background: Rectangle {
+                        color: root.theme.field
+                        radius: root.theme.radius
+                        border.width: 0
+                    }
+                }
+            }
+        }
     }
 
     Text {
@@ -121,7 +274,7 @@ ColumnLayout {
         Layout.fillWidth: true
 
         Text {
-            text: qsTr("Related transactions")
+            text: qsTr("Transactions [%1]").arg(root.detail ? root.numberText(root.detail.related_transactions.length) : "-")
             color: root.theme.text
             textFormat: Text.PlainText
             font.pixelSize: 14
@@ -146,7 +299,7 @@ ColumnLayout {
                 TransactionRow {
                     theme: root.theme
                     header: true
-                    columns: [qsTr("Tx hash"), qsTr("Kind"), qsTr("Program"), qsTr("Accounts")]
+                    columns: [qsTr("Tx hash"), qsTr("Direction"), qsTr("Kind"), qsTr("Caller"), qsTr("Affected")]
                 }
 
                 Repeater {
@@ -156,13 +309,13 @@ ColumnLayout {
                         required property var modelData
 
                         theme: root.theme
-                        columns: [modelData.hashText, modelData.kind, modelData.programText, modelData.accounts]
+                        columns: [modelData.hashText, modelData.direction, modelData.kind, modelData.programText, modelData.accounts]
                         txHash: modelData.txHash
                         programId: modelData.programId
                         onCellActivated: function (column) {
                             if (column === 0) {
                                 root.model.openReference("transaction", modelData.txHash)
-                            } else if (column === 2) {
+                            } else if (column === 3) {
                                 root.model.openReference("program", modelData.programId)
                             }
                         }
@@ -198,7 +351,13 @@ ColumnLayout {
         const report = account || {}
         return {
             account_id: String(report.account_id || (decode && decode.account_id) || ""),
+            account_id_base58: String(report.account_id_base58 || report.account_id || (decode && decode.account_id) || ""),
+            account_id_hex: String(report.account_id_hex || ""),
             account: report.account || null,
+            balance: String(report.balance || (report.account && report.account.balance !== undefined ? report.account.balance : "")),
+            nonce: String(report.nonce || (report.account && report.account.nonce !== undefined ? report.account.nonce : "")),
+            owner_base58: String(report.owner_base58 || ""),
+            owner_hex: String(report.owner_hex || ""),
             data_hex: String(report.data_hex || ""),
             related_transactions: Array.isArray(report.related_transactions) ? report.related_transactions : [],
             related_transactions_error: String(report.related_transactions_error || ""),
@@ -209,62 +368,284 @@ ColumnLayout {
         }
     }
 
+    function accountHeader(detail) {
+        if (detail && (detail.account_id_base58.length || detail.account_id_hex.length)) {
+            return root.addressLabel(detail.account_id_base58, detail.account_id_hex)
+        }
+        return detail && detail.decode_only ? qsTr("Account data decode") : qsTr("Account")
+    }
+
+    function accountAlternate(detail) {
+        if (!detail) {
+            return ""
+        }
+        if (detail.account_id_hex.length) {
+            return root.hexAddressText(detail.account_id_hex)
+        }
+        if (detail.account_id.length && detail.account_id !== detail.account_id_base58) {
+            return qsTr("input %1").arg(detail.account_id)
+        }
+        return ""
+    }
+
+    function accountCopyValue(detail) {
+        if (!detail) {
+            return ""
+        }
+        if (root.isNullAddress(detail.account_id_base58, detail.account_id_hex)) {
+            return root.nullAddressBase58
+        }
+        if (detail.account_id_base58.length) {
+            return detail.account_id_base58
+        }
+        return detail.account_id.length ? detail.account_id : ""
+    }
+
+    function accountHeaderTooltip(detail) {
+        if (!detail || !root.isNullAddress(detail.account_id_base58, detail.account_id_hex)) {
+            return ""
+        }
+        return root.accountCopyValue(detail)
+    }
+
+    function resetDecodeState() {
+        root.decodeRequestSerial += 1
+        if (!root.detail) {
+            root.idlTypeOptions = []
+            root.idlTypeLabels = []
+            root.selectedIdlTypeIndex = -1
+            root.activeDecode = null
+            root.activeDecodeError = ""
+            root.activeIdlLabel = ""
+            return
+        }
+
+        root.dataView = "decoded"
+        root.rebuildIdlTypeOptions()
+        root.activeDecode = root.detail.decode
+        root.activeDecodeError = root.detail.decode_error
+        root.activeIdlLabel = ""
+        root.selectedIdlTypeIndex = root.activeDecode ? root.indexForType(root.activeDecode.account_type) : -1
+        if (root.selectedIdlTypeIndex >= 0) {
+            root.activeIdlLabel = root.idlTypeOptions[root.selectedIdlTypeIndex].idlName
+        }
+        if (!root.activeDecode) {
+            root.autoSelectDecode()
+        }
+    }
+
+    function rebuildIdlTypeOptions() {
+        const options = []
+        const labels = []
+        for (let i = 0; i < root.model.registeredIdls.count; ++i) {
+            const idl = root.model.registeredIdls.get(i)
+            const types = root.idlAccountTypes(idl.json)
+            for (let j = 0; j < types.length; ++j) {
+                const label = qsTr("%1: %2").arg(idl.name).arg(types[j])
+                options.push({
+                    idlIndex: i,
+                    idlKey: String(idl.key || root.model.idlKey(idl.name, idl.programId, idl.json)),
+                    idlName: String(idl.name || qsTr("IDL %1").arg(i + 1)),
+                    programId: String(idl.programId || ""),
+                    accountType: types[j],
+                    json: String(idl.json || ""),
+                    label: label
+                })
+                labels.push(label)
+            }
+        }
+        root.idlTypeOptions = options
+        root.idlTypeLabels = labels
+    }
+
+    function idlAccountTypes(json) {
+        const parsed = BridgeHelpers.parseJson(String(json || ""))
+        if (!parsed.ok || !parsed.value || !Array.isArray(parsed.value.accounts)) {
+            return []
+        }
+        const rows = []
+        for (let i = 0; i < parsed.value.accounts.length; ++i) {
+            const account = parsed.value.accounts[i] || {}
+            const name = String(account.name || "")
+            if (name.length) {
+                rows.push(name)
+            }
+        }
+        return rows
+    }
+
+    function autoSelectDecode() {
+        if (!root.detail || !root.detail.data_hex.length || root.model.registeredIdls.count === 0) {
+            return
+        }
+
+        const serial = root.decodeRequestSerial + 1
+        root.decodeRequestSerial = serial
+        root.model.autoDecodeAccountData(root.detail.data_hex, root.accountCacheId(), function (response) {
+            if (serial !== root.decodeRequestSerial) {
+                return
+            }
+            if (response.ok && response.value) {
+                root.activeDecode = response.value
+                root.activeDecodeError = ""
+                root.activeIdlLabel = String(response.entry.name || qsTr("IDL"))
+                root.selectedIdlTypeIndex = root.indexForTypeInIdlKey(response.entry.key, response.value.account_type)
+                root.model.cacheAccountIdlSelection(root.accountCacheId(), response.entry, response.value.account_type)
+            } else {
+                root.activeDecodeError = response.error || ""
+            }
+        })
+    }
+
+    function selectIdlType(index) {
+        if (!root.detail || index < 0 || index >= root.idlTypeOptions.length) {
+            return
+        }
+        const option = root.idlTypeOptions[index]
+        const serial = root.decodeRequestSerial + 1
+        root.decodeRequestSerial = serial
+        root.selectedIdlTypeIndex = index
+        root.activeIdlLabel = option.idlName
+        root.model.decodeAccountDataAsync(root.detail.data_hex, option.json, option.accountType, function (response) {
+            if (serial !== root.decodeRequestSerial) {
+                return
+            }
+            if (response.ok && response.value) {
+                root.activeDecode = response.value
+                root.activeDecodeError = ""
+                if (root.model.accountDecodeFullyConsumed(response.value)) {
+                    root.model.cacheAccountIdlSelection(root.accountCacheId(), option, response.value.account_type || option.accountType)
+                }
+            } else {
+                root.activeDecode = null
+                root.activeDecodeError = response.error || qsTr("Decode failed.")
+            }
+        })
+    }
+
+    function selectTypedIdlType(text) {
+        const needle = String(text || "").trim().toLowerCase()
+        if (!needle.length) {
+            return
+        }
+        for (let i = 0; i < root.idlTypeLabels.length; ++i) {
+            if (String(root.idlTypeLabels[i]).toLowerCase().indexOf(needle) >= 0) {
+                root.selectIdlType(i)
+                return
+            }
+        }
+    }
+
+    function indexForType(accountType) {
+        const text = String(accountType || "")
+        if (!text.length) {
+            return -1
+        }
+        for (let i = 0; i < root.idlTypeOptions.length; ++i) {
+            if (root.idlTypeOptions[i].accountType === text) {
+                return i
+            }
+        }
+        return -1
+    }
+
+    function indexForTypeInIdl(idlIndex, accountType) {
+        const text = String(accountType || "")
+        for (let i = 0; i < root.idlTypeOptions.length; ++i) {
+            const option = root.idlTypeOptions[i]
+            if (option.idlIndex === idlIndex && option.accountType === text) {
+                return i
+            }
+        }
+        return root.indexForType(accountType)
+    }
+
+    function indexForTypeInIdlKey(idlKey, accountType) {
+        const key = String(idlKey || "")
+        const text = String(accountType || "")
+        for (let i = 0; i < root.idlTypeOptions.length; ++i) {
+            const option = root.idlTypeOptions[i]
+            if (option.idlKey === key && option.accountType === text) {
+                return i
+            }
+        }
+        return root.indexForType(accountType)
+    }
+
+    function accountCacheId() {
+        if (!root.detail) {
+            return ""
+        }
+        return root.detail.account_id_base58.length ? root.detail.account_id_base58 : root.detail.account_id
+    }
+
+    function activeIdlTypeLabel() {
+        if (!root.activeDecode) {
+            return "-"
+        }
+        const accountType = root.valueText(root.activeDecode.account_type)
+        if (root.activeIdlLabel.length) {
+            return qsTr("%1: %2").arg(root.activeIdlLabel).arg(accountType)
+        }
+        return qsTr("IDL: %1").arg(accountType)
+    }
+
+    function decodeMessage() {
+        if (root.activeDecodeError.length) {
+            return root.activeDecodeError
+        }
+        if (!root.detail || !root.detail.data_hex.length) {
+            return qsTr("No account data is available.")
+        }
+        if (root.model.registeredIdls.count === 0) {
+            return qsTr("Register an account IDL in SPEL to decode this data.")
+        }
+        return qsTr("No registered IDL type decoded this data.")
+    }
+
     function accountRows() {
         if (!root.detail) {
             return []
         }
 
         const rows = []
-        if (root.detail.account_id.length) {
+        if (root.detail.balance.length) {
             rows.push({
-                label: qsTr("Account ID"),
-                value: root.detail.account_id,
-                monospace: true,
-                linkKind: "account",
-                linkValue: root.detail.account_id
-            })
-        }
-        if (root.detail.data_hex.length) {
-            rows.push({
-                label: qsTr("Data hex"),
-                value: root.shortLong(root.detail.data_hex),
-                subvalue: qsTr("%1 bytes").arg(root.numberText(root.dataBytes(root.detail.data_hex))),
+                label: qsTr("Balance"),
+                value: root.numberText(root.detail.balance),
                 monospace: true
             })
         }
-
-        const account = root.detail.account
-        if (account && typeof account === "object" && !Array.isArray(account)) {
-            const keys = Object.keys(account).sort()
-            for (let i = 0; i < keys.length; ++i) {
-                const key = keys[i]
-                if (key === "data" || key === "data_hex") {
-                    continue
-                }
-                rows.push({
-                    label: key,
-                    value: root.valueText(account[key]),
-                    monospace: true,
-                    linkKind: root.referenceKind(key, account[key]),
-                    linkValue: root.valueText(account[key])
-                })
-            }
+        if (root.detail.nonce.length) {
+            rows.push({
+                label: qsTr("Nonce"),
+                value: root.numberText(root.detail.nonce),
+                monospace: true
+            })
+        }
+        if (root.detail.owner_base58.length || root.detail.owner_hex.length) {
+            const ownerValue = root.addressCopyValue(root.detail.owner_base58, root.detail.owner_hex)
+            rows.push({
+                label: qsTr("Owner"),
+                value: root.addressLabel(root.detail.owner_base58, root.detail.owner_hex),
+                subvalue: root.detail.owner_hex.length ? root.hexAddressText(root.detail.owner_hex) : "",
+                subvalueCopyText: root.detail.owner_hex.length ? root.hexAddressText(root.detail.owner_hex) : "",
+                monospace: true,
+                linkKind: "program",
+                linkValue: ownerValue,
+                tooltipText: root.isNullAddress(root.detail.owner_base58, root.detail.owner_hex) ? ownerValue : ""
+            })
         }
         return rows
     }
 
     function decodedRows() {
-        const decode = root.detail ? root.detail.decode : null
+        const decode = root.activeDecode
         if (!decode) {
             return []
         }
 
-        const rows = [
-            { label: qsTr("Account type"), value: root.valueText(decode.account_type), monospace: false },
-            { label: qsTr("Consumed bytes"), value: root.numberText(decode.consumed_bytes), monospace: true },
-            { label: qsTr("Total bytes"), value: root.numberText(decode.total_bytes), monospace: true },
-            { label: qsTr("Remaining bytes"), value: root.numberText(decode.remaining_bytes), monospace: true }
-        ]
+        const rows = []
         if (decode.remaining_data_hex) {
             rows.push({ label: qsTr("Remaining data"), value: root.shortLong(decode.remaining_data_hex), monospace: true })
         }
@@ -272,12 +653,17 @@ ColumnLayout {
         const decodedRows = Array.isArray(decode.rows) ? decode.rows : []
         for (let i = 0; i < decodedRows.length; ++i) {
             const row = decodedRows[i]
+            const rawValue = root.valueText(row.value)
+            const kind = root.referenceKind(row.path, row.value)
+            const useAlias = (kind === "account" || kind === "program") && root.isNullAddress(rawValue, rawValue)
+            const aliased = useAlias ? root.addressLabel(rawValue, "") : rawValue
             rows.push({
-                label: String(row.path || qsTr("Field")),
-                value: root.valueText(row.value),
+                label: root.displayLabel(row.path || qsTr("Field")),
+                value: aliased,
                 monospace: true,
-                linkKind: root.referenceKind(row.path, row.value),
-                linkValue: root.valueText(row.value)
+                linkKind: kind,
+                linkValue: useAlias ? root.addressCopyValue(rawValue, rawValue) : rawValue,
+                tooltipText: useAlias ? root.addressCopyValue(rawValue, rawValue) : ""
             })
         }
         return rows
@@ -288,6 +674,7 @@ ColumnLayout {
         if (!rows.length) {
             return [{
                 hashText: qsTr("No related transactions loaded"),
+                direction: "-",
                 kind: "-",
                 programText: "-",
                 accounts: "-",
@@ -300,6 +687,7 @@ ColumnLayout {
             const programId = String(tx.program_id_hex || "")
             return {
                 hashText: root.shortId(txHash),
+                direction: root.directionText(tx.direction),
                 kind: String(tx.kind || "-"),
                 programText: root.shortId(programId),
                 accounts: root.numberText(Array.isArray(tx.account_ids) ? tx.account_ids.length : 0),
@@ -307,6 +695,17 @@ ColumnLayout {
                 programId: programId
             }
         })
+    }
+
+    function directionText(direction) {
+        const value = String(direction || "").toLowerCase()
+        if (value === "incoming") {
+            return qsTr("Incoming")
+        }
+        if (value === "outgoing") {
+            return qsTr("Outgoing")
+        }
+        return "-"
     }
 
     function referenceKind(label, value) {
@@ -350,6 +749,40 @@ ColumnLayout {
         return Math.floor(text.length / 2)
     }
 
+    function hexAddressText(hex) {
+        const text = String(hex || "").replace(/^0x/, "")
+        return text.length ? "0x" + text : ""
+    }
+
+    function addressLabel(baseValue, hexValue) {
+        const base = String(baseValue || "")
+        const hex = String(hexValue || "")
+        if (root.isNullAddress(base, hex)) {
+            return qsTr("Null")
+        }
+        if (base.length) {
+            return base
+        }
+        return hex.length ? root.hexAddressText(hex) : "-"
+    }
+
+    function addressCopyValue(baseValue, hexValue) {
+        const base = String(baseValue || "")
+        if (root.isNullAddress(base, hexValue)) {
+            return root.nullAddressBase58
+        }
+        return base.length ? base : root.hexAddressText(hexValue)
+    }
+
+    function isNullAddress(baseValue, hexValue) {
+        const base = String(baseValue || "")
+        const explicitHex = String(hexValue || "").replace(/^0x/, "")
+        const inferredHex = explicitHex.length > 0
+            ? explicitHex
+            : (/^(0x)?[0-9a-fA-F]{32,}$/.test(base) ? base.replace(/^0x/, "") : "")
+        return base === root.nullAddressBase58 || (inferredHex.length > 0 && /^[0]+$/.test(inferredHex))
+    }
+
     function valueText(value) {
         if (value === undefined || value === null || value === "") {
             return "-"
@@ -361,6 +794,11 @@ ColumnLayout {
             return JSON.stringify(value)
         }
         return String(value)
+    }
+
+    function displayLabel(value) {
+        const text = String(value || "").replace(/[._-]+/g, " ").trim()
+        return text.length ? text : qsTr("Field")
     }
 
     function numberText(value) {
@@ -435,13 +873,131 @@ ColumnLayout {
                         label: String(modelData.label || "")
                         value: String(modelData.value || "-")
                         subvalue: String(modelData.subvalue || "")
+                        subvalueCopyText: String(modelData.subvalueCopyText || "")
                         linkKind: String(modelData.linkKind || "")
                         linkValue: String(modelData.linkValue || "")
+                        tooltipText: String(modelData.tooltipText || "")
                         monospace: modelData.monospace !== undefined ? modelData.monospace : true
                         onActivated: root.model.openReference(modelData.linkKind, modelData.linkValue)
                     }
                 }
             }
+        }
+    }
+
+    component CopyTextLine: Item {
+        id: copyLineRoot
+
+        required property Theme theme
+        property string text: ""
+        property string copyText: text
+        property string tooltipText: ""
+        property bool monospace: true
+        property color textColor: theme.text
+        property int textPixelSize: theme.dataText
+        property int textWeight: Font.Normal
+
+        Layout.fillWidth: true
+        implicitHeight: Math.max(copyLineText.implicitHeight, copyButton.implicitHeight)
+
+        Row {
+            id: copyLineRow
+
+            width: copyLineRoot.width
+            spacing: copyLineRoot.theme.gapTiny
+
+            Text {
+                id: copyLineText
+
+                text: copyLineRoot.text
+                width: Math.min(implicitWidth, Math.max(80, copyLineRoot.width - copyButton.implicitWidth - copyLineRow.spacing))
+                color: copyLineRoot.textColor
+                textFormat: Text.PlainText
+                wrapMode: Text.WrapAnywhere
+                font.family: copyLineRoot.monospace ? "monospace" : ""
+                font.pixelSize: copyLineRoot.textPixelSize
+                font.weight: copyLineRoot.textWeight
+
+                MouseArea {
+                    id: copyLineHover
+
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    acceptedButtons: Qt.NoButton
+                }
+
+                ToolTip.visible: copyLineHover.containsMouse && copyLineRoot.tooltipText.length > 0
+                ToolTip.text: copyLineRoot.tooltipText
+            }
+
+            ToolButton {
+                id: copyButton
+
+                visible: copyLineRoot.copyText.length > 0
+                hoverEnabled: true
+                focusPolicy: Qt.TabFocus
+                width: 26
+                height: 26
+                padding: 0
+                onClicked: copyLineRoot.copyToClipboard()
+
+                ToolTip.visible: hovered
+                ToolTip.delay: 500
+                ToolTip.text: qsTr("Copy")
+
+                background: Rectangle {
+                    radius: copyLineRoot.theme.radius
+                    color: copyButton.down ? copyLineRoot.theme.accentMuted : (copyButton.hovered || copyButton.activeFocus ? copyLineRoot.theme.hover : "transparent")
+                    border.width: copyButton.activeFocus ? 1 : 0
+                    border.color: copyLineRoot.theme.accent
+                }
+
+                contentItem: Item {
+                    Rectangle {
+                        x: 7
+                        y: 5
+                        width: 10
+                        height: 12
+                        radius: 2
+                        color: "transparent"
+                        border.width: 1
+                        border.color: copyButton.hovered || copyButton.activeFocus ? copyLineRoot.theme.accentHover : copyLineRoot.theme.textMuted
+                    }
+
+                    Rectangle {
+                        x: 10
+                        y: 8
+                        width: 10
+                        height: 12
+                        radius: 2
+                        color: copyLineRoot.theme.surface
+                        border.width: 1
+                        border.color: copyButton.hovered || copyButton.activeFocus ? copyLineRoot.theme.accentHover : copyLineRoot.theme.textMuted
+                    }
+                }
+
+                Accessible.role: Accessible.Button
+                Accessible.name: qsTr("Copy %1").arg(copyLineRoot.text)
+            }
+        }
+
+        TextArea {
+            id: copyBuffer
+
+            visible: false
+            text: copyLineRoot.copyText
+        }
+
+        Accessible.role: Accessible.StaticText
+        Accessible.name: copyLineRoot.text
+
+        function copyToClipboard() {
+            copyBuffer.text = copyLineRoot.copyText
+            copyBuffer.forceActiveFocus()
+            copyBuffer.selectAll()
+            copyBuffer.copy()
+            copyBuffer.deselect()
+            copyLineRoot.forceActiveFocus()
         }
     }
 
@@ -452,8 +1008,10 @@ ColumnLayout {
         property string label: ""
         property string value: ""
         property string subvalue: ""
+        property string subvalueCopyText: ""
         property string linkKind: ""
         property string linkValue: ""
+        property string tooltipText: ""
         property bool monospace: true
         signal activated()
 
@@ -476,10 +1034,14 @@ ColumnLayout {
                 text: rowRoot.label
                 color: rowRoot.theme.textMuted
                 textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                maximumLineCount: 2
+                elide: Text.ElideRight
                 font.pixelSize: 11
                 font.weight: Font.DemiBold
                 font.capitalization: Font.AllUppercase
                 Layout.preferredWidth: 132
+                Layout.maximumWidth: 132
                 Layout.alignment: Qt.AlignTop
             }
 
@@ -491,20 +1053,24 @@ ColumnLayout {
                     text: rowRoot.value
                     theme: rowRoot.theme
                     link: rowRoot.linkKind.length > 0
+                    copyText: rowRoot.linkValue.length > 0 ? rowRoot.linkValue : rowRoot.value
+                    tooltipText: rowRoot.tooltipText
                     monospace: rowRoot.monospace
                     wrap: true
                     Layout.fillWidth: true
                     onActivated: rowRoot.activated()
                 }
 
-                Text {
+                LinkCell {
                     visible: rowRoot.subvalue.length > 0
                     text: rowRoot.subvalue
-                    color: rowRoot.theme.textDim
-                    textFormat: Text.PlainText
-                    wrapMode: Text.WrapAnywhere
-                    font.family: "monospace"
-                    font.pixelSize: 11
+                    theme: rowRoot.theme
+                    copyable: rowRoot.subvalueCopyText.length > 0
+                    copyText: rowRoot.subvalueCopyText
+                    monospace: true
+                    wrap: true
+                    textColor: rowRoot.theme.textDim
+                    textPixelSize: 11
                     Layout.fillWidth: true
                 }
             }
@@ -534,11 +1100,11 @@ ColumnLayout {
             anchors.fill: parent
             anchors.leftMargin: 14
             anchors.rightMargin: 14
-            columns: 4
+            columns: rowRoot.columns.length > 0 ? rowRoot.columns.length : 5
             columnSpacing: 10
 
             Repeater {
-                model: 4
+                model: rowRoot.columns.length > 0 ? rowRoot.columns.length : 5
 
                 LinkCell {
                     required property int index
@@ -547,9 +1113,10 @@ ColumnLayout {
                     text: String(rowRoot.columns[index] || "-")
                     header: rowRoot.header
                     link: rowRoot.linkFor(index)
+                    copyText: rowRoot.copyValueFor(index)
                     monospace: !rowRoot.header
                     Layout.preferredWidth: rowRoot.columnWidth(index)
-                    Layout.fillWidth: index === 0 || index === 2
+                    Layout.fillWidth: index === 0 || index === 3
                     onActivated: rowRoot.cellActivated(index)
                 }
             }
@@ -558,14 +1125,24 @@ ColumnLayout {
         function linkFor(index) {
             return !rowRoot.header
                 && ((index === 0 && rowRoot.txHash.length > 0)
-                    || (index === 2 && rowRoot.programId.length > 0))
+                    || (index === 3 && rowRoot.programId.length > 0))
         }
 
         function columnWidth(index) {
-            if (index === 1 || index === 3) {
+            if (index === 1 || index === 2 || index === 4) {
                 return 92
             }
             return 180
+        }
+
+        function copyValueFor(index) {
+            if (index === 0 && rowRoot.txHash.length > 0) {
+                return rowRoot.txHash
+            }
+            if (index === 3 && rowRoot.programId.length > 0) {
+                return rowRoot.programId
+            }
+            return String(rowRoot.columns[index] || "")
         }
     }
 }

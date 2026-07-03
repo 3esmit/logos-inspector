@@ -106,11 +106,16 @@ Pane {
 
             ActionButton {
                 theme: root.theme
-                text: qsTr("Open")
+                text: ""
+                iconOnly: true
+                iconName: "search"
                 primary: true
                 enabled: !root.model.busy && root.lookupCanOpen(lookupField.text)
-                Layout.preferredWidth: 82
-                accessibleName: qsTr("Open reference")
+                Layout.preferredWidth: root.theme.controlHeight
+                accessibleName: qsTr("Search")
+                ToolTip.visible: hovered
+                ToolTip.delay: 350
+                ToolTip.text: qsTr("Search")
                 onClicked: root.openLookup()
             }
         }
@@ -157,8 +162,11 @@ Pane {
         if (!value.length || root.model.busy || !root.lookupCanOpen(value)) {
             return
         }
+        lookupField.clear()
         root.model.routeSearch(value)
-        lookupField.text = ""
+        Qt.callLater(function () {
+            lookupField.clear()
+        })
     }
 
     function lookupCode(query) {
@@ -170,7 +178,7 @@ Pane {
             return "block"
         }
         if (/^(0x)?[0-9a-fA-F]{64}$/.test(value)) {
-            return "transaction"
+            return "any"
         }
         if (/^(0x)?[0-9a-fA-F]{40}$/.test(value) || /^[1-9A-HJ-NP-Za-km-z]{32,64}$/.test(value)) {
             return "account"
@@ -195,8 +203,9 @@ Pane {
     }
 
     function lookupCanOpen(query) {
+        const value = String(query || "").trim()
         const code = root.lookupCode(query)
-        return code !== "any" && code !== "invalid"
+        return code !== "invalid" && (code !== "any" || value.length > 0)
     }
 
     function lookupBadgeFill(code) {
