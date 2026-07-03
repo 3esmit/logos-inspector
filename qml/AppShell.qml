@@ -70,6 +70,13 @@ Item {
         onTriggered: appModel.queryNetworkConnection("storage", false)
     }
 
+    Timer {
+        interval: appModel.dashboardRefreshInterval()
+        repeat: true
+        running: appModel.currentView === "overview" && appModel.dashboardRefreshInterval() > 0
+        onTriggered: appModel.refreshDashboard()
+    }
+
     Rectangle {
         anchors.fill: parent
         color: theme.background
@@ -177,8 +184,12 @@ Item {
         switch (view) {
         case "blocks":
             return blocksPage
+        case "blockDetail":
+            return blockDetailPage
         case "transactions":
             return transactionsPage
+        case "transactionDetail":
+            return transactionDetailPage
         case "transferActivity":
             return transferActivityPage
         case "blockchain":
@@ -191,8 +202,15 @@ Item {
             return messagingPage
         case "capabilities":
             return capabilitiesPage
+        case "l2Blocks":
         case "sequencer":
-            return sequencerPage
+            return lezBlocksPage
+        case "l2Transactions":
+            return lezTransactionsPage
+        case "l2BlockDetail":
+            return lezBlockDetailPage
+        case "l2TransactionDetail":
+            return lezTransactionDetailPage
         case "accounts":
             return accountsPage
         case "programs":
@@ -225,10 +243,28 @@ Item {
     }
 
     Component {
+        id: blockDetailPage
+        BlockDetailPage {
+            theme: theme
+            model: appModel
+            l2: false
+        }
+    }
+
+    Component {
         id: transactionsPage
         TransactionsPage {
             theme: theme
             model: appModel
+        }
+    }
+
+    Component {
+        id: transactionDetailPage
+        TransactionDetailPage {
+            theme: theme
+            model: appModel
+            l2: false
         }
     }
 
@@ -287,10 +323,36 @@ Item {
     }
 
     Component {
-        id: sequencerPage
-        SequencerPage {
+        id: lezBlocksPage
+        LezBlocksPage {
             theme: theme
             model: appModel
+        }
+    }
+
+    Component {
+        id: lezTransactionsPage
+        LezTransactionsPage {
+            theme: theme
+            model: appModel
+        }
+    }
+
+    Component {
+        id: lezBlockDetailPage
+        BlockDetailPage {
+            theme: theme
+            model: appModel
+            l2: true
+        }
+    }
+
+    Component {
+        id: lezTransactionDetailPage
+        TransactionDetailPage {
+            theme: theme
+            model: appModel
+            l2: true
         }
     }
 

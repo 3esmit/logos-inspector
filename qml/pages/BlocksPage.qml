@@ -90,21 +90,6 @@ ColumnLayout {
         Layout.fillWidth: true
     }
 
-    BlockDetailPane {
-        value: root.model.blockDetailValue
-        theme: root.theme
-        model: root.model
-    }
-
-    StatusMessage {
-        visible: root.model.blockDetailValue === null
-        theme: root.theme
-        tone: "info"
-        title: qsTr("Block detail")
-        message: qsTr("Select a block header or slot to inspect its parent, consensus fields, and transaction list.")
-        Layout.fillWidth: true
-    }
-
     function blockRows() {
         const blocks = root.model.blocksPageRows || [];
         if (!blocks.length) {

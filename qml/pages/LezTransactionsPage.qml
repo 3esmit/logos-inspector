@@ -17,24 +17,24 @@ ColumnLayout {
     spacing: 16
 
     Component.onCompleted: {
-        if (!model.transactionsPageRows.length) {
-            model.refreshTransactionsPage();
+        if (!model.lezTransactionsPageRows.length) {
+            model.refreshLezTransactionsPage();
         }
     }
 
     ListToolbar {
         theme: root.theme
-        loadCount: root.model.transactionsPageLimit
-        rangeText: root.transactionRangeText()
-        canGoNewer: root.canLoadNewer()
-        canGoOlder: root.model.transactionsPageNextBeforeBlock > 0
+        loadCount: root.model.lezTransactionsPageLimit
+        rangeText: root.rangeText()
+        canGoNewer: root.model.lezTransactionsPageBeforeBlock > 0
+        canGoOlder: root.model.lezTransactionsPageNextBeforeBlock > 0
         busy: root.model.busy
         Layout.fillWidth: true
-        onRefresh: root.model.refreshTransactionsPage()
-        onNewer: root.model.newerTransactionsPage()
-        onOlder: root.model.olderTransactionsPage()
+        onRefresh: root.model.refreshLezTransactionsPage(root.model.lezTransactionsPageBeforeBlock > 0 ? root.model.lezTransactionsPageBeforeBlock : null)
+        onNewer: root.model.newerLezTransactionsPage()
+        onOlder: root.model.olderLezTransactionsPage()
         onLoadCountSelected: function (count) {
-            root.model.setTransactionsPageLimit(count)
+            root.model.setLezTransactionsPageLimit(count)
         }
     }
 
@@ -55,7 +55,7 @@ ColumnLayout {
             TransactionRow {
                 theme: root.theme
                 header: true
-                columns: [qsTr("L1 slot"), qsTr("Tx hash"), qsTr("Header"), qsTr("Ops")]
+                columns: [qsTr("L2 block"), qsTr("Tx hash"), qsTr("Kind"), qsTr("Words")]
             }
 
             Repeater {
@@ -65,14 +65,14 @@ ColumnLayout {
                     required property var modelData
 
                     theme: root.theme
-                    columns: [modelData.slot, modelData.hash, modelData.block, modelData.ops]
+                    columns: [modelData.block, modelData.hash, modelData.kind, modelData.words]
                     txHash: modelData.txHash
                     blockHash: modelData.blockHash
                     onCellActivated: function (column) {
-                        if (column === 1) {
-                            root.model.openMantleTransaction(modelData.txHash);
-                        } else if (column === 2) {
-                            root.model.openBlockchainBlock(modelData.blockHash);
+                        if (column === 0 && modelData.blockHash.length > 0) {
+                            root.model.openReference("indexerBlock", modelData.blockHash)
+                        } else if (column === 1 && modelData.txHash.length > 0) {
+                            root.model.openReference("transaction", modelData.txHash)
                         }
                     }
                 }
@@ -81,34 +81,48 @@ ColumnLayout {
     }
 
     StatusMessage {
-        visible: root.model.transactionsPageError.length > 0
+        visible: root.model.lezTransactionsPageError.length > 0
         theme: root.theme
         tone: "warning"
-        title: qsTr("Transactions unavailable")
-        message: root.model.transactionsPageError
+        title: qsTr("L2 transactions unavailable")
+        message: root.model.lezTransactionsPageError
         Layout.fillWidth: true
     }
 
     function transactionRows() {
-        const transactions = root.model.transactionsPageRows || [];
+        const transactions = root.model.lezTransactionsPageRows || [];
         if (!transactions.length) {
             return [{
-                slot: "-",
-                hash: qsTr("No transactions in loaded range"),
                 block: "-",
-                ops: "-"
+                hash: qsTr("No indexed transactions"),
+                kind: "-",
+                words: "-",
+                txHash: "",
+                blockHash: ""
             }];
         }
         return transactions.map(function (tx) {
             return {
-                slot: root.numberText(tx.slot),
+                block: root.numberText(tx.block_id),
                 hash: root.shortHash(tx.hash),
-                block: root.shortHash(tx.block),
-                ops: root.numberText(tx.ops),
-                txHash: String(tx.hash || ""),
-                blockHash: String(tx.block || "")
+                kind: String(tx.kind || "-"),
+                words: root.numberText(tx.ops),
+                txHash: root.validHash(tx.hash) ? String(tx.hash || "") : "",
+                blockHash: String(tx.block_hash || "")
             };
         });
+    }
+
+    function rangeText() {
+        if (root.model.lezTransactionsPageBeforeBlock <= 0) {
+            return qsTr("Latest L2 transactions");
+        }
+        return qsTr("Before L2 block %1").arg(root.numberText(root.model.lezTransactionsPageBeforeBlock));
+    }
+
+    function validHash(value) {
+        const text = String(value || "");
+        return text.length > 0 && text !== "-";
     }
 
     function numberText(value) {
@@ -129,26 +143,6 @@ ColumnLayout {
         return text.slice(0, 8) + "..." + text.slice(-6);
     }
 
-    function transactionRangeText() {
-        if (root.model.transactionsPageBeforeBlock <= 0) {
-            return qsTr("No range loaded")
-        }
-        return qsTr("Before L1 slot %1").arg(root.numberText(root.model.transactionsPageBeforeBlock))
-    }
-
-    function canLoadNewer() {
-        const current = root.chainSlot("lib_slot")
-        return root.model.transactionsPageBeforeBlock > 0 && current > 0 && root.model.transactionsPageBeforeBlock < current
-    }
-
-    function chainSlot(field) {
-        const info = root.model.blockchainInfo()
-        if (!info || info[field] === undefined || info[field] === null) {
-            return 0
-        }
-        return Number(info[field] || 0)
-    }
-
     component TransactionRow: Item {
         id: rowRoot
 
@@ -166,6 +160,14 @@ ColumnLayout {
             anchors.fill: parent
             color: rowRoot.header ? rowRoot.theme.field : "transparent"
             border.width: 0
+        }
+
+        Rectangle {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            height: 1
+            color: rowRoot.theme.outlineMuted
         }
 
         GridLayout {
@@ -195,17 +197,17 @@ ColumnLayout {
         }
 
         function linkFor(index) {
-            return !rowRoot.header && ((index === 1 && rowRoot.txHash.length > 0) || (index === 2 && rowRoot.blockHash.length > 0));
+            return !rowRoot.header && ((index === 0 && rowRoot.blockHash.length > 0) || (index === 1 && rowRoot.txHash.length > 0));
         }
 
         function copyValueFor(index) {
+            if (index === 0 && rowRoot.blockHash.length > 0) {
+                return rowRoot.blockHash;
+            }
             if (index === 1 && rowRoot.txHash.length > 0) {
-                return rowRoot.txHash
+                return rowRoot.txHash;
             }
-            if (index === 2 && rowRoot.blockHash.length > 0) {
-                return rowRoot.blockHash
-            }
-            return String(rowRoot.columns[index] || "")
+            return String(rowRoot.columns[index] || "");
         }
 
         function columnWidth(index) {
@@ -213,7 +215,7 @@ ColumnLayout {
                 return 96;
             }
             if (index === 3) {
-                return 64;
+                return 72;
             }
             return 180;
         }

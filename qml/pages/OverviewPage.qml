@@ -17,9 +17,7 @@ ColumnLayout {
     spacing: 16
 
     Component.onCompleted: {
-        if (!model.dashboardOverview) {
-            model.refreshDashboard();
-        }
+        model.refreshDashboard();
     }
 
     PageHeader {
@@ -135,8 +133,7 @@ ColumnLayout {
                     title: qsTr("Latest L2 Blocks")
                     action: qsTr("View all")
                     onActivated: {
-                        root.model.sequencerTab = "blocks"
-                        root.model.selectView("sequencer")
+                        root.model.selectView("l2Blocks")
                     }
                 }
 
@@ -185,8 +182,7 @@ ColumnLayout {
                     title: qsTr("Latest L2 Transactions")
                     action: qsTr("View all")
                     onActivated: {
-                        root.model.sequencerTab = "transactions"
-                        root.model.selectView("sequencer")
+                        root.model.selectView("l2Transactions")
                     }
                 }
 
@@ -267,6 +263,11 @@ ColumnLayout {
     }
 
     function consensusValue() {
+        const nodeReport = root.nodeReport();
+        const infoProbe = nodeReport ? nodeReport.cryptarchia_info : null;
+        if (infoProbe && infoProbe.value) {
+            return infoProbe.value;
+        }
         const node = overview().node;
         const probe = node ? node.consensus : null;
         return probe && probe.value ? probe.value : {};
@@ -484,7 +485,7 @@ ColumnLayout {
 
     function l1BlockRows() {
         const blocks = root.model.blocksPageRows || []
-        if (blocks.length > 0) {
+        if (blocks.length > 0 && root.blocksPageRowsAreCurrent()) {
             return blocks.slice(0, 5).map(function (block) {
                 const header = block.header || {}
                 const transactions = Array.isArray(block.transactions) ? block.transactions : []
@@ -517,6 +518,12 @@ ColumnLayout {
                 blockHash: String(root.cryptarchiaValue("lib") || "")
             }
         ]
+    }
+
+    function blocksPageRowsAreCurrent() {
+        const libSlot = Number(root.cryptarchiaValue("lib_slot"))
+        const slotTo = Number(root.model.blocksPageSlotTo)
+        return Number.isFinite(libSlot) && libSlot > 0 && Number.isFinite(slotTo) && slotTo >= libSlot
     }
 
     function l2BlockRows() {
@@ -668,12 +675,17 @@ ColumnLayout {
                     ctx.lineTo(width - inset, height - inset)
                     ctx.stroke()
 
-                    const raw = Array.isArray(graphRoot.samples) && graphRoot.samples.length > 0 ? graphRoot.samples : [graphRoot.numericValue]
+                    const raw = Array.isArray(graphRoot.samples) && graphRoot.samples.length > 0 ? graphRoot.samples : [{ timestamp: Date.now(), value: graphRoot.numericValue }]
                     const samples = []
                     for (let i = 0; i < raw.length; ++i) {
-                        const value = Number(raw[i])
+                        const sample = raw[i]
+                        const value = Number(sample && typeof sample === "object" ? sample.value : sample)
                         if (Number.isFinite(value)) {
-                            samples.push(value)
+                            const timestamp = Number(sample && typeof sample === "object" ? sample.timestamp : i)
+                            samples.push({
+                                timestamp: Number.isFinite(timestamp) ? timestamp : i,
+                                value: value
+                            })
                         }
                     }
                     if (samples.length === 0) {
@@ -697,18 +709,22 @@ ColumnLayout {
                         return
                     }
 
-                    let min = samples[0]
-                    let max = samples[0]
+                    let min = samples[0].value
+                    let max = samples[0].value
+                    let minTimestamp = samples[0].timestamp
+                    let maxTimestamp = samples[0].timestamp
                     for (let j = 1; j < samples.length; ++j) {
-                        min = Math.min(min, samples[j])
-                        max = Math.max(max, samples[j])
+                        min = Math.min(min, samples[j].value)
+                        max = Math.max(max, samples[j].value)
+                        minTimestamp = Math.min(minTimestamp, samples[j].timestamp)
+                        maxTimestamp = Math.max(maxTimestamp, samples[j].timestamp)
                     }
                     const span = Math.max(1, max - min)
-                    const count = Math.max(2, samples.length)
+                    const timeSpan = Math.max(1, maxTimestamp - minTimestamp)
                     ctx.beginPath()
                     for (let k = 0; k < samples.length; ++k) {
-                        const x = inset + (count === 1 ? chartWidth : (chartWidth * k / (count - 1)))
-                        const y = inset + chartHeight - ((samples[k] - min) / span * chartHeight)
+                        const x = inset + ((samples[k].timestamp - minTimestamp) / timeSpan * chartWidth)
+                        const y = inset + chartHeight - ((samples[k].value - min) / span * chartHeight)
                         if (k === 0) {
                             ctx.moveTo(x, y)
                         } else {

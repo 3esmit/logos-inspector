@@ -310,11 +310,43 @@ impl InspectorBridge {
                     ))?,
             )
         } else {
-            to_value(
-                self.runtime
-                    .block_on(sequencer_transaction_inspection(endpoint, hash))?,
-            )
+            self.inspect_transaction_with_registered_idls(endpoint, hash)
         }
+    }
+
+    fn inspect_transaction_with_registered_idls(
+        &self,
+        endpoint: &str,
+        hash: &str,
+    ) -> Result<Value> {
+        let inspection = self
+            .runtime
+            .block_on(sequencer_transaction_inspection(endpoint, hash))?;
+        let Some(inspection) = inspection else {
+            return Ok(Value::Null);
+        };
+
+        let summary = inspection.raw_summary.clone();
+        let mut partial = None;
+        for idl_json in registered_idl_jsons()? {
+            let Ok(report) = inspect_transaction_summary_with_idl(&summary, &idl_json) else {
+                continue;
+            };
+            if let Some(decoded) = &report.decoded_instruction {
+                if decoded.remaining_words.is_empty() {
+                    return to_value(Some(report));
+                }
+                if partial.is_none() {
+                    partial = Some(report);
+                }
+            }
+        }
+
+        if let Some(report) = partial {
+            return to_value(Some(report));
+        }
+
+        to_value(Some(inspection))
     }
 
     fn trace_transaction(&self, args: Value) -> Result<Value> {
@@ -385,6 +417,23 @@ fn load_idl_state() -> Result<Value> {
         .with_context(|| format!("failed to read IDL state from {}", path.display()))?;
     serde_json::from_str(&text)
         .with_context(|| format!("failed to parse IDL state from {}", path.display()))
+}
+
+fn registered_idl_jsons() -> Result<Vec<String>> {
+    let state = load_idl_state()?;
+    Ok(state
+        .get("idls")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| {
+            entry
+                .get("json")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        })
+        .filter(|json| !json.trim().is_empty())
+        .collect())
 }
 
 fn save_idl_state(state: &Value) -> Result<Value> {
