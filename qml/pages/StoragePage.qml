@@ -41,7 +41,7 @@ ColumnLayout {
         breadcrumb: qsTr("Home / Storage")
         title: qsTr("Storage")
         layerLabel: qsTr("Module / Network")
-        subtitle: qsTr("%1 on %2, %3 s rolling window.")
+        subtitle: qsTr("%1 on %2, %3 s refresh window.")
             .arg(root.model.storageSourceLabel())
             .arg(root.model.storageNetworkPreset)
             .arg(root.model.storageRollingWindow)
@@ -155,8 +155,8 @@ ColumnLayout {
                     compact: true
                     label: qsTr("Transfers")
                     value: root.transferSummary()
-                    delta: qsTr("%1 failed").arg(root.metricDisplay("storage.failed_transfers_recent"))
-                    deltaColor: root.metricTone("storage.failed_transfers_recent")
+                    delta: qsTr("%1 failure counter").arg(root.metricDisplay("storage.failed_transfers_recent"))
+                    deltaColor: root.transferFailureTone()
                 }
 
                 MetricCard {
@@ -380,7 +380,7 @@ ColumnLayout {
 
             Panel {
                 theme: root.theme
-                title: qsTr("Rolling-window transfer signals")
+                title: qsTr("Transfer counters")
 
                 Repeater {
                     model: root.transferRows()
@@ -824,7 +824,7 @@ ColumnLayout {
         if (uploads === qsTr("n/a") && downloads === qsTr("n/a")) {
             return qsTr("n/a")
         }
-        return qsTr("%1 up / %2 down").arg(uploads).arg(downloads)
+        return qsTr("%1 uploads / %2 downloads").arg(uploads).arg(downloads)
     }
 
     function reliabilityText() {
@@ -832,7 +832,7 @@ ColumnLayout {
             return qsTr("Degraded")
         }
         if (root.metricKnown("storage.failed_transfers_recent")) {
-            return Number(root.model.dashboardMetricValue("storage.failed_transfers_recent")) > 0 ? qsTr("Degraded") : qsTr("Stable")
+            return Number(root.model.dashboardMetricValue("storage.failed_transfers_recent")) > 0 ? qsTr("Observed") : qsTr("No failures")
         }
         return qsTr("Unknown")
     }
@@ -841,10 +841,14 @@ ColumnLayout {
         if (root.failedProbeCount() > 0) {
             return root.theme.error
         }
-        if (root.metricKnown("storage.failed_transfers_recent")) {
-            return Number(root.model.dashboardMetricValue("storage.failed_transfers_recent")) > 0 ? root.theme.error : root.theme.success
+        return root.transferFailureTone()
+    }
+
+    function transferFailureTone() {
+        if (!root.metricKnown("storage.failed_transfers_recent")) {
+            return root.theme.textMuted
         }
-        return root.theme.textMuted
+        return Number(root.model.dashboardMetricValue("storage.failed_transfers_recent")) > 0 ? root.theme.warning : root.theme.success
     }
 
     function healthRows() {
@@ -856,16 +860,16 @@ ColumnLayout {
             root.statusRow(qsTr("DHT / discovery"), root.probeKnown("debug") ? qsTr("observed") : qsTr("unknown"), root.probeKnown("debug") ? root.valueSummary(root.probeValue("debug")) : qsTr("Debug source unavailable."), root.probeKnown("debug") ? "success" : "neutral"),
             root.statusRow(qsTr("Connected peers"), root.metricKnown("storage.peer_count") ? qsTr("observed") : qsTr("unknown"), root.metricDisplay("storage.peer_count"), root.metricKnown("storage.peer_count") ? "success" : "neutral"),
             root.statusRow(qsTr("Repository and host disk"), root.probeKnown("space") || root.metricKnown("storage.local_storage_used") ? qsTr("observed") : qsTr("unknown"), root.capacitySummary(), root.probeKnown("space") || root.metricKnown("storage.local_storage_used") ? "success" : "neutral"),
-            root.statusRow(qsTr("Transfer reliability"), root.metricKnown("storage.failed_transfers_recent") ? root.metricDisplay("storage.failed_transfers_recent") : qsTr("unknown"), root.metricKnown("storage.failed_transfers_recent") ? qsTr("%1 s window").arg(root.model.storageRollingWindow) : qsTr("Metric not exposed by current source."), root.metricKnown("storage.failed_transfers_recent") ? (Number(root.model.dashboardMetricValue("storage.failed_transfers_recent")) > 0 ? "error" : "success") : "neutral"),
+            root.statusRow(qsTr("Transfer failures"), root.metricKnown("storage.failed_transfers_recent") ? root.metricDisplay("storage.failed_transfers_recent") : qsTr("unknown"), root.metricKnown("storage.failed_transfers_recent") ? qsTr("Counter total") : qsTr("Metric not exposed by current source."), root.metricKnown("storage.failed_transfers_recent") ? (Number(root.model.dashboardMetricValue("storage.failed_transfers_recent")) > 0 ? "warning" : "success") : "neutral"),
             root.statusRow(qsTr("Mix / private queries"), qsTr("not queried"), qsTr("No passive metric selected."), "neutral")
         ]
     }
 
     function activeOperationRows() {
         return [
-            root.metricRow(qsTr("Active uploads"), "storage.active_uploads"),
-            root.metricRow(qsTr("Active downloads"), "storage.active_downloads"),
-            root.metricRow(qsTr("Failed transfers"), "storage.failed_transfers_recent"),
+            root.metricRow(qsTr("Upload requests"), "storage.active_uploads"),
+            root.metricRow(qsTr("Download requests"), "storage.active_downloads"),
+            root.metricRow(qsTr("Transfer failures"), "storage.failed_transfers_recent"),
             root.statusRow(qsTr("Provider lookup"), qsTr("idle"), qsTr("Explicit diagnostic only."), "neutral"),
             root.statusRow(qsTr("Network download"), qsTr("idle"), qsTr("No operation created by background polling."), "success")
         ]
@@ -901,9 +905,9 @@ ColumnLayout {
 
     function transferRows() {
         return [
-            root.metricRow(qsTr("Active uploads"), "storage.active_uploads"),
-            root.metricRow(qsTr("Active downloads"), "storage.active_downloads"),
-            root.metricRow(qsTr("Failed transfers"), "storage.failed_transfers_recent"),
+            root.metricRow(qsTr("Upload requests"), "storage.active_uploads"),
+            root.metricRow(qsTr("Download requests"), "storage.active_downloads"),
+            root.metricRow(qsTr("Transfer failures"), "storage.failed_transfers_recent"),
             root.statusRow(qsTr("Upload diagnostics"), qsTr("disabled"), qsTr("Mutating diagnostics require explicit backend support."), root.model.storageMutatingDiagnosticsEnabled ? "warning" : "neutral"),
             root.statusRow(qsTr("Download diagnostics"), qsTr("idle"), qsTr("Future download probes run asynchronously with progress and cancel."), "neutral")
         ]
@@ -980,7 +984,18 @@ ColumnLayout {
 
     function metricRow(label, key) {
         const known = root.metricKnown(key)
-        return root.statusRow(label, known ? root.metricDisplay(key) : qsTr("n/a"), known ? qsTr("%1 s window").arg(root.model.storageRollingWindow) : qsTr("Metric not exposed by current source."), known ? "success" : "neutral")
+        return root.statusRow(label, known ? root.metricDisplay(key) : qsTr("n/a"), known ? root.metricEvidence(key) : qsTr("Metric not exposed by current source."), known ? "success" : "neutral")
+    }
+
+    function metricEvidence(key) {
+        switch (String(key || "")) {
+        case "storage.active_uploads":
+        case "storage.active_downloads":
+        case "storage.failed_transfers_recent":
+            return qsTr("Counter total")
+        default:
+            return qsTr("%1 s window").arg(root.model.storageRollingWindow)
+        }
     }
 
     function manifestCountRow() {

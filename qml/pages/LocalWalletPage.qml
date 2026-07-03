@@ -21,7 +21,6 @@ ColumnLayout {
         id: walletTabs
 
         ListElement { value: "profiles"; label: "Profiles" }
-        ListElement { value: "lezAccounts"; label: "LEZ Accounts" }
         ListElement { value: "privateSync"; label: "Private Sync" }
         ListElement { value: "bedrockNotes"; label: "Bedrock Notes" }
         ListElement { value: "operations"; label: "Operations" }
@@ -495,8 +494,6 @@ ColumnLayout {
 
     function tabComponent(tab) {
         switch (String(tab || "")) {
-        case "lezAccounts":
-            return lezAccountsTab
         case "privateSync":
             return privateSyncTab
         case "bedrockNotes":

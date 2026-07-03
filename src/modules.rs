@@ -127,10 +127,11 @@ async fn storage_rest_report(
         raw_http_value(endpoint, "/data"),
         raw_http_value(endpoint, "/debug/info"),
     );
+    let manifests = data.map(normalize_storage_manifests);
     let mut probes = vec![
         ProbeReport::from_result("storage_rest.spr", spr_source, spr),
         ProbeReport::from_result("storage_rest.peerId", peer_id_source, peer_id),
-        ProbeReport::from_result("storage_rest.manifests", data_source, data),
+        ProbeReport::from_result("storage_rest.manifests", data_source, manifests),
         ProbeReport::from_result("storage_rest.debug", debug_source, debug),
     ];
     if let Some(cid) = optional(cid) {
@@ -214,6 +215,20 @@ fn normalized_storage_source_mode(source_mode: &str) -> &'static str {
         "c-library" | "c library" | "library" => "c-library",
         "local-os" | "local os" | "local diagnostics" => "local-os",
         _ => "module",
+    }
+}
+
+fn normalize_storage_manifests(value: Value) -> Value {
+    match value {
+        Value::Object(mut object) => match object.remove("content") {
+            Some(Value::Array(items)) => Value::Array(items),
+            Some(content) => {
+                object.insert("content".to_owned(), content);
+                Value::Object(object)
+            }
+            None => Value::Object(object),
+        },
+        value => value,
     }
 }
 

@@ -14,10 +14,10 @@ use crate::{
         blockchain_module_report, capabilities_report, delivery_report, delivery_source_report,
         logoscore_status_report, modules_report, storage_report, storage_source_report,
     },
-    overview, program_file_info, raw_json_rpc_result, raw_rpc_report, sequencer_block,
-    sequencer_program_ids, sequencer_transaction, sequencer_transaction_inspection,
-    sequencer_transaction_inspection_with_idl, sequencer_transaction_trace,
-    sequencer_transaction_trace_with_idl,
+    normalize_program_id_hex, overview, program_file_info, raw_json_rpc_optional_result,
+    raw_rpc_report, sequencer_block, sequencer_program_ids, sequencer_transaction,
+    sequencer_transaction_inspection, sequencer_transaction_inspection_with_idl,
+    sequencer_transaction_trace, sequencer_transaction_trace_with_idl,
     spel::spel_idl_report,
 };
 
@@ -127,6 +127,13 @@ impl InspectorBridge {
                     args.u64(2, "slot to")?,
                 ))?)
             }
+            "blockchainBlock" => {
+                let args = Args::new(args)?;
+                to_value(self.runtime.block_on(blockchain::blockchain_block(
+                    args.string(0, "node endpoint")?,
+                    args.string(1, "block id")?,
+                ))?)
+            }
             "channelScan" => {
                 let args = Args::new(args)?;
                 to_value(self.runtime.block_on(channels::channel_scan(
@@ -137,7 +144,7 @@ impl InspectorBridge {
             }
             "indexerHealth" => {
                 let args = Args::new(args)?;
-                let head = self.runtime.block_on(raw_json_rpc_result(
+                let head = self.runtime.block_on(raw_json_rpc_optional_result(
                     args.string(0, "indexer endpoint")?,
                     "getLastFinalizedBlockId",
                     Value::Array(vec![]),
@@ -149,7 +156,7 @@ impl InspectorBridge {
             }
             "indexerFinalizedHead" => {
                 let args = Args::new(args)?;
-                to_value(self.runtime.block_on(raw_json_rpc_result(
+                to_value(self.runtime.block_on(raw_json_rpc_optional_result(
                     args.string(0, "indexer endpoint")?,
                     "getLastFinalizedBlockId",
                     Value::Array(vec![]),
@@ -198,6 +205,10 @@ impl InspectorBridge {
                 let args = Args::new(args)?;
                 to_value(program_file_info(args.string(0, "program path")?)?)
             }
+            "normalizeProgramId" => {
+                let args = Args::new(args)?;
+                to_value(normalize_program_id_hex(args.string(0, "program id")?)?)
+            }
             "localWalletProfileStatus" => {
                 let args = Args::new(args)?;
                 to_value(local_wallet_profile_status(
@@ -223,6 +234,11 @@ impl InspectorBridge {
             "saveWalletState" => {
                 let args = Args::new(args)?;
                 save_wallet_state(args.value(0).context("wallet state is required")?)
+            }
+            "loadSettingsState" => load_settings_state(),
+            "saveSettingsState" => {
+                let args = Args::new(args)?;
+                save_settings_state(args.value(0).context("settings state is required")?)
             }
             "modules" => to_value(modules_report()),
             "logoscoreStatus" => to_value(logoscore_status_report()),
@@ -414,6 +430,40 @@ fn save_wallet_state(state: &Value) -> Result<Value> {
     }))
 }
 
+fn load_settings_state() -> Result<Value> {
+    let path = settings_state_path()?;
+    if !path.is_file() {
+        return Ok(default_settings_state());
+    }
+
+    let text = fs::read_to_string(&path)
+        .with_context(|| format!("failed to read settings state from {}", path.display()))?;
+    serde_json::from_str(&text)
+        .with_context(|| format!("failed to parse settings state from {}", path.display()))
+}
+
+fn save_settings_state(state: &Value) -> Result<Value> {
+    let path = settings_state_path()?;
+    let parent = path
+        .parent()
+        .context("settings state path has no parent directory")?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("failed to create config directory {}", parent.display()))?;
+    let text = serde_json::to_string_pretty(state).context("failed to serialize settings state")?;
+    fs::write(&path, text)
+        .with_context(|| format!("failed to write settings state to {}", path.display()))?;
+    Ok(json!({
+        "saved": true,
+        "path": path.display().to_string(),
+    }))
+}
+
+fn default_settings_state() -> Value {
+    json!({
+        "version": 1
+    })
+}
+
 fn default_wallet_state() -> Value {
     json!({
         "version": 1,
@@ -433,6 +483,10 @@ fn default_wallet_state() -> Value {
 
 fn wallet_state_path() -> Result<PathBuf> {
     Ok(config_dir()?.join("wallet.json"))
+}
+
+fn settings_state_path() -> Result<PathBuf> {
+    Ok(config_dir()?.join("settings.json"))
 }
 
 fn config_dir() -> Result<PathBuf> {

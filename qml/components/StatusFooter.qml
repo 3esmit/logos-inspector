@@ -197,7 +197,6 @@ Pane {
                 "messaging.connection_state",
                 "messaging.module",
                 "messaging.peer_count",
-                "messaging.bootstrap_connected",
                 "messaging.active_subscriptions",
                 "messaging.content_topics",
                 "messaging.outbound_queue",
@@ -283,9 +282,9 @@ Pane {
             "storage.shared_files_count": qsTr("Files"),
             "storage.manifest_count": qsTr("Manifests"),
             "storage.local_storage_used": qsTr("Storage"),
-            "storage.active_uploads": qsTr("Uploads"),
-            "storage.active_downloads": qsTr("Downloads"),
-            "storage.failed_transfers_recent": qsTr("Failures"),
+            "storage.active_uploads": qsTr("Uploads total"),
+            "storage.active_downloads": qsTr("Downloads total"),
+            "storage.failed_transfers_recent": qsTr("Failures total"),
             "storage.cid_fetch_test": qsTr("CID"),
             "storage.last_error": qsTr("ST error"),
             "messaging.module": qsTr("Delivery"),
@@ -428,7 +427,7 @@ Pane {
         case "messaging.receive_latency_ms":
             return root.valueOrNa(root.model.dashboardMetricValue(key))
         case "messaging.bootstrap_connected":
-            return root.valueOrNa(root.model.moduleProbeValue("messaging", "getAvailableNodeInfoIDs") ? qsTr("yes") : null)
+            return qsTr("n/a")
         case "messaging.last_error":
             return root.valueOrNa(root.model.moduleLastError("messaging"))
         case "overall.status":
@@ -499,7 +498,7 @@ Pane {
         if (key === "storage.udp_discovery_port" || key === "storage.tcp_transfer_port") {
             return root.portTone(root.footerFieldValue(key))
         }
-        if (key === "messaging.connection_state" || key === "messaging.bootstrap_connected") {
+        if (key === "messaging.connection_state") {
             return root.booleanTone(root.footerFieldValue(key))
         }
         if (key === "storage.failed_transfers_recent" || key === "messaging.message_error_events_recent") {
@@ -550,7 +549,6 @@ Pane {
             "storage.cid_fetch_test": true,
             "messaging.module": true,
             "messaging.connection_state": true,
-            "messaging.bootstrap_connected": true,
             "overall.status": true
         }
         return lookup[key] === true
@@ -566,6 +564,9 @@ Pane {
         }
         if (key === "overall.operator_action") {
             return root.overallTone() === "success" && root.operatorAction() === qsTr("monitor")
+        }
+        if (key === "messaging.bootstrap_connected") {
+            return true
         }
         return false
     }
@@ -738,11 +739,14 @@ Pane {
     function networkLabel() {
         const profile = String(root.model.networkProfile || "").toLowerCase()
         const sequencer = String(root.model.sequencerUrl || "").toLowerCase()
-        if (profile.indexOf("local") >= 0 || sequencer.indexOf("127.0.0.1") >= 0 || sequencer.indexOf("localhost") >= 0) {
+        if (sequencer.indexOf("127.0.0.1") >= 0 || sequencer.indexOf("localhost") >= 0) {
             return qsTr("local")
         }
         if (profile.indexOf("mainnet") >= 0 || sequencer.indexOf("mainnet") >= 0) {
             return qsTr("mainnet")
+        }
+        if (sequencer.indexOf("testnet") >= 0 || sequencer.indexOf("lez.logos.co") >= 0) {
+            return qsTr("testnet")
         }
         if (profile === "custom") {
             return qsTr("custom")

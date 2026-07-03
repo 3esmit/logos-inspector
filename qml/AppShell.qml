@@ -30,6 +30,7 @@ Item {
     }
 
     Component.onCompleted: {
+        appModel.loadSettingsState()
         appModel.loadIdlState()
         appModel.loadWalletState()
     }

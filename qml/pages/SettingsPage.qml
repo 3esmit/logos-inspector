@@ -51,16 +51,6 @@ ColumnLayout {
             summary: "Public LEZ, local indexer and node defaults"
         }
         ListElement {
-            key: "testnet-indexer-local"
-            label: "Testnet + local indexer"
-            summary: "Remote sequencer with local indexer probes"
-        }
-        ListElement {
-            key: "local-node"
-            label: "Local Logos node"
-            summary: "Testnet LEZ with local base-chain node"
-        }
-        ListElement {
             key: "local"
             label: "Local sequencer"
             summary: "Local sequencer, indexer, and node"
@@ -493,8 +483,8 @@ ColumnLayout {
     }
 
     function applyProfileIndex(index) {
-        if (index === 4) {
-            settingsRoot.model.networkProfile = "custom"
+        if (index === 2) {
+            settingsRoot.syncProfileFromEndpoints()
             return
         }
         settingsRoot.model.applyProfile(index)
@@ -535,17 +525,11 @@ ColumnLayout {
     }
 
     function profileIndexFor(value) {
-        if (value === "testnet-indexer-local") {
+        if (value === "local") {
             return 1
         }
-        if (value === "local-node") {
-            return 2
-        }
-        if (value === "local") {
-            return 3
-        }
         if (value === "custom") {
-            return 4
+            return 2
         }
         return 0
     }
@@ -563,7 +547,7 @@ ColumnLayout {
             return "local"
         }
         if (seq === testnetSeq && idx === localIndexer && nod === localNode) {
-            return settingsRoot.model.networkProfile === "testnet-indexer-local" || settingsRoot.model.networkProfile === "local-node" ? settingsRoot.model.networkProfile : "default"
+            return "default"
         }
         return "custom"
     }
@@ -571,12 +555,6 @@ ColumnLayout {
     function profileLabel(value) {
         if (value === "local") {
             return qsTr("Local")
-        }
-        if (value === "local-node") {
-            return qsTr("Local node")
-        }
-        if (value === "testnet-indexer-local") {
-            return qsTr("Mixed")
         }
         if (value === "custom") {
             return qsTr("Custom")
@@ -587,12 +565,6 @@ ColumnLayout {
     function profileSummary(value) {
         if (value === "local") {
             return qsTr("All endpoints local")
-        }
-        if (value === "local-node") {
-            return qsTr("Local node focus")
-        }
-        if (value === "testnet-indexer-local") {
-            return qsTr("Remote LEZ, local indexer")
         }
         if (value === "custom") {
             return qsTr("Manual endpoints")
@@ -679,9 +651,9 @@ ColumnLayout {
                 { key: "storage.shared_files_count", label: qsTr("shared_files_count"), detail: qsTr("Shared files") },
                 { key: "storage.manifest_count", label: qsTr("manifest_count"), detail: qsTr("Manifest count") },
                 { key: "storage.local_storage_used", label: qsTr("local_storage_used"), detail: qsTr("Local storage usage") },
-                { key: "storage.active_uploads", label: qsTr("active_uploads"), detail: qsTr("Active uploads") },
-                { key: "storage.active_downloads", label: qsTr("active_downloads"), detail: qsTr("Active downloads") },
-                { key: "storage.failed_transfers_recent", label: qsTr("failed_transfers_recent"), detail: qsTr("Recent failed transfers") },
+                { key: "storage.active_uploads", label: qsTr("upload_requests_total"), detail: qsTr("Upload request counter total") },
+                { key: "storage.active_downloads", label: qsTr("download_requests_total"), detail: qsTr("Download request counter total") },
+                { key: "storage.failed_transfers_recent", label: qsTr("transfer_failures_total"), detail: qsTr("Transfer failure counter total") },
                 { key: "storage.cid_fetch_test", label: qsTr("cid_fetch_test"), detail: qsTr("CID fetch probe result") },
                 { key: "storage.last_error", label: qsTr("last_error"), detail: qsTr("Latest storage error") }
             ] },
@@ -689,7 +661,6 @@ ColumnLayout {
                 { key: "messaging.module", label: qsTr("module"), detail: qsTr("loaded, running, or stopped") },
                 { key: "messaging.connection_state", label: qsTr("connection_state"), detail: qsTr("connected, disconnected, or connecting") },
                 { key: "messaging.peer_count", label: qsTr("peer_count"), detail: qsTr("Delivery peers") },
-                { key: "messaging.bootstrap_connected", label: qsTr("bootstrap_connected"), detail: qsTr("Bootstrap connectivity") },
                 { key: "messaging.active_subscriptions", label: qsTr("active_subscriptions"), detail: qsTr("Active subscriptions") },
                 { key: "messaging.content_topics", label: qsTr("content_topics"), detail: qsTr("Subscribed content topics") },
                 { key: "messaging.outbound_queue", label: qsTr("outbound_queue"), detail: qsTr("Outbound message queue") },
@@ -731,9 +702,9 @@ ColumnLayout {
                 { key: "storage.shared_files_count", label: qsTr("shared_files_count"), detail: qsTr("Shared files") },
                 { key: "storage.manifest_count", label: qsTr("manifest_count"), detail: qsTr("Manifests") },
                 { key: "storage.local_storage_used", label: qsTr("local_storage_used"), detail: qsTr("Local storage usage") },
-                { key: "storage.active_uploads", label: qsTr("active_uploads"), detail: qsTr("Active uploads") },
-                { key: "storage.active_downloads", label: qsTr("active_downloads"), detail: qsTr("Active downloads") },
-                { key: "storage.failed_transfers_recent", label: qsTr("failed_transfers_recent"), detail: qsTr("Recent failed transfers") }
+                { key: "storage.active_uploads", label: qsTr("upload_requests_total"), detail: qsTr("Upload request counter total") },
+                { key: "storage.active_downloads", label: qsTr("download_requests_total"), detail: qsTr("Download request counter total") },
+                { key: "storage.failed_transfers_recent", label: qsTr("transfer_failures_total"), detail: qsTr("Transfer failure counter total") }
             ] },
             { title: qsTr("Messaging / Delivery"), fields: [
                 { key: "messaging.peer_count", label: qsTr("peer_count"), detail: qsTr("Delivery peers") },

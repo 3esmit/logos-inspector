@@ -880,7 +880,7 @@ ColumnLayout {
 
     function restMetricsState() {
         if (root.model.messagingSourceMode === "module") {
-            return root.probeValue("collectOpenMetricsText") !== null ? qsTr("metrics") : qsTr("module")
+            return root.moduleMetricsText().length > 0 ? qsTr("metrics") : qsTr("module")
         }
         if (root.model.messagingSourceMode === "rest") {
             return root.status().ok ? qsTr("reachable") : qsTr("unknown")
@@ -893,12 +893,17 @@ ColumnLayout {
 
     function restMetricsEvidence() {
         if (root.model.messagingSourceMode === "module") {
-            return root.probeValue("collectOpenMetricsText") !== null ? qsTr("OpenMetrics text available") : qsTr("Module API")
+            return root.moduleMetricsText().length > 0 ? qsTr("OpenMetrics text available") : qsTr("Module API")
         }
         if (root.model.messagingSourceMode === "metrics") {
             return root.shortText(root.model.messagingMetricsUrl, 48)
         }
         return root.shortText(root.model.messagingRestUrl, 48)
+    }
+
+    function moduleMetricsText() {
+        const value = root.probeValue("collectOpenMetricsText")
+        return typeof value === "string" ? value.trim() : ""
     }
 
     function restMetricsTone() {

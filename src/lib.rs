@@ -41,7 +41,6 @@ pub const DEFAULT_SEQUENCER_ENDPOINT: &str = TESTNET_SEQUENCER_ENDPOINT;
 pub const DEFAULT_INDEXER_ENDPOINT: &str = "http://127.0.0.1:8779/";
 pub const DEFAULT_NODE_ENDPOINT: &str = "http://127.0.0.1:8080/";
 pub const DEFAULT_NETWORK_PROFILE: &str = "default";
-pub const LOCAL_NODE_NETWORK_PROFILE: &str = "local-node";
 pub const CUSTOM_NETWORK_PROFILE: &str = "custom";
 pub const ACCOUNT_TRANSACTION_LIMIT: usize = 20;
 pub const LOCAL_WALLET_HOME_ENV: &str = "NSSA_WALLET_HOME_DIR";
@@ -93,20 +92,6 @@ const NETWORK_PROFILES: &[NetworkProfile] = &[
         node_endpoint: DEFAULT_NODE_ENDPOINT,
     },
     NetworkProfile {
-        id: "testnet-indexer-local",
-        label: "Testnet + local indexer",
-        sequencer_endpoint: DEFAULT_SEQUENCER_ENDPOINT,
-        indexer_endpoint: DEFAULT_INDEXER_ENDPOINT,
-        node_endpoint: DEFAULT_NODE_ENDPOINT,
-    },
-    NetworkProfile {
-        id: LOCAL_NODE_NETWORK_PROFILE,
-        label: "Local Logos node",
-        sequencer_endpoint: DEFAULT_SEQUENCER_ENDPOINT,
-        indexer_endpoint: DEFAULT_INDEXER_ENDPOINT,
-        node_endpoint: DEFAULT_NODE_ENDPOINT,
-    },
-    NetworkProfile {
         id: "local",
         label: "Local sequencer",
         sequencer_endpoint: LOCAL_SEQUENCER_ENDPOINT,
@@ -152,6 +137,8 @@ pub fn resolve_network_endpoints(
                 .unwrap_or(CUSTOM_NETWORK_PROFILE)
                 .to_owned()
         }
+    } else if selected_profile == CUSTOM_NETWORK_PROFILE {
+        DEFAULT_NETWORK_PROFILE.to_owned()
     } else {
         selected_profile.to_owned()
     };
@@ -551,7 +538,7 @@ pub async fn overview(
         }),
     };
 
-    let indexer_head = match raw_json_rpc_result(
+    let indexer_head = match raw_json_rpc_optional_result(
         indexer_endpoint,
         "getLastFinalizedBlockId",
         Value::Array(vec![]),
@@ -1110,10 +1097,20 @@ pub async fn raw_json_rpc(endpoint: &str, method: &str, params: Value) -> Result
 }
 
 pub async fn raw_json_rpc_result(endpoint: &str, method: &str, params: Value) -> Result<Value> {
+    let value = raw_json_rpc_optional_result(endpoint, method, params).await?;
+    if value.is_null() {
+        bail!("{method} returned no result");
+    }
+    Ok(value)
+}
+
+pub async fn raw_json_rpc_optional_result(
+    endpoint: &str,
+    method: &str,
+    params: Value,
+) -> Result<Value> {
     let response = raw_json_rpc(endpoint, method, params).await?;
-    json_rpc_result(&response, method)?
-        .cloned()
-        .with_context(|| format!("{method} returned no result"))
+    json_rpc_result_value(&response, method).cloned()
 }
 
 pub async fn logos_node_cryptarchia_info(endpoint: &str) -> Result<Value> {
@@ -1321,10 +1318,17 @@ fn unix_time_text() -> String {
 }
 
 fn json_rpc_result<'a>(response: &'a Value, method: &str) -> Result<Option<&'a Value>> {
+    let value = json_rpc_result_value(response, method)?;
+    Ok((!value.is_null()).then_some(value))
+}
+
+fn json_rpc_result_value<'a>(response: &'a Value, method: &str) -> Result<&'a Value> {
     if let Some(error) = response.get("error") {
         bail!("{method} returned JSON-RPC error: {error}");
     }
-    Ok(response.get("result").filter(|value| !value.is_null()))
+    response
+        .get("result")
+        .with_context(|| format!("{method} returned no result"))
 }
 
 fn decode_sequencer_block(encoded: &str) -> Result<BlockSummary> {
@@ -2453,6 +2457,23 @@ fn program_id_base58_from_hex(program_id_hex: &str) -> Option<String> {
     let bytes = hex::decode(program_id_hex).ok()?;
     let fixed: [u8; 32] = bytes.try_into().ok()?;
     Some(AccountId::new(fixed).to_string())
+}
+
+pub fn normalize_program_id_hex(value: &str) -> Result<String> {
+    let text = value.trim();
+    if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+        let bytes = hex::decode(hex).context("invalid program id hex")?;
+        if bytes.len() != 32 {
+            bail!("program id hex must be 32 bytes");
+        }
+        return Ok(hex::encode(bytes));
+    }
+    if text.len() == 64 && text.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        let bytes = hex::decode(text).context("invalid program id hex")?;
+        return Ok(hex::encode(bytes));
+    }
+    let account_id = parse_account_id(text)?;
+    Ok(hex::encode(account_id.value()))
 }
 
 fn program_entries(programs: BTreeMap<String, ProgramId>) -> Vec<ProgramIdEntry> {
@@ -3608,35 +3629,6 @@ mod tests {
     }
 
     #[test]
-    fn resolve_network_endpoints_uses_testnet_indexer_local_profile() {
-        let endpoints = resolve_network_endpoints(Some("testnet-indexer-local"), None, None, None);
-
-        assert!(endpoints.is_ok(), "{endpoints:?}");
-        let Ok(endpoints) = endpoints else {
-            return;
-        };
-        assert_eq!(endpoints.profile, "testnet-indexer-local");
-        assert_eq!(endpoints.sequencer_endpoint, DEFAULT_SEQUENCER_ENDPOINT);
-        assert_eq!(endpoints.indexer_endpoint, DEFAULT_INDEXER_ENDPOINT);
-        assert_eq!(endpoints.node_endpoint, DEFAULT_NODE_ENDPOINT);
-    }
-
-    #[test]
-    fn resolve_network_endpoints_uses_local_node_profile() {
-        let endpoints =
-            resolve_network_endpoints(Some(LOCAL_NODE_NETWORK_PROFILE), None, None, None);
-
-        assert!(endpoints.is_ok(), "{endpoints:?}");
-        let Ok(endpoints) = endpoints else {
-            return;
-        };
-        assert_eq!(endpoints.profile, LOCAL_NODE_NETWORK_PROFILE);
-        assert_eq!(endpoints.sequencer_endpoint, DEFAULT_SEQUENCER_ENDPOINT);
-        assert_eq!(endpoints.indexer_endpoint, DEFAULT_INDEXER_ENDPOINT);
-        assert_eq!(endpoints.node_endpoint, DEFAULT_NODE_ENDPOINT);
-    }
-
-    #[test]
     fn resolve_network_endpoints_uses_local_profile() {
         let endpoints = resolve_network_endpoints(Some("local"), None, None, None);
 
@@ -3673,10 +3665,24 @@ mod tests {
     }
 
     #[test]
+    fn resolve_network_endpoints_custom_without_overrides_uses_default_profile() {
+        let endpoints = resolve_network_endpoints(Some(CUSTOM_NETWORK_PROFILE), None, None, None);
+
+        assert!(endpoints.is_ok(), "{endpoints:?}");
+        let Ok(endpoints) = endpoints else {
+            return;
+        };
+        assert_eq!(endpoints.profile, DEFAULT_NETWORK_PROFILE);
+        assert_eq!(endpoints.sequencer_endpoint, DEFAULT_SEQUENCER_ENDPOINT);
+        assert_eq!(endpoints.indexer_endpoint, DEFAULT_INDEXER_ENDPOINT);
+        assert_eq!(endpoints.node_endpoint, DEFAULT_NODE_ENDPOINT);
+    }
+
+    #[test]
     fn resolve_network_endpoints_explicit_urls_override_profile() {
         let sequencer = "https://override.example.invalid/";
         let endpoints =
-            resolve_network_endpoints(Some("testnet-indexer-local"), Some(sequencer), None, None);
+            resolve_network_endpoints(Some(DEFAULT_NETWORK_PROFILE), Some(sequencer), None, None);
 
         assert!(endpoints.is_ok(), "{endpoints:?}");
         let Ok(endpoints) = endpoints else {

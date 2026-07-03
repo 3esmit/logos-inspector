@@ -112,6 +112,7 @@ QtObject {
     property ListModel registeredIdls: ListModel {}
     property bool idlStateLoaded: false
     property bool walletStateLoaded: false
+    property bool settingsStateLoaded: false
     property string walletProfileLabel: "Local wallet"
     property string walletBinary: ""
     property string walletHome: ""
@@ -134,6 +135,35 @@ QtObject {
     property int navRevision: 0
 
     onCurrentViewChanged: expandNavGroupForView(currentView)
+    onNetworkProfileChanged: saveSettingsState()
+    onSequencerUrlChanged: saveSettingsState()
+    onIndexerUrlChanged: saveSettingsState()
+    onNodeUrlChanged: saveSettingsState()
+    onMessagingNodeInfoIdChanged: saveSettingsState()
+    onMessagingSourceModeChanged: saveSettingsState()
+    onMessagingRestUrlChanged: saveSettingsState()
+    onMessagingMetricsUrlChanged: saveSettingsState()
+    onMessagingNetworkPresetChanged: saveSettingsState()
+    onMessagingRollingWindowChanged: saveSettingsState()
+    onMessagingAdminRestEnabledChanged: saveSettingsState()
+    onMessagingMutatingDiagnosticsEnabledChanged: saveSettingsState()
+    onStorageSourceModeChanged: saveSettingsState()
+    onStorageRestUrlChanged: saveSettingsState()
+    onStorageMetricsUrlChanged: saveSettingsState()
+    onStorageNetworkPresetChanged: saveSettingsState()
+    onStorageDataDirChanged: saveSettingsState()
+    onStorageRollingWindowChanged: saveSettingsState()
+    onStorageLocalDiagnosticsEnabledChanged: saveSettingsState()
+    onStoragePrivilegedDebugEnabledChanged: saveSettingsState()
+    onStorageMutatingDiagnosticsEnabledChanged: saveSettingsState()
+    onStorageCidProbeChanged: saveSettingsState()
+    onBlockchainRefreshRateChanged: saveSettingsState()
+    onIndexerRefreshRateChanged: saveSettingsState()
+    onExecutionRefreshRateChanged: saveSettingsState()
+    onMessagingRefreshRateChanged: saveSettingsState()
+    onStorageRefreshRateChanged: saveSettingsState()
+    onFooterFieldRevisionChanged: saveSettingsState()
+    onDashboardGraphRevisionChanged: saveSettingsState()
 
     function navTreeItems() {
         return [
@@ -536,6 +566,93 @@ QtObject {
         }
     }
 
+    function loadSettingsState() {
+        const response = bridge.callModule(inspectorModule, "loadSettingsState", [])
+        if (response.ok && response.value && typeof response.value === "object") {
+            const value = response.value
+            const storedNetworkProfile = root.normalizedNetworkProfile(root.stringSetting(value, "network_profile", networkProfile))
+            sequencerUrl = root.stringSetting(value, "sequencer_url", sequencerUrl)
+            indexerUrl = root.stringSetting(value, "indexer_url", indexerUrl)
+            nodeUrl = root.stringSetting(value, "node_url", nodeUrl)
+            networkProfile = root.resolvedNetworkProfile(storedNetworkProfile, sequencerUrl, indexerUrl, nodeUrl)
+            messagingSourceMode = root.stringSetting(value, "messaging_source_mode", messagingSourceMode)
+            messagingRestUrl = root.stringSetting(value, "messaging_rest_url", messagingRestUrl)
+            messagingMetricsUrl = root.stringSetting(value, "messaging_metrics_url", messagingMetricsUrl)
+            messagingNetworkPreset = root.stringSetting(value, "messaging_network_preset", messagingNetworkPreset)
+            messagingNodeInfoId = root.stringSetting(value, "messaging_node_info_id", messagingNodeInfoId)
+            messagingRollingWindow = root.numberSetting(value, "messaging_rolling_window", messagingRollingWindow)
+            messagingAdminRestEnabled = root.boolSetting(value, "messaging_admin_rest_enabled", messagingAdminRestEnabled)
+            messagingMutatingDiagnosticsEnabled = root.boolSetting(value, "messaging_mutating_diagnostics_enabled", messagingMutatingDiagnosticsEnabled)
+            storageSourceMode = root.stringSetting(value, "storage_source_mode", storageSourceMode)
+            storageRestUrl = root.stringSetting(value, "storage_rest_url", storageRestUrl)
+            storageMetricsUrl = root.stringSetting(value, "storage_metrics_url", storageMetricsUrl)
+            storageNetworkPreset = root.stringSetting(value, "storage_network_preset", storageNetworkPreset)
+            storageDataDir = root.stringSetting(value, "storage_data_dir", storageDataDir)
+            storageCidProbe = root.stringSetting(value, "storage_cid_probe", storageCidProbe)
+            storageRollingWindow = root.numberSetting(value, "storage_rolling_window", storageRollingWindow)
+            storageLocalDiagnosticsEnabled = root.boolSetting(value, "storage_local_diagnostics_enabled", storageLocalDiagnosticsEnabled)
+            storagePrivilegedDebugEnabled = root.boolSetting(value, "storage_privileged_debug_enabled", storagePrivilegedDebugEnabled)
+            storageMutatingDiagnosticsEnabled = root.boolSetting(value, "storage_mutating_diagnostics_enabled", storageMutatingDiagnosticsEnabled)
+            blockchainRefreshRate = root.numberSetting(value, "blockchain_refresh_rate", blockchainRefreshRate)
+            indexerRefreshRate = root.numberSetting(value, "indexer_refresh_rate", indexerRefreshRate)
+            executionRefreshRate = root.numberSetting(value, "execution_refresh_rate", executionRefreshRate)
+            messagingRefreshRate = root.numberSetting(value, "messaging_refresh_rate", messagingRefreshRate)
+            storageRefreshRate = root.numberSetting(value, "storage_refresh_rate", storageRefreshRate)
+            if (value.footer_fields && typeof value.footer_fields === "object" && !Array.isArray(value.footer_fields)) {
+                footerFieldSelections = root.mergeMap(root.defaultFooterFieldSelections(), value.footer_fields)
+                footerFieldRevision += 1
+            }
+            if (value.dashboard_graphs && typeof value.dashboard_graphs === "object" && !Array.isArray(value.dashboard_graphs)) {
+                dashboardGraphSelections = root.mergeMap(root.defaultDashboardGraphSelections(), value.dashboard_graphs)
+                dashboardGraphRevision += 1
+            }
+        }
+        settingsStateLoaded = true
+    }
+
+    function saveSettingsState() {
+        if (!settingsStateLoaded) {
+            return
+        }
+        bridge.callModule(inspectorModule, "saveSettingsState", [settingsStatePayload()])
+    }
+
+    function settingsStatePayload() {
+        const resolvedProfile = root.inferNetworkProfileFromEndpoints(sequencerUrl, indexerUrl, nodeUrl)
+        return {
+            version: 1,
+            network_profile: resolvedProfile,
+            sequencer_url: String(sequencerUrl || ""),
+            indexer_url: String(indexerUrl || ""),
+            node_url: String(nodeUrl || ""),
+            messaging_source_mode: String(messagingSourceMode || ""),
+            messaging_rest_url: String(messagingRestUrl || ""),
+            messaging_metrics_url: String(messagingMetricsUrl || ""),
+            messaging_network_preset: String(messagingNetworkPreset || ""),
+            messaging_node_info_id: String(messagingNodeInfoId || ""),
+            messaging_rolling_window: Number(messagingRollingWindow || 0),
+            messaging_admin_rest_enabled: messagingAdminRestEnabled === true,
+            messaging_mutating_diagnostics_enabled: messagingMutatingDiagnosticsEnabled === true,
+            storage_source_mode: String(storageSourceMode || ""),
+            storage_rest_url: String(storageRestUrl || ""),
+            storage_metrics_url: String(storageMetricsUrl || ""),
+            storage_network_preset: String(storageNetworkPreset || ""),
+            storage_data_dir: String(storageDataDir || ""),
+            storage_cid_probe: String(storageCidProbe || ""),
+            storage_rolling_window: Number(storageRollingWindow || 0),
+            storage_local_diagnostics_enabled: storageLocalDiagnosticsEnabled === true,
+            storage_privileged_debug_enabled: storagePrivilegedDebugEnabled === true,
+            storage_mutating_diagnostics_enabled: storageMutatingDiagnosticsEnabled === true,
+            blockchain_refresh_rate: Number(blockchainRefreshRate || 0),
+            indexer_refresh_rate: Number(indexerRefreshRate || 0),
+            execution_refresh_rate: Number(executionRefreshRate || 0),
+            messaging_refresh_rate: Number(messagingRefreshRate || 0),
+            storage_refresh_rate: Number(storageRefreshRate || 0),
+            footer_fields: footerFieldSelections || {},
+            dashboard_graphs: dashboardGraphSelections || {}
+        }
+    }
+
     function loadWalletState() {
         const response = bridge.callModule(inspectorModule, "loadWalletState", [])
         walletStateLoaded = true
@@ -649,10 +766,12 @@ QtObject {
         const json = String(row.json || "")
         const name = String(row.name || root.idlNameFromJson(json) || qsTr("IDL %1").arg(Number(fallbackIndex || 0) + 1))
         const programId = String(row.programId || row.program_id || "")
+        const programIdHex = String(row.programIdHex || row.program_id_hex || root.canonicalProgramIdHex(programId))
         return {
-            key: String(row.key || root.idlKey(name, programId, json)),
+            key: String(row.key || root.idlKey(name, programIdHex, json)),
             name: name,
             programId: programId,
+            programIdHex: programIdHex,
             json: json
         }
     }
@@ -695,14 +814,15 @@ QtObject {
     }
 
     function idlEntriesForProgram(programId) {
-        const normalizedProgram = root.normalizedHexText(programId)
+        const normalizedProgram = root.canonicalProgramIdHex(programId) || root.normalizedHexText(programId)
         if (!normalizedProgram.length) {
             return []
         }
         const entries = []
         for (let i = 0; i < registeredIdls.count; ++i) {
             const entry = root.idlEntryAt(i)
-            if (root.normalizedHexText(entry.programId) === normalizedProgram) {
+            const entryProgram = String(entry.programIdHex || "") || root.canonicalProgramIdHex(entry.programId) || root.normalizedHexText(entry.programId)
+            if (entryProgram === normalizedProgram) {
                 entries.push(entry)
             }
         }
@@ -792,6 +912,18 @@ QtObject {
 
     function normalizedHexText(value) {
         return String(value || "").trim().replace(/^0x/i, "").toLowerCase()
+    }
+
+    function canonicalProgramIdHex(value) {
+        const text = String(value || "").trim()
+        if (!text.length) {
+            return ""
+        }
+        if (/^(0x)?[0-9a-fA-F]{64}$/.test(text)) {
+            return root.normalizedHexText(text)
+        }
+        const response = bridge.callModule(inspectorModule, "normalizeProgramId", [text])
+        return response.ok && response.value !== undefined && response.value !== null ? String(response.value) : ""
     }
 
     function autoDecodeAccountData(dataHex, accountId, callback) {
@@ -1274,6 +1406,71 @@ QtObject {
         return next
     }
 
+    function mergeMap(base, overrides) {
+        const next = root.copyMap(base)
+        const current = overrides || {}
+        for (const key in current) {
+            next[key] = current[key]
+        }
+        return next
+    }
+
+    function stringSetting(value, key, fallback) {
+        const raw = value ? value[key] : undefined
+        return raw === undefined || raw === null ? String(fallback || "") : String(raw)
+    }
+
+    function numberSetting(value, key, fallback) {
+        const number = Number(value ? value[key] : undefined)
+        return Number.isFinite(number) ? number : Number(fallback || 0)
+    }
+
+    function boolSetting(value, key, fallback) {
+        const raw = value ? value[key] : undefined
+        if (raw === true || raw === false) {
+            return raw
+        }
+        return fallback === true
+    }
+
+    function normalizedNetworkProfile(value) {
+        const profile = String(value || "default")
+        if (profile === "local" || profile === "custom") {
+            return profile
+        }
+        return "default"
+    }
+
+    function resolvedNetworkProfile(storedProfile, sequencer, indexer, node) {
+        const inferred = root.inferNetworkProfileFromEndpoints(sequencer, indexer, node)
+        if (inferred !== "custom") {
+            return inferred
+        }
+        return root.normalizedNetworkProfile(storedProfile) === "custom" ? "custom" : inferred
+    }
+
+    function inferNetworkProfileFromEndpoints(sequencer, indexer, node) {
+        const seq = root.normalizeEndpoint(sequencer)
+        const idx = root.normalizeEndpoint(indexer)
+        const nod = root.normalizeEndpoint(node)
+        const testnetSeq = root.normalizeEndpoint("https://testnet.lez.logos.co/")
+        const localSeq = root.normalizeEndpoint("http://127.0.0.1:3040/")
+        const localIndexer = root.normalizeEndpoint("http://127.0.0.1:8779/")
+        const localNode = root.normalizeEndpoint("http://127.0.0.1:8080/")
+
+        if (seq === localSeq && idx === localIndexer && nod === localNode) {
+            return "local"
+        }
+        if (seq === testnetSeq && idx === localIndexer && nod === localNode) {
+            return "default"
+        }
+        return "custom"
+    }
+
+    function normalizeEndpoint(value) {
+        return String(value || "").trim().replace(/\/+$/, "")
+    }
+
     function scalarValue(value) {
         if (value === undefined || value === null || value === "") {
             return null
@@ -1370,6 +1567,10 @@ QtObject {
 
     function openMetricsText(kind) {
         const value = root.moduleProbeValue(kind, kind === "storage" ? "collectMetrics" : "collectOpenMetricsText")
+        return root.openMetricsTextFromValue(value)
+    }
+
+    function openMetricsTextFromValue(value) {
         if (typeof value === "string") {
             return value
         }
@@ -1378,11 +1579,16 @@ QtObject {
     }
 
     function openMetricValue(kind, names) {
-        const text = root.openMetricsText(kind)
+        const wanted = Array.isArray(names) ? names : [names]
+        const value = root.moduleProbeValue(kind, kind === "storage" ? "collectMetrics" : "collectOpenMetricsText")
+        const jsonMetric = root.metricJsonValue(value, wanted)
+        if (jsonMetric !== null) {
+            return jsonMetric
+        }
+        const text = root.openMetricsTextFromValue(value)
         if (!text.length) {
             return null
         }
-        const wanted = Array.isArray(names) ? names : [names]
         const lines = text.split(/\r?\n/)
         for (let i = 0; i < lines.length; ++i) {
             const line = lines[i].trim()
@@ -1401,6 +1607,45 @@ QtObject {
             }
         }
         return null
+    }
+
+    function metricJsonValue(value, names) {
+        if (value === undefined || value === null) {
+            return null
+        }
+        const wanted = Array.isArray(names) ? names : [names]
+        if (Array.isArray(value)) {
+            for (let i = 0; i < value.length; ++i) {
+                const match = root.metricJsonValue(value[i], wanted)
+                if (match !== null) {
+                    return match
+                }
+            }
+            return null
+        }
+        if (typeof value !== "object") {
+            return null
+        }
+        if (Array.isArray(value.metrics)) {
+            return root.metricJsonValue(value.metrics, wanted)
+        }
+        const metricName = String(value.name || value.metric || value.key || "")
+        for (let i = 0; i < wanted.length; ++i) {
+            const wantedName = String(wanted[i] || "")
+            if (metricName === wantedName) {
+                return root.metricNumber(value.value !== undefined ? value.value : (value.count !== undefined ? value.count : value.total))
+            }
+            if (value[wantedName] !== undefined) {
+                return root.metricNumber(value[wantedName])
+            }
+        }
+        return null
+    }
+
+    function metricNumber(value) {
+        const scalar = root.scalarValue(value)
+        const number = Number(scalar)
+        return Number.isFinite(number) ? number : null
     }
 
     function overviewProbeValue(section, field) {
@@ -1538,19 +1783,19 @@ QtObject {
         case "indexer.indexer_lag_vs_sequencer_head":
             return root.indexerLag()
         case "storage.peer_count":
-            return root.moduleMetricValue("storage", ["storage_peer_count", "libp2p_peers", "peers"])
+            return root.moduleMetricValue("storage", ["storage_peer_count", "storage_libp2p_peers", "libp2p_peers", "peers"])
         case "storage.shared_files_count":
-            return root.moduleMetricValue("storage", ["storage_shared_files_count", "shared_files_count"])
+            return root.moduleMetricValue("storage", ["storage_shared_files_count", "shared_files_count", "storage_repostore_blocks"])
         case "storage.manifest_count":
             return root.moduleMetricValue("storage", ["storage_manifest_count", "manifest_count"])
         case "storage.local_storage_used":
-            return root.moduleMetricValue("storage", ["storage_local_storage_used_bytes", "local_storage_used_bytes", "storage_used_bytes"])
+            return root.moduleMetricValue("storage", ["storage_local_storage_used_bytes", "local_storage_used_bytes", "storage_used_bytes", "storage_repostore_bytes_used"])
         case "storage.active_uploads":
-            return root.moduleMetricValue("storage", ["storage_active_uploads", "active_uploads"])
+            return root.moduleMetricValue("storage", ["storage_active_uploads", "active_uploads", "storage_api_uploads"])
         case "storage.active_downloads":
-            return root.moduleMetricValue("storage", ["storage_active_downloads", "active_downloads"])
+            return root.moduleMetricValue("storage", ["storage_active_downloads", "active_downloads", "storage_api_downloads"])
         case "storage.failed_transfers_recent":
-            return root.moduleMetricValue("storage", ["storage_failed_transfers_recent", "failed_transfers_recent"])
+            return root.moduleMetricValue("storage", ["storage_failed_transfers_recent", "failed_transfers_recent", "storage_block_exchange_requests_failed_total", "storage_block_exchange_peer_timeouts_total"])
         case "messaging.peer_count":
             return root.moduleMetricValue("messaging", ["waku_peers", "libp2p_peers", "messaging_peer_count", "peer_count"])
         case "messaging.active_subscriptions":
@@ -2769,7 +3014,8 @@ QtObject {
                 return
             }
             if (response.ok && response.value !== null && response.value !== undefined) {
-                setResult(qsTr("LEZ block"), response.text, false, response.value)
+                const detail = root.indexerBlockDetail(response.value)
+                setResult(qsTr("LEZ block"), BridgeHelpers.formatValue(detail), false, detail)
                 return
             }
             root.openLezTransaction(value)
@@ -2832,15 +3078,42 @@ QtObject {
                 loadBlockchainBlockBySlot(Number(fallback))
                 return
             }
-            currentView = "blocks"
-            blocksPageError = qsTr("L1 block %1 is not in the loaded slot window.").arg(String(fallback || ""))
-            setResult(qsTr("Block"), blocksPageError, true)
+            loadBlockchainBlockById(String(fallback || ""))
             return
         }
 
         currentView = "blocks"
         blockDetailValue = detail
         setResult(qsTr("Block"), BridgeHelpers.formatValue(detail), false, detail)
+    }
+
+    function loadBlockchainBlockById(blockId) {
+        const value = String(blockId || "").trim()
+        if (!value.length) {
+            return
+        }
+        currentView = "blocks"
+        const response = requestModule(inspectorModule, "blockchainBlock", [nodeUrl, value], qsTr("Block lookup"), false)
+        if (response.ok) {
+            blockDetailValue = blockchainBlockDetail(response.value)
+            blocksPageError = ""
+            setResult(qsTr("Block"), BridgeHelpers.formatValue(blockDetailValue), false, blockDetailValue)
+            return
+        }
+        const normalized = normalizedHashOrValue(value)
+        const retryValue = normalized !== value ? normalized : ""
+        if (retryValue.length) {
+            const retry = requestModule(inspectorModule, "blockchainBlock", [nodeUrl, retryValue], qsTr("Block lookup"), false)
+            if (retry.ok) {
+                blockDetailValue = blockchainBlockDetail(retry.value)
+                blocksPageError = ""
+                setResult(qsTr("Block"), BridgeHelpers.formatValue(blockDetailValue), false, blockDetailValue)
+                return
+            }
+        }
+        currentView = "blocks"
+        blocksPageError = qsTr("L1 block %1 was not found.").arg(value)
+        setResult(qsTr("Block"), blocksPageError, true)
     }
 
     function loadBlockchainBlockBySlot(slot) {
@@ -2916,7 +3189,8 @@ QtObject {
                 return
             }
             blocksPageError = ""
-            setResult(qsTr("LEZ block"), response.text, false, response.value)
+            const detail = root.indexerBlockDetail(response.value)
+            setResult(qsTr("LEZ block"), BridgeHelpers.formatValue(detail), false, detail)
         } else {
             blocksPageError = response.error
             setResult(qsTr("LEZ block"), response.error, true)
@@ -2930,6 +3204,7 @@ QtObject {
             type: "indexer_block",
             hash: String(block.header_hash || ""),
             parent: String(block.parent_hash || ""),
+            block_id: block.block_id,
             slot: block.block_id,
             height: block.block_id,
             status: String(block.bedrock_status || ""),
@@ -3046,14 +3321,20 @@ QtObject {
         const idl = parsed.value
         const resolvedName = name.trim().length ? name.trim() : (idl.name || qsTr("IDL %1").arg(registeredIdls.count + 1))
         const resolvedProgramId = programId.trim()
+        const resolvedProgramIdHex = resolvedProgramId.length ? root.canonicalProgramIdHex(resolvedProgramId) : ""
+        if (resolvedProgramId.length && !resolvedProgramIdHex.length) {
+            setResult(qsTr("IDL registry"), qsTr("Program ID must be hex or base58."), true)
+            return
+        }
         registeredIdls.append({
-            key: idlKey(resolvedName, resolvedProgramId, json),
+            key: idlKey(resolvedName, resolvedProgramIdHex, json),
             name: resolvedName,
             programId: resolvedProgramId,
+            programIdHex: resolvedProgramIdHex,
             json: json
         })
         saveIdlState()
-        if (currentView === "transactions" && transactionDetailValue !== null) {
+        if (transactionDetailValue !== null) {
             autoDecodeTransactionDetail(transactionDetailValue)
         }
         setResult(qsTr("IDL registry"), qsTr("Saved %1.").arg(resolvedName), false)
@@ -3080,20 +3361,17 @@ QtObject {
     }
 
     function profileIndex() {
-        if (networkProfile === "testnet-indexer-local") {
+        if (networkProfile === "local") {
             return 1
         }
-        if (networkProfile === "local-node") {
+        if (networkProfile === "custom") {
             return 2
-        }
-        if (networkProfile === "local") {
-            return 3
         }
         return 0
     }
 
     function applyProfile(index) {
-        if (index === 3) {
+        if (index === 1) {
             networkProfile = "local"
             sequencerUrl = "http://127.0.0.1:3040/"
             indexerUrl = "http://127.0.0.1:8779/"
@@ -3101,11 +3379,7 @@ QtObject {
             return
         }
 
-        if (index === 2) {
-            networkProfile = "local-node"
-        } else {
-            networkProfile = index === 1 ? "testnet-indexer-local" : "default"
-        }
+        networkProfile = "default"
         sequencerUrl = "https://testnet.lez.logos.co/"
         indexerUrl = "http://127.0.0.1:8779/"
         nodeUrl = "http://127.0.0.1:8080/"

@@ -382,16 +382,16 @@ ColumnLayout {
                     enabled: !root.model.busy
                     Layout.fillWidth: true
                     accessibleName: qsTr("Fetch messaging module version")
-                    onClicked: root.model.callModule(root.model.deliveryModule, "moduleVersion", [], qsTr("Messaging module"))
+                    onClicked: root.model.callModule(root.model.deliveryModule, "version", [], qsTr("Messaging module"))
                 }
 
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Node info")
-                    enabled: !root.model.busy
+                    enabled: !root.model.busy && infoId.text.trim().length > 0
                     Layout.fillWidth: true
                     accessibleName: qsTr("Fetch messaging node info")
-                    onClicked: root.model.callModule(root.model.deliveryModule, "getNodeInfo", infoId.text.trim().length ? [infoId.text] : [], qsTr("Messaging node info"))
+                    onClicked: root.model.callModule(root.model.deliveryModule, "getNodeInfo", [infoId.text.trim()], qsTr("Messaging node info"))
                 }
             }
         }
