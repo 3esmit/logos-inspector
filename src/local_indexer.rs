@@ -16,7 +16,10 @@ const DISABLE_AUTO_BUILD_ENV: &str = "LOGOS_INSPECTOR_DISABLE_INDEXER_AUTO_BUILD
 const INDEXER_SERVICE: &str = "logos-lez-indexer.service";
 const INDEXER_PACKAGE: &str = "indexer_service";
 const INDEXER_BINARY_RELATIVE_PATH: &str = "target/release/indexer_service";
-const INDEXER_CARGO_TOML_RELATIVE_PATH: &str = "indexer/service/Cargo.toml";
+const INDEXER_CARGO_TOML_RELATIVE_PATHS: &[&str] = &[
+    "lez/indexer/service/Cargo.toml",
+    "indexer/service/Cargo.toml",
+];
 const LOCAL_INDEXER_ADDR: &str = "127.0.0.1:8779";
 
 pub fn bootstrap_default_local_indexer() -> Result<()> {
@@ -140,7 +143,13 @@ fn parse_service_environment(raw: &str) -> Vec<(String, String)> {
 fn find_lez_workspace() -> Option<PathBuf> {
     lez_workspace_candidates()
         .into_iter()
-        .find(|path| path.join(INDEXER_CARGO_TOML_RELATIVE_PATH).is_file())
+        .find(|path| workspace_has_indexer_service(path))
+}
+
+fn workspace_has_indexer_service(path: &Path) -> bool {
+    INDEXER_CARGO_TOML_RELATIVE_PATHS
+        .iter()
+        .any(|relative_path| path.join(relative_path).is_file())
 }
 
 fn lez_workspace_candidates() -> Vec<PathBuf> {
@@ -213,5 +222,29 @@ mod tests {
             parse_service_environment("NOPE =bad OK=value"),
             vec![("OK".to_owned(), "value".to_owned())]
         );
+    }
+
+    #[test]
+    fn workspace_has_indexer_service_accepts_canonical_layout() -> Result<()> {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let workspace = env::temp_dir().join(format!(
+            "logos-inspector-indexer-layout-{}-{nonce}",
+            std::process::id()
+        ));
+        let service_dir = workspace.join("lez/indexer/service");
+        std::fs::create_dir_all(&service_dir)?;
+        std::fs::write(
+            service_dir.join("Cargo.toml"),
+            "[package]\nname = \"indexer_service\"\n",
+        )?;
+
+        if !workspace_has_indexer_service(&workspace) {
+            bail!("canonical indexer service layout was not detected");
+        }
+
+        std::fs::remove_dir_all(&workspace)?;
+        Ok(())
     }
 }

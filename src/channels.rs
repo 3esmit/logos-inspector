@@ -20,6 +20,9 @@ pub struct ChannelScanReport {
 pub struct ChannelSummary {
     pub channel: String,
     pub label: Option<String>,
+    pub operation_type: Option<String>,
+    pub first_operation_type: Option<String>,
+    pub last_operation_type: Option<String>,
     pub first_slot: Option<u64>,
     pub first_tx_hash: Option<String>,
     pub first_block_hash: Option<String>,
@@ -103,6 +106,9 @@ pub fn summarize_channel_operations(matches: &[ChannelOperationMatch]) -> Vec<Ch
             .or_insert_with(|| ChannelSummary {
                 channel: channel_id.clone(),
                 label: None,
+                operation_type: None,
+                first_operation_type: None,
+                last_operation_type: None,
                 first_slot: None,
                 first_tx_hash: None,
                 first_block_hash: None,
@@ -121,11 +127,14 @@ pub fn summarize_channel_operations(matches: &[ChannelOperationMatch]) -> Vec<Ch
             entry.first_slot = matched.slot;
             entry.first_tx_hash = matched.tx_hash.clone();
             entry.first_block_hash = matched.block_hash.clone();
+            entry.first_operation_type = matched.operation_type.clone();
         }
         if should_replace_last(entry.last_slot, matched.slot) {
             entry.last_slot = matched.slot;
             entry.last_tx_hash = matched.tx_hash.clone();
             entry.last_block_hash = matched.block_hash.clone();
+            entry.operation_type = matched.operation_type.clone();
+            entry.last_operation_type = matched.operation_type.clone();
             if matched.tip.is_some() || matched.parent.is_some() {
                 entry.tip = matched.tip.clone().or_else(|| matched.parent.clone());
             }
@@ -194,8 +203,11 @@ fn scan_value(
                 tx_hash: tx_hash.clone(),
             };
             let operation_key = channel_operation_key(object);
-            if is_channel_object(value) {
-                let payload = operation_key.and_then(|key| object.get(key));
+            let matched_channel_object = is_channel_object(value);
+            if matched_channel_object {
+                let payload = operation_key
+                    .and_then(|key| object.get(key))
+                    .or_else(|| object.get("payload"));
                 let signer =
                     first_stringish(value, &["signer", "sequencer", "key"]).or_else(|| {
                         payload.and_then(|payload| {
@@ -273,6 +285,9 @@ fn scan_value(
                 if operation_key.is_some_and(|operation_key| operation_key == key) {
                     continue;
                 }
+                if matched_channel_object && key == "payload" {
+                    continue;
+                }
                 scan_value(child, &format!("{path}.{key}"), &next_context, matches);
             }
         }
@@ -332,8 +347,11 @@ fn should_replace_last(current: Option<u64>, candidate: Option<u64>) -> bool {
 }
 
 fn is_channel_object(value: &Value) -> bool {
-    operation_type(value).is_some()
+    operation_type(value).is_some_and(|operation_type| operation_type.contains("Channel"))
         || first_stringish(value, &["channel_id", "channelId"]).is_some()
+        || value.get("payload").is_some_and(|payload| {
+            first_stringish(payload, &["channel_id", "channelId", "channel"]).is_some()
+        })
         || value
             .as_object()
             .is_some_and(|object| object.keys().any(|key| key.contains("channel")))
@@ -341,28 +359,99 @@ fn is_channel_object(value: &Value) -> bool {
 
 fn operation_type(value: &Value) -> Option<String> {
     let object = value.as_object()?;
+    if let Some(operation_type) = object
+        .get("opcode")
+        .and_then(opcode_value)
+        .and_then(operation_name_from_opcode)
+    {
+        return Some(operation_type.to_owned());
+    }
     if let Some(key) = channel_operation_key(object) {
-        return Some(key.to_owned());
+        return Some(canonical_operation_name(key).unwrap_or(key).to_owned());
     }
     object
-        .get("type")
+        .get("operation_type")
+        .or_else(|| object.get("operationType"))
+        .or_else(|| object.get("opcode_name"))
+        .or_else(|| object.get("type"))
         .or_else(|| object.get("kind"))
         .or_else(|| object.get("op"))
         .and_then(Value::as_str)
-        .filter(|value| value.to_ascii_lowercase().contains("channel"))
-        .map(ToOwned::to_owned)
+        .and_then(|value| {
+            canonical_operation_name(value)
+                .map(ToOwned::to_owned)
+                .or_else(|| value.contains("Channel").then(|| value.to_owned()))
+        })
 }
 
 fn channel_operation_key(object: &serde_json::Map<String, Value>) -> Option<&str> {
     [
+        "ChannelConfig",
         "ChannelInscribe",
+        "ChannelDeposit",
+        "ChannelWithdraw",
         "ChannelSetKeys",
         "channel_inscribe",
+        "channel_config",
+        "channel_deposit",
+        "channel_withdraw",
         "channel_set_keys",
         "inscription",
     ]
     .into_iter()
     .find(|key| object.contains_key(*key))
+}
+
+fn opcode_value(value: &Value) -> Option<u64> {
+    value.as_u64().or_else(|| {
+        value.as_str().and_then(|value| {
+            let value = value.trim();
+            if let Some(hex) = value
+                .strip_prefix("0x")
+                .or_else(|| value.strip_prefix("0X"))
+            {
+                u64::from_str_radix(hex, 16).ok()
+            } else {
+                value.parse().ok()
+            }
+        })
+    })
+}
+
+fn operation_name_from_opcode(opcode: u64) -> Option<&'static str> {
+    match opcode {
+        0x00 => Some("Transfer"),
+        0x10 => Some("ChannelConfig"),
+        0x11 => Some("ChannelInscribe"),
+        0x12 => Some("ChannelDeposit"),
+        0x13 => Some("ChannelWithdraw"),
+        0x20 => Some("SDPDeclare"),
+        0x21 => Some("SDPWithdraw"),
+        0x22 => Some("SDPActive"),
+        0x30 => Some("LeaderClaim"),
+        _ => None,
+    }
+}
+
+fn canonical_operation_name(name: &str) -> Option<&'static str> {
+    match name
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect::<String>()
+        .as_str()
+    {
+        "transfer" => Some("Transfer"),
+        "channelconfig" | "channelsetkeys" => Some("ChannelConfig"),
+        "channelinscribe" | "inscription" => Some("ChannelInscribe"),
+        "channeldeposit" => Some("ChannelDeposit"),
+        "channelwithdraw" => Some("ChannelWithdraw"),
+        "sdpdeclare" => Some("SDPDeclare"),
+        "sdpwithdraw" => Some("SDPWithdraw"),
+        "sdpactive" => Some("SDPActive"),
+        "leaderclaim" => Some("LeaderClaim"),
+        _ => None,
+    }
 }
 
 fn first_stringish(value: &Value, keys: &[&str]) -> Option<String> {
@@ -489,6 +578,57 @@ mod tests {
                 .first()
                 .and_then(|matched| matched.block_hash.as_deref()),
             Some("block-a")
+        );
+    }
+
+    #[test]
+    fn extracts_canonical_channel_opcode_payload() {
+        let value = json!({
+            "blocks": [{
+                "header": { "slot": 50, "id": "block-b" },
+                "transactions": [{
+                    "mantle_tx": {
+                        "hash": "tx-b",
+                        "ops": [{
+                            "opcode": 16,
+                            "payload": {
+                                "channel": "channel-a",
+                                "signer": "signer-a"
+                            }
+                        }]
+                    }
+                }]
+            }]
+        });
+
+        let matches = extract_channel_operations(&value);
+        let summaries = summarize_channel_operations(&matches);
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(
+            matches
+                .first()
+                .and_then(|matched| matched.operation_type.as_deref()),
+            Some("ChannelConfig")
+        );
+        assert_eq!(
+            matches
+                .first()
+                .and_then(|matched| matched.channel_id.as_deref()),
+            Some("channel-a")
+        );
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(
+            summaries
+                .first()
+                .and_then(|summary| summary.operation_type.as_deref()),
+            Some("ChannelConfig")
+        );
+        assert_eq!(
+            summaries
+                .first()
+                .and_then(|summary| summary.last_operation_type.as_deref()),
+            Some("ChannelConfig")
         );
     }
 

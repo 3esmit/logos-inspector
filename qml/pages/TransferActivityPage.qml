@@ -183,11 +183,12 @@ ColumnLayout {
     }
 
     function coinText(value) {
-        const numeric = Number(value);
-        if (Number.isFinite(numeric)) {
-            return (numeric / 100).toLocaleString(Qt.locale(), "f", 2) + "E";
+        const text = String(value)
+        if (/^-?[0-9]+$/.test(text) && text.length <= 15) {
+            const numeric = Number(text);
+            return numeric.toLocaleString(Qt.locale(), "f", 0);
         }
-        return String(value);
+        return text;
     }
 
     function numberText(value) {

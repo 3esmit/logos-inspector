@@ -147,7 +147,7 @@ ColumnLayout {
                     compact: true
                     label: qsTr("Messages")
                     value: root.metricDisplay("messaging.message_received_events_recent")
-                    delta: qsTr("%1 sent").arg(root.metricDisplay("messaging.message_sent_events_recent"))
+                    delta: qsTr("waku_node_messages_total")
                 }
 
                 MetricCard {
@@ -648,7 +648,7 @@ ColumnLayout {
         const rows = [
             root.model.deliverySourceLabel(),
             root.shortText(root.model.deliverySourceTarget(), 42),
-            root.model.messagingNetworkPreset,
+            root.model.normalizedMessagingNetworkPreset(root.model.messagingNetworkPreset),
             qsTr("%1 s window").arg(root.model.messagingRollingWindow)
         ]
         const status = root.status()
@@ -710,11 +710,11 @@ ColumnLayout {
     }
 
     function identityEvidence() {
-        const peerId = root.probeValue("MyPeerId")
+        const peerId = root.identityValue("peerId")
         if (peerId !== null) {
             return qsTr("peer id present")
         }
-        const addresses = root.probeValue("MyMultiaddresses")
+        const addresses = root.identityValue("listenAddresses")
         if (addresses !== null) {
             return qsTr("addresses present")
         }
@@ -723,15 +723,18 @@ ColumnLayout {
 
     function healthRows() {
         const status = root.status()
+        const peerId = root.identityValue("peerId")
+        const nodeHealth = root.probeValue("nodeHealth")
         return [
             root.statusRow(qsTr("Source and lifecycle"), status.known ? (status.ok ? qsTr("reachable") : qsTr("problem")) : qsTr("unknown"), status.detail || qsTr("Not queried"), root.statusTone()),
-            root.statusRow(qsTr("Identity"), root.probeValue("MyPeerId") !== null ? qsTr("present") : qsTr("unknown"), root.valueSummary(root.probeValue("MyPeerId")), root.probeValue("MyPeerId") !== null ? "success" : "neutral"),
-            root.statusRow(qsTr("Preset, cluster, shards"), root.model.messagingNetworkPreset.length ? qsTr("configured") : qsTr("unknown"), root.model.messagingNetworkPreset || qsTr("No preset"), root.model.messagingNetworkPreset.length ? "success" : "neutral"),
+            root.statusRow(qsTr("Identity"), peerId !== null ? qsTr("present") : qsTr("unknown"), root.valueSummary(peerId), peerId !== null ? "success" : "neutral"),
+            root.statusRow(qsTr("Node health"), nodeHealth !== null ? qsTr("reported") : qsTr("unknown"), root.valueSummary(nodeHealth), nodeHealth !== null ? "success" : "neutral"),
+            root.statusRow(qsTr("Preset, cluster, shards"), root.model.messagingNetworkPreset.length ? qsTr("configured") : qsTr("unknown"), root.model.normalizedMessagingNetworkPreset(root.model.messagingNetworkPreset) || qsTr("No preset"), root.model.messagingNetworkPreset.length ? "success" : "neutral"),
             root.statusRow(qsTr("REST and metrics access"), root.restMetricsState(), root.restMetricsEvidence(), root.restMetricsTone()),
-            root.statusRow(qsTr("Relay"), root.metricKnown("messaging.message_received_events_recent") ? qsTr("observed") : qsTr("unknown"), root.metricDisplay("messaging.message_received_events_recent"), root.metricKnown("messaging.message_received_events_recent") ? "success" : "neutral"),
-            root.statusRow(qsTr("Store"), qsTr("not queried"), qsTr("Manual query only, includeData=false"), "neutral"),
-            root.statusRow(qsTr("Filter"), root.metricKnown("messaging.active_subscriptions") ? qsTr("observed") : qsTr("unknown"), root.metricDisplay("messaging.active_subscriptions"), root.metricKnown("messaging.active_subscriptions") ? "success" : "neutral"),
-            root.statusRow(qsTr("Lightpush"), root.metricKnown("messaging.publish_latency_ms") ? qsTr("observed") : qsTr("unknown"), root.metricDisplay("messaging.publish_latency_ms"), root.metricKnown("messaging.publish_latency_ms") ? "success" : "neutral"),
+            root.statusRow(qsTr("Relay"), root.metricKnown("messaging.pubsub_peers") ? qsTr("observed") : qsTr("unknown"), root.metricDisplay("messaging.pubsub_peers"), root.metricKnown("messaging.pubsub_peers") ? "success" : "neutral"),
+            root.statusRow(qsTr("Store"), root.metricKnown("messaging.store_peers") ? qsTr("observed") : qsTr("unknown"), root.metricDisplay("messaging.store_peers"), root.metricKnown("messaging.store_peers") ? "success" : "neutral"),
+            root.statusRow(qsTr("Filter"), root.metricKnown("messaging.filter_peers") ? qsTr("observed") : qsTr("unknown"), root.metricDisplay("messaging.filter_peers"), root.metricKnown("messaging.filter_peers") ? "success" : "neutral"),
+            root.statusRow(qsTr("Lightpush"), root.metricKnown("messaging.lightpush_peers") ? qsTr("observed") : qsTr("unknown"), root.metricDisplay("messaging.lightpush_peers"), root.metricKnown("messaging.lightpush_peers") ? "success" : "neutral"),
             root.statusRow(qsTr("RLN / spam protection"), qsTr("unknown"), qsTr("No passive metric selected"), "neutral")
         ]
     }
@@ -765,33 +768,31 @@ ColumnLayout {
     function throughputRows() {
         return [
             root.metricRow(qsTr("Peer count"), "messaging.peer_count"),
-            root.metricRow(qsTr("Outbound queue"), "messaging.outbound_queue"),
-            root.metricRow(qsTr("Sent events"), "messaging.message_sent_events_recent"),
-            root.metricRow(qsTr("Propagated events"), "messaging.message_propagated_events_recent"),
-            root.metricRow(qsTr("Received events"), "messaging.message_received_events_recent"),
-            root.metricRow(qsTr("Error events"), "messaging.message_error_events_recent"),
-            root.metricRow(qsTr("Publish latency"), "messaging.publish_latency_ms"),
-            root.metricRow(qsTr("Receive latency"), "messaging.receive_latency_ms")
+            root.metricRow(qsTr("Pubsub peers"), "messaging.pubsub_peers"),
+            root.metricRow(qsTr("Messages total"), "messaging.message_received_events_recent"),
+            root.metricRow(qsTr("Errors total"), "messaging.message_error_events_recent"),
+            root.metricRow(qsTr("Store peers"), "messaging.store_peers"),
+            root.metricRow(qsTr("Filter peers"), "messaging.filter_peers"),
+            root.metricRow(qsTr("Lightpush peers"), "messaging.lightpush_peers")
         ]
     }
 
     function protocolRows() {
         return [
-            root.protocolRow(qsTr("Relay"), "/vac/waku/relay/2.0.0", "messaging.message_received_events_recent"),
-            root.protocolRow(qsTr("Store"), "/vac/waku/store/3.0.0", ""),
-            root.protocolRow(qsTr("Filter"), "/vac/waku/filter/2.0.0-beta1", "messaging.active_subscriptions"),
-            root.protocolRow(qsTr("Lightpush"), "/vac/waku/lightpush/2.0.0-beta1", "messaging.publish_latency_ms"),
+            root.protocolRow(qsTr("Relay"), "/vac/waku/relay/2.0.0", "messaging.pubsub_peers"),
+            root.protocolRow(qsTr("Store"), "/vac/waku/store/3.0.0", "messaging.store_peers"),
+            root.protocolRow(qsTr("Filter"), "/vac/waku/filter/2.0.0-beta1", "messaging.filter_peers"),
+            root.protocolRow(qsTr("Lightpush"), "/vac/waku/lightpush/2.0.0-beta1", "messaging.lightpush_peers"),
             root.protocolRow(qsTr("Peer exchange"), "/vac/waku/peer-exchange/2.0.0-alpha1", ""),
             root.protocolRow(qsTr("Metadata"), "/vac/waku/metadata/1.0.0", "Version"),
             root.protocolRow(qsTr("Discv5"), "discv5", ""),
-            root.protocolRow(qsTr("RLN relay"), "/vac/waku/rln-relay/2.0.0", ""),
-            root.protocolRow(qsTr("Mix"), "mix", "MyMixPubKey")
+            root.protocolRow(qsTr("RLN relay"), "/vac/waku/rln-relay/2.0.0", "")
         ]
     }
 
     function topicRows() {
         return [
-            root.metricRow(qsTr("Pubsub topics"), "messaging.active_subscriptions"),
+            root.metricRow(qsTr("Pubsub peers"), "messaging.pubsub_peers"),
             root.metricRow(qsTr("Content topics"), "messaging.content_topics"),
             root.statusRow(qsTr("Topic-to-shard mapping"), qsTr("unknown"), qsTr("Requires topic metadata or network monitor source."), "neutral"),
             root.statusRow(qsTr("Query pressure"), qsTr("unknown"), qsTr("Store/filter query pressure not available from passive source."), "neutral")
@@ -809,13 +810,25 @@ ColumnLayout {
 
     function identityRows() {
         return [
-            root.detailRow(qsTr("Peer ID"), root.probeValue("MyPeerId")),
-            root.detailRow(qsTr("ENR"), root.probeValue("MyENR")),
-            root.detailRow(qsTr("Multiaddresses"), root.probeValue("MyMultiaddresses")),
-            root.detailRow(qsTr("Bound ports"), root.probeValue("MyBoundPorts")),
-            root.detailRow(qsTr("Mix public key"), root.probeValue("MyMixPubKey")),
+            root.detailRow(qsTr("Peer ID"), root.identityValue("peerId")),
+            root.detailRow(qsTr("ENR"), root.identityValue("enrUri")),
+            root.detailRow(qsTr("Multiaddresses"), root.identityValue("listenAddresses")),
+            root.detailRow(qsTr("Protocol health"), root.probeValue("protocolsHealth")),
             root.detailRow(qsTr("Version"), root.probeValue("Version") || root.probeValue("version"))
         ]
+    }
+
+    function identityValue(kind) {
+        switch (kind) {
+        case "peerId":
+            return root.probeValue("peerId") || root.probeValue("MyPeerId")
+        case "enrUri":
+            return root.probeValue("enrUri") || root.probeValue("MyENR")
+        case "listenAddresses":
+            return root.probeValue("listenAddresses") || root.probeValue("MyMultiaddresses")
+        default:
+            return null
+        }
     }
 
     function probeRows() {
@@ -835,7 +848,7 @@ ColumnLayout {
 
     function metricRow(label, key) {
         const known = root.metricKnown(key)
-        return root.statusRow(label, known ? root.metricDisplay(key) : qsTr("n/a"), known ? qsTr("%1 s window").arg(root.model.messagingRollingWindow) : qsTr("Metric not exposed by current source."), known ? "success" : "neutral")
+        return root.statusRow(label, known ? root.metricDisplay(key) : qsTr("n/a"), known ? qsTr("OpenMetrics value") : qsTr("Metric not exposed by current source."), known ? "success" : "neutral")
     }
 
     function protocolRow(label, protocolId, signalKey) {

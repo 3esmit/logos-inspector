@@ -661,15 +661,15 @@ ColumnLayout {
                 { key: "messaging.module", label: qsTr("module"), detail: qsTr("loaded, running, or stopped") },
                 { key: "messaging.connection_state", label: qsTr("connection_state"), detail: qsTr("connected, disconnected, or connecting") },
                 { key: "messaging.peer_count", label: qsTr("peer_count"), detail: qsTr("Delivery peers") },
-                { key: "messaging.active_subscriptions", label: qsTr("active_subscriptions"), detail: qsTr("Active subscriptions") },
+                { key: "messaging.active_subscriptions", label: qsTr("active_subscriptions"), detail: qsTr("Not exposed by current Delivery metrics") },
                 { key: "messaging.content_topics", label: qsTr("content_topics"), detail: qsTr("Subscribed content topics") },
                 { key: "messaging.outbound_queue", label: qsTr("outbound_queue"), detail: qsTr("Outbound message queue") },
-                { key: "messaging.message_sent_events_recent", label: qsTr("message_sent_events_recent"), detail: qsTr("Recent sent message events") },
-                { key: "messaging.message_propagated_events_recent", label: qsTr("message_propagated_events_recent"), detail: qsTr("Recent propagated message events") },
-                { key: "messaging.message_received_events_recent", label: qsTr("message_received_events_recent"), detail: qsTr("Recent received message events") },
-                { key: "messaging.message_error_events_recent", label: qsTr("message_error_events_recent"), detail: qsTr("Recent message errors") },
-                { key: "messaging.publish_latency_ms", label: qsTr("publish_latency_ms"), detail: qsTr("Publish latency") },
-                { key: "messaging.receive_latency_ms", label: qsTr("receive_latency_ms"), detail: qsTr("Receive latency") },
+                { key: "messaging.message_sent_events_recent", label: qsTr("message_sent_events_recent"), detail: qsTr("Not exposed by current Delivery metrics") },
+                { key: "messaging.message_propagated_events_recent", label: qsTr("message_propagated_events_recent"), detail: qsTr("Not exposed by current Delivery metrics") },
+                { key: "messaging.message_received_events_recent", label: qsTr("waku_node_messages_total"), detail: qsTr("Delivery message counter total") },
+                { key: "messaging.message_error_events_recent", label: qsTr("waku_node_errors_total"), detail: qsTr("Delivery error counter total") },
+                { key: "messaging.publish_latency_ms", label: qsTr("publish_latency_ms"), detail: qsTr("Not exposed by current Delivery metrics") },
+                { key: "messaging.receive_latency_ms", label: qsTr("receive_latency_ms"), detail: qsTr("Not exposed by current Delivery metrics") },
                 { key: "messaging.last_error", label: qsTr("last_error"), detail: qsTr("Latest Delivery error") }
             ] },
             { title: qsTr("Overall"), fields: [
@@ -708,15 +708,15 @@ ColumnLayout {
             ] },
             { title: qsTr("Messaging / Delivery"), fields: [
                 { key: "messaging.peer_count", label: qsTr("peer_count"), detail: qsTr("Delivery peers") },
-                { key: "messaging.active_subscriptions", label: qsTr("active_subscriptions"), detail: qsTr("Active subscriptions") },
+                { key: "messaging.active_subscriptions", label: qsTr("active_subscriptions"), detail: qsTr("Not exposed by current Delivery metrics") },
                 { key: "messaging.content_topics", label: qsTr("content_topics"), detail: qsTr("Content topics") },
                 { key: "messaging.outbound_queue", label: qsTr("outbound_queue"), detail: qsTr("Outbound queue") },
-                { key: "messaging.message_sent_events_recent", label: qsTr("message_sent_events_recent"), detail: qsTr("Recent sent message events") },
-                { key: "messaging.message_propagated_events_recent", label: qsTr("message_propagated_events_recent"), detail: qsTr("Recent propagated message events") },
-                { key: "messaging.message_received_events_recent", label: qsTr("message_received_events_recent"), detail: qsTr("Recent received message events") },
-                { key: "messaging.message_error_events_recent", label: qsTr("message_error_events_recent"), detail: qsTr("Recent message errors") },
-                { key: "messaging.publish_latency_ms", label: qsTr("publish_latency_ms"), detail: qsTr("Publish latency") },
-                { key: "messaging.receive_latency_ms", label: qsTr("receive_latency_ms"), detail: qsTr("Receive latency") }
+                { key: "messaging.message_sent_events_recent", label: qsTr("message_sent_events_recent"), detail: qsTr("Not exposed by current Delivery metrics") },
+                { key: "messaging.message_propagated_events_recent", label: qsTr("message_propagated_events_recent"), detail: qsTr("Not exposed by current Delivery metrics") },
+                { key: "messaging.message_received_events_recent", label: qsTr("waku_node_messages_total"), detail: qsTr("Delivery message counter total") },
+                { key: "messaging.message_error_events_recent", label: qsTr("waku_node_errors_total"), detail: qsTr("Delivery error counter total") },
+                { key: "messaging.publish_latency_ms", label: qsTr("publish_latency_ms"), detail: qsTr("Not exposed by current Delivery metrics") },
+                { key: "messaging.receive_latency_ms", label: qsTr("receive_latency_ms"), detail: qsTr("Not exposed by current Delivery metrics") }
             ] }
         ]
     }
@@ -905,8 +905,8 @@ ColumnLayout {
                 theme: deliveryRoot.theme
                 label: qsTr("Network preset")
                 text: settingsRoot.model.messagingNetworkPreset
-                placeholderText: qsTr("testnet")
-                onTextChanged: settingsRoot.model.messagingNetworkPreset = String(text || "").trim()
+                placeholderText: qsTr("logos.test")
+                onTextChanged: settingsRoot.model.messagingNetworkPreset = settingsRoot.model.normalizedMessagingNetworkPreset(text)
             }
 
             FieldRow {
