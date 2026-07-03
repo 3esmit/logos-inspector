@@ -189,7 +189,7 @@ Pane {
                 "storage.local_storage_used",
                 "storage.active_uploads",
                 "storage.active_downloads",
-                "storage.failed_transfers_recent",
+                "storage.failed_transfers_total",
                 "storage.cid_fetch_test",
                 "storage.last_error"
             ] },
@@ -284,7 +284,7 @@ Pane {
             "storage.local_storage_used": qsTr("Storage"),
             "storage.active_uploads": qsTr("Uploads total"),
             "storage.active_downloads": qsTr("Downloads total"),
-            "storage.failed_transfers_recent": qsTr("Failures total"),
+            "storage.failed_transfers_total": qsTr("Failures total"),
             "storage.cid_fetch_test": qsTr("CID"),
             "storage.last_error": qsTr("ST error"),
             "messaging.module": qsTr("Delivery"),
@@ -403,7 +403,7 @@ Pane {
         case "storage.local_storage_used":
         case "storage.active_uploads":
         case "storage.active_downloads":
-        case "storage.failed_transfers_recent":
+        case "storage.failed_transfers_total":
             return root.valueOrNa(root.model.dashboardMetricValue(key))
         case "storage.dht_connected":
             return root.yesNo(root.model.openMetricValue("storage", ["storage_dht_connected", "dht_connected"]))
@@ -501,7 +501,7 @@ Pane {
         if (key === "messaging.connection_state") {
             return root.booleanTone(root.footerFieldValue(key))
         }
-        if (key === "storage.failed_transfers_recent" || key === "messaging.message_error_events_recent") {
+        if (key === "messaging.message_error_events_recent") {
             return root.countProblemTone(root.footerFieldValue(key))
         }
         if (key === "storage.last_error" || key === "messaging.last_error") {

@@ -2514,13 +2514,31 @@ fn program_entries(programs: BTreeMap<String, ProgramId>) -> Vec<ProgramIdEntry>
 }
 
 fn parse_account_id(value: &str) -> Result<AccountId> {
-    let value = value.trim();
+    let value = normalized_public_account_id(value)?;
     if let Some(account_id) = parse_account_id_hex(value)? {
         return Ok(account_id);
     }
     value
         .parse()
         .with_context(|| format!("invalid account id `{value}`"))
+}
+
+fn normalized_public_account_id(value: &str) -> Result<&str> {
+    let value = value.trim();
+    if let Some(private) = value
+        .strip_prefix("Private/")
+        .or_else(|| value.strip_prefix("private/"))
+    {
+        let _ = private;
+        bail!(
+            "private account state is local wallet state; public RPC cannot fetch `Private/` accounts"
+        )
+    }
+    Ok(value
+        .strip_prefix("Public/")
+        .or_else(|| value.strip_prefix("public/"))
+        .unwrap_or(value)
+        .trim())
 }
 
 fn parse_account_id_hex(value: &str) -> Result<Option<AccountId>> {
@@ -2990,6 +3008,11 @@ fn find_defined_shape<'a>(idl: &'a Value, name: &str) -> Option<&'a Value> {
 }
 
 fn select_idl_event<'a>(idl: &'a Value, event_name: Option<&str>) -> Result<&'a Value> {
+    if !idl_event_extension_enabled(idl) {
+        bail!(
+            "event decode requires explicit nonstandard events extension; pinned SPEL IDL has no event schema"
+        );
+    }
     let events = idl
         .get("events")
         .and_then(Value::as_array)
@@ -3021,6 +3044,15 @@ fn select_idl_event<'a>(idl: &'a Value, event_name: Option<&str>) -> Result<&'a 
         "event name required because IDL has {} events: {names}",
         events.len()
     )
+}
+
+fn idl_event_extension_enabled(idl: &Value) -> bool {
+    idl.get("x-logos-inspector-events").and_then(Value::as_bool) == Some(true)
+        || idl
+            .get("extensions")
+            .and_then(|extensions| extensions.get("logos_inspector_events"))
+            .and_then(Value::as_bool)
+            == Some(true)
 }
 
 fn decode_idl_event(idl: &Value, event: &Value, data: &[u8]) -> Result<EventIdlDecodeReport> {
@@ -3470,6 +3502,23 @@ mod tests {
 
         assert_eq!(parse_account_id(&hex).ok(), Some(account_id));
         assert_eq!(parse_account_id(&format!("0x{hex}")).ok(), Some(account_id));
+    }
+
+    #[test]
+    fn parse_account_id_accepts_public_prefix_and_rejects_private_prefix() {
+        let account_id = AccountId::new([9_u8; 32]);
+        let encoded = account_id.to_string();
+
+        assert_eq!(
+            parse_account_id(&format!("Public/{encoded}")).ok(),
+            Some(account_id)
+        );
+        let result = parse_account_id(&format!("Private/{encoded}"));
+        assert!(result.is_err(), "{result:?}");
+        let Err(error) = result else {
+            return;
+        };
+        assert!(error.to_string().contains("private account state"));
     }
 
     #[test]
@@ -4081,6 +4130,7 @@ mod tests {
     fn decode_event_data_hex_with_idl_decodes_single_event_without_name() {
         let idl = r#"{
             "name": "test_program",
+            "x-logos-inspector-events": true,
             "events": [
                 {
                     "name": "LogEntry",
@@ -4249,6 +4299,7 @@ mod tests {
     fn decode_event_data_hex_with_idl_selects_named_event_type_shape() {
         let idl = r#"{
             "name": "test_program",
+            "extensions": { "logos_inspector_events": true },
             "events": [
                 {
                     "name": "Ignored",
@@ -4290,6 +4341,32 @@ mod tests {
             return;
         };
         assert_eq!(enabled.value, "true");
+    }
+
+    #[test]
+    fn decode_event_data_hex_with_idl_rejects_standard_spel_idl_without_event_extension() {
+        let idl = r#"{
+            "name": "test_program",
+            "events": [
+                {
+                    "name": "LogEntry",
+                    "fields": [
+                        { "name": "amount", "type": "u64" }
+                    ]
+                }
+            ]
+        }"#;
+
+        let result = decode_event_data_hex_with_idl(idl, None, "2a00000000000000");
+        assert!(result.is_err(), "{result:?}");
+        let Err(error) = result else {
+            return;
+        };
+
+        assert!(
+            error.to_string().contains("nonstandard events extension"),
+            "{error:#}"
+        );
     }
 
     #[test]

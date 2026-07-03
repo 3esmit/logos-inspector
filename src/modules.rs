@@ -100,10 +100,19 @@ pub async fn storage_source_report(
     rest_endpoint: Option<&str>,
     metrics_endpoint: Option<&str>,
     cid: Option<&str>,
+    privileged_debug_enabled: bool,
 ) -> ModuleReport {
     match normalized_storage_source_mode(source_mode) {
         "module" => storage_report(cid),
-        "rest" => storage_rest_report(rest_endpoint, metrics_endpoint, cid).await,
+        "rest" => {
+            storage_rest_report(
+                rest_endpoint,
+                metrics_endpoint,
+                cid,
+                privileged_debug_enabled,
+            )
+            .await
+        }
         "metrics" => storage_metrics_report(metrics_endpoint).await,
         mode => unsupported_storage_source_report(mode),
     }
@@ -113,19 +122,18 @@ async fn storage_rest_report(
     rest_endpoint: Option<&str>,
     metrics_endpoint: Option<&str>,
     cid: Option<&str>,
+    privileged_debug_enabled: bool,
 ) -> ModuleReport {
     let endpoint = optional(rest_endpoint).unwrap_or(DEFAULT_STORAGE_REST_ENDPOINT);
     let space_source = http_url(endpoint, "/space");
     let spr_source = http_url(endpoint, "/spr");
     let peer_id_source = http_url(endpoint, "/peerid");
     let data_source = http_url(endpoint, "/data");
-    let debug_source = http_url(endpoint, "/debug/info");
-    let (space, spr, peer_id, data, debug) = tokio::join!(
+    let (space, spr, peer_id, data) = tokio::join!(
         raw_http_value(endpoint, "/space"),
         raw_http_value(endpoint, "/spr"),
         raw_http_value(endpoint, "/peerid"),
         raw_http_value(endpoint, "/data"),
-        raw_http_value(endpoint, "/debug/info"),
     );
     let spr = spr.map(normalize_storage_spr);
     let peer_id = peer_id.map(normalize_storage_peer_id);
@@ -136,8 +144,15 @@ async fn storage_rest_report(
         ProbeReport::from_result("storage_rest.spr", spr_source, spr),
         ProbeReport::from_result("storage_rest.peerId", peer_id_source, peer_id),
         ProbeReport::from_result("storage_rest.manifests", data_source, manifests),
-        ProbeReport::from_result("storage_rest.debug", debug_source, debug),
     ];
+    if privileged_debug_enabled {
+        let debug_source = http_url(endpoint, "/debug/info");
+        probes.push(ProbeReport::from_result(
+            "storage_rest.debug",
+            debug_source,
+            raw_http_value(endpoint, "/debug/info").await,
+        ));
+    }
     if let Some(cid) = optional(cid) {
         let path = format!("/data/{cid}/exists");
         probes.push(ProbeReport::from_result(
@@ -330,6 +345,13 @@ async fn delivery_rest_report(
             &health_source,
             value,
             &["nodeHealth"],
+        );
+        push_delivery_probe(
+            &mut probes,
+            "connectionStatus",
+            &health_source,
+            value,
+            &["connectionStatus"],
         );
         push_delivery_probe(
             &mut probes,
@@ -621,11 +643,22 @@ mod tests {
     fn delivery_rest_normalizers_expose_current_api_fields() {
         let health = normalize_delivery_health(json!({
             "nodeHealth": "Ready",
-            "protocolsHealth": { "relay": "Ready" }
+            "connectionStatus": "Connected",
+            "protocolsHealth": [
+                { "/vac/waku/relay/2.0.0": "Ready" }
+            ]
         }));
         assert_eq!(
             scalar_field(&health, &["nodeHealth"]).as_ref(),
             Some(&json!("Ready"))
+        );
+        assert_eq!(
+            scalar_field(&health, &["connectionStatus"]).as_ref(),
+            Some(&json!("Connected"))
+        );
+        assert_eq!(
+            scalar_field(&health, &["protocolsHealth"]).as_ref(),
+            Some(&json!([{ "/vac/waku/relay/2.0.0": "Ready" }]))
         );
 
         let info = normalize_delivery_info(json!({

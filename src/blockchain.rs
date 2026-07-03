@@ -57,6 +57,22 @@ pub async fn blockchain_block(endpoint: &str, block_id: &str) -> Result<Value> {
     raw_http_json(endpoint, &format!("/cryptarchia/blocks/{block_id}")).await
 }
 
+pub async fn blockchain_transaction(endpoint: &str, transaction_id: &str) -> Result<Value> {
+    let transaction_id = transaction_id.trim();
+    if transaction_id.is_empty() {
+        bail!("transaction id is required");
+    }
+    if transaction_id.contains('/') || transaction_id.contains('?') || transaction_id.contains('#')
+    {
+        bail!("transaction id cannot contain path separators or query markers");
+    }
+    raw_http_json(
+        endpoint,
+        &format!("/cryptarchia/transaction/{transaction_id}"),
+    )
+    .await
+}
+
 pub async fn mantle_status(endpoint: &str, item_ids: Value) -> Result<Value> {
     post_json(endpoint, "/mantle/status", &item_ids).await
 }

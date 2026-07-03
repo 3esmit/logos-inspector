@@ -1,9 +1,11 @@
 use std::collections::BTreeMap;
 
+use anyhow::{Result, bail};
 use serde::Serialize;
 use serde_json::Value;
 
 use crate::blockchain::blockchain_blocks;
+use crate::raw_http_json;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ChannelScanReport {
@@ -82,6 +84,17 @@ pub async fn channel_scan(
         matches,
         raw_blocks: blocks,
     })
+}
+
+pub async fn channel_state(endpoint: &str, channel_id: &str) -> Result<Value> {
+    let channel_id = channel_id.trim();
+    if channel_id.is_empty() {
+        bail!("channel id is required");
+    }
+    if channel_id.contains('/') || channel_id.contains('?') || channel_id.contains('#') {
+        bail!("channel id cannot contain path separators or query markers");
+    }
+    raw_http_json(endpoint, &format!("/channel/{channel_id}")).await
 }
 
 pub fn extract_channel_operations(value: &Value) -> Vec<ChannelOperationMatch> {

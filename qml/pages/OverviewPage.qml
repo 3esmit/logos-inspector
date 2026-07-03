@@ -342,7 +342,7 @@ ColumnLayout {
             "storage.local_storage_used",
             "storage.active_uploads",
             "storage.active_downloads",
-            "storage.failed_transfers_recent",
+            "storage.failed_transfers_total",
             "messaging.peer_count",
             "messaging.active_subscriptions",
             "messaging.content_topics",
@@ -384,8 +384,8 @@ ColumnLayout {
         if (key === "bedrock.peer_count" || key === "storage.peer_count" || key === "messaging.peer_count" || key === "lez.blocks_produced_recent") {
             return numeric > 0 ? "success" : "neutral"
         }
-        if (key === "storage.failed_transfers_recent") {
-            return numeric > 0 ? "warning" : "neutral"
+        if (key === "storage.failed_transfers_total") {
+            return numeric > 0 ? "neutral" : "success"
         }
         if (key.indexOf("rejected_") >= 0 || key.indexOf("failed_") >= 0 || key.indexOf("_error_") >= 0) {
             return numeric > 0 ? "error" : "neutral"
@@ -418,7 +418,7 @@ ColumnLayout {
             return qsTr("upload requests total")
         case "storage.active_downloads":
             return qsTr("download requests total")
-        case "storage.failed_transfers_recent":
+        case "storage.failed_transfers_total":
             return qsTr("transfer failures total")
         }
         const parts = String(key || "").split(".")
