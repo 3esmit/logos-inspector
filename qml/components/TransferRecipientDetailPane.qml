@@ -37,7 +37,7 @@ ColumnLayout {
             }
 
             ActionButton {
-                visible: root.detail !== null && root.detail.address.length > 0
+                visible: root.detail !== null && root.detail.source === "account_refs" && root.detail.address.length > 0
                 theme: root.theme
                 text: qsTr("Open account state")
                 Layout.preferredWidth: 156

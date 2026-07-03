@@ -949,18 +949,6 @@ ColumnLayout {
             }
         }
 
-        ActionButton {
-            theme: contextRoot.theme
-            text: qsTr("Inspect as account")
-            Layout.preferredWidth: 156
-            enabled: contextRoot.rows.length > 0
-            onClicked: {
-                const first = contextRoot.rows.length > 0 ? contextRoot.rows[0] : null
-                if (first && first.value) {
-                    contextRoot.modelRef.openAccount(first.value)
-                }
-            }
-        }
     }
 
     component FileRow: Item {
@@ -1134,8 +1122,7 @@ ColumnLayout {
             { label: qsTr("Program ID"), value: programId, linkKind: "program" },
             { label: qsTr("IDL binding"), value: root.knownIdlText(programId), linkKind: "" },
             { label: qsTr("Binary"), value: qsTr("not selected"), linkKind: "" },
-            { label: qsTr("Recent transactions"), value: qsTr("not loaded"), linkKind: "" },
-            { label: qsTr("Account state"), value: qsTr("secondary action"), linkKind: "" }
+            { label: qsTr("Recent transactions"), value: qsTr("not loaded"), linkKind: "" }
         ]
         return rows
     }

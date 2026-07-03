@@ -339,7 +339,7 @@ ColumnLayout {
                 TransactionRow {
                     theme: root.theme
                     header: true
-                    columns: [qsTr("Tx hash"), qsTr("Direction"), qsTr("Kind"), qsTr("Caller"), qsTr("Affected")]
+                    columns: [qsTr("Tx hash"), qsTr("Direction"), qsTr("Kind"), qsTr("Program"), qsTr("Affected")]
                 }
 
                 Repeater {

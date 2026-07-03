@@ -7,7 +7,7 @@ use tokio::runtime::Runtime;
 use crate::{
     TransactionSummary, account_lookup, account_lookup_with_idl, bedrock_wallet_balance,
     blockchain, channels, decode_account_data_hex_with_idl, decode_event_data_hex_with_idl,
-    indexer_block_by_hash, indexer_blocks, indexer_transfer_recipients,
+    indexer_block_by_hash, indexer_blocks, indexer_health, indexer_transfer_recipients,
     inspect_transaction_summary_with_idl, last_sequencer_block_id, local_wallet_profile_status,
     logoscore,
     modules::{
@@ -158,14 +158,12 @@ impl InspectorBridge {
             }
             "indexerHealth" => {
                 let args = Args::new(args)?;
-                let head = self.runtime.block_on(raw_json_rpc_optional_result(
-                    args.string(0, "indexer endpoint")?,
-                    "getLastFinalizedBlockId",
-                    Value::Array(vec![]),
-                ))?;
+                let health = self
+                    .runtime
+                    .block_on(indexer_health(args.string(0, "indexer endpoint")?))?;
                 Ok(json!({
-                    "status": "reachable",
-                    "head": head,
+                    "status": "healthy",
+                    "health": health,
                 }))
             }
             "indexerFinalizedHead" => {
@@ -262,7 +260,7 @@ impl InspectorBridge {
             }
             "storageReport" => {
                 let args = Args::new(args)?;
-                to_value(storage_report(args.optional_string(0)))
+                to_value(storage_report(args.optional_string(0), false))
             }
             "storageSourceReport" => {
                 let args = Args::new(args)?;

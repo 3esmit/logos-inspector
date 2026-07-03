@@ -110,8 +110,8 @@ ColumnLayout {
                 StatusChip {
                     theme: root.theme
                     label: qsTr("Home")
-                    value: root.model.walletHome.length ? root.shortText(root.model.walletHome, 22) : qsTr("Default")
-                    detail: root.model.walletHomeFallbackLabel()
+                    value: root.model.walletHome.length ? root.shortText(root.model.walletHomeDisplayLabel(), 22) : qsTr("Default")
+                    detail: root.model.walletHomeDisplayLabel()
                     tone: "neutral"
                     Layout.fillWidth: true
                 }
@@ -255,15 +255,15 @@ ColumnLayout {
                     CopyRow {
                         theme: root.theme
                         label: qsTr("Wallet binary")
-                        value: root.model.walletBinary.length ? root.model.walletBinary : qsTr("Not set")
-                        copyText: root.model.walletBinary
+                        value: root.model.walletBinary.length ? root.model.walletBinaryDisplayLabel() : qsTr("Not set")
+                        copyText: ""
                     }
 
                     CopyRow {
                         theme: root.theme
                         label: qsTr("Wallet home")
-                        value: root.model.walletHomeFallbackLabel()
-                        copyText: root.model.walletHome
+                        value: root.model.walletHomeDisplayLabel()
+                        copyText: ""
                     }
 
                     CopyRow {
@@ -359,8 +359,8 @@ ColumnLayout {
                     CopyRow {
                         theme: root.theme
                         label: qsTr("Wallet home")
-                        value: root.model.walletHomeFallbackLabel()
-                        copyText: root.model.walletHome
+                        value: root.model.walletHomeDisplayLabel()
+                        copyText: ""
                     }
                 }
             }

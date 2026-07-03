@@ -433,7 +433,7 @@ ColumnLayout {
                         enabled: root.model.storageCidProbe.length > 0 && !root.pending()
                         Layout.preferredWidth: 126
                         accessibleName: qsTr("Check local CID existence")
-                        onClicked: root.refreshSource(true)
+                        onClicked: root.refreshSource(true, true)
                     }
                 }
 
@@ -626,8 +626,8 @@ ColumnLayout {
         }
     }
 
-    function refreshSource(showResult) {
-        root.model.queryNetworkConnection("storage", showResult === true)
+    function refreshSource(showResult, includeCidProbe) {
+        root.model.queryNetworkConnection("storage", showResult === true, includeCidProbe === true)
     }
 
     function pending() {
@@ -825,7 +825,7 @@ ColumnLayout {
         if (uploads === qsTr("n/a") && downloads === qsTr("n/a")) {
             return qsTr("n/a")
         }
-        return qsTr("%1 uploads / %2 downloads").arg(uploads).arg(downloads)
+        return qsTr("%1 upload requests / %2 download requests").arg(uploads).arg(downloads)
     }
 
     function reliabilityText() {
@@ -900,8 +900,9 @@ ColumnLayout {
     }
 
     function repositoryRows() {
+        const dataDir = root.probeKnown("dataDir") ? root.model.storageDisplayPath(root.valueSummary(root.probeValue("dataDir"))) : (root.model.storageDataDir.length > 0 ? root.model.storageDisplayPath(root.model.storageDataDir) : qsTr("No local path configured."))
         return [
-            root.statusRow(qsTr("Data directory"), root.probeKnown("dataDir") || root.model.storageDataDir.length > 0 ? qsTr("configured") : qsTr("unknown"), root.probeKnown("dataDir") ? root.valueSummary(root.probeValue("dataDir")) : (root.model.storageDataDir || qsTr("No local path configured.")), root.probeKnown("dataDir") || root.model.storageDataDir.length > 0 ? "success" : "neutral"),
+            root.statusRow(qsTr("Data directory"), root.probeKnown("dataDir") || root.model.storageDataDir.length > 0 ? qsTr("configured") : qsTr("unknown"), dataDir, root.probeKnown("dataDir") || root.model.storageDataDir.length > 0 ? "success" : "neutral"),
             root.metricRow(qsTr("Shared files"), "storage.shared_files_count"),
             root.manifestCountRow()
         ]
@@ -951,7 +952,7 @@ ColumnLayout {
         return [
             root.detailRow(qsTr("Peer ID"), root.probeValue("peerId")),
             root.detailRow(qsTr("SPR"), root.probeValue("spr")),
-            root.detailRow(qsTr("Data directory"), root.probeValue("dataDir") || root.model.storageDataDir),
+            root.pathDetailRow(qsTr("Data directory"), root.probeValue("dataDir") || root.model.storageDataDir),
             root.detailRow(qsTr("Version"), root.probeValue("version") || root.probeValue("moduleVersion")),
             root.detailRow(qsTr("Network preset"), root.model.storageNetworkPreset),
             root.detailRow(qsTr("Source target"), root.model.storageSourceTarget())
@@ -1044,6 +1045,17 @@ ColumnLayout {
             label: label,
             value: text,
             copyText: text === "-" || text === qsTr("n/a") || text === qsTr("Not queried") || text === qsTr("Not fetched") || text === qsTr("Idle") ? "" : root.copyValue(value),
+            source: root.sourceName()
+        }
+    }
+
+    function pathDetailRow(label, value) {
+        const raw = root.valueSummary(value)
+        const text = root.model.storageDisplayPath(raw)
+        return {
+            label: label,
+            value: text.length ? text : qsTr("n/a"),
+            copyText: root.model.storageLocalDiagnosticsEnabled ? root.copyValue(value) : "",
             source: root.sourceName()
         }
     }

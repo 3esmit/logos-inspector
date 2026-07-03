@@ -54,6 +54,7 @@ pub async fn blockchain_block(endpoint: &str, block_id: &str) -> Result<Value> {
     if block_id.is_empty() {
         bail!("block id is required");
     }
+    reject_path_markers(block_id, "block id")?;
     raw_http_json(endpoint, &format!("/cryptarchia/blocks/{block_id}")).await
 }
 
@@ -62,15 +63,19 @@ pub async fn blockchain_transaction(endpoint: &str, transaction_id: &str) -> Res
     if transaction_id.is_empty() {
         bail!("transaction id is required");
     }
-    if transaction_id.contains('/') || transaction_id.contains('?') || transaction_id.contains('#')
-    {
-        bail!("transaction id cannot contain path separators or query markers");
-    }
+    reject_path_markers(transaction_id, "transaction id")?;
     raw_http_json(
         endpoint,
         &format!("/cryptarchia/transaction/{transaction_id}"),
     )
     .await
+}
+
+fn reject_path_markers(value: &str, label: &str) -> Result<()> {
+    if value.contains('/') || value.contains('?') || value.contains('#') {
+        bail!("{label} cannot contain path separators or query markers");
+    }
+    Ok(())
 }
 
 pub async fn mantle_status(endpoint: &str, item_ids: Value) -> Result<Value> {
@@ -105,4 +110,26 @@ async fn post_json(endpoint: &str, path: &str, body: &Value) -> Result<Value> {
     let value: Value = serde_json::from_str(&text)
         .with_context(|| format!("invalid JSON response: {}", response_excerpt(&text)))?;
     Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn block_id_rejects_path_or_query_markers() -> Result<()> {
+        for value in ["abc/def", "abc?def", "abc#def"] {
+            let error = reject_path_markers(value, "block id");
+            let Err(error) = error else {
+                bail!("expected block id `{value}` to be rejected");
+            };
+            if !error
+                .to_string()
+                .contains("block id cannot contain path separators")
+            {
+                bail!("unexpected error: {error:#}");
+            }
+        }
+        Ok(())
+    }
 }
