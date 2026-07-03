@@ -16,6 +16,21 @@ ColumnLayout {
     width: parent ? parent.width : 900
     spacing: 16
 
+    PageHeader {
+        theme: root.theme
+        breadcrumb: qsTr("Home / L2 LEZ / Transfer Activity")
+        title: qsTr("L2 Transfer Activity")
+        layerLabel: qsTr("L2 LEZ")
+        subtitle: qsTr("Indexer-derived transfer recipients and account-reference fallbacks from finalized L2 blocks.")
+        Layout.fillWidth: true
+    }
+
+    SourceStrip {
+        theme: root.theme
+        sources: [qsTr("L2 Indexer"), qsTr("transfer-output scan"), qsTr("finalized blocks")]
+        Layout.fillWidth: true
+    }
+
     Component.onCompleted: {
         if (!model.transferActivityRows.length) {
             model.refreshTransferActivityPage();
@@ -55,7 +70,7 @@ ColumnLayout {
             RecipientRow {
                 theme: root.theme
                 header: true
-                columns: [qsTr("Recipient"), qsTr("Observed amount"), qsTr("Txs"), qsTr("Outputs"), qsTr("Last L2 block")]
+                columns: [qsTr("Recipient"), qsTr("Source"), qsTr("Observed amount"), qsTr("Txs"), qsTr("Outputs"), qsTr("Last L2 block")]
             }
 
             Repeater {
@@ -65,12 +80,22 @@ ColumnLayout {
                     required property var modelData
 
                     theme: root.theme
-                    columns: [modelData.recipient, modelData.received, modelData.txs, modelData.outputs, modelData.lastSlot]
+                    columns: [modelData.recipient, modelData.source, modelData.received, modelData.txs, modelData.outputs, modelData.lastSlot]
                     recipient: modelData.recipientRaw
+                    source: modelData.sourceRaw
                     onRecipientActivated: root.model.openRecipient(modelData.recipientRaw)
                 }
             }
         }
+    }
+
+    StatusMessage {
+        visible: root.showAccountRefFallback()
+        theme: root.theme
+        tone: "info"
+        title: qsTr("Account-reference fallback")
+        message: qsTr("No decoded transfer outputs in this range. Showing account references observed in finalized L2 transactions.")
+        Layout.fillWidth: true
     }
 
     StatusMessage {
@@ -103,6 +128,8 @@ ColumnLayout {
             return [{
                 recipient: qsTr("No transfer recipients in loaded range"),
                 recipientRaw: "",
+                source: "-",
+                sourceRaw: "",
                 received: "-",
                 txs: "-",
                 outputs: "-",
@@ -113,6 +140,8 @@ ColumnLayout {
             return {
                 recipient: root.shortRecipient(recipient.recipient),
                 recipientRaw: String(recipient.recipient || ""),
+                source: root.sourceLabel(recipient.source),
+                sourceRaw: String(recipient.source || ""),
                 received: root.receivedText(recipient),
                 txs: root.numberText(recipient.txs),
                 outputs: root.numberText(recipient.outputs),
@@ -121,11 +150,29 @@ ColumnLayout {
         });
     }
 
+    function showAccountRefFallback() {
+        const recipients = root.model.transferActivityRows || []
+        return recipients.length > 0 && recipients.every(function (recipient) {
+            return String(recipient.source || "") === "account_refs"
+        })
+    }
+
     function transferActivityRangeText() {
         if (root.model.transferActivityBeforeBlock > 0) {
             return qsTr("Before L2 block %1").arg(root.numberText(root.model.transferActivityBeforeBlock));
         }
-        return qsTr("Latest finalized L2 transfer activity");
+        return qsTr("Latest finalized L2 blocks");
+    }
+
+    function sourceLabel(source) {
+        const value = String(source || "")
+        if (value === "transfer_outputs") {
+            return qsTr("transfer output")
+        }
+        if (value === "account_refs") {
+            return qsTr("account ref")
+        }
+        return value.length ? value : "-"
     }
 
     function receivedText(recipient) {
@@ -168,6 +215,7 @@ ColumnLayout {
         required property Theme theme
         property var columns: []
         property string recipient: ""
+        property string source: ""
         property bool header: false
         signal recipientActivated()
 
@@ -184,11 +232,11 @@ ColumnLayout {
             anchors.fill: parent
             anchors.leftMargin: 14
             anchors.rightMargin: 14
-            columns: 5
+            columns: 6
             columnSpacing: 10
 
             Repeater {
-                model: 5
+                model: 6
 
                 LinkCell {
                     required property int index
@@ -197,6 +245,7 @@ ColumnLayout {
                     text: String(rowRoot.columns[index] || "-")
                     header: rowRoot.header
                     link: rowRoot.linkFor(index)
+                    copyable: !rowRoot.header && index === 0 && rowRoot.recipient.length > 0
                     copyText: rowRoot.recipient.length > 0 ? rowRoot.recipient : String(rowRoot.columns[index] || "")
                     monospace: !rowRoot.header
                     textColor: rowRoot.textColor(index)
@@ -223,6 +272,9 @@ ColumnLayout {
                 return 240;
             }
             if (index === 1) {
+                return 112;
+            }
+            if (index === 2) {
                 return 120;
             }
             return 82;

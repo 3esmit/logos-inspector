@@ -23,6 +23,7 @@ ColumnLayout {
     ListModel {
         id: programTabs
 
+        ListElement { value: "programIds"; label: "Program IDs" }
         ListElement { value: "idls"; label: "IDLs" }
         ListElement { value: "binaries"; label: "Binaries" }
         ListElement { value: "events"; label: "Events" }
@@ -30,10 +31,10 @@ ColumnLayout {
 
     PageHeader {
         theme: root.theme
-        breadcrumb: qsTr("Home / L2 LEZ / SPEL")
-        title: qsTr("SPEL / IDL")
+        breadcrumb: qsTr("Home / L2 LEZ / Programs")
+        title: qsTr("L2 Programs")
         layerLabel: qsTr("L2 LEZ")
-        subtitle: qsTr("Register IDLs, inspect binaries, and decode program events without hardcoded program assumptions.")
+        subtitle: qsTr("Sequencer program IDs with local SPEL / IDL bindings, binary inspection, and event decoding.")
         Layout.fillWidth: true
     }
 
@@ -80,7 +81,7 @@ ColumnLayout {
 
     Panel {
         theme: root.theme
-        title: qsTr("%1 tools").arg(root.activeTabLabel())
+        title: root.activeTabLabel()
 
         TabSwitch {
             theme: root.theme
@@ -253,7 +254,15 @@ ColumnLayout {
             modelRef: root.model
         }
 
+        ProgramContextSummary {
+            visible: root.isProgramContext(root.responseValue)
+            theme: root.theme
+            rows: root.programContextRows()
+            modelRef: root.model
+        }
+
         TextArea {
+            visible: !root.isProgramContext(root.responseValue)
             readOnly: true
             text: root.model.resultText.length ? root.model.resultText : qsTr("No response body.")
             wrapMode: TextArea.Wrap
@@ -285,8 +294,33 @@ ColumnLayout {
             return binaryForm
         case "events":
             return eventForm
-        default:
+        case "idls":
             return idlForm
+        default:
+            return programIdsForm
+        }
+    }
+
+    Component {
+        id: programIdsForm
+
+        ColumnLayout {
+            spacing: 12
+
+            SourceStrip {
+                theme: root.theme
+                sources: [qsTr("L2 LEZ"), qsTr("sequencer getProgramIds"), qsTr("program id")]
+                Layout.fillWidth: true
+            }
+
+            ActionButton {
+                theme: root.theme
+                text: qsTr("Load program IDs")
+                primary: true
+                enabled: !root.model.busy
+                Layout.preferredWidth: 190
+                onClicked: root.model.callInspector("programs", [root.model.sequencerUrl], qsTr("Program IDs"))
+            }
         }
     }
 
@@ -351,7 +385,7 @@ ColumnLayout {
 
                 ActionButton {
                     theme: root.theme
-                    text: qsTr("Load programs")
+                    text: qsTr("Load program IDs")
                     enabled: !root.model.busy
                     Layout.fillWidth: true
                     onClicked: root.model.callInspector("programs", [root.model.sequencerUrl], qsTr("Program IDs"))
@@ -369,7 +403,7 @@ ColumnLayout {
             FileDialog {
                 id: programFileDialog
 
-                title: qsTr("Select SPEL binary")
+                title: qsTr("Select program binary")
                 fileMode: FileDialog.OpenFile
                 nameFilters: [qsTr("Binary files (*.bin *.wasm)"), qsTr("All files (*)")]
                 onAccepted: {
@@ -585,9 +619,11 @@ ColumnLayout {
                 ProgramRow {
                     theme: listRoot.theme
                     header: true
-                    label: qsTr("Label")
-                    hex: qsTr("Program ID")
-                    base58: qsTr("Base58")
+                    programIdText: qsTr("Program ID")
+                    knownIdl: qsTr("Known IDL")
+                    binaryMatch: qsTr("Binary match")
+                    recentTx: qsTr("Recent tx")
+                    source: qsTr("Source")
                 }
 
                 Repeater {
@@ -600,6 +636,11 @@ ColumnLayout {
                         label: String(modelData.label || "-")
                         hex: String(modelData.hex || "")
                         base58: String(modelData.base58 || "")
+                        programIdText: String(modelData.base58 || modelData.hex || "")
+                        knownIdl: root.knownIdlText(modelData.hex)
+                        binaryMatch: qsTr("unknown")
+                        recentTx: qsTr("not loaded")
+                        source: qsTr("sequencer")
                         modelRef: listRoot.modelRef
                     }
                 }
@@ -614,6 +655,11 @@ ColumnLayout {
         property string label: ""
         property string hex: ""
         property string base58: ""
+        property string programIdText: ""
+        property string knownIdl: ""
+        property string binaryMatch: ""
+        property string recentTx: ""
+        property string source: ""
         property bool header: false
         property AppModel modelRef
 
@@ -630,33 +676,50 @@ ColumnLayout {
             anchors.fill: parent
             anchors.leftMargin: rowRoot.theme.gap
             anchors.rightMargin: rowRoot.theme.gap
-            columns: 3
+            columns: 5
             columnSpacing: rowRoot.theme.gap
 
             LinkCell {
                 theme: rowRoot.theme
-                text: rowRoot.label
+                text: rowRoot.header ? rowRoot.programIdText : root.shortHash(rowRoot.programIdText)
                 header: rowRoot.header
-                monospace: false
-                Layout.preferredWidth: 140
-            }
-
-            LinkCell {
-                theme: rowRoot.theme
-                text: rowRoot.header ? rowRoot.hex : root.shortHash(rowRoot.hex)
-                header: rowRoot.header
-                link: !rowRoot.header && rowRoot.hex.length > 0
-                copyText: rowRoot.hex
-                Layout.fillWidth: true
-                onActivated: rowRoot.modelRef.openReference("program", rowRoot.hex)
-            }
-
-            LinkCell {
-                theme: rowRoot.theme
-                text: rowRoot.header ? rowRoot.base58 : root.shortHash(rowRoot.base58)
-                header: rowRoot.header
+                link: !rowRoot.header && (rowRoot.hex.length > 0 || rowRoot.base58.length > 0)
+                copyText: rowRoot.base58.length ? rowRoot.base58 : rowRoot.hex
                 monospace: !rowRoot.header
                 Layout.fillWidth: true
+                onActivated: rowRoot.modelRef.openReference("program", rowRoot.hex.length ? rowRoot.hex : rowRoot.base58)
+            }
+
+            LinkCell {
+                theme: rowRoot.theme
+                text: rowRoot.knownIdl
+                header: rowRoot.header
+                monospace: false
+                Layout.preferredWidth: 120
+            }
+
+            LinkCell {
+                theme: rowRoot.theme
+                text: rowRoot.binaryMatch
+                header: rowRoot.header
+                monospace: false
+                Layout.preferredWidth: 110
+            }
+
+            LinkCell {
+                theme: rowRoot.theme
+                text: rowRoot.recentTx
+                header: rowRoot.header
+                monospace: !rowRoot.header
+                Layout.preferredWidth: 96
+            }
+
+            LinkCell {
+                theme: rowRoot.theme
+                text: rowRoot.source
+                header: rowRoot.header
+                monospace: false
+                Layout.preferredWidth: 92
             }
         }
     }
@@ -680,7 +743,7 @@ ColumnLayout {
 
         SummarySection {
             theme: summaryRoot.theme
-            title: qsTr("Accounts")
+            title: qsTr("Account schemas")
             rows: summaryRoot.accounts
         }
 
@@ -834,6 +897,75 @@ ColumnLayout {
         }
     }
 
+    component ProgramContextSummary: ColumnLayout {
+        id: contextRoot
+
+        required property Theme theme
+        property var rows: []
+        property AppModel modelRef
+
+        spacing: 6
+        Layout.fillWidth: true
+
+        Text {
+            text: qsTr("Program")
+            color: contextRoot.theme.text
+            textFormat: Text.PlainText
+            font.pixelSize: contextRoot.theme.primaryText
+            font.weight: Font.DemiBold
+            Layout.fillWidth: true
+        }
+
+        SourceStrip {
+            theme: contextRoot.theme
+            sources: [qsTr("L2 LEZ"), qsTr("sequencer program id"), qsTr("Local IDL"), qsTr("registered IDL")]
+            Layout.fillWidth: true
+        }
+
+        Frame {
+            padding: 0
+            Layout.fillWidth: true
+
+            background: Rectangle {
+                color: contextRoot.theme.field
+                radius: contextRoot.theme.radius
+                border.width: 1
+                border.color: contextRoot.theme.outlineMuted
+            }
+
+            contentItem: ColumnLayout {
+                spacing: 0
+
+                Repeater {
+                    model: contextRoot.rows
+
+                    FileRow {
+                        required property var modelData
+
+                        theme: contextRoot.theme
+                        label: String(modelData.label || "")
+                        value: String(modelData.value || "-")
+                        linkKind: String(modelData.linkKind || "")
+                        modelRef: contextRoot.modelRef
+                    }
+                }
+            }
+        }
+
+        ActionButton {
+            theme: contextRoot.theme
+            text: qsTr("Inspect as account")
+            Layout.preferredWidth: 156
+            enabled: contextRoot.rows.length > 0
+            onClicked: {
+                const first = contextRoot.rows.length > 0 ? contextRoot.rows[0] : null
+                if (first && first.value) {
+                    contextRoot.modelRef.openAccount(first.value)
+                }
+            }
+        }
+    }
+
     component FileRow: Item {
         id: rowRoot
 
@@ -880,6 +1012,9 @@ ColumnLayout {
     }
 
     function activeTabLabel() {
+        if (root.model.programTab === "programIds") {
+            return qsTr("Program IDs")
+        }
         if (root.model.programTab === "binaries") {
             return qsTr("Binaries")
         }
@@ -890,6 +1025,9 @@ ColumnLayout {
     }
 
     function activeTabDelta() {
+        if (root.model.programTab === "programIds") {
+            return qsTr("Sequencer")
+        }
         if (root.model.programTab === "binaries") {
             return qsTr("File inspection")
         }
@@ -900,6 +1038,9 @@ ColumnLayout {
     }
 
     function activeTabMessage() {
+        if (root.model.programTab === "programIds") {
+            return qsTr("Load program identities from the sequencer before binding local IDLs or binaries.")
+        }
         if (root.model.programTab === "binaries") {
             return qsTr("Inspect compiled program bytecode to derive program IDs and deployment transaction hashes.")
         }
@@ -989,6 +1130,36 @@ ColumnLayout {
         return Array.isArray(root.responseValue) ? root.responseValue.slice(0, 12) : []
     }
 
+    function isProgramContext(value) {
+        return value && typeof value === "object" && !Array.isArray(value)
+            && value.type === "program"
+            && value.program_id !== undefined
+    }
+
+    function programContextRows() {
+        const value = root.responseValue || {}
+        if (!root.isProgramContext(value)) {
+            return []
+        }
+        const programId = root.valueText(value.program_id)
+        const rows = [
+            { label: qsTr("Program ID"), value: programId, linkKind: "program" },
+            { label: qsTr("IDL binding"), value: root.knownIdlText(programId), linkKind: "" },
+            { label: qsTr("Binary"), value: qsTr("not selected"), linkKind: "" },
+            { label: qsTr("Recent transactions"), value: qsTr("not loaded"), linkKind: "" },
+            { label: qsTr("Account state"), value: qsTr("secondary action"), linkKind: "" }
+        ]
+        return rows
+    }
+
+    function knownIdlText(programId) {
+        const entries = root.model.idlEntriesForProgram(programId)
+        if (entries.length > 0) {
+            return entries[0].name || qsTr("registered")
+        }
+        return qsTr("none")
+    }
+
     function isIdlReport(value) {
         return value && typeof value === "object" && !Array.isArray(value)
             && value.instructions !== undefined
@@ -1018,7 +1189,7 @@ ColumnLayout {
             const accounts = Array.isArray(item.accounts) ? item.accounts.length : 0
             return {
                 title: root.valueText(item.name),
-                detail: qsTr("%1 account(s), %2 arg(s)").arg(root.numberText(accounts)).arg(root.numberText(args))
+                detail: qsTr("%1 instruction account role(s), %2 arg(s)").arg(root.numberText(accounts)).arg(root.numberText(args))
             }
         })
     }
@@ -1053,8 +1224,8 @@ ColumnLayout {
         return [
             { label: qsTr("Path"), value: root.valueText(value.path), linkKind: "" },
             { label: qsTr("Bytecode"), value: qsTr("%1 bytes").arg(root.numberText(value.bytecode_len)), linkKind: "" },
-            { label: qsTr("Program hex"), value: root.valueText(value.program_id_hex), linkKind: "program" },
-            { label: qsTr("Program base58"), value: root.valueText(value.program_id_base58), linkKind: "" },
+            { label: qsTr("Program ID (0x)"), value: root.valueText(value.program_id_hex), linkKind: "program" },
+            { label: qsTr("Program ID"), value: root.valueText(value.program_id_base58), linkKind: "" },
             { label: qsTr("Deployment tx"), value: root.valueText(value.deployment_tx_hash), linkKind: "transaction" }
         ]
     }

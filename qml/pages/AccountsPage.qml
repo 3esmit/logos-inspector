@@ -15,6 +15,16 @@ ColumnLayout {
     width: parent ? parent.width : 900
     spacing: 16
 
+    PageHeader {
+        visible: root.model.accountDetailValue === null
+        theme: root.theme
+        breadcrumb: qsTr("Home / L2 LEZ / Accounts")
+        title: qsTr("L2 Accounts")
+        layerLabel: qsTr("L2 LEZ")
+        subtitle: qsTr("Public account state from sequencer latest, finalized related transactions from the indexer, and local IDL decoding.")
+        Layout.fillWidth: true
+    }
+
     AccountDetailPane {
         value: root.model.accountDetailValue
         theme: root.theme

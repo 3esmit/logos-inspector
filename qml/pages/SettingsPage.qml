@@ -31,7 +31,7 @@ ColumnLayout {
         ListElement { value: "blockchain"; label: "Blockchain" }
         ListElement { value: "indexer"; label: "Indexer" }
         ListElement { value: "execution"; label: "Execution Zone" }
-        ListElement { value: "messaging"; label: "Messaging" }
+        ListElement { value: "messaging"; label: "Messaging / Delivery" }
         ListElement { value: "storage"; label: "Storage" }
     }
 
@@ -69,6 +69,66 @@ ColumnLayout {
             key: "custom"
             label: "Custom"
             summary: "Manual endpoint override"
+        }
+    }
+
+    ListModel {
+        id: deliverySourceOptions
+
+        ListElement {
+            key: "module"
+            label: "Basecamp module"
+            summary: "Local logoscore delivery_module bridge"
+        }
+        ListElement {
+            key: "rest"
+            label: "Direct Waku REST"
+            summary: "Read-only health, info, version, and optional metrics"
+        }
+        ListElement {
+            key: "metrics"
+            label: "Metrics only"
+            summary: "Scrape a Prometheus/OpenMetrics endpoint"
+        }
+        ListElement {
+            key: "network-monitor"
+            label: "Network monitor"
+            summary: "Fleet monitor source; adapter pending"
+        }
+        ListElement {
+            key: "discovery-crawler"
+            label: "Discovery crawler"
+            summary: "Preset and bootnode crawl; adapter pending"
+        }
+    }
+
+    ListModel {
+        id: storageSourceOptions
+
+        ListElement {
+            key: "module"
+            label: "Basecamp module"
+            summary: "Local logoscore storage_module bridge"
+        }
+        ListElement {
+            key: "rest"
+            label: "Standalone REST"
+            summary: "Read-only space, identity, local data, debug, and metrics"
+        }
+        ListElement {
+            key: "metrics"
+            label: "Metrics only"
+            summary: "Scrape a Prometheus/OpenMetrics endpoint"
+        }
+        ListElement {
+            key: "c-library"
+            label: "C library"
+            summary: "Embedded storage library source; adapter pending"
+        }
+        ListElement {
+            key: "local-os"
+            label: "Local OS diagnostics"
+            summary: "Process, data directory, and port checks; adapter pending"
         }
     }
 
@@ -279,25 +339,14 @@ ColumnLayout {
     Component {
         id: messagingNetwork
 
-        NetworkConnectionPanel {
+        DeliveryConnectionPanel {
             theme: settingsRoot.theme
             title: qsTr("Messaging / Delivery")
-            subtitle: qsTr("Local delivery module bridge used for messaging metadata and node information.")
-            kind: "messaging"
-            connectionType: qsTr("Module")
-            moduleName: settingsRoot.model.deliveryModule
-            moduleFieldVisible: true
-            primaryFieldVisible: false
-            auxiliaryFieldVisible: true
-            auxiliaryLabel: qsTr("Node info id")
-            auxiliaryText: settingsRoot.model.messagingNodeInfoId
-            auxiliaryPlaceholder: qsTr("Optional node id")
-            refreshRate: settingsRoot.model.messagingRefreshRate
+            subtitle: qsTr("Configure the Delivery inspection source. Probes here are read-only status checks.")
             statusText: settingsRoot.connectionStatusText("messaging")
             statusDetail: settingsRoot.connectionStatusDetail("messaging")
             statusColor: settingsRoot.connectionStatusColor("messaging")
-            onAuxiliaryEdited: value => settingsRoot.model.messagingNodeInfoId = String(value || "").trim()
-            onRefreshRateEdited: value => settingsRoot.model.setNetworkConnectionRate("messaging", value)
+            sourceOptions: deliverySourceOptions
             onQueryClicked: settingsRoot.model.queryNetworkConnection("messaging", true)
         }
     }
@@ -305,25 +354,14 @@ ColumnLayout {
     Component {
         id: storageNetwork
 
-        NetworkConnectionPanel {
+        StorageConnectionPanel {
             theme: settingsRoot.theme
             title: qsTr("Storage")
-            subtitle: qsTr("Local storage module bridge used for CID probes, transfer status, and storage node metadata.")
-            kind: "storage"
-            connectionType: qsTr("Module")
-            moduleName: settingsRoot.model.storageModule
-            moduleFieldVisible: true
-            primaryFieldVisible: false
-            auxiliaryFieldVisible: true
-            auxiliaryLabel: qsTr("CID fetch test")
-            auxiliaryText: settingsRoot.model.storageCidProbe
-            auxiliaryPlaceholder: qsTr("Optional CID")
-            refreshRate: settingsRoot.model.storageRefreshRate
+            subtitle: qsTr("Configure the Storage inspection source. Safe checks only query identity, space, local manifests, metrics, and optional local exists.")
             statusText: settingsRoot.connectionStatusText("storage")
             statusDetail: settingsRoot.connectionStatusDetail("storage")
             statusColor: settingsRoot.connectionStatusColor("storage")
-            onAuxiliaryEdited: value => settingsRoot.model.storageCidProbe = String(value || "").trim()
-            onRefreshRateEdited: value => settingsRoot.model.setNetworkConnectionRate("storage", value)
+            sourceOptions: storageSourceOptions
             onQueryClicked: settingsRoot.model.queryNetworkConnection("storage", true)
         }
     }
@@ -460,6 +498,40 @@ ColumnLayout {
             return
         }
         settingsRoot.model.applyProfile(index)
+    }
+
+    function deliverySourceIndexFor(value) {
+        const source = String(value || "module")
+        for (let i = 0; i < deliverySourceOptions.count; ++i) {
+            if (deliverySourceOptions.get(i).key === source) {
+                return i
+            }
+        }
+        return 0
+    }
+
+    function deliverySourceModeAt(index) {
+        if (index < 0 || index >= deliverySourceOptions.count) {
+            return "module"
+        }
+        return deliverySourceOptions.get(index).key
+    }
+
+    function storageSourceIndexFor(value) {
+        const source = String(value || "module")
+        for (let i = 0; i < storageSourceOptions.count; ++i) {
+            if (storageSourceOptions.get(i).key === source) {
+                return i
+            }
+        }
+        return 0
+    }
+
+    function storageSourceModeAt(index) {
+        if (index < 0 || index >= storageSourceOptions.count) {
+            return "module"
+        }
+        return storageSourceOptions.get(index).key
     }
 
     function profileIndexFor(value) {
@@ -616,7 +688,7 @@ ColumnLayout {
             { title: qsTr("Messaging / Delivery"), fields: [
                 { key: "messaging.module", label: qsTr("module"), detail: qsTr("loaded, running, or stopped") },
                 { key: "messaging.connection_state", label: qsTr("connection_state"), detail: qsTr("connected, disconnected, or connecting") },
-                { key: "messaging.peer_count", label: qsTr("peer_count"), detail: qsTr("Messaging peers") },
+                { key: "messaging.peer_count", label: qsTr("peer_count"), detail: qsTr("Delivery peers") },
                 { key: "messaging.bootstrap_connected", label: qsTr("bootstrap_connected"), detail: qsTr("Bootstrap connectivity") },
                 { key: "messaging.active_subscriptions", label: qsTr("active_subscriptions"), detail: qsTr("Active subscriptions") },
                 { key: "messaging.content_topics", label: qsTr("content_topics"), detail: qsTr("Subscribed content topics") },
@@ -627,7 +699,7 @@ ColumnLayout {
                 { key: "messaging.message_error_events_recent", label: qsTr("message_error_events_recent"), detail: qsTr("Recent message errors") },
                 { key: "messaging.publish_latency_ms", label: qsTr("publish_latency_ms"), detail: qsTr("Publish latency") },
                 { key: "messaging.receive_latency_ms", label: qsTr("receive_latency_ms"), detail: qsTr("Receive latency") },
-                { key: "messaging.last_error", label: qsTr("last_error"), detail: qsTr("Latest messaging error") }
+                { key: "messaging.last_error", label: qsTr("last_error"), detail: qsTr("Latest Delivery error") }
             ] },
             { title: qsTr("Overall"), fields: [
                 { key: "overall.status", label: qsTr("status"), detail: qsTr("healthy, degraded, or down") },
@@ -664,7 +736,7 @@ ColumnLayout {
                 { key: "storage.failed_transfers_recent", label: qsTr("failed_transfers_recent"), detail: qsTr("Recent failed transfers") }
             ] },
             { title: qsTr("Messaging / Delivery"), fields: [
-                { key: "messaging.peer_count", label: qsTr("peer_count"), detail: qsTr("Messaging peers") },
+                { key: "messaging.peer_count", label: qsTr("peer_count"), detail: qsTr("Delivery peers") },
                 { key: "messaging.active_subscriptions", label: qsTr("active_subscriptions"), detail: qsTr("Active subscriptions") },
                 { key: "messaging.content_topics", label: qsTr("content_topics"), detail: qsTr("Content topics") },
                 { key: "messaging.outbound_queue", label: qsTr("outbound_queue"), detail: qsTr("Outbound queue") },
@@ -786,6 +858,326 @@ ColumnLayout {
                 textFormat: Text.PlainText
                 wrapMode: Text.Wrap
                 font.pixelSize: panelRoot.theme.dataText
+                Layout.fillWidth: true
+            }
+        }
+    }
+
+    component DeliveryConnectionPanel: Panel {
+        id: deliveryRoot
+
+        property string subtitle: ""
+        property string statusText: qsTr("Unknown")
+        property string statusDetail: ""
+        property color statusColor: theme.textMuted
+        property ListModel sourceOptions
+        signal queryClicked()
+
+        RowLayout {
+            spacing: deliveryRoot.theme.gap
+            Layout.fillWidth: true
+
+            Text {
+                text: deliveryRoot.subtitle
+                color: deliveryRoot.theme.textMuted
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                font.pixelSize: deliveryRoot.theme.secondaryText
+                Layout.fillWidth: true
+            }
+
+            StatusPill {
+                theme: deliveryRoot.theme
+                text: deliveryRoot.statusText
+                colorToken: deliveryRoot.statusColor
+            }
+        }
+
+        GridLayout {
+            columns: settingsRoot.width < 760 ? 1 : 2
+            columnSpacing: deliveryRoot.theme.gap
+            rowSpacing: deliveryRoot.theme.gap
+            Layout.fillWidth: true
+
+            ComboField {
+                theme: deliveryRoot.theme
+                label: qsTr("Source mode")
+                accessibleName: qsTr("Delivery source mode")
+                options: deliveryRoot.sourceOptions
+                currentIndex: settingsRoot.deliverySourceIndexFor(settingsRoot.model.messagingSourceMode)
+                onActivated: index => settingsRoot.model.messagingSourceMode = settingsRoot.deliverySourceModeAt(index)
+            }
+
+            InfoField {
+                theme: deliveryRoot.theme
+                label: qsTr("Module API")
+                value: settingsRoot.model.deliveryModule
+            }
+
+            FieldRow {
+                theme: deliveryRoot.theme
+                label: qsTr("Waku REST URL")
+                text: settingsRoot.model.messagingRestUrl
+                placeholderText: qsTr("http://127.0.0.1:8645")
+                onTextChanged: settingsRoot.model.messagingRestUrl = String(text || "").trim()
+            }
+
+            FieldRow {
+                theme: deliveryRoot.theme
+                label: qsTr("Metrics URL")
+                text: settingsRoot.model.messagingMetricsUrl
+                placeholderText: qsTr("http://127.0.0.1:8008/metrics")
+                onTextChanged: settingsRoot.model.messagingMetricsUrl = String(text || "").trim()
+            }
+
+            FieldRow {
+                theme: deliveryRoot.theme
+                label: qsTr("Network preset")
+                text: settingsRoot.model.messagingNetworkPreset
+                placeholderText: qsTr("testnet")
+                onTextChanged: settingsRoot.model.messagingNetworkPreset = String(text || "").trim()
+            }
+
+            FieldRow {
+                theme: deliveryRoot.theme
+                label: qsTr("Node info id")
+                text: settingsRoot.model.messagingNodeInfoId
+                placeholderText: qsTr("Optional getNodeInfo id")
+                onTextChanged: settingsRoot.model.messagingNodeInfoId = String(text || "").trim()
+            }
+
+            RefreshRateField {
+                theme: deliveryRoot.theme
+                value: settingsRoot.model.messagingRefreshRate
+                onRateEdited: value => settingsRoot.model.setNetworkConnectionRate("messaging", value)
+            }
+
+            SecondsField {
+                theme: deliveryRoot.theme
+                label: qsTr("Rolling window")
+                value: settingsRoot.model.messagingRollingWindow
+                onValueEdited: value => settingsRoot.model.messagingRollingWindow = value
+            }
+        }
+
+        Flow {
+            spacing: deliveryRoot.theme.gapSmall
+            Layout.fillWidth: true
+
+            SafetyToggle {
+                theme: deliveryRoot.theme
+                text: qsTr("Admin REST")
+                detail: qsTr("Allows privileged read-only admin endpoints when a future adapter uses them.")
+                checked: settingsRoot.model.messagingAdminRestEnabled
+                onToggled: settingsRoot.model.messagingAdminRestEnabled = checked
+            }
+
+            SafetyToggle {
+                theme: deliveryRoot.theme
+                text: qsTr("Mutating diagnostics")
+                detail: qsTr("Allows future publish, subscribe, dial, and lightpush probes after per-action confirmation.")
+                checked: settingsRoot.model.messagingMutatingDiagnosticsEnabled
+                onToggled: settingsRoot.model.messagingMutatingDiagnosticsEnabled = checked
+            }
+        }
+
+        StatusMessage {
+            visible: settingsRoot.model.messagingSourceMode === "network-monitor" || settingsRoot.model.messagingSourceMode === "discovery-crawler"
+            theme: deliveryRoot.theme
+            tone: "warning"
+            title: qsTr("Adapter pending")
+            message: qsTr("This source profile is saved for layout and future wiring. Query status reports it as unavailable until the backend adapter exists.")
+            Layout.fillWidth: true
+        }
+
+        RowLayout {
+            spacing: deliveryRoot.theme.gapSmall
+            Layout.fillWidth: true
+
+            ActionButton {
+                theme: deliveryRoot.theme
+                text: qsTr("Query status")
+                primary: true
+                enabled: !settingsRoot.model.busy
+                Layout.preferredWidth: 132
+                accessibleName: qsTr("Query Delivery status")
+                onClicked: deliveryRoot.queryClicked()
+            }
+
+            Text {
+                text: deliveryRoot.statusDetail
+                color: deliveryRoot.theme.textMuted
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                font.pixelSize: deliveryRoot.theme.dataText
+                Layout.fillWidth: true
+            }
+        }
+    }
+
+    component StorageConnectionPanel: Panel {
+        id: storageRoot
+
+        property string subtitle: ""
+        property string statusText: qsTr("Unknown")
+        property string statusDetail: ""
+        property color statusColor: theme.textMuted
+        property ListModel sourceOptions
+        signal queryClicked()
+
+        RowLayout {
+            spacing: storageRoot.theme.gap
+            Layout.fillWidth: true
+
+            Text {
+                text: storageRoot.subtitle
+                color: storageRoot.theme.textMuted
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                font.pixelSize: storageRoot.theme.secondaryText
+                Layout.fillWidth: true
+            }
+
+            StatusPill {
+                theme: storageRoot.theme
+                text: storageRoot.statusText
+                colorToken: storageRoot.statusColor
+            }
+        }
+
+        GridLayout {
+            columns: settingsRoot.width < 760 ? 1 : 2
+            columnSpacing: storageRoot.theme.gap
+            rowSpacing: storageRoot.theme.gap
+            Layout.fillWidth: true
+
+            ComboField {
+                theme: storageRoot.theme
+                label: qsTr("Source mode")
+                accessibleName: qsTr("Storage source mode")
+                options: storageRoot.sourceOptions
+                currentIndex: settingsRoot.storageSourceIndexFor(settingsRoot.model.storageSourceMode)
+                onActivated: index => settingsRoot.model.storageSourceMode = settingsRoot.storageSourceModeAt(index)
+            }
+
+            InfoField {
+                theme: storageRoot.theme
+                label: qsTr("Module API")
+                value: settingsRoot.model.storageModule
+            }
+
+            FieldRow {
+                theme: storageRoot.theme
+                label: qsTr("REST URL")
+                text: settingsRoot.model.storageRestUrl
+                placeholderText: qsTr("http://127.0.0.1:8080/api/storage/v1")
+                onTextChanged: settingsRoot.model.storageRestUrl = String(text || "").trim()
+            }
+
+            FieldRow {
+                theme: storageRoot.theme
+                label: qsTr("Metrics URL")
+                text: settingsRoot.model.storageMetricsUrl
+                placeholderText: qsTr("http://127.0.0.1:8008/metrics")
+                onTextChanged: settingsRoot.model.storageMetricsUrl = String(text || "").trim()
+            }
+
+            FieldRow {
+                theme: storageRoot.theme
+                label: qsTr("Network preset")
+                text: settingsRoot.model.storageNetworkPreset
+                placeholderText: qsTr("logos.test")
+                onTextChanged: settingsRoot.model.storageNetworkPreset = String(text || "").trim()
+            }
+
+            FieldRow {
+                theme: storageRoot.theme
+                label: qsTr("Data directory")
+                text: settingsRoot.model.storageDataDir
+                placeholderText: qsTr("Optional local diagnostics path")
+                onTextChanged: settingsRoot.model.storageDataDir = String(text || "").trim()
+            }
+
+            FieldRow {
+                theme: storageRoot.theme
+                label: qsTr("CID local exists")
+                text: settingsRoot.model.storageCidProbe
+                placeholderText: qsTr("Optional CID")
+                onTextChanged: settingsRoot.model.storageCidProbe = String(text || "").trim()
+            }
+
+            RefreshRateField {
+                theme: storageRoot.theme
+                value: settingsRoot.model.storageRefreshRate
+                onRateEdited: value => settingsRoot.model.setNetworkConnectionRate("storage", value)
+            }
+
+            SecondsField {
+                theme: storageRoot.theme
+                label: qsTr("Rolling window")
+                value: settingsRoot.model.storageRollingWindow
+                onValueEdited: value => settingsRoot.model.storageRollingWindow = value
+            }
+        }
+
+        Flow {
+            spacing: storageRoot.theme.gapSmall
+            Layout.fillWidth: true
+
+            SafetyToggle {
+                theme: storageRoot.theme
+                text: qsTr("Local OS diagnostics")
+                detail: qsTr("Allows future process, disk, and port checks from the local machine.")
+                checked: settingsRoot.model.storageLocalDiagnosticsEnabled
+                onToggled: settingsRoot.model.storageLocalDiagnosticsEnabled = checked
+            }
+
+            SafetyToggle {
+                theme: storageRoot.theme
+                text: qsTr("Privileged debug")
+                detail: qsTr("Allows future privileged debug endpoints after source-specific confirmation.")
+                checked: settingsRoot.model.storagePrivilegedDebugEnabled
+                onToggled: settingsRoot.model.storagePrivilegedDebugEnabled = checked
+            }
+
+            SafetyToggle {
+                theme: storageRoot.theme
+                text: qsTr("Mutating diagnostics")
+                detail: qsTr("Allows future upload, download, connect, remove, and lifecycle probes after per-action confirmation.")
+                checked: settingsRoot.model.storageMutatingDiagnosticsEnabled
+                onToggled: settingsRoot.model.storageMutatingDiagnosticsEnabled = checked
+            }
+        }
+
+        StatusMessage {
+            visible: settingsRoot.model.storageSourceMode === "c-library" || settingsRoot.model.storageSourceMode === "local-os"
+            theme: storageRoot.theme
+            tone: "warning"
+            title: qsTr("Adapter pending")
+            message: qsTr("This source profile is saved for layout and future wiring. Query status reports it as unavailable until the backend adapter exists.")
+            Layout.fillWidth: true
+        }
+
+        RowLayout {
+            spacing: storageRoot.theme.gapSmall
+            Layout.fillWidth: true
+
+            ActionButton {
+                theme: storageRoot.theme
+                text: qsTr("Query status")
+                primary: true
+                enabled: !settingsRoot.model.busy
+                Layout.preferredWidth: 132
+                accessibleName: qsTr("Query Storage status")
+                onClicked: storageRoot.queryClicked()
+            }
+
+            Text {
+                text: storageRoot.statusDetail
+                color: storageRoot.theme.textMuted
+                textFormat: Text.PlainText
+                wrapMode: Text.Wrap
+                font.pixelSize: storageRoot.theme.dataText
                 Layout.fillWidth: true
             }
         }
@@ -968,6 +1360,68 @@ ColumnLayout {
         }
     }
 
+    component SecondsField: ColumnLayout {
+        id: secondsRoot
+
+        required property Theme theme
+        property string label: ""
+        property int value: 120
+        signal valueEdited(int value)
+
+        spacing: 6
+        Layout.fillWidth: true
+
+        Text {
+            text: secondsRoot.label
+            color: secondsRoot.theme.textMuted
+            textFormat: Text.PlainText
+            font.pixelSize: secondsRoot.theme.secondaryText
+            font.weight: Font.Medium
+            Layout.fillWidth: true
+        }
+
+        SpinBox {
+            id: secondsSpin
+
+            from: 5
+            to: 3600
+            stepSize: 5
+            value: secondsRoot.value
+            editable: true
+            hoverEnabled: true
+            Layout.fillWidth: true
+            Layout.preferredHeight: secondsRoot.theme.controlHeight
+            textFromValue: function (value, locale) {
+                return qsTr("%1 s").arg(Number(value).toLocaleString(locale, "f", 0))
+            }
+            valueFromText: function (text, locale) {
+                const parsed = Number(String(text || "").replace(/[^0-9]/g, ""))
+                return Number.isFinite(parsed) ? parsed : secondsRoot.value
+            }
+            onValueModified: secondsRoot.valueEdited(value)
+
+            contentItem: TextInput {
+                text: secondsSpin.textFromValue(secondsSpin.value, secondsSpin.locale)
+                color: secondsRoot.theme.text
+                selectionColor: secondsRoot.theme.accent
+                selectedTextColor: secondsRoot.theme.selectedText
+                font.pixelSize: secondsRoot.theme.primaryText
+                horizontalAlignment: Qt.AlignHCenter
+                verticalAlignment: Qt.AlignVCenter
+                readOnly: !secondsSpin.editable
+                validator: secondsSpin.validator
+                inputMethodHints: Qt.ImhDigitsOnly
+            }
+
+            background: Rectangle {
+                radius: secondsRoot.theme.radius
+                color: secondsSpin.hovered || secondsSpin.activeFocus ? secondsRoot.theme.surfaceRaised : secondsRoot.theme.field
+                border.width: secondsSpin.activeFocus ? 2 : 1
+                border.color: secondsSpin.activeFocus ? secondsRoot.theme.accent : secondsRoot.theme.outlineMuted
+            }
+        }
+    }
+
     component InfoField: ColumnLayout {
         id: infoRoot
 
@@ -1015,6 +1469,7 @@ ColumnLayout {
 
         required property Theme theme
         property ListModel options
+        property string accessibleName: qsTr("Network profile")
         signal profileActivated(int index)
 
         model: comboRoot.options
@@ -1023,7 +1478,7 @@ ColumnLayout {
         hoverEnabled: true
         implicitHeight: comboRoot.theme.controlHeight
         Accessible.role: Accessible.ComboBox
-        Accessible.name: qsTr("Network profile")
+        Accessible.name: comboRoot.accessibleName
         onActivated: index => comboRoot.profileActivated(index)
 
         contentItem: Text {
@@ -1116,6 +1571,84 @@ ColumnLayout {
                 border.color: comboRoot.theme.outline
             }
         }
+    }
+
+    component ComboField: ColumnLayout {
+        id: comboFieldRoot
+
+        required property Theme theme
+        property string label: ""
+        property string accessibleName: label
+        property ListModel options
+        property int currentIndex: 0
+        signal activated(int index)
+
+        spacing: 6
+        Layout.fillWidth: true
+
+        Text {
+            text: comboFieldRoot.label
+            color: comboFieldRoot.theme.textMuted
+            textFormat: Text.PlainText
+            font.pixelSize: comboFieldRoot.theme.secondaryText
+            font.weight: Font.Medium
+            Layout.fillWidth: true
+        }
+
+        ProfileComboBox {
+            theme: comboFieldRoot.theme
+            options: comboFieldRoot.options
+            accessibleName: comboFieldRoot.accessibleName
+            currentIndex: comboFieldRoot.currentIndex
+            Layout.fillWidth: true
+            onProfileActivated: index => comboFieldRoot.activated(index)
+        }
+    }
+
+    component SafetyToggle: CheckBox {
+        id: safetyRoot
+
+        required property Theme theme
+        property string detail: ""
+
+        hoverEnabled: true
+        implicitWidth: 220
+        implicitHeight: 34
+
+        indicator: Rectangle {
+            x: 0
+            y: (safetyRoot.height - height) / 2
+            width: 18
+            height: 18
+            radius: 4
+            color: safetyRoot.checked ? safetyRoot.theme.accent : safetyRoot.theme.field
+            border.width: safetyRoot.activeFocus ? 2 : 1
+            border.color: safetyRoot.checked ? safetyRoot.theme.accentHover : safetyRoot.theme.outline
+
+            Rectangle {
+                visible: safetyRoot.checked
+                anchors.centerIn: parent
+                width: 8
+                height: 8
+                radius: 2
+                color: safetyRoot.theme.selectedText
+            }
+        }
+
+        contentItem: Text {
+            text: safetyRoot.text
+            color: safetyRoot.enabled ? safetyRoot.theme.text : safetyRoot.theme.textDim
+            textFormat: Text.PlainText
+            font.pixelSize: safetyRoot.theme.dataText
+            elide: Text.ElideRight
+            verticalAlignment: Text.AlignVCenter
+            leftPadding: 26
+        }
+
+        ToolTip.visible: hovered && safetyRoot.detail.length > 0
+        ToolTip.text: safetyRoot.detail
+        Accessible.role: Accessible.CheckBox
+        Accessible.name: safetyRoot.text
     }
 
     component StatusPill: Rectangle {

@@ -119,6 +119,10 @@ Item {
 
                 ScrollView {
                     id: pageScroll
+                    leftPadding: root.compact ? theme.gap : theme.pageMargin
+                    rightPadding: root.compact ? theme.gap : theme.pageMargin
+                    topPadding: theme.gapLarge
+                    bottomPadding: theme.gapLarge
                     contentWidth: availableWidth
                     ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
                     Layout.fillWidth: true
@@ -256,23 +260,17 @@ Item {
 
     Component {
         id: storagePage
-        ModulePage {
+        StoragePage {
             theme: theme
             model: appModel
-            moduleKind: "storage"
-            title: qsTr("Storage Module")
-            subtitle: qsTr("Query storage module metadata and optional CID state.")
         }
     }
 
     Component {
         id: messagingPage
-        ModulePage {
+        DeliveryPage {
             theme: theme
             model: appModel
-            moduleKind: "messaging"
-            title: qsTr("Messaging Module")
-            subtitle: qsTr("Inspect delivery module metadata and node info.")
         }
     }
 

@@ -74,7 +74,7 @@ Pane {
 
             ColumnLayout {
                 width: parent ? parent.width : 180
-                spacing: 4
+                spacing: 3
 
                 Repeater {
                     model: root.model.navRows()
@@ -98,21 +98,74 @@ Pane {
                                 Layout.preferredHeight: 1
                             }
 
+                            Button {
+                                id: groupButton
+
+                                visible: navRow.isGroup
+                                hoverEnabled: true
+                                activeFocusOnTab: true
+                                padding: 0
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: root.compact ? 38 : 30
+                                onClicked: root.model.toggleNavGroup(navRow.modelData.key)
+
+                                contentItem: RowLayout {
+                                    spacing: root.theme.gapSmall
+
+                                    Text {
+                                        visible: !root.compact
+                                        text: navRow.modelData.expanded === true ? "v" : ">"
+                                        color: navRow.modelData.active === true ? root.theme.accent : root.theme.textDim
+                                        textFormat: Text.PlainText
+                                        horizontalAlignment: Text.AlignHCenter
+                                        verticalAlignment: Text.AlignVCenter
+                                        font.family: "monospace"
+                                        font.pixelSize: root.theme.dataText
+                                        font.weight: Font.DemiBold
+                                        Layout.preferredWidth: 12
+                                        Layout.fillHeight: true
+                                    }
+
+                                    Text {
+                                        text: root.groupText(navRow.modelData)
+                                        color: navRow.modelData.active === true ? root.theme.text : root.theme.textMuted
+                                        textFormat: Text.PlainText
+                                        elide: Text.ElideRight
+                                        verticalAlignment: Text.AlignVCenter
+                                        horizontalAlignment: root.compact ? Text.AlignHCenter : Text.AlignLeft
+                                        font.pixelSize: root.compact ? root.theme.dataText : root.theme.labelText
+                                        font.weight: Font.DemiBold
+                                        font.capitalization: root.compact ? Font.MixedCase : Font.AllUppercase
+                                        Layout.fillWidth: true
+                                        Layout.fillHeight: true
+                                    }
+                                }
+
+                                background: Rectangle {
+                                    radius: root.theme.radius
+                                    color: groupButton.down
+                                        ? root.theme.surfaceRaised
+                                        : (groupButton.hovered || groupButton.activeFocus ? root.theme.hover : "transparent")
+                                    border.width: groupButton.activeFocus ? 1 : 0
+                                    border.color: root.theme.accent
+                                }
+
+                                ToolTip.visible: groupButton.hovered && root.compact
+                                ToolTip.text: String(navRow.modelData.label || "")
+                                Accessible.role: Accessible.Button
+                                Accessible.name: qsTr("%1 navigation group").arg(String(navRow.modelData.label || ""))
+                            }
+
                             ActionButton {
                                 id: navButton
 
+                                visible: !navRow.isGroup
                                 theme: root.theme
                                 text: root.navText(navRow.modelData)
                                 accessibleName: String(navRow.modelData.label || "")
                                 selected: navRow.modelData.active === true
                                 Layout.fillWidth: true
-                                onClicked: {
-                                    if (navRow.isGroup) {
-                                        root.model.toggleNavGroup(navRow.modelData.key)
-                                    } else {
-                                        root.model.selectView(navRow.modelData.view)
-                                    }
-                                }
+                                onClicked: root.model.selectView(navRow.modelData.view)
                                 ToolTip.visible: hovered && root.compact
                                 ToolTip.text: String(navRow.modelData.label || "")
                             }
@@ -138,9 +191,13 @@ Pane {
             return String(row.token || "--")
         }
         const label = String(row.label || "")
-        if (String(row.type || "") !== "group") {
-            return label
+        return label
+    }
+
+    function groupText(row) {
+        if (root.compact) {
+            return String(row.token || "--")
         }
-        return (row.expanded === true ? "- " : "+ ") + label
+        return String(row.label || "")
     }
 }

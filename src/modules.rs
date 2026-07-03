@@ -1,11 +1,17 @@
+use anyhow::{Context as _, Result, bail};
 use serde::Serialize;
+use serde_json::{Value, json};
 
-use crate::{ProbeReport, logoscore};
+use crate::{ProbeReport, logoscore, response_excerpt};
 
 const BLOCKCHAIN_MODULE: &str = "blockchain_module";
 const STORAGE_MODULE: &str = "storage_module";
 const DELIVERY_MODULE: &str = "delivery_module";
 const CAPABILITY_MODULE: &str = "capability_module";
+const DEFAULT_DELIVERY_REST_ENDPOINT: &str = "http://127.0.0.1:8645";
+const DEFAULT_DELIVERY_METRICS_ENDPOINT: &str = "http://127.0.0.1:8008/metrics";
+const DEFAULT_STORAGE_REST_ENDPOINT: &str = "http://127.0.0.1:8080/api/storage/v1";
+const DEFAULT_STORAGE_METRICS_ENDPOINT: &str = "http://127.0.0.1:8008/metrics";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct LogosModulesReport {
@@ -89,6 +95,128 @@ pub fn storage_report(cid: Option<&str>) -> ModuleReport {
     }
 }
 
+pub async fn storage_source_report(
+    source_mode: &str,
+    rest_endpoint: Option<&str>,
+    metrics_endpoint: Option<&str>,
+    cid: Option<&str>,
+) -> ModuleReport {
+    match normalized_storage_source_mode(source_mode) {
+        "module" => storage_report(cid),
+        "rest" => storage_rest_report(rest_endpoint, metrics_endpoint, cid).await,
+        "metrics" => storage_metrics_report(metrics_endpoint).await,
+        mode => unsupported_storage_source_report(mode),
+    }
+}
+
+async fn storage_rest_report(
+    rest_endpoint: Option<&str>,
+    metrics_endpoint: Option<&str>,
+    cid: Option<&str>,
+) -> ModuleReport {
+    let endpoint = optional(rest_endpoint).unwrap_or(DEFAULT_STORAGE_REST_ENDPOINT);
+    let space_source = http_url(endpoint, "/space");
+    let spr_source = http_url(endpoint, "/spr");
+    let peer_id_source = http_url(endpoint, "/peerid");
+    let data_source = http_url(endpoint, "/data");
+    let debug_source = http_url(endpoint, "/debug/info");
+    let (space, spr, peer_id, data, debug) = tokio::join!(
+        raw_http_value(endpoint, "/space"),
+        raw_http_value(endpoint, "/spr"),
+        raw_http_value(endpoint, "/peerid"),
+        raw_http_value(endpoint, "/data"),
+        raw_http_value(endpoint, "/debug/info"),
+    );
+    let mut probes = vec![
+        ProbeReport::from_result("storage_rest.spr", spr_source, spr),
+        ProbeReport::from_result("storage_rest.peerId", peer_id_source, peer_id),
+        ProbeReport::from_result("storage_rest.manifests", data_source, data),
+        ProbeReport::from_result("storage_rest.debug", debug_source, debug),
+    ];
+    if let Some(cid) = optional(cid) {
+        let path = format!("/data/{cid}/exists");
+        probes.push(ProbeReport::from_result(
+            "storage_rest.exists",
+            http_url(endpoint, &path),
+            raw_http_value(endpoint, &path).await,
+        ));
+    }
+    if let Some(metrics_endpoint) = optional(metrics_endpoint) {
+        probes.push(storage_metrics_probe(metrics_endpoint).await);
+    }
+    ModuleReport {
+        module: "storage_rest".to_owned(),
+        module_info: ProbeReport::from_result("storage_rest.space", space_source, space),
+        probes,
+    }
+}
+
+async fn storage_metrics_report(metrics_endpoint: Option<&str>) -> ModuleReport {
+    let endpoint = optional(metrics_endpoint).unwrap_or(DEFAULT_STORAGE_METRICS_ENDPOINT);
+    let metrics = raw_http_text_url(endpoint).await;
+    match metrics {
+        Ok(text) => ModuleReport {
+            module: "storage_metrics".to_owned(),
+            module_info: ProbeReport::ok(
+                "storage_metrics.scrape",
+                endpoint,
+                json!({
+                    "bytes": text.len(),
+                    "lines": text.lines().count(),
+                }),
+            ),
+            probes: vec![ProbeReport::ok(
+                "storage_metrics.collectMetrics",
+                endpoint,
+                text,
+            )],
+        },
+        Err(error) => {
+            let error = error.to_string();
+            ModuleReport {
+                module: "storage_metrics".to_owned(),
+                module_info: ProbeReport::err("storage_metrics.scrape", endpoint, &error),
+                probes: vec![ProbeReport::err(
+                    "storage_metrics.collectMetrics",
+                    endpoint,
+                    error,
+                )],
+            }
+        }
+    }
+}
+
+async fn storage_metrics_probe(metrics_endpoint: &str) -> ProbeReport {
+    ProbeReport::from_result(
+        "storage_rest.collectMetrics",
+        metrics_endpoint,
+        raw_http_text_url(metrics_endpoint).await,
+    )
+}
+
+fn unsupported_storage_source_report(mode: &str) -> ModuleReport {
+    ModuleReport {
+        module: format!("storage_{mode}"),
+        module_info: ProbeReport::err(
+            "storage source",
+            mode,
+            format!("storage source mode `{mode}` is not implemented"),
+        ),
+        probes: Vec::new(),
+    }
+}
+
+fn normalized_storage_source_mode(source_mode: &str) -> &'static str {
+    match source_mode.trim().to_ascii_lowercase().as_str() {
+        "module" | "basecamp" | "basecamp-module" | "basecamp module" => "module",
+        "rest" | "standalone-rest" | "standalone rest" | "direct-rest" => "rest",
+        "metrics" | "metrics-only" | "metrics only" => "metrics",
+        "c-library" | "c library" | "library" => "c-library",
+        "local-os" | "local os" | "local diagnostics" => "local-os",
+        _ => "module",
+    }
+}
+
 pub fn delivery_report(info_id: Option<&str>) -> ModuleReport {
     let mut probes = vec![
         call_probe(DELIVERY_MODULE, "version", &[]),
@@ -115,6 +243,151 @@ pub fn delivery_report(info_id: Option<&str>) -> ModuleReport {
         module_info: module_info_probe(DELIVERY_MODULE),
         probes,
     }
+}
+
+pub async fn delivery_source_report(
+    source_mode: &str,
+    rest_endpoint: Option<&str>,
+    metrics_endpoint: Option<&str>,
+    info_id: Option<&str>,
+) -> ModuleReport {
+    match normalized_delivery_source_mode(source_mode) {
+        "module" => delivery_report(info_id),
+        "rest" => delivery_rest_report(rest_endpoint, metrics_endpoint).await,
+        "metrics" => delivery_metrics_report(metrics_endpoint).await,
+        mode => unsupported_delivery_source_report(mode),
+    }
+}
+
+async fn delivery_rest_report(
+    rest_endpoint: Option<&str>,
+    metrics_endpoint: Option<&str>,
+) -> ModuleReport {
+    let endpoint = optional(rest_endpoint).unwrap_or(DEFAULT_DELIVERY_REST_ENDPOINT);
+    let health_source = http_url(endpoint, "/health");
+    let info_source = http_url(endpoint, "/info");
+    let version_source = http_url(endpoint, "/version");
+    let (health, info, version) = tokio::join!(
+        raw_http_value(endpoint, "/health"),
+        raw_http_value(endpoint, "/info"),
+        raw_http_value(endpoint, "/version"),
+    );
+    let mut probes = vec![
+        ProbeReport::from_result("delivery_rest.info", info_source, info),
+        ProbeReport::from_result("delivery_rest.version", version_source, version),
+    ];
+    if let Some(metrics_endpoint) = optional(metrics_endpoint) {
+        probes.push(metrics_probe(metrics_endpoint).await);
+    }
+    ModuleReport {
+        module: "delivery_rest".to_owned(),
+        module_info: ProbeReport::from_result("delivery_rest.health", health_source, health),
+        probes,
+    }
+}
+
+async fn delivery_metrics_report(metrics_endpoint: Option<&str>) -> ModuleReport {
+    let endpoint = optional(metrics_endpoint).unwrap_or(DEFAULT_DELIVERY_METRICS_ENDPOINT);
+    let metrics = raw_http_text_url(endpoint).await;
+    match metrics {
+        Ok(text) => ModuleReport {
+            module: "delivery_metrics".to_owned(),
+            module_info: ProbeReport::ok(
+                "delivery_metrics.scrape",
+                endpoint,
+                json!({
+                    "bytes": text.len(),
+                    "lines": text.lines().count(),
+                }),
+            ),
+            probes: vec![ProbeReport::ok(
+                "delivery_metrics.collectOpenMetricsText",
+                endpoint,
+                text,
+            )],
+        },
+        Err(error) => {
+            let error = error.to_string();
+            ModuleReport {
+                module: "delivery_metrics".to_owned(),
+                module_info: ProbeReport::err("delivery_metrics.scrape", endpoint, &error),
+                probes: vec![ProbeReport::err(
+                    "delivery_metrics.collectOpenMetricsText",
+                    endpoint,
+                    error,
+                )],
+            }
+        }
+    }
+}
+
+async fn metrics_probe(metrics_endpoint: &str) -> ProbeReport {
+    ProbeReport::from_result(
+        "delivery_rest.collectOpenMetricsText",
+        metrics_endpoint,
+        raw_http_text_url(metrics_endpoint).await,
+    )
+}
+
+fn unsupported_delivery_source_report(mode: &str) -> ModuleReport {
+    ModuleReport {
+        module: format!("delivery_{mode}"),
+        module_info: ProbeReport::err(
+            "delivery source",
+            mode,
+            format!("delivery source mode `{mode}` is not implemented"),
+        ),
+        probes: Vec::new(),
+    }
+}
+
+fn normalized_delivery_source_mode(source_mode: &str) -> &'static str {
+    match source_mode.trim().to_ascii_lowercase().as_str() {
+        "module" | "basecamp" | "basecamp-module" | "basecamp module" => "module",
+        "rest" | "direct-rest" | "direct waku rest" | "waku-rest" => "rest",
+        "metrics" | "metrics-only" | "metrics only" => "metrics",
+        "network-monitor" | "network monitor" => "network-monitor",
+        "discovery-crawler" | "discovery crawler" | "crawler" => "discovery-crawler",
+        _ => "module",
+    }
+}
+
+async fn raw_http_value(endpoint: &str, path: &str) -> Result<Value> {
+    let text = raw_http_text_url(&http_url(endpoint, path)).await?;
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Ok(Value::Null);
+    }
+    match serde_json::from_str(trimmed) {
+        Ok(value) => Ok(value),
+        Err(_) => Ok(Value::String(trimmed.to_owned())),
+    }
+}
+
+async fn raw_http_text_url(url: &str) -> Result<String> {
+    let response = reqwest::Client::new()
+        .get(url)
+        .send()
+        .await
+        .with_context(|| format!("failed to call {url}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .await
+        .context("failed to read http response body")?;
+    if !status.is_success() {
+        bail!(
+            "http call `{url}` failed with status {status}: {}",
+            response_excerpt(&text)
+        );
+    }
+    Ok(text)
+}
+
+fn http_url(endpoint: &str, path: &str) -> String {
+    let endpoint = endpoint.trim_end_matches('/');
+    let path = path.trim_start_matches('/');
+    format!("{endpoint}/{path}")
 }
 
 pub fn capabilities_report() -> ModuleReport {
