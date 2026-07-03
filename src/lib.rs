@@ -10,7 +10,9 @@ pub mod spel;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    path::Path,
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context as _, Result, bail};
@@ -42,6 +44,28 @@ pub const DEFAULT_NETWORK_PROFILE: &str = "default";
 pub const LOCAL_NODE_NETWORK_PROFILE: &str = "local-node";
 pub const CUSTOM_NETWORK_PROFILE: &str = "custom";
 pub const ACCOUNT_TRANSACTION_LIMIT: usize = 20;
+pub const LOCAL_WALLET_HOME_ENV: &str = "NSSA_WALLET_HOME_DIR";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LocalWalletProfileStatus {
+    pub source: String,
+    pub status: String,
+    pub checked_at: String,
+    pub detail: String,
+    pub version: Option<String>,
+    pub home_source: String,
+    pub network_profile: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct LocalWalletProfileInput {
+    #[serde(default, alias = "walletBinary")]
+    wallet_binary: String,
+    #[serde(default, alias = "walletHome")]
+    wallet_home: String,
+    #[serde(default, alias = "networkProfile")]
+    network_profile: String,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct NetworkProfile {
@@ -1096,6 +1120,98 @@ pub async fn logos_node_cryptarchia_info(endpoint: &str) -> Result<Value> {
     raw_http_json(endpoint, "/cryptarchia/info").await
 }
 
+pub fn local_wallet_profile_status(profile: Value) -> Result<LocalWalletProfileStatus> {
+    let profile: LocalWalletProfileInput =
+        serde_json::from_value(profile).context("failed to parse local wallet profile")?;
+    let wallet_binary = profile.wallet_binary.trim();
+    let explicit_home = profile.wallet_home.trim();
+    let env_home = std::env::var(LOCAL_WALLET_HOME_ENV).unwrap_or_default();
+    let wallet_home = if explicit_home.is_empty() {
+        env_home.trim()
+    } else {
+        explicit_home
+    };
+    let home_source = if !explicit_home.is_empty() {
+        "profile"
+    } else if !wallet_home.is_empty() {
+        LOCAL_WALLET_HOME_ENV
+    } else {
+        "none"
+    };
+
+    if wallet_binary.is_empty() && wallet_home.is_empty() {
+        return Ok(LocalWalletProfileStatus {
+            source: "local_wallet_cli".to_owned(),
+            status: "unknown".to_owned(),
+            checked_at: unix_time_text(),
+            detail: format!("wallet binary and {LOCAL_WALLET_HOME_ENV} not configured"),
+            version: None,
+            home_source: home_source.to_owned(),
+            network_profile: profile.network_profile.trim().to_owned(),
+        });
+    }
+
+    let mut status = "ok";
+    let mut details = Vec::new();
+    let mut version = None;
+
+    if wallet_home.is_empty() {
+        details.push(format!("{LOCAL_WALLET_HOME_ENV} not configured"));
+        status = local_wallet_worst_status(status, "degraded");
+    } else if !PathBuf::from(wallet_home).is_dir() {
+        details.push("wallet home directory is not reachable".to_owned());
+        status = local_wallet_worst_status(status, "down");
+    } else {
+        details.push(format!("{LOCAL_WALLET_HOME_ENV} configured"));
+    }
+
+    if wallet_binary.is_empty() {
+        details.push("wallet binary not configured".to_owned());
+        status = local_wallet_worst_status(status, "degraded");
+    } else if !PathBuf::from(wallet_binary).is_file() {
+        details.push("wallet binary is not reachable".to_owned());
+        status = local_wallet_worst_status(status, "down");
+    } else if status != "down" {
+        match local_wallet_binary_version(wallet_binary, wallet_home) {
+            Ok(value) => {
+                details.push("wallet binary responded".to_owned());
+                version = (!value.is_empty()).then_some(value);
+            }
+            Err(error) => {
+                details.push(format!("wallet binary version check failed: {error:#}"));
+                status = local_wallet_worst_status(status, "degraded");
+            }
+        }
+    }
+
+    Ok(LocalWalletProfileStatus {
+        source: "local_wallet_cli".to_owned(),
+        status: status.to_owned(),
+        checked_at: unix_time_text(),
+        detail: details.join("; "),
+        version,
+        home_source: home_source.to_owned(),
+        network_profile: profile.network_profile.trim().to_owned(),
+    })
+}
+
+pub async fn bedrock_wallet_balance(
+    endpoint: &str,
+    public_key: &str,
+    tip: Option<&str>,
+) -> Result<Value> {
+    let public_key = normalize_bedrock_wallet_public_key(public_key)?;
+    let mut path = format!("/wallet/{public_key}/balance");
+    if let Some(tip) = tip.map(str::trim).filter(|tip| !tip.is_empty()) {
+        if !tip.chars().all(|ch| ch.is_ascii_alphanumeric()) {
+            bail!("balance tip must be alphanumeric")
+        }
+        path.push_str("?tip=");
+        path.push_str(tip);
+    }
+    raw_http_json(endpoint, &path).await
+}
+
 pub async fn raw_http_json(endpoint: &str, path: &str) -> Result<Value> {
     let endpoint = endpoint.trim_end_matches('/');
     let path = path.trim_start_matches('/');
@@ -1123,6 +1239,85 @@ pub async fn raw_http_json(endpoint: &str, path: &str) -> Result<Value> {
 
 pub(crate) fn response_excerpt(text: &str) -> String {
     text.chars().take(400).collect()
+}
+
+fn local_wallet_binary_version(binary: &str, wallet_home: &str) -> Result<String> {
+    let mut command = Command::new(binary);
+    command.arg("--version");
+    if !wallet_home.trim().is_empty() {
+        command.env(LOCAL_WALLET_HOME_ENV, wallet_home);
+    }
+    let output = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .context("failed to run wallet binary")?;
+    let text = if output.stdout.is_empty() {
+        String::from_utf8_lossy(&output.stderr).to_string()
+    } else {
+        String::from_utf8_lossy(&output.stdout).to_string()
+    };
+    let version = text
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default()
+        .chars()
+        .take(160)
+        .collect::<String>();
+    if !output.status.success() {
+        bail!("process exited with {}", output.status)
+    }
+    Ok(version)
+}
+
+fn local_wallet_worst_status(current: &str, candidate: &str) -> &'static str {
+    match (
+        local_wallet_status_rank(current),
+        local_wallet_status_rank(candidate),
+    ) {
+        (left, right) if left >= right => local_wallet_status_name(left),
+        (_, right) => local_wallet_status_name(right),
+    }
+}
+
+fn local_wallet_status_rank(status: &str) -> u8 {
+    match status {
+        "down" => 3,
+        "degraded" => 2,
+        "unknown" => 1,
+        _ => 0,
+    }
+}
+
+fn local_wallet_status_name(rank: u8) -> &'static str {
+    match rank {
+        3 => "down",
+        2 => "degraded",
+        1 => "unknown",
+        _ => "ok",
+    }
+}
+
+fn normalize_bedrock_wallet_public_key(value: &str) -> Result<String> {
+    let mut text = value.trim();
+    if let Some(rest) = text.strip_prefix("Public/") {
+        text = rest;
+    }
+    if text.is_empty() {
+        bail!("wallet public key is required")
+    }
+    if text.contains('/') || text.contains('?') || text.contains('#') {
+        bail!("wallet public key contains unsupported URL characters")
+    }
+    Ok(text.to_owned())
+}
+
+fn unix_time_text() -> String {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs().to_string())
+        .unwrap_or_default()
 }
 
 fn json_rpc_result<'a>(response: &'a Value, method: &str) -> Result<Option<&'a Value>> {
@@ -3047,6 +3242,34 @@ mod tests {
     use super::*;
 
     const TESTNET_LEGACY_BLOCK_1234: &str = "0gQAAAAAAADgBr/57T2VP8TvanoE/U28V0Cdzfe66q1YCY203VHHaPZH+D0d+RhX4Qtz8m7atlbEG6J5XguGFqEPUWLQ8+1kb3u3+Z4BAADGt772EW9LB3inITN2BUfOdP8fHmTlcvpFP45NvGI01KYmibPzb/BkLygy6fTsHB4Oc4XoVVMp+k7Rp8xdjpgGAQAAAADiMVjm57Su7ujTA26v18dZ5R2KCU2Ce5JXELoh3v+PRgMAAAAvTEVaL0Nsb2NrUHJvZ3JhbUFjY291bnQvMDAwMDAwMS9MRVovQ2xvY2tQcm9ncmFtQWNjb3VudC8wMDAwMDEwL0xFWi9DbG9ja1Byb2dyYW1BY2NvdW50LzAwMDAwNTAAAAAAAgAAAG97t/meAQAAAAAAAAI=";
+
+    #[test]
+    fn local_wallet_profile_status_reports_missing_binary_without_path_leak() {
+        let status = local_wallet_profile_status(serde_json::json!({
+            "wallet_binary": "/definitely/not/a/logos/wallet",
+            "wallet_home": ".",
+            "network_profile": "local"
+        }));
+
+        assert!(status.is_ok(), "{status:?}");
+        let Ok(status) = status else {
+            return;
+        };
+        assert_eq!(status.status, "down");
+        assert_eq!(status.source, "local_wallet_cli");
+        assert_eq!(status.home_source, "profile");
+        assert_eq!(status.network_profile, "local");
+        assert!(!status.detail.contains("/definitely/not/a/logos/wallet"));
+    }
+
+    #[test]
+    fn bedrock_wallet_public_key_normalization_rejects_path_fragments() {
+        let normalized = normalize_bedrock_wallet_public_key("Public/abc123");
+        assert!(normalized.is_ok(), "{normalized:?}");
+        assert_eq!(normalized.unwrap_or_default(), "abc123");
+        assert!(normalize_bedrock_wallet_public_key("abc/123").is_err());
+        assert!(normalize_bedrock_wallet_public_key("abc?tip=1").is_err());
+    }
 
     #[test]
     fn decode_sequencer_block_fixture_without_warning() {

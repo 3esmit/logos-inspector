@@ -29,7 +29,10 @@ Item {
         bridge: bridge
     }
 
-    Component.onCompleted: appModel.loadIdlState()
+    Component.onCompleted: {
+        appModel.loadIdlState()
+        appModel.loadWalletState()
+    }
 
     Timer {
         interval: appModel.refreshInterval(appModel.blockchainRefreshRate)
@@ -189,6 +192,8 @@ Item {
             return accountsPage
         case "programs":
             return programsPage
+        case "localWallet":
+            return localWalletPage
         case "indexer":
             return indexerPage
         case "settings":
@@ -301,6 +306,14 @@ Item {
     Component {
         id: programsPage
         ProgramsPage {
+            theme: theme
+            model: appModel
+        }
+    }
+
+    Component {
+        id: localWalletPage
+        LocalWalletPage {
             theme: theme
             model: appModel
         }

@@ -68,6 +68,8 @@ QtObject {
     property string accountTab: "lookup"
     property string programTab: "idls"
     property string indexerTab: "status"
+    property string localWalletTab: "profiles"
+    property string localWalletLookupTarget: ""
     property string settingsSection: "general"
     property string settingsNetworkSection: "blockchain"
     property string settingsUiSection: "footer"
@@ -93,12 +95,26 @@ QtObject {
 
     property ListModel registeredIdls: ListModel {}
     property bool idlStateLoaded: false
+    property bool walletStateLoaded: false
+    property string walletProfileLabel: "Local wallet"
+    property string walletBinary: ""
+    property string walletHome: ""
+    property string walletSequencerUrl: ""
+    property string walletIndexerUrl: ""
+    property string walletBedrockNodeUrl: ""
+    property string walletPublicKeyProbe: ""
+    property string bedrockWalletBalanceTip: ""
+    property var localWalletStatus: null
+    property string localWalletStatusError: ""
+    property var localWalletOperations: []
+    property var bedrockWalletBalanceValue: null
+    property string bedrockWalletBalanceError: ""
     property var accountIdlSelections: ({})
     property int accountIdlSelectionRevision: 0
     property int accountAutoDecodeSerial: 0
     property int transactionAutoDecodeSerial: 0
     property int searchResolveSerial: 0
-    property var navExpanded: ({ l1: true, l2: true, modules: false, system: true })
+    property var navExpanded: ({ l1: true, l2: true, modules: false, local: true, system: true })
     property int navRevision: 0
 
     onCurrentViewChanged: expandNavGroupForView(currentView)
@@ -143,6 +159,16 @@ QtObject {
                     { key: "storage", view: "storage", label: qsTr("Storage"), token: "STO", layer: "module" },
                     { key: "messaging", view: "messaging", label: qsTr("Messaging"), token: "MSG", layer: "module" },
                     { key: "capabilities", view: "capabilities", label: qsTr("Capabilities"), token: "CAP", layer: "module" }
+                ]
+            },
+            {
+                type: "group",
+                key: "local",
+                label: qsTr("Local"),
+                token: "LOC",
+                layer: "local",
+                children: [
+                    { key: "localWallet", view: "localWallet", label: qsTr("Wallet"), token: "WAL", layer: "local" }
                 ]
             },
             {
@@ -492,6 +518,106 @@ QtObject {
             idls: registeredIdlEntries(),
             account_idl_selections: accountIdlSelections || {}
         }
+    }
+
+    function loadWalletState() {
+        const response = bridge.callModule(inspectorModule, "loadWalletState", [])
+        walletStateLoaded = true
+        if (!response.ok || !response.value || typeof response.value !== "object") {
+            return
+        }
+
+        const profile = response.value.profile && typeof response.value.profile === "object" ? response.value.profile : response.value
+        walletProfileLabel = String(profile.label || profile.name || qsTr("Local wallet"))
+        walletBinary = String(profile.wallet_binary || profile.walletBinary || "")
+        walletHome = String(profile.wallet_home || profile.walletHome || "")
+        walletSequencerUrl = String(profile.sequencer_url || profile.sequencerUrl || "")
+        walletIndexerUrl = String(profile.indexer_url || profile.indexerUrl || "")
+        walletBedrockNodeUrl = String(profile.bedrock_node_url || profile.bedrockNodeUrl || "")
+        walletPublicKeyProbe = String(profile.public_key_probe || profile.publicKeyProbe || "")
+        localWalletOperations = Array.isArray(response.value.operations) ? response.value.operations : []
+    }
+
+    function saveWalletState() {
+        if (!walletStateLoaded) {
+            return
+        }
+        bridge.callModule(inspectorModule, "saveWalletState", [walletStatePayload()])
+    }
+
+    function walletStatePayload() {
+        return {
+            version: 1,
+            profile: walletProfile(),
+            operations: Array.isArray(localWalletOperations) ? localWalletOperations.slice(-50) : []
+        }
+    }
+
+    function walletProfile() {
+        return {
+            label: String(walletProfileLabel || qsTr("Local wallet")),
+            wallet_binary: String(walletBinary || ""),
+            wallet_home: String(walletHome || ""),
+            network_profile: String(networkProfile || ""),
+            sequencer_url: String(walletSequencerUrl || sequencerUrl || ""),
+            indexer_url: String(walletIndexerUrl || indexerUrl || ""),
+            bedrock_node_url: String(walletBedrockNodeUrl || nodeUrl || ""),
+            public_key_probe: String(walletPublicKeyProbe || "")
+        }
+    }
+
+    function walletProfileConfigured() {
+        return String(walletBinary || "").trim().length > 0
+            || String(walletHome || "").trim().length > 0
+    }
+
+    function checkLocalWalletProfile(showResult) {
+        localWalletStatusError = ""
+        statusText = qsTr("Local wallet")
+        return requestModuleAsync(inspectorModule, "localWalletProfileStatus", [walletProfile()], qsTr("Local wallet"), showResult === true, function (response) {
+            if (response.ok) {
+                localWalletStatus = response.value || null
+                localWalletStatusError = ""
+                appendLocalWalletOperation(qsTr("Profile status"), String(response.value && response.value.status ? response.value.status : "ok"), String(response.value && response.value.detail ? response.value.detail : ""))
+            } else {
+                localWalletStatus = null
+                localWalletStatusError = response.error || qsTr("Profile status failed.")
+                appendLocalWalletOperation(qsTr("Profile status"), "down", localWalletStatusError)
+            }
+        })
+    }
+
+    function queryBedrockWalletBalance() {
+        const publicKey = String(walletPublicKeyProbe || "").trim()
+        if (!publicKey.length) {
+            bedrockWalletBalanceError = qsTr("Wallet public key is required.")
+            return
+        }
+        bedrockWalletBalanceError = ""
+        statusText = qsTr("Bedrock wallet")
+        return requestModuleAsync(inspectorModule, "bedrockWalletBalance", [String(walletBedrockNodeUrl || nodeUrl || ""), publicKey, String(bedrockWalletBalanceTip || "")], qsTr("Bedrock wallet"), false, function (response) {
+            if (response.ok) {
+                bedrockWalletBalanceValue = response.value
+                bedrockWalletBalanceError = ""
+                appendLocalWalletOperation(qsTr("Bedrock balance"), "ok", publicKey)
+            } else {
+                bedrockWalletBalanceValue = null
+                bedrockWalletBalanceError = response.error || qsTr("Balance query failed.")
+                appendLocalWalletOperation(qsTr("Bedrock balance"), "down", bedrockWalletBalanceError)
+            }
+        })
+    }
+
+    function appendLocalWalletOperation(label, status, detail) {
+        const rows = Array.isArray(localWalletOperations) ? localWalletOperations.slice(-49) : []
+        rows.push({
+            label: String(label || ""),
+            status: String(status || ""),
+            detail: String(detail || ""),
+            time: new Date().toLocaleTimeString(Qt.locale(), "hh:mm:ss")
+        })
+        localWalletOperations = rows
+        saveWalletState()
     }
 
     function registeredIdlEntries() {
@@ -2100,6 +2226,18 @@ QtObject {
             }
             return true
         }
+        if (prefix === "public") {
+            if (target.length > 0) {
+                openAccount(target.indexOf("Public/") === 0 ? target : "Public/" + target)
+            } else {
+                selectView("accounts")
+            }
+            return true
+        }
+        if (prefix === "private") {
+            openLocalWallet(target.length > 0 && target.indexOf("Private/") !== 0 ? "Private/" + target : target, "privateSync")
+            return true
+        }
         if (prefix === "recipient") {
             if (target.length > 0) {
                 openRecipient(target)
@@ -2109,7 +2247,11 @@ QtObject {
             return true
         }
         if (prefix === "wallet") {
-            showLocalWalletRequired(target)
+            openLocalWallet(target, "profiles")
+            return true
+        }
+        if (prefix === "l1-wallet" || prefix === "note") {
+            openLocalWallet(target, "bedrockNotes")
             return true
         }
         if (prefix === "program") {
@@ -2145,7 +2287,8 @@ QtObject {
         return value === "l1" || value === "slot" || value === "bedrock" || value === "cryptarchia"
             || value === "mantle" || value === "channel" || value === "l2" || value === "lez"
             || value === "block" || value === "tx" || value === "transaction" || value === "account"
-            || value === "program" || value === "wallet" || value === "recipient" || value === "module"
+            || value === "public" || value === "private" || value === "program" || value === "wallet"
+            || value === "l1-wallet" || value === "note" || value === "recipient" || value === "module"
     }
 
     function routeModuleSearchTarget(target) {
@@ -2239,8 +2382,8 @@ QtObject {
         if (normalized === "transaction" || normalized === "tx" || normalized === "txs" || normalized === "latest transactions") {
             return "transactions"
         }
-        if (normalized === "wallet") {
-            return ""
+        if (normalized === "wallet" || normalized === "local wallet" || normalized === "wallets") {
+            return "localWallet"
         }
         if (normalized === "recipient" || normalized === "recipients" || normalized === "transfer" || normalized === "transfers" || normalized === "transfer activity") {
             return "transferActivity"
@@ -2248,7 +2391,7 @@ QtObject {
         if (normalized === "channel") {
             return "channels"
         }
-        if (normalized === "account") {
+        if (normalized === "account" || normalized === "public account") {
             return "accounts"
         }
         if (normalized === "spel" || normalized === "program" || normalized === "programs") {
@@ -2338,7 +2481,15 @@ QtObject {
             openMantleTransaction(target)
             return
         case "wallet":
-            showLocalWalletRequired(target)
+            openLocalWallet(target, "profiles")
+            return
+        case "private":
+        case "privateAccount":
+            openLocalWallet(target, "privateSync")
+            return
+        case "bedrockWallet":
+        case "note":
+            openLocalWallet(target, "bedrockNotes")
             return
         case "recipient":
         case "transferRecipient":
@@ -2641,16 +2792,34 @@ QtObject {
         }
     }
 
-    function showLocalWalletRequired(wallet) {
-        currentView = "settings"
-        settingsSection = "general"
+    function openLocalWallet(wallet, tab) {
+        const target = String(wallet || "").trim()
+        currentView = "localWallet"
+        localWalletTab = String(tab || "").length ? String(tab || "") : "profiles"
+        localWalletLookupTarget = target
         transferRecipientDetailValue = null
+        if (localWalletTab === "bedrockNotes" && target.length > 0 && walletPublicKeyProbe.length === 0) {
+            walletPublicKeyProbe = target
+        }
+        if (!walletProfileConfigured()) {
+            setResult(
+                qsTr("Local wallet"),
+                qsTr("Configure an explicit local wallet profile. Transfer recipients use recipient:<id>; wallet:<id> is reserved for local wallet state."),
+                true,
+                null
+            )
+            return
+        }
         setResult(
             qsTr("Local wallet"),
-            qsTr("Local wallet integration is not configured. Indexer-derived transfer activity is available with recipient:<id>, not wallet:<id>."),
-            true,
-            null
+            target.length ? qsTr("Local wallet context: %1").arg(target) : qsTr("Local wallet profile configured."),
+            false,
+            walletProfile()
         )
+    }
+
+    function showLocalWalletRequired(wallet) {
+        openLocalWallet(wallet, "profiles")
     }
 
     function openProgram(programId) {
