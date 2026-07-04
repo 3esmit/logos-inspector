@@ -53,6 +53,8 @@ TestCase {
         model.currentView = "overview"
         model.dashboardNode = null
         model.blockchainModuleReport = null
+        model.networkConnectionStatus = ({})
+        model.networkConnectionStatusRevision = 0
         model.dashboardMetricHistory = ({})
         model.dashboardMetricLastSeen = ({})
         model.dashboardMetricHistoryRevision = 0
@@ -69,6 +71,8 @@ TestCase {
         model.idlStateLoaded = false
         model.accountIdlSelections = ({})
         model.accountIdlSelectionRevision = 0
+        model.walletPublicKeyProbe = ""
+        model.bedrockWalletModuleError = ""
     }
 
     function test_navigation_delegates() {
@@ -293,6 +297,145 @@ TestCase {
         compare(model.moduleProbeValue("blockchain", "get_peer_id"), "peer-123")
     }
 
+    function test_bedrock_wallet_known_addresses_unwraps_module_payload() {
+        model.blockchainModuleReport = blockchainWalletReport("wallet_get_known_addresses", {
+            runner: "plain logoscore",
+            value: {
+                result: {
+                    value: {
+                        addresses: [
+                            "addr-1",
+                            { address: "addr-2", label: "default" }
+                        ]
+                    }
+                }
+            }
+        })
+
+        const rows = model.bedrockWalletModuleKnownAddressRows()
+
+        compare(rows.length, 2)
+        compare(rows[0].address, "addr-1")
+        compare(rows[1].address, "addr-2")
+        compare(rows[1].label, "default")
+    }
+
+    function test_bedrock_wallet_empty_known_addresses_are_known_shape() {
+        model.blockchainModuleReport = blockchainWalletReport("wallet_get_known_addresses", {
+            result: {
+                value: []
+            }
+        })
+
+        compare(model.bedrockWalletModuleKnownAddressRows().length, 0)
+        compare(model.bedrockWalletModuleListKnown("wallet_get_known_addresses"), true)
+    }
+
+    function test_bedrock_wallet_notes_rows_format_note_fields() {
+        model.blockchainModuleReport = blockchainWalletReport("wallet_get_notes", {
+            result: {
+                value: {
+                    notes: [
+                        {
+                            note_id: "note-1",
+                            value: "42",
+                            commitment: "cm-1",
+                            nullifier: "nf-1",
+                            tip: "tip-1"
+                        }
+                    ]
+                }
+            }
+        })
+
+        const rows = model.bedrockWalletModuleNoteRows()
+
+        compare(rows.length, 1)
+        compare(rows[0].id, "note-1")
+        compare(rows[0].value, "42")
+        compare(rows[0].commitment, "cm-1")
+        compare(rows[0].nullifier, "nf-1")
+        compare(rows[0].tip, "tip-1")
+    }
+
+    function test_bedrock_wallet_voucher_rows_format_commitments() {
+        model.blockchainModuleReport = blockchainWalletReport("wallet_get_claimable_vouchers", {
+            result: {
+                value: {
+                    claimable_vouchers: [
+                        {
+                            voucher_commitment: "voucher-cm",
+                            nullifier_hash: "voucher-nf",
+                            amount: "7",
+                            header_id: "header-1"
+                        }
+                    ]
+                }
+            }
+        })
+
+        const rows = model.bedrockWalletModuleVoucherRows()
+
+        compare(rows.length, 1)
+        compare(rows[0].commitment, "voucher-cm")
+        compare(rows[0].nullifier, "voucher-nf")
+        compare(rows[0].value, "7")
+        compare(rows[0].tip, "header-1")
+    }
+
+    function test_bedrock_wallet_module_failure_keeps_other_probes_readable() {
+        model.blockchainModuleReport = {
+            module: model.blockchainModule,
+            module_info: { ok: true, value: {}, label: "module", source: "logoscore modules" },
+            probes: [
+                {
+                    label: "blockchain_module.wallet_get_known_addresses",
+                    source: "blockchain_module wallet_get_known_addresses",
+                    ok: true,
+                    value: { result: { value: ["addr-ok"] } },
+                    error: null
+                },
+                {
+                    label: "blockchain_module.wallet_get_notes(addr-ok)",
+                    source: "blockchain_module wallet_get_notes addr-ok",
+                    ok: false,
+                    value: null,
+                    error: "module unavailable"
+                }
+            ]
+        }
+
+        compare(model.bedrockWalletModuleKnownAddressRows().length, 1)
+        compare(model.bedrockWalletModuleNoteRows().length, 0)
+        compare(model.moduleProbeError("blockchain", "wallet_get_notes"), "module unavailable")
+    }
+
+    function test_bedrock_wallet_module_methods_are_read_only() {
+        const methods = model.bedrockWalletModuleReadOnlyMethods()
+
+        verify(methods.indexOf("wallet_get_known_addresses") >= 0)
+        verify(methods.indexOf("wallet_get_balance") >= 0)
+        verify(methods.indexOf("wallet_get_notes") >= 0)
+        verify(methods.indexOf("wallet_get_claimable_vouchers") >= 0)
+        compare(methods.filter(function (method) {
+            return method.indexOf("wallet_get_") !== 0
+        }).length, 0)
+    }
+
+    function test_source_empty_text_uses_sync_and_shape_state() {
+        compare(model.sourceEmptyText("indexer", "", "No indexed blocks"), "No indexed blocks")
+
+        model.updateNetworkConnectionStatus("indexer", {
+            ok: true,
+            value: { state: "syncing", indexedBlockId: 12 },
+            text: "syncing",
+            error: ""
+        })
+
+        compare(model.sourceEmptyText("indexer", "", "No indexed blocks"), "Source reachable; syncing")
+        compare(model.sourceProblemTitle("indexer", "Response shape unknown. Raw JSON remains available.", "L2 blocks unavailable"), "Response shape unknown")
+    }
+
     function test_dashboard_refresh_loads_recent_blocks_for_both_chains() {
         fakeHost.responses = {
             blockchainNode: {
@@ -365,6 +508,22 @@ TestCase {
                     }
                 }
             }
+        }
+    }
+
+    function blockchainWalletReport(method, value) {
+        return {
+            module: model.blockchainModule,
+            module_info: { ok: true, value: {}, label: "module", source: "logoscore modules" },
+            probes: [
+                {
+                    label: "blockchain_module." + method,
+                    source: "blockchain_module " + method,
+                    ok: true,
+                    value: value,
+                    error: null
+                }
+            ]
         }
     }
 }

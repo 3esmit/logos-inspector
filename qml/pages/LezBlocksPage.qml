@@ -60,7 +60,7 @@ ColumnLayout {
         visible: root.model.lezBlocksPageError.length > 0
         theme: root.theme
         tone: "warning"
-        title: qsTr("L2 blocks unavailable")
+        title: root.model.sourceProblemTitle("indexer", root.model.lezBlocksPageError, qsTr("L2 blocks unavailable"))
         message: root.model.lezBlocksPageError
         Layout.fillWidth: true
     }
@@ -71,7 +71,7 @@ ColumnLayout {
             return [{
                 cells: [
                     { text: "-", width: 96 },
-                    { text: qsTr("No indexed blocks"), width: 220, fill: true, monospace: false },
+                    { text: root.model.sourceEmptyText("indexer", root.model.lezBlocksPageError, qsTr("No indexed blocks")), width: 220, fill: true, monospace: false },
                     { text: "-", width: 64 },
                     { text: "-", width: 98 }
                 ],

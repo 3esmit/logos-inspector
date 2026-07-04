@@ -446,6 +446,230 @@ function appendLocalWalletOperation(root, label, status, detail) {
     }
 }
 
+function refreshBedrockWalletModule(root, address) {
+    with (root) {
+        const target = String(address === undefined || address === null ? walletPublicKeyProbe : address).trim()
+        bedrockWalletModuleError = ""
+        statusText = qsTr("Bedrock wallet")
+        return requestModuleAsync(inspectorModule, "blockchainModuleReport", [target], qsTr("Bedrock wallet"), false, function (response) {
+            if (response.ok) {
+                blockchainModuleReport = response.value || null
+                bedrockWalletModuleError = ""
+                appendLocalWalletOperation(qsTr("Bedrock module wallet"), "ok", target.length ? target : qsTr("known addresses"))
+            } else {
+                blockchainModuleReport = null
+                bedrockWalletModuleError = response.error || qsTr("Bedrock wallet module unavailable.")
+                appendLocalWalletOperation(qsTr("Bedrock module wallet"), "down", bedrockWalletModuleError)
+            }
+        })
+    }
+}
+
+function bedrockWalletModuleKnownAddressRows(root) {
+    with (root) {
+        const items = walletPayloadList(root, "wallet_get_known_addresses", ["addresses", "known_addresses", "knownAddresses", "wallets", "public_keys", "publicKeys"])
+        if (items === null) {
+            return []
+        }
+        const rows = []
+        for (let i = 0; i < items.length; ++i) {
+            const item = items[i]
+            const address = walletScalarText(walletField(item, ["address", "account", "account_id", "accountId", "public_key", "publicKey", "id"], item))
+            if (!address.length) {
+                continue
+            }
+            rows.push({
+                address: address,
+                label: walletScalarText(walletField(item, ["label", "name", "kind", "type"], "")),
+                raw: item
+            })
+        }
+        return rows
+    }
+}
+
+function bedrockWalletModuleNoteRows(root) {
+    with (root) {
+        const items = walletPayloadList(root, "wallet_get_notes", ["notes", "wallet_notes", "walletNotes", "entries"])
+        if (items === null) {
+            return []
+        }
+        const rows = []
+        for (let i = 0; i < items.length; ++i) {
+            const item = items[i]
+            rows.push({
+                id: walletScalarText(walletField(item, ["note_id", "noteId", "id", "commitment", "note_commitment", "noteCommitment"], "")),
+                value: walletScalarText(walletField(item, ["value", "amount", "balance"], "")),
+                commitment: walletScalarText(walletField(item, ["commitment", "note_commitment", "noteCommitment", "cm"], "")),
+                nullifier: walletScalarText(walletField(item, ["nullifier", "nullifier_hash", "nullifierHash"], "")),
+                tip: walletScalarText(walletField(item, ["tip", "header", "header_id", "headerId", "block_id", "blockId"], "")),
+                raw: item
+            })
+        }
+        return rows
+    }
+}
+
+function bedrockWalletModuleVoucherRows(root) {
+    with (root) {
+        const items = walletPayloadList(root, "wallet_get_claimable_vouchers", ["vouchers", "claimable_vouchers", "claimableVouchers", "entries"])
+        if (items === null) {
+            return []
+        }
+        const rows = []
+        for (let i = 0; i < items.length; ++i) {
+            const item = items[i]
+            rows.push({
+                commitment: walletScalarText(walletField(item, ["commitment", "voucher_commitment", "voucherCommitment", "voucher_cm", "voucherCm", "cm"], item)),
+                nullifier: walletScalarText(walletField(item, ["nullifier", "nullifier_hash", "nullifierHash"], "")),
+                value: walletScalarText(walletField(item, ["value", "amount", "balance"], "")),
+                tip: walletScalarText(walletField(item, ["tip", "header", "header_id", "headerId", "block_id", "blockId"], "")),
+                raw: item
+            })
+        }
+        return rows
+    }
+}
+
+function bedrockWalletModuleBalance(root) {
+    with (root) {
+        return walletProbePayload(root, "wallet_get_balance")
+    }
+}
+
+function bedrockWalletModuleBalanceSummary(root) {
+    with (root) {
+        const balance = root.bedrockWalletModuleBalance()
+        if (balance === null) {
+            return ""
+        }
+        const scalar = root.scalarValue(balance)
+        if (scalar !== null) {
+            return root.valueText(scalar)
+        }
+        const keys = ["balance", "available", "spendable", "confirmed", "pending"]
+        const parts = []
+        for (let i = 0; i < keys.length; ++i) {
+            const value = walletField(balance, [keys[i]], "")
+            const text = walletScalarText(value)
+            if (text.length) {
+                parts.push(qsTr("%1 %2").arg(keys[i]).arg(text))
+            }
+        }
+        return parts.length ? parts.join(", ") : qsTr("loaded")
+    }
+}
+
+function bedrockWalletModuleRawText(root, method) {
+    with (root) {
+        const probe = root.moduleProbe("blockchain", method)
+        if (!probe || probe.value === undefined || probe.value === null) {
+            return ""
+        }
+        return walletJsonText(probe.value)
+    }
+}
+
+function bedrockWalletModuleListKnown(root, method) {
+    with (root) {
+        return walletPayloadList(root, method, walletListKeys(method)) !== null
+    }
+}
+
+function bedrockWalletModuleReadOnlyMethods(root) {
+    with (root) {
+        return [
+            "wallet_get_known_addresses",
+            "wallet_get_claimable_vouchers",
+            "wallet_get_balance",
+            "wallet_get_notes"
+        ]
+    }
+}
+
+function walletListKeys(method) {
+    switch (String(method || "")) {
+    case "wallet_get_known_addresses":
+        return ["addresses", "known_addresses", "knownAddresses", "wallets", "public_keys", "publicKeys"]
+    case "wallet_get_notes":
+        return ["notes", "wallet_notes", "walletNotes", "entries"]
+    case "wallet_get_claimable_vouchers":
+        return ["vouchers", "claimable_vouchers", "claimableVouchers", "entries"]
+    default:
+        return []
+    }
+}
+
+function walletPayloadList(root, method, keys) {
+    const payload = walletProbePayload(root, method)
+    if (Array.isArray(payload)) {
+        return payload
+    }
+    if (payload && typeof payload === "object") {
+        for (let i = 0; i < keys.length; ++i) {
+            const value = payload[keys[i]]
+            if (Array.isArray(value)) {
+                return value
+            }
+        }
+    }
+    return null
+}
+
+function walletProbePayload(root, method) {
+    const value = root.moduleProbeValue("blockchain", method)
+    return unwrapLogoscoreCallValue(value)
+}
+
+function unwrapLogoscoreCallValue(value) {
+    let current = value
+    if (current && typeof current === "object" && !Array.isArray(current)
+            && current.runner !== undefined && current.value !== undefined) {
+        current = current.value
+    }
+    if (current && typeof current === "object" && !Array.isArray(current)
+            && current.result !== undefined) {
+        const result = current.result
+        if (result && typeof result === "object" && !Array.isArray(result)
+                && result.value !== undefined) {
+            return result.value
+        }
+        return result
+    }
+    return current === undefined ? null : current
+}
+
+function walletField(item, keys, fallback) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+        return item === undefined || item === null ? fallback : item
+    }
+    for (let i = 0; i < keys.length; ++i) {
+        const value = item[keys[i]]
+        if (value !== undefined && value !== null && String(value).length > 0) {
+            return value
+        }
+    }
+    return fallback
+}
+
+function walletScalarText(value) {
+    if (value === undefined || value === null) {
+        return ""
+    }
+    if (typeof value === "object") {
+        return walletJsonText(value)
+    }
+    return String(value)
+}
+
+function walletJsonText(value) {
+    try {
+        return JSON.stringify(value, null, 2)
+    } catch (error) {
+        return String(value || "")
+    }
+}
+
 function registeredIdlEntries(root) {
     with (root) {
         const rows = []
@@ -862,4 +1086,3 @@ function tryTransactionDecodeCandidate(root, serial, summary, candidates, index,
         })
     }
 }
-

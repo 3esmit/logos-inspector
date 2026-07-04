@@ -61,7 +61,7 @@ ColumnLayout {
         visible: root.model.channelsPageError.length > 0
         theme: root.theme
         tone: "warning"
-        title: qsTr("Channels unavailable")
+        title: root.model.sourceProblemTitle("blockchain", root.model.channelsPageError, qsTr("Channels unavailable"))
         message: root.model.channelsPageError
         Layout.fillWidth: true
     }
@@ -87,7 +87,7 @@ ColumnLayout {
             return [{
                 channelRaw: "",
                 cells: [
-                    { text: qsTr("No channels in loaded range"), width: 210, fill: true, monospace: false },
+                    { text: root.model.sourceEmptyText("blockchain", root.model.channelsPageError, qsTr("No channels in loaded range")), width: 210, fill: true, monospace: false },
                     { text: "-", width: 120 },
                     { text: "-", width: 86 },
                     { text: "-", width: 86 },

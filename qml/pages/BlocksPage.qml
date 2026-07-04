@@ -62,7 +62,7 @@ ColumnLayout {
         visible: root.model.blocksPageError.length > 0
         theme: root.theme
         tone: "warning"
-        title: qsTr("Blocks unavailable")
+        title: root.model.sourceProblemTitle("blockchain", root.model.blocksPageError, qsTr("Blocks unavailable"))
         message: root.model.blocksPageError
         Layout.fillWidth: true
     }
@@ -75,7 +75,7 @@ ColumnLayout {
                 cells: [
                     { text: "-", width: 96 },
                     { text: "-", width: 72 },
-                    { text: qsTr("No blocks in loaded range"), width: 140, fill: true, monospace: false },
+                    { text: root.model.sourceEmptyText("blockchain", root.model.blocksPageError, qsTr("No blocks in loaded range")), width: 140, fill: true, monospace: false },
                     { text: "-", width: 72 },
                     { text: "-", width: 140, fill: true },
                     { text: "-", width: 72 }

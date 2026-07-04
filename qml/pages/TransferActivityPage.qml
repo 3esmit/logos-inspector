@@ -79,7 +79,7 @@ ColumnLayout {
         visible: root.model.transferActivityError.length > 0
         theme: root.theme
         tone: "warning"
-        title: qsTr("Transfer activity unavailable")
+        title: root.model.sourceProblemTitle("indexer", root.model.transferActivityError, qsTr("Transfer activity unavailable"))
         message: root.model.transferActivityError
         Layout.fillWidth: true
     }
@@ -108,7 +108,7 @@ ColumnLayout {
                 recipientRaw: "",
                 sourceRaw: "",
                 cells: [
-                    { text: qsTr("No account references in loaded range"), width: 240, fill: true, monospace: false },
+                    { text: root.model.sourceEmptyText("indexer", root.model.transferActivityError, qsTr("No account references in loaded range")), width: 240, fill: true, monospace: false },
                     { text: "-", width: 112, monospace: false },
                     { text: "-", width: 120 },
                     { text: "-", width: 82 },
