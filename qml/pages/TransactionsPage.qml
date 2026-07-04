@@ -62,7 +62,7 @@ ColumnLayout {
         visible: root.model.transactionsPageError.length > 0
         theme: root.theme
         tone: "warning"
-        title: qsTr("Transactions unavailable")
+        title: root.model.sourceProblemTitle("blockchain", root.model.transactionsPageError, qsTr("Transactions unavailable"))
         message: root.model.transactionsPageError
         Layout.fillWidth: true
     }
@@ -73,7 +73,7 @@ ColumnLayout {
             return [{
                 cells: [
                     { text: "-", width: 96 },
-                    { text: qsTr("No transactions in loaded range"), width: 180, fill: true, monospace: false },
+                    { text: root.model.sourceEmptyText("blockchain", root.model.transactionsPageError, qsTr("No transactions in loaded range")), width: 180, fill: true, monospace: false },
                     { text: "-", width: 180, fill: true },
                     { text: "-", width: 64 }
                 ],

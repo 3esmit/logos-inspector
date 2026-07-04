@@ -26,7 +26,13 @@ function refreshBlocksPage(root, anchorSlot) {
         dashboardNode = node.value
         blocksPageSlotFrom = slotFrom
         blocksPageSlotTo = slotTo
-        blocksPageRows = sortedBlocks(blocks.value || []).slice(0, blocksPageLimit)
+        if (!Array.isArray(blocks.value)) {
+            blocksPageRows = []
+            blocksPageError = qsTr("Response shape unknown. Raw JSON remains available.")
+            setResult(qsTr("Blocks"), BridgeHelpers.formatValue(blocks.value), false, blocks.value)
+            return
+        }
+        blocksPageRows = sortedBlocks(blocks.value).slice(0, blocksPageLimit)
         blocksPageError = ""
         setResult(qsTr("Blocks"), BridgeHelpers.formatValue(blocksPageRows), false, blocksPageRows)
     }
@@ -169,6 +175,100 @@ function blockchainInfo(root) {
     }
 }
 
+function sourceEmptyText(root, source, error, fallback) {
+    with (root) {
+        const state = sourceState(root, source, error)
+        if (state === "unknown_shape") {
+            return qsTr("Response shape unknown")
+        }
+        if (state === "unavailable") {
+            return qsTr("Source unavailable")
+        }
+        if (state === "syncing") {
+            return qsTr("Source reachable; syncing")
+        }
+        return String(fallback || qsTr("No rows in loaded range"))
+    }
+}
+
+function sourceProblemTitle(root, source, error, fallback) {
+    with (root) {
+        const state = sourceState(root, source, error)
+        if (state === "unknown_shape") {
+            return qsTr("Response shape unknown")
+        }
+        if (state === "syncing") {
+            return qsTr("Source syncing")
+        }
+        return String(fallback || qsTr("Source unavailable"))
+    }
+}
+
+function sourceState(root, source, error) {
+    with (root) {
+        if (responseShapeUnknown(root, error)) {
+            return "unknown_shape"
+        }
+        if (String(error || "").length > 0) {
+            return "unavailable"
+        }
+        const sourceName = String(source || "")
+        if (sourceName === "indexer") {
+            return indexerSourceState(root)
+        }
+        if (sourceName === "blockchain") {
+            return blockchainSourceState(root)
+        }
+        return "ready"
+    }
+}
+
+function indexerSourceState(root) {
+    with (root) {
+        const status = root.networkConnectionState("indexer")
+        if (status.known === true && status.ok !== true) {
+            return "unavailable"
+        }
+        const value = status && status.value ? status.value : null
+        const normalized = indexerStatusStateText(root, value)
+        if (normalized.indexOf("sync") >= 0 || normalized.indexOf("catch") >= 0 || normalized.indexOf("index") >= 0) {
+            return "syncing"
+        }
+        return "ready"
+    }
+}
+
+function blockchainSourceState(root) {
+    with (root) {
+        const status = root.networkConnectionState("blockchain")
+        if (status.known === true && status.ok !== true) {
+            return "unavailable"
+        }
+        const info = root.cryptarchiaInfo()
+        const state = String(info.mode || info.sync_state || info.syncState || "").toLowerCase()
+        if (state.indexOf("sync") >= 0 || state.indexOf("catch") >= 0 || state.indexOf("start") >= 0) {
+            return "syncing"
+        }
+        return "ready"
+    }
+}
+
+function indexerStatusStateText(root, value) {
+    with (root) {
+        if (!value || typeof value !== "object") {
+            return String(value || "").toLowerCase()
+        }
+        const status = value.status && typeof value.status === "object" ? value.status : value
+        return String(status.state || status.status || "").toLowerCase()
+    }
+}
+
+function responseShapeUnknown(root, error) {
+    with (root) {
+        return String(error || "").toLowerCase().indexOf("response shape unknown") >= 0
+    }
+}
+
 function blockTransactions(root, block) {
     with (root) {
         const raw = block || {}
@@ -265,7 +365,14 @@ function refreshTransactionsPage(root, beforeBlock) {
         }
 
         transactionsPageBeforeBlock = slotTo
-        transactionsPageRows = transactionRowsFromBlocks(blocks.value || []).slice(0, transactionsPageLimit)
+        if (!Array.isArray(blocks.value)) {
+            transactionsPageRows = []
+            transactionsPageNextBeforeBlock = 0
+            transactionsPageError = qsTr("Response shape unknown. Raw JSON remains available.")
+            setResult(qsTr("Transactions"), BridgeHelpers.formatValue(blocks.value), false, blocks.value)
+            return
+        }
+        transactionsPageRows = transactionRowsFromBlocks(blocks.value).slice(0, transactionsPageLimit)
         transactionsPageNextBeforeBlock = slotFrom > 0 ? slotFrom - 1 : 0
         transactionsPageError = ""
         setResult(qsTr("Transactions"), BridgeHelpers.formatValue(transactionsPageRows), false, transactionsPageRows)
@@ -301,7 +408,15 @@ function refreshLezBlocksPage(root, beforeBlock) {
         const sequencerResponse = requestModule(inspectorModule, "sequencerBlocks", [sequencerUrl, before > 0 ? before : null, lezBlocksPageLimit], qsTr("L2 blocks"), false, false)
         if (sequencerResponse.ok) {
             const indexerResponse = requestModule(inspectorModule, "indexerBlocks", [indexerUrl, before > 0 ? before : null, lezBlocksPageLimit], qsTr("L2 indexed blocks"), false, false)
-            const blocks = mergedLezBlocks(root, sequencerResponse.value || [], indexerResponse.ok ? (indexerResponse.value || []) : [], lezBlocksPageLimit)
+            if (!Array.isArray(sequencerResponse.value) || (indexerResponse.ok && !Array.isArray(indexerResponse.value))) {
+                lezBlocksPageBeforeBlock = before
+                lezBlocksPageRows = []
+                lezBlocksPageNextBeforeBlock = 0
+                lezBlocksPageError = qsTr("Response shape unknown. Raw JSON remains available.")
+                setResult(qsTr("L2 blocks"), BridgeHelpers.formatValue(indexerResponse.ok ? indexerResponse.value : sequencerResponse.value), false, indexerResponse.ok ? indexerResponse.value : sequencerResponse.value)
+                return
+            }
+            const blocks = mergedLezBlocks(root, sequencerResponse.value, indexerResponse.ok ? indexerResponse.value : [], lezBlocksPageLimit)
             lezBlocksPageBeforeBlock = before
             lezBlocksPageRows = blocks
             lezBlocksPageNextBeforeBlock = nextIndexerBlocksCursor(blocks)
@@ -317,7 +432,16 @@ function refreshLezBlocksPage(root, beforeBlock) {
             return
         }
 
-        const blocks = sortedIndexerBlocks(response.value || [])
+        if (!Array.isArray(response.value)) {
+            lezBlocksPageBeforeBlock = before
+            lezBlocksPageRows = []
+            lezBlocksPageNextBeforeBlock = 0
+            lezBlocksPageError = qsTr("Response shape unknown. Raw JSON remains available.")
+            setResult(qsTr("L2 blocks"), BridgeHelpers.formatValue(response.value), false, response.value)
+            return
+        }
+
+        const blocks = sortedIndexerBlocks(response.value)
         lezBlocksPageBeforeBlock = before
         lezBlocksPageRows = blocks
         lezBlocksPageNextBeforeBlock = nextIndexerBlocksCursor(blocks)
@@ -362,7 +486,16 @@ function refreshLezTransactionsPage(root, beforeBlock) {
             return
         }
 
-        const blocks = sortedIndexerBlocks(response.value || [])
+        if (!Array.isArray(response.value)) {
+            lezTransactionsPageBeforeBlock = before
+            lezTransactionsPageRows = []
+            lezTransactionsPageNextBeforeBlock = 0
+            lezTransactionsPageError = qsTr("Response shape unknown. Raw JSON remains available.")
+            setResult(qsTr("L2 transactions"), BridgeHelpers.formatValue(response.value), false, response.value)
+            return
+        }
+
+        const blocks = sortedIndexerBlocks(response.value)
         lezTransactionsPageBeforeBlock = before
         lezTransactionsPageRows = lezTransactionRowsFromBlocks(blocks).slice(0, lezTransactionsPageLimit)
         lezTransactionsPageNextBeforeBlock = nextIndexerBlocksCursor(blocks)
@@ -676,7 +809,15 @@ function refreshTransferActivityPage(root, beforeBlock, preserveHistory) {
         }
 
         const page = recipients.value || {}
-        const rows = Array.isArray(page.recipients) ? page.recipients : (Array.isArray(recipients.value) ? recipients.value : [])
+        const rows = Array.isArray(page.recipients) ? page.recipients : (Array.isArray(recipients.value) ? recipients.value : null)
+        if (rows === null) {
+            transferActivityBeforeBlock = before || 0
+            transferActivityRows = []
+            transferActivityNextBeforeBlock = 0
+            transferActivityError = qsTr("Response shape unknown. Raw JSON remains available.")
+            setResult(qsTr("Transfer activity"), BridgeHelpers.formatValue(recipients.value), false, recipients.value)
+            return
+        }
         transferActivityBeforeBlock = before || 0
         transferActivityRows = rows.slice(0, transferActivityLimit)
         const next = Number(page.next_before_block || 0)
@@ -789,9 +930,18 @@ function refreshChannelsPage(root, anchorSlot) {
             return
         }
 
+        if (!report.value || typeof report.value !== "object" || !Array.isArray(report.value.summaries)) {
+            channelsPageSlotFrom = slotFrom
+            channelsPageSlotTo = slotTo
+            channelsPageRows = []
+            channelsPageError = qsTr("Response shape unknown. Raw JSON remains available.")
+            setResult(qsTr("Channels"), BridgeHelpers.formatValue(report.value), false, report.value)
+            return
+        }
+
         channelsPageSlotFrom = slotFrom
         channelsPageSlotTo = slotTo
-        channelsPageRows = ((report.value || {}).summaries || []).slice(0, channelsPageLimit)
+        channelsPageRows = report.value.summaries.slice(0, channelsPageLimit)
         channelsPageError = ""
         setResult(qsTr("Channels"), BridgeHelpers.formatValue(report.value || {}), false, report.value || {})
     }

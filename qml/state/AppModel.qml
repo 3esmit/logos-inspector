@@ -147,6 +147,7 @@ QtObject {
     property var localWalletOperations: []
     property var bedrockWalletBalanceValue: null
     property string bedrockWalletBalanceError: ""
+    property string bedrockWalletModuleError: ""
     property var accountIdlSelections: ({})
     property int accountIdlSelectionRevision: 0
     property var knownProgramIds: ({})
@@ -299,6 +300,24 @@ QtObject {
     function isBedrockHexId(value) { return AppModelIdentity.isBedrockHexId(root, value) }
 
     function appendLocalWalletOperation(label, status, detail) { return AppModelIdentity.appendLocalWalletOperation(root, label, status, detail) }
+
+    function refreshBedrockWalletModule(address) { return AppModelIdentity.refreshBedrockWalletModule(root, address) }
+
+    function bedrockWalletModuleKnownAddressRows() { return AppModelIdentity.bedrockWalletModuleKnownAddressRows(root) }
+
+    function bedrockWalletModuleNoteRows() { return AppModelIdentity.bedrockWalletModuleNoteRows(root) }
+
+    function bedrockWalletModuleVoucherRows() { return AppModelIdentity.bedrockWalletModuleVoucherRows(root) }
+
+    function bedrockWalletModuleBalance() { return AppModelIdentity.bedrockWalletModuleBalance(root) }
+
+    function bedrockWalletModuleBalanceSummary() { return AppModelIdentity.bedrockWalletModuleBalanceSummary(root) }
+
+    function bedrockWalletModuleRawText(method) { return AppModelIdentity.bedrockWalletModuleRawText(root, method) }
+
+    function bedrockWalletModuleListKnown(method) { return AppModelIdentity.bedrockWalletModuleListKnown(root, method) }
+
+    function bedrockWalletModuleReadOnlyMethods() { return AppModelIdentity.bedrockWalletModuleReadOnlyMethods(root) }
 
     function registeredIdlEntries() { return AppModelIdentity.registeredIdlEntries(root) }
 
@@ -575,6 +594,10 @@ QtObject {
     function blockStatus(block) { return AppModelPages.blockStatus(root, block) }
 
     function blockchainInfo() { return AppModelPages.blockchainInfo(root) }
+
+    function sourceEmptyText(source, error, fallback) { return AppModelPages.sourceEmptyText(root, source, error, fallback) }
+
+    function sourceProblemTitle(source, error, fallback) { return AppModelPages.sourceProblemTitle(root, source, error, fallback) }
 
     function blockTransactions(block) { return AppModelPages.blockTransactions(root, block) }
 

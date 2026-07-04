@@ -121,6 +121,7 @@ function refreshIndexerStatus(root) {
             ? root.copyMap(statusResponse.value)
             : { state: root.valueToString(statusResponse.value) }
         if (!root.indexerStatusNeedsFallback(statusValue)) {
+            root.updateNetworkConnectionStatus("indexer", statusResponse)
             root.setResult(qsTr("Indexer status"), statusResponse.text, false, statusResponse.value)
             return statusResponse
         }
@@ -156,6 +157,12 @@ function refreshIndexerStatus(root) {
                 programs: null
             }
         }
+        root.updateNetworkConnectionStatus("indexer", {
+            ok: true,
+            value: fallbackValue,
+            text: BridgeHelpers.formatValue(fallbackValue),
+            error: ""
+        })
         root.setResult(qsTr("Indexer status"), BridgeHelpers.formatValue(fallbackValue), false, fallbackValue)
         return {
             ok: true,
