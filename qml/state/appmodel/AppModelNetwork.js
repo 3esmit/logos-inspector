@@ -237,6 +237,7 @@ function networkConnectionKindForMethod(root, method) {
     with (root) {
         switch (String(method || "")) {
         case "blockchainNode":
+        case "blockchainLiveBlocks":
             return "blockchain"
         case "indexerStatus":
         case "indexerFinalizedHead":

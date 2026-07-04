@@ -154,6 +154,18 @@ impl InspectorBridge {
                     )
                 }
             }
+            "blockchainLiveBlocks" => {
+                let args = Args::new(args)?;
+                to_value(
+                    self.runtime
+                        .block_on(blockchain::blockchain_live_blocks_snapshot(
+                            args.string(0, "node endpoint")?,
+                            args.u64(1, "slot from")?,
+                            args.u64(2, "slot to")?,
+                            args.value(3).and_then(Value::as_u64).unwrap_or(50),
+                        ))?,
+                )
+            }
             "blockchainBlock" => {
                 let args = Args::new(args)?;
                 to_value(self.runtime.block_on(blockchain::blockchain_block(
@@ -777,6 +789,25 @@ mod tests {
             bail!("expected missing indexer endpoint to fail");
         };
         if !error.to_string().contains("indexer endpoint is required") {
+            bail!("unexpected error: {error:#}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn blockchain_live_blocks_bridge_requires_slot_arguments() -> Result<()> {
+        let bridge = InspectorBridge::new()?;
+
+        let result = bridge.call_module(
+            INSPECTOR_MODULE,
+            "blockchainLiveBlocks",
+            json!(["http://127.0.0.1:8080"]),
+        );
+
+        let Err(error) = result else {
+            bail!("expected missing slot argument to fail");
+        };
+        if !error.to_string().contains("slot from is required") {
             bail!("unexpected error: {error:#}");
         }
         Ok(())

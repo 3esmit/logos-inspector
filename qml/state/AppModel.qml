@@ -44,6 +44,11 @@ QtObject {
     property int blocksPageWindow: 2000
     property int blocksPageLimit: 20
     property string blocksPageError: ""
+    property bool blocksLiveEnabled: false
+    property string blocksLiveError: ""
+    property string blocksLiveSource: ""
+    property int blocksLiveUnknownEvents: 0
+    property string blocksLiveCheckedAt: ""
     property var transactionsPageRows: []
     property int transactionsPageBeforeBlock: 0
     property int transactionsPageNextBeforeBlock: 0
@@ -566,6 +571,16 @@ QtObject {
     function defaultDashboardGraphSelections() { return AppModelMetrics.defaultDashboardGraphSelections(root) }
 
     function refreshBlocksPage(anchorSlot) { return AppModelPages.refreshBlocksPage(root, anchorSlot) }
+
+    function startBlocksLiveMode() { return AppModelPages.startBlocksLiveMode(root) }
+
+    function stopBlocksLiveMode() { return AppModelPages.stopBlocksLiveMode(root) }
+
+    function refreshBlocksLivePage() { return AppModelPages.refreshBlocksLivePage(root) }
+
+    function mergeLiveBlocks(liveBlocks, existingBlocks, limit) { return AppModelPages.mergeLiveBlocks(root, liveBlocks, existingBlocks, limit) }
+
+    function blocksLiveStatusText() { return AppModelPages.blocksLiveStatusText(root) }
 
     function olderBlocksPage() { return AppModelPages.olderBlocksPage(root) }
 

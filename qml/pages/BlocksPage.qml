@@ -23,20 +23,77 @@ ColumnLayout {
         }
     }
 
+    Timer {
+        interval: root.model.refreshInterval(root.model.blockchainRefreshRate)
+        running: root.model.blocksLiveEnabled && root.model.currentView === "blocks"
+        repeat: true
+        onTriggered: root.model.refreshBlocksLivePage()
+    }
+
     ListToolbar {
         theme: root.theme
         loadCount: root.model.blocksPageLimit
         rangeText: root.slotRangeText()
-        canGoNewer: root.canLoadNewer()
-        canGoOlder: root.model.blocksPageSlotFrom > 0
+        canGoNewer: !root.model.blocksLiveEnabled && root.canLoadNewer()
+        canGoOlder: !root.model.blocksLiveEnabled && root.model.blocksPageSlotFrom > 0
         busy: root.model.busy
         Layout.fillWidth: true
-        onRefresh: root.model.refreshBlocksPage()
+        onRefresh: root.model.blocksLiveEnabled ? root.model.refreshBlocksLivePage() : root.model.refreshBlocksPage()
         onNewer: root.model.newerBlocksPage()
         onOlder: root.model.olderBlocksPage()
         onLoadCountSelected: function (count) {
             root.model.setBlocksPageLimit(count)
         }
+    }
+
+    RowLayout {
+        spacing: root.theme.gapSmall
+        Layout.fillWidth: true
+
+        Text {
+            text: root.model.blocksLiveStatusText()
+            color: root.model.blocksLiveEnabled ? root.theme.success : root.theme.textMuted
+            textFormat: Text.PlainText
+            font.pixelSize: root.theme.dataText
+            font.weight: Font.Medium
+            Layout.fillWidth: true
+        }
+
+        ActionButton {
+            theme: root.theme
+            text: root.model.blocksLiveEnabled ? qsTr("Refresh Live") : qsTr("Live")
+            primary: !root.model.blocksLiveEnabled
+            enabled: !root.model.busy
+            Layout.preferredWidth: root.model.blocksLiveEnabled ? 126 : 82
+            onClicked: root.model.blocksLiveEnabled ? root.model.refreshBlocksLivePage() : root.model.startBlocksLiveMode()
+        }
+
+        ActionButton {
+            visible: root.model.blocksLiveEnabled
+            theme: root.theme
+            text: qsTr("Stop")
+            enabled: !root.model.busy
+            Layout.preferredWidth: 82
+            onClicked: root.model.stopBlocksLiveMode()
+        }
+    }
+
+    StatusMessage {
+        visible: root.model.blocksLiveError.length > 0
+        theme: root.theme
+        tone: "warning"
+        title: qsTr("Live blocks unavailable")
+        message: root.model.blocksLiveError
+        Layout.fillWidth: true
+    }
+
+    StatusMessage {
+        visible: root.model.blocksLiveUnknownEvents > 0
+        theme: root.theme
+        tone: "info"
+        title: qsTr("Unknown live events")
+        message: qsTr("%1 raw events preserved in output.").arg(root.model.blocksLiveUnknownEvents)
+        Layout.fillWidth: true
     }
 
     DataTableFrame {
