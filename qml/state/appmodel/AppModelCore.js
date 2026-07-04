@@ -16,6 +16,11 @@ function handleNetworkConfigurationChanged(root) {
         blockchainModuleReport = null
         storageModuleReport = null
         messagingModuleReport = null
+        blocksLiveEnabled = false
+        blocksLiveError = ""
+        blocksLiveSource = ""
+        blocksLiveUnknownEvents = 0
+        blocksLiveCheckedAt = ""
         saveSettingsState()
     }
 }

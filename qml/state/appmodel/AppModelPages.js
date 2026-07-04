@@ -38,6 +38,159 @@ function refreshBlocksPage(root, anchorSlot) {
     }
 }
 
+function startBlocksLiveMode(root) {
+    with (root) {
+        blocksLiveEnabled = true
+        blocksLiveError = ""
+        blocksLiveSource = ""
+        blocksLiveUnknownEvents = 0
+        blocksLiveCheckedAt = ""
+        if (!blocksPageRows.length) {
+            refreshBlocksPage()
+        }
+        refreshBlocksLivePage()
+    }
+}
+
+function stopBlocksLiveMode(root) {
+    with (root) {
+        blocksLiveEnabled = false
+        blocksLiveError = ""
+        blocksLiveSource = ""
+        blocksLiveUnknownEvents = 0
+        blocksLiveCheckedAt = ""
+    }
+}
+
+function refreshBlocksLivePage(root) {
+    with (root) {
+        const node = requestModule(inspectorModule, "blockchainNode", [nodeUrl], qsTr("Live blocks node state"), false)
+        if (!node.ok) {
+            blocksLiveError = node.error
+            return
+        }
+        dashboardNode = node.value
+        const infoProbe = node.value ? node.value.cryptarchia_info : null
+        const info = infoProbe && infoProbe.value ? infoProbe.value.cryptarchia_info : null
+        const tip = Number(info ? (info.slot || info.lib_slot || 0) : 0)
+        const slotTo = tip > 0 ? tip : Math.max(0, Number(blocksPageSlotTo || 0))
+        if (slotTo <= 0) {
+            blocksLiveError = qsTr("No L1 tip available.")
+            return
+        }
+        const existingTo = Math.max(0, Number(blocksPageSlotTo || 0))
+        const slotFrom = existingTo > 0 ? Math.min(existingTo, slotTo) : Math.max(0, slotTo - blocksPageWindow)
+        const limit = Math.max(5, Number(blocksPageLimit || 5))
+        const response = requestModule(inspectorModule, "blockchainLiveBlocks", [nodeUrl, slotFrom, slotTo, limit], qsTr("Live blocks"), false)
+        if (!response.ok) {
+            blocksLiveError = response.error
+            return
+        }
+
+        const report = response.value || {}
+        const liveBlocks = Array.isArray(report.blocks) ? report.blocks : []
+        const merged = root.mergeLiveBlocks(liveBlocks, blocksPageRows, blocksPageLimit)
+        blocksPageRows = merged
+        blocksPageSlotTo = Math.max(slotTo, maxBlockSlot(root, merged))
+        blocksPageSlotFrom = merged.length ? minBlockSlot(root, merged) : slotFrom
+        blocksLiveSource = String(report.source || "")
+        blocksLiveUnknownEvents = Array.isArray(report.unknown_events) ? report.unknown_events.length : 0
+        blocksLiveCheckedAt = new Date().toLocaleTimeString(Qt.locale(), "hh:mm:ss")
+        blocksLiveError = ""
+        blocksPageError = ""
+        setResult(qsTr("Live blocks"), BridgeHelpers.formatValue(report), false, report)
+    }
+}
+
+function mergeLiveBlocks(root, liveBlocks, existingBlocks, limit) {
+    with (root) {
+        const rows = []
+        const seen = ({})
+        appendUniqueBlocks(root, rows, seen, Array.isArray(liveBlocks) ? liveBlocks : [])
+        appendUniqueBlocks(root, rows, seen, Array.isArray(existingBlocks) ? existingBlocks : [])
+        const sorted = root.sortedBlocks(rows)
+        return sorted.slice(0, Math.max(1, Number(limit || sorted.length || 1)))
+    }
+}
+
+function appendUniqueBlocks(root, rows, seen, blocks) {
+    with (root) {
+        for (let i = 0; i < blocks.length; ++i) {
+            const block = blocks[i]
+            const keys = blockDedupeKeys(root, block)
+            let duplicate = false
+            for (let keyIndex = 0; keyIndex < keys.length; ++keyIndex) {
+                if (seen[keys[keyIndex]] === true) {
+                    duplicate = true
+                    break
+                }
+            }
+            if (duplicate) {
+                continue
+            }
+            for (let seenIndex = 0; seenIndex < keys.length; ++seenIndex) {
+                seen[keys[seenIndex]] = true
+            }
+            rows.push(block)
+        }
+    }
+}
+
+function blockDedupeKeys(root, block) {
+    with (root) {
+        const keys = []
+        const hash = root.blockHash(block)
+        if (hash.length) {
+            keys.push("hash:" + hash)
+        }
+        const slot = root.blockSlot(block)
+        if (slot > 0) {
+            keys.push("slot:" + slot)
+        }
+        return keys
+    }
+}
+
+function maxBlockSlot(root, blocks) {
+    with (root) {
+        let max = 0
+        const rows = Array.isArray(blocks) ? blocks : []
+        for (let i = 0; i < rows.length; ++i) {
+            max = Math.max(max, root.blockSlot(rows[i]))
+        }
+        return max
+    }
+}
+
+function minBlockSlot(root, blocks) {
+    with (root) {
+        let min = 0
+        const rows = Array.isArray(blocks) ? blocks : []
+        for (let i = 0; i < rows.length; ++i) {
+            const slot = root.blockSlot(rows[i])
+            if (slot > 0 && (min === 0 || slot < min)) {
+                min = slot
+            }
+        }
+        return min
+    }
+}
+
+function blocksLiveStatusText(root) {
+    with (root) {
+        if (!blocksLiveEnabled) {
+            return qsTr("Paged")
+        }
+        if (blocksLiveError.length > 0) {
+            return qsTr("Live error")
+        }
+        if (blocksLiveCheckedAt.length > 0) {
+            return qsTr("Live %1").arg(blocksLiveCheckedAt)
+        }
+        return qsTr("Live")
+    }
+}
+
 function olderBlocksPage(root) {
     with (root) {
         refreshBlocksPage(Math.max(0, blocksPageSlotFrom - 1))

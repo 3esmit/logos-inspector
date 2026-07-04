@@ -1,8 +1,12 @@
 use anyhow::{Context as _, Result, bail};
 use serde::Serialize;
 use serde_json::{Value, json};
+use std::time::Duration;
 
 use crate::{ProbeReport, logos_node_cryptarchia_info, raw_http_json, response_excerpt};
+
+const BLOCK_STREAM_SNAPSHOT_TIMEOUT: Duration = Duration::from_millis(250);
+const BLOCK_STREAM_SNAPSHOT_MAX_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct BlockchainNodeReport {
@@ -11,6 +15,14 @@ pub struct BlockchainNodeReport {
     pub headers: ProbeReport,
     pub network_info: ProbeReport,
     pub mantle_metrics: ProbeReport,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BlockchainLiveBlocksReport {
+    pub endpoint: String,
+    pub source: String,
+    pub blocks: Vec<Value>,
+    pub unknown_events: Vec<Value>,
 }
 
 pub async fn blockchain_node_report(endpoint: &str) -> BlockchainNodeReport {
@@ -69,12 +81,73 @@ pub async fn blockchain_recent_blocks(
     }
 }
 
+pub async fn blockchain_live_blocks_snapshot(
+    endpoint: &str,
+    slot_from: u64,
+    slot_to: u64,
+    limit: u64,
+) -> Result<BlockchainLiveBlocksReport> {
+    if slot_from > slot_to {
+        bail!("slot_from must be less than or equal to slot_to");
+    }
+    let limit = limit.clamp(1, 500);
+    let mut report = match blockchain_blocks_range_text(endpoint, slot_from, slot_to, limit).await {
+        Ok(text) => {
+            let mut report = parse_block_stream_response(&text)?;
+            report.endpoint = endpoint.to_owned();
+            report.source = "blocks_range".to_owned();
+            report
+        }
+        Err(range_error) => {
+            let blocks = legacy_recent_blocks(endpoint, slot_from, slot_to, limit)
+                .await
+                .with_context(|| format!("live blocks_range failed: {range_error:#}"))?;
+            BlockchainLiveBlocksReport {
+                endpoint: endpoint.to_owned(),
+                source: "range_fallback".to_owned(),
+                blocks: value_array(blocks),
+                unknown_events: Vec::new(),
+            }
+        }
+    };
+
+    if let Ok(text) = blockchain_blocks_stream_text(endpoint, limit).await {
+        match parse_block_stream_response(&text) {
+            Ok(stream_report) => {
+                report.blocks.extend(stream_report.blocks);
+                report.unknown_events.extend(stream_report.unknown_events);
+                report.source.push_str("+stream");
+            }
+            Err(error) => {
+                report.unknown_events.push(json!({
+                    "source": "cryptarchia/events/blocks/stream",
+                    "error": error.to_string(),
+                    "raw": response_excerpt(&text),
+                }));
+            }
+        }
+    }
+    report.blocks = dedupe_stream_blocks(report.blocks, limit);
+    Ok(report)
+}
+
 async fn blockchain_blocks_range(
     endpoint: &str,
     slot_from: u64,
     slot_to: u64,
     limit: u64,
 ) -> Result<Value> {
+    parse_blocks_range_response(
+        &blockchain_blocks_range_text(endpoint, slot_from, slot_to, limit).await?,
+    )
+}
+
+async fn blockchain_blocks_range_text(
+    endpoint: &str,
+    slot_from: u64,
+    slot_to: u64,
+    limit: u64,
+) -> Result<String> {
     let batch_size = limit.min(100);
     let endpoint = endpoint.trim_end_matches('/');
     let url = format!(
@@ -96,7 +169,43 @@ async fn blockchain_blocks_range(
             response_excerpt(&text)
         );
     }
-    parse_blocks_range_response(&text)
+    Ok(text)
+}
+
+async fn blockchain_blocks_stream_text(endpoint: &str, limit: u64) -> Result<String> {
+    let endpoint = endpoint.trim_end_matches('/');
+    let limit = limit.min(100);
+    let url = format!("{endpoint}/cryptarchia/events/blocks/stream?prefetch-limit={limit}");
+    let mut response = reqwest::Client::new()
+        .get(&url)
+        .send()
+        .await
+        .with_context(|| format!("failed to call {url}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        bail!("block stream HTTP {status}");
+    }
+
+    let mut text = String::new();
+    loop {
+        if text.len() >= BLOCK_STREAM_SNAPSHOT_MAX_BYTES {
+            break;
+        }
+        let chunk =
+            match tokio::time::timeout(BLOCK_STREAM_SNAPSHOT_TIMEOUT, response.chunk()).await {
+                Ok(chunk) => chunk.context("failed to read block stream chunk")?,
+                Err(_) => break,
+            };
+        let Some(chunk) = chunk else {
+            break;
+        };
+        text.push_str(&String::from_utf8_lossy(&chunk));
+    }
+
+    if text.trim().is_empty() {
+        bail!("block stream produced no snapshot events");
+    }
+    Ok(text)
 }
 
 async fn legacy_recent_blocks(
@@ -159,6 +268,51 @@ fn block_slot(block: &Value) -> u64 {
         .and_then(|header| header.get("slot"))
         .and_then(Value::as_u64)
         .unwrap_or_default()
+}
+
+fn value_array(value: Value) -> Vec<Value> {
+    match value {
+        Value::Array(values) => values,
+        _ => Vec::new(),
+    }
+}
+
+fn dedupe_stream_blocks(blocks: Vec<Value>, limit: u64) -> Vec<Value> {
+    let mut seen = std::collections::HashSet::new();
+    let mut deduped = Vec::new();
+    for block in blocks {
+        let keys = block_dedupe_keys(&block);
+        if !keys.is_empty() && keys.iter().any(|key| seen.contains(key)) {
+            continue;
+        }
+        for key in keys {
+            seen.insert(key);
+        }
+        deduped.push(block);
+    }
+    deduped.sort_by_key(|block| std::cmp::Reverse(block_slot(block)));
+    deduped.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+    deduped
+}
+
+fn block_dedupe_keys(block: &Value) -> Vec<String> {
+    let header = block.get("header").and_then(Value::as_object);
+    let mut keys = Vec::new();
+    let hash = header
+        .and_then(|header| header.get("id").or_else(|| header.get("hash")))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if !hash.is_empty() {
+        keys.push(format!("hash:{hash}"));
+    }
+    let slot = header
+        .and_then(|header| header.get("slot"))
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    if slot > 0 {
+        keys.push(format!("slot:{slot}"));
+    }
+    keys
 }
 
 pub async fn blockchain_block(endpoint: &str, block_id: &str) -> Result<Value> {
@@ -225,6 +379,76 @@ fn parse_blocks_range_response(text: &str) -> Result<Value> {
         .map(Value::Array)
 }
 
+fn parse_block_stream_response(text: &str) -> Result<BlockchainLiveBlocksReport> {
+    let mut blocks = Vec::new();
+    let mut unknown_events = Vec::new();
+    for event in stream_event_values(text)? {
+        if let Some(block) = block_from_stream_event(&event) {
+            blocks.push(block);
+        } else {
+            unknown_events.push(event);
+        }
+    }
+    Ok(BlockchainLiveBlocksReport {
+        endpoint: String::new(),
+        source: "stream".to_owned(),
+        blocks,
+        unknown_events,
+    })
+}
+
+fn stream_event_values(text: &str) -> Result<Vec<Value>> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+    if trimmed.starts_with('[') {
+        return serde_json::from_str(trimmed)
+            .with_context(|| format!("invalid stream JSON: {}", response_excerpt(trimmed)));
+    }
+
+    Ok(text
+        .lines()
+        .filter_map(stream_line_payload)
+        .map(|line| serde_json::from_str(line).unwrap_or_else(|_| Value::String(line.to_owned())))
+        .collect())
+}
+
+fn stream_line_payload(line: &str) -> Option<&str> {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with("event:") || line.starts_with("id:") {
+        return None;
+    }
+    Some(line.strip_prefix("data:").map(str::trim).unwrap_or(line))
+}
+
+fn block_from_stream_event(event: &Value) -> Option<Value> {
+    if let Some(block) = event.get("block").and_then(block_payload_value) {
+        return Some(block_with_event_chain_state(block, event));
+    }
+    if let Some(block) = event
+        .get("newBlock")
+        .or_else(|| event.get("new_block"))
+        .and_then(|value| block_from_stream_event(value).or_else(|| block_payload_value(value)))
+    {
+        return Some(block);
+    }
+    if event.get("header").is_some() {
+        return Some(event.clone());
+    }
+    None
+}
+
+fn block_payload_value(value: &Value) -> Option<Value> {
+    match value {
+        Value::Object(_) => Some(value.clone()),
+        Value::String(text) => serde_json::from_str::<Value>(text)
+            .ok()
+            .filter(|value| value.get("header").is_some()),
+        _ => None,
+    }
+}
+
 fn block_from_processed_event(mut event: Value) -> Result<Value> {
     if event.get("block").is_none() && event.get("header").is_some() {
         return Ok(event);
@@ -237,11 +461,22 @@ fn block_from_processed_event(mut event: Value) -> Result<Value> {
     let Some(block) = event
         .as_object_mut()
         .and_then(|event| event.remove("block"))
+        .and_then(|block| block_payload_value(&block))
     else {
         bail!("blocks_range event did not include a block object");
     };
 
     Ok(block_with_chain_state(block, tip, tip_slot, lib, lib_slot))
+}
+
+fn block_with_event_chain_state(block: Value, event: &Value) -> Value {
+    block_with_chain_state(
+        block,
+        event.get("tip").cloned().unwrap_or(Value::Null),
+        event.get("tip_slot").cloned().unwrap_or(Value::Null),
+        event.get("lib").cloned().unwrap_or(Value::Null),
+        event.get("lib_slot").cloned().unwrap_or(Value::Null),
+    )
 }
 
 fn block_with_chain_state(
@@ -371,6 +606,108 @@ mod tests {
     }
 
     #[test]
+    fn block_stream_response_accepts_stringified_block_payload() -> Result<()> {
+        let body = r#"{"block":"{\"header\":{\"id\":\"live-1\",\"slot\":41},\"transactions\":[]}","tip":"live-1","tip_slot":41,"lib":"lib","lib_slot":20}"#;
+
+        let report = parse_block_stream_response(body)?;
+
+        ensure_block_count(&report, 1)?;
+        ensure_no_unknown_events(&report)?;
+        let block = report.blocks.first().context("first block should exist")?;
+        ensure_nested_string(block, &["header", "id"], "live-1")?;
+        ensure_nested_string(block, &["_chain", "status"], "pending")?;
+        Ok(())
+    }
+
+    #[test]
+    fn block_stream_response_accepts_object_block_payload() -> Result<()> {
+        let body = r#"[{"block":{"header":{"id":"live-2","slot":42},"transactions":[]},"tip":"live-2","tip_slot":42,"lib":"lib","lib_slot":20}]"#;
+
+        let report = parse_block_stream_response(body)?;
+
+        ensure_block_count(&report, 1)?;
+        ensure_no_unknown_events(&report)?;
+        let block = report.blocks.first().context("first block should exist")?;
+        ensure_nested_string(block, &["header", "id"], "live-2")?;
+        ensure_nested_string(block, &["_chain", "status"], "pending")?;
+        Ok(())
+    }
+
+    #[test]
+    fn block_stream_response_accepts_direct_block_payload() -> Result<()> {
+        let body = r#"event: newBlock
+data: {"header":{"id":"live-3","slot":43},"transactions":[]}"#;
+
+        let report = parse_block_stream_response(body)?;
+
+        ensure_block_count(&report, 1)?;
+        ensure_no_unknown_events(&report)?;
+        let block = report.blocks.first().context("first block should exist")?;
+        ensure_nested_string(block, &["header", "id"], "live-3")?;
+        Ok(())
+    }
+
+    #[test]
+    fn block_stream_response_accepts_new_block_wrapper() -> Result<()> {
+        let body =
+            r#"{"newBlock":{"block":{"header":{"id":"live-3b","slot":43},"transactions":[]}}}"#;
+
+        let report = parse_block_stream_response(body)?;
+
+        ensure_block_count(&report, 1)?;
+        ensure_no_unknown_events(&report)?;
+        let block = report.blocks.first().context("first block should exist")?;
+        ensure_nested_string(block, &["header", "id"], "live-3b")?;
+        Ok(())
+    }
+
+    #[test]
+    fn block_stream_response_preserves_unknown_events() -> Result<()> {
+        let body = r#"{"kind":"heartbeat"}
+{"block":{"header":{"id":"live-4","slot":44},"transactions":[]}}"#;
+
+        let report = parse_block_stream_response(body)?;
+
+        ensure_block_count(&report, 1)?;
+        ensure_unknown_event_count(&report, 1)?;
+        let unknown = report
+            .unknown_events
+            .first()
+            .context("first unknown event should exist")?;
+        if unknown.get("kind") != Some(&json!("heartbeat")) {
+            bail!("expected heartbeat unknown event, got {unknown:?}");
+        }
+        let block = report.blocks.first().context("first block should exist")?;
+        ensure_nested_string(block, &["header", "id"], "live-4")?;
+        Ok(())
+    }
+
+    #[test]
+    fn dedupe_stream_blocks_suppresses_duplicate_headers() -> Result<()> {
+        let blocks = vec![
+            json!({ "header": { "id": "dup", "slot": 30 } }),
+            json!({ "header": { "id": "dup", "slot": 30 } }),
+            json!({ "header": { "id": "same-slot", "slot": 30 } }),
+            json!({ "header": { "id": "new", "slot": 31 } }),
+        ];
+
+        let deduped = dedupe_stream_blocks(blocks, 10);
+
+        if deduped.len() != 2 {
+            bail!("expected two deduped blocks, got {}", deduped.len());
+        }
+        let first = deduped
+            .first()
+            .context("first deduped block should exist")?;
+        let second = deduped
+            .get(1)
+            .context("second deduped block should exist")?;
+        ensure_nested_string(first, &["header", "id"], "new")?;
+        ensure_nested_string(second, &["header", "id"], "dup")?;
+        Ok(())
+    }
+
+    #[test]
     fn fallback_range_ending_at_lib_moves_newer_empty_window_to_lib() {
         assert_eq!(fallback_range_ending_at_lib(150, 200, 120), Some((70, 120)));
         assert_eq!(fallback_range_ending_at_lib(100, 200, 150), None);
@@ -412,5 +749,32 @@ mod tests {
             current = current.get(segment)?;
         }
         current.as_str()
+    }
+
+    fn ensure_block_count(report: &BlockchainLiveBlocksReport, expected: usize) -> Result<()> {
+        if report.blocks.len() != expected {
+            bail!(
+                "expected {expected} live blocks, got {}",
+                report.blocks.len()
+            );
+        }
+        Ok(())
+    }
+
+    fn ensure_no_unknown_events(report: &BlockchainLiveBlocksReport) -> Result<()> {
+        ensure_unknown_event_count(report, 0)
+    }
+
+    fn ensure_unknown_event_count(
+        report: &BlockchainLiveBlocksReport,
+        expected: usize,
+    ) -> Result<()> {
+        if report.unknown_events.len() != expected {
+            bail!(
+                "expected {expected} unknown events, got {}",
+                report.unknown_events.len()
+            );
+        }
+        Ok(())
     }
 }

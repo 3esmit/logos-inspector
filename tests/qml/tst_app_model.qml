@@ -62,6 +62,11 @@ TestCase {
         model.blocksPageSlotFrom = 0
         model.blocksPageSlotTo = 0
         model.blocksPageError = ""
+        model.blocksLiveEnabled = false
+        model.blocksLiveError = ""
+        model.blocksLiveSource = ""
+        model.blocksLiveUnknownEvents = 0
+        model.blocksLiveCheckedAt = ""
         model.lezBlocksPageRows = []
         model.lezBlocksPageBeforeBlock = 0
         model.lezBlocksPageNextBeforeBlock = 0
@@ -194,6 +199,82 @@ TestCase {
         compare(model.blocksPageRows[0].header.slot, 30)
         compare(model.blockStatus(model.blocksPageRows[0]), "pending")
         compare(model.blockStatus(model.blocksPageRows[1]), "finalized")
+    }
+
+    function test_blocks_live_mode_merges_and_dedupes_snapshot() {
+        model.currentView = "blocks"
+        model.blocksPageRows = [
+            { header: { slot: 30, id: "slot-30" }, transactions: [] }
+        ]
+        model.blocksPageSlotFrom = 30
+        model.blocksPageSlotTo = 30
+        fakeHost.responses = {
+            blockchainNode: {
+                ok: true,
+                value: {
+                    cryptarchia_info: {
+                        value: {
+                            cryptarchia_info: {
+                                slot: 31,
+                                lib_slot: 20
+                            }
+                        }
+                    }
+                },
+                text: "OK",
+                error: ""
+            },
+            blockchainLiveBlocks: {
+                ok: true,
+                value: {
+                    source: "blocks_range",
+                    blocks: [
+                        { header: { slot: 31, id: "slot-31" }, transactions: [] },
+                        { header: { slot: 30, id: "slot-30-live" }, transactions: [] }
+                    ],
+                    unknown_events: [
+                        { kind: "heartbeat" }
+                    ]
+                },
+                text: "live",
+                error: ""
+            }
+        }
+
+        compare(model.mergeLiveBlocks(fakeHost.responses.blockchainLiveBlocks.value.blocks, model.blocksPageRows, 20).length, 2)
+        model.startBlocksLiveMode()
+
+        compare(model.blocksLiveEnabled, true)
+        compare(fakeHost.lastMethod, "blockchainLiveBlocks")
+        compare(fakeHost.lastArgs[1], 30)
+        compare(fakeHost.lastArgs[2], 31)
+        compare(model.blocksPageRows.length, 2)
+        compare(model.blocksPageRows[0].header.id, "slot-31")
+        compare(model.blocksPageRows[1].header.id, "slot-30-live")
+        compare(model.blocksLiveSource, "blocks_range")
+        compare(model.blocksLiveUnknownEvents, 1)
+        compare(model.resultOwner, "blocks")
+        compare(model.resultValue.unknown_events.length, 1)
+    }
+
+    function test_stop_blocks_live_mode_keeps_paged_rows() {
+        model.blocksLiveEnabled = true
+        model.blocksLiveSource = "blocks_range+stream"
+        model.blocksLiveUnknownEvents = 1
+        model.blocksLiveCheckedAt = "10:00:00"
+        model.blocksPageRows = [
+            { header: { slot: 30, id: "slot-30" }, transactions: [] }
+        ]
+
+        model.stopBlocksLiveMode()
+
+        compare(model.blocksLiveEnabled, false)
+        compare(model.blocksLiveError, "")
+        compare(model.blocksLiveSource, "")
+        compare(model.blocksLiveUnknownEvents, 0)
+        compare(model.blocksLiveCheckedAt, "")
+        compare(model.blocksPageRows.length, 1)
+        compare(model.blocksPageRows[0].header.id, "slot-30")
     }
 
     function test_lez_blocks_page_merges_sequencer_and_indexer_blocks() {
