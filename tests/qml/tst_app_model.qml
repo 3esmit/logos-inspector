@@ -186,4 +186,59 @@ TestCase {
         compare(model.blockDetailValue.type, "sequencer_block")
         compare(model.blockDetailValue.status, "Submitted")
     }
+
+    function test_dashboard_refresh_loads_recent_blocks_for_both_chains() {
+        fakeHost.responses = {
+            blockchainNode: {
+                ok: true,
+                value: {
+                    cryptarchia_info: {
+                        value: {
+                            cryptarchia_info: {
+                                slot: 30,
+                                lib_slot: 20
+                            }
+                        }
+                    }
+                },
+                text: "OK",
+                error: ""
+            },
+            blockchainAllBlocks: {
+                ok: true,
+                value: [
+                    {
+                        header: { slot: 30, id: "l1-tip" },
+                        transactions: [{ mantle_tx: { hash: "l1-tx", ops: [{ opcode: 17 }] } }]
+                    }
+                ],
+                text: "OK",
+                error: ""
+            },
+            sequencerBlocks: {
+                ok: true,
+                value: [
+                    { block_id: 102, header_hash: "seq-102", tx_count: 1, bedrock_status: "Submitted", transactions: [{ hash: "l2-tx", instruction_data: [1, 2] }] }
+                ],
+                text: "OK",
+                error: ""
+            },
+            indexerBlocks: {
+                ok: true,
+                value: [
+                    { block_id: 100, header_hash: "idx-100", tx_count: 0, bedrock_status: "Finalized", transactions: [] }
+                ],
+                text: "OK",
+                error: ""
+            }
+        }
+
+        model.refreshDashboard()
+
+        compare(model.blocksPageRows.length, 1)
+        compare(model.blocksPageRows[0].header.id, "l1-tip")
+        compare(model.lezBlocksPageRows.length, 2)
+        compare(model.lezBlocksPageRows[0].block_id, 102)
+        tryCompare(model, "dashboardRefreshing", false)
+    }
 }

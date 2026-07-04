@@ -82,7 +82,7 @@ ColumnLayout {
 
                 DashboardHeader {
                     theme: root.theme
-                    title: qsTr("Latest L1 Blocks / Mantle")
+                    title: qsTr("Recent L1 Blocks")
                     action: qsTr("View all")
                     onActivated: root.model.selectView("blocks")
                 }
@@ -131,7 +131,7 @@ ColumnLayout {
 
                 DashboardHeader {
                     theme: root.theme
-                    title: qsTr("Latest L2 Blocks")
+                    title: qsTr("Recent L2 Blocks")
                     action: qsTr("View all")
                     onActivated: {
                         root.model.selectView("l2Blocks")
@@ -157,7 +157,9 @@ ColumnLayout {
                         linkKinds: ["indexerBlock", "indexerBlock", "", ""]
                         linkValues: [modelData.blockHash, modelData.blockHash, "", ""]
                         onCellActivated: function (column) {
-                            root.model.openReference(column === 0 || column === 1 ? "indexerBlock" : "", modelData.blockHash)
+                            if (column === 0 || column === 1) {
+                                root.model.openReference("indexerBlock", modelData.blockHash, modelData.rawBlock)
+                            }
                         }
                     }
                 }
@@ -180,7 +182,60 @@ ColumnLayout {
 
                 DashboardHeader {
                     theme: root.theme
-                    title: qsTr("Latest L2 Transactions")
+                    title: qsTr("Recent L1 Transactions")
+                    action: qsTr("View all")
+                    onActivated: {
+                        root.model.selectView("transactions")
+                    }
+                }
+
+                DashboardRow {
+                    theme: root.theme
+                    header: true
+                    columns: [qsTr("L1 slot"), qsTr("Tx hash"), qsTr("Header"), qsTr("Ops")]
+                    columnWidths: [86, -1, -1, 58]
+                }
+
+                Repeater {
+                    model: root.l1TransactionRows()
+
+                    DashboardRow {
+                        required property var modelData
+
+                        theme: root.theme
+                        columns: [modelData.slot, modelData.hash, modelData.block, modelData.ops]
+                        columnWidths: [86, -1, -1, 58]
+                        linkKinds: ["", "mantleTransaction", "block", ""]
+                        linkValues: ["", modelData.txHash, modelData.blockHash, ""]
+                        onCellActivated: function (column) {
+                            if (column === 1) {
+                                root.model.openMantleTransaction(modelData.txHash)
+                            } else if (column === 2) {
+                                root.model.openReference("block", modelData.blockHash)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Frame {
+            padding: 0
+            Layout.fillWidth: true
+
+            background: Rectangle {
+                color: root.theme.surface
+                radius: root.theme.radius
+                border.width: 1
+                border.color: root.theme.outlineMuted
+            }
+
+            contentItem: ColumnLayout {
+                spacing: 0
+
+                DashboardHeader {
+                    theme: root.theme
+                    title: qsTr("Recent L2 Transactions")
                     action: qsTr("View all")
                     onActivated: {
                         root.model.selectView("l2Transactions")
@@ -195,7 +250,7 @@ ColumnLayout {
                 }
 
                 Repeater {
-                    model: root.transactionRows()
+                    model: root.l2TransactionRows()
 
                     DashboardRow {
                         required property var modelData
@@ -209,7 +264,7 @@ ColumnLayout {
                             if (column === 1) {
                                 root.model.openReference("transaction", modelData.txHash)
                             } else if (column === 2) {
-                                root.model.openReference("indexerBlock", modelData.blockHash)
+                                root.model.openReference("indexerBlock", modelData.blockHash, modelData.rawBlock)
                             }
                         }
                     }
@@ -535,7 +590,7 @@ ColumnLayout {
     }
 
     function l2BlockRows() {
-        const blocks = model.dashboardBlocks || [];
+        const blocks = root.l2BlocksForDashboard();
         if (blocks.length > 0) {
             return blocks.slice(0, 5).map(function (block) {
                 return {
@@ -543,7 +598,8 @@ ColumnLayout {
                     header: root.shortHash(block.header_hash),
                     tx: root.numberText(block.tx_count),
                     status: block.bedrock_status || "-",
-                    blockHash: String(block.header_hash || "")
+                    blockHash: String(block.header_hash || ""),
+                    rawBlock: block
                 };
             });
         }
@@ -553,14 +609,48 @@ ColumnLayout {
                 header: qsTr("No indexed L2 blocks"),
                 tx: "-",
                 status: "-",
-                blockHash: ""
+                blockHash: "",
+                rawBlock: null
             }
         ];
     }
 
-    function transactionRows() {
+    function l2BlocksForDashboard() {
+        const loaded = root.model.lezBlocksPageRows || []
+        return loaded.length > 0 ? loaded : (model.dashboardBlocks || [])
+    }
+
+    function l1TransactionRows() {
+        const transactions = root.model.transactionRowsFromBlocks(root.model.blocksPageRows || []).slice(0, 5)
+        if (transactions.length > 0) {
+            return transactions.map(function (tx) {
+                const txHash = String(tx.hash || "")
+                const blockHash = String(tx.block || "")
+                return {
+                    slot: root.numberText(tx.slot),
+                    hash: root.shortHash(txHash),
+                    block: root.shortHash(blockHash),
+                    ops: root.numberText(tx.ops),
+                    txHash: txHash,
+                    blockHash: blockHash
+                }
+            })
+        }
+        return [
+            {
+                slot: "-",
+                hash: qsTr("No L1 transactions"),
+                block: "-",
+                ops: "-",
+                txHash: "",
+                blockHash: ""
+            }
+        ]
+    }
+
+    function l2TransactionRows() {
         const rows = [];
-        const blocks = model.dashboardBlocks || [];
+        const blocks = root.l2BlocksForDashboard();
         for (let i = 0; i < blocks.length && rows.length < 5; ++i) {
             const block = blocks[i];
             const transactions = block.transactions || [];
@@ -572,7 +662,8 @@ ColumnLayout {
                     block: root.shortHash(block.header_hash),
                     ops: root.numberText((tx.instruction_data || []).length),
                     txHash: String(tx.hash || ""),
-                    blockHash: String(block.header_hash || "")
+                    blockHash: String(block.header_hash || ""),
+                    rawBlock: block
                 });
             }
         }
@@ -586,7 +677,8 @@ ColumnLayout {
                 block: "-",
                 ops: "-",
                 txHash: "",
-                blockHash: ""
+                blockHash: "",
+                rawBlock: null
             }
         ];
     }
