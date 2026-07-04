@@ -2,7 +2,7 @@ use anyhow::{Context as _, Result, bail};
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::{ProbeReport, raw_http_json, response_excerpt};
+use crate::{ProbeReport, logos_node_cryptarchia_info, raw_http_json, response_excerpt};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct BlockchainNodeReport {
@@ -15,7 +15,7 @@ pub struct BlockchainNodeReport {
 
 pub async fn blockchain_node_report(endpoint: &str) -> BlockchainNodeReport {
     let (cryptarchia_info, headers, network_info, mantle_metrics) = tokio::join!(
-        raw_http_json(endpoint, "/cryptarchia/info"),
+        logos_node_cryptarchia_info(endpoint),
         raw_http_json(endpoint, "/cryptarchia/headers"),
         raw_http_json(endpoint, "/network/info"),
         raw_http_json(endpoint, "/mantle/metrics"),
@@ -120,7 +120,7 @@ async fn legacy_finalized_fallback_range(
     slot_from: u64,
     slot_to: u64,
 ) -> Result<Option<(u64, u64)>> {
-    let info = raw_http_json(endpoint, "/cryptarchia/info").await?;
+    let info = logos_node_cryptarchia_info(endpoint).await?;
     Ok(cryptarchia_slot(&info, "lib_slot")
         .and_then(|lib_slot| fallback_range_ending_at_lib(slot_from, slot_to, lib_slot)))
 }
@@ -137,6 +137,7 @@ fn cryptarchia_slot(info: &Value, field: &str) -> Option<u64> {
     info.get("cryptarchia_info")
         .and_then(|info| info.get(field))
         .and_then(Value::as_u64)
+        .or_else(|| info.get(field).and_then(Value::as_u64))
 }
 
 fn value_array_len(value: &Value) -> Option<usize> {

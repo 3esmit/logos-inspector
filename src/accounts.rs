@@ -224,7 +224,7 @@ fn account_transaction_direction(value: &Value, account_id: &str) -> Option<Stri
     let (_, payload) = enum_payload(value);
     let empty = Value::Null;
     let message = payload.get("message").unwrap_or(&empty);
-    let account_ids = transaction_account_ids(message);
+    let account_ids = transaction_account_ids(payload, message);
     let signer_ids = transaction_signer_account_ids(payload);
     if signer_ids.contains(&normalized_account_id) {
         return Some("outgoing".to_owned());
@@ -235,11 +235,23 @@ fn account_transaction_direction(value: &Value, account_id: &str) -> Option<Stri
     None
 }
 
-fn transaction_account_ids(message: &Value) -> BTreeSet<String> {
+fn transaction_account_ids(payload: &Value, message: &Value) -> BTreeSet<String> {
     value_list_strings(message.get("account_ids"))
         .into_iter()
         .chain(value_list_strings(message.get("public_account_ids")))
+        .chain(compact_transaction_account_ids(payload))
         .filter_map(|account_id| normalize_account_id_text(&account_id))
+        .collect()
+}
+
+fn compact_transaction_account_ids(value: &Value) -> Vec<String> {
+    value
+        .get("accounts")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|account| account.get("account_id"))
+        .map(value_to_string)
         .collect()
 }
 
