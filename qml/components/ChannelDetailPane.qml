@@ -146,7 +146,7 @@ ColumnLayout {
                         label: String(modelData.label || "")
                         value: String(modelData.value || "-")
                         linkKind: String(modelData.linkKind || "")
-                        linkValue: String(modelData.linkValue || "")
+                        linkValue: root.model.valueToString(modelData.linkValue)
                         monospace: true
                         onActivated: root.model.openReference(modelData.linkKind, modelData.linkValue)
                     }
@@ -192,10 +192,10 @@ ColumnLayout {
             return []
         }
         return [
-            { label: qsTr("First L1 slot"), value: root.numberText(root.detail.first_slot), linkKind: root.hasValue(root.detail.first_slot) ? "block" : "", linkValue: root.numberText(root.detail.first_slot), monospace: true },
+            { label: qsTr("First L1 slot"), value: root.numberText(root.detail.first_slot), linkKind: root.hasValue(root.detail.first_slot) ? "block" : "", linkValue: root.detail.first_slot, monospace: true },
             { label: qsTr("First Mantle tx"), value: root.valueText(root.detail.first_tx_hash), linkKind: root.detail.first_tx_hash.length ? "mantleTransaction" : "", linkValue: root.detail.first_tx_hash, monospace: true },
             { label: qsTr("First header"), value: root.valueText(root.detail.first_block_hash), linkKind: root.detail.first_block_hash.length ? "block" : "", linkValue: root.detail.first_block_hash, monospace: true },
-            { label: qsTr("Last L1 slot"), value: root.numberText(root.detail.last_slot), linkKind: root.hasValue(root.detail.last_slot) ? "block" : "", linkValue: root.numberText(root.detail.last_slot), monospace: true },
+            { label: qsTr("Last L1 slot"), value: root.numberText(root.detail.last_slot), linkKind: root.hasValue(root.detail.last_slot) ? "block" : "", linkValue: root.detail.last_slot, monospace: true },
             { label: qsTr("Last Mantle tx"), value: root.valueText(root.detail.last_tx_hash), linkKind: root.detail.last_tx_hash.length ? "mantleTransaction" : "", linkValue: root.detail.last_tx_hash, monospace: true },
             { label: qsTr("Last header"), value: root.valueText(root.detail.last_block_hash), linkKind: root.detail.last_block_hash.length ? "block" : "", linkValue: root.detail.last_block_hash, monospace: true }
         ]
@@ -208,10 +208,10 @@ ColumnLayout {
         return [
             { label: qsTr("Channel ID"), value: root.valueText(root.detail.channel_id), monospace: true },
             { label: qsTr("Operation type"), value: root.valueText(root.detail.operation_type), monospace: false },
-            { label: qsTr("Evidence L1 slot"), value: root.numberText(root.detail.l1_slot), linkKind: root.hasValue(root.detail.l1_slot) ? "block" : "", linkValue: root.numberText(root.detail.l1_slot), monospace: true },
+            { label: qsTr("Evidence L1 slot"), value: root.numberText(root.detail.l1_slot), linkKind: root.hasValue(root.detail.l1_slot) ? "block" : "", linkValue: root.detail.l1_slot, monospace: true },
             { label: qsTr("Header"), value: root.valueText(root.detail.header), linkKind: root.detail.header.length ? "block" : "", linkValue: root.detail.header, monospace: true },
             { label: qsTr("Mantle tx"), value: root.valueText(root.detail.tx_hash), linkKind: root.detail.tx_hash.length ? "mantleTransaction" : "", linkValue: root.detail.tx_hash, monospace: true },
-            { label: qsTr("Parent"), value: root.valueText(root.detail.parent), linkKind: root.detail.parent.length ? "block" : "", linkValue: root.detail.parent, monospace: true },
+            { label: qsTr("Parent message"), value: root.valueText(root.detail.parent), linkKind: "", linkValue: root.detail.parent, monospace: true, copyable: root.detail.parent.length > 0 },
             { label: qsTr("Signer"), value: root.valueText(root.detail.signer), linkKind: root.detail.signer.length ? "account" : "", linkValue: root.detail.signer, monospace: true },
             { label: qsTr("Source confidence"), value: root.valueText(root.detail.source_confidence), monospace: false }
         ]
@@ -328,8 +328,9 @@ ColumnLayout {
                         label: String(modelData.label || "")
                         value: String(modelData.value || "-")
                         linkKind: String(modelData.linkKind || "")
-                        linkValue: String(modelData.linkValue || "")
+                        linkValue: root.model.valueToString(modelData.linkValue)
                         monospace: modelData.monospace !== undefined ? modelData.monospace : true
+                        copyable: modelData.copyable !== undefined ? modelData.copyable : String(modelData.linkKind || "").length > 0
                         onActivated: root.model.openReference(modelData.linkKind, modelData.linkValue)
                     }
                 }
@@ -346,6 +347,7 @@ ColumnLayout {
         property string linkKind: ""
         property string linkValue: ""
         property bool monospace: true
+        property bool copyable: linkKind.length > 0
         signal activated()
 
         Layout.fillWidth: true
@@ -378,6 +380,7 @@ ColumnLayout {
                 text: rowRoot.value
                 theme: rowRoot.theme
                 link: rowRoot.linkKind.length > 0
+                copyable: rowRoot.copyable
                 copyText: rowRoot.linkValue.length > 0 ? rowRoot.linkValue : rowRoot.value
                 monospace: rowRoot.monospace
                 wrap: true

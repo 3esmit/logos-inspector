@@ -723,13 +723,14 @@ ColumnLayout {
 
     function healthRows() {
         const status = root.status()
-        const peerId = root.identityValue("peerId")
+        const identity = root.identityValue("peerId") || root.identityValue("enrUri") || root.identityValue("listenAddresses")
         const nodeHealth = root.probeValue("nodeHealth")
         const connectionStatus = root.probeValue("connectionStatus")
+        const nodeTone = root.combinedHealthTone(nodeHealth, connectionStatus)
         return [
             root.statusRow(qsTr("Source and lifecycle"), status.known ? (status.ok ? qsTr("reachable") : qsTr("problem")) : qsTr("unknown"), status.detail || qsTr("Not queried"), root.statusTone()),
-            root.statusRow(qsTr("Identity"), peerId !== null ? qsTr("present") : qsTr("unknown"), root.valueSummary(peerId), peerId !== null ? "success" : "neutral"),
-            root.statusRow(qsTr("Node health"), nodeHealth !== null ? root.valueSummary(nodeHealth) : qsTr("unknown"), root.valueSummary(connectionStatus), root.healthValueTone(nodeHealth)),
+            root.statusRow(qsTr("Identity"), identity !== null ? qsTr("present") : qsTr("unknown"), root.valueSummary(identity), identity !== null ? "success" : "neutral"),
+            root.statusRow(qsTr("Node health"), nodeHealth !== null ? root.valueSummary(nodeHealth) : qsTr("unknown"), root.valueSummary(connectionStatus), nodeTone),
             root.statusRow(qsTr("Preset, cluster, shards"), root.model.messagingNetworkPreset.length ? qsTr("configured") : qsTr("unknown"), root.model.normalizedMessagingNetworkPreset(root.model.messagingNetworkPreset) || qsTr("No preset"), root.model.messagingNetworkPreset.length ? "success" : "neutral"),
             root.statusRow(qsTr("REST and metrics access"), root.restMetricsState(), root.restMetricsEvidence(), root.restMetricsTone()),
             root.statusRow(qsTr("Relay"), root.metricKnown("messaging.pubsub_peers") ? qsTr("observed") : qsTr("unknown"), root.metricDisplay("messaging.pubsub_peers"), root.metricKnown("messaging.pubsub_peers") ? "success" : "neutral"),
@@ -890,6 +891,18 @@ ColumnLayout {
             return "neutral"
         }
         return root.model.deliveryHealthValueOk(value, false) ? "success" : "error"
+    }
+
+    function combinedHealthTone(left, right) {
+        const leftTone = root.healthValueTone(left)
+        const rightTone = root.healthValueTone(right)
+        if (leftTone === "error" || rightTone === "error") {
+            return "error"
+        }
+        if (leftTone === "success" || rightTone === "success") {
+            return "success"
+        }
+        return "neutral"
     }
 
     function topicRows() {

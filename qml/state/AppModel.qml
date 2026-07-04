@@ -141,6 +141,8 @@ QtObject {
     property string bedrockWalletBalanceError: ""
     property var accountIdlSelections: ({})
     property int accountIdlSelectionRevision: 0
+    property var knownProgramIds: ({})
+    property int knownProgramIdsRevision: 0
     property int accountAutoDecodeSerial: 0
     property int transactionAutoDecodeSerial: 0
     property int searchResolveSerial: 0
@@ -152,22 +154,23 @@ QtObject {
     onSequencerUrlChanged: handleNetworkConfigurationChanged()
     onIndexerUrlChanged: handleNetworkConfigurationChanged()
     onNodeUrlChanged: handleNetworkConfigurationChanged()
-    onMessagingNodeInfoIdChanged: handleNetworkConfigurationChanged()
-    onMessagingSourceModeChanged: handleNetworkConfigurationChanged()
-    onMessagingRestUrlChanged: handleNetworkConfigurationChanged()
-    onMessagingMetricsUrlChanged: handleNetworkConfigurationChanged()
-    onMessagingNetworkPresetChanged: handleNetworkConfigurationChanged()
+    onMessagingNodeInfoIdChanged: handleMessagingConfigurationChanged()
+    onMessagingSourceModeChanged: handleMessagingConfigurationChanged()
+    onMessagingRestUrlChanged: handleMessagingConfigurationChanged()
+    onMessagingMetricsUrlChanged: handleMessagingConfigurationChanged()
+    onMessagingNetworkPresetChanged: handleMessagingConfigurationChanged()
     onMessagingRollingWindowChanged: saveSettingsState()
     onMessagingAdminRestEnabledChanged: saveSettingsState()
     onMessagingMutatingDiagnosticsEnabledChanged: saveSettingsState()
-    onStorageSourceModeChanged: handleNetworkConfigurationChanged()
-    onStorageRestUrlChanged: handleNetworkConfigurationChanged()
-    onStorageMetricsUrlChanged: handleNetworkConfigurationChanged()
-    onStorageNetworkPresetChanged: handleNetworkConfigurationChanged()
-    onStorageDataDirChanged: handleNetworkConfigurationChanged()
+    onStorageSourceModeChanged: handleStorageConfigurationChanged()
+    onStorageRestUrlChanged: handleStorageConfigurationChanged()
+    onStorageMetricsUrlChanged: handleStorageConfigurationChanged()
+    onStorageNetworkPresetChanged: handleStorageConfigurationChanged()
+    onStorageDataDirChanged: handleStorageConfigurationChanged()
+    onStorageCidProbeChanged: saveSettingsState()
     onStorageRollingWindowChanged: saveSettingsState()
-    onStorageLocalDiagnosticsEnabledChanged: handleNetworkConfigurationChanged()
-    onStoragePrivilegedDebugEnabledChanged: handleNetworkConfigurationChanged()
+    onStorageLocalDiagnosticsEnabledChanged: handleStorageConfigurationChanged()
+    onStoragePrivilegedDebugEnabledChanged: handleStorageConfigurationChanged()
     onStorageMutatingDiagnosticsEnabledChanged: saveSettingsState()
     onBlockchainRefreshRateChanged: saveSettingsState()
     onIndexerRefreshRateChanged: saveSettingsState()
@@ -192,6 +195,16 @@ QtObject {
         storageModuleReport = null
         messagingModuleReport = null
         saveSettingsState()
+    }
+
+    function handleMessagingConfigurationChanged() {
+        root.clearDashboardMetricHistoryForPrefix("messaging.")
+        handleNetworkConfigurationChanged()
+    }
+
+    function handleStorageConfigurationChanged() {
+        root.clearDashboardMetricHistoryForPrefix("storage.")
+        handleNetworkConfigurationChanged()
     }
 
     function navTreeItems() {
@@ -517,6 +530,9 @@ QtObject {
             if (cacheResult !== false) {
                 updateDashboardCache(method, response.value)
             }
+            if (method === "programs") {
+                root.updateKnownProgramIds(response.value)
+            }
             if (showResult) {
                 setResult(label, response.text, false, response.value)
             }
@@ -594,7 +610,7 @@ QtObject {
         const idls = Array.isArray(response.value.idls) ? response.value.idls : []
         for (let i = 0; i < idls.length; ++i) {
             const entry = root.normalizedIdlEntry(idls[i], registeredIdls.count)
-            if (entry.json.length) {
+            if (entry !== null && entry.json.length) {
                 registeredIdls.append(entry)
             }
         }
@@ -635,7 +651,7 @@ QtObject {
         indexerUrl = root.stringSetting(value, "indexer_url", indexerUrl)
         nodeUrl = root.stringSetting(value, "node_url", nodeUrl)
         networkProfile = root.resolvedNetworkProfile(storedNetworkProfile, sequencerUrl, indexerUrl, nodeUrl)
-        messagingSourceMode = root.stringSetting(value, "messaging_source_mode", messagingSourceMode)
+        messagingSourceMode = root.normalizedMessagingSourceMode(root.stringSetting(value, "messaging_source_mode", messagingSourceMode))
         messagingRestUrl = root.stringSetting(value, "messaging_rest_url", messagingRestUrl)
         messagingMetricsUrl = root.stringSetting(value, "messaging_metrics_url", messagingMetricsUrl)
         messagingNetworkPreset = root.normalizedMessagingNetworkPreset(root.stringSetting(value, "messaging_network_preset", messagingNetworkPreset))
@@ -643,11 +659,12 @@ QtObject {
         messagingRollingWindow = root.numberSetting(value, "messaging_rolling_window", messagingRollingWindow)
         messagingAdminRestEnabled = root.boolSetting(value, "messaging_admin_rest_enabled", messagingAdminRestEnabled)
         messagingMutatingDiagnosticsEnabled = root.boolSetting(value, "messaging_mutating_diagnostics_enabled", messagingMutatingDiagnosticsEnabled)
-        storageSourceMode = root.stringSetting(value, "storage_source_mode", storageSourceMode)
+        storageSourceMode = root.normalizedStorageSourceMode(root.stringSetting(value, "storage_source_mode", storageSourceMode))
         storageRestUrl = root.stringSetting(value, "storage_rest_url", storageRestUrl)
         storageMetricsUrl = root.stringSetting(value, "storage_metrics_url", storageMetricsUrl)
         storageNetworkPreset = root.stringSetting(value, "storage_network_preset", storageNetworkPreset)
         storageDataDir = root.stringSetting(value, "storage_data_dir", storageDataDir)
+        storageCidProbe = root.stringSetting(value, "storage_cid_probe", storageCidProbe)
         storageRollingWindow = root.numberSetting(value, "storage_rolling_window", storageRollingWindow)
         storageLocalDiagnosticsEnabled = root.boolSetting(value, "storage_local_diagnostics_enabled", storageLocalDiagnosticsEnabled)
         storagePrivilegedDebugEnabled = root.boolSetting(value, "storage_privileged_debug_enabled", storagePrivilegedDebugEnabled)
@@ -683,7 +700,7 @@ QtObject {
             sequencer_url: String(sequencerUrl || ""),
             indexer_url: String(indexerUrl || ""),
             node_url: String(nodeUrl || ""),
-            messaging_source_mode: String(messagingSourceMode || ""),
+            messaging_source_mode: root.normalizedMessagingSourceMode(messagingSourceMode),
             messaging_rest_url: String(messagingRestUrl || ""),
             messaging_metrics_url: String(messagingMetricsUrl || ""),
             messaging_network_preset: root.normalizedMessagingNetworkPreset(messagingNetworkPreset),
@@ -691,11 +708,12 @@ QtObject {
             messaging_rolling_window: Number(messagingRollingWindow || 0),
             messaging_admin_rest_enabled: messagingAdminRestEnabled === true,
             messaging_mutating_diagnostics_enabled: messagingMutatingDiagnosticsEnabled === true,
-            storage_source_mode: String(storageSourceMode || ""),
+            storage_source_mode: root.normalizedStorageSourceMode(storageSourceMode),
             storage_rest_url: String(storageRestUrl || ""),
             storage_metrics_url: String(storageMetricsUrl || ""),
             storage_network_preset: String(storageNetworkPreset || ""),
-            storage_data_dir: storageLocalDiagnosticsEnabled === true ? String(storageDataDir || "") : "",
+            storage_data_dir: String(storageDataDir || ""),
+            storage_cid_probe: String(storageCidProbe || ""),
             storage_rolling_window: Number(storageRollingWindow || 0),
             storage_local_diagnostics_enabled: storageLocalDiagnosticsEnabled === true,
             storage_privileged_debug_enabled: storagePrivilegedDebugEnabled === true,
@@ -780,16 +798,21 @@ QtObject {
             return root.redactedPath(walletHome)
         }
         const source = String(localWalletStatus && localWalletStatus.home_source ? localWalletStatus.home_source : "")
-        if (source === "LEE_WALLET_HOME_DIR") {
-            return "$LEE_WALLET_HOME_DIR"
-        }
         if (source === "NSSA_WALLET_HOME_DIR") {
             return "$NSSA_WALLET_HOME_DIR"
         }
-        if (!source.length) {
-            return "$LEE_WALLET_HOME_DIR, $NSSA_WALLET_HOME_DIR, or $HOME/.lee/wallet"
+        return qsTr("Not configured")
+    }
+
+    function walletHomeSourceLabel() {
+        if (String(walletHome || "").trim().length > 0) {
+            return qsTr("profile home")
         }
-        return "$HOME/.lee/wallet"
+        const source = String(localWalletStatus && localWalletStatus.home_source ? localWalletStatus.home_source : "")
+        if (source === "NSSA_WALLET_HOME_DIR") {
+            return "$NSSA_WALLET_HOME_DIR"
+        }
+        return qsTr("home not configured")
     }
 
     function walletBinaryDisplayLabel() {
@@ -1012,7 +1035,8 @@ QtObject {
 
     function cachedIdlEntryForAccount(accountId, ownerProgramId) {
         const selection = accountIdlSelection(accountId, ownerProgramId)
-        return selection ? root.idlEntryForKey(selection.idlKey) : null
+        const entry = selection ? root.idlEntryForKey(selection.idlKey) : null
+        return entry && String(entry.programIdHex || "").length > 0 ? entry : null
     }
 
     function cachedAccountType(accountId, ownerProgramId) {
@@ -1468,6 +1492,9 @@ QtObject {
             if (!root.moduleReportReachable(value)) {
                 return root.moduleReportError(value) || qsTr("source unavailable")
             }
+            if (String(value && value.module ? value.module : "") === "storage_metrics") {
+                return qsTr("metrics available")
+            }
             const version = root.moduleProbeValue("storage", "version") || root.moduleProbeValue("storage", "moduleVersion")
             return version !== null ? qsTr("version %1").arg(root.valueText(version)) : qsTr("%1 reachable").arg(root.storageSourceLabel())
         }
@@ -1479,9 +1506,24 @@ QtObject {
             return root.moduleReportReachable(value) && root.deliveryReportHealthy(value)
         }
         if (kind === "storage") {
-            return root.moduleReportReachable(value)
+            return root.storageReportReady(value)
         }
         return true
+    }
+
+    function storageReportReady(report) {
+        if (!root.moduleReportReachable(report)) {
+            return false
+        }
+        const moduleName = String(report && report.module ? report.module : "")
+        if (moduleName === "storage_metrics") {
+            return true
+        }
+        return root.reportProbeOk(report, "peerId")
+            || root.reportProbeOk(report, "spr")
+            || root.reportProbeOk(report, "space")
+            || root.reportProbeOk(report, "debug")
+            || root.reportProbeOk(report, "manifests")
     }
 
     function moduleReportReachable(report) {
@@ -1560,7 +1602,7 @@ QtObject {
     }
 
     function deliveryModuleRuntimeHealthy(report) {
-        const runtimeMethods = ["MyPeerId", "MyENR", "MyMultiaddresses", "Metrics", "collectOpenMetricsText"]
+        const runtimeMethods = ["Metrics", "collectOpenMetricsText"]
         for (let i = 0; i < runtimeMethods.length; ++i) {
             if (root.deliveryProbeHasRuntimeValue(root.reportProbe(report, runtimeMethods[i]))) {
                 return true
@@ -1631,7 +1673,7 @@ QtObject {
 
     function deliverySourceReportArgs() {
         return [
-            String(messagingSourceMode || "module"),
+            root.normalizedMessagingSourceMode(messagingSourceMode),
             String(messagingRestUrl || ""),
             String(messagingMetricsUrl || ""),
             String(messagingNodeInfoId || "")
@@ -1639,38 +1681,51 @@ QtObject {
     }
 
     function deliverySourceLabel() {
-        switch (String(messagingSourceMode || "module")) {
+        switch (root.normalizedMessagingSourceMode(messagingSourceMode)) {
         case "rest":
             return qsTr("Direct Waku REST")
         case "metrics":
             return qsTr("Metrics only")
-        case "network-monitor":
-            return qsTr("Network monitor")
-        case "discovery-crawler":
-            return qsTr("Discovery crawler")
         default:
             return qsTr("Basecamp module")
         }
     }
 
     function deliverySourceTarget() {
-        switch (String(messagingSourceMode || "module")) {
+        switch (root.normalizedMessagingSourceMode(messagingSourceMode)) {
         case "rest":
             return String(messagingRestUrl || "")
         case "metrics":
             return String(messagingMetricsUrl || "")
-        case "network-monitor":
-            return String(messagingRestUrl || "")
-        case "discovery-crawler":
-            return root.normalizedMessagingNetworkPreset(messagingNetworkPreset)
         default:
             return String(deliveryModule || "")
         }
     }
 
+    function normalizedMessagingSourceMode(value) {
+        const source = String(value || "module").trim().toLowerCase()
+        switch (source) {
+        case "rest":
+        case "direct-rest":
+        case "direct waku rest":
+        case "waku-rest":
+            return "rest"
+        case "metrics":
+        case "metrics-only":
+        case "metrics only":
+            return "metrics"
+        case "module":
+        case "basecamp":
+        case "basecamp-module":
+        case "basecamp module":
+        default:
+            return "module"
+        }
+    }
+
     function storageSourceReportArgs(includeCidProbe) {
         return [
-            String(storageSourceMode || "module"),
+            root.normalizedStorageSourceMode(storageSourceMode),
             String(storageRestUrl || ""),
             String(storageMetricsUrl || ""),
             includeCidProbe === true ? String(storageCidProbe || "") : "",
@@ -1679,7 +1734,7 @@ QtObject {
     }
 
     function storageSourceLabel() {
-        switch (String(storageSourceMode || "module")) {
+        switch (root.normalizedStorageSourceMode(storageSourceMode)) {
         case "rest":
             return qsTr("Standalone REST")
         case "metrics":
@@ -1694,7 +1749,7 @@ QtObject {
     }
 
     function storageSourceTarget() {
-        switch (String(storageSourceMode || "module")) {
+        switch (root.normalizedStorageSourceMode(storageSourceMode)) {
         case "rest":
             return String(storageRestUrl || "")
         case "metrics":
@@ -1704,6 +1759,35 @@ QtObject {
             return String(storageDataDir || storageNetworkPreset || "")
         default:
             return String(storageModule || "")
+        }
+    }
+
+    function normalizedStorageSourceMode(value) {
+        const source = String(value || "module").trim().toLowerCase()
+        switch (source) {
+        case "rest":
+        case "standalone-rest":
+        case "standalone rest":
+        case "direct-rest":
+            return "rest"
+        case "metrics":
+        case "metrics-only":
+        case "metrics only":
+            return "metrics"
+        case "c-library":
+        case "c library":
+        case "library":
+            return "c-library"
+        case "local-os":
+        case "local os":
+        case "local diagnostics":
+            return "local-os"
+        case "module":
+        case "basecamp":
+        case "basecamp-module":
+        case "basecamp module":
+        default:
+            return "module"
         }
     }
 
@@ -1866,6 +1950,13 @@ QtObject {
             return scalar.toLocaleString(Qt.locale(), "f", Number.isInteger(scalar) ? 0 : 2)
         }
         return String(scalar)
+    }
+
+    function valueToString(value) {
+        if (value === undefined || value === null) {
+            return ""
+        }
+        return String(value)
     }
 
     function moduleReport(kind) {
@@ -2642,7 +2733,7 @@ QtObject {
     }
 
     function normalizedHashOrValue(value) {
-        let text = String(value || "").trim().toLowerCase()
+        let text = root.valueToString(value).trim().toLowerCase()
         if (text.startsWith("0x") && text.length === 66) {
             text = text.slice(2)
         }
@@ -3557,7 +3648,7 @@ QtObject {
     }
 
     function openReference(kind, value, payload) {
-        const target = String(value || "").trim()
+        const target = root.valueToString(value).trim()
         if (!target.length && payload === undefined) {
             return
         }
@@ -3714,7 +3805,7 @@ QtObject {
                 return
             }
             if (response.ok && response.value !== null && response.value !== undefined) {
-                blockDetailValue = root.indexerBlockDetail(response.value)
+                blockDetailValue = root.indexerBlockDetail(response.value, "sequencer")
                 setResult(qsTr("LEZ block"), BridgeHelpers.formatValue(blockDetailValue), false, blockDetailValue)
             } else {
                 blockDetailValue = null
@@ -3947,17 +4038,18 @@ QtObject {
         }
     }
 
-    function indexerBlockDetail(value) {
+    function indexerBlockDetail(value, source) {
         const block = value || {}
         const transactions = Array.isArray(block.transactions) ? block.transactions : []
+        const fromSequencer = String(source || "") === "sequencer"
         return {
-            type: "indexer_block",
+            type: fromSequencer ? "sequencer_block" : "indexer_block",
             hash: String(block.header_hash || ""),
             parent: String(block.parent_hash || ""),
             block_id: block.block_id,
             slot: block.block_id,
             height: block.block_id,
-            status: String(block.bedrock_status || ""),
+            status: fromSequencer ? String(block.status || block.bedrock_status || "") : String(block.bedrock_status || ""),
             version: "",
             block_root: "",
             voucher_cm: "",
@@ -3981,6 +4073,10 @@ QtObject {
         const target = String(wallet || "").trim()
         const targetTab = String(tab || "").length ? String(tab || "") : "profiles"
         const bedrockOnly = targetTab === "bedrockNotes"
+        currentView = "localWallet"
+        localWalletTab = targetTab
+        localWalletLookupTarget = target
+        transferRecipientDetailValue = null
         if (bedrockOnly && !bedrockWalletSourceConfigured()) {
             setResult(
                 qsTr("Bedrock wallet"),
@@ -4009,10 +4105,6 @@ QtObject {
             )
             return
         }
-        currentView = "localWallet"
-        localWalletTab = targetTab
-        localWalletLookupTarget = target
-        transferRecipientDetailValue = null
         if (localWalletTab === "bedrockNotes" && target.length > 0 && walletPublicKeyProbe.length === 0) {
             walletPublicKeyProbe = target
         }
@@ -4106,7 +4198,7 @@ QtObject {
                 return true
             }
         }
-        const rows = Array.isArray(resultValue) ? resultValue : []
+        const rows = root.knownProgramIdRows()
         for (let j = 0; j < rows.length; ++j) {
             const row = rows[j] || {}
             const rowProgram = String(row.hex || row.programIdHex || "") || root.canonicalProgramIdHex(row.base58 || row.programId || row.program_id)
@@ -4115,6 +4207,41 @@ QtObject {
             }
         }
         return false
+    }
+
+    function knownProgramCacheScope() {
+        return [String(networkProfile || ""), String(sequencerUrl || "")].join("|")
+    }
+
+    function knownProgramIdRows() {
+        const revision = knownProgramIdsRevision
+        const rows = knownProgramIds[root.knownProgramCacheScope()]
+        return Array.isArray(rows) ? rows : []
+    }
+
+    function updateKnownProgramIds(value) {
+        if (!Array.isArray(value)) {
+            return
+        }
+        const rows = []
+        for (let i = 0; i < value.length; ++i) {
+            const row = value[i] || {}
+            const hex = String(row.hex || row.programIdHex || row.program_id_hex || "")
+            const base58 = String(row.base58 || row.programId || row.program_id || "")
+            const normalized = hex.length ? root.normalizedHexText(hex) : root.canonicalProgramIdHex(base58)
+            if (!normalized.length) {
+                continue
+            }
+            rows.push({
+                hex: normalized,
+                base58: base58,
+                label: String(row.label || row.name || "")
+            })
+        }
+        const next = copyMap(knownProgramIds)
+        next[root.knownProgramCacheScope()] = rows
+        knownProgramIds = next
+        knownProgramIdsRevision += 1
     }
 
     function registerIdl(name, programId, json) {
@@ -4133,6 +4260,10 @@ QtObject {
         const resolvedName = name.trim().length ? name.trim() : (idl.name || qsTr("IDL %1").arg(registeredIdls.count + 1))
         const resolvedProgramId = programId.trim()
         const resolvedProgramIdHex = resolvedProgramId.length ? root.canonicalProgramIdHex(resolvedProgramId) : ""
+        if (!resolvedProgramId.length) {
+            setResult(qsTr("IDL registry"), qsTr("Program ID is required for automatic decode."), true)
+            return
+        }
         if (resolvedProgramId.length && !resolvedProgramIdHex.length) {
             setResult(qsTr("IDL registry"), qsTr("Program ID must be hex or base58."), true)
             return

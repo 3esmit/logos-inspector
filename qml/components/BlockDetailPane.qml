@@ -43,7 +43,7 @@ ColumnLayout {
             textColor: root.theme.textMuted
             textPixelSize: 12
             Layout.fillWidth: true
-            onActivated: root.model.openReference(root.isIndexerBlock() ? "indexerBlock" : "block", root.detail.hash)
+            onActivated: root.model.openReference(root.isLezBlock() ? "indexerBlock" : "block", root.detail.hash)
         }
     }
 
@@ -59,7 +59,7 @@ ColumnLayout {
             compact: true
             label: qsTr("Source")
             value: root.sourceText()
-            delta: root.detail && root.detail.type === "indexer_block" ? qsTr("Indexer lookup") : qsTr("Node block")
+            delta: root.sourceDetailText()
         }
 
         MetricCard {
@@ -82,9 +82,9 @@ ColumnLayout {
         MetricCard {
             theme: root.theme
             compact: true
-            label: root.isIndexerBlock() ? qsTr("Block ID") : qsTr("Height")
+            label: root.isLezBlock() ? qsTr("Block ID") : qsTr("Height")
             value: root.detail ? root.valueText(root.detail.height) : "-"
-            delta: root.isIndexerBlock() ? qsTr("LEZ block id") : qsTr("Chain height")
+            delta: root.isLezBlock() ? qsTr("LEZ block id") : qsTr("Chain height")
         }
     }
 
@@ -147,7 +147,7 @@ ColumnLayout {
                         columns: [modelData.index, modelData.hashText, modelData.ops]
                         transaction: modelData.transaction
                         onActivated: {
-                            if (root.isIndexerBlock()) {
+                            if (root.isLezBlock()) {
                                 root.model.openTransaction(modelData.transaction.hash)
                             } else {
                                 root.model.openBlockchainTransaction(modelData.transaction, root.detail)
@@ -160,7 +160,7 @@ ColumnLayout {
     }
 
     function normalize(value) {
-        if (!value || typeof value !== "object" || Array.isArray(value) || (value.type !== "blockchain_block" && value.type !== "indexer_block")) {
+        if (!value || typeof value !== "object" || Array.isArray(value) || (value.type !== "blockchain_block" && value.type !== "indexer_block" && value.type !== "sequencer_block")) {
             return null
         }
         return {
@@ -187,11 +187,11 @@ ColumnLayout {
             return []
         }
         return [
-            { label: root.isIndexerBlock() ? qsTr("Parent LEZ block") : qsTr("Parent"), value: root.valueText(root.detail.parent), monospace: true, linkKind: root.detail.parent.length ? (root.isIndexerBlock() ? "indexerBlock" : "block") : "", linkValue: root.detail.parent, copyable: root.detail.parent.length > 0 },
-            { label: root.isIndexerBlock() ? qsTr("LEZ block ID") : qsTr("Slot"), value: root.valueText(root.detail.slot), monospace: true, linkKind: root.valueText(root.detail.slot) !== "-" && !root.isIndexerBlock() ? "block" : "", linkValue: root.valueText(root.detail.slot) },
+            { label: root.isLezBlock() ? qsTr("Parent LEZ block") : qsTr("Parent"), value: root.valueText(root.detail.parent), monospace: true, linkKind: root.detail.parent.length ? (root.isLezBlock() ? "indexerBlock" : "block") : "", linkValue: root.detail.parent, copyable: root.detail.parent.length > 0 },
+            { label: root.isLezBlock() ? qsTr("LEZ block ID") : qsTr("Slot"), value: root.valueText(root.detail.slot), monospace: true, linkKind: root.valueText(root.detail.slot) !== "-" && !root.isLezBlock() ? "block" : "", linkValue: root.detail.slot },
             { label: qsTr("Height"), value: root.valueText(root.detail.height), monospace: true },
             { label: qsTr("Status"), value: root.valueText(root.detail.status), monospace: false },
-            { label: qsTr("Version"), value: root.isIndexerBlock() ? qsTr("- (not in this source)") : root.valueText(root.detail.version), monospace: true },
+            { label: qsTr("Version"), value: root.isLezBlock() ? qsTr("- (not in this source)") : root.valueText(root.detail.version), monospace: true },
             { label: qsTr("Block root"), value: root.valueText(root.detail.block_root), monospace: true, copyable: root.detail.block_root.length > 0 },
             { label: qsTr("Voucher cm"), value: root.valueText(root.detail.voucher_cm), monospace: true, copyable: root.detail.voucher_cm.length > 0 },
             { label: qsTr("Entropy"), value: root.valueText(root.detail.entropy), monospace: true, copyable: root.detail.entropy.length > 0 },
@@ -242,18 +242,38 @@ ColumnLayout {
         if (!root.detail) {
             return "-"
         }
-        return root.detail.type === "indexer_block" ? qsTr("Indexer") : qsTr("Node")
+        if (root.detail.type === "indexer_block") {
+            return qsTr("Indexer")
+        }
+        return root.detail.type === "sequencer_block" ? qsTr("Sequencer") : qsTr("Node")
+    }
+
+    function sourceDetailText() {
+        if (!root.detail) {
+            return "-"
+        }
+        if (root.detail.type === "indexer_block") {
+            return qsTr("Indexer lookup")
+        }
+        if (root.detail.type === "sequencer_block") {
+            return qsTr("Sequencer RPC")
+        }
+        return qsTr("Node block")
     }
 
     function isIndexerBlock() {
         return root.detail !== null && root.detail.type === "indexer_block"
     }
 
+    function isLezBlock() {
+        return root.detail !== null && (root.detail.type === "indexer_block" || root.detail.type === "sequencer_block")
+    }
+
     function titleText() {
         if (!root.detail) {
             return ""
         }
-        return root.isIndexerBlock()
+        return root.isLezBlock()
             ? qsTr("LEZ block %1").arg(root.valueText(root.detail.block_id))
             : qsTr("Block at slot %1").arg(root.valueText(root.detail.slot))
     }
@@ -262,7 +282,7 @@ ColumnLayout {
         if (!root.detail) {
             return qsTr("Slot")
         }
-        return root.isIndexerBlock()
+        return root.isLezBlock()
             ? qsTr("Block ID %1").arg(root.valueText(root.detail.block_id))
             : qsTr("Slot %1").arg(root.valueText(root.detail.slot))
     }
@@ -323,7 +343,7 @@ ColumnLayout {
                         label: String(modelData.label || "")
                         value: String(modelData.value || "-")
                         linkKind: String(modelData.linkKind || "")
-                        linkValue: String(modelData.linkValue || "")
+                        linkValue: root.model.valueToString(modelData.linkValue)
                         monospace: modelData.monospace !== undefined ? modelData.monospace : true
                         copyable: modelData.copyable !== undefined ? modelData.copyable : String(modelData.linkKind || "").length > 0
                         onActivated: root.model.openReference(modelData.linkKind, modelData.linkValue)

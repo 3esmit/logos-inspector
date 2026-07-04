@@ -9,7 +9,6 @@ pub mod spel;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    ffi::OsStr,
     fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -44,8 +43,7 @@ pub const DEFAULT_NODE_ENDPOINT: &str = "http://127.0.0.1:8080/";
 pub const DEFAULT_NETWORK_PROFILE: &str = "default";
 pub const CUSTOM_NETWORK_PROFILE: &str = "custom";
 pub const ACCOUNT_TRANSACTION_LIMIT: usize = 20;
-pub const LOCAL_WALLET_HOME_ENV: &str = "LEE_WALLET_HOME_DIR";
-const LEGACY_LOCAL_WALLET_HOME_ENV: &str = "NSSA_WALLET_HOME_DIR";
+pub const LOCAL_WALLET_HOME_ENV: &str = "NSSA_WALLET_HOME_DIR";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LocalWalletProfileStatus {
@@ -1164,33 +1162,36 @@ pub async fn logos_node_cryptarchia_info(endpoint: &str) -> Result<Value> {
 }
 
 pub fn local_wallet_profile_status(profile: Value) -> Result<LocalWalletProfileStatus> {
+    local_wallet_profile_status_with_env(
+        profile,
+        std::env::var(LOCAL_WALLET_HOME_ENV).unwrap_or_default(),
+        String::new(),
+    )
+}
+
+fn local_wallet_profile_status_with_env(
+    profile: Value,
+    canonical_env_home: String,
+    _legacy_env_home: String,
+) -> Result<LocalWalletProfileStatus> {
     let profile: LocalWalletProfileInput =
         serde_json::from_value(profile).context("failed to parse local wallet profile")?;
     let wallet_binary = profile.wallet_binary.trim();
     let explicit_home = profile.wallet_home.trim();
-    let canonical_env_home = std::env::var(LOCAL_WALLET_HOME_ENV).unwrap_or_default();
-    let legacy_env_home = std::env::var(LEGACY_LOCAL_WALLET_HOME_ENV).unwrap_or_default();
     let (env_home, env_home_source) = if !canonical_env_home.trim().is_empty() {
         (canonical_env_home, Some(LOCAL_WALLET_HOME_ENV))
-    } else if !legacy_env_home.trim().is_empty() {
-        (legacy_env_home, Some(LEGACY_LOCAL_WALLET_HOME_ENV))
     } else {
         (String::new(), None)
     };
-    let default_home = local_wallet_default_home()
-        .map(|path| path.to_string_lossy().to_string())
-        .unwrap_or_default();
     let wallet_home = if !explicit_home.is_empty() {
         explicit_home.to_owned()
     } else if env_home_source.is_some() {
         env_home.trim().to_owned()
     } else {
-        default_home
+        String::new()
     };
     let home_source = if !explicit_home.is_empty() {
         "profile"
-    } else if !wallet_home.is_empty() && env_home_source.is_none() {
-        "default"
     } else {
         env_home_source.unwrap_or("none")
     };
@@ -1217,12 +1218,8 @@ pub fn local_wallet_profile_status(profile: Value) -> Result<LocalWalletProfileS
     } else if !PathBuf::from(&wallet_home).is_dir() {
         details.push("wallet home directory is not reachable".to_owned());
         status = local_wallet_worst_status(status, "down");
-    } else if home_source == LEGACY_LOCAL_WALLET_HOME_ENV {
-        details.push(format!(
-            "{LEGACY_LOCAL_WALLET_HOME_ENV} configured (legacy fallback)"
-        ));
-    } else if home_source == "default" {
-        details.push("default wallet home configured".to_owned());
+    } else if home_source == "profile" {
+        details.push("wallet home configured".to_owned());
     } else {
         details.push(format!("{LOCAL_WALLET_HOME_ENV} configured"));
     }
@@ -1258,21 +1255,12 @@ pub fn local_wallet_profile_status(profile: Value) -> Result<LocalWalletProfileS
     })
 }
 
-fn local_wallet_default_home() -> Option<PathBuf> {
-    default_wallet_home_from_home(std::env::var_os("HOME").as_deref())
-}
-
 fn local_wallet_binary_is_path_like(binary: &str) -> bool {
     let binary = binary.trim();
     Path::new(binary).is_absolute()
         || binary.contains(std::path::MAIN_SEPARATOR)
         || binary.contains('/')
         || binary.contains('\\')
-}
-
-fn default_wallet_home_from_home(home: Option<&OsStr>) -> Option<PathBuf> {
-    let home = PathBuf::from(home?);
-    (!home.as_os_str().is_empty()).then(|| home.join(".lee").join("wallet"))
 }
 
 pub async fn bedrock_wallet_balance(
@@ -3394,16 +3382,27 @@ mod tests {
     }
 
     #[test]
-    fn default_wallet_home_uses_upstream_lee_wallet_path() {
-        let home = OsStr::new("/tmp/logos-inspector-home");
-
-        let wallet_home = default_wallet_home_from_home(Some(home));
-
-        assert_eq!(
-            wallet_home.as_deref(),
-            Some(Path::new("/tmp/logos-inspector-home/.lee/wallet"))
+    fn local_wallet_profile_status_keeps_blank_wallet_home_unconfigured() {
+        let status = local_wallet_profile_status_with_env(
+            serde_json::json!({
+                "wallet_binary": "/definitely/not/a/logos/wallet",
+                "wallet_home": "",
+                "network_profile": "local"
+            }),
+            String::new(),
+            String::new(),
         );
-        assert_eq!(default_wallet_home_from_home(None), None);
+
+        assert!(status.is_ok(), "{status:?}");
+        let Ok(status) = status else {
+            return;
+        };
+        assert_eq!(status.home_source, "none");
+        assert!(
+            status
+                .detail
+                .contains("wallet home directory not configured")
+        );
     }
 
     #[test]

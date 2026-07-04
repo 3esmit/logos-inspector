@@ -327,9 +327,10 @@ impl InspectorBridge {
             return Ok(Value::Null);
         };
 
-        if let Some(report) =
-            decode_transaction_summary_with_idls(&inspection.raw_summary, &registered_idl_jsons()?)
-        {
+        if let Some(report) = decode_transaction_summary_with_idls(
+            &inspection.raw_summary,
+            &registered_idl_entries()?,
+        ) {
             return to_value(Some(report));
         }
 
@@ -408,7 +409,13 @@ fn load_idl_state() -> Result<Value> {
         .with_context(|| format!("failed to parse IDL state from {}", path.display()))
 }
 
-fn registered_idl_jsons() -> Result<Vec<String>> {
+#[derive(Debug, Clone)]
+struct RegisteredIdlEntry {
+    program_id_hex: String,
+    json: String,
+}
+
+fn registered_idl_entries() -> Result<Vec<RegisteredIdlEntry>> {
     let state = load_idl_state()?;
     Ok(state
         .get("idls")
@@ -416,22 +423,58 @@ fn registered_idl_jsons() -> Result<Vec<String>> {
         .into_iter()
         .flatten()
         .filter_map(|entry| {
-            entry
-                .get("json")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned)
+            let json = entry.get("json").and_then(Value::as_str)?.trim();
+            if json.is_empty() {
+                return None;
+            }
+            let program_id_hex = registered_idl_program_id_hex(entry);
+            if program_id_hex.is_empty() {
+                return None;
+            }
+            Some(RegisteredIdlEntry {
+                program_id_hex,
+                json: json.to_owned(),
+            })
         })
-        .filter(|json| !json.trim().is_empty())
         .collect())
+}
+
+fn registered_idl_program_id_hex(entry: &Value) -> String {
+    entry
+        .get("programIdHex")
+        .or_else(|| entry.get("program_id_hex"))
+        .and_then(Value::as_str)
+        .and_then(normalized_program_id_hex_text)
+        .or_else(|| {
+            entry
+                .get("programId")
+                .or_else(|| entry.get("program_id"))
+                .and_then(Value::as_str)
+                .and_then(normalized_program_id_hex_text)
+        })
+        .unwrap_or_default()
+}
+
+fn normalized_program_id_hex_text(value: &str) -> Option<String> {
+    normalize_program_id_hex(value)
+        .ok()
+        .filter(|text| !text.is_empty())
 }
 
 fn decode_transaction_summary_with_idls(
     summary: &TransactionSummary,
-    idl_jsons: &[String],
+    idl_entries: &[RegisteredIdlEntry],
 ) -> Option<TransactionIdlInspectionReport> {
+    let summary_program_id = summary
+        .program_id_hex
+        .as_deref()
+        .and_then(normalized_program_id_hex_text)?;
     let mut partial = None;
-    for idl_json in idl_jsons {
-        let Ok(report) = inspect_transaction_summary_with_idl(summary, idl_json) else {
+    for entry in idl_entries
+        .iter()
+        .filter(|entry| entry.program_id_hex == summary_program_id)
+    {
+        let Ok(report) = inspect_transaction_summary_with_idl(summary, &entry.json) else {
             continue;
         };
         if let Some(decoded) = &report.decoded_instruction {
@@ -447,21 +490,21 @@ fn decode_transaction_summary_with_idls(
 }
 
 fn enrich_account_related_transaction_decodes(value: &mut Value) -> Result<()> {
-    let idl_jsons = registered_idl_jsons()?;
-    if idl_jsons.is_empty() {
+    let idl_entries = registered_idl_entries()?;
+    if idl_entries.is_empty() {
         return Ok(());
     }
     if let Some(account) = value.get_mut("account") {
-        enrich_account_report_related_transaction_decodes(account, &idl_jsons)?;
+        enrich_account_report_related_transaction_decodes(account, &idl_entries)?;
     } else {
-        enrich_account_report_related_transaction_decodes(value, &idl_jsons)?;
+        enrich_account_report_related_transaction_decodes(value, &idl_entries)?;
     }
     Ok(())
 }
 
 fn enrich_account_report_related_transaction_decodes(
     account: &mut Value,
-    idl_jsons: &[String],
+    idl_entries: &[RegisteredIdlEntry],
 ) -> Result<()> {
     let Some(transactions) = account
         .get_mut("related_transactions")
@@ -482,7 +525,7 @@ fn enrich_account_report_related_transaction_decodes(
         if summary.kind != "Public" || summary.instruction_data.is_empty() {
             continue;
         }
-        let Some(report) = decode_transaction_summary_with_idls(&summary, idl_jsons) else {
+        let Some(report) = decode_transaction_summary_with_idls(&summary, idl_entries) else {
             continue;
         };
         let Some(decoded) = report.decoded_instruction else {

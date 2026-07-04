@@ -67,7 +67,7 @@ ColumnLayout {
 
                 SourceStrip {
                     theme: root.theme
-                    sources: [qsTr("Local Wallet"), qsTr("Explicit Profile"), qsTr("Default Home")]
+                    sources: [qsTr("Local Wallet"), qsTr("Explicit Profile"), root.model.walletHomeSourceLabel()]
                     Layout.fillWidth: true
                 }
 
@@ -110,7 +110,7 @@ ColumnLayout {
                 StatusChip {
                     theme: root.theme
                     label: qsTr("Home")
-                    value: root.model.walletHome.length ? root.shortText(root.model.walletHomeDisplayLabel(), 22) : qsTr("Default")
+                    value: root.shortText(root.model.walletHomeDisplayLabel(), 22)
                     detail: root.model.walletHomeDisplayLabel()
                     tone: "neutral"
                     Layout.fillWidth: true
@@ -184,7 +184,7 @@ ColumnLayout {
                     FieldRow {
                         theme: root.theme
                         label: qsTr("Wallet home")
-                        placeholderText: qsTr("$LEE_WALLET_HOME_DIR")
+                        placeholderText: qsTr("$NSSA_WALLET_HOME_DIR")
                         sourceText: root.model.walletHome
                         syncSourceText: true
                         onTextEdited: text => { if (root.model.walletHome !== text) {

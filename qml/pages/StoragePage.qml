@@ -155,7 +155,7 @@ ColumnLayout {
                     compact: true
                     label: qsTr("Transfers")
                     value: root.transferSummary()
-                    delta: qsTr("%1 historical failures").arg(root.metricDisplay("storage.failed_transfers_total"))
+                    delta: qsTr("%1 failures in window").arg(root.metricDisplay("storage.failed_transfers_recent"))
                     deltaColor: root.transferFailureTone()
                 }
 
@@ -688,7 +688,7 @@ ColumnLayout {
     }
 
     function sourceShortLabel() {
-        switch (String(root.model.storageSourceMode || "module")) {
+        switch (root.storageSourceMode()) {
         case "rest":
             return qsTr("REST")
         case "metrics":
@@ -832,8 +832,8 @@ ColumnLayout {
         if (root.failedProbeCount() > 0) {
             return qsTr("Degraded")
         }
-        if (root.metricKnown("storage.failed_transfers_total")) {
-            return Number(root.model.dashboardMetricValue("storage.failed_transfers_total")) > 0 ? qsTr("Historical failures") : qsTr("No failures")
+        if (root.metricKnown("storage.failed_transfers_recent")) {
+            return Number(root.model.dashboardMetricValue("storage.failed_transfers_recent")) > 0 ? qsTr("Recent failures") : qsTr("No failures")
         }
         return qsTr("Unknown")
     }
@@ -842,17 +842,17 @@ ColumnLayout {
         if (root.failedProbeCount() > 0) {
             return root.theme.error
         }
-        if (root.metricKnown("storage.failed_transfers_total")) {
-            return Number(root.model.dashboardMetricValue("storage.failed_transfers_total")) > 0 ? root.theme.textMuted : root.theme.success
+        if (root.metricKnown("storage.failed_transfers_recent")) {
+            return Number(root.model.dashboardMetricValue("storage.failed_transfers_recent")) > 0 ? root.theme.error : root.theme.success
         }
         return root.theme.textMuted
     }
 
     function transferFailureTone() {
-        if (!root.metricKnown("storage.failed_transfers_total")) {
+        if (!root.metricKnown("storage.failed_transfers_recent")) {
             return root.theme.textMuted
         }
-        return Number(root.model.dashboardMetricValue("storage.failed_transfers_total")) > 0 ? root.theme.textMuted : root.theme.success
+        return Number(root.model.dashboardMetricValue("storage.failed_transfers_recent")) > 0 ? root.theme.error : root.theme.success
     }
 
     function healthRows() {
@@ -864,7 +864,7 @@ ColumnLayout {
             root.statusRow(qsTr("DHT / discovery"), root.probeKnown("debug") ? qsTr("observed") : qsTr("unknown"), root.probeKnown("debug") ? root.valueSummary(root.probeValue("debug")) : qsTr("Debug source unavailable."), root.probeKnown("debug") ? "success" : "neutral"),
             root.statusRow(qsTr("Connected peers"), root.metricKnown("storage.peer_count") ? qsTr("observed") : qsTr("unknown"), root.metricDisplay("storage.peer_count"), root.metricKnown("storage.peer_count") ? "success" : "neutral"),
             root.statusRow(qsTr("Repository and host disk"), root.probeKnown("space") || root.metricKnown("storage.local_storage_used") ? qsTr("observed") : qsTr("unknown"), root.capacitySummary(), root.probeKnown("space") || root.metricKnown("storage.local_storage_used") ? "success" : "neutral"),
-            root.statusRow(qsTr("Historical transfer failures"), root.metricKnown("storage.failed_transfers_total") ? root.metricDisplay("storage.failed_transfers_total") : qsTr("unknown"), root.metricKnown("storage.failed_transfers_total") ? qsTr("Counter total") : qsTr("Metric not exposed by current source."), root.metricKnown("storage.failed_transfers_total") ? (Number(root.model.dashboardMetricValue("storage.failed_transfers_total")) > 0 ? "neutral" : "success") : "neutral"),
+            root.statusRow(qsTr("Recent transfer failures"), root.metricKnown("storage.failed_transfers_recent") ? root.metricDisplay("storage.failed_transfers_recent") : qsTr("unknown"), root.metricKnown("storage.failed_transfers_recent") ? qsTr("%1 s window").arg(root.model.storageRollingWindow) : qsTr("Metric not exposed by current source."), root.metricKnown("storage.failed_transfers_recent") ? (Number(root.model.dashboardMetricValue("storage.failed_transfers_recent")) > 0 ? "error" : "success") : "neutral"),
             root.statusRow(qsTr("Mix / private queries"), qsTr("not queried"), qsTr("No passive metric selected."), "neutral")
         ]
     }
@@ -873,6 +873,7 @@ ColumnLayout {
         return [
             root.metricRow(qsTr("Upload requests"), "storage.active_uploads"),
             root.metricRow(qsTr("Download requests"), "storage.active_downloads"),
+            root.metricRow(qsTr("Recent transfer failures"), "storage.failed_transfers_recent"),
             root.metricRow(qsTr("Historical transfer failures"), "storage.failed_transfers_total"),
             root.statusRow(qsTr("Provider lookup"), qsTr("idle"), qsTr("Explicit diagnostic only."), "neutral"),
             root.statusRow(qsTr("Network download"), qsTr("idle"), qsTr("No operation created by background polling."), "success")
@@ -912,6 +913,7 @@ ColumnLayout {
         return [
             root.metricRow(qsTr("Upload requests"), "storage.active_uploads"),
             root.metricRow(qsTr("Download requests"), "storage.active_downloads"),
+            root.metricRow(qsTr("Recent transfer failures"), "storage.failed_transfers_recent"),
             root.metricRow(qsTr("Historical transfer failures"), "storage.failed_transfers_total"),
             root.statusRow(qsTr("Upload diagnostics"), qsTr("disabled"), qsTr("Mutating diagnostics require explicit backend support."), root.model.storageMutatingDiagnosticsEnabled ? "warning" : "neutral"),
             root.statusRow(qsTr("Download diagnostics"), qsTr("idle"), qsTr("Future download probes run asynchronously with progress and cancel."), "neutral")
@@ -943,7 +945,7 @@ ColumnLayout {
             root.protocolRow(qsTr("Merkle verification"), "storage-root", false, qsTr("No passive verification source.")),
             root.protocolRow(qsTr("DHT discovery"), "libp2p/kad-dht", root.probeKnown("debug"), root.probeKnown("debug") ? root.valueSummary(root.probeValue("debug")) : qsTr("No DHT table.")),
             root.protocolRow(qsTr("Block exchange"), "storage/blockexchange", root.metricKnown("storage.active_downloads") || root.metricKnown("storage.active_uploads"), root.transferSummary()),
-            root.protocolRow(qsTr("REST / C API"), "/api/storage/v1", root.model.storageSourceMode === "rest", root.model.storageSourceTarget()),
+            root.protocolRow(qsTr("REST / C API"), "/api/storage/v1", root.storageSourceMode() === "rest", root.model.storageSourceTarget()),
             root.protocolRow(qsTr("Mix / private queries"), "private queries", false, qsTr("No passive signal."))
         ]
     }
@@ -989,7 +991,8 @@ ColumnLayout {
 
     function metricRow(label, key) {
         const known = root.metricKnown(key)
-        return root.statusRow(label, known ? root.metricDisplay(key) : qsTr("n/a"), known ? root.metricEvidence(key) : qsTr("Metric not exposed by current source."), known ? "success" : "neutral")
+        const tone = known && String(key || "") === "storage.failed_transfers_recent" && Number(root.model.dashboardMetricValue(key)) > 0 ? "error" : (known ? "success" : "neutral")
+        return root.statusRow(label, known ? root.metricDisplay(key) : qsTr("n/a"), known ? root.metricEvidence(key) : qsTr("Metric not exposed by current source."), tone)
     }
 
     function metricEvidence(key) {
@@ -1061,10 +1064,11 @@ ColumnLayout {
     }
 
     function restMetricsState() {
-        if (root.model.storageSourceMode === "module") {
+        const sourceMode = root.storageSourceMode()
+        if (sourceMode === "module") {
             return root.probeValue("collectMetrics") !== null ? qsTr("metrics") : qsTr("module")
         }
-        if (root.model.storageSourceMode === "rest") {
+        if (sourceMode === "rest") {
             const metricsProbe = root.model.moduleProbe("storage", "collectMetrics")
             if (root.metricsEndpointConfigured() && metricsProbe && metricsProbe.ok === false) {
                 return qsTr("metrics error")
@@ -1074,20 +1078,21 @@ ColumnLayout {
             }
             return root.status().ok ? qsTr("reachable") : qsTr("unknown")
         }
-        if (root.model.storageSourceMode === "metrics") {
+        if (sourceMode === "metrics") {
             return root.status().ok ? qsTr("scraping") : qsTr("unknown")
         }
         return qsTr("pending")
     }
 
     function restMetricsEvidence() {
-        if (root.model.storageSourceMode === "module") {
+        const sourceMode = root.storageSourceMode()
+        if (sourceMode === "module") {
             return root.probeValue("collectMetrics") !== null ? qsTr("OpenMetrics text available") : qsTr("Module API")
         }
-        if (root.model.storageSourceMode === "metrics") {
+        if (sourceMode === "metrics") {
             return root.shortText(root.model.storageMetricsUrl, 48)
         }
-        if (root.model.storageSourceMode === "rest" && root.metricsEndpointConfigured()) {
+        if (sourceMode === "rest" && root.metricsEndpointConfigured()) {
             const metricsProbe = root.model.moduleProbe("storage", "collectMetrics")
             if (metricsProbe && metricsProbe.ok === false && metricsProbe.error) {
                 return qsTr("REST %1; metrics %2: %3")
@@ -1103,10 +1108,11 @@ ColumnLayout {
     }
 
     function restMetricsTone() {
-        if (root.model.storageSourceMode === "c-library" || root.model.storageSourceMode === "local-os") {
+        const sourceMode = root.storageSourceMode()
+        if (sourceMode === "c-library" || sourceMode === "local-os") {
             return "warning"
         }
-        if (root.model.storageSourceMode === "rest") {
+        if (sourceMode === "rest") {
             const metricsProbe = root.model.moduleProbe("storage", "collectMetrics")
             if (root.metricsEndpointConfigured() && metricsProbe && metricsProbe.ok === false) {
                 return "error"
@@ -1116,6 +1122,10 @@ ColumnLayout {
             }
         }
         return root.statusTone()
+    }
+
+    function storageSourceMode() {
+        return root.model.normalizedStorageSourceMode(root.model.storageSourceMode)
     }
 
     function metricsEndpointConfigured() {

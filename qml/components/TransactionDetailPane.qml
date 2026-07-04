@@ -2,6 +2,7 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Controls.Basic
+import QtQml.Models
 import QtQuick.Layouts
 import "../state"
 import "../theme"
@@ -13,10 +14,20 @@ ColumnLayout {
     required property AppModel model
     property var value: null
     readonly property var detail: normalize(value)
+    property string transactionView: "decoded"
 
     visible: detail !== null
     spacing: 14
     Layout.fillWidth: true
+
+    onDetailChanged: transactionView = "decoded"
+
+    ListModel {
+        id: transactionTabs
+
+        ListElement { value: "decoded"; label: "Decoded" }
+        ListElement { value: "raw"; label: "Raw" }
+    }
 
     ColumnLayout {
         visible: root.detail !== null
@@ -50,78 +61,112 @@ ColumnLayout {
     }
 
     ColumnLayout {
-        visible: root.detail && root.detail.mode === "blockchain" && root.detail.ops.length > 0
-        spacing: 10
+        visible: root.detail !== null
+        spacing: 8
         Layout.fillWidth: true
 
-        Text {
-            text: qsTr("Operations")
-            color: root.theme.text
-            textFormat: Text.PlainText
-            font.pixelSize: 14
-            font.weight: Font.DemiBold
+        RowLayout {
+            spacing: root.theme.gap
             Layout.fillWidth: true
-        }
 
-        Repeater {
-            model: root.detail && root.detail.mode === "blockchain" ? root.detail.ops : []
-
-            ColumnLayout {
-                id: operationBlock
-
-                required property var modelData
-
-                spacing: 8
+            Text {
+                text: qsTr("Data")
+                color: root.theme.text
+                textFormat: Text.PlainText
+                font.pixelSize: 14
+                font.weight: Font.DemiBold
                 Layout.fillWidth: true
+            }
 
-                SectionBlock {
-                    theme: root.theme
-                    title: qsTr("Operation %1").arg(operationBlock.modelData.index)
-                    rows: root.operationRows(operationBlock.modelData)
-                }
+            TabSwitch {
+                theme: root.theme
+                current: root.transactionView
+                options: transactionTabs
+                Layout.preferredWidth: 206
+                onSelected: value => root.transactionView = value
+            }
+        }
+    }
 
-                Frame {
-                    padding: 0
+    ColumnLayout {
+        visible: root.detail !== null && root.transactionView === "decoded"
+        spacing: 14
+        Layout.fillWidth: true
+
+        ColumnLayout {
+            visible: root.detail && root.detail.mode === "blockchain" && root.detail.ops.length > 0
+            spacing: 10
+            Layout.fillWidth: true
+
+            Text {
+                text: qsTr("Operations")
+                color: root.theme.text
+                textFormat: Text.PlainText
+                font.pixelSize: 14
+                font.weight: Font.DemiBold
+                Layout.fillWidth: true
+            }
+
+            Repeater {
+                model: root.detail && root.detail.mode === "blockchain" ? root.detail.ops : []
+
+                ColumnLayout {
+                    id: operationBlock
+
+                    required property var modelData
+
+                    spacing: 8
                     Layout.fillWidth: true
 
-                    background: Rectangle {
-                        color: root.theme.surface
-                        radius: root.theme.radius
-                        border.width: 1
-                        border.color: root.theme.outlineMuted
+                    SectionBlock {
+                        theme: root.theme
+                        title: qsTr("Operation %1").arg(operationBlock.modelData.index)
+                        rows: root.operationRows(operationBlock.modelData)
                     }
 
-                    contentItem: ColumnLayout {
-                        spacing: 0
+                    Frame {
+                        padding: 0
+                        Layout.fillWidth: true
 
-                        DetailRow {
-                            theme: root.theme
-                            label: qsTr("Payload")
-                            value: qsTr("%1 field(s)").arg(root.fieldCount(operationBlock.modelData.payload))
-                            monospace: false
+                        background: Rectangle {
+                            color: root.theme.surface
+                            radius: root.theme.radius
+                            border.width: 1
+                            border.color: root.theme.outlineMuted
                         }
 
-                        TextArea {
-                            readOnly: true
-                            text: root.formatValue(operationBlock.modelData.payload)
-                            wrapMode: TextArea.Wrap
-                            color: root.theme.textMuted
-                            selectedTextColor: root.theme.selectedText
-                            selectionColor: root.theme.accent
-                            textFormat: Text.PlainText
-                            font.family: "monospace"
-                            font.pixelSize: 11
-                            leftPadding: 12
-                            rightPadding: 12
-                            topPadding: 10
-                            bottomPadding: 10
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: 150
+                        contentItem: ColumnLayout {
+                            spacing: 0
 
-                            background: Rectangle {
-                                color: root.theme.field
-                                border.width: 1
-                                border.color: root.theme.outlineMuted
+                            DetailRow {
+                                theme: root.theme
+                                label: qsTr("Payload")
+                                value: qsTr("%1 field(s)").arg(root.fieldCount(operationBlock.modelData.payload))
+                                monospace: false
+                            }
+
+                            TextArea {
+                                readOnly: true
+                                text: root.formatValue(operationBlock.modelData.payload)
+                                wrapMode: TextArea.Wrap
+                                color: root.theme.textMuted
+                                selectedTextColor: root.theme.selectedText
+                                selectionColor: root.theme.accent
+                                textFormat: Text.PlainText
+                                font.family: "monospace"
+                                font.pixelSize: 11
+                                leftPadding: 12
+                                rightPadding: 12
+                                topPadding: 10
+                                bottomPadding: 10
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 150
+
+                                background: Rectangle {
+                                    color: root.theme.field
+                                    border.width: 1
+                                    border.color: root.theme.outlineMuted
+                                }
                             }
                         }
                     }
@@ -131,28 +176,28 @@ ColumnLayout {
     }
 
     SectionBlock {
-        visible: root.detail && root.detail.decoded !== null
+        visible: root.detail && root.transactionView === "decoded" && root.detail.decoded !== null
         theme: root.theme
         title: qsTr("Decoded instruction")
         rows: root.decodedRows()
     }
 
     SectionBlock {
-        visible: root.detail && root.detail.decoded !== null
+        visible: root.detail && root.transactionView === "decoded" && root.detail.decoded !== null
         theme: root.theme
         title: qsTr("Decoded accounts")
         rows: root.decodedAccountRows()
     }
 
     SectionBlock {
-        visible: root.detail && root.detail.decoded !== null
+        visible: root.detail && root.transactionView === "decoded" && root.detail.decoded !== null
         theme: root.theme
         title: qsTr("Decoded args")
         rows: root.decodedArgRows()
     }
 
     Repeater {
-        model: root.detail && root.detail.mode === "lez" ? root.detail.sections : []
+        model: root.detail && root.transactionView === "decoded" && root.detail.mode === "lez" ? root.detail.sections : []
 
         SectionBlock {
             required property var modelData
@@ -160,6 +205,47 @@ ColumnLayout {
             theme: root.theme
             title: String(modelData.title || "")
             rows: root.inspectionRows(modelData.rows || [])
+        }
+    }
+
+    Frame {
+        visible: root.detail !== null && root.transactionView === "raw"
+        padding: 0
+        Layout.fillWidth: true
+
+        background: Rectangle {
+            color: root.theme.surface
+            radius: root.theme.radius
+            border.width: 1
+            border.color: root.theme.outlineMuted
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 0
+
+            TextArea {
+                readOnly: true
+                text: root.rawTransactionText()
+                wrapMode: TextArea.Wrap
+                color: root.theme.textMuted
+                selectedTextColor: root.theme.selectedText
+                selectionColor: root.theme.accent
+                textFormat: Text.PlainText
+                font.family: "monospace"
+                font.pixelSize: root.theme.dataText
+                leftPadding: 12
+                rightPadding: 12
+                topPadding: 10
+                bottomPadding: 10
+                Layout.fillWidth: true
+                Layout.preferredHeight: 360
+
+                background: Rectangle {
+                    color: root.theme.field
+                    radius: root.theme.radius
+                    border.width: 0
+                }
+            }
         }
     }
 
@@ -196,7 +282,8 @@ ColumnLayout {
             summary: summary,
             sections: inspection && Array.isArray(inspection.sections) ? inspection.sections : [],
             decoded: value.decoded_instruction || null,
-            steps: Array.isArray(value.steps) ? value.steps : []
+            steps: Array.isArray(value.steps) ? value.steps : [],
+            raw: value
         }
     }
 
@@ -260,7 +347,7 @@ ColumnLayout {
             rows.push({ label: qsTr("Signer"), value: operation.signer, monospace: true, linkKind: "account", linkValue: operation.signer })
         }
         if (operation.parent) {
-            rows.push({ label: qsTr("Parent"), value: operation.parent, monospace: true, linkKind: "block", linkValue: operation.parent })
+            rows.push({ label: qsTr("Parent message"), value: operation.parent, monospace: true, copyable: true })
         }
         if (operation.proof) {
             rows.push({ label: qsTr("Proof"), value: root.formatValue(operation.proof), monospace: true })
@@ -436,6 +523,16 @@ ColumnLayout {
         return JSON.stringify(value, null, 2)
     }
 
+    function rawTransactionText() {
+        if (!root.detail) {
+            return "-"
+        }
+        if (root.detail.mode === "blockchain") {
+            return root.formatValue(root.detail.raw || root.value)
+        }
+        return root.formatValue(root.detail.raw || root.value)
+    }
+
     component SectionBlock: ColumnLayout {
         id: sectionRoot
 
@@ -482,8 +579,9 @@ ColumnLayout {
                         value: String(modelData.value || "-")
                         subvalue: String(modelData.subvalue || "")
                         linkKind: String(modelData.linkKind || "")
-                        linkValue: String(modelData.linkValue || "")
+                        linkValue: root.model.valueToString(modelData.linkValue)
                         monospace: modelData.monospaced !== undefined ? modelData.monospaced : (modelData.monospace !== undefined ? modelData.monospace : true)
+                        copyable: modelData.copyable !== undefined ? modelData.copyable : String(modelData.linkKind || "").length > 0
                         onActivated: root.model.openReference(modelData.linkKind, modelData.linkValue)
                     }
                 }
@@ -501,6 +599,7 @@ ColumnLayout {
         property string linkKind: ""
         property string linkValue: ""
         property bool monospace: true
+        property bool copyable: linkKind.length > 0
         signal activated()
 
         Layout.fillWidth: true
@@ -545,6 +644,7 @@ ColumnLayout {
                     text: rowRoot.value
                     theme: rowRoot.theme
                     link: rowRoot.linkKind.length > 0
+                    copyable: rowRoot.copyable
                     copyText: rowRoot.linkValue.length > 0 ? rowRoot.linkValue : rowRoot.value
                     monospace: rowRoot.monospace
                     wrap: true

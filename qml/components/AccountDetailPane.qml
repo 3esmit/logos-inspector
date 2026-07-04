@@ -269,7 +269,7 @@ ColumnLayout {
                             subvalue: String(modelData.subvalue || "")
                             subvalueCopyText: String(modelData.subvalueCopyText || "")
                             linkKind: String(modelData.linkKind || "")
-                            linkValue: String(modelData.linkValue || "")
+                            linkValue: root.model.valueToString(modelData.linkValue)
                             tooltipText: String(modelData.tooltipText || "")
                             monospace: modelData.monospace !== undefined ? modelData.monospace : true
                             onActivated: root.model.openReference(modelData.linkKind, modelData.linkValue)
@@ -1062,7 +1062,7 @@ ColumnLayout {
                         subvalue: String(modelData.subvalue || "")
                         subvalueCopyText: String(modelData.subvalueCopyText || "")
                         linkKind: String(modelData.linkKind || "")
-                        linkValue: String(modelData.linkValue || "")
+                        linkValue: root.model.valueToString(modelData.linkValue)
                         tooltipText: String(modelData.tooltipText || "")
                         monospace: modelData.monospace !== undefined ? modelData.monospace : true
                         onActivated: root.model.openReference(modelData.linkKind, modelData.linkValue)

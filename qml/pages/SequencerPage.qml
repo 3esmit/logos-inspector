@@ -1262,7 +1262,7 @@ ColumnLayout {
                         label: String(modelData.label || "")
                         value: String(modelData.value || "-")
                         linkKind: String(modelData.linkKind || "")
-                        linkValue: String(modelData.linkValue || "")
+                        linkValue: root.model.valueToString(modelData.linkValue)
                         monospace: modelData.monospace !== undefined ? modelData.monospace : true
                         modelRef: sectionRoot.modelRef
                     }
