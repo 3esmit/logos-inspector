@@ -139,25 +139,20 @@ impl InspectorBridge {
             }
             "blockchainBlocks" => {
                 let args = Args::new(args)?;
-                to_value(self.runtime.block_on(blockchain::blockchain_blocks(
-                    args.string(0, "node endpoint")?,
-                    args.u64(1, "slot from")?,
-                    args.u64(2, "slot to")?,
-                ))?)
-            }
-            "blockchainAllBlocks" => {
-                let args = Args::new(args)?;
-                let header_limit = args
-                    .value(3)
-                    .and_then(Value::as_u64)
-                    .unwrap_or(100)
-                    .min(500);
-                to_value(self.runtime.block_on(blockchain::blockchain_all_blocks(
-                    args.string(0, "node endpoint")?,
-                    args.u64(1, "slot from")?,
-                    args.u64(2, "slot to")?,
-                    header_limit,
-                ))?)
+                let endpoint = args.string(0, "node endpoint")?;
+                let slot_from = args.u64(1, "slot from")?;
+                let slot_to = args.u64(2, "slot to")?;
+                if let Some(limit) = args.value(3).and_then(Value::as_u64) {
+                    to_value(self.runtime.block_on(blockchain::blockchain_recent_blocks(
+                        endpoint, slot_from, slot_to, limit,
+                    ))?)
+                } else {
+                    to_value(
+                        self.runtime.block_on(blockchain::blockchain_blocks(
+                            endpoint, slot_from, slot_to,
+                        ))?,
+                    )
+                }
             }
             "blockchainBlock" => {
                 let args = Args::new(args)?;

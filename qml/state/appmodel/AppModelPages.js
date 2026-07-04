@@ -15,7 +15,8 @@ function refreshBlocksPage(root, anchorSlot) {
         const requestedSlot = Math.max(0, Number(anchorSlot === undefined || anchorSlot === null ? fallbackSlot : anchorSlot))
         const slotTo = fallbackSlot > 0 ? Math.min(requestedSlot, Number(fallbackSlot)) : requestedSlot
         const slotFrom = Math.max(0, slotTo - blocksPageWindow)
-        const blocks = requestModule(inspectorModule, "blockchainAllBlocks", [nodeUrl, slotFrom, slotTo, blocksPageWindow], qsTr("Blocks"), false)
+        const blockLimit = Math.max(5, Number(blocksPageLimit || 5))
+        const blocks = requestModule(inspectorModule, "blockchainBlocks", [nodeUrl, slotFrom, slotTo, blockLimit], qsTr("Blocks"), false)
         if (!blocks.ok) {
             blocksPageError = blocks.error
             setResult(qsTr("Blocks"), blocksPageError, true)
@@ -132,6 +133,17 @@ function blockStatus(root, block) {
         const explicitStatus = String(raw.bedrock_status || raw.status || "")
         if (explicitStatus.length) {
             return explicitStatus
+        }
+        const chain = raw._chain || {}
+        const chainStatus = String(chain.status || "")
+        if (chainStatus === "finalized") {
+            return qsTr("finalized")
+        }
+        if (chainStatus === "pending") {
+            return qsTr("pending")
+        }
+        if (chainStatus === "orphaned") {
+            return qsTr("orphaned")
         }
 
         const slot = blockSlot(block)
