@@ -38,9 +38,9 @@ ColumnLayout {
 
     PageHeader {
         theme: root.theme
-        breadcrumb: qsTr("Home / Delivery")
-        title: qsTr("Delivery")
-        layerLabel: qsTr("Module / Network")
+        breadcrumb: qsTr("Home / Diagnostics / Delivery")
+        title: qsTr("Delivery Diagnostics")
+        layerLabel: qsTr("Diagnostics")
         subtitle: qsTr("%1 on %2, %3 s rolling window.")
             .arg(root.model.deliverySourceLabel())
             .arg(root.model.messagingNetworkPreset)

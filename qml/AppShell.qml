@@ -206,6 +206,10 @@ Item {
             return storagePage
         case "messaging":
             return messagingPage
+        case "diagnosticsStorage":
+            return storageDiagnosticsPage
+        case "diagnosticsDelivery":
+            return deliveryDiagnosticsPage
         case "capabilities":
             return capabilitiesPage
         case "l2Blocks":
@@ -298,7 +302,7 @@ Item {
             theme: theme
             model: appModel
             moduleKind: "blockchain"
-            title: qsTr("L1 Node / Module")
+            title: qsTr("Bedrock Node Diagnostics")
             subtitle: qsTr("Inspect Bedrock node state, L1 block windows, and blockchain module calls.")
         }
     }
@@ -313,7 +317,7 @@ Item {
 
     Component {
         id: storagePage
-        StoragePage {
+        StorageAppPage {
             theme: theme
             model: appModel
         }
@@ -321,6 +325,22 @@ Item {
 
     Component {
         id: messagingPage
+        DeliveryAppPage {
+            theme: theme
+            model: appModel
+        }
+    }
+
+    Component {
+        id: storageDiagnosticsPage
+        StoragePage {
+            theme: theme
+            model: appModel
+        }
+    }
+
+    Component {
+        id: deliveryDiagnosticsPage
         DeliveryPage {
             theme: theme
             model: appModel
@@ -333,7 +353,7 @@ Item {
             theme: theme
             model: appModel
             moduleKind: "capabilities"
-            title: qsTr("Capabilities Module")
+            title: qsTr("Capabilities Diagnostics")
             subtitle: qsTr("Review capability inventory and module availability.")
         }
     }

@@ -602,7 +602,7 @@ ColumnLayout {
     }
 
     function moduleLayer() {
-        return root.moduleKind === "blockchain" ? qsTr("L1 Bedrock") : qsTr("Module")
+        return qsTr("Diagnostics")
     }
 
     function moduleName(kind) {

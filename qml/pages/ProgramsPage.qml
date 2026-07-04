@@ -191,7 +191,7 @@ ColumnLayout {
         }
 
         GridLayout {
-            visible: !root.model.resultIsError
+            visible: !root.model.resultIsError && !root.isProgramContext(root.responseValue)
             columns: root.width < 760 ? 2 : 4
             columnSpacing: root.theme.gap
             rowSpacing: root.theme.gap
@@ -258,6 +258,9 @@ ColumnLayout {
             visible: root.isProgramContext(root.responseValue)
             theme: root.theme
             rows: root.programContextRows()
+            idls: root.programContextIdlRows()
+            transactions: root.programContextTransactionRows()
+            account: root.programContextAccount()
             modelRef: root.model
         }
 
@@ -400,6 +403,83 @@ ColumnLayout {
         ColumnLayout {
             spacing: 12
 
+            Item {
+                implicitWidth: 0
+                implicitHeight: 0
+                Layout.preferredWidth: 0
+                Layout.preferredHeight: 0
+
+                Popup {
+                    id: deployConfirm
+
+                    property string binaryPath: ""
+
+                    modal: true
+                    focus: true
+                    padding: root.theme.gap
+                    width: Math.min(root.width - 24, 460)
+                    x: Math.max(0, (root.width - width) / 2)
+                    y: 96
+                    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+
+                    background: Rectangle {
+                        color: root.theme.surface
+                        radius: root.theme.radius
+                        border.width: 1
+                        border.color: root.theme.outline
+                    }
+
+                    contentItem: ColumnLayout {
+                        spacing: root.theme.gapSmall
+
+                        Text {
+                            text: qsTr("Deploy program binary")
+                            color: root.theme.text
+                            textFormat: Text.PlainText
+                            font.pixelSize: root.theme.primaryText
+                            font.weight: Font.DemiBold
+                            Layout.fillWidth: true
+                        }
+
+                        Text {
+                            text: qsTr("Submit deployment transaction for %1.").arg(root.model.redactedPath(deployConfirm.binaryPath))
+                            color: root.theme.textMuted
+                            textFormat: Text.PlainText
+                            wrapMode: Text.WrapAnywhere
+                            font.pixelSize: root.theme.secondaryText
+                            Layout.fillWidth: true
+                        }
+
+                        RowLayout {
+                            spacing: root.theme.gapSmall
+                            Layout.fillWidth: true
+
+                            Item {
+                                Layout.fillWidth: true
+                            }
+
+                            ActionButton {
+                                theme: root.theme
+                                text: qsTr("Cancel")
+                                onClicked: deployConfirm.close()
+                            }
+
+                            ActionButton {
+                                theme: root.theme
+                                text: qsTr("Deploy")
+                                primary: true
+                                enabled: !root.model.busy
+                                onClicked: {
+                                    const path = deployConfirm.binaryPath
+                                    deployConfirm.close()
+                                    root.model.deployProgramBinary(path)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             FileDialog {
                 id: programFileDialog
 
@@ -466,13 +546,29 @@ ColumnLayout {
                 }
             }
 
-            ActionButton {
-                theme: root.theme
-                text: qsTr("Inspect")
-                primary: true
-                enabled: !root.model.busy && programPath.text.trim().length > 0
-                Layout.preferredWidth: 124
-                onClicked: root.model.callInspector("programFile", [programPath.text], qsTr("Program file"))
+            RowLayout {
+                spacing: root.theme.gapSmall
+
+                ActionButton {
+                    theme: root.theme
+                    text: qsTr("Inspect")
+                    primary: true
+                    enabled: !root.model.busy && programPath.text.trim().length > 0
+                    Layout.preferredWidth: 124
+                    onClicked: root.model.callInspector("programFile", [programPath.text], qsTr("Program file"))
+                }
+
+                ActionButton {
+                    visible: root.model.walletProfileConfigured()
+                    theme: root.theme
+                    text: qsTr("Deploy")
+                    enabled: !root.model.busy && programPath.text.trim().length > 0
+                    Layout.preferredWidth: 124
+                    onClicked: {
+                        deployConfirm.binaryPath = programPath.text.trim()
+                        deployConfirm.open()
+                    }
+                }
             }
         }
     }
@@ -902,6 +998,9 @@ ColumnLayout {
 
         required property Theme theme
         property var rows: []
+        property var idls: []
+        property var transactions: []
+        property var account: null
         property AppModel modelRef
 
         spacing: 6
@@ -918,7 +1017,7 @@ ColumnLayout {
 
         SourceStrip {
             theme: contextRoot.theme
-            sources: [qsTr("L2 LEZ"), qsTr("sequencer program id"), qsTr("Local IDL"), qsTr("registered IDL")]
+            sources: [qsTr("L2 LEZ"), qsTr("sequencer getProgramIds"), qsTr("sequencer getAccount"), qsTr("local IDL")]
             Layout.fillWidth: true
         }
 
@@ -952,6 +1051,35 @@ ColumnLayout {
             }
         }
 
+        SummarySection {
+            theme: contextRoot.theme
+            title: qsTr("Registered IDLs")
+            rows: contextRoot.idls
+        }
+
+        SummarySection {
+            theme: contextRoot.theme
+            title: qsTr("Loaded recent transactions")
+            rows: contextRoot.transactions
+        }
+
+        Text {
+            visible: contextRoot.account !== null
+            text: qsTr("Program account state")
+            color: contextRoot.theme.text
+            textFormat: Text.PlainText
+            font.pixelSize: contextRoot.theme.primaryText
+            font.weight: Font.DemiBold
+            Layout.fillWidth: true
+        }
+
+        AccountDetailPane {
+            visible: contextRoot.account !== null
+            value: contextRoot.account
+            theme: contextRoot.theme
+            model: contextRoot.modelRef
+            Layout.fillWidth: true
+        }
     }
 
     component FileRow: Item {
@@ -1088,6 +1216,9 @@ ColumnLayout {
         if (Array.isArray(value)) {
             return root.numberText(value.length)
         }
+        if (root.isProgramContext(value)) {
+            return root.shortHash(value.program_id_base58 || value.program_id_hex || value.program_id)
+        }
         if (root.isProgramFile(value)) {
             return root.shortHash(value.program_id_hex)
         }
@@ -1098,6 +1229,9 @@ ColumnLayout {
         const value = root.responseValue
         if (Array.isArray(value)) {
             return qsTr("Known program IDs")
+        }
+        if (root.isProgramContext(value)) {
+            return value.in_chain ? qsTr("verified in chain") : qsTr("not verified")
         }
         if (root.isProgramFile(value)) {
             return qsTr("%1 bytes").arg(root.numberText(value.bytecode_len))
@@ -1121,13 +1255,67 @@ ColumnLayout {
             return []
         }
         const programId = root.valueText(value.program_id)
+        const programHex = root.programHexText(value.program_id_hex)
+        const programBase58 = root.valueText(value.program_id_base58)
+        const accountLookup = programBase58 !== "-" ? programBase58 : programHex
+        const verified = value.in_chain === true
         const rows = [
-            { label: qsTr("Program ID"), value: programId, linkKind: "program" },
-            { label: qsTr("IDL binding"), value: root.knownIdlText(programId), linkKind: "" },
-            { label: qsTr("Binary"), value: qsTr("not selected"), linkKind: "" },
-            { label: qsTr("Recent transactions"), value: qsTr("not loaded"), linkKind: "" }
+            { label: qsTr("Known program"), value: root.programVerificationText(value), linkKind: "" },
+            { label: qsTr("Program ID"), value: programBase58 !== "-" ? programBase58 : programId, linkKind: verified ? "program" : "" },
+            { label: qsTr("Program ID (0x)"), value: programHex, linkKind: verified ? "program" : "" },
+            { label: qsTr("Program account state"), value: value.account !== null && value.account !== undefined ? accountLookup : root.valueText(value.account_error), linkKind: value.account !== null && value.account !== undefined ? "account" : "" },
+            { label: qsTr("Sequencer label"), value: root.valueText(value.known_label), linkKind: "" }
         ]
+        if (value.verification_detail !== undefined && String(value.verification_detail || "").length > 0) {
+            rows.push({ label: qsTr("Verification error"), value: String(value.verification_detail || ""), linkKind: "" })
+        }
         return rows
+    }
+
+    function programVerificationText(value) {
+        if (!root.isProgramContext(value)) {
+            return "-"
+        }
+        if (value.in_chain === true) {
+            return qsTr("yes")
+        }
+        if (String(value.verification || "") === "unavailable") {
+            return qsTr("verification unavailable")
+        }
+        return qsTr("not in getProgramIds")
+    }
+
+    function programHexText(value) {
+        const text = String(value || "").replace(/^0x/i, "")
+        return text.length ? "0x" + text : "-"
+    }
+
+    function programContextIdlRows() {
+        const value = root.responseValue || {}
+        const entries = root.isProgramContext(value) && Array.isArray(value.idls) ? value.idls : []
+        return entries.map(function (entry) {
+            const json = String(entry.json || "")
+            return {
+                title: root.valueText(entry.name || entry.programId || entry.programIdHex),
+                detail: qsTr("%1 field(s), program %2").arg(root.numberText(root.idlFieldCount(json))).arg(root.shortHash(entry.programId || entry.programIdHex))
+            }
+        })
+    }
+
+    function programContextTransactionRows() {
+        const value = root.responseValue || {}
+        const rows = root.isProgramContext(value) && Array.isArray(value.recent_transactions) ? value.recent_transactions : []
+        return rows.slice(0, 8).map(function (tx) {
+            return {
+                title: root.shortHash(tx.hash),
+                detail: qsTr("block %1, %2, %3 word(s)").arg(root.valueText(tx.block_id)).arg(root.valueText(tx.kind)).arg(root.numberText(tx.ops))
+            }
+        })
+    }
+
+    function programContextAccount() {
+        const value = root.responseValue || {}
+        return root.isProgramContext(value) && value.account && typeof value.account === "object" ? value.account : null
     }
 
     function knownIdlText(programId) {
@@ -1199,13 +1387,27 @@ ColumnLayout {
         if (!root.isProgramFile(value)) {
             return []
         }
-        return [
+        const rows = [
             { label: qsTr("Path"), value: root.valueText(value.path), linkKind: "" },
             { label: qsTr("Bytecode"), value: qsTr("%1 bytes").arg(root.numberText(value.bytecode_len)), linkKind: "" },
             { label: qsTr("Program ID (0x)"), value: root.valueText(value.program_id_hex), linkKind: "program" },
             { label: qsTr("Program ID"), value: root.valueText(value.program_id_base58), linkKind: "" },
             { label: qsTr("Deployment tx"), value: root.valueText(value.deployment_tx_hash), linkKind: "transaction" }
         ]
+        if (String(value.source || "") === "local_wallet_cli") {
+            rows.unshift({ label: qsTr("Deploy status"), value: root.valueText(value.status), linkKind: "" })
+            rows.push({ label: qsTr("Wallet command"), value: root.valueText(value.command), linkKind: "" })
+            rows.push({ label: qsTr("Wallet home"), value: root.valueText(value.wallet_home_source), linkKind: "" })
+            rows.push({ label: qsTr("Submitted at"), value: root.valueText(value.submitted_at), linkKind: "" })
+            rows.push({ label: qsTr("Exit status"), value: root.valueText(value.exit_status), linkKind: "" })
+            if (String(value.stdout || "").length > 0) {
+                rows.push({ label: qsTr("stdout"), value: String(value.stdout || ""), linkKind: "" })
+            }
+            if (String(value.stderr || "").length > 0) {
+                rows.push({ label: qsTr("stderr"), value: String(value.stderr || ""), linkKind: "" })
+            }
+        }
+        return rows
     }
 
     function idlFieldCount(json) {

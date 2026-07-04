@@ -9,10 +9,12 @@ pub mod spel;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
+    env, fs,
+    io::ErrorKind,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
-    time::{SystemTime, UNIX_EPOCH},
+    process::{Command, Output, Stdio},
+    thread,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context as _, Result, bail};
@@ -44,6 +46,19 @@ pub const DEFAULT_NETWORK_PROFILE: &str = "default";
 pub const CUSTOM_NETWORK_PROFILE: &str = "custom";
 pub const ACCOUNT_TRANSACTION_LIMIT: usize = 20;
 pub const LOCAL_WALLET_HOME_ENV: &str = "NSSA_WALLET_HOME_DIR";
+pub const LEE_WALLET_HOME_ENV: &str = "LEE_WALLET_HOME_DIR";
+const LOCAL_WALLET_DEPLOY_TIMEOUT: Duration = Duration::from_secs(120);
+const LOCAL_WALLET_VERSION_TIMEOUT: Duration = Duration::from_secs(5);
+const LOCAL_WALLET_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const LOCAL_WALLET_OUTPUT_LIMIT: usize = 4096;
+const LOCAL_WALLET_ENV_ALLOWLIST: &[&str] = &[
+    "PATH",
+    "HOME",
+    "USER",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "NIX_SSL_CERT_FILE",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LocalWalletProfileStatus {
@@ -54,6 +69,22 @@ pub struct LocalWalletProfileStatus {
     pub version: Option<String>,
     pub home_source: String,
     pub network_profile: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LocalWalletDeployReport {
+    pub source: String,
+    pub status: String,
+    pub command: String,
+    pub wallet_home_source: String,
+    pub submitted_at: String,
+    pub exit_status: String,
+    #[serde(flatten)]
+    pub program: ProgramFileInfo,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub stdout: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub stderr: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -1164,22 +1195,80 @@ pub async fn logos_node_cryptarchia_info(endpoint: &str) -> Result<Value> {
 pub fn local_wallet_profile_status(profile: Value) -> Result<LocalWalletProfileStatus> {
     local_wallet_profile_status_with_env(
         profile,
-        std::env::var(LOCAL_WALLET_HOME_ENV).unwrap_or_default(),
-        String::new(),
+        env::var(LOCAL_WALLET_HOME_ENV).unwrap_or_default(),
+        env::var(LEE_WALLET_HOME_ENV).unwrap_or_default(),
     )
+}
+
+pub fn local_wallet_deploy_program(
+    profile: Value,
+    program_path: impl AsRef<Path>,
+) -> Result<LocalWalletDeployReport> {
+    let profile: LocalWalletProfileInput =
+        serde_json::from_value(profile).context("failed to parse local wallet profile")?;
+    let wallet_binary = profile.wallet_binary.trim();
+    if wallet_binary.is_empty() {
+        bail!("wallet binary is required to deploy program binary");
+    }
+    if local_wallet_binary_is_path_like(wallet_binary) && !Path::new(wallet_binary).is_file() {
+        bail!("wallet binary is not reachable");
+    }
+
+    let explicit_home = profile.wallet_home.trim();
+    let nssa_env_home = env::var(LOCAL_WALLET_HOME_ENV).unwrap_or_default();
+    let lee_env_home = env::var(LEE_WALLET_HOME_ENV).unwrap_or_default();
+    let (wallet_home, wallet_home_source) = if !explicit_home.is_empty() {
+        (explicit_home.to_owned(), "profile")
+    } else if !nssa_env_home.trim().is_empty() {
+        (nssa_env_home.trim().to_owned(), LOCAL_WALLET_HOME_ENV)
+    } else if !lee_env_home.trim().is_empty() {
+        (lee_env_home.trim().to_owned(), LEE_WALLET_HOME_ENV)
+    } else {
+        (String::new(), "none")
+    };
+    if wallet_home.is_empty() {
+        bail!("wallet home directory is required to deploy program binary");
+    }
+    if !Path::new(&wallet_home).is_dir() {
+        bail!("wallet home directory is not reachable");
+    }
+
+    let path = program_path.as_ref();
+    let program =
+        program_file_info(path).context("failed to inspect program binary before deployment")?;
+    let mut redactions = vec![wallet_home.as_str(), program.path.as_str()];
+    if local_wallet_binary_is_path_like(wallet_binary) {
+        redactions.push(wallet_binary);
+    }
+    let output =
+        local_wallet_deploy_program_output(wallet_binary, &wallet_home, path, &redactions)?;
+
+    Ok(LocalWalletDeployReport {
+        source: "local_wallet_cli".to_owned(),
+        status: "submitted".to_owned(),
+        command: "wallet deploy-program <program binary>".to_owned(),
+        wallet_home_source: wallet_home_source.to_owned(),
+        submitted_at: unix_time_text(),
+        exit_status: output.status.to_string(),
+        stdout: local_wallet_output_text(&output.stdout, &redactions),
+        stderr: local_wallet_output_text(&output.stderr, &redactions),
+        program,
+    })
 }
 
 fn local_wallet_profile_status_with_env(
     profile: Value,
-    canonical_env_home: String,
-    _legacy_env_home: String,
+    nssa_env_home: String,
+    lee_env_home: String,
 ) -> Result<LocalWalletProfileStatus> {
     let profile: LocalWalletProfileInput =
         serde_json::from_value(profile).context("failed to parse local wallet profile")?;
     let wallet_binary = profile.wallet_binary.trim();
     let explicit_home = profile.wallet_home.trim();
-    let (env_home, env_home_source) = if !canonical_env_home.trim().is_empty() {
-        (canonical_env_home, Some(LOCAL_WALLET_HOME_ENV))
+    let (env_home, env_home_source) = if !nssa_env_home.trim().is_empty() {
+        (nssa_env_home, Some(LOCAL_WALLET_HOME_ENV))
+    } else if !lee_env_home.trim().is_empty() {
+        (lee_env_home, Some(LEE_WALLET_HOME_ENV))
     } else {
         (String::new(), None)
     };
@@ -1221,7 +1310,7 @@ fn local_wallet_profile_status_with_env(
     } else if home_source == "profile" {
         details.push("wallet home configured".to_owned());
     } else {
-        details.push(format!("{LOCAL_WALLET_HOME_ENV} configured"));
+        details.push(format!("{home_source} configured"));
     }
 
     if wallet_binary.is_empty() {
@@ -1309,19 +1398,25 @@ pub(crate) fn response_excerpt(text: &str) -> String {
 
 fn local_wallet_binary_version(binary: &str, wallet_home: &str) -> Result<String> {
     let mut command = Command::new(binary);
+    configure_local_wallet_command(&mut command, wallet_home);
     command.arg("--version");
-    if !wallet_home.trim().is_empty() {
-        command.env(LOCAL_WALLET_HOME_ENV, wallet_home);
+    let mut redactions = Vec::new();
+    if local_wallet_binary_is_path_like(binary) {
+        redactions.push(binary);
     }
-    let output = command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .context("failed to run wallet binary")?;
+    if !wallet_home.trim().is_empty() {
+        redactions.push(wallet_home);
+    }
+    let output = run_local_wallet_command(
+        command,
+        "wallet --version",
+        LOCAL_WALLET_VERSION_TIMEOUT,
+        &redactions,
+    )?;
     let text = if output.stdout.is_empty() {
-        String::from_utf8_lossy(&output.stderr).to_string()
+        local_wallet_output_text(&output.stderr, &redactions)
     } else {
-        String::from_utf8_lossy(&output.stdout).to_string()
+        local_wallet_output_text(&output.stdout, &redactions)
     };
     let version = text
         .lines()
@@ -1331,10 +1426,110 @@ fn local_wallet_binary_version(binary: &str, wallet_home: &str) -> Result<String
         .chars()
         .take(160)
         .collect::<String>();
-    if !output.status.success() {
-        bail!("process exited with {}", output.status)
-    }
     Ok(version)
+}
+
+fn local_wallet_deploy_program_output(
+    binary: &str,
+    wallet_home: &str,
+    program_path: &Path,
+    redactions: &[&str],
+) -> Result<Output> {
+    let mut command = Command::new(binary);
+    configure_local_wallet_command(&mut command, wallet_home);
+    command.arg("deploy-program").arg(program_path);
+    run_local_wallet_command(
+        command,
+        "wallet deploy-program",
+        LOCAL_WALLET_DEPLOY_TIMEOUT,
+        redactions,
+    )
+}
+
+fn configure_local_wallet_command(command: &mut Command, wallet_home: &str) {
+    command.env_clear();
+    for name in LOCAL_WALLET_ENV_ALLOWLIST {
+        if let Some(value) = env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    if !wallet_home.trim().is_empty() {
+        command.env(LOCAL_WALLET_HOME_ENV, wallet_home);
+        command.env(LEE_WALLET_HOME_ENV, wallet_home);
+    }
+}
+
+fn run_local_wallet_command(
+    mut command: Command,
+    label: &str,
+    timeout: Duration,
+    redactions: &[&str],
+) -> Result<Output> {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .with_context(|| format!("failed to run {label}"))?;
+    let started = Instant::now();
+    loop {
+        if child
+            .try_wait()
+            .with_context(|| format!("failed to poll {label}"))?
+            .is_some()
+        {
+            break;
+        }
+        if started.elapsed() >= timeout {
+            match child.kill() {
+                Ok(()) => {}
+                Err(error) if error.kind() == ErrorKind::InvalidInput => {}
+                Err(error) => {
+                    return Err(error).with_context(|| format!("failed to kill timed-out {label}"));
+                }
+            }
+            let output = child
+                .wait_with_output()
+                .with_context(|| format!("failed to collect timed-out {label}"))?;
+            let message = local_wallet_process_message(&output, redactions);
+            bail!(
+                "{label} timed out after {} ms: {message}",
+                timeout.as_millis()
+            );
+        }
+        thread::sleep(LOCAL_WALLET_POLL_INTERVAL);
+    }
+    let output = child
+        .wait_with_output()
+        .with_context(|| format!("failed to collect {label}"))?;
+    if !output.status.success() {
+        let message = local_wallet_process_message(&output, redactions);
+        bail!("{label} exited with {}: {message}", output.status);
+    }
+    Ok(output)
+}
+
+fn local_wallet_process_message(output: &Output, redactions: &[&str]) -> String {
+    let message = if output.stderr.is_empty() {
+        local_wallet_output_text(&output.stdout, redactions)
+    } else {
+        local_wallet_output_text(&output.stderr, redactions)
+    };
+    if message.is_empty() {
+        "no output".to_owned()
+    } else {
+        message
+    }
+}
+
+fn local_wallet_output_text(output: &[u8], redactions: &[&str]) -> String {
+    let text = String::from_utf8_lossy(output).trim().to_owned();
+    let mut redacted = text;
+    for value in redactions {
+        let value = value.trim();
+        if !value.is_empty() {
+            redacted = redacted.replace(value, "...");
+        }
+    }
+    redacted.chars().take(LOCAL_WALLET_OUTPUT_LIMIT).collect()
 }
 
 fn local_wallet_worst_status(current: &str, candidate: &str) -> &'static str {
@@ -3403,6 +3598,59 @@ mod tests {
                 .detail
                 .contains("wallet home directory not configured")
         );
+    }
+
+    #[test]
+    fn local_wallet_profile_status_accepts_lee_wallet_home_env() {
+        let status = local_wallet_profile_status_with_env(
+            serde_json::json!({
+                "wallet_binary": "",
+                "wallet_home": "",
+                "network_profile": "local"
+            }),
+            String::new(),
+            ".".to_owned(),
+        );
+
+        assert!(status.is_ok(), "{status:?}");
+        let Ok(status) = status else {
+            return;
+        };
+        assert_eq!(status.home_source, LEE_WALLET_HOME_ENV);
+        assert!(status.detail.contains("LEE_WALLET_HOME_DIR configured"));
+    }
+
+    #[test]
+    fn local_wallet_deploy_program_requires_wallet_binary() {
+        let error_text = match local_wallet_deploy_program(
+            serde_json::json!({
+                "wallet_binary": "",
+                "wallet_home": ".",
+                "network_profile": "local"
+            }),
+            "program.bin",
+        ) {
+            Ok(report) => format!("{report:?}"),
+            Err(error) => format!("{error:#}"),
+        };
+
+        assert!(
+            error_text.contains("wallet binary is required"),
+            "{error_text}"
+        );
+    }
+
+    #[test]
+    fn local_wallet_output_text_redacts_values_and_limits_output() {
+        let input = format!(
+            "failed at /sensitive/wallet/home {}",
+            "x".repeat(LOCAL_WALLET_OUTPUT_LIMIT + 100)
+        );
+        let output = local_wallet_output_text(input.as_bytes(), &["/sensitive/wallet/home"]);
+
+        assert!(!output.contains("/sensitive/wallet/home"));
+        assert!(output.contains("..."));
+        assert!(output.chars().count() <= LOCAL_WALLET_OUTPUT_LIMIT);
     }
 
     #[test]

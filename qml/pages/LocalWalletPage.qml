@@ -120,7 +120,7 @@ ColumnLayout {
                     theme: root.theme
                     label: qsTr("Bedrock")
                     value: root.model.bedrockWalletBalanceValue !== null ? qsTr("Loaded") : qsTr("Idle")
-                    detail: root.shortText(root.model.walletBedrockNodeUrl || root.model.nodeUrl, 42)
+                    detail: root.shortText(root.model.nodeUrl, 42)
                     tone: root.model.bedrockWalletBalanceValue !== null ? "success" : "neutral"
                     Layout.fillWidth: true
                 }
@@ -155,102 +155,16 @@ ColumnLayout {
                 theme: root.theme
                 title: qsTr("Profile")
 
-                GridLayout {
-                    columns: root.width < 760 ? 1 : 2
-                    columnSpacing: root.theme.gap
-                    rowSpacing: root.theme.gap
-                    Layout.fillWidth: true
-
-                    FieldRow {
-                        theme: root.theme
-                        label: qsTr("Label")
-                        sourceText: root.model.walletProfileLabel
-                        syncSourceText: true
-                        onTextEdited: text => { if (root.model.walletProfileLabel !== text) root.model.walletProfileLabel = text }
-                    }
-
-                    FieldRow {
-                        theme: root.theme
-                        label: qsTr("Wallet binary")
-                        placeholderText: qsTr("/path/to/wallet")
-                        sourceText: root.model.walletBinary
-                        syncSourceText: true
-                        onTextEdited: text => { if (root.model.walletBinary !== text) {
-                            root.model.walletBinary = text
-                            root.model.clearLocalWalletStatus()
-                        } }
-                    }
-
-                    FieldRow {
-                        theme: root.theme
-                        label: qsTr("Wallet home")
-                        placeholderText: qsTr("$NSSA_WALLET_HOME_DIR")
-                        sourceText: root.model.walletHome
-                        syncSourceText: true
-                        onTextEdited: text => { if (root.model.walletHome !== text) {
-                            root.model.walletHome = text
-                            root.model.clearLocalWalletStatus()
-                        } }
-                    }
-
-                    FieldRow {
-                        theme: root.theme
-                        label: qsTr("Sequencer RPC")
-                        sourceText: root.model.walletSequencerUrl
-                        syncSourceText: true
-                        placeholderText: root.model.sequencerUrl
-                        onTextEdited: text => { if (root.model.walletSequencerUrl !== text) root.model.walletSequencerUrl = text }
-                    }
-
-                    FieldRow {
-                        theme: root.theme
-                        label: qsTr("Indexer RPC")
-                        sourceText: root.model.walletIndexerUrl
-                        syncSourceText: true
-                        placeholderText: root.model.indexerUrl
-                        onTextEdited: text => { if (root.model.walletIndexerUrl !== text) root.model.walletIndexerUrl = text }
-                    }
-
-                    FieldRow {
-                        theme: root.theme
-                        label: qsTr("Bedrock node")
-                        sourceText: root.model.walletBedrockNodeUrl
-                        syncSourceText: true
-                        placeholderText: root.model.nodeUrl
-                        onTextEdited: text => { if (root.model.walletBedrockNodeUrl !== text) root.model.walletBedrockNodeUrl = text }
-                    }
-                }
-
-                RowLayout {
-                    spacing: root.theme.gapSmall
-                    Layout.fillWidth: true
-
-                    ActionButton {
-                        theme: root.theme
-                        text: qsTr("Save")
-                        primary: true
-                        onClicked: root.model.saveWalletState()
-                    }
-
-                    ActionButton {
-                        theme: root.theme
-                        text: qsTr("Check")
-                        onClicked: root.model.checkLocalWalletProfile(false)
-                    }
-
-                    Item {
-                        Layout.fillWidth: true
-                    }
-                }
-            }
-
-            Panel {
-                theme: root.theme
-                title: qsTr("Source")
-
                 ColumnLayout {
                     spacing: root.theme.gapSmall
                     Layout.fillWidth: true
+
+                    CopyRow {
+                        theme: root.theme
+                        label: qsTr("Label")
+                        value: root.model.walletProfileLabel
+                        copyText: ""
+                    }
 
                     CopyRow {
                         theme: root.theme
@@ -271,6 +185,58 @@ ColumnLayout {
                         label: qsTr("Version")
                         value: root.model.localWalletStatus && root.model.localWalletStatus.version ? String(root.model.localWalletStatus.version) : "-"
                         copyText: root.model.localWalletStatus && root.model.localWalletStatus.version ? String(root.model.localWalletStatus.version) : ""
+                    }
+
+                    CopyRow {
+                        theme: root.theme
+                        label: qsTr("Sequencer RPC")
+                        value: root.endpointLabel(root.model.sequencerUrl)
+                        copyText: root.model.sequencerUrl
+                    }
+
+                    CopyRow {
+                        theme: root.theme
+                        label: qsTr("Indexer RPC")
+                        value: root.endpointLabel(root.model.indexerUrl)
+                        copyText: root.model.indexerUrl
+                    }
+
+                    CopyRow {
+                        theme: root.theme
+                        label: qsTr("Bedrock node")
+                        value: root.endpointLabel(root.model.nodeUrl)
+                        copyText: root.model.nodeUrl
+                    }
+                }
+
+                RowLayout {
+                    spacing: root.theme.gapSmall
+                    Layout.fillWidth: true
+
+                    ActionButton {
+                        theme: root.theme
+                        text: qsTr("Open Settings")
+                        primary: true
+                        onClicked: root.model.openSettings("wallet", "")
+                    }
+
+                    ActionButton {
+                        theme: root.theme
+                        text: qsTr("Autodetect")
+                        onClicked: {
+                            root.model.detectWalletProfile(true)
+                            root.model.checkLocalWalletProfile(false)
+                        }
+                    }
+
+                    ActionButton {
+                        theme: root.theme
+                        text: qsTr("Check")
+                        onClicked: root.model.checkLocalWalletProfile(false)
+                    }
+
+                    Item {
+                        Layout.fillWidth: true
                     }
                 }
             }
@@ -578,6 +544,14 @@ ColumnLayout {
             return text.length ? text : "-"
         }
         return text.slice(0, Math.max(4, max - 9)) + "..." + text.slice(-6)
+    }
+
+    function endpointLabel(value) {
+        const text = String(value || "").trim()
+        if (!text.length) {
+            return qsTr("Not configured")
+        }
+        return text.replace(/^https?:\/\//, "").replace(/\/$/, "")
     }
 
     component CopyRow: GridLayout {

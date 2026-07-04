@@ -1,4 +1,7 @@
-use std::{env, fs, path::PathBuf};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context as _, Result, bail};
 use serde_json::{Value, json};
@@ -9,20 +12,24 @@ use crate::{
     account_lookup_with_idl, bedrock_wallet_balance, blockchain, channels,
     decode_account_data_hex_with_idl, decode_event_data_hex_with_idl, indexer_block_by_hash,
     indexer_blocks, indexer_health, indexer_transfer_recipients,
-    inspect_transaction_summary_with_idl, last_sequencer_block_id, local_wallet_profile_status,
-    logoscore,
+    inspect_transaction_summary_with_idl, last_sequencer_block_id, local_wallet_deploy_program,
+    local_wallet_profile_status, logoscore,
     modules::{
         blockchain_module_report, capabilities_report, delivery_report, delivery_source_report,
         logoscore_status_report, modules_report, storage_report, storage_source_report,
     },
-    normalize_program_id_hex, overview, program_file_info, raw_json_rpc_optional_result,
-    raw_rpc_report, sequencer_block, sequencer_program_ids, sequencer_transaction,
-    sequencer_transaction_inspection, sequencer_transaction_inspection_with_idl,
-    sequencer_transaction_trace, sequencer_transaction_trace_with_idl,
+    normalize_program_id_hex, overview, program_file_info, raw_http_json,
+    raw_json_rpc_optional_result, raw_rpc_report, sequencer_block, sequencer_program_ids,
+    sequencer_transaction, sequencer_transaction_inspection,
+    sequencer_transaction_inspection_with_idl, sequencer_transaction_trace,
+    sequencer_transaction_trace_with_idl,
     spel::spel_idl_report,
 };
 
 pub const INSPECTOR_MODULE: &str = "logos_inspector";
+const STORAGE_MODULE: &str = "storage_module";
+const DELIVERY_MODULE: &str = "delivery_module";
+const DEFAULT_STORAGE_REST_ENDPOINT: &str = "http://127.0.0.1:8080/api/storage/v1";
 
 pub struct InspectorBridge {
     runtime: Runtime,
@@ -230,6 +237,15 @@ impl InspectorBridge {
                         .context("local wallet profile is required")?,
                 )?)
             }
+            "localWalletDeployProgram" => {
+                let args = Args::new(args)?;
+                to_value(local_wallet_deploy_program(
+                    args.value(0)
+                        .cloned()
+                        .context("local wallet profile is required")?,
+                    args.string(1, "program path")?,
+                )?)
+            }
             "bedrockWalletBalance" => {
                 let args = Args::new(args)?;
                 to_value(self.runtime.block_on(bedrock_wallet_balance(
@@ -244,6 +260,7 @@ impl InspectorBridge {
                 save_idl_state(args.value(0).context("IDL state is required")?)
             }
             "loadWalletState" => load_wallet_state(),
+            "detectWalletProfile" => Ok(detected_wallet_profile()),
             "saveWalletState" => {
                 let args = Args::new(args)?;
                 save_wallet_state(args.value(0).context("wallet state is required")?)
@@ -285,6 +302,103 @@ impl InspectorBridge {
                     args.optional_string(2),
                     args.optional_string(3),
                 )))
+            }
+            "storageManifests" => self.storage_manifests(args),
+            "storageExists" => self.storage_exists(args),
+            "storageDownloadManifest" => {
+                let args = Args::new(args)?;
+                self.require_storage_module_source(args.optional_string(0).unwrap_or("module"))?;
+                self.call_logoscore_module(
+                    STORAGE_MODULE,
+                    "downloadManifest",
+                    json!([args.string(2, "CID")?]),
+                )
+            }
+            "storageFetch" => {
+                let args = Args::new(args)?;
+                self.require_storage_module_source(args.optional_string(0).unwrap_or("module"))?;
+                self.call_logoscore_module(STORAGE_MODULE, "fetch", json!([args.string(2, "CID")?]))
+            }
+            "storageUploadUrl" => {
+                let args = Args::new(args)?;
+                self.require_storage_module_source(args.optional_string(0).unwrap_or("module"))?;
+                self.call_logoscore_module(
+                    STORAGE_MODULE,
+                    "uploadUrl",
+                    json!([
+                        args.string(2, "file path or URL")?,
+                        args.u64(3, "chunk size")?
+                    ]),
+                )
+            }
+            "storageDownloadToUrl" => {
+                let args = Args::new(args)?;
+                self.require_storage_module_source(args.optional_string(0).unwrap_or("module"))?;
+                self.call_logoscore_module(
+                    STORAGE_MODULE,
+                    "downloadToUrl",
+                    json!([
+                        args.string(2, "CID")?,
+                        args.string(3, "destination path")?,
+                        args.optional_bool(4),
+                        args.u64(5, "chunk size")?
+                    ]),
+                )
+            }
+            "storageRemove" => {
+                let args = Args::new(args)?;
+                self.require_storage_module_source(args.optional_string(0).unwrap_or("module"))?;
+                self.call_logoscore_module(
+                    STORAGE_MODULE,
+                    "remove",
+                    json!([args.string(2, "CID")?]),
+                )
+            }
+            "deliveryCreateNode" => {
+                let args = Args::new(args)?;
+                self.require_delivery_module_source(args.optional_string(0).unwrap_or("module"))?;
+                self.call_logoscore_module(
+                    DELIVERY_MODULE,
+                    "createNode",
+                    json!([args.string(2, "node configuration")?]),
+                )
+            }
+            "deliveryStart" => {
+                let args = Args::new(args)?;
+                self.require_delivery_module_source(args.optional_string(0).unwrap_or("module"))?;
+                self.call_logoscore_module(DELIVERY_MODULE, "start", json!([]))
+            }
+            "deliveryStop" => {
+                let args = Args::new(args)?;
+                self.require_delivery_module_source(args.optional_string(0).unwrap_or("module"))?;
+                self.call_logoscore_module(DELIVERY_MODULE, "stop", json!([]))
+            }
+            "deliverySubscribe" => {
+                let args = Args::new(args)?;
+                self.require_delivery_module_source(args.optional_string(0).unwrap_or("module"))?;
+                self.call_logoscore_module(
+                    DELIVERY_MODULE,
+                    "subscribe",
+                    json!([args.string(2, "content topic")?]),
+                )
+            }
+            "deliveryUnsubscribe" => {
+                let args = Args::new(args)?;
+                self.require_delivery_module_source(args.optional_string(0).unwrap_or("module"))?;
+                self.call_logoscore_module(
+                    DELIVERY_MODULE,
+                    "unsubscribe",
+                    json!([args.string(2, "content topic")?]),
+                )
+            }
+            "deliverySend" => {
+                let args = Args::new(args)?;
+                self.require_delivery_module_source(args.optional_string(0).unwrap_or("module"))?;
+                self.call_logoscore_module(
+                    DELIVERY_MODULE,
+                    "send",
+                    json!([args.string(2, "content topic")?, args.string(3, "payload")?]),
+                )
             }
             "capabilitiesReport" => to_value(capabilities_report()),
             "callModule" => {
@@ -391,6 +505,78 @@ impl InspectorBridge {
             .collect::<Vec<_>>();
         to_value(logoscore::call(module, method, &args)?)
     }
+
+    fn storage_manifests(&self, args: Value) -> Result<Value> {
+        let args = Args::new(args)?;
+        if storage_source_is_rest(args.optional_string(0).unwrap_or("module")) {
+            return to_value(
+                self.runtime.block_on(raw_http_json(
+                    args.optional_string(1)
+                        .unwrap_or(DEFAULT_STORAGE_REST_ENDPOINT),
+                    "/data",
+                ))?,
+            );
+        }
+        self.require_storage_module_source(args.optional_string(0).unwrap_or("module"))?;
+        self.call_logoscore_module(STORAGE_MODULE, "manifests", json!([]))
+    }
+
+    fn storage_exists(&self, args: Value) -> Result<Value> {
+        let args = Args::new(args)?;
+        let cid = args.string(2, "CID")?;
+        if storage_source_is_rest(args.optional_string(0).unwrap_or("module")) {
+            return to_value(
+                self.runtime.block_on(raw_http_json(
+                    args.optional_string(1)
+                        .unwrap_or(DEFAULT_STORAGE_REST_ENDPOINT),
+                    &format!("/data/{cid}/exists"),
+                ))?,
+            );
+        }
+        self.require_storage_module_source(args.optional_string(0).unwrap_or("module"))?;
+        self.call_logoscore_module(STORAGE_MODULE, "exists", json!([cid]))
+    }
+
+    fn require_storage_module_source(&self, source_mode: &str) -> Result<()> {
+        if storage_source_is_module(source_mode) {
+            return Ok(());
+        }
+        bail!(
+            "storage operation requires the storage module source; current source mode is `{}`",
+            source_mode.trim()
+        )
+    }
+
+    fn require_delivery_module_source(&self, source_mode: &str) -> Result<()> {
+        if delivery_source_is_module(source_mode) {
+            return Ok(());
+        }
+        bail!(
+            "delivery operation requires the delivery module source; current source mode is `{}`",
+            source_mode.trim()
+        )
+    }
+}
+
+fn storage_source_is_module(source_mode: &str) -> bool {
+    matches!(
+        source_mode.trim().to_ascii_lowercase().as_str(),
+        "module" | "basecamp" | "basecamp-module" | "basecamp module"
+    )
+}
+
+fn storage_source_is_rest(source_mode: &str) -> bool {
+    matches!(
+        source_mode.trim().to_ascii_lowercase().as_str(),
+        "rest" | "standalone-rest" | "standalone rest" | "direct-rest"
+    )
+}
+
+fn delivery_source_is_module(source_mode: &str) -> bool {
+    matches!(
+        source_mode.trim().to_ascii_lowercase().as_str(),
+        "module" | "basecamp" | "basecamp-module" | "basecamp module"
+    )
 }
 
 fn to_value(value: impl serde::Serialize) -> Result<Value> {
@@ -572,13 +758,14 @@ fn idl_state_path() -> Result<PathBuf> {
 fn load_wallet_state() -> Result<Value> {
     let path = wallet_state_path()?;
     if !path.is_file() {
-        return Ok(default_wallet_state());
+        return Ok(wallet_state_with_detected_profile(default_wallet_state()));
     }
 
     let text = fs::read_to_string(&path)
         .with_context(|| format!("failed to read wallet state from {}", path.display()))?;
-    serde_json::from_str(&text)
-        .with_context(|| format!("failed to parse wallet state from {}", path.display()))
+    let state: Value = serde_json::from_str(&text)
+        .with_context(|| format!("failed to parse wallet state from {}", path.display()))?;
+    Ok(wallet_state_with_detected_profile(state))
 }
 
 fn save_wallet_state(state: &Value) -> Result<Value> {
@@ -639,13 +826,132 @@ fn default_wallet_state() -> Value {
             "wallet_binary": "",
             "wallet_home": "",
             "network_profile": "",
-            "sequencer_url": "",
-            "indexer_url": "",
-            "bedrock_node_url": "",
             "public_key_probe": ""
         },
         "operations": []
     })
+}
+
+fn wallet_state_with_detected_profile(mut state: Value) -> Value {
+    let detected = detected_wallet_profile();
+    let profile = match state.as_object_mut() {
+        Some(root) => root
+            .entry("profile")
+            .or_insert_with(|| json!({ "label": "Local wallet" })),
+        None => return state,
+    };
+    let Some(profile) = profile.as_object_mut() else {
+        return state;
+    };
+
+    fill_blank_field(profile, &detected, "wallet_binary");
+    fill_blank_field(profile, &detected, "wallet_home");
+    state
+}
+
+fn fill_blank_field(profile: &mut serde_json::Map<String, Value>, detected: &Value, key: &str) {
+    let current = profile.get(key).and_then(Value::as_str).unwrap_or_default();
+    if !current.trim().is_empty() {
+        return;
+    }
+    let Some(value) = detected.get(key).and_then(Value::as_str) else {
+        return;
+    };
+    if value.trim().is_empty() {
+        return;
+    }
+    profile.insert(key.to_owned(), Value::String(value.to_owned()));
+}
+
+fn detected_wallet_profile() -> Value {
+    json!({
+        "label": "Local wallet",
+        "wallet_binary": detect_wallet_binary()
+            .map(|path| path.display().to_string())
+            .unwrap_or_default(),
+        "wallet_home": detect_wallet_home()
+            .map(|path| path.display().to_string())
+            .unwrap_or_default(),
+    })
+}
+
+fn detect_wallet_binary() -> Option<PathBuf> {
+    if let Some(path) = env_path_if_file("LOGOS_WALLET_BINARY") {
+        return Some(path);
+    }
+
+    if let Some(path) = find_binary_in_path("wallet") {
+        return Some(path);
+    }
+
+    let home = env::var_os("HOME").map(PathBuf::from)?;
+    [
+        home.join(".cargo").join("bin").join(binary_name("wallet")),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")))
+            .join("logos-execution-zone")
+            .join("target")
+            .join("release")
+            .join(binary_name("wallet")),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")))
+            .join("logos-execution-zone")
+            .join("target")
+            .join("debug")
+            .join(binary_name("wallet")),
+    ]
+    .into_iter()
+    .find(|path| path.is_file())
+}
+
+fn detect_wallet_home() -> Option<PathBuf> {
+    if let Some(path) = env_path_if_wallet_home("NSSA_WALLET_HOME_DIR") {
+        return Some(path);
+    }
+    if let Some(path) = env_path_if_wallet_home("LEE_WALLET_HOME_DIR") {
+        return Some(path);
+    }
+
+    let home = env::var_os("HOME").map(PathBuf::from)?;
+    [
+        home.join(".nssa").join("wallet"),
+        home.join(".lee").join("wallet"),
+    ]
+    .into_iter()
+    .find(|path| wallet_home_is_configured(path))
+}
+
+fn env_path_if_file(variable: &str) -> Option<PathBuf> {
+    let path = env::var_os(variable).map(PathBuf::from)?;
+    path.is_file().then_some(path)
+}
+
+fn env_path_if_wallet_home(variable: &str) -> Option<PathBuf> {
+    let path = env::var_os(variable).map(PathBuf::from)?;
+    wallet_home_is_configured(&path).then_some(path)
+}
+
+fn wallet_home_is_configured(path: &Path) -> bool {
+    path.is_dir() && path.join("wallet_config.json").is_file()
+}
+
+fn find_binary_in_path(binary: &str) -> Option<PathBuf> {
+    let binary = binary_name(binary);
+    env::var_os("PATH")
+        .into_iter()
+        .flat_map(|paths| env::split_paths(&paths).collect::<Vec<_>>())
+        .map(|path| path.join(&binary))
+        .find(|path| path.is_file())
+}
+
+fn binary_name(binary: &str) -> String {
+    if cfg!(windows) {
+        format!("{binary}.exe")
+    } else {
+        binary.to_owned()
+    }
 }
 
 fn wallet_state_path() -> Result<PathBuf> {

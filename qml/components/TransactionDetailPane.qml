@@ -20,7 +20,7 @@ ColumnLayout {
     spacing: 14
     Layout.fillWidth: true
 
-    onDetailChanged: transactionView = "decoded"
+    onDetailChanged: transactionView = root.detail && root.detail.decoded !== null ? "decoded" : "raw"
 
     ListModel {
         id: transactionTabs
@@ -92,6 +92,51 @@ ColumnLayout {
         visible: root.detail !== null && root.transactionView === "decoded"
         spacing: 14
         Layout.fillWidth: true
+
+        StatusMessage {
+            visible: root.detail && root.detail.decoded === null
+            theme: root.theme
+            tone: "info"
+            title: qsTr("No IDL decode")
+            message: qsTr("This transaction has no IDL-decoded instruction.")
+            Layout.fillWidth: true
+        }
+
+        SectionBlock {
+            visible: root.detail && root.detail.decoded !== null
+            theme: root.theme
+            title: qsTr("Decoded instruction")
+            rows: root.decodedRows()
+        }
+
+        SectionBlock {
+            visible: root.detail && root.detail.decoded !== null
+            theme: root.theme
+            title: qsTr("Accounts")
+            rows: root.decodedAccountRows()
+        }
+
+        SectionBlock {
+            visible: root.detail && root.detail.decoded !== null
+            theme: root.theme
+            title: qsTr("Args")
+            rows: root.decodedArgRows()
+        }
+    }
+
+    ColumnLayout {
+        visible: root.detail !== null && root.transactionView === "raw"
+        spacing: 14
+        Layout.fillWidth: true
+
+        StatusMessage {
+            visible: root.detail && !root.hasRawData()
+            theme: root.theme
+            tone: "info"
+            title: qsTr("No raw data")
+            message: qsTr("No undecoded transaction rows are available.")
+            Layout.fillWidth: true
+        }
 
         ColumnLayout {
             visible: root.detail && root.detail.mode === "blockchain" && root.detail.ops.length > 0
@@ -173,78 +218,16 @@ ColumnLayout {
                 }
             }
         }
-    }
 
-    SectionBlock {
-        visible: root.detail && root.transactionView === "decoded" && root.detail.decoded !== null
-        theme: root.theme
-        title: qsTr("Decoded instruction")
-        rows: root.decodedRows()
-    }
+        Repeater {
+            model: root.detail && root.detail.mode === "lez" ? root.detail.sections : []
 
-    SectionBlock {
-        visible: root.detail && root.transactionView === "decoded" && root.detail.decoded !== null
-        theme: root.theme
-        title: qsTr("Decoded accounts")
-        rows: root.decodedAccountRows()
-    }
+            SectionBlock {
+                required property var modelData
 
-    SectionBlock {
-        visible: root.detail && root.transactionView === "decoded" && root.detail.decoded !== null
-        theme: root.theme
-        title: qsTr("Decoded args")
-        rows: root.decodedArgRows()
-    }
-
-    Repeater {
-        model: root.detail && root.transactionView === "decoded" && root.detail.mode === "lez" ? root.detail.sections : []
-
-        SectionBlock {
-            required property var modelData
-
-            theme: root.theme
-            title: String(modelData.title || "")
-            rows: root.inspectionRows(modelData.rows || [])
-        }
-    }
-
-    Frame {
-        visible: root.detail !== null && root.transactionView === "raw"
-        padding: 0
-        Layout.fillWidth: true
-
-        background: Rectangle {
-            color: root.theme.surface
-            radius: root.theme.radius
-            border.width: 1
-            border.color: root.theme.outlineMuted
-        }
-
-        contentItem: ColumnLayout {
-            spacing: 0
-
-            TextArea {
-                readOnly: true
-                text: root.rawTransactionText()
-                wrapMode: TextArea.Wrap
-                color: root.theme.textMuted
-                selectedTextColor: root.theme.selectedText
-                selectionColor: root.theme.accent
-                textFormat: Text.PlainText
-                font.family: "monospace"
-                font.pixelSize: root.theme.dataText
-                leftPadding: 12
-                rightPadding: 12
-                topPadding: 10
-                bottomPadding: 10
-                Layout.fillWidth: true
-                Layout.preferredHeight: 360
-
-                background: Rectangle {
-                    color: root.theme.field
-                    radius: root.theme.radius
-                    border.width: 0
-                }
+                theme: root.theme
+                title: String(modelData.title || "")
+                rows: root.inspectionRows(modelData.rows || [])
             }
         }
     }
@@ -282,8 +265,7 @@ ColumnLayout {
             summary: summary,
             sections: inspection && Array.isArray(inspection.sections) ? inspection.sections : [],
             decoded: value.decoded_instruction || null,
-            steps: Array.isArray(value.steps) ? value.steps : [],
-            raw: value
+            steps: Array.isArray(value.steps) ? value.steps : []
         }
     }
 
@@ -298,6 +280,16 @@ ColumnLayout {
             return value
         }
         return null
+    }
+
+    function hasRawData() {
+        if (!root.detail) {
+            return false
+        }
+        if (root.detail.mode === "blockchain") {
+            return root.detail.ops.length > 0
+        }
+        return root.detail.sections.length > 0
     }
 
     function overviewRows() {
@@ -381,8 +373,6 @@ ColumnLayout {
             { label: qsTr("Variant"), value: root.valueText(decoded.variant_index), monospace: true },
             { label: qsTr("Program"), value: root.valueText(decoded.program_id), monospace: true, linkKind: "program", linkValue: decoded.program_id },
             { label: qsTr("IDL"), value: root.valueText(decoded.idl_name), monospace: false },
-            { label: qsTr("Accounts"), value: root.valueText(root.count(decoded.accounts)), monospace: true },
-            { label: qsTr("Args"), value: root.valueText(root.count(decoded.args)), monospace: true },
             { label: qsTr("Remaining words"), value: root.valueText(root.count(decoded.remaining_words)), monospace: true }
         ]
     }
@@ -521,16 +511,6 @@ ColumnLayout {
             return value
         }
         return JSON.stringify(value, null, 2)
-    }
-
-    function rawTransactionText() {
-        if (!root.detail) {
-            return "-"
-        }
-        if (root.detail.mode === "blockchain") {
-            return root.formatValue(root.detail.raw || root.value)
-        }
-        return root.formatValue(root.detail.raw || root.value)
     }
 
     component SectionBlock: ColumnLayout {
