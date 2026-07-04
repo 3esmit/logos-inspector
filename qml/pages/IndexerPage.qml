@@ -26,9 +26,9 @@ ColumnLayout {
 
     PageHeader {
         theme: root.theme
-        breadcrumb: qsTr("Home / L2 LEZ / Indexer")
-        title: qsTr("L2 Indexer")
-        layerLabel: qsTr("L2 LEZ")
+        breadcrumb: qsTr("Home / Diagnostics / LEZ Indexer")
+        title: qsTr("LEZ Indexer Diagnostics")
+        layerLabel: qsTr("Diagnostics")
         subtitle: qsTr("Probe local or remote indexer health, finalized head, and raw JSON-RPC methods.")
         Layout.fillWidth: true
     }

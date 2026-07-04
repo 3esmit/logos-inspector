@@ -38,9 +38,9 @@ ColumnLayout {
 
     PageHeader {
         theme: root.theme
-        breadcrumb: qsTr("Home / Storage")
-        title: qsTr("Storage")
-        layerLabel: qsTr("Module / Network")
+        breadcrumb: qsTr("Home / Diagnostics / Storage")
+        title: qsTr("Storage Diagnostics")
+        layerLabel: qsTr("Diagnostics")
         subtitle: qsTr("%1 on %2, %3 s refresh window.")
             .arg(root.model.storageSourceLabel())
             .arg(root.model.storageNetworkPreset)

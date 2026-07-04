@@ -22,6 +22,7 @@ ColumnLayout {
 
         ListElement { value: "general"; label: "General" }
         ListElement { value: "network"; label: "Network" }
+        ListElement { value: "wallet"; label: "Wallet" }
         ListElement { value: "ui"; label: "User Interface" }
     }
 
@@ -117,7 +118,7 @@ ColumnLayout {
         breadcrumb: qsTr("Home / Settings")
         title: qsTr("Settings")
         layerLabel: qsTr("System")
-        subtitle: qsTr("Configure profiles, network connections, footer status fields, and dashboard graphs.")
+        subtitle: qsTr("Configure profiles, network connections, wallet sources, footer status fields, and dashboard graphs.")
         Layout.fillWidth: true
     }
 
@@ -251,6 +252,184 @@ ColumnLayout {
                 active: true
                 asynchronous: true
                 sourceComponent: settingsRoot.networkComponent(settingsRoot.model.settingsNetworkSection)
+                Layout.fillWidth: true
+            }
+        }
+    }
+
+    Component {
+        id: walletSection
+
+        ColumnLayout {
+            spacing: settingsRoot.theme.gap
+            Layout.fillWidth: true
+
+            GridLayout {
+                columns: settingsRoot.width < 760 ? 2 : 4
+                columnSpacing: settingsRoot.theme.gap
+                rowSpacing: settingsRoot.theme.gap
+                Layout.fillWidth: true
+
+                MetricCard {
+                    theme: settingsRoot.theme
+                    compact: true
+                    label: qsTr("Profile")
+                    value: settingsRoot.model.walletProfileLabel
+                    delta: settingsRoot.walletSourceStatusDetail()
+                    deltaColor: settingsRoot.walletSourceStatusColor()
+                }
+
+                MetricCard {
+                    theme: settingsRoot.theme
+                    compact: true
+                    label: qsTr("Wallet binary")
+                    value: settingsRoot.model.walletBinary.length ? settingsRoot.model.walletBinaryDisplayLabel() : qsTr("Not set")
+                    delta: settingsRoot.model.localWalletStatus && settingsRoot.model.localWalletStatus.version ? String(settingsRoot.model.localWalletStatus.version) : qsTr("Version unknown")
+                    deltaColor: settingsRoot.model.walletBinary.length ? settingsRoot.theme.textMuted : settingsRoot.theme.warning
+                }
+
+                MetricCard {
+                    theme: settingsRoot.theme
+                    compact: true
+                    label: qsTr("Wallet home")
+                    value: settingsRoot.model.walletHomeDisplayLabel()
+                    delta: settingsRoot.model.walletHomeSourceLabel()
+                    deltaColor: settingsRoot.model.walletHome.length ? settingsRoot.theme.textMuted : settingsRoot.theme.warning
+                }
+
+                MetricCard {
+                    theme: settingsRoot.theme
+                    compact: true
+                    label: qsTr("Network")
+                    value: settingsRoot.profileLabel(settingsRoot.model.networkProfile)
+                    delta: settingsRoot.profileDetail()
+                    deltaColor: settingsRoot.theme.textMuted
+                }
+            }
+
+            Panel {
+                theme: settingsRoot.theme
+                title: qsTr("Local Wallet")
+
+                RowLayout {
+                    spacing: settingsRoot.theme.gap
+                    Layout.fillWidth: true
+
+                    Text {
+                        text: qsTr("Wallet source uses active Network endpoints.")
+                        color: settingsRoot.theme.textMuted
+                        textFormat: Text.PlainText
+                        wrapMode: Text.Wrap
+                        font.pixelSize: settingsRoot.theme.secondaryText
+                        Layout.fillWidth: true
+                    }
+
+                    StatusPill {
+                        theme: settingsRoot.theme
+                        text: settingsRoot.walletSourceStatusText()
+                        colorToken: settingsRoot.walletSourceStatusColor()
+                    }
+                }
+
+                GridLayout {
+                    columns: settingsRoot.width < 760 ? 1 : 2
+                    columnSpacing: settingsRoot.theme.gap
+                    rowSpacing: settingsRoot.theme.gap
+                    Layout.fillWidth: true
+
+                    FieldRow {
+                        theme: settingsRoot.theme
+                        label: qsTr("Label")
+                        sourceText: settingsRoot.model.walletProfileLabel
+                        syncSourceText: true
+                        onTextEdited: text => { if (settingsRoot.model.walletProfileLabel !== text) settingsRoot.model.walletProfileLabel = text }
+                    }
+
+                    FieldRow {
+                        theme: settingsRoot.theme
+                        label: qsTr("Wallet binary")
+                        placeholderText: qsTr("/path/to/wallet")
+                        sourceText: settingsRoot.model.walletBinary
+                        syncSourceText: true
+                        onTextEdited: text => {
+                            if (settingsRoot.model.walletBinary !== text) {
+                                settingsRoot.model.walletBinary = text
+                                settingsRoot.model.clearLocalWalletStatus()
+                            }
+                        }
+                    }
+
+                    FieldRow {
+                        theme: settingsRoot.theme
+                        label: qsTr("Wallet home")
+                        placeholderText: qsTr("$NSSA_WALLET_HOME_DIR or $LEE_WALLET_HOME_DIR")
+                        sourceText: settingsRoot.model.walletHome
+                        syncSourceText: true
+                        onTextEdited: text => {
+                            if (settingsRoot.model.walletHome !== text) {
+                                settingsRoot.model.walletHome = text
+                                settingsRoot.model.clearLocalWalletStatus()
+                            }
+                        }
+                    }
+
+                    InfoField {
+                        theme: settingsRoot.theme
+                        label: qsTr("Sequencer RPC")
+                        value: settingsRoot.shortEndpoint(settingsRoot.model.sequencerUrl)
+                    }
+
+                    InfoField {
+                        theme: settingsRoot.theme
+                        label: qsTr("Indexer RPC")
+                        value: settingsRoot.shortEndpoint(settingsRoot.model.indexerUrl)
+                    }
+
+                    InfoField {
+                        theme: settingsRoot.theme
+                        label: qsTr("Bedrock node")
+                        value: settingsRoot.shortEndpoint(settingsRoot.model.nodeUrl)
+                    }
+                }
+
+                RowLayout {
+                    spacing: settingsRoot.theme.gapSmall
+                    Layout.fillWidth: true
+
+                    ActionButton {
+                        theme: settingsRoot.theme
+                        text: qsTr("Save")
+                        primary: true
+                        onClicked: settingsRoot.model.saveWalletState()
+                    }
+
+                    ActionButton {
+                        theme: settingsRoot.theme
+                        text: qsTr("Autodetect")
+                        onClicked: {
+                            settingsRoot.model.detectWalletProfile(true)
+                            settingsRoot.model.checkLocalWalletProfile(false)
+                        }
+                    }
+
+                    ActionButton {
+                        theme: settingsRoot.theme
+                        text: qsTr("Check")
+                        onClicked: settingsRoot.model.checkLocalWalletProfile(false)
+                    }
+
+                    Item {
+                        Layout.fillWidth: true
+                    }
+                }
+            }
+
+            StatusMessage {
+                visible: settingsRoot.model.localWalletStatusError.length > 0
+                theme: settingsRoot.theme
+                tone: "error"
+                title: qsTr("Wallet check failed")
+                message: settingsRoot.model.localWalletStatusError
                 Layout.fillWidth: true
             }
         }
@@ -407,6 +586,8 @@ ColumnLayout {
         switch (section) {
         case "network":
             return networkSection
+        case "wallet":
+            return walletSection
         case "ui":
             return uiSection
         default:
@@ -463,6 +644,41 @@ ColumnLayout {
             return settingsRoot.theme.textMuted
         }
         return status.ok ? settingsRoot.theme.success : settingsRoot.theme.warning
+    }
+
+    function walletSourceStatusText() {
+        const status = settingsRoot.model.localWalletStatus || null
+        if (!status) {
+            return settingsRoot.model.localWalletStatusError.length ? qsTr("Down") : qsTr("Unknown")
+        }
+        const value = String(status.status || "unknown")
+        return value.length ? value[0].toUpperCase() + value.slice(1) : qsTr("Unknown")
+    }
+
+    function walletSourceStatusDetail() {
+        const status = settingsRoot.model.localWalletStatus || null
+        if (settingsRoot.model.localWalletStatusError.length) {
+            return settingsRoot.model.localWalletStatusError
+        }
+        if (status && status.detail) {
+            return String(status.detail)
+        }
+        return qsTr("Not checked")
+    }
+
+    function walletSourceStatusColor() {
+        const status = settingsRoot.model.localWalletStatus || null
+        const value = status && status.status ? String(status.status) : ""
+        if (settingsRoot.model.localWalletStatusError.length || value === "down") {
+            return settingsRoot.theme.error
+        }
+        if (!value.length || value === "degraded" || value === "unknown") {
+            return settingsRoot.theme.warning
+        }
+        if (value === "ok") {
+            return settingsRoot.theme.success
+        }
+        return settingsRoot.theme.textMuted
     }
 
     function updateSequencerUrl(value) {

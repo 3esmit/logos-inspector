@@ -92,6 +92,8 @@ QtObject {
     property string storageCidProbe: ""
 
     property string sequencerTab: "blocks"
+    property string storageAppTab: "files"
+    property string deliveryAppTab: "messages"
     property string accountTab: "lookup"
     property string programTab: "programIds"
     property string indexerTab: "status"
@@ -129,9 +131,6 @@ QtObject {
     property string walletProfileLabel: "Local wallet"
     property string walletBinary: ""
     property string walletHome: ""
-    property string walletSequencerUrl: ""
-    property string walletIndexerUrl: ""
-    property string walletBedrockNodeUrl: ""
     property string walletPublicKeyProbe: ""
     property string bedrockWalletBalanceTip: ""
     property var localWalletStatus: null
@@ -146,7 +145,7 @@ QtObject {
     property int accountAutoDecodeSerial: 0
     property int transactionAutoDecodeSerial: 0
     property int searchResolveSerial: 0
-    property var navExpanded: ({ l1: true, l2: true, network: false, local: true, system: true })
+    property var navExpanded: ({ l1: true, l2: true, network: true, diagnostics: false, local: true, system: true })
     property int navRevision: 0
 
     onCurrentViewChanged: expandNavGroupForView(currentView)
@@ -219,8 +218,7 @@ QtObject {
                 children: [
                     { key: "blocks", view: "blocks", label: qsTr("Blocks"), token: "L1B", layer: "l1" },
                     { key: "transactions", view: "transactions", label: qsTr("Mantle Tx"), token: "L1T", layer: "l1" },
-                    { key: "channels", view: "channels", label: qsTr("Channels"), token: "L1C", layer: "l1" },
-                    { key: "blockchain", view: "blockchain", label: qsTr("Node"), token: "L1N", layer: "l1" }
+                    { key: "channels", view: "channels", label: qsTr("Channels"), token: "L1C", layer: "l1" }
                 ]
             },
             {
@@ -234,8 +232,7 @@ QtObject {
                     { key: "l2Transactions", view: "l2Transactions", label: qsTr("Transactions"), token: "L2T", layer: "l2" },
                     { key: "accounts", view: "accounts", label: qsTr("Accounts"), token: "ACC", layer: "l2" },
                     { key: "transferActivity", view: "transferActivity", label: qsTr("Transfer Activity"), token: "XFR", layer: "l2" },
-                    { key: "programs", view: "programs", label: qsTr("Programs"), token: "PRG", layer: "l2" },
-                    { key: "indexer", view: "indexer", label: qsTr("Indexer"), token: "IDX", layer: "l2" }
+                    { key: "programs", view: "programs", label: qsTr("Programs"), token: "PRG", layer: "l2" }
                 ]
             },
             {
@@ -246,8 +243,21 @@ QtObject {
                 layer: "module",
                 children: [
                     { key: "storage", view: "storage", label: qsTr("Storage"), token: "STO", layer: "module" },
-                    { key: "messaging", view: "messaging", label: qsTr("Delivery"), token: "DLV", layer: "module" },
-                    { key: "capabilities", view: "capabilities", label: qsTr("Capabilities"), token: "CAP", layer: "module" }
+                    { key: "messaging", view: "messaging", label: qsTr("Delivery"), token: "DLV", layer: "module" }
+                ]
+            },
+            {
+                type: "group",
+                key: "diagnostics",
+                label: qsTr("Diagnostics"),
+                token: "DIA",
+                layer: "system",
+                children: [
+                    { key: "blockchain", view: "blockchain", label: qsTr("Bedrock Node"), token: "L1N", layer: "system" },
+                    { key: "indexer", view: "indexer", label: qsTr("LEZ Indexer"), token: "IDX", layer: "system" },
+                    { key: "storageDiagnostics", view: "diagnosticsStorage", label: qsTr("Storage"), token: "DST", layer: "system" },
+                    { key: "deliveryDiagnostics", view: "diagnosticsDelivery", label: qsTr("Delivery"), token: "DDL", layer: "system" },
+                    { key: "capabilities", view: "capabilities", label: qsTr("Capabilities"), token: "CAP", layer: "system" }
                 ]
             },
             {
@@ -739,11 +749,30 @@ QtObject {
         walletProfileLabel = String(profile.label || profile.name || qsTr("Local wallet"))
         walletBinary = String(profile.wallet_binary || profile.walletBinary || "")
         walletHome = String(profile.wallet_home || profile.walletHome || "")
-        walletSequencerUrl = String(profile.sequencer_url || profile.sequencerUrl || "")
-        walletIndexerUrl = String(profile.indexer_url || profile.indexerUrl || "")
-        walletBedrockNodeUrl = String(profile.bedrock_node_url || profile.bedrockNodeUrl || "")
         walletPublicKeyProbe = String(profile.public_key_probe || profile.publicKeyProbe || "")
         localWalletOperations = Array.isArray(response.value.operations) ? response.value.operations : []
+    }
+
+    function detectWalletProfile(saveDetected) {
+        const response = bridge.callModule(inspectorModule, "detectWalletProfile", [])
+        if (!response.ok || !response.value || typeof response.value !== "object") {
+            localWalletStatusError = response && response.error ? response.error : qsTr("Wallet autodetect failed.")
+            return false
+        }
+
+        const detectedBinary = String(response.value.wallet_binary || response.value.walletBinary || "")
+        const detectedHome = String(response.value.wallet_home || response.value.walletHome || "")
+        if (detectedBinary.length > 0) {
+            walletBinary = detectedBinary
+        }
+        if (detectedHome.length > 0) {
+            walletHome = detectedHome
+        }
+        clearLocalWalletStatus()
+        if (saveDetected !== false) {
+            saveWalletState()
+        }
+        return detectedBinary.length > 0 || detectedHome.length > 0
     }
 
     function saveWalletState() {
@@ -767,9 +796,6 @@ QtObject {
             wallet_binary: String(walletBinary || ""),
             wallet_home: String(walletHome || ""),
             network_profile: String(networkProfile || ""),
-            sequencer_url: String(walletSequencerUrl || sequencerUrl || ""),
-            indexer_url: String(walletIndexerUrl || indexerUrl || ""),
-            bedrock_node_url: String(walletBedrockNodeUrl || nodeUrl || ""),
             public_key_probe: String(walletPublicKeyProbe || "")
         }
     }
@@ -779,7 +805,7 @@ QtObject {
     }
 
     function bedrockWalletSourceConfigured() {
-        return String(walletBedrockNodeUrl || nodeUrl || "").trim().length > 0
+        return String(nodeUrl || "").trim().length > 0
     }
 
     function walletProfileUsable() {
@@ -798,8 +824,8 @@ QtObject {
             return root.redactedPath(walletHome)
         }
         const source = String(localWalletStatus && localWalletStatus.home_source ? localWalletStatus.home_source : "")
-        if (source === "NSSA_WALLET_HOME_DIR") {
-            return "$NSSA_WALLET_HOME_DIR"
+        if (source.length > 0 && source !== "none" && source !== "profile") {
+            return qsTr("$%1").arg(source)
         }
         return qsTr("Not configured")
     }
@@ -809,8 +835,8 @@ QtObject {
             return qsTr("profile home")
         }
         const source = String(localWalletStatus && localWalletStatus.home_source ? localWalletStatus.home_source : "")
-        if (source === "NSSA_WALLET_HOME_DIR") {
-            return "$NSSA_WALLET_HOME_DIR"
+        if (source.length > 0 && source !== "none" && source !== "profile") {
+            return qsTr("$%1").arg(source)
         }
         return qsTr("home not configured")
     }
@@ -886,6 +912,47 @@ QtObject {
         }
     }
 
+    function deployProgramBinary(programPath) {
+        if (busy) {
+            setResult(qsTr("Program deploy"), qsTr("Another inspection is already running."), true)
+            return null
+        }
+
+        const path = String(programPath || "").trim()
+        if (!path.length) {
+            setResult(qsTr("Program deploy"), qsTr("Program binary path is required."), true)
+            return null
+        }
+        if (!walletProfileConfigured()) {
+            openLocalWallet("", "profiles")
+            return null
+        }
+
+        busy = true
+        statusText = qsTr("Deploy program")
+        return requestModuleAsync(inspectorModule, "localWalletDeployProgram", [walletProfile(), path], qsTr("Program deploy"), true, function (response) {
+            busy = false
+            if (response.ok) {
+                appendLocalWalletOperation(qsTr("Deploy program"), "submitted", root.deployProgramOperationDetail(response.value))
+            } else {
+                appendLocalWalletOperation(qsTr("Deploy program"), "down", response.error || qsTr("Deployment failed."))
+            }
+        })
+    }
+
+    function deployProgramOperationDetail(value) {
+        const report = value || {}
+        const program = String(report.program_id_base58 || report.program_id_hex || "")
+        const tx = String(report.deployment_tx_hash || "")
+        if (program.length > 0 && tx.length > 0) {
+            return qsTr("%1, tx %2").arg(root.shortHash(program)).arg(root.shortHash(tx))
+        }
+        if (tx.length > 0) {
+            return qsTr("tx %1").arg(root.shortHash(tx))
+        }
+        return qsTr("submitted")
+    }
+
     function queryBedrockWalletBalance() {
         const publicKey = String(walletPublicKeyProbe || "").trim()
         if (!publicKey.length) {
@@ -903,7 +970,7 @@ QtObject {
         }
         bedrockWalletBalanceError = ""
         statusText = qsTr("Bedrock wallet")
-        return requestModuleAsync(inspectorModule, "bedrockWalletBalance", [String(walletBedrockNodeUrl || nodeUrl || ""), publicKey, tip], qsTr("Bedrock wallet"), false, function (response) {
+        return requestModuleAsync(inspectorModule, "bedrockWalletBalance", [String(nodeUrl || ""), publicKey, tip], qsTr("Bedrock wallet"), false, function (response) {
             if (response.ok) {
                 bedrockWalletBalanceValue = response.value
                 bedrockWalletBalanceError = ""
@@ -2905,6 +2972,7 @@ QtObject {
                     hash: root.lezTransactionHash(tx),
                     index: tx && tx.index !== undefined ? tx.index : j,
                     kind: String(tx && tx.kind ? tx.kind : ""),
+                    program_id_hex: root.transactionProgramIdHex(tx),
                     ops: root.lezTransactionOpCount(tx),
                     raw: tx
                 })
@@ -2915,6 +2983,14 @@ QtObject {
 
     function lezTransactionHash(tx) {
         return String((tx && (tx.hash || tx.tx_hash || tx.transaction_hash)) || "")
+    }
+
+    function transactionProgramIdHex(tx) {
+        const value = tx || {}
+        const message = value.message && typeof value.message === "object" ? value.message : {}
+        const programId = String(value.program_id_hex || value.programIdHex || value.program_id || value.programId
+            || message.program_id_hex || message.programIdHex || message.program_id || message.programId || "")
+        return root.canonicalProgramIdHex(programId) || root.normalizedHexText(programId)
     }
 
     function lezTransactionOpCount(tx) {
@@ -3594,11 +3670,17 @@ QtObject {
         if (normalized === "l2" || normalized === "lez" || normalized === "sequencer" || normalized === "l2 blocks" || normalized === "lez blocks") {
             return "l2Blocks"
         }
-        if (normalized === "indexer") {
+        if (normalized === "indexer" || normalized === "lez indexer" || normalized === "indexer diagnostics") {
             return "indexer"
         }
-        if (normalized === "chain" || normalized === "base chain" || normalized === "node" || normalized === "consensus") {
+        if (normalized === "chain" || normalized === "base chain" || normalized === "node" || normalized === "consensus" || normalized === "bedrock node" || normalized === "node diagnostics") {
             return "blockchain"
+        }
+        if (normalized === "storage diagnostics") {
+            return "diagnosticsStorage"
+        }
+        if (normalized === "delivery diagnostics" || normalized === "messaging diagnostics") {
+            return "diagnosticsDelivery"
         }
         if (normalized === "messages" || normalized === "messaging" || normalized === "delivery") {
             return "messaging"
@@ -3619,6 +3701,9 @@ QtObject {
         }
         if (normalized === "network") {
             return { section: "network", subsection: settingsNetworkSection }
+        }
+        if (normalized === "wallet settings" || normalized === "local wallet settings" || normalized === "wallet profile") {
+            return { section: "wallet", subsection: "" }
         }
         if (normalized === "blockchain rpc" || normalized === "node rpc" || normalized === "chain rpc" || normalized === "base chain rpc") {
             return { section: "network", subsection: "blockchain" }
@@ -4128,12 +4213,90 @@ QtObject {
         }
         currentView = "programs"
         programTab = "programIds"
-        const detail = {
-            type: "program",
-            program_id: value,
-            source: "search"
-        }
+        const detail = root.programContextDetail(value)
         setResult(qsTr("Program"), BridgeHelpers.formatValue(detail), false, detail)
+    }
+
+    function programContextDetail(programId) {
+        const input = String(programId || "").trim()
+        const normalized = root.canonicalProgramIdHex(input) || root.normalizedHexText(input)
+        const accountResponse = requestModule(inspectorModule, "account", [sequencerUrl, indexerUrl, input], qsTr("Program account"), false, false)
+        if (!root.knownProgramIdRows().length) {
+            const response = requestModule(inspectorModule, "programs", [sequencerUrl], qsTr("Known programs"), false, false)
+            if (!response.ok) {
+                return root.programContextFromParts(input, normalized, null, accountResponse, response.error || qsTr("Sequencer known-program lookup failed."))
+            }
+        }
+        return root.programContextFromParts(input, normalized, root.knownProgramRow(normalized), accountResponse, "")
+    }
+
+    function programContextFromParts(input, normalized, knownRow, accountResponse, lookupError) {
+        const row = knownRow || {}
+        const account = accountResponse && accountResponse.ok === true ? accountResponse.value : null
+        const accountHex = account && typeof account === "object" ? String(account.account_id_hex || "") : ""
+        const accountBase58 = account && typeof account === "object" ? String(account.account_id_base58 || account.account_id || "") : ""
+        const hex = normalized || String(row.hex || "") || accountHex
+        const base58 = String(row.base58 || accountBase58 || (root.looksLikeHexId(input) ? "" : input))
+        const idls = root.idlEntriesForProgram(hex.length ? hex : input)
+        const txs = root.programRecentTransactions(hex)
+        return {
+            type: "program",
+            program_id: base58.length ? base58 : input,
+            program_id_hex: hex,
+            program_id_base58: base58,
+            input: input,
+            known_label: String(row.label || ""),
+            in_chain: knownRow !== null && knownRow !== undefined,
+            verification: knownRow ? "verified" : (lookupError.length ? "unavailable" : "not_found"),
+            verification_detail: lookupError,
+            account: account,
+            account_error: accountResponse && accountResponse.ok !== true ? String(accountResponse.error || "") : "",
+            idls: idls,
+            recent_transactions: txs,
+            source: "sequencer getProgramIds + getAccount"
+        }
+    }
+
+    function knownProgramRow(programId) {
+        const normalized = root.canonicalProgramIdHex(programId) || root.normalizedHexText(programId)
+        if (!normalized.length) {
+            return null
+        }
+        const rows = root.knownProgramIdRows()
+        for (let i = 0; i < rows.length; ++i) {
+            const row = rows[i] || {}
+            const rowProgram = String(row.hex || row.programIdHex || "") || root.canonicalProgramIdHex(row.base58 || row.programId || row.program_id)
+            if (rowProgram === normalized) {
+                return row
+            }
+        }
+        return null
+    }
+
+    function programRecentTransactions(programId) {
+        const normalized = root.canonicalProgramIdHex(programId) || root.normalizedHexText(programId)
+        if (!normalized.length) {
+            return []
+        }
+        const matches = []
+        const rows = Array.isArray(lezTransactionsPageRows) ? lezTransactionsPageRows : []
+        for (let i = 0; i < rows.length; ++i) {
+            const row = rows[i] || {}
+            const txProgram = root.transactionProgramIdHex(row.raw || row)
+            if (txProgram === normalized) {
+                matches.push({
+                    hash: String(row.hash || ""),
+                    block_id: row.block_id,
+                    kind: String(row.kind || ""),
+                    ops: row.ops
+                })
+            }
+        }
+        return matches
+    }
+
+    function looksLikeHexId(value) {
+        return /^(0x)?[0-9a-fA-F]{64}$/.test(String(value || "").trim())
     }
 
     function openRecipient(recipient) {
