@@ -18,7 +18,9 @@ ColumnLayout {
     spacing: 16
 
     Component.onCompleted: {
-        model.refreshDashboard();
+        if (model.dashboardRefreshInterval() > 0) {
+            model.refreshDashboard()
+        }
     }
 
     PageHeader {

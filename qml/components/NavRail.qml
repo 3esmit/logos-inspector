@@ -155,7 +155,7 @@ Pane {
                                     border.color: root.theme.accent
                                 }
 
-                                ToolTip.visible: groupButton.hovered && root.compact
+                                ToolTip.visible: (groupButton.hovered || groupButton.activeFocus) && root.compact
                                 ToolTip.text: String(navRow.modelData.label || "")
                                 Accessible.role: Accessible.Button
                                 Accessible.name: qsTr("%1 navigation group").arg(String(navRow.modelData.label || ""))
@@ -176,7 +176,7 @@ Pane {
                                         root.model.selectView(view)
                                     })
                                 }
-                                ToolTip.visible: hovered && root.compact
+                                ToolTip.visible: (hovered || activeFocus) && root.compact
                                 ToolTip.text: String(navRow.modelData.label || "")
                             }
                         }

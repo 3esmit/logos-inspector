@@ -118,13 +118,30 @@ TestCase {
         model.lezBlocksPageBeforeBlock = 0
         model.lezBlocksPageNextBeforeBlock = 0
         model.lezBlocksPageError = ""
+        model.lezTransactionsPageRows = []
+        model.lezTransactionsPageBeforeBlock = 0
+        model.lezTransactionsPageNextBeforeBlock = 0
+        model.lezTransactionsPageOverflowRows = []
+        model.lezTransactionsPageOverflowNextBeforeBlock = 0
+        model.lezTransactionsPageError = ""
+        model.transferActivityRows = []
+        model.transferActivityBeforeBlock = 0
+        model.transferActivityNextBeforeBlock = 0
+        model.transferActivityOverflowRows = []
+        model.transferActivityOverflowNextBeforeBlock = 0
+        model.transferActivityHistory = []
+        model.transferActivityError = ""
         model.blockDetailValue = null
         model.blockchainSourceMode = "auto"
         model.indexerSourceMode = "auto"
-        model.executionSourceMode = "auto"
+        model.executionSourceMode = "rpc"
+        model.messagingSourceMode = "auto"
+        model.storageSourceMode = "auto"
         basecampModel.blockchainSourceMode = "auto"
         basecampModel.indexerSourceMode = "auto"
-        basecampModel.executionSourceMode = "auto"
+        basecampModel.executionSourceMode = "rpc"
+        basecampModel.messagingSourceMode = "auto"
+        basecampModel.storageSourceMode = "auto"
         model.registeredIdls.clear()
         model.idlStateLoaded = false
         model.accountIdlSelections = ({})
@@ -191,18 +208,88 @@ TestCase {
         compare(args[2], "hash-1")
     }
 
-    function test_account_lookup_args_can_mix_execution_rpc_and_indexer_module() {
-        model.executionSourceMode = "rpc"
-        model.indexerSourceMode = "module"
+    function test_rpc_only_helpers_keep_rpc_shape_in_basecamp_auto() {
+        compare(basecampModel.effectiveCoreSourceMode(basecampModel.blockchainSourceMode), "module")
 
-        const args = model.accountLookupArgs("account-1")
+        const channelArgs = basecampModel.blockchainRpcArgs([10, 20])
+        compare(channelArgs.length, 3)
+        compare(channelArgs[0], basecampModel.nodeUrl)
+        compare(channelArgs[1], 10)
+        compare(channelArgs[2], 20)
 
-        compare(args.length, 5)
-        compare(args[0], "rpc")
-        compare(args[1], model.sequencerUrl)
-        compare(args[2], "module")
-        compare(args[3], model.indexerUrl)
-        compare(args[4], "account-1")
+        const programArgs = basecampModel.executionRpcArgs([])
+        compare(programArgs.length, 1)
+        compare(programArgs[0], basecampModel.sequencerUrl)
+
+        const executionArgs = basecampModel.executionArgs(["tx-1"])
+        compare(executionArgs.length, 2)
+        compare(executionArgs[0], basecampModel.sequencerUrl)
+        compare(executionArgs[1], "tx-1")
+    }
+
+    function test_account_lookup_args_stay_rpc_for_account_decode_contract() {
+        basecampModel.indexerSourceMode = "module"
+
+        const args = basecampModel.accountLookupArgs("account-1")
+
+        compare(args.length, 3)
+        compare(args[0], basecampModel.sequencerUrl)
+        compare(args[1], basecampModel.indexerUrl)
+        compare(args[2], "account-1")
+    }
+
+    function test_messaging_and_storage_auto_use_standalone_routes_without_basecamp() {
+        compare(model.normalizedMessagingSourceMode(model.messagingSourceMode), "auto")
+        compare(model.effectiveMessagingSourceMode(model.messagingSourceMode), "rest")
+        compare(model.deliverySourceReportArgs()[0], "rest")
+        compare(model.deliverySourceTarget(), model.messagingRestUrl)
+
+        compare(model.normalizedStorageSourceMode(model.storageSourceMode), "auto")
+        compare(model.effectiveStorageSourceMode(model.storageSourceMode), "rest")
+        compare(model.storageSourceReportArgs(false)[0], "rest")
+        compare(model.storageSourceTarget(), model.storageRestUrl)
+    }
+
+    function test_messaging_and_storage_auto_use_module_routes_in_basecamp() {
+        compare(basecampModel.effectiveMessagingSourceMode(basecampModel.messagingSourceMode), "module")
+        compare(basecampModel.deliverySourceReportArgs()[0], "module")
+        compare(basecampModel.deliverySourceTarget(), basecampModel.deliveryModule)
+
+        compare(basecampModel.effectiveStorageSourceMode(basecampModel.storageSourceMode), "module")
+        compare(basecampModel.storageSourceReportArgs(false)[0], "module")
+        compare(basecampModel.storageSourceTarget(), basecampModel.storageModule)
+    }
+
+    function test_storage_unsupported_pending_modes_stay_inert() {
+        compare(model.normalizedStorageSourceMode("c-library"), "unsupported")
+        compare(model.normalizedStorageSourceMode("local-os"), "unsupported")
+        model.storageSourceMode = "unsupported"
+        compare(model.effectiveStorageSourceMode(model.storageSourceMode), "unsupported")
+        compare(model.storageSourceReportArgs(false)[0], "unsupported")
+    }
+
+    function test_delivery_rest_health_allows_missing_connection_status() {
+        const report = {
+            module: "delivery_rest",
+            probes: [
+                { label: "delivery_rest.health", ok: true, value: { status: "ok" } },
+                { label: "delivery_rest.nodeHealth", ok: true, value: "healthy" }
+            ]
+        }
+
+        verify(model.deliveryReportHealthy(report))
+    }
+
+    function test_delivery_rest_health_rejects_unhealthy_node_without_connection_status() {
+        const report = {
+            module: "delivery_rest",
+            probes: [
+                { label: "delivery_rest.health", ok: true, value: { status: "ok" } },
+                { label: "delivery_rest.nodeHealth", ok: true, value: "unhealthy" }
+            ]
+        }
+
+        verify(!model.deliveryReportHealthy(report))
     }
 
     function test_navigation_delegates() {
@@ -437,6 +524,77 @@ TestCase {
         compare(model.currentView, "l2BlockDetail")
         compare(model.blockDetailValue.type, "sequencer_block")
         compare(model.blockDetailValue.status, "Submitted")
+    }
+
+    function test_lez_transactions_older_consumes_overflow_rows_before_fetching_more_blocks() {
+        model.lezTransactionsPageLimit = 2
+        model.lezTransactionsBlockBatch = 2
+        fakeHost.responses = {
+            indexerBlocks: {
+                ok: true,
+                value: [
+                    {
+                        block_id: 12,
+                        header_hash: "block-12",
+                        transactions: [
+                            { hash: "tx-1", instruction_data: [1] },
+                            { hash: "tx-2", instruction_data: [2] },
+                            { hash: "tx-3", instruction_data: [3] }
+                        ]
+                    }
+                ],
+                text: "OK",
+                error: ""
+            }
+        }
+
+        model.refreshLezTransactionsPage()
+        const callsAfterFirstPage = fakeHost.callCount
+
+        compare(model.lezTransactionsPageRows.length, 2)
+        compare(model.lezTransactionsPageRows[0].hash, "tx-1")
+        compare(model.lezTransactionsPageOverflowRows.length, 1)
+
+        model.olderLezTransactionsPage()
+
+        compare(fakeHost.callCount, callsAfterFirstPage)
+        compare(model.lezTransactionsPageRows.length, 1)
+        compare(model.lezTransactionsPageRows[0].hash, "tx-3")
+        compare(model.lezTransactionsPageOverflowRows.length, 0)
+    }
+
+    function test_transfer_activity_older_consumes_overflow_rows_before_fetching_more_blocks() {
+        model.transferActivityLimit = 2
+        fakeHost.responses = {
+            indexerTransferRecipients: {
+                ok: true,
+                value: {
+                    recipients: [
+                        { recipient: "r1", last_slot: 12, transfer_count: 1 },
+                        { recipient: "r2", last_slot: 11, transfer_count: 1 },
+                        { recipient: "r3", last_slot: 10, transfer_count: 1 }
+                    ],
+                    next_before_block: 9
+                },
+                text: "OK",
+                error: ""
+            }
+        }
+
+        model.refreshTransferActivityPage()
+        const callsAfterFirstPage = fakeHost.callCount
+
+        compare(model.transferActivityRows.length, 2)
+        compare(model.transferActivityRows[0].recipient, "r1")
+        compare(model.transferActivityOverflowRows.length, 1)
+
+        model.nextTransferActivityPage()
+
+        compare(fakeHost.callCount, callsAfterFirstPage)
+        compare(model.transferActivityRows.length, 1)
+        compare(model.transferActivityRows[0].recipient, "r3")
+        compare(model.transferActivityOverflowRows.length, 0)
+        compare(model.transferActivityNextBeforeBlock, 9)
     }
 
     function test_indexer_status_falls_back_to_health_and_head() {

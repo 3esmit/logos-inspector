@@ -62,6 +62,8 @@ Panel {
         FieldRow {
             theme: root.theme
             label: qsTr("REST URL")
+            enabled: root.storageRestEnabled()
+            opacity: enabled ? 1 : 0.56
             sourceText: root.modelRef.storageRestUrl
             syncSourceText: true
             placeholderText: qsTr("http://127.0.0.1:8080/api/storage/v1")
@@ -71,6 +73,8 @@ Panel {
         FieldRow {
             theme: root.theme
             label: qsTr("Metrics URL")
+            enabled: root.storageMetricsEnabled()
+            opacity: enabled ? 1 : 0.56
             sourceText: root.modelRef.storageMetricsUrl
             syncSourceText: true
             placeholderText: qsTr("http://127.0.0.1:8008/metrics")
@@ -108,6 +112,8 @@ Panel {
         FieldRow {
             theme: root.theme
             label: qsTr("CID local exists")
+            enabled: root.storageDataEnabled()
+            opacity: enabled ? 1 : 0.56
             sourceText: root.modelRef.storageCidProbe
             syncSourceText: true
             placeholderText: qsTr("Optional CID")
@@ -158,11 +164,11 @@ Panel {
     }
 
     StatusMessage {
-        visible: root.modelRef.storageSourceMode === "c-library" || root.modelRef.storageSourceMode === "local-os"
+        visible: root.storageSourceMode() === "unsupported"
         theme: root.theme
         tone: "warning"
-        title: qsTr("Adapter pending")
-        message: qsTr("This source profile is saved for layout and future wiring. Query status reports it as unavailable until the backend adapter exists.")
+        title: qsTr("Source unavailable")
+        message: qsTr("The saved source mode no longer has an adapter. Select Auto, Basecamp module, Standalone REST, or Metrics only.")
         Layout.fillWidth: true
     }
 
@@ -191,7 +197,7 @@ Panel {
     }
 
     function sourceIndexFor(value) {
-        const source = String(value || "module")
+        const source = root.modelRef.normalizedStorageSourceMode(value)
         for (let i = 0; i < root.sourceOptions.count; ++i) {
             if (root.sourceOptions.get(i).key === source) {
                 return i
@@ -202,8 +208,24 @@ Panel {
 
     function sourceModeAt(index) {
         if (index < 0 || index >= root.sourceOptions.count) {
-            return "module"
+            return "auto"
         }
         return root.sourceOptions.get(index).key
+    }
+
+    function storageSourceMode() {
+        return root.modelRef.effectiveStorageSourceMode(root.modelRef.storageSourceMode)
+    }
+
+    function storageRestEnabled() {
+        return root.storageSourceMode() === "rest"
+    }
+
+    function storageMetricsEnabled() {
+        return root.storageSourceMode() === "metrics"
+    }
+
+    function storageDataEnabled() {
+        return root.storageSourceMode() === "module" || root.storageSourceMode() === "rest"
     }
 }

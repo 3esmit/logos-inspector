@@ -31,7 +31,16 @@ ColumnLayout {
     }
 
     StatusMessage {
-        visible: root.model.blockDetailValue === null
+        visible: root.model.blockDetailValue === null && root.model.blockDetailError.length > 0
+        theme: root.theme
+        tone: "warning"
+        title: root.l2 ? qsTr("LEZ block lookup failed") : qsTr("Block lookup failed")
+        message: root.model.blockDetailError
+        Layout.fillWidth: true
+    }
+
+    StatusMessage {
+        visible: root.model.blockDetailValue === null && root.model.blockDetailError.length === 0
         theme: root.theme
         tone: "info"
         title: root.l2 ? qsTr("LEZ block detail") : qsTr("Block detail")

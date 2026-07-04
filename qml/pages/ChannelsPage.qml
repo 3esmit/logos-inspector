@@ -73,7 +73,16 @@ ColumnLayout {
     }
 
     StatusMessage {
-        visible: root.model.channelDetailValue === null
+        visible: root.model.channelDetailValue === null && root.model.channelDetailError.length > 0
+        theme: root.theme
+        tone: "warning"
+        title: qsTr("Channel lookup failed")
+        message: root.model.channelDetailError
+        Layout.fillWidth: true
+    }
+
+    StatusMessage {
+        visible: root.model.channelDetailValue === null && root.model.channelDetailError.length === 0
         theme: root.theme
         tone: "info"
         title: qsTr("Channel detail")

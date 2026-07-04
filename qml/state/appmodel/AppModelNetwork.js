@@ -238,7 +238,19 @@ function indexerArgs(root, extra) {
 
 function executionArgs(root, extra) {
     with (root) {
-        return coreSourceArgs(root, executionSourceMode, executionModule, sequencerUrl, extra)
+        return root.executionRpcArgs(extra)
+    }
+}
+
+function blockchainRpcArgs(root, extra) {
+    with (root) {
+        return [String(nodeUrl || "")].concat(Array.isArray(extra) ? extra : [])
+    }
+}
+
+function executionRpcArgs(root, extra) {
+    with (root) {
+        return [String(sequencerUrl || "")].concat(Array.isArray(extra) ? extra : [])
     }
 }
 
@@ -254,8 +266,6 @@ function coreSourceArgs(root, sourceMode, moduleName, endpoint, extra) {
 
 function accountLookupArgs(root, account, idlJson, accountType) {
     with (root) {
-        const executionMode = root.effectiveCoreSourceMode(executionSourceMode)
-        const indexerMode = root.effectiveCoreSourceMode(indexerSourceMode)
         const suffix = [String(account || "")]
         const idl = String(idlJson || "").trim()
         if (idl.length > 0) {
@@ -264,15 +274,7 @@ function accountLookupArgs(root, account, idlJson, accountType) {
                 suffix.push(String(accountType).trim())
             }
         }
-        if (executionMode === "rpc" && indexerMode === "rpc") {
-            return [String(sequencerUrl || ""), String(indexerUrl || "")].concat(suffix)
-        }
-        return [
-            executionMode,
-            String(sequencerUrl || ""),
-            indexerMode,
-            String(indexerUrl || "")
-        ].concat(suffix)
+        return [String(sequencerUrl || ""), String(indexerUrl || "")].concat(suffix)
     }
 }
 
@@ -499,6 +501,13 @@ function deliveryReportHealthy(root, report) {
         }
         const nodeProbe = root.reportProbe(report, "nodeHealth")
         const connectionProbe = root.reportProbe(report, "connectionStatus")
+        if (moduleName === "delivery_rest" && !connectionProbe) {
+            if (!nodeProbe) {
+                return true
+            }
+            const nodeHealth = nodeProbe.ok === true ? nodeProbe.value : null
+            return root.deliveryHealthValueOk(nodeHealth, false)
+        }
         if (moduleName === deliveryModule && !nodeProbe && !connectionProbe) {
             return root.deliveryModuleRuntimeHealthy(report)
         }
@@ -592,7 +601,7 @@ function moduleReportError(root, report) {
 function deliverySourceReportArgs(root) {
     with (root) {
         return [
-            root.normalizedMessagingSourceMode(messagingSourceMode),
+            root.effectiveMessagingSourceMode(messagingSourceMode),
             String(messagingRestUrl || ""),
             String(messagingMetricsUrl || ""),
             String(messagingNodeInfoId || "")
@@ -602,11 +611,20 @@ function deliverySourceReportArgs(root) {
 
 function deliverySourceLabel(root) {
     with (root) {
-        switch (root.normalizedMessagingSourceMode(messagingSourceMode)) {
+        const source = root.normalizedMessagingSourceMode(messagingSourceMode)
+        const effective = root.effectiveMessagingSourceMode(messagingSourceMode)
+        if (source === "auto") {
+            return effective === "module"
+                ? qsTr("Auto: Basecamp module")
+                : qsTr("Auto: Direct Waku REST")
+        }
+        switch (effective) {
         case "rest":
             return qsTr("Direct Waku REST")
         case "metrics":
             return qsTr("Metrics only")
+        case "unsupported":
+            return qsTr("Unsupported source")
         default:
             return qsTr("Basecamp module")
         }
@@ -615,7 +633,7 @@ function deliverySourceLabel(root) {
 
 function deliverySourceTarget(root) {
     with (root) {
-        switch (root.normalizedMessagingSourceMode(messagingSourceMode)) {
+        switch (root.effectiveMessagingSourceMode(messagingSourceMode)) {
         case "rest":
             return String(messagingRestUrl || "")
         case "metrics":
@@ -685,13 +703,13 @@ function indexerSourceTarget(root) {
 
 function executionSourceLabel(root) {
     with (root) {
-        return coreSourceLabel(root, executionSourceMode, qsTr("Sequencer RPC"), qsTr("Basecamp logos_execution_zone"))
+        return qsTr("Sequencer RPC")
     }
 }
 
 function executionSourceTarget(root) {
     with (root) {
-        return root.effectiveCoreSourceMode(executionSourceMode) === "module" ? String(executionModule || "") : String(sequencerUrl || "")
+        return String(sequencerUrl || "")
     }
 }
 
@@ -712,7 +730,7 @@ function coreSourceLabel(root, sourceMode, rpcLabel, moduleLabel) {
 
 function normalizedMessagingSourceMode(root, value) {
     with (root) {
-        const source = String(value || "module").trim().toLowerCase()
+        const source = String(value || "auto").trim().toLowerCase()
         switch (source) {
         case "rest":
         case "direct-rest":
@@ -727,16 +745,28 @@ function normalizedMessagingSourceMode(root, value) {
         case "basecamp":
         case "basecamp-module":
         case "basecamp module":
-        default:
             return "module"
+        case "auto":
+        default:
+            return "auto"
         }
+    }
+}
+
+function effectiveMessagingSourceMode(root, value) {
+    with (root) {
+        const source = root.normalizedMessagingSourceMode(value)
+        if (source !== "auto") {
+            return source
+        }
+        return bridge && bridge.prefersBasecampModules && bridge.prefersBasecampModules() ? "module" : "rest"
     }
 }
 
 function storageSourceReportArgs(root, includeCidProbe) {
     with (root) {
         return [
-            root.normalizedStorageSourceMode(storageSourceMode),
+            root.effectiveStorageSourceMode(storageSourceMode),
             String(storageRestUrl || ""),
             String(storageMetricsUrl || ""),
             includeCidProbe === true ? String(storageCidProbe || "") : "",
@@ -747,15 +777,20 @@ function storageSourceReportArgs(root, includeCidProbe) {
 
 function storageSourceLabel(root) {
     with (root) {
-        switch (root.normalizedStorageSourceMode(storageSourceMode)) {
+        const source = root.normalizedStorageSourceMode(storageSourceMode)
+        const effective = root.effectiveStorageSourceMode(storageSourceMode)
+        if (source === "auto") {
+            return effective === "module"
+                ? qsTr("Auto: Basecamp module")
+                : qsTr("Auto: Standalone REST")
+        }
+        switch (effective) {
         case "rest":
             return qsTr("Standalone REST")
         case "metrics":
             return qsTr("Metrics only")
-        case "c-library":
-            return qsTr("C library")
-        case "local-os":
-            return qsTr("Local OS diagnostics")
+        case "unsupported":
+            return qsTr("Unsupported source")
         default:
             return qsTr("Basecamp module")
         }
@@ -764,14 +799,13 @@ function storageSourceLabel(root) {
 
 function storageSourceTarget(root) {
     with (root) {
-        switch (root.normalizedStorageSourceMode(storageSourceMode)) {
+        switch (root.effectiveStorageSourceMode(storageSourceMode)) {
         case "rest":
             return String(storageRestUrl || "")
         case "metrics":
             return String(storageMetricsUrl || "")
-        case "c-library":
-        case "local-os":
-            return String(storageDataDir || storageNetworkPreset || "")
+        case "unsupported":
+            return ""
         default:
             return String(storageModule || "")
         }
@@ -780,7 +814,7 @@ function storageSourceTarget(root) {
 
 function normalizedStorageSourceMode(root, value) {
     with (root) {
-        const source = String(value || "module").trim().toLowerCase()
+        const source = String(value || "auto").trim().toLowerCase()
         switch (source) {
         case "rest":
         case "standalone-rest":
@@ -794,18 +828,30 @@ function normalizedStorageSourceMode(root, value) {
         case "c-library":
         case "c library":
         case "library":
-            return "c-library"
         case "local-os":
         case "local os":
         case "local diagnostics":
-            return "local-os"
+        case "unsupported":
+            return "unsupported"
         case "module":
         case "basecamp":
         case "basecamp-module":
         case "basecamp module":
-        default:
             return "module"
+        case "auto":
+        default:
+            return "auto"
         }
+    }
+}
+
+function effectiveStorageSourceMode(root, value) {
+    with (root) {
+        const source = root.normalizedStorageSourceMode(value)
+        if (source !== "auto") {
+            return source
+        }
+        return bridge && bridge.prefersBasecampModules && bridge.prefersBasecampModules() ? "module" : "rest"
     }
 }
 

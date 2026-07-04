@@ -217,6 +217,9 @@ ColumnLayout {
         }
 
         const report = account || {}
+        if (!decodeError.length && report.decode_error !== undefined) {
+            decodeError = String(report.decode_error || "")
+        }
         return {
             account_id: String(report.account_id || (decode && decode.account_id) || ""),
             account_id_base58: String(report.account_id_base58 || report.account_id || (decode && decode.account_id) || ""),

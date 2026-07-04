@@ -347,19 +347,19 @@ ColumnLayout {
         if (root.deliveryModuleSource()) {
             sources.push(root.model.deliveryModule)
         } else {
-            sources.push(root.model.messagingRestUrl)
+            sources.push(root.model.deliverySourceTarget())
         }
         sources.push(root.model.messagingNetworkPreset)
         return sources
     }
 
     function deliveryModuleSource() {
-        const mode = String(root.model.messagingSourceMode || "").toLowerCase()
+        const mode = root.model.effectiveMessagingSourceMode(root.model.messagingSourceMode)
         return mode === "module" || mode === "basecamp" || mode === "basecamp-module" || mode === "basecamp module"
     }
 
     function deliveryArgs(extra) {
-        const args = [root.model.messagingSourceMode, root.model.messagingRestUrl]
+        const args = [root.model.effectiveMessagingSourceMode(root.model.messagingSourceMode), root.model.messagingRestUrl]
         return args.concat(extra || [])
     }
 

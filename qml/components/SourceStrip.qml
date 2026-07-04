@@ -4,13 +4,14 @@ import QtQuick
 import QtQuick.Layouts
 import "../theme"
 
-RowLayout {
+Flow {
     id: root
 
     required property Theme theme
     property var sources: []
 
     spacing: root.theme.gapSmall
+    Layout.fillWidth: true
 
     Repeater {
         model: root.sources

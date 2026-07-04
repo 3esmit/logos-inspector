@@ -28,7 +28,7 @@ ColumnLayout {
         loadCount: root.model.lezTransactionsPageLimit
         rangeText: root.rangeText()
         canGoNewer: root.model.lezTransactionsPageBeforeBlock > 0
-        canGoOlder: root.model.lezTransactionsPageNextBeforeBlock > 0
+        canGoOlder: root.model.lezTransactionsPageNextBeforeBlock > 0 || root.model.lezTransactionsPageOverflowRows.length > 0
         busy: root.model.busy
         Layout.fillWidth: true
         onRefresh: root.model.refreshLezTransactionsPage(root.model.lezTransactionsPageBeforeBlock > 0 ? root.model.lezTransactionsPageBeforeBlock : null)

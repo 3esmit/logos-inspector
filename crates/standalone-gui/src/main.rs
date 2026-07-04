@@ -4,11 +4,8 @@ use std::{env, path::PathBuf};
 
 use anyhow::{Context as _, Result};
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
-use logos_inspector::local_indexer::bootstrap_default_local_indexer;
 
 fn main() -> Result<()> {
-    bootstrap_default_local_indexer()?;
-
     let mut app = QGuiApplication::new();
     let mut engine = QQmlApplicationEngine::new();
     let entry = qml_entry()?;

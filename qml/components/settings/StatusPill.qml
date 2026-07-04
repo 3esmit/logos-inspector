@@ -11,7 +11,7 @@ Rectangle {
     property color colorToken: theme.textMuted
 
     radius: root.theme.radius
-    color: root.colorToken === root.theme.success ? root.theme.successMuted : (root.colorToken === root.theme.warning ? root.theme.warningMuted : root.theme.field)
+    color: root.fillColor()
     border.width: 1
     border.color: root.colorToken
     implicitWidth: pillText.implicitWidth + 18
@@ -22,9 +22,32 @@ Rectangle {
 
         anchors.centerIn: parent
         text: root.text.length ? root.text : qsTr("Unknown")
-        color: root.colorToken === root.theme.textMuted ? root.theme.textMuted : root.theme.text
+        color: root.textColor()
         textFormat: Text.PlainText
         font.pixelSize: root.theme.dataText
         font.weight: Font.DemiBold
+    }
+
+    function fillColor() {
+        if (root.colorToken === root.theme.success) {
+            return root.theme.successMuted
+        }
+        if (root.colorToken === root.theme.warning) {
+            return root.theme.warningMuted
+        }
+        if (root.colorToken === root.theme.error) {
+            return root.theme.errorMuted
+        }
+        if (root.colorToken === root.theme.info) {
+            return root.theme.infoMuted
+        }
+        return root.theme.field
+    }
+
+    function textColor() {
+        if (root.colorToken === root.theme.textMuted) {
+            return root.theme.textMuted
+        }
+        return root.theme.text
     }
 }

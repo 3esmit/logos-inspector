@@ -593,15 +593,15 @@ impl InspectorBridge {
     fn account(&self, args: Value) -> Result<Value> {
         let args = Args::new(args)?;
         let account_args = args.account_sources()?;
-        if account_args.execution_mode == SourceMode::Module
-            && account_args.indexer_mode != SourceMode::Module
-        {
+        if account_args.execution_mode == SourceMode::Module {
             bail!(
-                "{EXECUTION_MODULE} does not expose sequencer account reads; set execution source to RPC or use the indexer module source"
+                "{EXECUTION_MODULE} does not expose Inspector account reads; use sequencer RPC for account inspection"
             );
         }
         if account_args.indexer_mode == SourceMode::Module {
-            return self.indexer_module_account(account_args.account);
+            bail!(
+                "{INDEXER_MODULE} account reads do not satisfy Inspector decode/history needs; use indexer RPC for account inspection"
+            );
         }
         let sequencer = account_args.sequencer_endpoint;
         let indexer = account_args.indexer_endpoint;
@@ -776,7 +776,7 @@ impl InspectorBridge {
         before: Option<u64>,
         limit: u64,
     ) -> Result<Vec<IndexerBlockReport>> {
-        let before = before.map_or_else(|| "0".to_owned(), |value| value.to_string());
+        let before = indexer_module_before_arg(before);
         let blocks =
             self.call_logoscore_module_value(INDEXER_MODULE, "getBlocks", json!([before, limit]))?;
         let blocks = blocks
@@ -798,14 +798,11 @@ impl InspectorBridge {
             "getBlockByHash",
             json!([header_hash]),
         )?;
+        let value = module_lookup_value_or_null(value);
         if value.is_null() {
             return Ok(Value::Null);
         }
         to_value(crate::indexer::summarize_indexer_block(&value))
-    }
-
-    fn indexer_module_account(&self, account: &str) -> Result<Value> {
-        self.call_logoscore_module_value(INDEXER_MODULE, "getAccount", json!([account]))
     }
 
     fn indexer_module_transfer_recipients(&self, before: Option<u64>, limit: u64) -> Result<Value> {
@@ -817,13 +814,11 @@ impl InspectorBridge {
     }
 
     fn execution_head(&self, source: &SourceEndpoint<'_>) -> Result<Value> {
-        if source.mode == SourceMode::Rpc {
-            return to_value(
-                self.runtime
-                    .block_on(last_sequencer_block_id(source.endpoint))?,
-            );
-        }
-        self.call_logoscore_module_value(EXECUTION_MODULE, "get_current_block_height", json!([]))
+        self.require_rpc_source(source, "head")?;
+        to_value(
+            self.runtime
+                .block_on(last_sequencer_block_id(source.endpoint))?,
+        )
     }
 
     fn storage_manifests(&self, args: Value) -> Result<Value> {
@@ -977,6 +972,17 @@ fn parse_json_string_value(value: Value) -> Result<Value> {
         return Ok(Value::String(text));
     }
     Ok(serde_json::from_str(trimmed).unwrap_or(Value::String(text)))
+}
+
+fn indexer_module_before_arg(before: Option<u64>) -> String {
+    before.map_or_else(String::new, |value| value.to_string())
+}
+
+fn module_lookup_value_or_null(value: Value) -> Value {
+    match value {
+        Value::String(text) if text.trim().is_empty() => Value::Null,
+        value => value,
+    }
 }
 
 fn normalize_module_cryptarchia_info(value: Value) -> Value {
@@ -1350,5 +1356,17 @@ mod tests {
         }));
 
         assert_eq!(value.pointer("/height").and_then(Value::as_u64), Some(7));
+    }
+
+    #[test]
+    fn indexer_module_before_arg_uses_empty_string_for_latest() {
+        assert_eq!(indexer_module_before_arg(None), "");
+        assert_eq!(indexer_module_before_arg(Some(42)), "42");
+    }
+
+    #[test]
+    fn empty_module_lookup_value_is_null() {
+        assert!(module_lookup_value_or_null(json!("  ")).is_null());
+        assert_eq!(module_lookup_value_or_null(json!("value")), json!("value"));
     }
 }

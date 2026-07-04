@@ -18,7 +18,6 @@ QtObject {
     readonly property string inspectorModule: "logos_inspector"
     readonly property string blockchainModule: "blockchain_module"
     readonly property string indexerModule: "lez_indexer_module"
-    readonly property string executionModule: "logos_execution_zone"
     readonly property string storageModule: "storage_module"
     readonly property string deliveryModule: "delivery_module"
     readonly property string capabilityModule: "capability_module"
@@ -36,10 +35,13 @@ QtObject {
     property var dashboardBlocks: []
     property string dashboardError: ""
     property var blockDetailValue: null
+    property string blockDetailError: ""
     property var transactionDetailValue: null
+    property string transactionDetailError: ""
     property var accountDetailValue: null
     property var transferRecipientDetailValue: null
     property var channelDetailValue: null
+    property string channelDetailError: ""
     property var blocksPageRows: []
     property int blocksPageSlotFrom: 0
     property int blocksPageSlotTo: 0
@@ -65,12 +67,16 @@ QtObject {
     property var lezTransactionsPageRows: []
     property int lezTransactionsPageBeforeBlock: 0
     property int lezTransactionsPageNextBeforeBlock: 0
+    property var lezTransactionsPageOverflowRows: []
+    property int lezTransactionsPageOverflowNextBeforeBlock: 0
     property int lezTransactionsBlockBatch: 50
     property int lezTransactionsPageLimit: 20
     property string lezTransactionsPageError: ""
     property var transferActivityRows: []
     property int transferActivityBeforeBlock: 0
     property int transferActivityNextBeforeBlock: 0
+    property var transferActivityOverflowRows: []
+    property int transferActivityOverflowNextBeforeBlock: 0
     property int transferActivityBlockBatch: 50
     property int transferActivityLimit: 20
     property var transferActivityHistory: []
@@ -88,16 +94,16 @@ QtObject {
     property string nodeUrl: "http://127.0.0.1:8080/"
     property string blockchainSourceMode: "auto"
     property string indexerSourceMode: "auto"
-    property string executionSourceMode: "auto"
+    property string executionSourceMode: "rpc"
     property string messagingNodeInfoId: ""
-    property string messagingSourceMode: "module"
+    property string messagingSourceMode: "auto"
     property string messagingRestUrl: "http://127.0.0.1:8645"
     property string messagingMetricsUrl: "http://127.0.0.1:8008/metrics"
     property string messagingNetworkPreset: "logos.test"
     property int messagingRollingWindow: 120
     property bool messagingAdminRestEnabled: false
     property bool messagingMutatingDiagnosticsEnabled: false
-    property string storageSourceMode: "module"
+    property string storageSourceMode: "auto"
     property string storageRestUrl: "http://127.0.0.1:8080/api/storage/v1"
     property string storageMetricsUrl: "http://127.0.0.1:8008/metrics"
     property string storageNetworkPreset: "logos.test"
@@ -119,11 +125,11 @@ QtObject {
     property string settingsSection: "general"
     property string settingsNetworkSection: "blockchain"
     property string settingsUiSection: "footer"
-    property int blockchainRefreshRate: 30
-    property int indexerRefreshRate: 30
-    property int executionRefreshRate: 30
-    property int messagingRefreshRate: 30
-    property int storageRefreshRate: 30
+    property int blockchainRefreshRate: 0
+    property int indexerRefreshRate: 0
+    property int executionRefreshRate: 0
+    property int messagingRefreshRate: 0
+    property int storageRefreshRate: 0
     property var networkConnectionStatus: ({})
     property int networkConnectionStatusRevision: 0
     property int networkConfigurationRevision: 0
@@ -240,7 +246,7 @@ QtObject {
 
     function clearResult() { return AppModelCore.clearResult(root) }
 
-    function setResult(title, text, isError, value) { return AppModelCore.setResult(root, title, text, isError, value) }
+    function setResult(title, text, isError, value, owner) { return AppModelCore.setResult(root, title, text, isError, value, owner) }
 
     function pageHasOutput(view) { return AppModelCore.pageHasOutput(root, view) }
 
@@ -253,6 +259,10 @@ QtObject {
     function indexerArgs(extra) { return AppModelNetwork.indexerArgs(root, extra) }
 
     function executionArgs(extra) { return AppModelNetwork.executionArgs(root, extra) }
+
+    function blockchainRpcArgs(extra) { return AppModelNetwork.blockchainRpcArgs(root, extra) }
+
+    function executionRpcArgs(extra) { return AppModelNetwork.executionRpcArgs(root, extra) }
 
     function accountLookupArgs(account, idlJson, accountType) { return AppModelNetwork.accountLookupArgs(root, account, idlJson, accountType) }
 
@@ -456,6 +466,8 @@ QtObject {
 
     function normalizedMessagingSourceMode(value) { return AppModelNetwork.normalizedMessagingSourceMode(root, value) }
 
+    function effectiveMessagingSourceMode(value) { return AppModelNetwork.effectiveMessagingSourceMode(root, value === undefined ? messagingSourceMode : value) }
+
     function normalizedCoreSourceMode(value) { return AppModelNetwork.normalizedCoreSourceMode(root, value) }
 
     function effectiveCoreSourceMode(value) { return AppModelNetwork.effectiveCoreSourceMode(root, value) }
@@ -479,6 +491,8 @@ QtObject {
     function storageSourceTarget() { return AppModelNetwork.storageSourceTarget(root) }
 
     function normalizedStorageSourceMode(value) { return AppModelNetwork.normalizedStorageSourceMode(root, value) }
+
+    function effectiveStorageSourceMode(value) { return AppModelNetwork.effectiveStorageSourceMode(root, value === undefined ? storageSourceMode : value) }
 
     function networkConnectionState(kind) { return AppModelNetwork.networkConnectionState(root, kind) }
 

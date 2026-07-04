@@ -6,10 +6,7 @@ use std::{
 use anyhow::{Context as _, Result, bail};
 use serde_json::{Value, json};
 
-use crate::{
-    normalize_program_id_hex,
-    wallet::{default_wallet_state, wallet_state_with_detected_profile},
-};
+use crate::{normalize_program_id_hex, wallet::default_wallet_state};
 
 #[derive(Debug, Clone)]
 pub(crate) struct RegisteredIdlEntry {
@@ -61,14 +58,13 @@ pub(crate) fn registered_idl_entries() -> Result<Vec<RegisteredIdlEntry>> {
 pub(crate) fn load_wallet_state() -> Result<Value> {
     let path = wallet_state_path()?;
     if !path.is_file() {
-        return Ok(wallet_state_with_detected_profile(default_wallet_state()));
+        return Ok(default_wallet_state());
     }
 
     let text = fs::read_to_string(&path)
         .with_context(|| format!("failed to read wallet state from {}", path.display()))?;
-    let state: Value = serde_json::from_str(&text)
-        .with_context(|| format!("failed to parse wallet state from {}", path.display()))?;
-    Ok(wallet_state_with_detected_profile(state))
+    serde_json::from_str(&text)
+        .with_context(|| format!("failed to parse wallet state from {}", path.display()))
 }
 
 pub(crate) fn save_wallet_state(state: &Value) -> Result<Value> {

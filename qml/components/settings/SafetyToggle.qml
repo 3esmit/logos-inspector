@@ -44,8 +44,9 @@ CheckBox {
         leftPadding: 26
     }
 
-    ToolTip.visible: hovered && root.detail.length > 0
+    ToolTip.visible: (hovered || activeFocus) && root.detail.length > 0
     ToolTip.text: root.detail
     Accessible.role: Accessible.CheckBox
     Accessible.name: root.text
+    Accessible.description: root.detail
 }

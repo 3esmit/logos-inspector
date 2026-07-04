@@ -43,7 +43,7 @@ ColumnLayout {
         loadCount: root.model.transferActivityLimit
         rangeText: root.transferActivityRangeText()
         canGoNewer: root.model.transferActivityHistory.length > 0
-        canGoOlder: root.model.transferActivityNextBeforeBlock > 0
+        canGoOlder: root.model.transferActivityNextBeforeBlock > 0 || root.model.transferActivityOverflowRows.length > 0
         busy: root.model.busy
         Layout.fillWidth: true
         onRefresh: root.model.refreshTransferActivityPage()

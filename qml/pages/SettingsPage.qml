@@ -87,6 +87,11 @@ ColumnLayout {
         id: deliverySourceOptions
 
         ListElement {
+            key: "auto"
+            label: "Auto"
+            summary: "Basecamp module when embedded, direct Waku REST when standalone"
+        }
+        ListElement {
             key: "module"
             label: "Basecamp module"
             summary: "Local logoscore delivery_module bridge"
@@ -107,6 +112,11 @@ ColumnLayout {
         id: storageSourceOptions
 
         ListElement {
+            key: "auto"
+            label: "Auto"
+            summary: "Basecamp module when embedded, standalone REST when standalone"
+        }
+        ListElement {
             key: "module"
             label: "Basecamp module"
             summary: "Local logoscore storage_module bridge"
@@ -122,14 +132,9 @@ ColumnLayout {
             summary: "Scrape a Prometheus/OpenMetrics endpoint"
         }
         ListElement {
-            key: "c-library"
-            label: "C library"
-            summary: "Embedded storage library source; adapter pending"
-        }
-        ListElement {
-            key: "local-os"
-            label: "Local OS diagnostics"
-            summary: "Process, data directory, and port checks; adapter pending"
+            key: "unsupported"
+            label: "Unsupported saved source"
+            summary: "Select a supported source to replace this saved value"
         }
     }
 
@@ -529,16 +534,12 @@ ColumnLayout {
             endpointLabel: qsTr("RPC URL")
             endpoint: settingsRoot.model.sequencerUrl
             primaryFieldVisible: true
-            moduleName: settingsRoot.model.executionModule
-            moduleFieldVisible: settingsRoot.model.effectiveCoreSourceMode(settingsRoot.model.executionSourceMode) === "module"
-            sourceSelectorVisible: true
-            sourceOptions: coreSourceOptions
-            sourceIndex: settingsRoot.coreSourceIndexFor(settingsRoot.model.executionSourceMode)
+            moduleFieldVisible: false
+            sourceSelectorVisible: false
             refreshRate: settingsRoot.model.executionRefreshRate
             statusText: settingsRoot.connectionStatusText("execution")
             statusDetail: settingsRoot.connectionStatusDetail("execution")
             statusColor: settingsRoot.connectionStatusColor("execution")
-            onSourceActivated: index => settingsRoot.model.executionSourceMode = settingsRoot.coreSourceModeAt(index)
             onEndpointEdited: value => settingsRoot.updateSequencerUrl(value)
             onRefreshRateEdited: value => settingsRoot.model.setNetworkConnectionRate("execution", value)
             onQueryClicked: settingsRoot.model.queryNetworkConnection("execution", true)

@@ -62,7 +62,7 @@ ColumnLayout {
             theme: root.theme
             label: qsTr("Source")
             value: root.model.storageSourceLabel()
-            tone: root.storageModuleSource() ? "success" : "warning"
+            tone: root.storageDataSource() ? "success" : "warning"
             Layout.fillWidth: true
         }
 
@@ -260,7 +260,7 @@ ColumnLayout {
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Check")
-                    enabled: !root.model.busy && cidField.text.trim().length > 0
+                    enabled: !root.model.busy && cidField.text.trim().length > 0 && root.storageDataSource()
                     Layout.preferredWidth: 104
                     onClicked: root.runStorage("storageExists", [cidField.text.trim()], qsTr("Storage exists"))
                 }
@@ -476,34 +476,44 @@ ColumnLayout {
 
     function sourceBadges() {
         const sources = [qsTr("Storage"), root.model.storageSourceLabel()]
-        if (root.storageModuleSource()) {
-            sources.push(root.model.storageModule)
-        } else {
-            sources.push(root.model.storageRestUrl)
-        }
+        sources.push(root.shortText(root.storageTargetText(), 42))
         sources.push(root.model.storageNetworkPreset)
         return sources
     }
 
     function storageTargetText() {
-        if (root.storageModuleSource()) {
-            return root.model.storageModule
+        return root.model.storageSourceTarget()
+    }
+
+    function shortText(value, max) {
+        const text = String(value || "")
+        const limit = Math.max(8, Number(max || 42))
+        if (text.length <= limit) {
+            return text
         }
-        return root.model.storageRestUrl
+        return text.slice(0, Math.max(3, limit - 1)) + "..."
     }
 
     function storageModuleSource() {
-        const mode = String(root.model.storageSourceMode || "").toLowerCase()
+        const mode = String(root.model.effectiveStorageSourceMode(root.model.storageSourceMode) || "").toLowerCase()
         return mode === "module" || mode === "basecamp" || mode === "basecamp-module" || mode === "basecamp module"
     }
 
+    function storageRestSource() {
+        return String(root.model.effectiveStorageSourceMode(root.model.storageSourceMode) || "").toLowerCase() === "rest"
+    }
+
+    function storageDataSource() {
+        return root.storageModuleSource() || root.storageRestSource()
+    }
+
     function storageArgs(extra) {
-        const args = [root.model.storageSourceMode, root.model.storageRestUrl]
+        const args = [root.model.effectiveStorageSourceMode(root.model.storageSourceMode), root.model.storageRestUrl]
         return args.concat(extra || [])
     }
 
     function refreshManifests(showLog) {
-        if (root.model.busy) {
+        if (root.model.busy || !root.storageDataSource()) {
             return
         }
         const response = root.model.callInspector("storageManifests", root.storageArgs([]), qsTr("Storage manifests"))

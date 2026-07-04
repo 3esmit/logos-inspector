@@ -62,6 +62,8 @@ Panel {
         FieldRow {
             theme: root.theme
             label: qsTr("Waku REST URL")
+            enabled: root.messagingSourceMode() === "rest"
+            opacity: enabled ? 1 : 0.56
             sourceText: root.modelRef.messagingRestUrl
             syncSourceText: true
             placeholderText: qsTr("http://127.0.0.1:8645")
@@ -71,6 +73,8 @@ Panel {
         FieldRow {
             theme: root.theme
             label: qsTr("Metrics URL")
+            enabled: root.messagingSourceMode() === "metrics"
+            opacity: enabled ? 1 : 0.56
             sourceText: root.modelRef.messagingMetricsUrl
             syncSourceText: true
             placeholderText: qsTr("http://127.0.0.1:8008/metrics")
@@ -89,6 +93,8 @@ Panel {
         FieldRow {
             theme: root.theme
             label: qsTr("Node info id")
+            enabled: root.messagingSourceMode() === "rest"
+            opacity: enabled ? 1 : 0.56
             sourceText: root.modelRef.messagingNodeInfoId
             syncSourceText: true
             placeholderText: qsTr("Optional getNodeInfo id")
@@ -155,7 +161,7 @@ Panel {
     }
 
     function sourceIndexFor(value) {
-        const source = String(value || "module")
+        const source = String(value || "auto")
         for (let i = 0; i < root.sourceOptions.count; ++i) {
             if (root.sourceOptions.get(i).key === source) {
                 return i
@@ -166,8 +172,12 @@ Panel {
 
     function sourceModeAt(index) {
         if (index < 0 || index >= root.sourceOptions.count) {
-            return "module"
+            return "auto"
         }
         return root.sourceOptions.get(index).key
+    }
+
+    function messagingSourceMode() {
+        return root.modelRef.effectiveMessagingSourceMode(root.modelRef.messagingSourceMode)
     }
 }

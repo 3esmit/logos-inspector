@@ -353,8 +353,7 @@ ColumnLayout {
             theme: root.theme
             readTitle: qsTr("Read-only diagnostics")
             refreshActions: [
-                { text: qsTr("Refresh debug"), width: 138, accessibleName: qsTr("Refresh Storage debug information") },
-                { text: qsTr("Refresh metrics"), width: 140, accessibleName: qsTr("Refresh Storage metrics") }
+                { text: qsTr("Refresh status"), width: 140, accessibleName: qsTr("Refresh Storage status") }
             ]
             pending: root.pending()
             statusText: root.statusLine()
@@ -459,10 +458,8 @@ ColumnLayout {
             return qsTr("REST")
         case "metrics":
             return qsTr("Metrics")
-        case "c-library":
-            return qsTr("C lib")
-        case "local-os":
-            return qsTr("Local OS")
+        case "unsupported":
+            return qsTr("Unsupported")
         default:
             return qsTr("Module")
         }
@@ -891,7 +888,7 @@ ColumnLayout {
     }
 
     function storageSourceMode() {
-        return root.model.normalizedStorageSourceMode(root.model.storageSourceMode)
+        return root.model.effectiveStorageSourceMode(root.model.storageSourceMode)
     }
 
     function metricsEndpointConfigured() {

@@ -27,37 +27,73 @@ Frame {
         border.color: root.theme.outlineMuted
     }
 
-    contentItem: ColumnLayout {
-        spacing: 0
+    contentItem: Flickable {
+        id: tableScroller
 
-        DataTableRow {
-            theme: root.theme
-            header: true
-            cells: root.headerCells
-            headerHeight: root.headerHeight
-            rowHeight: root.rowHeight
-        }
+        implicitHeight: tableColumn.implicitHeight
+        boundsBehavior: Flickable.StopAtBounds
+        clip: true
+        contentWidth: Math.max(width, root.tableMinimumWidth())
+        contentHeight: tableColumn.implicitHeight
+        flickableDirection: Flickable.HorizontalFlick
+        interactive: contentWidth > width
 
-        Repeater {
-            model: root.rowCount
+        ColumnLayout {
+            id: tableColumn
+
+            width: tableScroller.contentWidth
+            spacing: 0
 
             DataTableRow {
-                required property int index
-                readonly property var rowData: root.rowAt(index)
-
                 theme: root.theme
-                cells: rowData.cells || []
-                selected: Boolean(rowData.selected)
+                header: true
+                cells: root.headerCells
                 headerHeight: root.headerHeight
                 rowHeight: root.rowHeight
-                onCellActivated: function (column, cell) {
-                    root.cellActivated(index, column, cell, rowData)
+            }
+
+            Repeater {
+                model: root.rowCount
+
+                DataTableRow {
+                    required property int index
+                    readonly property var rowData: root.rowAt(index)
+
+                    theme: root.theme
+                    cells: rowData.cells || []
+                    selected: Boolean(rowData.selected)
+                    headerHeight: root.headerHeight
+                    rowHeight: root.rowHeight
+                    onCellActivated: function (column, cell) {
+                        root.cellActivated(index, column, cell, rowData)
+                    }
                 }
             }
+        }
+
+        ScrollBar.horizontal: ScrollBar {
+            policy: tableScroller.contentWidth > tableScroller.width ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff
         }
     }
 
     function rowAt(index) {
         return Array.isArray(root.rows) && index >= 0 && index < root.rows.length ? root.rows[index] : ({})
+    }
+
+    function tableMinimumWidth() {
+        let cells = Array.isArray(root.headerCells) ? root.headerCells : []
+        if (!cells.length && root.rowCount > 0) {
+            const row = root.rowAt(0)
+            cells = Array.isArray(row.cells) ? row.cells : []
+        }
+        if (!cells.length) {
+            return root.width
+        }
+        let total = 28
+        for (let i = 0; i < cells.length; ++i) {
+            total += cells[i] && cells[i].width !== undefined ? Number(cells[i].width) : 120
+        }
+        total += Math.max(0, cells.length - 1) * 10
+        return total
     }
 }

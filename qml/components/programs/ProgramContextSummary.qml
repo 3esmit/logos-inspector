@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
+import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import ".."
 import "../common"
@@ -15,6 +16,7 @@ ColumnLayout {
     property var idls: []
     property var transactions: []
     property var account: null
+    property string rawText: ""
     property AppModel modelRef
 
     spacing: 6
@@ -73,5 +75,31 @@ ColumnLayout {
         theme: root.theme
         model: root.modelRef
         Layout.fillWidth: true
+    }
+
+    TextArea {
+        visible: root.rawText.length > 0
+        readOnly: true
+        text: root.rawText
+        wrapMode: TextArea.Wrap
+        color: root.theme.text
+        selectedTextColor: root.theme.selectedText
+        selectionColor: root.theme.accent
+        textFormat: Text.PlainText
+        font.family: "monospace"
+        font.pixelSize: root.theme.secondaryText
+        leftPadding: 12
+        rightPadding: 12
+        topPadding: 10
+        bottomPadding: 10
+        Layout.fillWidth: true
+        Layout.preferredHeight: 180
+
+        background: Rectangle {
+            color: root.theme.field
+            radius: root.theme.radius
+            border.width: 1
+            border.color: root.theme.outline
+        }
     }
 }
