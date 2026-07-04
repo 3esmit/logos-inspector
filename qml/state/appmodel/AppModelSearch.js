@@ -5,6 +5,10 @@ function refreshDashboard(root) {
         if (dashboardRefreshing) {
             return
         }
+        if (!busy) {
+            refreshBlocksPage()
+            refreshLezBlocksPage()
+        }
         const refreshId = dashboardRefreshSerial + 1
         const configRevision = networkConfigurationRevision
         dashboardRefreshSerial = refreshId
@@ -460,4 +464,3 @@ function settingsTargetForQuery(root, query) {
         return { section: "", subsection: "" }
     }
 }
-
