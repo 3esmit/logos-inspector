@@ -74,8 +74,8 @@ pub use rpc::{
 };
 pub(crate) use rpc::{json_rpc_result, response_excerpt};
 pub use sequencer::{
-    last_sequencer_block_id, sequencer_block, sequencer_health, sequencer_program_ids,
-    sequencer_transaction, sequencer_transaction_inspection,
+    last_sequencer_block_id, sequencer_block, sequencer_blocks, sequencer_health,
+    sequencer_program_ids, sequencer_transaction, sequencer_transaction_inspection,
     sequencer_transaction_inspection_with_idl, sequencer_transaction_trace,
     sequencer_transaction_trace_with_idl,
 };

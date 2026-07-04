@@ -130,7 +130,7 @@ ColumnLayout {
     }
 
     function canLoadNewer() {
-        const current = root.chainSlot("lib_slot")
+        const current = root.chainSlot("slot")
         return root.model.blocksPageSlotTo > 0 && current > 0 && root.model.blocksPageSlotTo < current
     }
 

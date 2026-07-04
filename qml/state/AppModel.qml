@@ -716,7 +716,7 @@ QtObject {
 
     function blockchainTransactionDetail(value, fallbackHash) { return AppModelOpeners.blockchainTransactionDetail(root, value, fallbackHash) }
 
-    function openIndexerBlock(headerHash) { return AppModelOpeners.openIndexerBlock(root, headerHash) }
+    function openIndexerBlock(headerHash, payload) { return AppModelOpeners.openIndexerBlock(root, headerHash, payload) }
 
     function indexerBlockDetail(value, source) { return AppModelOpeners.indexerBlockDetail(root, value, source) }
 

@@ -529,7 +529,7 @@ ColumnLayout {
     }
 
     function blocksPageRowsAreCurrent() {
-        const libSlot = Number(root.cryptarchiaValue("lib_slot"))
+        const libSlot = Number(root.cryptarchiaValue("slot"))
         const slotTo = Number(root.model.blocksPageSlotTo)
         return Number.isFinite(libSlot) && libSlot > 0 && Number.isFinite(slotTo) && slotTo >= libSlot
     }

@@ -11,17 +11,18 @@ function refreshBlocksPage(root, anchorSlot) {
 
         const infoProbe = node.value ? node.value.cryptarchia_info : null
         const info = infoProbe && infoProbe.value ? infoProbe.value.cryptarchia_info : null
-        const fallbackSlot = info ? (info.lib_slot || info.slot || 0) : 0
+        const fallbackSlot = info ? (info.slot || info.lib_slot || 0) : 0
         const requestedSlot = Math.max(0, Number(anchorSlot === undefined || anchorSlot === null ? fallbackSlot : anchorSlot))
         const slotTo = fallbackSlot > 0 ? Math.min(requestedSlot, Number(fallbackSlot)) : requestedSlot
         const slotFrom = Math.max(0, slotTo - blocksPageWindow)
-        const blocks = requestModule(inspectorModule, "blockchainBlocks", [nodeUrl, slotFrom, slotTo], qsTr("Blocks"), false)
+        const blocks = requestModule(inspectorModule, "blockchainAllBlocks", [nodeUrl, slotFrom, slotTo, blocksPageWindow], qsTr("Blocks"), false)
         if (!blocks.ok) {
             blocksPageError = blocks.error
             setResult(qsTr("Blocks"), blocksPageError, true)
             return
         }
 
+        dashboardNode = node.value
         blocksPageSlotFrom = slotFrom
         blocksPageSlotTo = slotTo
         blocksPageRows = sortedBlocks(blocks.value || []).slice(0, blocksPageLimit)
@@ -285,9 +286,21 @@ function setTransactionsPageLimit(root, limit) {
 function refreshLezBlocksPage(root, beforeBlock) {
     with (root) {
         const before = root.normalizedPositiveInteger(beforeBlock)
+        const sequencerResponse = requestModule(inspectorModule, "sequencerBlocks", [sequencerUrl, before > 0 ? before : null, lezBlocksPageLimit], qsTr("L2 blocks"), false, false)
+        if (sequencerResponse.ok) {
+            const indexerResponse = requestModule(inspectorModule, "indexerBlocks", [indexerUrl, before > 0 ? before : null, lezBlocksPageLimit], qsTr("L2 indexed blocks"), false, false)
+            const blocks = mergedLezBlocks(root, sequencerResponse.value || [], indexerResponse.ok ? (indexerResponse.value || []) : [], lezBlocksPageLimit)
+            lezBlocksPageBeforeBlock = before
+            lezBlocksPageRows = blocks
+            lezBlocksPageNextBeforeBlock = nextIndexerBlocksCursor(blocks)
+            lezBlocksPageError = ""
+            setResult(qsTr("L2 blocks"), BridgeHelpers.formatValue(lezBlocksPageRows), false, lezBlocksPageRows)
+            return
+        }
+
         const response = requestModule(inspectorModule, "indexerBlocks", [indexerUrl, before > 0 ? before : null, lezBlocksPageLimit], qsTr("L2 blocks"), false, false)
         if (!response.ok) {
-            lezBlocksPageError = response.error
+            lezBlocksPageError = sequencerResponse.error || response.error
             setResult(qsTr("L2 blocks"), lezBlocksPageError, true)
             return
         }
@@ -378,6 +391,58 @@ function sortedIndexerBlocks(root, blocks) {
             return root.indexerBlockId(right) - root.indexerBlockId(left)
         })
         return copy
+    }
+}
+
+function mergedLezBlocks(root, sequencerBlocks, indexerBlocks, limit) {
+    with (root) {
+        const rows = []
+        const seen = ({})
+        const indexedById = ({})
+        const indexed = sortedIndexerBlocks(indexerBlocks)
+        for (let i = 0; i < indexed.length; ++i) {
+            const block = sourceLezBlock(root, indexed[i], "indexer")
+            const id = indexerBlockId(block)
+            if (id > 0) {
+                indexedById[String(id)] = block
+            }
+        }
+
+        const sequenced = sortedIndexerBlocks(sequencerBlocks)
+        for (let j = 0; j < sequenced.length; ++j) {
+            const block = sourceLezBlock(root, sequenced[j], "sequencer")
+            const id = indexerBlockId(block)
+            appendLezBlock(root, rows, seen, id > 0 && indexedById[String(id)] ? indexedById[String(id)] : block)
+        }
+
+        for (let k = 0; k < indexed.length; ++k) {
+            appendLezBlock(root, rows, seen, sourceLezBlock(root, indexed[k], "indexer"))
+        }
+
+        return sortedIndexerBlocks(rows).slice(0, Math.max(1, Number(limit || rows.length || 1)))
+    }
+}
+
+function sourceLezBlock(root, block, source) {
+    with (root) {
+        const copy = Object.assign({}, block || {})
+        copy.source = source
+        return copy
+    }
+}
+
+function appendLezBlock(root, rows, seen, block) {
+    with (root) {
+        const id = indexerBlockId(block)
+        const hash = indexerBlockHash(block)
+        const key = id > 0 ? "id:" + id : (hash.length ? "hash:" + hash : "")
+        if (key.length && seen[key] === true) {
+            return
+        }
+        if (key.length) {
+            seen[key] = true
+        }
+        rows.push(block)
     }
 }
 
@@ -800,4 +865,3 @@ function channelDetailById(root, value) {
         return null
     }
 }
-

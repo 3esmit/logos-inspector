@@ -49,6 +49,35 @@ pub async fn sequencer_block(endpoint: &str, block_id: u64) -> Result<Option<Blo
     Ok(Some(block))
 }
 
+pub async fn sequencer_blocks(
+    endpoint: &str,
+    before: Option<u64>,
+    limit: u64,
+) -> Result<Vec<BlockSummary>> {
+    let limit = limit.min(50);
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut block_id = match before {
+        Some(0) => return Ok(Vec::new()),
+        Some(block_id) => block_id.saturating_sub(1),
+        None => last_sequencer_block_id(endpoint).await?,
+    };
+    let mut blocks = Vec::with_capacity(limit as usize);
+    loop {
+        let Some(block) = sequencer_block(endpoint, block_id).await? else {
+            break;
+        };
+        blocks.push(block);
+        if blocks.len() >= limit as usize || block_id == 0 {
+            break;
+        }
+        block_id -= 1;
+    }
+    Ok(blocks)
+}
+
 pub async fn sequencer_transaction(
     endpoint: &str,
     tx_hash: &str,

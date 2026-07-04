@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use anyhow::{Context as _, Result, bail};
 use serde::Serialize;
 use serde_json::Value;
@@ -49,6 +51,48 @@ pub async fn blockchain_blocks(endpoint: &str, slot_from: u64, slot_to: u64) -> 
     .await
 }
 
+pub async fn blockchain_all_blocks(
+    endpoint: &str,
+    slot_from: u64,
+    slot_to: u64,
+    header_limit: u64,
+) -> Result<Value> {
+    let header_limit = usize::try_from(header_limit.min(500)).unwrap_or(500);
+    let mut blocks = Vec::new();
+    let mut seen = BTreeSet::new();
+
+    let finalized = blockchain_blocks(endpoint, slot_from, slot_to).await?;
+    if let Some(finalized_blocks) = finalized.as_array() {
+        for block in finalized_blocks {
+            push_unique_block(&mut blocks, &mut seen, block.clone());
+        }
+    }
+
+    if let Ok(headers) = raw_http_json(endpoint, "/cryptarchia/headers").await
+        && let Some(header_hashes) = headers.as_array()
+    {
+        for (header_lookups, header_hash) in
+            header_hashes.iter().filter_map(Value::as_str).enumerate()
+        {
+            if header_lookups >= header_limit {
+                break;
+            }
+            if let Ok(block) = blockchain_block(endpoint, header_hash).await
+                && let Some(slot) = block_slot(&block)
+            {
+                if slot < slot_from {
+                    break;
+                }
+                if slot <= slot_to {
+                    push_unique_block(&mut blocks, &mut seen, block);
+                }
+            }
+        }
+    }
+
+    Ok(Value::Array(blocks))
+}
+
 pub async fn blockchain_block(endpoint: &str, block_id: &str) -> Result<Value> {
     let block_id = block_id.trim();
     if block_id.is_empty() {
@@ -76,6 +120,29 @@ fn reject_path_markers(value: &str, label: &str) -> Result<()> {
         bail!("{label} cannot contain path separators or query markers");
     }
     Ok(())
+}
+
+fn push_unique_block(blocks: &mut Vec<Value>, seen: &mut BTreeSet<String>, block: Value) {
+    let key = block_key(&block);
+    if key.is_empty() || seen.insert(key) {
+        blocks.push(block);
+    }
+}
+
+fn block_key(block: &Value) -> String {
+    let Some(header) = block.get("header") else {
+        return String::new();
+    };
+    header
+        .get("id")
+        .or_else(|| header.get("hash"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned()
+}
+
+fn block_slot(block: &Value) -> Option<u64> {
+    block.get("header")?.get("slot")?.as_u64()
 }
 
 pub async fn mantle_status(endpoint: &str, item_ids: Value) -> Result<Value> {
