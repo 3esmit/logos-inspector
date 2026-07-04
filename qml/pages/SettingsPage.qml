@@ -64,6 +64,26 @@ ColumnLayout {
     }
 
     ListModel {
+        id: coreSourceOptions
+
+        ListElement {
+            key: "auto"
+            label: "Auto"
+            summary: "Basecamp module when embedded, RPC when standalone"
+        }
+        ListElement {
+            key: "module"
+            label: "Basecamp module"
+            summary: "Use local logoscore module bridge"
+        }
+        ListElement {
+            key: "rpc"
+            label: "Direct RPC"
+            summary: "Use configured standalone RPC endpoint"
+        }
+    }
+
+    ListModel {
         id: deliverySourceOptions
 
         ListElement {
@@ -441,19 +461,24 @@ ColumnLayout {
         NetworkConnectionPanel {
             theme: settingsRoot.theme
             title: qsTr("Bedrock Blockchain")
-            subtitle: qsTr("RPC connection used for node health, consensus, blocks, and channel scans.")
+            subtitle: qsTr("Source used for node health, consensus, blocks, and supported blockchain module calls.")
             kind: "blockchain"
             pageWidth: settingsRoot.width
             busy: settingsRoot.model.busy
-            connectionType: qsTr("RPC")
+            connectionType: settingsRoot.model.blockchainSourceLabel()
             endpointLabel: qsTr("RPC URL")
             endpoint: settingsRoot.model.nodeUrl
             primaryFieldVisible: true
-            moduleFieldVisible: false
+            moduleName: settingsRoot.model.blockchainModule
+            moduleFieldVisible: settingsRoot.model.effectiveCoreSourceMode(settingsRoot.model.blockchainSourceMode) === "module"
+            sourceSelectorVisible: true
+            sourceOptions: coreSourceOptions
+            sourceIndex: settingsRoot.coreSourceIndexFor(settingsRoot.model.blockchainSourceMode)
             refreshRate: settingsRoot.model.blockchainRefreshRate
             statusText: settingsRoot.connectionStatusText("blockchain")
             statusDetail: settingsRoot.connectionStatusDetail("blockchain")
             statusColor: settingsRoot.connectionStatusColor("blockchain")
+            onSourceActivated: index => settingsRoot.model.blockchainSourceMode = settingsRoot.coreSourceModeAt(index)
             onEndpointEdited: value => settingsRoot.updateNodeUrl(value)
             onRefreshRateEdited: value => settingsRoot.model.setNetworkConnectionRate("blockchain", value)
             onQueryClicked: settingsRoot.model.queryNetworkConnection("blockchain", true)
@@ -466,19 +491,24 @@ ColumnLayout {
         NetworkConnectionPanel {
             theme: settingsRoot.theme
             title: qsTr("Indexer")
-            subtitle: qsTr("RPC connection used for finalized head, block lookup, transfer activity, and transaction history.")
+            subtitle: qsTr("Source used for finalized head, block lookup, transfer activity, and transaction history.")
             kind: "indexer"
             pageWidth: settingsRoot.width
             busy: settingsRoot.model.busy
-            connectionType: qsTr("RPC")
+            connectionType: settingsRoot.model.indexerSourceLabel()
             endpointLabel: qsTr("RPC URL")
             endpoint: settingsRoot.model.indexerUrl
             primaryFieldVisible: true
-            moduleFieldVisible: false
+            moduleName: settingsRoot.model.indexerModule
+            moduleFieldVisible: settingsRoot.model.effectiveCoreSourceMode(settingsRoot.model.indexerSourceMode) === "module"
+            sourceSelectorVisible: true
+            sourceOptions: coreSourceOptions
+            sourceIndex: settingsRoot.coreSourceIndexFor(settingsRoot.model.indexerSourceMode)
             refreshRate: settingsRoot.model.indexerRefreshRate
             statusText: settingsRoot.connectionStatusText("indexer")
             statusDetail: settingsRoot.connectionStatusDetail("indexer")
             statusColor: settingsRoot.connectionStatusColor("indexer")
+            onSourceActivated: index => settingsRoot.model.indexerSourceMode = settingsRoot.coreSourceModeAt(index)
             onEndpointEdited: value => settingsRoot.updateIndexerUrl(value)
             onRefreshRateEdited: value => settingsRoot.model.setNetworkConnectionRate("indexer", value)
             onQueryClicked: settingsRoot.model.queryNetworkConnection("indexer", true)
@@ -491,19 +521,24 @@ ColumnLayout {
         NetworkConnectionPanel {
             theme: settingsRoot.theme
             title: qsTr("Logos Execution Zone")
-            subtitle: qsTr("Sequencer RPC used for LEZ blocks, accounts, transactions, and SPEL program inspection.")
+            subtitle: qsTr("Source used for LEZ head checks. Sequencer blocks, accounts, transactions, and SPEL inspection require RPC.")
             kind: "execution"
             pageWidth: settingsRoot.width
             busy: settingsRoot.model.busy
-            connectionType: qsTr("RPC")
+            connectionType: settingsRoot.model.executionSourceLabel()
             endpointLabel: qsTr("RPC URL")
             endpoint: settingsRoot.model.sequencerUrl
             primaryFieldVisible: true
-            moduleFieldVisible: false
+            moduleName: settingsRoot.model.executionModule
+            moduleFieldVisible: settingsRoot.model.effectiveCoreSourceMode(settingsRoot.model.executionSourceMode) === "module"
+            sourceSelectorVisible: true
+            sourceOptions: coreSourceOptions
+            sourceIndex: settingsRoot.coreSourceIndexFor(settingsRoot.model.executionSourceMode)
             refreshRate: settingsRoot.model.executionRefreshRate
             statusText: settingsRoot.connectionStatusText("execution")
             statusDetail: settingsRoot.connectionStatusDetail("execution")
             statusColor: settingsRoot.connectionStatusColor("execution")
+            onSourceActivated: index => settingsRoot.model.executionSourceMode = settingsRoot.coreSourceModeAt(index)
             onEndpointEdited: value => settingsRoot.updateSequencerUrl(value)
             onRefreshRateEdited: value => settingsRoot.model.setNetworkConnectionRate("execution", value)
             onQueryClicked: settingsRoot.model.queryNetworkConnection("execution", true)
@@ -752,6 +787,23 @@ ColumnLayout {
             return "module"
         }
         return storageSourceOptions.get(index).key
+    }
+
+    function coreSourceIndexFor(value) {
+        const source = settingsRoot.model.normalizedCoreSourceMode(value)
+        for (let i = 0; i < coreSourceOptions.count; ++i) {
+            if (coreSourceOptions.get(i).key === source) {
+                return i
+            }
+        }
+        return 0
+    }
+
+    function coreSourceModeAt(index) {
+        if (index < 0 || index >= coreSourceOptions.count) {
+            return "auto"
+        }
+        return coreSourceOptions.get(index).key
     }
 
     function profileIndexFor(value) {

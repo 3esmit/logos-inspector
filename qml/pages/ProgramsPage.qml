@@ -326,7 +326,7 @@ ColumnLayout {
                 primary: true
                 enabled: !root.model.busy
                 Layout.preferredWidth: 190
-                onClicked: root.model.callInspector("programs", [root.model.sequencerUrl], qsTr("Known program IDs"))
+                onClicked: root.model.callInspector("programs", root.model.executionArgs([]), qsTr("Known program IDs"))
             }
         }
     }
@@ -395,7 +395,7 @@ ColumnLayout {
                     text: qsTr("Load known IDs")
                     enabled: !root.model.busy
                     Layout.fillWidth: true
-                    onClicked: root.model.callInspector("programs", [root.model.sequencerUrl], qsTr("Known program IDs"))
+                    onClicked: root.model.callInspector("programs", root.model.executionArgs([]), qsTr("Known program IDs"))
                 }
             }
         }

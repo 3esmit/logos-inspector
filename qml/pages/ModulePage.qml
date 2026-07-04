@@ -284,7 +284,7 @@ ColumnLayout {
                     enabled: !root.model.busy
                     Layout.fillWidth: true
                     accessibleName: qsTr("Refresh blockchain node")
-                    onClicked: root.model.callInspector("blockchainNode", [root.model.nodeUrl], qsTr("Blockchain node"))
+                    onClicked: root.model.callInspector("blockchainNode", root.model.blockchainArgs([]), qsTr("Blockchain node"))
                 }
 
                 ActionButton {
@@ -293,7 +293,7 @@ ColumnLayout {
                     enabled: !root.model.busy && slotFrom.text.trim().length > 0 && slotTo.text.trim().length > 0
                     Layout.fillWidth: true
                     accessibleName: qsTr("Load blockchain blocks")
-                    onClicked: root.model.callInspector("blockchainBlocks", [root.model.nodeUrl, slotFrom.text, slotTo.text], qsTr("Blockchain blocks"))
+                    onClicked: root.model.callInspector("blockchainBlocks", root.model.blockchainArgs([slotFrom.text, slotTo.text]), qsTr("Blockchain blocks"))
                 }
 
                 ActionButton {

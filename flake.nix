@@ -372,11 +372,38 @@ EOF
           buildType = "debug";
           staticRapidsnarkFeature = false;
         }));
+
+      mkRenamedLgxPackage = pkgs: { source, outputName }:
+        pkgs.runCommand (lib.removeSuffix ".lgx" outputName) { } ''
+          shopt -s nullglob
+          files=("${source}"/*.lgx)
+          if [ "''${#files[@]}" -ne 1 ]; then
+            echo "expected exactly one .lgx in ${source}, got ''${#files[@]}" >&2
+            exit 1
+          fi
+
+          mkdir -p "$out"
+          cp "''${files[0]}" "$out/${outputName}"
+        '';
     in
     qmlModule // {
       packages = builtins.mapAttrs
         (system: packages:
-          packages // lib.optionalAttrs (builtins.hasAttr system standalonePackages) {
+          let
+            pkgs = import nixpkgs { inherit system; };
+            uiLgx = mkRenamedLgxPackage pkgs {
+              source = packages.lgx-portable;
+              outputName = "logos-inspector-ui-module.lgx";
+            };
+            coreLgx = mkRenamedLgxPackage pkgs {
+              source = coreModule.packages.${system}.lgx-portable;
+              outputName = "logos-inspector-lib.lgx";
+            };
+          in
+          packages // {
+            lgx = uiLgx;
+            lgx-portable = uiLgx;
+          } // lib.optionalAttrs (builtins.hasAttr system standalonePackages) {
             standalone = standalonePackages.${system};
           } // lib.optionalAttrs (builtins.hasAttr system standaloneDevPackages) {
             standalone-dev = standaloneDevPackages.${system};
@@ -384,10 +411,10 @@ EOF
             core = coreModule.packages.${system}.default;
             core-ffi = coreFfiPackages.${system}.default;
             core-lib = coreModule.packages.${system}.lib;
-            core-lgx = coreModule.packages.${system}.lgx;
-            core-lgx-portable = coreModule.packages.${system}.lgx-portable;
+            core-lgx = coreLgx;
+            core-lgx-portable = coreLgx;
             logos_inspector = coreModule.packages.${system}.default;
-            logos_inspector-lgx = coreModule.packages.${system}.lgx;
+            logos_inspector-lgx = coreLgx;
           })
         qmlModule.packages;
       apps = builtins.mapAttrs

@@ -75,7 +75,7 @@ function openMantleTransaction(root, hash) {
             return
         }
 
-        const response = requestModule(inspectorModule, "blockchainTransaction", [nodeUrl, root.normalizedHashOrValue(value)], qsTr("Mantle transaction"), false)
+        const response = requestModule(inspectorModule, "blockchainTransaction", root.blockchainArgs([root.normalizedHashOrValue(value)]), qsTr("Mantle transaction"), false)
         if (response.ok) {
             const fetched = root.blockchainTransactionDetail(response.value, value)
             transactionDetailValue = fetched
@@ -105,7 +105,7 @@ function openAccount(root, account) {
         currentView = "accounts"
         accountTab = "lookup"
         statusText = qsTr("Account lookup")
-        requestModuleAsync(inspectorModule, "account", [sequencerUrl, indexerUrl, value], qsTr("Account lookup"), false, function (response) {
+        requestModuleAsync(inspectorModule, "account", root.accountLookupArgs(value), qsTr("Account lookup"), false, function (response) {
             if (serial !== searchResolveSerial) {
                 return
             }
@@ -166,7 +166,7 @@ function openLezBlock(root, blockId) {
         currentView = "l2BlockDetail"
         blockDetailValue = null
         statusText = qsTr("LEZ block lookup")
-        requestModuleAsync(inspectorModule, "block", [sequencerUrl, value], qsTr("LEZ block"), false, function (response) {
+        requestModuleAsync(inspectorModule, "block", root.executionArgs([value]), qsTr("LEZ block"), false, function (response) {
             if (serial !== searchResolveSerial) {
                 return
             }
@@ -193,7 +193,7 @@ function resolveLezHash(root, hash) {
         currentView = "l2BlockDetail"
         blockDetailValue = null
         statusText = qsTr("L2 lookup")
-        requestModuleAsync(inspectorModule, "indexerBlockByHash", [indexerUrl, value], qsTr("LEZ block lookup"), false, function (response) {
+        requestModuleAsync(inspectorModule, "indexerBlockByHash", root.indexerArgs([value]), qsTr("LEZ block lookup"), false, function (response) {
             if (serial !== searchResolveSerial) {
                 return
             }
@@ -230,7 +230,7 @@ function inspectTransaction(root, hash, idl) {
 
         currentView = "l2TransactionDetail"
         const trimmedIdl = String(idl || "").trim()
-        const args = trimmedIdl.length ? [sequencerUrl, value, trimmedIdl] : [sequencerUrl, value]
+        const args = root.executionArgs(trimmedIdl.length ? [value, trimmedIdl] : [value])
         const serial = transactionAutoDecodeSerial + 1
         transactionAutoDecodeSerial = serial
         transactionDetailValue = null
@@ -286,7 +286,7 @@ function loadBlockchainBlockById(root, blockId) {
         }
         currentView = "blockDetail"
         blockDetailValue = null
-        const response = requestModule(inspectorModule, "blockchainBlock", [nodeUrl, value], qsTr("Block lookup"), false)
+        const response = requestModule(inspectorModule, "blockchainBlock", root.blockchainArgs([value]), qsTr("Block lookup"), false)
         if (response.ok) {
             blockDetailValue = blockchainBlockDetail(response.value)
             blocksPageError = ""
@@ -296,7 +296,7 @@ function loadBlockchainBlockById(root, blockId) {
         const normalized = normalizedHashOrValue(value)
         const retryValue = normalized !== value ? normalized : ""
         if (retryValue.length) {
-            const retry = requestModule(inspectorModule, "blockchainBlock", [nodeUrl, retryValue], qsTr("Block lookup"), false)
+            const retry = requestModule(inspectorModule, "blockchainBlock", root.blockchainArgs([retryValue]), qsTr("Block lookup"), false)
             if (retry.ok) {
                 blockDetailValue = blockchainBlockDetail(retry.value)
                 blocksPageError = ""
@@ -316,7 +316,7 @@ function loadBlockchainBlockBySlot(root, slot) {
         const value = Math.max(0, Number(slot || 0))
         currentView = "blockDetail"
         blockDetailValue = null
-        const response = requestModule(inspectorModule, "blockchainBlocks", [nodeUrl, value, value], qsTr("Block lookup"), false)
+        const response = requestModule(inspectorModule, "blockchainBlocks", root.blockchainArgs([value, value]), qsTr("Block lookup"), false)
         if (response.ok) {
             const blocks = Array.isArray(response.value) ? response.value : []
             if (blocks.length > 0) {
@@ -414,7 +414,7 @@ function openIndexerBlock(root, headerHash, payload) {
             return
         }
 
-        const response = requestModule(inspectorModule, "indexerBlockByHash", [indexerUrl, value], qsTr("Block lookup"), false)
+        const response = requestModule(inspectorModule, "indexerBlockByHash", root.indexerArgs([value]), qsTr("Block lookup"), false)
         if (response.ok) {
             if (response.value === null || response.value === undefined) {
                 lezBlocksPageError = qsTr("No block found for %1.").arg(value)
@@ -540,9 +540,9 @@ function programContextDetail(root, programId) {
     with (root) {
         const input = String(programId || "").trim()
         const normalized = root.canonicalProgramIdHex(input) || root.normalizedHexText(input)
-        const accountResponse = requestModule(inspectorModule, "account", [sequencerUrl, indexerUrl, input], qsTr("Program account"), false, false)
+        const accountResponse = requestModule(inspectorModule, "account", root.accountLookupArgs(input), qsTr("Program account"), false, false)
         if (!root.knownProgramIdRows().length) {
-            const response = requestModule(inspectorModule, "programs", [sequencerUrl], qsTr("Known programs"), false, false)
+            const response = requestModule(inspectorModule, "programs", root.executionArgs([]), qsTr("Known programs"), false, false)
             if (!response.ok) {
                 return root.programContextFromParts(input, normalized, null, accountResponse, response.error || qsTr("Sequencer known-program lookup failed."))
             }
@@ -659,7 +659,7 @@ function openChannel(root, channel) {
         }
 
         const channelId = String(channel || "").trim()
-        const response = requestModule(inspectorModule, "channelState", [nodeUrl, channelId], qsTr("Channel"), false)
+        const response = requestModule(inspectorModule, "channelState", root.blockchainArgs([channelId]), qsTr("Channel"), false)
         if (response.ok) {
             const raw = response.value && typeof response.value === "object" ? response.value : {}
             const state = raw.channel && typeof raw.channel === "object" && !Array.isArray(raw.channel) ? raw.channel : raw

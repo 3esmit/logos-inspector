@@ -46,8 +46,9 @@ function callModuleJson(logosObject, moduleName, method, args) {
 function parseModuleResponseJson(raw) {
     try {
         const parsed = JSON.parse(raw)
-        if (typeof parsed.ok === "boolean") {
-            return parsed
+        const unwrapped = unwrapBridgeResponse(parsed)
+        if (unwrapped !== null) {
+            return unwrapped
         }
         return {
             ok: true,
@@ -62,6 +63,25 @@ function parseModuleResponseJson(raw) {
             error: "Logos bridge call failed: " + errorMessage(error)
         }
     }
+}
+
+function unwrapBridgeResponse(value) {
+    if (value && typeof value.ok === "boolean") {
+        return value
+    }
+    if (typeof value !== "string") {
+        return null
+    }
+
+    try {
+        const parsed = JSON.parse(value)
+        if (parsed && typeof parsed.ok === "boolean") {
+            return parsed
+        }
+    } catch (error) {
+        return null
+    }
+    return null
 }
 
 function missingBridge() {

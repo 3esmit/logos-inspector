@@ -107,7 +107,12 @@ Pane {
                                 padding: 0
                                 Layout.fillWidth: true
                                 Layout.preferredHeight: root.compact ? 38 : 30
-                                onClicked: root.model.toggleNavGroup(navRow.modelData.key)
+                                onClicked: {
+                                    const key = String(navRow.modelData.key || "")
+                                    Qt.callLater(function () {
+                                        root.model.toggleNavGroup(key)
+                                    })
+                                }
 
                                 contentItem: RowLayout {
                                     spacing: root.theme.gapSmall
@@ -165,7 +170,12 @@ Pane {
                                 accessibleName: String(navRow.modelData.label || "")
                                 selected: navRow.modelData.active === true
                                 Layout.fillWidth: true
-                                onClicked: root.model.selectView(navRow.modelData.view)
+                                onClicked: {
+                                    const view = String(navRow.modelData.view || "")
+                                    Qt.callLater(function () {
+                                        root.model.selectView(view)
+                                    })
+                                }
                                 ToolTip.visible: hovered && root.compact
                                 ToolTip.text: String(navRow.modelData.label || "")
                             }

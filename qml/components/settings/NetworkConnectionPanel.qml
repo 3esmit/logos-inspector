@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
+import QtQml.Models
 import QtQuick.Layouts
 import ".."
 
@@ -17,6 +18,9 @@ Panel {
     property string moduleName: ""
     property bool primaryFieldVisible: true
     property bool moduleFieldVisible: false
+    property bool sourceSelectorVisible: false
+    property var sourceOptions
+    property int sourceIndex: 0
     property bool auxiliaryFieldVisible: false
     property string auxiliaryLabel: ""
     property string auxiliaryText: ""
@@ -29,7 +33,12 @@ Panel {
     signal endpointEdited(string value)
     signal auxiliaryEdited(string value)
     signal refreshRateEdited(int value)
+    signal sourceActivated(int index)
     signal queryClicked()
+
+    ListModel {
+        id: emptySourceOptions
+    }
 
     RowLayout {
         spacing: root.theme.gap
@@ -61,6 +70,16 @@ Panel {
             theme: root.theme
             label: qsTr("Connection")
             value: root.connectionType
+        }
+
+        ComboField {
+            visible: root.sourceSelectorVisible
+            theme: root.theme
+            label: qsTr("Source")
+            accessibleName: qsTr("%1 source mode").arg(root.title)
+            options: root.sourceOptions || emptySourceOptions
+            currentIndex: root.sourceIndex
+            onActivated: index => root.sourceActivated(index)
         }
 
         RefreshRateField {

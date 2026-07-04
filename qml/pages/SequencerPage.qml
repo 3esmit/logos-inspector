@@ -42,7 +42,7 @@ ColumnLayout {
             enabled: !root.model.busy
             Layout.preferredWidth: 96
             accessibleName: qsTr("Fetch sequencer head")
-            onClicked: root.model.callInspector("head", [root.model.sequencerUrl], qsTr("Sequencer head"))
+            onClicked: root.model.callInspector("head", root.model.executionArgs([]), qsTr("Sequencer head"))
         }
 
         ActionButton {
@@ -51,7 +51,7 @@ ColumnLayout {
             enabled: !root.model.busy
             Layout.preferredWidth: 112
             accessibleName: qsTr("Fetch sequencer programs")
-            onClicked: root.model.callInspector("programs", [root.model.sequencerUrl], qsTr("Sequencer programs"))
+            onClicked: root.model.callInspector("programs", root.model.executionArgs([]), qsTr("Sequencer programs"))
         }
     }
 
@@ -292,7 +292,7 @@ ColumnLayout {
                     enabled: !root.model.busy && root.isUnsignedInteger(blockId.text)
                     Layout.fillWidth: true
                     accessibleName: qsTr("Fetch sequencer block")
-                    onClicked: root.model.callInspector("block", [root.model.sequencerUrl, blockId.text], qsTr("Sequencer block"))
+                    onClicked: root.model.callInspector("block", root.model.executionArgs([blockId.text]), qsTr("Sequencer block"))
                 }
 
                 ActionButton {
@@ -310,7 +310,7 @@ ColumnLayout {
                     enabled: !root.model.busy
                     Layout.fillWidth: true
                     accessibleName: qsTr("Fetch sequencer head")
-                    onClicked: root.model.callInspector("head", [root.model.sequencerUrl], qsTr("Sequencer head"))
+                    onClicked: root.model.callInspector("head", root.model.executionArgs([]), qsTr("Sequencer head"))
                 }
             }
         }
@@ -350,7 +350,7 @@ ColumnLayout {
                     enabled: !root.model.busy && txHash.text.trim().length > 0
                     Layout.fillWidth: true
                     accessibleName: qsTr("Fetch transaction summary")
-                    onClicked: root.model.callInspector("transaction", [root.model.sequencerUrl, txHash.text], qsTr("Transaction summary"))
+                    onClicked: root.model.callInspector("transaction", root.model.executionArgs([txHash.text]), qsTr("Transaction summary"))
                 }
 
                 ActionButton {
@@ -400,7 +400,7 @@ ColumnLayout {
 
     function transactionArgs(hash, idl) {
         const trimmedIdl = String(idl || "").trim()
-        const args = [root.model.sequencerUrl, String(hash || "").trim()]
+        const args = root.model.executionArgs([String(hash || "").trim()])
         if (trimmedIdl.length > 0) {
             args.push(trimmedIdl)
         }
