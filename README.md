@@ -103,6 +103,10 @@ Run the Basecamp QML plugin directly:
 nix run .#qml-ui
 ```
 
+The Basecamp plugin requires a matching `logos_inspector` runtime module. If
+the UI is updated without rebuilding or reinstalling that module, calls can fail
+with `unknown inspector method`.
+
 Run the standalone QML host:
 
 ```bash
