@@ -16,8 +16,8 @@ function refreshDashboard(root) {
         dashboardError = ""
         const requests = [
             { module: inspectorModule, method: "overview", args: [sequencerUrl, indexerUrl, nodeUrl], label: qsTr("Dashboard overview") },
-            { module: inspectorModule, method: "blockchainNode", args: [nodeUrl], label: qsTr("Blockchain node") },
-            { module: inspectorModule, method: "indexerBlocks", args: [indexerUrl, null, 10], label: qsTr("Latest blocks") },
+            { module: inspectorModule, method: "blockchainNode", args: root.blockchainArgs([]), label: qsTr("Blockchain node") },
+            { module: inspectorModule, method: "indexerBlocks", args: root.indexerArgs([null, 10]), label: qsTr("Latest blocks") },
             { module: inspectorModule, method: "storageSourceReport", args: root.storageSourceReportArgs(false), label: qsTr("Storage source") },
             { module: inspectorModule, method: "deliverySourceReport", args: root.deliverySourceReportArgs(), label: qsTr("Delivery source") }
         ]
@@ -309,7 +309,7 @@ function resolveSearchHash(root, hash) {
         const serial = searchResolveSerial + 1
         searchResolveSerial = serial
         statusText = qsTr("Search")
-        requestModuleAsync(inspectorModule, "indexerBlockByHash", [indexerUrl, value], qsTr("Block lookup"), false, function (response) {
+        requestModuleAsync(inspectorModule, "indexerBlockByHash", root.indexerArgs([value]), qsTr("Block lookup"), false, function (response) {
             if (serial !== searchResolveSerial) {
                 return
             }
@@ -326,7 +326,7 @@ function resolveSearchHash(root, hash) {
 
 function resolveSearchTransaction(root, serial, hash) {
     with (root) {
-        requestModuleAsync(inspectorModule, "inspectTransaction", [sequencerUrl, hash], qsTr("Transaction inspection"), false, function (response) {
+        requestModuleAsync(inspectorModule, "inspectTransaction", root.executionArgs([hash]), qsTr("Transaction inspection"), false, function (response) {
             if (serial !== searchResolveSerial) {
                 return
             }
@@ -345,7 +345,7 @@ function resolveSearchTransaction(root, serial, hash) {
 
 function resolveSearchAccount(root, serial, account) {
     with (root) {
-        requestModuleAsync(inspectorModule, "account", [sequencerUrl, indexerUrl, account], qsTr("Account lookup"), false, function (response) {
+        requestModuleAsync(inspectorModule, "account", root.accountLookupArgs(account), qsTr("Account lookup"), false, function (response) {
             if (serial !== searchResolveSerial) {
                 return
             }

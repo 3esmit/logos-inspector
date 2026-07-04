@@ -17,6 +17,8 @@ QtObject {
 
     readonly property string inspectorModule: "logos_inspector"
     readonly property string blockchainModule: "blockchain_module"
+    readonly property string indexerModule: "lez_indexer_module"
+    readonly property string executionModule: "logos_execution_zone"
     readonly property string storageModule: "storage_module"
     readonly property string deliveryModule: "delivery_module"
     readonly property string capabilityModule: "capability_module"
@@ -84,6 +86,9 @@ QtObject {
     property string sequencerUrl: "https://testnet.lez.logos.co/"
     property string indexerUrl: "http://127.0.0.1:8779/"
     property string nodeUrl: "http://127.0.0.1:8080/"
+    property string blockchainSourceMode: "auto"
+    property string indexerSourceMode: "auto"
+    property string executionSourceMode: "auto"
     property string messagingNodeInfoId: ""
     property string messagingSourceMode: "module"
     property string messagingRestUrl: "http://127.0.0.1:8645"
@@ -168,6 +173,9 @@ QtObject {
     onSequencerUrlChanged: handleNetworkConfigurationChanged()
     onIndexerUrlChanged: handleNetworkConfigurationChanged()
     onNodeUrlChanged: handleNetworkConfigurationChanged()
+    onBlockchainSourceModeChanged: handleNetworkConfigurationChanged()
+    onIndexerSourceModeChanged: handleNetworkConfigurationChanged()
+    onExecutionSourceModeChanged: handleNetworkConfigurationChanged()
     onMessagingNodeInfoIdChanged: handleMessagingConfigurationChanged()
     onMessagingSourceModeChanged: handleMessagingConfigurationChanged()
     onMessagingRestUrlChanged: handleMessagingConfigurationChanged()
@@ -239,6 +247,14 @@ QtObject {
     function callInspector(method, args, label) { return AppModelCore.callInspector(root, method, args, label) }
 
     function callModule(moduleName, method, args, label) { return AppModelCore.callModule(root, moduleName, method, args, label) }
+
+    function blockchainArgs(extra) { return AppModelNetwork.blockchainArgs(root, extra) }
+
+    function indexerArgs(extra) { return AppModelNetwork.indexerArgs(root, extra) }
+
+    function executionArgs(extra) { return AppModelNetwork.executionArgs(root, extra) }
+
+    function accountLookupArgs(account, idlJson, accountType) { return AppModelNetwork.accountLookupArgs(root, account, idlJson, accountType) }
 
     function requestModule(moduleName, method, args, label, showResult, cacheResult) { return AppModelCore.requestModule(root, moduleName, method, args, label, showResult, cacheResult) }
 
@@ -439,6 +455,22 @@ QtObject {
     function deliverySourceTarget() { return AppModelNetwork.deliverySourceTarget(root) }
 
     function normalizedMessagingSourceMode(value) { return AppModelNetwork.normalizedMessagingSourceMode(root, value) }
+
+    function normalizedCoreSourceMode(value) { return AppModelNetwork.normalizedCoreSourceMode(root, value) }
+
+    function effectiveCoreSourceMode(value) { return AppModelNetwork.effectiveCoreSourceMode(root, value) }
+
+    function blockchainSourceLabel() { return AppModelNetwork.blockchainSourceLabel(root) }
+
+    function blockchainSourceTarget() { return AppModelNetwork.blockchainSourceTarget(root) }
+
+    function indexerSourceLabel() { return AppModelNetwork.indexerSourceLabel(root) }
+
+    function indexerSourceTarget() { return AppModelNetwork.indexerSourceTarget(root) }
+
+    function executionSourceLabel() { return AppModelNetwork.executionSourceLabel(root) }
+
+    function executionSourceTarget() { return AppModelNetwork.executionSourceTarget(root) }
 
     function storageSourceReportArgs(includeCidProbe) { return AppModelNetwork.storageSourceReportArgs(root, includeCidProbe) }
 

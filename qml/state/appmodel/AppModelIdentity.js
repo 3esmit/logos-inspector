@@ -59,6 +59,9 @@ function loadSettingsState(root) {
         indexerUrl = root.stringSetting(value, "indexer_url", indexerUrl)
         nodeUrl = root.stringSetting(value, "node_url", nodeUrl)
         networkProfile = root.resolvedNetworkProfile(storedNetworkProfile, sequencerUrl, indexerUrl, nodeUrl)
+        blockchainSourceMode = root.normalizedCoreSourceMode(root.stringSetting(value, "blockchain_source_mode", blockchainSourceMode))
+        indexerSourceMode = root.normalizedCoreSourceMode(root.stringSetting(value, "indexer_source_mode", indexerSourceMode))
+        executionSourceMode = root.normalizedCoreSourceMode(root.stringSetting(value, "execution_source_mode", executionSourceMode))
         messagingSourceMode = root.normalizedMessagingSourceMode(root.stringSetting(value, "messaging_source_mode", messagingSourceMode))
         messagingRestUrl = root.stringSetting(value, "messaging_rest_url", messagingRestUrl)
         messagingMetricsUrl = root.stringSetting(value, "messaging_metrics_url", messagingMetricsUrl)
@@ -112,6 +115,9 @@ function settingsStatePayload(root) {
             sequencer_url: String(sequencerUrl || ""),
             indexer_url: String(indexerUrl || ""),
             node_url: String(nodeUrl || ""),
+            blockchain_source_mode: root.normalizedCoreSourceMode(blockchainSourceMode),
+            indexer_source_mode: root.normalizedCoreSourceMode(indexerSourceMode),
+            execution_source_mode: root.normalizedCoreSourceMode(executionSourceMode),
             messaging_source_mode: root.normalizedMessagingSourceMode(messagingSourceMode),
             messaging_rest_url: String(messagingRestUrl || ""),
             messaging_metrics_url: String(messagingMetricsUrl || ""),

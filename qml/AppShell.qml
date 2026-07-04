@@ -14,6 +14,7 @@ Item {
 
     property QtObject bridgeHost: null
     readonly property bool compact: width < 940
+    property int pageLoadSerial: 0
 
     Theme {
         id: theme
@@ -33,6 +34,7 @@ Item {
         appModel.loadSettingsState()
         appModel.loadIdlState()
         appModel.loadWalletState()
+        root.schedulePageLoaderUpdate()
         const initialReference = root.initialReferenceFromArguments()
         if (initialReference.length > 0) {
             Qt.callLater(function () {
@@ -147,7 +149,6 @@ Item {
                         active: true
                         asynchronous: true
                         width: pageScroll.availableWidth
-                        sourceComponent: root.pageFor(appModel.currentView)
                     }
                 }
             }
@@ -170,6 +171,7 @@ Item {
         target: appModel
 
         function onCurrentViewChanged() {
+            root.schedulePageLoaderUpdate()
             if (pageScroll.contentItem) {
                 pageScroll.contentItem.contentY = 0
             }
@@ -234,6 +236,17 @@ Item {
         default:
             return overviewPage
         }
+    }
+
+    function schedulePageLoaderUpdate() {
+        root.pageLoadSerial += 1
+        const serial = root.pageLoadSerial
+        Qt.callLater(function () {
+            if (serial !== root.pageLoadSerial) {
+                return
+            }
+            pageLoader.sourceComponent = root.pageFor(appModel.currentView)
+        })
     }
 
     function initialReferenceFromArguments() {

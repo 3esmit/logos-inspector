@@ -8,6 +8,10 @@ QtObject {
     property int nextRequestId: 1
     property var pendingCalls: ({})
 
+    function prefersBasecampModules() {
+        return root.host && root.host["callModule"] && !root.host["callModuleJson"]
+    }
+
     function callModule(moduleName, method, args) {
         if (!root.host) {
             return BridgeHelpers.missingBridge()

@@ -40,6 +40,7 @@ TestCase {
         property string lastModule: ""
         property string lastMethod: ""
         property var lastArgs: []
+        property bool serializeResults: false
 
         function callModule(moduleName, method, args) {
             callCount += 1
@@ -47,7 +48,7 @@ TestCase {
             lastMethod = String(method || "")
             lastArgs = args || []
             if (lastModule === "logos_inspector" && lastMethod === "call") {
-                return JSON.stringify({
+                const response = JSON.stringify({
                     ok: true,
                     value: {
                         method: lastArgs[0],
@@ -56,6 +57,7 @@ TestCase {
                     text: "OK",
                     error: ""
                 })
+                return serializeResults ? JSON.stringify(response) : response
             }
             return "direct"
         }
@@ -79,6 +81,12 @@ TestCase {
         bridge: bridgeClient
     }
 
+    AppModel {
+        id: basecampModel
+
+        bridge: basecampBridgeClient
+    }
+
     function init() {
         fakeHost.callCount = 0
         fakeHost.lastMethod = ""
@@ -88,6 +96,7 @@ TestCase {
         basecampHost.lastModule = ""
         basecampHost.lastMethod = ""
         basecampHost.lastArgs = []
+        basecampHost.serializeResults = false
         model.currentView = "overview"
         model.dashboardNode = null
         model.blockchainModuleReport = null
@@ -110,6 +119,12 @@ TestCase {
         model.lezBlocksPageNextBeforeBlock = 0
         model.lezBlocksPageError = ""
         model.blockDetailValue = null
+        model.blockchainSourceMode = "auto"
+        model.indexerSourceMode = "auto"
+        model.executionSourceMode = "auto"
+        basecampModel.blockchainSourceMode = "auto"
+        basecampModel.indexerSourceMode = "auto"
+        basecampModel.executionSourceMode = "auto"
         model.registeredIdls.clear()
         model.idlStateLoaded = false
         model.accountIdlSelections = ({})
@@ -131,6 +146,19 @@ TestCase {
         compare(response.value.args[1], 1)
     }
 
+    function test_basecamp_bridge_decodes_json_serialized_inspector_response() {
+        basecampHost.serializeResults = true
+
+        const response = basecampBridgeClient.callModule("logos_inspector", "blockchainLiveBlocks", ["http://127.0.0.1:8080", 1, 2, 3])
+
+        compare(basecampHost.callCount, 1)
+        compare(basecampHost.lastModule, "logos_inspector")
+        compare(basecampHost.lastMethod, "call")
+        verify(response.ok)
+        compare(response.value.method, "blockchainLiveBlocks")
+        compare(response.value.args[3], 3)
+    }
+
     function test_basecamp_bridge_keeps_inspector_module_version_direct() {
         const response = basecampBridgeClient.callModule("logos_inspector", "moduleVersion", [])
 
@@ -139,6 +167,42 @@ TestCase {
         compare(basecampHost.lastMethod, "moduleVersion")
         verify(response.ok)
         compare(response.value, "direct")
+    }
+
+    function test_core_source_args_keep_rpc_shape_in_standalone_auto() {
+        compare(model.effectiveCoreSourceMode(model.blockchainSourceMode), "rpc")
+
+        const args = model.blockchainArgs([1, 2])
+
+        compare(args.length, 3)
+        compare(args[0], model.nodeUrl)
+        compare(args[1], 1)
+        compare(args[2], 2)
+    }
+
+    function test_core_source_args_use_module_shape_in_basecamp_auto() {
+        compare(basecampModel.effectiveCoreSourceMode(basecampModel.indexerSourceMode), "module")
+
+        const args = basecampModel.indexerArgs(["hash-1"])
+
+        compare(args.length, 3)
+        compare(args[0], "module")
+        compare(args[1], basecampModel.indexerUrl)
+        compare(args[2], "hash-1")
+    }
+
+    function test_account_lookup_args_can_mix_execution_rpc_and_indexer_module() {
+        model.executionSourceMode = "rpc"
+        model.indexerSourceMode = "module"
+
+        const args = model.accountLookupArgs("account-1")
+
+        compare(args.length, 5)
+        compare(args[0], "rpc")
+        compare(args[1], model.sequencerUrl)
+        compare(args[2], "module")
+        compare(args[3], model.indexerUrl)
+        compare(args[4], "account-1")
     }
 
     function test_navigation_delegates() {

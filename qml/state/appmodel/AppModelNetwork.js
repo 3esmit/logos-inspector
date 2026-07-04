@@ -111,7 +111,7 @@ function queryNetworkConnection(root, kind, showResult, includeSensitiveProbe) {
 
 function refreshIndexerStatus(root) {
     with (root) {
-        const statusResponse = root.requestModule(root.inspectorModule, "indexerStatus", [indexerUrl], qsTr("Indexer status"), false, false)
+        const statusResponse = root.requestModule(root.inspectorModule, "indexerStatus", root.indexerArgs([]), qsTr("Indexer status"), false, false)
         if (!statusResponse.ok) {
             root.setResult(qsTr("Indexer status"), statusResponse.error, true, null)
             return statusResponse
@@ -126,8 +126,8 @@ function refreshIndexerStatus(root) {
             return statusResponse
         }
 
-        const healthResponse = root.requestModule(root.inspectorModule, "indexerHealth", [indexerUrl], qsTr("Indexer health"), false, false)
-        const headResponse = root.requestModule(root.inspectorModule, "indexerFinalizedHead", [indexerUrl], qsTr("Indexer head"), false, false)
+        const healthResponse = root.requestModule(root.inspectorModule, "indexerHealth", root.indexerArgs([]), qsTr("Indexer health"), false, false)
+        const headResponse = root.requestModule(root.inspectorModule, "indexerFinalizedHead", root.indexerArgs([]), qsTr("Indexer head"), false, false)
         if (statusValue.indexedBlockId === undefined && headResponse.ok === true) {
             const head = root.scalarValue(headResponse.value)
             if (head !== null) {
@@ -209,11 +209,11 @@ function networkConnectionRequest(root, kind, includeSensitiveProbe) {
     with (root) {
         switch (kind) {
         case "blockchain":
-            return { module: inspectorModule, method: "blockchainNode", args: [nodeUrl], label: qsTr("Blockchain node") }
+            return { module: inspectorModule, method: "blockchainNode", args: root.blockchainArgs([]), label: qsTr("Blockchain node") }
         case "indexer":
-            return { module: inspectorModule, method: "indexerFinalizedHead", args: [indexerUrl], label: qsTr("Indexer head") }
+            return { module: inspectorModule, method: "indexerFinalizedHead", args: root.indexerArgs([]), label: qsTr("Indexer head") }
         case "execution":
-            return { module: inspectorModule, method: "head", args: [sequencerUrl], label: qsTr("Sequencer head") }
+            return { module: inspectorModule, method: "head", args: root.executionArgs([]), label: qsTr("Sequencer head") }
         case "messaging":
             return { module: inspectorModule, method: "deliverySourceReport", args: root.deliverySourceReportArgs(), label: qsTr("Delivery source") }
         case "storage":
@@ -221,6 +221,58 @@ function networkConnectionRequest(root, kind, includeSensitiveProbe) {
         default:
             return null
         }
+    }
+}
+
+function blockchainArgs(root, extra) {
+    with (root) {
+        return coreSourceArgs(root, blockchainSourceMode, blockchainModule, nodeUrl, extra)
+    }
+}
+
+function indexerArgs(root, extra) {
+    with (root) {
+        return coreSourceArgs(root, indexerSourceMode, indexerModule, indexerUrl, extra)
+    }
+}
+
+function executionArgs(root, extra) {
+    with (root) {
+        return coreSourceArgs(root, executionSourceMode, executionModule, sequencerUrl, extra)
+    }
+}
+
+function coreSourceArgs(root, sourceMode, moduleName, endpoint, extra) {
+    with (root) {
+        const rest = Array.isArray(extra) ? extra : []
+        if (root.effectiveCoreSourceMode(sourceMode) !== "module") {
+            return [String(endpoint || "")].concat(rest)
+        }
+        return ["module", String(endpoint || "")].concat(rest)
+    }
+}
+
+function accountLookupArgs(root, account, idlJson, accountType) {
+    with (root) {
+        const executionMode = root.effectiveCoreSourceMode(executionSourceMode)
+        const indexerMode = root.effectiveCoreSourceMode(indexerSourceMode)
+        const suffix = [String(account || "")]
+        const idl = String(idlJson || "").trim()
+        if (idl.length > 0) {
+            suffix.push(idl)
+            if (accountType !== undefined && accountType !== null && String(accountType).trim().length > 0) {
+                suffix.push(String(accountType).trim())
+            }
+        }
+        if (executionMode === "rpc" && indexerMode === "rpc") {
+            return [String(sequencerUrl || ""), String(indexerUrl || "")].concat(suffix)
+        }
+        return [
+            executionMode,
+            String(sequencerUrl || ""),
+            indexerMode,
+            String(indexerUrl || "")
+        ].concat(suffix)
     }
 }
 
@@ -571,6 +623,90 @@ function deliverySourceTarget(root) {
         default:
             return String(deliveryModule || "")
         }
+    }
+}
+
+function normalizedCoreSourceMode(root, value) {
+    with (root) {
+        const source = String(value || "auto").trim().toLowerCase()
+        switch (source) {
+        case "rpc":
+        case "direct-rpc":
+        case "direct rpc":
+        case "standalone":
+        case "standalone-rpc":
+        case "standalone rpc":
+            return "rpc"
+        case "module":
+        case "basecamp":
+        case "basecamp-module":
+        case "basecamp module":
+            return "module"
+        case "auto":
+        default:
+            return "auto"
+        }
+    }
+}
+
+function effectiveCoreSourceMode(root, value) {
+    with (root) {
+        const source = root.normalizedCoreSourceMode(value)
+        if (source !== "auto") {
+            return source
+        }
+        return bridge && bridge.prefersBasecampModules && bridge.prefersBasecampModules() ? "module" : "rpc"
+    }
+}
+
+function blockchainSourceLabel(root) {
+    with (root) {
+        return coreSourceLabel(root, blockchainSourceMode, qsTr("Bedrock RPC"), qsTr("Basecamp blockchain_module"))
+    }
+}
+
+function blockchainSourceTarget(root) {
+    with (root) {
+        return root.effectiveCoreSourceMode(blockchainSourceMode) === "module" ? String(blockchainModule || "") : String(nodeUrl || "")
+    }
+}
+
+function indexerSourceLabel(root) {
+    with (root) {
+        return coreSourceLabel(root, indexerSourceMode, qsTr("Indexer RPC"), qsTr("Basecamp lez_indexer_module"))
+    }
+}
+
+function indexerSourceTarget(root) {
+    with (root) {
+        return root.effectiveCoreSourceMode(indexerSourceMode) === "module" ? String(indexerModule || "") : String(indexerUrl || "")
+    }
+}
+
+function executionSourceLabel(root) {
+    with (root) {
+        return coreSourceLabel(root, executionSourceMode, qsTr("Sequencer RPC"), qsTr("Basecamp logos_execution_zone"))
+    }
+}
+
+function executionSourceTarget(root) {
+    with (root) {
+        return root.effectiveCoreSourceMode(executionSourceMode) === "module" ? String(executionModule || "") : String(sequencerUrl || "")
+    }
+}
+
+function coreSourceLabel(root, sourceMode, rpcLabel, moduleLabel) {
+    with (root) {
+        const source = root.normalizedCoreSourceMode(sourceMode)
+        if (source === "rpc") {
+            return rpcLabel
+        }
+        if (source === "module") {
+            return moduleLabel
+        }
+        return root.effectiveCoreSourceMode(sourceMode) === "module"
+            ? qsTr("Auto: %1").arg(moduleLabel)
+            : qsTr("Auto: %1").arg(rpcLabel)
     }
 }
 

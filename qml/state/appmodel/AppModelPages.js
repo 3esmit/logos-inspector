@@ -2,7 +2,7 @@
 
 function refreshBlocksPage(root, anchorSlot) {
     with (root) {
-        const node = requestModule(inspectorModule, "blockchainNode", [nodeUrl], qsTr("Blocks node state"), false)
+        const node = requestModule(inspectorModule, "blockchainNode", root.blockchainArgs([]), qsTr("Blocks node state"), false)
         if (!node.ok) {
             blocksPageError = node.error
             setResult(qsTr("Blocks"), blocksPageError, true)
@@ -16,7 +16,7 @@ function refreshBlocksPage(root, anchorSlot) {
         const slotTo = fallbackSlot > 0 ? Math.min(requestedSlot, Number(fallbackSlot)) : requestedSlot
         const slotFrom = Math.max(0, slotTo - blocksPageWindow)
         const blockLimit = Math.max(5, Number(blocksPageLimit || 5))
-        const blocks = requestModule(inspectorModule, "blockchainBlocks", [nodeUrl, slotFrom, slotTo, blockLimit], qsTr("Blocks"), false)
+        const blocks = requestModule(inspectorModule, "blockchainBlocks", root.blockchainArgs([slotFrom, slotTo, blockLimit]), qsTr("Blocks"), false)
         if (!blocks.ok) {
             blocksPageError = blocks.error
             setResult(qsTr("Blocks"), blocksPageError, true)
@@ -64,7 +64,7 @@ function stopBlocksLiveMode(root) {
 
 function refreshBlocksLivePage(root) {
     with (root) {
-        const node = requestModule(inspectorModule, "blockchainNode", [nodeUrl], qsTr("Live blocks node state"), false)
+        const node = requestModule(inspectorModule, "blockchainNode", root.blockchainArgs([]), qsTr("Live blocks node state"), false)
         if (!node.ok) {
             blocksLiveError = node.error
             return
@@ -81,7 +81,7 @@ function refreshBlocksLivePage(root) {
         const existingTo = Math.max(0, Number(blocksPageSlotTo || 0))
         const slotFrom = existingTo > 0 ? Math.min(existingTo, slotTo) : Math.max(0, slotTo - blocksPageWindow)
         const limit = Math.max(5, Number(blocksPageLimit || 5))
-        const response = requestModule(inspectorModule, "blockchainLiveBlocks", [nodeUrl, slotFrom, slotTo, limit], qsTr("Live blocks"), false)
+        const response = requestModule(inspectorModule, "blockchainLiveBlocks", root.blockchainArgs([slotFrom, slotTo, limit]), qsTr("Live blocks"), false)
         if (!response.ok) {
             blocksLiveError = response.error
             return
@@ -497,7 +497,7 @@ function normalizedHashOrValue(root, value) {
 
 function refreshTransactionsPage(root, beforeBlock) {
     with (root) {
-        const node = requestModule(inspectorModule, "blockchainNode", [nodeUrl], qsTr("Transactions node state"), false)
+        const node = requestModule(inspectorModule, "blockchainNode", root.blockchainArgs([]), qsTr("Transactions node state"), false)
         if (!node.ok) {
             transactionsPageError = node.error
             setResult(qsTr("Transactions"), transactionsPageError, true)
@@ -510,7 +510,7 @@ function refreshTransactionsPage(root, beforeBlock) {
         const requestedSlot = Math.max(0, Number(beforeBlock === undefined || beforeBlock === null ? fallbackSlot : beforeBlock))
         const slotTo = fallbackSlot > 0 ? Math.min(requestedSlot, Number(fallbackSlot)) : requestedSlot
         const slotFrom = Math.max(0, slotTo - transactionsPageBlockBatch)
-        const blocks = requestModule(inspectorModule, "blockchainBlocks", [nodeUrl, slotFrom, slotTo], qsTr("Transactions"), false)
+        const blocks = requestModule(inspectorModule, "blockchainBlocks", root.blockchainArgs([slotFrom, slotTo]), qsTr("Transactions"), false)
         if (!blocks.ok) {
             transactionsPageError = blocks.error
             setResult(qsTr("Transactions"), transactionsPageError, true)
@@ -558,9 +558,9 @@ function setTransactionsPageLimit(root, limit) {
 function refreshLezBlocksPage(root, beforeBlock) {
     with (root) {
         const before = root.normalizedPositiveInteger(beforeBlock)
-        const sequencerResponse = requestModule(inspectorModule, "sequencerBlocks", [sequencerUrl, before > 0 ? before : null, lezBlocksPageLimit], qsTr("L2 blocks"), false, false)
+        const sequencerResponse = requestModule(inspectorModule, "sequencerBlocks", root.executionArgs([before > 0 ? before : null, lezBlocksPageLimit]), qsTr("L2 blocks"), false, false)
         if (sequencerResponse.ok) {
-            const indexerResponse = requestModule(inspectorModule, "indexerBlocks", [indexerUrl, before > 0 ? before : null, lezBlocksPageLimit], qsTr("L2 indexed blocks"), false, false)
+            const indexerResponse = requestModule(inspectorModule, "indexerBlocks", root.indexerArgs([before > 0 ? before : null, lezBlocksPageLimit]), qsTr("L2 indexed blocks"), false, false)
             if (!Array.isArray(sequencerResponse.value) || (indexerResponse.ok && !Array.isArray(indexerResponse.value))) {
                 lezBlocksPageBeforeBlock = before
                 lezBlocksPageRows = []
@@ -578,7 +578,7 @@ function refreshLezBlocksPage(root, beforeBlock) {
             return
         }
 
-        const response = requestModule(inspectorModule, "indexerBlocks", [indexerUrl, before > 0 ? before : null, lezBlocksPageLimit], qsTr("L2 blocks"), false, false)
+        const response = requestModule(inspectorModule, "indexerBlocks", root.indexerArgs([before > 0 ? before : null, lezBlocksPageLimit]), qsTr("L2 blocks"), false, false)
         if (!response.ok) {
             lezBlocksPageError = sequencerResponse.error || response.error
             setResult(qsTr("L2 blocks"), lezBlocksPageError, true)
@@ -632,7 +632,7 @@ function refreshLezTransactionsPage(root, beforeBlock) {
     with (root) {
         const before = root.normalizedPositiveInteger(beforeBlock)
         const blockLimit = Math.max(lezTransactionsBlockBatch, lezTransactionsPageLimit)
-        const response = requestModule(inspectorModule, "indexerBlocks", [indexerUrl, before > 0 ? before : null, blockLimit], qsTr("L2 transactions"), false, false)
+        const response = requestModule(inspectorModule, "indexerBlocks", root.indexerArgs([before > 0 ? before : null, blockLimit]), qsTr("L2 transactions"), false, false)
         if (!response.ok) {
             lezTransactionsPageError = response.error
             setResult(qsTr("L2 transactions"), lezTransactionsPageError, true)
@@ -954,7 +954,7 @@ function refreshTransferActivityPage(root, beforeBlock, preserveHistory) {
         if (!preserveHistory) {
             transferActivityHistory = []
         }
-        const recipients = requestModule(inspectorModule, "indexerTransferRecipients", [indexerUrl, before, transferActivityBlockBatch], qsTr("Transfer activity"), false)
+        const recipients = requestModule(inspectorModule, "indexerTransferRecipients", root.indexerArgs([before, transferActivityBlockBatch]), qsTr("Transfer activity"), false)
         if (!recipients.ok) {
             transferActivityError = recipients.error
             setResult(qsTr("Transfer activity"), transferActivityError, true)
@@ -1063,7 +1063,7 @@ function transferRecipientDetailById(root, value) {
 
 function refreshChannelsPage(root, anchorSlot) {
     with (root) {
-        const node = requestModule(inspectorModule, "blockchainNode", [nodeUrl], qsTr("Channels node state"), false)
+        const node = requestModule(inspectorModule, "blockchainNode", root.blockchainArgs([]), qsTr("Channels node state"), false)
         if (!node.ok) {
             channelsPageError = node.error
             setResult(qsTr("Channels"), channelsPageError, true)
@@ -1076,7 +1076,7 @@ function refreshChannelsPage(root, anchorSlot) {
         const requestedSlot = Math.max(0, Number(anchorSlot === undefined || anchorSlot === null ? fallbackSlot : anchorSlot))
         const slotTo = fallbackSlot > 0 ? Math.min(requestedSlot, Number(fallbackSlot)) : requestedSlot
         const slotFrom = Math.max(0, slotTo - channelsPageWindow)
-        const report = requestModule(inspectorModule, "channelScan", [nodeUrl, slotFrom, slotTo], qsTr("Channels"), false)
+        const report = requestModule(inspectorModule, "channelScan", root.blockchainArgs([slotFrom, slotTo]), qsTr("Channels"), false)
         if (!report.ok) {
             channelsPageError = report.error
             setResult(qsTr("Channels"), channelsPageError, true)

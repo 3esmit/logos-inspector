@@ -240,7 +240,7 @@ ColumnLayout {
                     enabled: !root.model.busy
                     Layout.preferredWidth: 132
                     accessibleName: qsTr("Run indexer deep health")
-                    onClicked: root.model.callInspector("indexerHealth", [root.model.indexerUrl], qsTr("Indexer health"))
+                    onClicked: root.model.callInspector("indexerHealth", root.model.indexerArgs([]), qsTr("Indexer health"))
                 }
 
                 ActionButton {
@@ -249,7 +249,7 @@ ColumnLayout {
                     enabled: !root.model.busy
                     Layout.preferredWidth: 148
                     accessibleName: qsTr("Fetch indexer finalized head")
-                    onClicked: root.model.callInspector("indexerFinalizedHead", [root.model.indexerUrl], qsTr("Indexer head"))
+                    onClicked: root.model.callInspector("indexerFinalizedHead", root.model.indexerArgs([]), qsTr("Indexer head"))
                 }
 
                 ActionButton {
