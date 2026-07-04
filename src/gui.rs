@@ -1,4 +1,9 @@
-use std::{env, path::PathBuf, process::Command};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+    process::Command,
+    time::SystemTime,
+};
 
 use anyhow::{Context as _, Result, bail};
 use logos_inspector::local_indexer::bootstrap_default_local_indexer;
@@ -43,11 +48,93 @@ fn standalone_program() -> Option<PathBuf> {
     }
 
     let exe = env::current_exe().ok()?;
-    let binary_name = if cfg!(windows) {
+    sibling_standalone_program(&exe)
+}
+
+fn sibling_standalone_program(exe: &Path) -> Option<PathBuf> {
+    let sibling = exe.with_file_name(standalone_binary_name());
+    if sibling.is_file() && file_modified_at(&sibling) >= file_modified_at(exe) {
+        return Some(sibling);
+    }
+    None
+}
+
+fn standalone_binary_name() -> &'static str {
+    if cfg!(windows) {
         "logos-inspector-standalone-gui.exe"
     } else {
         "logos-inspector-standalone-gui"
-    };
-    let sibling = exe.with_file_name(binary_name);
-    sibling.is_file().then_some(sibling)
+    }
+}
+
+fn file_modified_at(path: &Path) -> Option<SystemTime> {
+    fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::{thread, time::Duration};
+
+    #[test]
+    fn sibling_standalone_program_ignores_older_sibling() -> Result<()> {
+        let dir = temp_test_dir("older");
+        fs::create_dir_all(&dir)?;
+        let exe = dir.join("logos-inspector");
+        let sibling = dir.join(standalone_binary_name());
+        touch(&sibling)?;
+        thread::sleep(Duration::from_millis(20));
+        touch(&exe)?;
+
+        let selected = sibling_standalone_program(&exe);
+
+        cleanup_temp_dir(&dir)?;
+        if selected.is_some() {
+            bail!("older standalone sibling should be ignored");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sibling_standalone_program_accepts_newer_sibling() -> Result<()> {
+        let dir = temp_test_dir("newer");
+        fs::create_dir_all(&dir)?;
+        let exe = dir.join("logos-inspector");
+        let sibling = dir.join(standalone_binary_name());
+        touch(&exe)?;
+        thread::sleep(Duration::from_millis(20));
+        touch(&sibling)?;
+
+        let selected = sibling_standalone_program(&exe);
+
+        cleanup_temp_dir(&dir)?;
+        if selected.as_deref() != Some(sibling.as_path()) {
+            bail!("newer standalone sibling should be selected, got {selected:?}");
+        }
+        Ok(())
+    }
+
+    fn touch(path: &Path) -> Result<()> {
+        fs::write(path, [])?;
+        Ok(())
+    }
+
+    fn temp_test_dir(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        env::temp_dir().join(format!(
+            "logos-inspector-gui-{name}-{}-{nanos}",
+            std::process::id()
+        ))
+    }
+
+    fn cleanup_temp_dir(path: &Path) -> Result<()> {
+        fs::remove_dir_all(path)?;
+        Ok(())
+    }
 }
