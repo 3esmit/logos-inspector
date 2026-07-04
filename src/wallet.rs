@@ -9,7 +9,7 @@ use std::{
 
 use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value, json};
 
 use crate::{ProgramFileInfo, program_file_info, raw_http_json};
 
@@ -142,6 +142,63 @@ pub async fn bedrock_wallet_balance(
         path.push_str(&tip);
     }
     raw_http_json(endpoint, &path).await
+}
+
+pub(crate) fn default_wallet_state() -> Value {
+    json!({
+        "version": 1,
+        "profile": {
+            "label": "Local wallet",
+            "wallet_binary": "",
+            "wallet_home": "",
+            "network_profile": "",
+            "public_key_probe": ""
+        },
+        "operations": []
+    })
+}
+
+pub(crate) fn wallet_state_with_detected_profile(mut state: Value) -> Value {
+    let detected = detected_wallet_profile();
+    let profile = match state.as_object_mut() {
+        Some(root) => root
+            .entry("profile")
+            .or_insert_with(|| json!({ "label": "Local wallet" })),
+        None => return state,
+    };
+    let Some(profile) = profile.as_object_mut() else {
+        return state;
+    };
+
+    fill_blank_field(profile, &detected, "wallet_binary");
+    fill_blank_field(profile, &detected, "wallet_home");
+    state
+}
+
+pub(crate) fn detected_wallet_profile() -> Value {
+    json!({
+        "label": "Local wallet",
+        "wallet_binary": detect_wallet_binary()
+            .map(|path| path.display().to_string())
+            .unwrap_or_default(),
+        "wallet_home": detect_wallet_home()
+            .map(|path| path.display().to_string())
+            .unwrap_or_default(),
+    })
+}
+
+fn fill_blank_field(profile: &mut Map<String, Value>, detected: &Value, key: &str) {
+    let current = profile.get(key).and_then(Value::as_str).unwrap_or_default();
+    if !current.trim().is_empty() {
+        return;
+    }
+    let Some(value) = detected.get(key).and_then(Value::as_str) else {
+        return;
+    };
+    if value.trim().is_empty() {
+        return;
+    }
+    profile.insert(key.to_owned(), Value::String(value.to_owned()));
 }
 
 fn local_wallet_profile_status_with_env(
@@ -418,6 +475,85 @@ fn normalize_bedrock_hex_id(value: &str, label: &str) -> Result<String> {
         bail!("{label} must be 64 hex characters")
     }
     Ok(text.to_ascii_lowercase())
+}
+
+fn detect_wallet_binary() -> Option<PathBuf> {
+    if let Some(path) = env_path_if_file("LOGOS_WALLET_BINARY") {
+        return Some(path);
+    }
+
+    if let Some(path) = find_binary_in_path("wallet") {
+        return Some(path);
+    }
+
+    let home = env::var_os("HOME").map(PathBuf::from)?;
+    [
+        home.join(".cargo").join("bin").join(binary_name("wallet")),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")))
+            .join("logos-execution-zone")
+            .join("target")
+            .join("release")
+            .join(binary_name("wallet")),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")))
+            .join("logos-execution-zone")
+            .join("target")
+            .join("debug")
+            .join(binary_name("wallet")),
+    ]
+    .into_iter()
+    .find(|path| path.is_file())
+}
+
+fn detect_wallet_home() -> Option<PathBuf> {
+    if let Some(path) = env_path_if_wallet_home(LOCAL_WALLET_HOME_ENV) {
+        return Some(path);
+    }
+    if let Some(path) = env_path_if_wallet_home(LEE_WALLET_HOME_ENV) {
+        return Some(path);
+    }
+
+    let home = env::var_os("HOME").map(PathBuf::from)?;
+    [
+        home.join(".nssa").join("wallet"),
+        home.join(".lee").join("wallet"),
+    ]
+    .into_iter()
+    .find(|path| wallet_home_is_configured(path))
+}
+
+fn env_path_if_file(variable: &str) -> Option<PathBuf> {
+    let path = env::var_os(variable).map(PathBuf::from)?;
+    path.is_file().then_some(path)
+}
+
+fn env_path_if_wallet_home(variable: &str) -> Option<PathBuf> {
+    let path = env::var_os(variable).map(PathBuf::from)?;
+    wallet_home_is_configured(&path).then_some(path)
+}
+
+fn wallet_home_is_configured(path: &Path) -> bool {
+    path.is_dir() && path.join("wallet_config.json").is_file()
+}
+
+fn find_binary_in_path(binary: &str) -> Option<PathBuf> {
+    let binary = binary_name(binary);
+    env::var_os("PATH")
+        .into_iter()
+        .flat_map(|paths| env::split_paths(&paths).collect::<Vec<_>>())
+        .map(|path| path.join(&binary))
+        .find(|path| path.is_file())
+}
+
+fn binary_name(binary: &str) -> String {
+    if cfg!(windows) {
+        format!("{binary}.exe")
+    } else {
+        binary.to_owned()
+    }
 }
 
 fn unix_time_text() -> String {

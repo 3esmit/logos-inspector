@@ -3,6 +3,7 @@ pub mod blockchain;
 mod borsh_decode;
 pub mod bridge;
 pub mod channels;
+mod entity_id;
 mod idl;
 mod indexer;
 pub mod local_indexer;
@@ -20,12 +21,12 @@ mod transactions;
 mod transfers;
 mod wallet;
 
-use anyhow::{Context as _, Result, bail};
+#[cfg(test)]
+use anyhow::bail;
+use anyhow::{Context as _, Result};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
-use common::{
-    HashType,
-    block::{BedrockStatus, Block, BlockBody, BlockHeader},
-};
+use common::block::{BedrockStatus, Block, BlockBody, BlockHeader};
+#[cfg(test)]
 use lee::AccountId;
 #[cfg(test)]
 use lee::PublicKey;
@@ -39,6 +40,8 @@ pub use accounts::{
     account_lookup_with_idl, account_transactions_by_account, sequencer_account,
     sequencer_account_with_idl,
 };
+pub use entity_id::normalize_program_id_hex;
+pub(crate) use entity_id::{normalize_account_id_text, parse_account_id, parse_hash};
 pub use idl::{
     AccountIdlDecodeReport, DecodedField, EventIdlDecodeReport, InstructionDecodeReport,
     decode_account_data_hex_with_idl, decode_event_data_hex_with_idl, decode_event_data_with_idl,
@@ -58,9 +61,9 @@ pub use network::{
     resolve_network_endpoints,
 };
 pub use overview::{
-    InspectorScope, NodeProbe, OverviewReport, ProbeField, ServiceProbe, inspector_scopes, overview,
+    InspectorScope, NodeProbe, OverviewReport, ServiceProbe, inspector_scopes, overview,
 };
-pub use probe::ProbeReport;
+pub use probe::{ProbeField, ProbeReport};
 use programs::program_id_base58_from_hex;
 pub use programs::{
     ProgramFileInfo, ProgramIdEntry, program_file_info, program_id_base58, program_id_hex,
@@ -174,85 +177,6 @@ fn split_list_string(value: &str) -> Vec<String> {
         .collect()
 }
 
-pub fn normalize_program_id_hex(value: &str) -> Result<String> {
-    let text = value.trim();
-    if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
-        let bytes = hex::decode(hex).context("invalid program id hex")?;
-        if bytes.len() != 32 {
-            bail!("program id hex must be 32 bytes");
-        }
-        return Ok(hex::encode(bytes));
-    }
-    if text.len() == 64 && text.chars().all(|ch| ch.is_ascii_hexdigit()) {
-        let bytes = hex::decode(text).context("invalid program id hex")?;
-        return Ok(hex::encode(bytes));
-    }
-    let account_id = parse_account_id(text)?;
-    Ok(hex::encode(account_id.value()))
-}
-
-pub(crate) fn parse_account_id(value: &str) -> Result<AccountId> {
-    let value = normalized_public_account_id(value)?;
-    if let Some(account_id) = parse_account_id_hex(value)? {
-        return Ok(account_id);
-    }
-    value
-        .parse()
-        .with_context(|| format!("invalid account id `{value}`"))
-}
-
-fn normalized_public_account_id(value: &str) -> Result<&str> {
-    let value = value.trim();
-    if let Some(private) = value
-        .strip_prefix("Private/")
-        .or_else(|| value.strip_prefix("private/"))
-    {
-        let _ = private;
-        bail!(
-            "private account state is local wallet state; public RPC cannot fetch `Private/` accounts"
-        )
-    }
-    Ok(value
-        .strip_prefix("Public/")
-        .or_else(|| value.strip_prefix("public/"))
-        .unwrap_or(value)
-        .trim())
-}
-
-fn parse_account_id_hex(value: &str) -> Result<Option<AccountId>> {
-    let hex = value
-        .strip_prefix("0x")
-        .or_else(|| value.strip_prefix("0X"))
-        .unwrap_or(value);
-    let explicit_hex = hex.len() != value.len();
-    if hex.len() != 64 || !hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
-        if explicit_hex {
-            bail!("invalid account id `{value}`");
-        }
-        return Ok(None);
-    }
-    let bytes = hex::decode(hex).context("invalid account id hex")?;
-    let mut fixed = [0_u8; 32];
-    fixed.copy_from_slice(&bytes);
-    Ok(Some(AccountId::new(fixed)))
-}
-
-pub(crate) fn normalize_account_id_text(value: &str) -> Option<String> {
-    parse_account_id(value)
-        .ok()
-        .map(|account_id| account_id.to_string())
-}
-
-pub(crate) fn parse_hash(value: &str, label: &str) -> Result<HashType> {
-    let value = value
-        .strip_prefix("0x")
-        .or_else(|| value.strip_prefix("0X"))
-        .unwrap_or(value);
-    value
-        .parse()
-        .with_context(|| format!("invalid {label} `{value}`"))
-}
-
 pub(crate) fn value_to_string(value: &Value) -> String {
     match value {
         Value::String(value) => value.clone(),
@@ -317,32 +241,6 @@ mod tests {
         assert_eq!(summary.nonces, vec!["1", "2"]);
         assert_eq!(summary.instruction_data, vec![3, 4]);
         assert_eq!(summary.raw, raw);
-    }
-
-    #[test]
-    fn parse_account_id_accepts_hex_with_optional_prefix() {
-        let account_id = AccountId::new([7_u8; 32]);
-        let hex = hex::encode(account_id.value());
-
-        assert_eq!(parse_account_id(&hex).ok(), Some(account_id));
-        assert_eq!(parse_account_id(&format!("0x{hex}")).ok(), Some(account_id));
-    }
-
-    #[test]
-    fn parse_account_id_accepts_public_prefix_and_rejects_private_prefix() {
-        let account_id = AccountId::new([9_u8; 32]);
-        let encoded = account_id.to_string();
-
-        assert_eq!(
-            parse_account_id(&format!("Public/{encoded}")).ok(),
-            Some(account_id)
-        );
-        let result = parse_account_id(&format!("Private/{encoded}"));
-        assert!(result.is_err(), "{result:?}");
-        let Err(error) = result else {
-            return;
-        };
-        assert!(error.to_string().contains("private account state"));
     }
 
     #[test]

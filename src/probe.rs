@@ -2,6 +2,31 @@ use serde::Serialize;
 use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize)]
+pub struct ProbeField {
+    pub ok: bool,
+    pub value: Option<Value>,
+    pub error: Option<String>,
+}
+
+impl ProbeField {
+    pub(crate) fn ok(value: impl Serialize) -> Self {
+        Self {
+            ok: true,
+            value: Some(serde_json::to_value(value).unwrap_or(Value::Null)),
+            error: None,
+        }
+    }
+
+    pub(crate) fn err(error: impl std::fmt::Display) -> Self {
+        Self {
+            ok: false,
+            value: None,
+            error: Some(error.to_string()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct ProbeReport {
     pub label: String,
     pub source: String,
