@@ -1,11 +1,12 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
-import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import "../components"
+import "../components/common"
 import "../state"
 import "../theme"
+import "../utils/UiFormat.js" as UiFormat
 
 ColumnLayout {
     id: root
@@ -38,41 +39,19 @@ ColumnLayout {
         }
     }
 
-    Frame {
-        padding: 0
+    DataTableFrame {
+        theme: root.theme
         Layout.fillWidth: true
-
-        background: Rectangle {
-            color: root.theme.surface
-            radius: root.theme.radius
-            border.width: 1
-            border.color: root.theme.outlineMuted
-        }
-
-        contentItem: ColumnLayout {
-            spacing: 0
-
-            BlockRow {
-                theme: root.theme
-                header: true
-                columns: [qsTr("L2 block"), qsTr("Header"), qsTr("Tx"), qsTr("Bedrock")]
-            }
-
-            Repeater {
-                model: root.blockRows()
-
-                BlockRow {
-                    required property var modelData
-
-                    theme: root.theme
-                    columns: [modelData.block, modelData.header, modelData.tx, modelData.status]
-                    blockHash: modelData.blockHash
-                    onCellActivated: function (column) {
-                        if ((column === 0 || column === 1) && modelData.blockHash.length > 0) {
-                            root.model.openReference("indexerBlock", modelData.blockHash)
-                        }
-                    }
-                }
+        headerCells: [
+            { text: qsTr("L2 block"), width: 96 },
+            { text: qsTr("Header"), width: 220, fill: true },
+            { text: qsTr("Tx"), width: 64 },
+            { text: qsTr("Bedrock"), width: 98 }
+        ]
+        rows: root.blockRows()
+        onCellActivated: function (row, column, cell, rowData) {
+            if ((column === 0 || column === 1) && rowData.blockHash.length > 0) {
+                root.model.openReference("indexerBlock", rowData.blockHash)
             }
         }
     }
@@ -90,20 +69,25 @@ ColumnLayout {
         const blocks = root.model.lezBlocksPageRows || [];
         if (!blocks.length) {
             return [{
-                block: "-",
-                header: qsTr("No indexed blocks"),
-                tx: "-",
-                status: "-",
+                cells: [
+                    { text: "-", width: 96 },
+                    { text: qsTr("No indexed blocks"), width: 220, fill: true, monospace: false },
+                    { text: "-", width: 64 },
+                    { text: "-", width: 98 }
+                ],
                 blockHash: ""
             }];
         }
         return blocks.map(function (block) {
+            const blockHash = String(block.header_hash || "")
             return {
-                block: root.numberText(block.block_id),
-                header: root.shortHash(block.header_hash),
-                tx: root.numberText(block.tx_count !== undefined ? block.tx_count : ((block.transactions || []).length)),
-                status: String(block.bedrock_status || "-"),
-                blockHash: String(block.header_hash || "")
+                cells: [
+                    { text: root.numberText(block.block_id), width: 96, link: blockHash.length > 0, copyText: blockHash },
+                    { text: UiFormat.shortHash(blockHash), width: 220, fill: true, link: blockHash.length > 0, copyText: blockHash },
+                    { text: root.numberText(block.tx_count !== undefined ? block.tx_count : ((block.transactions || []).length)), width: 64 },
+                    { text: String(block.bedrock_status || "-"), width: 98, monospace: false }
+                ],
+                blockHash: blockHash
             };
         });
     }
@@ -116,97 +100,6 @@ ColumnLayout {
     }
 
     function numberText(value) {
-        if (value === undefined || value === null || value === "") {
-            return "-";
-        }
-        if (typeof value === "number") {
-            return value.toLocaleString(Qt.locale(), "f", 0);
-        }
-        return String(value);
-    }
-
-    function shortHash(value) {
-        const text = String(value || "");
-        if (text.length <= 16) {
-            return text.length ? text : "-";
-        }
-        return text.slice(0, 8) + "..." + text.slice(-6);
-    }
-
-    component BlockRow: Item {
-        id: rowRoot
-
-        required property Theme theme
-        property var columns: []
-        property string blockHash: ""
-        property bool header: false
-        signal cellActivated(int column)
-
-        Layout.fillWidth: true
-        Layout.preferredHeight: rowRoot.header ? 36 : 42
-
-        Rectangle {
-            anchors.fill: parent
-            color: rowRoot.header ? rowRoot.theme.field : "transparent"
-            border.width: 0
-        }
-
-        Rectangle {
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.bottom: parent.bottom
-            height: 1
-            color: rowRoot.theme.outlineMuted
-        }
-
-        GridLayout {
-            anchors.fill: parent
-            anchors.leftMargin: 14
-            anchors.rightMargin: 14
-            columns: 4
-            columnSpacing: 10
-
-            Repeater {
-                model: 4
-
-                LinkCell {
-                    required property int index
-
-                    theme: rowRoot.theme
-                    text: String(rowRoot.columns[index] || "-")
-                    header: rowRoot.header
-                    link: rowRoot.linkFor(index)
-                    copyText: rowRoot.copyValueFor(index)
-                    monospace: !rowRoot.header
-                    Layout.preferredWidth: rowRoot.columnWidth(index)
-                    Layout.fillWidth: index === 1
-                    onActivated: rowRoot.cellActivated(index)
-                }
-            }
-        }
-
-        function linkFor(index) {
-            return !rowRoot.header && rowRoot.blockHash.length > 0 && (index === 0 || index === 1);
-        }
-
-        function copyValueFor(index) {
-            if (index === 1 && rowRoot.blockHash.length > 0) {
-                return rowRoot.blockHash;
-            }
-            return String(rowRoot.columns[index] || "");
-        }
-
-        function columnWidth(index) {
-            if (index === 0) {
-                return 96;
-            }
-            if (index === 2) {
-                return 64;
-            }
-            if (index === 3) {
-                return 98;
-            }
-            return 220;
-        }
+        return UiFormat.numberText(value);
     }
 }

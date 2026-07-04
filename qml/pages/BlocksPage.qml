@@ -1,11 +1,12 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
-import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import "../components"
+import "../components/common"
 import "../state"
 import "../theme"
+import "../utils/UiFormat.js" as UiFormat
 
 ColumnLayout {
     id: root
@@ -38,45 +39,21 @@ ColumnLayout {
         }
     }
 
-    Frame {
-        padding: 0
+    DataTableFrame {
+        theme: root.theme
         Layout.fillWidth: true
-
-        background: Rectangle {
-            color: root.theme.surface
-            radius: root.theme.radius
-            border.width: 1
-            border.color: root.theme.outlineMuted
-        }
-
-        contentItem: ColumnLayout {
-            spacing: 0
-
-            BlockRow {
-                theme: root.theme
-                header: true
-                columns: [qsTr("L1 slot"), qsTr("Height"), qsTr("Header"), qsTr("Tx"), qsTr("Leader"), qsTr("Status")]
-            }
-
-            Repeater {
-                model: root.blockRows()
-
-                BlockRow {
-                    required property var modelData
-
-                    theme: root.theme
-                    columns: [modelData.slot, modelData.height, modelData.header, modelData.tx, modelData.leader, modelData.status]
-                    blockHash: modelData.blockHash
-                    leaderHash: modelData.leaderHash
-                    rawBlock: modelData.rawBlock
-                    status: modelData.status
-                    selected: root.isSelectedBlock(modelData.blockHash)
-                    onCellActivated: function (column) {
-                        if (column === 0 || column === 2) {
-                            root.model.openReference("block", modelData.slotRaw, modelData.rawBlock);
-                        }
-                    }
-                }
+        headerCells: [
+            { text: qsTr("L1 slot"), width: 96 },
+            { text: qsTr("Height"), width: 72 },
+            { text: qsTr("Header"), width: 140, fill: true },
+            { text: qsTr("Tx"), width: 72 },
+            { text: qsTr("Leader"), width: 140, fill: true },
+            { text: qsTr("Status"), width: 72 }
+        ]
+        rows: root.blockRows()
+        onCellActivated: function (row, column, cell, rowData) {
+            if (rowData.rawBlock !== null && (column === 0 || column === 2)) {
+                root.model.openReference("block", rowData.slotRaw, rowData.rawBlock)
             }
         }
     }
@@ -94,16 +71,19 @@ ColumnLayout {
         const blocks = root.model.blocksPageRows || [];
         if (!blocks.length) {
             return [{
-                slot: "-",
                 slotRaw: "",
-                height: "-",
-                header: qsTr("No blocks in loaded range"),
-                tx: "-",
-                leader: "-",
-                status: "-",
+                cells: [
+                    { text: "-", width: 96 },
+                    { text: "-", width: 72 },
+                    { text: qsTr("No blocks in loaded range"), width: 140, fill: true, monospace: false },
+                    { text: "-", width: 72 },
+                    { text: "-", width: 140, fill: true },
+                    { text: "-", width: 72 }
+                ],
                 blockHash: "",
                 leaderHash: "",
-                rawBlock: null
+                rawBlock: null,
+                selected: false
             }];
         }
         return blocks.map(function (block) {
@@ -113,16 +93,19 @@ ColumnLayout {
             const hash = root.model.blockHash(block);
             const status = root.model.blockStatus(block);
             return {
-                slot: root.numberText(header.slot),
                 slotRaw: String(header.slot || ""),
-                height: root.numberText(block.height || header.height),
-                header: root.shortHash(hash),
-                tx: root.numberText(transactions.length),
-                leader: root.shortHash(proof.leader_key),
-                status: status,
+                cells: [
+                    { text: root.numberText(header.slot), width: 96, link: true, copyable: false },
+                    { text: root.numberText(block.height || header.height), width: 72 },
+                    { text: UiFormat.shortHash(hash), width: 140, fill: true, link: hash.length > 0, copyText: hash },
+                    { text: root.numberText(transactions.length), width: 72 },
+                    { text: UiFormat.shortHash(proof.leader_key), width: 140, fill: true, copyable: String(proof.leader_key || "").length > 0, copyText: String(proof.leader_key || "") },
+                    { text: status, width: 72, tone: root.statusTone(status), monospace: false }
+                ],
                 blockHash: hash,
                 leaderHash: String(proof.leader_key || ""),
-                rawBlock: block
+                rawBlock: block,
+                selected: root.isSelectedBlock(hash)
             };
         });
     }
@@ -157,128 +140,16 @@ ColumnLayout {
     }
 
     function numberText(value) {
-        if (value === undefined || value === null || value === "") {
-            return "-";
-        }
-        if (typeof value === "number") {
-            return value.toLocaleString(Qt.locale(), "f", 0);
-        }
-        return String(value);
+        return UiFormat.numberText(value);
     }
 
-    function shortHash(value) {
-        const text = String(value || "");
-        if (text.length <= 16) {
-            return text.length ? text : "-";
+    function statusTone(value) {
+        if (value === "finalized" || value === "confirmed") {
+            return "success";
         }
-        return text.slice(0, 8) + "..." + text.slice(-6);
-    }
-
-    component BlockRow: Item {
-        id: rowRoot
-
-        required property Theme theme
-        property var columns: []
-        property string blockHash: ""
-        property string leaderHash: ""
-        property var rawBlock: null
-        property string status: ""
-        property bool header: false
-        property bool selected: false
-        signal cellActivated(int column)
-
-        Layout.fillWidth: true
-        Layout.preferredHeight: rowRoot.header ? 36 : 42
-
-        Rectangle {
-            anchors.fill: parent
-            color: rowRoot.header ? rowRoot.theme.field : (rowRoot.selected ? rowRoot.theme.accentMuted : "transparent")
-            border.width: 0
+        if (value === "pending") {
+            return "warning";
         }
-
-        Rectangle {
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.bottom: parent.bottom
-            height: 1
-            color: rowRoot.theme.outlineMuted
-        }
-
-        GridLayout {
-            anchors.fill: parent
-            anchors.leftMargin: 14
-            anchors.rightMargin: 14
-            columns: 6
-            columnSpacing: 10
-
-            Repeater {
-                model: 6
-
-                LinkCell {
-                    required property int index
-
-                    theme: rowRoot.theme
-                    text: String(rowRoot.columns[index] || "-")
-                    header: rowRoot.header
-                    link: rowRoot.linkFor(index)
-                    copyable: rowRoot.copyableFor(index)
-                    copyText: rowRoot.copyValueFor(index)
-                    monospace: !rowRoot.header
-                    textColor: rowRoot.textColor(index)
-                    Layout.preferredWidth: rowRoot.columnWidth(index)
-                    Layout.fillWidth: index === 2 || index === 4
-                    onActivated: rowRoot.cellActivated(index)
-                }
-            }
-        }
-
-        function linkFor(index) {
-            return !rowRoot.header
-                && rowRoot.rawBlock !== null
-                && ((index === 0 && String(rowRoot.columns[0] || "").length > 0)
-                    || (index === 2 && rowRoot.blockHash.length > 0));
-        }
-
-        function copyableFor(index) {
-            return !rowRoot.header
-                && ((index === 2 && rowRoot.blockHash.length > 0)
-                    || (index === 4 && rowRoot.leaderHash.length > 0));
-        }
-
-        function copyValueFor(index) {
-            if (index === 2 && rowRoot.blockHash.length > 0) {
-                return rowRoot.blockHash
-            }
-            if (index === 4 && rowRoot.leaderHash.length > 0) {
-                return rowRoot.leaderHash
-            }
-            return String(rowRoot.columns[index] || "")
-        }
-
-        function columnWidth(index) {
-            if (index === 0) {
-                return 96;
-            }
-            if (index === 1 || index === 3 || index === 5) {
-                return 72;
-            }
-            return 140;
-        }
-
-        function textColor(index) {
-            if (rowRoot.header) {
-                return rowRoot.theme.textMuted;
-            }
-            if (index !== 5) {
-                return rowRoot.theme.text;
-            }
-            if (rowRoot.status === "finalized" || rowRoot.status === "confirmed") {
-                return rowRoot.theme.success;
-            }
-            if (rowRoot.status === "pending") {
-                return rowRoot.theme.warning;
-            }
-            return rowRoot.theme.textMuted;
-        }
+        return "neutral";
     }
 }

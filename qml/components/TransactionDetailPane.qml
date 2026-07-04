@@ -6,6 +6,8 @@ import QtQml.Models
 import QtQuick.Layouts
 import "../state"
 import "../theme"
+import "common"
+import "../utils/UiFormat.js" as UiFormat
 
 ColumnLayout {
     id: root
@@ -54,10 +56,15 @@ ColumnLayout {
         }
     }
 
-    SectionBlock {
+    DetailSection {
         theme: root.theme
         title: qsTr("Overview")
         rows: root.overviewRows()
+        labelWidth: 210
+        surfaceColor: root.theme.surface
+        onLinkActivated: function (kind, value) {
+            root.model.openReference(kind, value)
+        }
     }
 
     ColumnLayout {
@@ -102,25 +109,40 @@ ColumnLayout {
             Layout.fillWidth: true
         }
 
-        SectionBlock {
+        DetailSection {
             visible: root.detail && root.detail.decoded !== null
             theme: root.theme
             title: qsTr("Decoded instruction")
             rows: root.decodedRows()
+            labelWidth: 210
+            surfaceColor: root.theme.surface
+            onLinkActivated: function (kind, value) {
+                root.model.openReference(kind, value)
+            }
         }
 
-        SectionBlock {
+        DetailSection {
             visible: root.detail && root.detail.decoded !== null
             theme: root.theme
             title: qsTr("Accounts")
             rows: root.decodedAccountRows()
+            labelWidth: 210
+            surfaceColor: root.theme.surface
+            onLinkActivated: function (kind, value) {
+                root.model.openReference(kind, value)
+            }
         }
 
-        SectionBlock {
+        DetailSection {
             visible: root.detail && root.detail.decoded !== null
             theme: root.theme
             title: qsTr("Args")
             rows: root.decodedArgRows()
+            labelWidth: 210
+            surfaceColor: root.theme.surface
+            onLinkActivated: function (kind, value) {
+                root.model.openReference(kind, value)
+            }
         }
     }
 
@@ -163,10 +185,15 @@ ColumnLayout {
                     spacing: 8
                     Layout.fillWidth: true
 
-                    SectionBlock {
+                    DetailSection {
                         theme: root.theme
                         title: qsTr("Operation %1").arg(operationBlock.modelData.index)
                         rows: root.operationRows(operationBlock.modelData)
+                        labelWidth: 210
+                        surfaceColor: root.theme.surface
+                        onLinkActivated: function (kind, value) {
+                            root.model.openReference(kind, value)
+                        }
                     }
 
                     Frame {
@@ -183,11 +210,12 @@ ColumnLayout {
                         contentItem: ColumnLayout {
                             spacing: 0
 
-                            DetailRow {
+                            DetailValueRow {
                                 theme: root.theme
                                 label: qsTr("Payload")
                                 value: qsTr("%1 field(s)").arg(root.fieldCount(operationBlock.modelData.payload))
                                 monospace: false
+                                labelWidth: 210
                             }
 
                             TextArea {
@@ -222,12 +250,17 @@ ColumnLayout {
         Repeater {
             model: root.detail && root.detail.mode === "lez" ? root.detail.sections : []
 
-            SectionBlock {
+            DetailSection {
                 required property var modelData
 
                 theme: root.theme
                 title: String(modelData.title || "")
                 rows: root.inspectionRows(modelData.rows || [])
+                labelWidth: 210
+                surfaceColor: root.theme.surface
+                onLinkActivated: function (kind, value) {
+                    root.model.openReference(kind, value)
+                }
             }
         }
     }
@@ -486,21 +519,11 @@ ColumnLayout {
     }
 
     function valueText(value) {
-        if (value === undefined || value === null || value === "") {
-            return "-"
-        }
-        if (typeof value === "number") {
-            return value % 1 === 0 ? value.toLocaleString(Qt.locale(), "f", 0) : String(value)
-        }
-        return String(value)
+        return UiFormat.valueText(value)
     }
 
     function shortHash(value) {
-        const text = String(value || "")
-        if (text.length <= 16) {
-            return text.length ? text : "-"
-        }
-        return text.slice(0, 8) + "..." + text.slice(-6)
+        return UiFormat.shortHash(value)
     }
 
     function formatValue(value) {
@@ -513,136 +536,4 @@ ColumnLayout {
         return JSON.stringify(value, null, 2)
     }
 
-    component SectionBlock: ColumnLayout {
-        id: sectionRoot
-
-        required property Theme theme
-        property string title: ""
-        property var rows: []
-
-        visible: rows.length > 0
-        spacing: 6
-        Layout.fillWidth: true
-
-        Text {
-            visible: sectionRoot.title.length > 0
-            text: sectionRoot.title
-            color: sectionRoot.theme.text
-            textFormat: Text.PlainText
-            font.pixelSize: 14
-            font.weight: Font.DemiBold
-            Layout.fillWidth: true
-        }
-
-        Frame {
-            padding: 0
-            Layout.fillWidth: true
-
-            background: Rectangle {
-                color: sectionRoot.theme.surface
-                radius: sectionRoot.theme.radius
-                border.width: 1
-                border.color: sectionRoot.theme.outlineMuted
-            }
-
-            contentItem: ColumnLayout {
-                spacing: 0
-
-                Repeater {
-                    model: sectionRoot.rows
-
-                    DetailRow {
-                        required property var modelData
-
-                        theme: sectionRoot.theme
-                        label: String(modelData.label || "")
-                        value: String(modelData.value || "-")
-                        subvalue: String(modelData.subvalue || "")
-                        linkKind: String(modelData.linkKind || "")
-                        linkValue: root.model.valueToString(modelData.linkValue)
-                        monospace: modelData.monospaced !== undefined ? modelData.monospaced : (modelData.monospace !== undefined ? modelData.monospace : true)
-                        copyable: modelData.copyable !== undefined ? modelData.copyable : String(modelData.linkKind || "").length > 0
-                        onActivated: root.model.openReference(modelData.linkKind, modelData.linkValue)
-                    }
-                }
-            }
-        }
-    }
-
-    component DetailRow: Item {
-        id: rowRoot
-
-        required property Theme theme
-        property string label: ""
-        property string value: ""
-        property string subvalue: ""
-        property string linkKind: ""
-        property string linkValue: ""
-        property bool monospace: true
-        property bool copyable: linkKind.length > 0
-        signal activated()
-
-        Layout.fillWidth: true
-        implicitHeight: Math.max(42, rowGrid.implicitHeight + 18)
-
-        Rectangle {
-            anchors.fill: parent
-            color: "transparent"
-            border.width: 0
-        }
-
-        GridLayout {
-            id: rowGrid
-
-            anchors.fill: parent
-            anchors.leftMargin: 12
-            anchors.rightMargin: 12
-            anchors.topMargin: 8
-            anchors.bottomMargin: 8
-            columns: 2
-            columnSpacing: 14
-            rowSpacing: 3
-
-            Text {
-                text: rowRoot.label
-                color: rowRoot.theme.textMuted
-                textFormat: Text.PlainText
-                wrapMode: Text.WrapAnywhere
-                font.pixelSize: 11
-                font.weight: Font.DemiBold
-                font.capitalization: Font.AllUppercase
-                Layout.preferredWidth: 210
-                Layout.maximumWidth: 210
-                Layout.alignment: Qt.AlignTop
-            }
-
-            ColumnLayout {
-                spacing: 2
-                Layout.fillWidth: true
-
-                LinkCell {
-                    text: rowRoot.value
-                    theme: rowRoot.theme
-                    link: rowRoot.linkKind.length > 0
-                    copyable: rowRoot.copyable
-                    copyText: rowRoot.linkValue.length > 0 ? rowRoot.linkValue : rowRoot.value
-                    monospace: rowRoot.monospace
-                    wrap: true
-                    Layout.fillWidth: true
-                    onActivated: rowRoot.activated()
-                }
-
-                Text {
-                    visible: rowRoot.subvalue.length > 0
-                    text: rowRoot.subvalue
-                    color: rowRoot.theme.textDim
-                    textFormat: Text.PlainText
-                    wrapMode: Text.WrapAnywhere
-                    font.family: "monospace"
-                    font.pixelSize: 11
-                    Layout.fillWidth: true
-                }
-            }
-        }
-    }
 }

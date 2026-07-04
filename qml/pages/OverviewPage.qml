@@ -4,6 +4,7 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import "../components"
+import "../components/common"
 import "../state"
 import "../theme"
 
@@ -793,65 +794,31 @@ ColumnLayout {
         }
     }
 
-    component DashboardRow: Item {
+    component DashboardRow: DataTableRow {
         id: rowRoot
 
-        required property Theme theme
         property var columns: []
         property var columnWidths: [-1, -1, -1, -1]
         property var linkKinds: ["", "", "", ""]
         property var linkValues: ["", "", "", ""]
-        property bool header: false
-        signal cellActivated(int column)
 
-        Layout.fillWidth: true
-        Layout.preferredHeight: rowRoot.header ? 34 : 38
+        headerHeight: 34
+        rowHeight: 38
+        cells: rowRoot.rowCells()
 
-        Rectangle {
-            anchors.fill: parent
-            color: rowRoot.header ? rowRoot.theme.field : "transparent"
-            border.width: 0
-        }
-
-        GridLayout {
-            anchors.fill: parent
-            anchors.leftMargin: 14
-            anchors.rightMargin: 14
-            columns: 4
-            columnSpacing: 10
-
-            Repeater {
-                model: 4
-
-                LinkCell {
-                    required property int index
-
-                    theme: rowRoot.theme
-                    text: String(rowRoot.columns[index] || "-")
-                    header: rowRoot.header
-                    link: rowRoot.linkFor(index)
-                    copyText: rowRoot.copyValueFor(index)
-                    monospace: !rowRoot.header
-                    Layout.preferredWidth: rowRoot.columnWidth(index)
-                    Layout.fillWidth: rowRoot.columnFills(index)
-                    onActivated: rowRoot.cellActivated(index)
-                }
+        function rowCells() {
+            const result = []
+            for (let i = 0; i < 4; ++i) {
+                const linkValue = i < rowRoot.linkValues.length ? String(rowRoot.linkValues[i] || "") : ""
+                result.push({
+                    text: String(rowRoot.columns[i] || "-"),
+                    width: rowRoot.columnWidth(i),
+                    fill: rowRoot.columnFills(i),
+                    link: !rowRoot.header && i < rowRoot.linkKinds.length && String(rowRoot.linkKinds[i] || "").length > 0 && linkValue.length > 0,
+                    copyText: linkValue.length > 0 ? linkValue : String(rowRoot.columns[i] || "")
+                })
             }
-        }
-
-        function linkFor(index) {
-            return !rowRoot.header
-                && index >= 0
-                && index < rowRoot.linkKinds.length
-                && String(rowRoot.linkKinds[index] || "").length > 0
-                && String(rowRoot.linkValues[index] || "").length > 0
-        }
-
-        function copyValueFor(index) {
-            if (index >= 0 && index < rowRoot.linkValues.length && String(rowRoot.linkValues[index] || "").length > 0) {
-                return String(rowRoot.linkValues[index])
-            }
-            return String(rowRoot.columns[index] || "")
+            return result
         }
 
         function columnWidth(index) {

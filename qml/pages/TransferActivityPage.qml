@@ -1,11 +1,12 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
-import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import "../components"
+import "../components/common"
 import "../state"
 import "../theme"
+import "../utils/UiFormat.js" as UiFormat
 
 ColumnLayout {
     id: root
@@ -53,40 +54,14 @@ ColumnLayout {
         }
     }
 
-    Frame {
-        padding: 0
+    DataTableFrame {
+        theme: root.theme
         Layout.fillWidth: true
-
-        background: Rectangle {
-            color: root.theme.surface
-            radius: root.theme.radius
-            border.width: 1
-            border.color: root.theme.outlineMuted
-        }
-
-        contentItem: ColumnLayout {
-            spacing: 0
-
-            RecipientRow {
-                theme: root.theme
-                header: true
-                columns: root.showAccountRefFallback()
-                    ? [qsTr("Account"), qsTr("Source"), qsTr("Observed amount"), qsTr("Txs"), qsTr("References"), qsTr("Last L2 block")]
-                    : [qsTr("Recipient"), qsTr("Source"), qsTr("Observed amount"), qsTr("Txs"), qsTr("Outputs"), qsTr("Last L2 block")]
-            }
-
-            Repeater {
-                model: root.recipientRows()
-
-                RecipientRow {
-                    required property var modelData
-
-                    theme: root.theme
-                    columns: [modelData.recipient, modelData.source, modelData.received, modelData.txs, modelData.outputs, modelData.lastSlot]
-                    recipient: modelData.recipientRaw
-                    source: modelData.sourceRaw
-                    onRecipientActivated: root.model.openRecipient(modelData.recipientRaw)
-                }
+        headerCells: root.recipientHeaderCells()
+        rows: root.recipientRows()
+        onCellActivated: function (row, column, cell, rowData) {
+            if (column === 0 && rowData.recipientRaw.length > 0) {
+                root.model.openRecipient(rowData.recipientRaw)
             }
         }
     }
@@ -130,28 +105,53 @@ ColumnLayout {
         const recipients = root.model.transferActivityRows || [];
         if (!recipients.length) {
             return [{
-                recipient: qsTr("No account references in loaded range"),
                 recipientRaw: "",
-                source: "-",
                 sourceRaw: "",
-                received: "-",
-                txs: "-",
-                outputs: "-",
-                lastSlot: "-"
+                cells: [
+                    { text: qsTr("No account references in loaded range"), width: 240, fill: true, monospace: false },
+                    { text: "-", width: 112, monospace: false },
+                    { text: "-", width: 120 },
+                    { text: "-", width: 82 },
+                    { text: "-", width: 82 },
+                    { text: "-", width: 82 }
+                ]
             }];
         }
         return recipients.map(function (recipient) {
+            const recipientId = String(recipient.account_ref || recipient.recipient || "")
             return {
-                recipient: root.shortRecipient(recipient.account_ref || recipient.recipient),
-                recipientRaw: String(recipient.account_ref || recipient.recipient || ""),
-                source: root.sourceLabel(recipient.source),
+                recipientRaw: recipientId,
                 sourceRaw: String(recipient.source || ""),
-                received: root.receivedText(recipient),
-                txs: root.numberText(recipient.txs),
-                outputs: root.numberText(recipient.source === "account_refs" ? recipient.references : recipient.outputs),
-                lastSlot: root.numberText(recipient.last_slot)
+                cells: [
+                    { text: root.shortRecipient(recipientId), width: 240, fill: true, link: recipientId.length > 0, copyable: recipientId.length > 0, copyText: recipientId },
+                    { text: root.sourceLabel(recipient.source), width: 112, monospace: false },
+                    { text: root.receivedText(recipient), width: 120 },
+                    { text: root.numberText(recipient.txs), width: 82 },
+                    { text: root.numberText(recipient.source === "account_refs" ? recipient.references : recipient.outputs), width: 82 },
+                    { text: root.numberText(recipient.last_slot), width: 82 }
+                ]
             };
         });
+    }
+
+    function recipientHeaderCells() {
+        return root.showAccountRefFallback()
+            ? [
+                { text: qsTr("Account"), width: 240, fill: true },
+                { text: qsTr("Source"), width: 112 },
+                { text: qsTr("Observed amount"), width: 120 },
+                { text: qsTr("Txs"), width: 82 },
+                { text: qsTr("References"), width: 82 },
+                { text: qsTr("Last L2 block"), width: 82 }
+            ]
+            : [
+                { text: qsTr("Recipient"), width: 240, fill: true },
+                { text: qsTr("Source"), width: 112 },
+                { text: qsTr("Observed amount"), width: 120 },
+                { text: qsTr("Txs"), width: 82 },
+                { text: qsTr("Outputs"), width: 82 },
+                { text: qsTr("Last L2 block"), width: 82 }
+            ]
     }
 
     function showAccountRefFallback() {
@@ -196,93 +196,10 @@ ColumnLayout {
     }
 
     function numberText(value) {
-        if (value === undefined || value === null || value === "") {
-            return "-";
-        }
-        const numeric = Number(value);
-        if (Number.isFinite(numeric)) {
-            return numeric.toLocaleString(Qt.locale(), "f", 0);
-        }
-        return String(value);
+        return UiFormat.numberText(value);
     }
 
     function shortRecipient(value) {
-        const text = String(value || "");
-        if (text.length <= 18) {
-            return text.length ? text : "-";
-        }
-        return text.slice(0, 12) + "..." + text.slice(-8);
-    }
-
-    component RecipientRow: Item {
-        id: rowRoot
-
-        required property Theme theme
-        property var columns: []
-        property string recipient: ""
-        property string source: ""
-        property bool header: false
-        signal recipientActivated()
-
-        Layout.fillWidth: true
-        Layout.preferredHeight: rowRoot.header ? 36 : 42
-
-        Rectangle {
-            anchors.fill: parent
-            color: rowRoot.header ? rowRoot.theme.field : "transparent"
-            border.width: 0
-        }
-
-        GridLayout {
-            anchors.fill: parent
-            anchors.leftMargin: 14
-            anchors.rightMargin: 14
-            columns: 6
-            columnSpacing: 10
-
-            Repeater {
-                model: 6
-
-                LinkCell {
-                    required property int index
-
-                    theme: rowRoot.theme
-                    text: String(rowRoot.columns[index] || "-")
-                    header: rowRoot.header
-                    link: rowRoot.linkFor(index)
-                    copyable: !rowRoot.header && index === 0 && rowRoot.recipient.length > 0
-                    copyText: rowRoot.recipient.length > 0 ? rowRoot.recipient : String(rowRoot.columns[index] || "")
-                    monospace: !rowRoot.header
-                    textColor: rowRoot.textColor(index)
-                    Layout.preferredWidth: rowRoot.columnWidth(index)
-                    Layout.fillWidth: index === 0
-                    onActivated: rowRoot.recipientActivated()
-                }
-            }
-        }
-
-        function linkFor(index) {
-            return !rowRoot.header && index === 0 && rowRoot.recipient.length > 0;
-        }
-
-        function textColor(index) {
-            if (rowRoot.linkFor(index)) {
-                return rowRoot.theme.accent;
-            }
-            return rowRoot.header ? rowRoot.theme.textMuted : rowRoot.theme.text;
-        }
-
-        function columnWidth(index) {
-            if (index === 0) {
-                return 240;
-            }
-            if (index === 1) {
-                return 112;
-            }
-            if (index === 2) {
-                return 120;
-            }
-            return 82;
-        }
+        return UiFormat.shortMiddle(value, 18, 12, 8);
     }
 }
