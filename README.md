@@ -87,11 +87,15 @@ Build the Basecamp core runtime module:
 nix build .#core-lgx
 ```
 
+This writes portable package `result/logos-inspector-lib.lgx`.
+
 Build the Basecamp UI plugin LGX:
 
 ```bash
 nix build .#lgx
 ```
+
+This writes portable package `result/logos-inspector-ui-module.lgx`.
 
 Build the standalone Nix package:
 
@@ -161,8 +165,9 @@ The Basecamp plugin requires a matching `logos_inspector` runtime module. If
 the UI is updated without rebuilding or reinstalling that module, calls can fail
 with `unknown inspector method`.
 
-Build both Basecamp packages, then install `.#core-lgx` as the core module and
-`.#lgx` as the UI plugin from Basecamp's **Install LGX Package** action.
+Build both Basecamp packages, then install `result/logos-inspector-lib.lgx` as
+the core module and `result/logos-inspector-ui-module.lgx` as the UI plugin
+from Basecamp's **Install LGX Package** action.
 
 Run the standalone QML host:
 
