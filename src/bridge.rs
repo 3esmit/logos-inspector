@@ -14,8 +14,8 @@ use crate::{
         logoscore_status_report, modules_report, storage_report, storage_source_report,
     },
     normalize_program_id_hex, overview, program_file_info, raw_http_json,
-    raw_json_rpc_optional_result, raw_rpc_report, sequencer_block, sequencer_program_ids,
-    sequencer_transaction, sequencer_transaction_inspection,
+    raw_json_rpc_optional_result, raw_rpc_report, sequencer_block, sequencer_blocks,
+    sequencer_program_ids, sequencer_transaction, sequencer_transaction_inspection,
     sequencer_transaction_inspection_with_idl, sequencer_transaction_trace,
     sequencer_transaction_trace_with_idl,
     spel::spel_idl_report,
@@ -81,6 +81,16 @@ impl InspectorBridge {
                     args.u64(1, "block id")?,
                 ))?)
             }
+            "sequencerBlocks" => {
+                let args = Args::new(args)?;
+                let before = args.value(1).and_then(Value::as_u64);
+                let limit = args.value(2).and_then(Value::as_u64).unwrap_or(10).min(50);
+                to_value(self.runtime.block_on(sequencer_blocks(
+                    args.string(0, "sequencer endpoint")?,
+                    before,
+                    limit,
+                ))?)
+            }
             "transaction" => {
                 let args = Args::new(args)?;
                 to_value(self.runtime.block_on(sequencer_transaction(
@@ -133,6 +143,20 @@ impl InspectorBridge {
                     args.string(0, "node endpoint")?,
                     args.u64(1, "slot from")?,
                     args.u64(2, "slot to")?,
+                ))?)
+            }
+            "blockchainAllBlocks" => {
+                let args = Args::new(args)?;
+                let header_limit = args
+                    .value(3)
+                    .and_then(Value::as_u64)
+                    .unwrap_or(100)
+                    .min(500);
+                to_value(self.runtime.block_on(blockchain::blockchain_all_blocks(
+                    args.string(0, "node endpoint")?,
+                    args.u64(1, "slot from")?,
+                    args.u64(2, "slot to")?,
+                    header_limit,
                 ))?)
             }
             "blockchainBlock" => {

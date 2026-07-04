@@ -51,7 +51,7 @@ ColumnLayout {
         rows: root.blockRows()
         onCellActivated: function (row, column, cell, rowData) {
             if ((column === 0 || column === 1) && rowData.blockHash.length > 0) {
-                root.model.openReference("indexerBlock", rowData.blockHash)
+                root.model.openReference("indexerBlock", rowData.blockHash, rowData.rawBlock)
             }
         }
     }
@@ -75,7 +75,8 @@ ColumnLayout {
                     { text: "-", width: 64 },
                     { text: "-", width: 98 }
                 ],
-                blockHash: ""
+                blockHash: "",
+                rawBlock: null
             }];
         }
         return blocks.map(function (block) {
@@ -87,7 +88,8 @@ ColumnLayout {
                     { text: root.numberText(block.tx_count !== undefined ? block.tx_count : ((block.transactions || []).length)), width: 64 },
                     { text: String(block.bedrock_status || "-"), width: 98, monospace: false }
                 ],
-                blockHash: blockHash
+                blockHash: blockHash,
+                rawBlock: block
             };
         });
     }

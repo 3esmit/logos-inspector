@@ -15,7 +15,7 @@ function openReference(root, kind, value, payload) {
             openBlockchainBlock(payload === undefined ? target : payload)
             return
         case "indexerBlock":
-            openIndexerBlock(target)
+            openIndexerBlock(target, payload)
             return
         case "lezBlock":
             openLezBlock(target)
@@ -395,15 +395,24 @@ function blockchainTransactionDetail(root, value, fallbackHash) {
     }
 }
 
-function openIndexerBlock(root, headerHash) {
+function openIndexerBlock(root, headerHash, payload) {
     with (root) {
         const value = String(headerHash || "").trim()
-        if (!value.length) {
+        if (!value.length && (payload === undefined || payload === null)) {
             return
         }
 
         currentView = "l2BlockDetail"
         blockDetailValue = null
+
+        if (payload !== undefined && payload !== null && typeof payload === "object") {
+            lezBlocksPageError = ""
+            const source = String(payload.source || "") === "sequencer" ? "sequencer" : ""
+            const detail = root.indexerBlockDetail(payload, source)
+            blockDetailValue = detail
+            setResult(qsTr("LEZ block"), BridgeHelpers.formatValue(detail), false, detail)
+            return
+        }
 
         const response = requestModule(inspectorModule, "indexerBlockByHash", [indexerUrl, value], qsTr("Block lookup"), false)
         if (response.ok) {
@@ -672,4 +681,3 @@ function openChannel(root, channel) {
         setResult(qsTr("Channel"), response.error || BridgeHelpers.formatValue(value), response.ok !== true, value)
     }
 }
-
