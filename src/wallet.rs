@@ -487,14 +487,7 @@ fn detect_wallet_home() -> Option<PathBuf> {
     if let Some(path) = env_path_if_wallet_home(LEE_WALLET_HOME_ENV) {
         return Some(path);
     }
-
-    let home = env::var_os("HOME").map(PathBuf::from)?;
-    [
-        home.join(".nssa").join("wallet"),
-        home.join(".lee").join("wallet"),
-    ]
-    .into_iter()
-    .find(|path| wallet_home_is_configured(path))
+    None
 }
 
 fn env_path_if_file(variable: &str) -> Option<PathBuf> {

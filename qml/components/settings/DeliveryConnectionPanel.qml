@@ -53,12 +53,6 @@ Panel {
             onActivated: index => root.modelRef.messagingSourceMode = root.sourceModeAt(index)
         }
 
-        InfoField {
-            theme: root.theme
-            label: qsTr("Module API")
-            value: root.modelRef.deliveryModule
-        }
-
         FieldRow {
             theme: root.theme
             label: qsTr("Waku REST URL")
@@ -88,17 +82,6 @@ Panel {
             syncSourceText: true
             placeholderText: qsTr("logos.test")
             onTextEdited: text => root.modelRef.messagingNetworkPreset = root.modelRef.normalizedMessagingNetworkPreset(text)
-        }
-
-        FieldRow {
-            theme: root.theme
-            label: qsTr("Node info id")
-            enabled: root.messagingSourceMode() === "rest"
-            opacity: enabled ? 1 : 0.56
-            sourceText: root.modelRef.messagingNodeInfoId
-            syncSourceText: true
-            placeholderText: qsTr("Optional getNodeInfo id")
-            onTextEdited: text => root.modelRef.messagingNodeInfoId = String(text || "").trim()
         }
 
         RefreshRateField {

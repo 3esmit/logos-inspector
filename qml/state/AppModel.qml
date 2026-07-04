@@ -95,7 +95,6 @@ QtObject {
     property string blockchainSourceMode: "auto"
     property string indexerSourceMode: "auto"
     property string executionSourceMode: "rpc"
-    property string messagingNodeInfoId: ""
     property string messagingSourceMode: "auto"
     property string messagingRestUrl: "http://127.0.0.1:8645"
     property string messagingMetricsUrl: "http://127.0.0.1:8008/metrics"
@@ -182,7 +181,6 @@ QtObject {
     onBlockchainSourceModeChanged: handleNetworkConfigurationChanged()
     onIndexerSourceModeChanged: handleNetworkConfigurationChanged()
     onExecutionSourceModeChanged: handleNetworkConfigurationChanged()
-    onMessagingNodeInfoIdChanged: handleMessagingConfigurationChanged()
     onMessagingSourceModeChanged: handleMessagingConfigurationChanged()
     onMessagingRestUrlChanged: handleMessagingConfigurationChanged()
     onMessagingMetricsUrlChanged: handleMessagingConfigurationChanged()

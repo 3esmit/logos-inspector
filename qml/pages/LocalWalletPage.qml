@@ -392,17 +392,8 @@ ColumnLayout {
 
                     ActionButton {
                         theme: root.theme
-                        text: qsTr("Refresh Module")
-                        primary: true
-                        onClicked: {
-                            root.model.saveWalletState()
-                            root.model.refreshBedrockWalletModule(root.model.walletPublicKeyProbe)
-                        }
-                    }
-
-                    ActionButton {
-                        theme: root.theme
                         text: qsTr("REST Balance")
+                        primary: true
                         onClicked: {
                             root.model.saveWalletState()
                             root.model.queryBedrockWalletBalance()
@@ -749,8 +740,7 @@ ColumnLayout {
     }
 
     function hasBlockchainWalletReport() {
-        const report = root.model.blockchainModuleReport || null
-        return report !== null && String(report.module || "") === root.model.blockchainModule
+        return false
     }
 
     function knownAddressRows() {

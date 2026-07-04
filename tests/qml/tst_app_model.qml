@@ -197,19 +197,18 @@ TestCase {
         compare(args[2], 2)
     }
 
-    function test_core_source_args_use_module_shape_in_basecamp_auto() {
-        compare(basecampModel.effectiveCoreSourceMode(basecampModel.indexerSourceMode), "module")
+    function test_core_source_args_keep_rpc_shape_in_basecamp_auto() {
+        compare(basecampModel.effectiveCoreSourceMode(basecampModel.indexerSourceMode), "rpc")
 
         const args = basecampModel.indexerArgs(["hash-1"])
 
-        compare(args.length, 3)
-        compare(args[0], "module")
-        compare(args[1], basecampModel.indexerUrl)
-        compare(args[2], "hash-1")
+        compare(args.length, 2)
+        compare(args[0], basecampModel.indexerUrl)
+        compare(args[1], "hash-1")
     }
 
     function test_rpc_only_helpers_keep_rpc_shape_in_basecamp_auto() {
-        compare(basecampModel.effectiveCoreSourceMode(basecampModel.blockchainSourceMode), "module")
+        compare(basecampModel.effectiveCoreSourceMode(basecampModel.blockchainSourceMode), "rpc")
 
         const channelArgs = basecampModel.blockchainRpcArgs([10, 20])
         compare(channelArgs.length, 3)
@@ -242,6 +241,7 @@ TestCase {
         compare(model.normalizedMessagingSourceMode(model.messagingSourceMode), "auto")
         compare(model.effectiveMessagingSourceMode(model.messagingSourceMode), "rest")
         compare(model.deliverySourceReportArgs()[0], "rest")
+        compare(model.deliverySourceReportArgs()[2], "")
         compare(model.deliverySourceTarget(), model.messagingRestUrl)
 
         compare(model.normalizedStorageSourceMode(model.storageSourceMode), "auto")
@@ -250,14 +250,15 @@ TestCase {
         compare(model.storageSourceTarget(), model.storageRestUrl)
     }
 
-    function test_messaging_and_storage_auto_use_module_routes_in_basecamp() {
-        compare(basecampModel.effectiveMessagingSourceMode(basecampModel.messagingSourceMode), "module")
-        compare(basecampModel.deliverySourceReportArgs()[0], "module")
-        compare(basecampModel.deliverySourceTarget(), basecampModel.deliveryModule)
+    function test_messaging_and_storage_auto_use_standalone_routes_in_basecamp() {
+        compare(basecampModel.effectiveMessagingSourceMode(basecampModel.messagingSourceMode), "rest")
+        compare(basecampModel.deliverySourceReportArgs()[0], "rest")
+        compare(basecampModel.deliverySourceReportArgs()[2], "")
+        compare(basecampModel.deliverySourceTarget(), basecampModel.messagingRestUrl)
 
-        compare(basecampModel.effectiveStorageSourceMode(basecampModel.storageSourceMode), "module")
-        compare(basecampModel.storageSourceReportArgs(false)[0], "module")
-        compare(basecampModel.storageSourceTarget(), basecampModel.storageModule)
+        compare(basecampModel.effectiveStorageSourceMode(basecampModel.storageSourceMode), "rest")
+        compare(basecampModel.storageSourceReportArgs(false)[0], "rest")
+        compare(basecampModel.storageSourceTarget(), basecampModel.storageRestUrl)
     }
 
     function test_storage_unsupported_pending_modes_stay_inert() {

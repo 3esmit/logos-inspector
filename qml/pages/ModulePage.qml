@@ -4,7 +4,6 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import "../components"
-import "../components/modules"
 import "../state"
 import "../theme"
 
@@ -171,16 +170,6 @@ ColumnLayout {
             }
         }
 
-        DetailRow {
-            visible: !root.model.resultIsError && root.moduleKind === "blockchain" && root.hasResponse
-            theme: root.theme
-            label: qsTr("Module peer ID")
-            value: root.blockchainPeerIdText()
-            copyText: root.blockchainPeerIdCopyText()
-            source: qsTr("module/config identity")
-            Layout.fillWidth: true
-        }
-
         ProbeList {
             visible: !root.model.resultIsError && root.responseProbeModel.length > 0
             theme: root.theme
@@ -256,31 +245,22 @@ ColumnLayout {
             }
 
             FieldRow {
-                id: address
+                id: blockId
                 theme: root.theme
-                label: qsTr("Wallet address for module probes")
-                placeholderText: qsTr("Optional module wallet address")
+                label: qsTr("Block id")
+                placeholderText: qsTr("Optional block id")
             }
 
             GridLayout {
-                columns: root.width < 680 ? 1 : 4
+                columns: root.width < 680 ? 1 : 3
                 columnSpacing: root.theme.gapSmall
                 rowSpacing: root.theme.gapSmall
                 Layout.fillWidth: true
 
                 ActionButton {
                     theme: root.theme
-                    text: qsTr("Module report")
-                    primary: true
-                    enabled: !root.model.busy
-                    Layout.fillWidth: true
-                    accessibleName: qsTr("Run blockchain module report")
-                    onClicked: root.model.callInspector("blockchainModuleReport", [address.text], qsTr("Blockchain module"))
-                }
-
-                ActionButton {
-                    theme: root.theme
                     text: qsTr("Refresh node")
+                    primary: true
                     enabled: !root.model.busy
                     Layout.fillWidth: true
                     accessibleName: qsTr("Refresh blockchain node")
@@ -298,11 +278,11 @@ ColumnLayout {
 
                 ActionButton {
                     theme: root.theme
-                    text: qsTr("Node info")
-                    enabled: !root.model.busy
+                    text: qsTr("Load block")
+                    enabled: !root.model.busy && blockId.text.trim().length > 0
                     Layout.fillWidth: true
-                    accessibleName: qsTr("Fetch blockchain node info")
-                    onClicked: root.model.callModule(root.model.blockchainModule, "get_cryptarchia_info", [], qsTr("Blockchain module"))
+                    accessibleName: qsTr("Load blockchain block")
+                    onClicked: root.model.callInspector("blockchainBlock", root.model.blockchainArgs([blockId.text.trim()]), qsTr("Blockchain block"))
                 }
             }
         }
@@ -329,21 +309,27 @@ ColumnLayout {
 
                 ActionButton {
                     theme: root.theme
-                    text: qsTr("Module report")
+                    text: qsTr("REST report")
                     primary: true
                     enabled: !root.model.busy
                     Layout.fillWidth: true
-                    accessibleName: qsTr("Run storage module report")
-                    onClicked: root.model.callInspector("storageReport", [cid.text.trim()], qsTr("Storage report"))
+                    accessibleName: qsTr("Run storage source report")
+                    onClicked: root.model.callInspector("storageSourceReport", [
+                        root.model.effectiveStorageSourceMode(root.model.storageSourceMode),
+                        root.model.storageRestUrl,
+                        root.model.storageMetricsUrl,
+                        cid.text.trim(),
+                        root.model.storagePrivilegedDebugEnabled
+                    ], qsTr("Storage report"))
                 }
 
                 ActionButton {
                     theme: root.theme
-                    text: qsTr("Version")
+                    text: qsTr("Check")
                     enabled: !root.model.busy
                     Layout.fillWidth: true
-                    accessibleName: qsTr("Fetch storage module version")
-                    onClicked: root.model.callModule(root.model.storageModule, "moduleVersion", [], qsTr("Storage module"))
+                    accessibleName: qsTr("Query storage status")
+                    onClicked: root.model.queryNetworkConnection("storage", true, cid.text.trim().length > 0)
                 }
 
                 ActionButton {
@@ -352,7 +338,7 @@ ColumnLayout {
                     enabled: !root.model.busy && cid.text.trim().length > 0
                     Layout.fillWidth: true
                     accessibleName: qsTr("Check storage CID existence")
-                    onClicked: root.model.callModule(root.model.storageModule, "exists", [cid.text.trim()], qsTr("Storage CID"))
+                    onClicked: root.model.callInspector("storageExists", [root.model.effectiveStorageSourceMode(root.model.storageSourceMode), root.model.storageRestUrl, cid.text.trim()], qsTr("Storage CID"))
                 }
             }
         }
@@ -364,13 +350,6 @@ ColumnLayout {
         ColumnLayout {
             spacing: 12
 
-            FieldRow {
-                id: infoId
-                theme: root.theme
-                label: qsTr("Info id")
-                placeholderText: qsTr("Optional getNodeInfo id")
-            }
-
             GridLayout {
                 columns: root.width < 680 ? 1 : 3
                 columnSpacing: root.theme.gapSmall
@@ -379,30 +358,30 @@ ColumnLayout {
 
                 ActionButton {
                     theme: root.theme
-                    text: qsTr("Module report")
+                    text: qsTr("REST report")
                     primary: true
                     enabled: !root.model.busy
                     Layout.fillWidth: true
-                    accessibleName: qsTr("Run messaging module report")
-                    onClicked: root.model.callInspector("deliveryReport", [infoId.text], qsTr("Messaging report"))
+                    accessibleName: qsTr("Run delivery source report")
+                    onClicked: root.model.callInspector("deliverySourceReport", root.model.deliverySourceReportArgs(), qsTr("Messaging report"))
                 }
 
                 ActionButton {
                     theme: root.theme
-                    text: qsTr("Version")
+                    text: qsTr("Check")
                     enabled: !root.model.busy
                     Layout.fillWidth: true
-                    accessibleName: qsTr("Fetch messaging module version")
-                    onClicked: root.model.callModule(root.model.deliveryModule, "version", [], qsTr("Messaging module"))
+                    accessibleName: qsTr("Query delivery status")
+                    onClicked: root.model.queryNetworkConnection("messaging", true)
                 }
 
                 ActionButton {
                     theme: root.theme
-                    text: qsTr("Node info")
-                    enabled: !root.model.busy && infoId.text.trim().length > 0
+                    text: qsTr("Settings")
+                    enabled: !root.model.busy
                     Layout.fillWidth: true
-                    accessibleName: qsTr("Fetch messaging node info")
-                    onClicked: root.model.callModule(root.model.deliveryModule, "getNodeInfo", [infoId.text.trim()], qsTr("Messaging node info"))
+                    accessibleName: qsTr("Open delivery settings")
+                    onClicked: root.model.openSettings("network", "messaging")
                 }
             }
         }
@@ -412,33 +391,15 @@ ColumnLayout {
         id: capabilitiesControls
 
         GridLayout {
-            columns: root.width < 680 ? 1 : 4
+            columns: root.width < 680 ? 1 : 2
             columnSpacing: root.theme.gapSmall
             rowSpacing: root.theme.gapSmall
             Layout.fillWidth: true
 
             ActionButton {
                 theme: root.theme
-                text: qsTr("Capability report")
-                primary: true
-                enabled: !root.model.busy
-                Layout.fillWidth: true
-                accessibleName: qsTr("Run capability module report")
-                onClicked: root.model.callInspector("capabilitiesReport", [], qsTr("Capabilities report"))
-            }
-
-            ActionButton {
-                theme: root.theme
-                text: qsTr("List")
-                enabled: !root.model.busy
-                Layout.fillWidth: true
-                accessibleName: qsTr("List capabilities")
-                onClicked: root.model.callModule(root.model.capabilityModule, "listCapabilities", [], qsTr("Capabilities"))
-            }
-
-            ActionButton {
-                theme: root.theme
                 text: qsTr("Core status")
+                primary: true
                 enabled: !root.model.busy
                 Layout.fillWidth: true
                 accessibleName: qsTr("Fetch LogosCore status")
@@ -447,11 +408,11 @@ ColumnLayout {
 
             ActionButton {
                 theme: root.theme
-                text: qsTr("All modules")
+                text: qsTr("Settings")
                 enabled: !root.model.busy
                 Layout.fillWidth: true
-                accessibleName: qsTr("Run all module reports")
-                onClicked: root.model.callInspector("modules", [], qsTr("Modules"))
+                accessibleName: qsTr("Open network settings")
+                onClicked: root.model.openSettings("network", "blockchain")
             }
         }
     }
@@ -623,9 +584,9 @@ ColumnLayout {
         case "messaging":
             return root.model.deliveryModule
         case "capabilities":
-            return root.model.capabilityModule
+            return root.model.inspectorModule
         default:
-            return root.model.blockchainModule
+            return root.model.nodeUrl
         }
     }
 
@@ -643,13 +604,13 @@ ColumnLayout {
     function moduleMessage() {
         switch (root.moduleKind) {
         case "storage":
-            return qsTr("Run storage metadata probes, then check a specific CID through the same module bridge.")
+            return qsTr("Run storage REST metadata probes, then check a specific CID through the configured source.")
         case "messaging":
-            return qsTr("Inspect delivery module metadata and node info IDs without leaving the Messaging surface.")
+            return qsTr("Inspect delivery REST metadata without leaving the Messaging surface.")
         case "capabilities":
-            return qsTr("Compare capability inventory, LogosCore status, and every module report from one place.")
+            return qsTr("Check LogosCore status and source configuration from one place.")
         default:
-            return qsTr("Probe the local blockchain node, block windows, and blockchain module wallet calls from this screen.")
+            return qsTr("Probe the configured blockchain node and block windows from this screen.")
         }
     }
 

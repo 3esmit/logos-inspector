@@ -257,10 +257,7 @@ function executionRpcArgs(root, extra) {
 function coreSourceArgs(root, sourceMode, moduleName, endpoint, extra) {
     with (root) {
         const rest = Array.isArray(extra) ? extra : []
-        if (root.effectiveCoreSourceMode(sourceMode) !== "module") {
-            return [String(endpoint || "")].concat(rest)
-        }
-        return ["module", String(endpoint || "")].concat(rest)
+        return [String(endpoint || "")].concat(rest)
     }
 }
 
@@ -376,10 +373,6 @@ function networkConnectionSummary(root, kind, value) {
             if (!root.deliveryReportHealthy(value)) {
                 const nodeHealth = root.reportProbeValue(value, "nodeHealth")
                 const connectionStatus = root.reportProbeValue(value, "connectionStatus")
-                const moduleName = String(value && value.module ? value.module : "")
-                if (moduleName === deliveryModule && nodeHealth === null && connectionStatus === null) {
-                    return qsTr("runtime health unavailable")
-                }
                 return qsTr("health %1 / %2").arg(root.valueText(nodeHealth)).arg(root.valueText(connectionStatus))
             }
             const version = root.moduleProbeValue("messaging", "version")
@@ -600,11 +593,11 @@ function moduleReportError(root, report) {
 
 function deliverySourceReportArgs(root) {
     with (root) {
+        const source = root.effectiveMessagingSourceMode(messagingSourceMode)
         return [
-            root.effectiveMessagingSourceMode(messagingSourceMode),
+            source,
             String(messagingRestUrl || ""),
-            String(messagingMetricsUrl || ""),
-            String(messagingNodeInfoId || "")
+            source === "metrics" ? String(messagingMetricsUrl || "") : ""
         ]
     }
 }
@@ -612,12 +605,10 @@ function deliverySourceReportArgs(root) {
 function deliverySourceLabel(root) {
     with (root) {
         const source = root.normalizedMessagingSourceMode(messagingSourceMode)
-        const effective = root.effectiveMessagingSourceMode(messagingSourceMode)
         if (source === "auto") {
-            return effective === "module"
-                ? qsTr("Auto: Basecamp module")
-                : qsTr("Auto: Direct Waku REST")
+            return qsTr("Auto: Direct Waku REST")
         }
+        const effective = root.effectiveMessagingSourceMode(messagingSourceMode)
         switch (effective) {
         case "rest":
             return qsTr("Direct Waku REST")
@@ -626,7 +617,7 @@ function deliverySourceLabel(root) {
         case "unsupported":
             return qsTr("Unsupported source")
         default:
-            return qsTr("Basecamp module")
+            return qsTr("Direct Waku REST")
         }
     }
 }
@@ -639,7 +630,7 @@ function deliverySourceTarget(root) {
         case "metrics":
             return String(messagingMetricsUrl || "")
         default:
-            return String(deliveryModule || "")
+            return String(messagingRestUrl || "")
         }
     }
 }
@@ -655,11 +646,6 @@ function normalizedCoreSourceMode(root, value) {
         case "standalone-rpc":
         case "standalone rpc":
             return "rpc"
-        case "module":
-        case "basecamp":
-        case "basecamp-module":
-        case "basecamp module":
-            return "module"
         case "auto":
         default:
             return "auto"
@@ -673,31 +659,31 @@ function effectiveCoreSourceMode(root, value) {
         if (source !== "auto") {
             return source
         }
-        return bridge && bridge.prefersBasecampModules && bridge.prefersBasecampModules() ? "module" : "rpc"
+        return "rpc"
     }
 }
 
 function blockchainSourceLabel(root) {
     with (root) {
-        return coreSourceLabel(root, blockchainSourceMode, qsTr("Bedrock RPC"), qsTr("Basecamp blockchain_module"))
+        return coreSourceLabel(root, blockchainSourceMode, qsTr("Bedrock RPC"))
     }
 }
 
 function blockchainSourceTarget(root) {
     with (root) {
-        return root.effectiveCoreSourceMode(blockchainSourceMode) === "module" ? String(blockchainModule || "") : String(nodeUrl || "")
+        return String(nodeUrl || "")
     }
 }
 
 function indexerSourceLabel(root) {
     with (root) {
-        return coreSourceLabel(root, indexerSourceMode, qsTr("Indexer RPC"), qsTr("Basecamp lez_indexer_module"))
+        return coreSourceLabel(root, indexerSourceMode, qsTr("Indexer RPC"))
     }
 }
 
 function indexerSourceTarget(root) {
     with (root) {
-        return root.effectiveCoreSourceMode(indexerSourceMode) === "module" ? String(indexerModule || "") : String(indexerUrl || "")
+        return String(indexerUrl || "")
     }
 }
 
@@ -713,18 +699,13 @@ function executionSourceTarget(root) {
     }
 }
 
-function coreSourceLabel(root, sourceMode, rpcLabel, moduleLabel) {
+function coreSourceLabel(root, sourceMode, rpcLabel) {
     with (root) {
         const source = root.normalizedCoreSourceMode(sourceMode)
         if (source === "rpc") {
             return rpcLabel
         }
-        if (source === "module") {
-            return moduleLabel
-        }
-        return root.effectiveCoreSourceMode(sourceMode) === "module"
-            ? qsTr("Auto: %1").arg(moduleLabel)
-            : qsTr("Auto: %1").arg(rpcLabel)
+        return qsTr("Auto: %1").arg(rpcLabel)
     }
 }
 
@@ -741,11 +722,6 @@ function normalizedMessagingSourceMode(root, value) {
         case "metrics-only":
         case "metrics only":
             return "metrics"
-        case "module":
-        case "basecamp":
-        case "basecamp-module":
-        case "basecamp module":
-            return "module"
         case "auto":
         default:
             return "auto"
@@ -759,7 +735,7 @@ function effectiveMessagingSourceMode(root, value) {
         if (source !== "auto") {
             return source
         }
-        return bridge && bridge.prefersBasecampModules && bridge.prefersBasecampModules() ? "module" : "rest"
+        return "rest"
     }
 }
 
@@ -778,12 +754,10 @@ function storageSourceReportArgs(root, includeCidProbe) {
 function storageSourceLabel(root) {
     with (root) {
         const source = root.normalizedStorageSourceMode(storageSourceMode)
-        const effective = root.effectiveStorageSourceMode(storageSourceMode)
         if (source === "auto") {
-            return effective === "module"
-                ? qsTr("Auto: Basecamp module")
-                : qsTr("Auto: Standalone REST")
+            return qsTr("Auto: Standalone REST")
         }
+        const effective = root.effectiveStorageSourceMode(storageSourceMode)
         switch (effective) {
         case "rest":
             return qsTr("Standalone REST")
@@ -792,7 +766,7 @@ function storageSourceLabel(root) {
         case "unsupported":
             return qsTr("Unsupported source")
         default:
-            return qsTr("Basecamp module")
+            return qsTr("Standalone REST")
         }
     }
 }
@@ -807,7 +781,7 @@ function storageSourceTarget(root) {
         case "unsupported":
             return ""
         default:
-            return String(storageModule || "")
+            return String(storageRestUrl || "")
         }
     }
 }
@@ -833,11 +807,6 @@ function normalizedStorageSourceMode(root, value) {
         case "local diagnostics":
         case "unsupported":
             return "unsupported"
-        case "module":
-        case "basecamp":
-        case "basecamp-module":
-        case "basecamp module":
-            return "module"
         case "auto":
         default:
             return "auto"
@@ -851,7 +820,7 @@ function effectiveStorageSourceMode(root, value) {
         if (source !== "auto") {
             return source
         }
-        return bridge && bridge.prefersBasecampModules && bridge.prefersBasecampModules() ? "module" : "rest"
+        return "rest"
     }
 }
 

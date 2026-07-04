@@ -143,8 +143,6 @@ enum CliCommand {
         metrics_url: Option<String>,
     },
     Messaging {
-        #[arg(long)]
-        info_id: Option<String>,
         #[arg(long, default_value = "rest")]
         source_mode: String,
         #[arg(long)]
@@ -403,7 +401,6 @@ pub fn run(args: CliArgs) -> Result<()> {
             print_json(&report)
         }
         CliCommand::Messaging {
-            info_id,
             source_mode,
             rest_url,
             metrics_url,
@@ -412,7 +409,6 @@ pub fn run(args: CliArgs) -> Result<()> {
                 &source_mode,
                 rest_url.as_deref(),
                 metrics_url.as_deref(),
-                info_id.as_deref(),
             ));
             print_json(&report)
         }

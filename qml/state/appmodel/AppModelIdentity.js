@@ -66,7 +66,6 @@ function loadSettingsState(root) {
         messagingRestUrl = root.stringSetting(value, "messaging_rest_url", messagingRestUrl)
         messagingMetricsUrl = root.stringSetting(value, "messaging_metrics_url", messagingMetricsUrl)
         messagingNetworkPreset = root.normalizedMessagingNetworkPreset(root.stringSetting(value, "messaging_network_preset", messagingNetworkPreset))
-        messagingNodeInfoId = root.stringSetting(value, "messaging_node_info_id", messagingNodeInfoId)
         messagingRollingWindow = root.numberSetting(value, "messaging_rolling_window", messagingRollingWindow)
         messagingAdminRestEnabled = root.boolSetting(value, "messaging_admin_rest_enabled", messagingAdminRestEnabled)
         messagingMutatingDiagnosticsEnabled = root.boolSetting(value, "messaging_mutating_diagnostics_enabled", messagingMutatingDiagnosticsEnabled)
@@ -122,7 +121,6 @@ function settingsStatePayload(root) {
             messaging_rest_url: String(messagingRestUrl || ""),
             messaging_metrics_url: String(messagingMetricsUrl || ""),
             messaging_network_preset: root.normalizedMessagingNetworkPreset(messagingNetworkPreset),
-            messaging_node_info_id: String(messagingNodeInfoId || ""),
             messaging_rolling_window: Number(messagingRollingWindow || 0),
             messaging_admin_rest_enabled: messagingAdminRestEnabled === true,
             messaging_mutating_diagnostics_enabled: messagingMutatingDiagnosticsEnabled === true,
@@ -457,17 +455,15 @@ function refreshBedrockWalletModule(root, address) {
         const target = String(address === undefined || address === null ? walletPublicKeyProbe : address).trim()
         bedrockWalletModuleError = ""
         statusText = qsTr("Bedrock wallet")
-        return requestModuleAsync(inspectorModule, "blockchainModuleReport", [target], qsTr("Bedrock wallet"), false, function (response) {
-            if (response.ok) {
-                blockchainModuleReport = response.value || null
-                bedrockWalletModuleError = ""
-                appendLocalWalletOperation(qsTr("Bedrock module wallet"), "ok", target.length ? target : qsTr("known addresses"))
-            } else {
-                blockchainModuleReport = null
-                bedrockWalletModuleError = response.error || qsTr("Bedrock wallet module unavailable.")
-                appendLocalWalletOperation(qsTr("Bedrock module wallet"), "down", bedrockWalletModuleError)
-            }
-        })
+        blockchainModuleReport = null
+        bedrockWalletModuleError = qsTr("Bedrock wallet module inspection is not supported; use REST Balance.")
+        appendLocalWalletOperation(qsTr("Bedrock wallet module"), "unsupported", target.length ? target : bedrockWalletModuleError)
+        return {
+            ok: false,
+            text: "",
+            value: null,
+            error: bedrockWalletModuleError
+        }
     }
 }
 
