@@ -62,6 +62,23 @@ TestCase {
                 label: qsTr("Endpoint")
                 value: "http://127.0.0.1:3040/"
             }
+
+            DataTableFrame {
+                id: dataTableFrame
+
+                theme: theme
+                headerCells: [
+                    { text: "Kind", width: 120 },
+                    { text: "Value", width: 180, fill: true }
+                ]
+                rows: [
+                    { cells: [
+                        { text: "block", width: 120 },
+                        { text: "row-visible-value", width: 180, fill: true }
+                    ] }
+                ]
+                Layout.fillWidth: true
+            }
         }
 
         ConfirmActionPopup {
@@ -99,6 +116,12 @@ TestCase {
         verify(infoField.implicitHeight > 0)
     }
 
+    function test_data_table_frame_renders_row_cell_text() {
+        verify(dataTableFrame.visible)
+        verify(dataTableFrame.width > 0)
+        verify(hasVisibleText(dataTableFrame, "row-visible-value"))
+    }
+
     function test_confirm_popup_accept_action() {
         confirmPopup.open()
         tryCompare(confirmPopup, "opened", true)
@@ -109,5 +132,24 @@ TestCase {
 
         tryCompare(confirmPopup, "opened", false)
         compare(acceptedCount, 1)
+    }
+
+    function hasVisibleText(item, expected) {
+        if (!item) {
+            return false
+        }
+        if (item.text !== undefined && String(item.text) === expected && item.visible && item.width > 0 && item.height > 0) {
+            return true
+        }
+        if (item.contentItem && hasVisibleText(item.contentItem, expected)) {
+            return true
+        }
+        const children = item.children || []
+        for (let i = 0; i < children.length; ++i) {
+            if (hasVisibleText(children[i], expected)) {
+                return true
+            }
+        }
+        return false
     }
 }

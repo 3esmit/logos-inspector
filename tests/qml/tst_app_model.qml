@@ -151,7 +151,7 @@ TestCase {
         compare(fakeHost.lastMethod, "saveIdlState")
     }
 
-    function test_blocks_page_uses_tip_range_and_all_blocks_backend() {
+    function test_blocks_page_uses_tip_range_and_blocks_backend() {
         fakeHost.responses = {
             blockchainNode: {
                 ok: true,
@@ -168,11 +168,11 @@ TestCase {
                 text: "OK",
                 error: ""
             },
-            blockchainAllBlocks: {
+            blockchainBlocks: {
                 ok: true,
                 value: [
-                    { header: { slot: 30, id: "tip" }, transactions: [] },
-                    { header: { slot: 20, id: "lib" }, transactions: [] }
+                    { header: { slot: 30, id: "tip" }, transactions: [], _chain: { status: "pending" } },
+                    { header: { slot: 20, id: "lib" }, transactions: [], _chain: { status: "finalized" } }
                 ],
                 text: "OK",
                 error: ""
@@ -181,12 +181,14 @@ TestCase {
 
         model.refreshBlocksPage()
 
-        compare(fakeHost.lastMethod, "blockchainAllBlocks")
+        compare(fakeHost.lastMethod, "blockchainBlocks")
         compare(fakeHost.lastArgs[1], 0)
         compare(fakeHost.lastArgs[2], 30)
+        compare(fakeHost.lastArgs[3], 20)
         compare(model.blocksPageRows.length, 2)
         compare(model.blocksPageRows[0].header.slot, 30)
         compare(model.blockStatus(model.blocksPageRows[0]), "pending")
+        compare(model.blockStatus(model.blocksPageRows[1]), "finalized")
     }
 
     function test_lez_blocks_page_merges_sequencer_and_indexer_blocks() {
@@ -243,13 +245,17 @@ TestCase {
                 text: "OK",
                 error: ""
             },
-            blockchainAllBlocks: {
+            blockchainBlocks: {
                 ok: true,
                 value: [
                     {
                         header: { slot: 30, id: "l1-tip" },
                         transactions: [{ mantle_tx: { hash: "l1-tx", ops: [{ opcode: 17 }] } }]
-                    }
+                    },
+                    { header: { slot: 29, id: "l1-pending-2" }, transactions: [] },
+                    { header: { slot: 28, id: "l1-pending-3" }, transactions: [] },
+                    { header: { slot: 20, id: "l1-lib" }, transactions: [], _chain: { status: "finalized" } },
+                    { header: { slot: 19, id: "l1-finalized-2" }, transactions: [], _chain: { status: "finalized" } }
                 ],
                 text: "OK",
                 error: ""
@@ -257,6 +263,8 @@ TestCase {
             sequencerBlocks: {
                 ok: true,
                 value: [
+                    { block_id: 104, header_hash: "seq-104", tx_count: 0, bedrock_status: "Submitted", transactions: [] },
+                    { block_id: 103, header_hash: "seq-103", tx_count: 0, bedrock_status: "Submitted", transactions: [] },
                     { block_id: 102, header_hash: "seq-102", tx_count: 1, bedrock_status: "Submitted", transactions: [{ hash: "l2-tx", instruction_data: [1, 2] }] }
                 ],
                 text: "OK",
@@ -265,6 +273,7 @@ TestCase {
             indexerBlocks: {
                 ok: true,
                 value: [
+                    { block_id: 101, header_hash: "idx-101", tx_count: 0, bedrock_status: "Finalized", transactions: [] },
                     { block_id: 100, header_hash: "idx-100", tx_count: 0, bedrock_status: "Finalized", transactions: [] }
                 ],
                 text: "OK",
@@ -274,10 +283,10 @@ TestCase {
 
         model.refreshDashboard()
 
-        compare(model.blocksPageRows.length, 1)
+        compare(model.blocksPageRows.length, 5)
         compare(model.blocksPageRows[0].header.id, "l1-tip")
-        compare(model.lezBlocksPageRows.length, 2)
-        compare(model.lezBlocksPageRows[0].block_id, 102)
+        compare(model.lezBlocksPageRows.length, 5)
+        compare(model.lezBlocksPageRows[0].block_id, 104)
         tryCompare(model, "dashboardRefreshing", false)
     }
 

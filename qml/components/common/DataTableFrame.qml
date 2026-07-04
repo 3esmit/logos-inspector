@@ -14,6 +14,7 @@ Frame {
     property int headerHeight: 36
     property int rowHeight: 42
     property color surfaceColor: theme.surface
+    readonly property int rowCount: Array.isArray(root.rows) ? root.rows.length : 0
     signal cellActivated(int row, int column, var cell, var rowData)
 
     padding: 0
@@ -38,21 +39,25 @@ Frame {
         }
 
         Repeater {
-            model: root.rows
+            model: root.rowCount
 
             DataTableRow {
                 required property int index
-                required property var modelData
+                readonly property var rowData: root.rowAt(index)
 
                 theme: root.theme
-                cells: modelData.cells || []
-                selected: Boolean(modelData.selected)
+                cells: rowData.cells || []
+                selected: Boolean(rowData.selected)
                 headerHeight: root.headerHeight
                 rowHeight: root.rowHeight
                 onCellActivated: function (column, cell) {
-                    root.cellActivated(index, column, cell, modelData)
+                    root.cellActivated(index, column, cell, rowData)
                 }
             }
         }
+    }
+
+    function rowAt(index) {
+        return Array.isArray(root.rows) && index >= 0 && index < root.rows.length ? root.rows[index] : ({})
     }
 }

@@ -150,6 +150,9 @@ ColumnLayout {
         if (value === "pending") {
             return "warning";
         }
+        if (value === "orphaned") {
+            return "error";
+        }
         return "neutral";
     }
 }
