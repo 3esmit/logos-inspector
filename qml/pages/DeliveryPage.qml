@@ -4,6 +4,7 @@ import QtQuick
 import QtQml.Models
 import QtQuick.Layouts
 import "../components"
+import "../components/modules"
 import "../state"
 import "../theme"
 
@@ -166,46 +167,16 @@ ColumnLayout {
                 rowSpacing: root.theme.gap
                 Layout.fillWidth: true
 
-                Panel {
+                StatusRowsPanel {
                     theme: root.theme
                     title: qsTr("Live degradation")
-
-                    Repeater {
-                        model: root.healthRows()
-
-                        StatusRow {
-                            required property var modelData
-
-                            theme: root.theme
-                            label: String(modelData.label || "")
-                            stateText: String(modelData.state || "")
-                            evidence: String(modelData.evidence || "")
-                            source: String(modelData.source || "")
-                            freshness: String(modelData.freshness || "")
-                            tone: String(modelData.tone || "neutral")
-                        }
-                    }
+                    rows: root.healthRows()
                 }
 
-                Panel {
+                StatusRowsPanel {
                     theme: root.theme
                     title: qsTr("Protocol readiness")
-
-                    Repeater {
-                        model: root.protocolRows()
-
-                        StatusRow {
-                            required property var modelData
-
-                            theme: root.theme
-                            label: String(modelData.label || "")
-                            stateText: String(modelData.state || "")
-                            evidence: String(modelData.evidence || "")
-                            source: String(modelData.source || "")
-                            freshness: String(modelData.freshness || "")
-                            tone: String(modelData.tone || "neutral")
-                        }
-                    }
+                    rows: root.protocolRows()
                 }
             }
         }
@@ -218,25 +189,10 @@ ColumnLayout {
             spacing: root.theme.gap
             Layout.fillWidth: true
 
-            Panel {
+            StatusRowsPanel {
                 theme: root.theme
                 title: qsTr("Diagnostic checklist")
-
-                Repeater {
-                    model: root.healthRows().concat(root.evidenceRows())
-
-                    StatusRow {
-                        required property var modelData
-
-                        theme: root.theme
-                        label: String(modelData.label || "")
-                        stateText: String(modelData.state || "")
-                        evidence: String(modelData.evidence || "")
-                        source: String(modelData.source || "")
-                        freshness: String(modelData.freshness || "")
-                        tone: String(modelData.tone || "neutral")
-                    }
-                }
+                rows: root.healthRows().concat(root.evidenceRows())
             }
         }
     }
@@ -248,44 +204,16 @@ ColumnLayout {
             spacing: root.theme.gap
             Layout.fillWidth: true
 
-            Panel {
+            DetailRowsPanel {
                 theme: root.theme
                 title: qsTr("Local node identity")
-
-                Repeater {
-                    model: root.identityRows()
-
-                    DetailRow {
-                        required property var modelData
-
-                        theme: root.theme
-                        label: String(modelData.label || "")
-                        value: String(modelData.value || "")
-                        copyText: String(modelData.copyText || "")
-                        source: String(modelData.source || "")
-                    }
-                }
+                rows: root.identityRows()
             }
 
-            Panel {
+            StatusRowsPanel {
                 theme: root.theme
                 title: qsTr("Topology boundaries")
-
-                Repeater {
-                    model: root.topologyRows()
-
-                    StatusRow {
-                        required property var modelData
-
-                        theme: root.theme
-                        label: String(modelData.label || "")
-                        stateText: String(modelData.state || "")
-                        evidence: String(modelData.evidence || "")
-                        source: String(modelData.source || "")
-                        freshness: String(modelData.freshness || "")
-                        tone: String(modelData.tone || "neutral")
-                    }
-                }
+                rows: root.topologyRows()
             }
         }
     }
@@ -297,25 +225,10 @@ ColumnLayout {
             spacing: root.theme.gap
             Layout.fillWidth: true
 
-            Panel {
+            StatusRowsPanel {
                 theme: root.theme
                 title: qsTr("Rolling-window rates")
-
-                Repeater {
-                    model: root.throughputRows()
-
-                    StatusRow {
-                        required property var modelData
-
-                        theme: root.theme
-                        label: String(modelData.label || "")
-                        stateText: String(modelData.state || "")
-                        evidence: String(modelData.evidence || "")
-                        source: String(modelData.source || "")
-                        freshness: String(modelData.freshness || "")
-                        tone: String(modelData.tone || "neutral")
-                    }
-                }
+                rows: root.throughputRows()
             }
         }
     }
@@ -327,24 +240,10 @@ ColumnLayout {
             spacing: root.theme.gap
             Layout.fillWidth: true
 
-            Panel {
+            ProtocolRowsPanel {
                 theme: root.theme
                 title: qsTr("Protocols")
-
-                Repeater {
-                    model: root.protocolRows()
-
-                    ProtocolRow {
-                        required property var modelData
-
-                        theme: root.theme
-                        label: String(modelData.label || "")
-                        protocolId: String(modelData.protocolId || "")
-                        stateText: String(modelData.state || "")
-                        evidence: String(modelData.evidence || "")
-                        tone: String(modelData.tone || "neutral")
-                    }
-                }
+                rows: root.protocolRows()
             }
         }
     }
@@ -356,25 +255,10 @@ ColumnLayout {
             spacing: root.theme.gap
             Layout.fillWidth: true
 
-            Panel {
+            StatusRowsPanel {
                 theme: root.theme
                 title: qsTr("Topics")
-
-                Repeater {
-                    model: root.topicRows()
-
-                    StatusRow {
-                        required property var modelData
-
-                        theme: root.theme
-                        label: String(modelData.label || "")
-                        stateText: String(modelData.state || "")
-                        evidence: String(modelData.evidence || "")
-                        source: String(modelData.source || "")
-                        freshness: String(modelData.freshness || "")
-                        tone: String(modelData.tone || "neutral")
-                    }
-                }
+                rows: root.topicRows()
             }
 
             StatusMessage {
@@ -394,25 +278,10 @@ ColumnLayout {
             spacing: root.theme.gap
             Layout.fillWidth: true
 
-            Panel {
+            StatusRowsPanel {
                 theme: root.theme
                 title: qsTr("Store")
-
-                Repeater {
-                    model: root.storeRows()
-
-                    StatusRow {
-                        required property var modelData
-
-                        theme: root.theme
-                        label: String(modelData.label || "")
-                        stateText: String(modelData.state || "")
-                        evidence: String(modelData.evidence || "")
-                        source: String(modelData.source || "")
-                        freshness: String(modelData.freshness || "")
-                        tone: String(modelData.tone || "neutral")
-                    }
-                }
+                rows: root.storeRows()
             }
         }
     }
@@ -420,114 +289,25 @@ ColumnLayout {
     Component {
         id: diagnosticsTab
 
-        ColumnLayout {
-            spacing: root.theme.gap
-            Layout.fillWidth: true
-
-            Panel {
-                theme: root.theme
-                title: qsTr("Read-only diagnostics")
-
-                RowLayout {
-                    spacing: root.theme.gapSmall
-                    Layout.fillWidth: true
-
-                    ActionButton {
-                        theme: root.theme
-                        text: qsTr("Refresh node info")
-                        enabled: !root.pending()
-                        Layout.preferredWidth: 150
-                        accessibleName: qsTr("Refresh Delivery node information")
-                        onClicked: root.refreshSource(true)
-                    }
-
-                    ActionButton {
-                        theme: root.theme
-                        text: qsTr("Refresh metrics")
-                        enabled: !root.pending()
-                        Layout.preferredWidth: 140
-                        accessibleName: qsTr("Refresh Delivery metrics")
-                        onClicked: root.refreshSource(true)
-                    }
-
-                    Text {
-                        text: root.statusLine()
-                        color: root.theme.textMuted
-                        textFormat: Text.PlainText
-                        elide: Text.ElideRight
-                        font.pixelSize: root.theme.secondaryText
-                        Layout.fillWidth: true
-                    }
-                }
-            }
-
-            Panel {
-                theme: root.theme
-                title: qsTr("Mutating diagnostics")
-
-                StatusMessage {
-                    theme: root.theme
-                    tone: root.model.messagingMutatingDiagnosticsEnabled ? "warning" : "info"
-                    title: root.model.messagingMutatingDiagnosticsEnabled ? qsTr("Permission enabled") : qsTr("Permission disabled")
-                    message: qsTr("Dial, publish, subscribe, and lightpush probes are not auto-run. They need backend adapters and per-action confirmation.")
-                    Layout.fillWidth: true
-                }
-
-                RowLayout {
-                    spacing: root.theme.gapSmall
-                    Layout.fillWidth: true
-
-                    ActionButton {
-                        theme: root.theme
-                        text: qsTr("Ping peer")
-                        enabled: false
-                        Layout.preferredWidth: 118
-                    }
-
-                    ActionButton {
-                        theme: root.theme
-                        text: qsTr("Store query")
-                        enabled: false
-                        Layout.preferredWidth: 122
-                    }
-
-                    ActionButton {
-                        theme: root.theme
-                        text: qsTr("Lightpush test")
-                        enabled: false
-                        Layout.preferredWidth: 136
-                    }
-
-                    Text {
-                        text: qsTr("Adapters pending")
-                        color: root.theme.textDim
-                        textFormat: Text.PlainText
-                        font.pixelSize: root.theme.dataText
-                        Layout.fillWidth: true
-                    }
-                }
-            }
-
-            Panel {
-                theme: root.theme
-                title: qsTr("Probe evidence")
-
-                Repeater {
-                    model: root.probeRows()
-
-                    StatusRow {
-                        required property var modelData
-
-                        theme: root.theme
-                        label: String(modelData.label || "")
-                        stateText: String(modelData.state || "")
-                        evidence: String(modelData.evidence || "")
-                        source: String(modelData.source || "")
-                        freshness: String(modelData.freshness || "")
-                        tone: String(modelData.tone || "neutral")
-                    }
-                }
-            }
+        DiagnosticsTab {
+            theme: root.theme
+            readTitle: qsTr("Read-only diagnostics")
+            refreshActions: [
+                { text: qsTr("Refresh node info"), width: 150, accessibleName: qsTr("Refresh Delivery node information") },
+                { text: qsTr("Refresh metrics"), width: 140, accessibleName: qsTr("Refresh Delivery metrics") }
+            ]
+            pending: root.pending()
+            statusText: root.statusLine()
+            guardedTitle: qsTr("Mutating diagnostics")
+            permissionEnabled: root.model.messagingMutatingDiagnosticsEnabled
+            guardedMessage: qsTr("Dial, publish, subscribe, and lightpush probes are not auto-run. They need backend adapters and per-action confirmation.")
+            guardedActions: [
+                { text: qsTr("Ping peer"), width: 118 },
+                { text: qsTr("Store query"), width: 122 },
+                { text: qsTr("Lightpush test"), width: 136 }
+            ]
+            evidenceRows: root.probeRows()
+            onRefreshRequested: root.refreshSource(true)
         }
     }
 
@@ -1085,258 +865,4 @@ ColumnLayout {
         return text.slice(0, Math.max(4, limit - 8)) + "..." + text.slice(-5)
     }
 
-    component StatusRow: Item {
-        id: rowRoot
-
-        required property Theme theme
-        property string label: ""
-        property string stateText: ""
-        property string evidence: ""
-        property string source: ""
-        property string freshness: ""
-        property string tone: "neutral"
-
-        Layout.fillWidth: true
-        implicitHeight: Math.max(48, rowGrid.implicitHeight + rowRoot.theme.gapSmall * 2)
-
-        GridLayout {
-            id: rowGrid
-
-            anchors.fill: parent
-            anchors.leftMargin: rowRoot.theme.gapSmall
-            anchors.rightMargin: rowRoot.theme.gapSmall
-            columns: root.width < 760 ? 2 : 4
-            columnSpacing: rowRoot.theme.gap
-            rowSpacing: 2
-
-            RowLayout {
-                spacing: rowRoot.theme.gapSmall
-                Layout.preferredWidth: root.width < 760 ? 0 : 212
-                Layout.fillWidth: root.width < 760
-
-                Rectangle {
-                    radius: 4
-                    color: rowRoot.toneColor()
-                    Layout.preferredWidth: 8
-                    Layout.preferredHeight: 8
-                    Layout.alignment: Qt.AlignVCenter
-                    Accessible.ignored: true
-                }
-
-                Text {
-                    text: rowRoot.label
-                    color: rowRoot.theme.text
-                    textFormat: Text.PlainText
-                    font.pixelSize: rowRoot.theme.secondaryText
-                    font.weight: Font.DemiBold
-                    elide: Text.ElideRight
-                    Layout.fillWidth: true
-                }
-            }
-
-            Text {
-                text: rowRoot.stateText
-                color: rowRoot.toneColor()
-                textFormat: Text.PlainText
-                font.pixelSize: rowRoot.theme.dataText
-                font.weight: Font.DemiBold
-                elide: Text.ElideRight
-                Layout.preferredWidth: root.width < 760 ? 110 : 118
-            }
-
-            Text {
-                text: rowRoot.evidence
-                color: rowRoot.theme.textMuted
-                textFormat: Text.PlainText
-                font.family: "monospace"
-                font.pixelSize: rowRoot.theme.dataText
-                elide: Text.ElideRight
-                Layout.columnSpan: root.width < 760 ? 2 : 1
-                Layout.fillWidth: true
-            }
-
-            Text {
-                visible: root.width >= 760
-                text: qsTr("%1 / %2").arg(rowRoot.source).arg(rowRoot.freshness)
-                color: rowRoot.theme.textDim
-                textFormat: Text.PlainText
-                font.pixelSize: rowRoot.theme.dataText
-                elide: Text.ElideRight
-                Layout.preferredWidth: 192
-            }
-        }
-
-        Rectangle {
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.bottom: parent.bottom
-            height: 1
-            color: rowRoot.theme.outlineMuted
-            Accessible.ignored: true
-        }
-
-        function toneColor() {
-            if (rowRoot.tone === "success") {
-                return rowRoot.theme.success
-            }
-            if (rowRoot.tone === "warning") {
-                return rowRoot.theme.warning
-            }
-            if (rowRoot.tone === "error") {
-                return rowRoot.theme.error
-            }
-            return rowRoot.theme.textDim
-        }
-    }
-
-    component DetailRow: Item {
-        id: detailRoot
-
-        required property Theme theme
-        property string label: ""
-        property string value: ""
-        property string copyText: ""
-        property string source: ""
-
-        Layout.fillWidth: true
-        implicitHeight: Math.max(48, rowGrid.implicitHeight + detailRoot.theme.gapSmall * 2)
-
-        GridLayout {
-            id: rowGrid
-
-            anchors.fill: parent
-            anchors.leftMargin: detailRoot.theme.gapSmall
-            anchors.rightMargin: detailRoot.theme.gapSmall
-            columns: root.width < 720 ? 1 : 3
-            columnSpacing: detailRoot.theme.gap
-            rowSpacing: 2
-
-            Text {
-                text: detailRoot.label
-                color: detailRoot.theme.text
-                textFormat: Text.PlainText
-                font.pixelSize: detailRoot.theme.secondaryText
-                font.weight: Font.DemiBold
-                elide: Text.ElideRight
-                Layout.preferredWidth: root.width < 720 ? 0 : 150
-                Layout.fillWidth: root.width < 720
-            }
-
-            LinkCell {
-                theme: detailRoot.theme
-                text: detailRoot.value
-                copyable: detailRoot.copyText.length > 0
-                copyText: detailRoot.copyText
-                link: false
-                wrap: root.width < 720
-                Layout.fillWidth: true
-            }
-
-            Text {
-                visible: root.width >= 720
-                text: detailRoot.source
-                color: detailRoot.theme.textDim
-                textFormat: Text.PlainText
-                font.pixelSize: detailRoot.theme.dataText
-                elide: Text.ElideRight
-                Layout.preferredWidth: 180
-            }
-        }
-
-        Rectangle {
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.bottom: parent.bottom
-            height: 1
-            color: detailRoot.theme.outlineMuted
-            Accessible.ignored: true
-        }
-    }
-
-    component ProtocolRow: Item {
-        id: protocolRoot
-
-        required property Theme theme
-        property string label: ""
-        property string protocolId: ""
-        property string stateText: ""
-        property string evidence: ""
-        property string tone: "neutral"
-
-        Layout.fillWidth: true
-        implicitHeight: Math.max(52, rowGrid.implicitHeight + protocolRoot.theme.gapSmall * 2)
-
-        GridLayout {
-            id: rowGrid
-
-            anchors.fill: parent
-            anchors.leftMargin: protocolRoot.theme.gapSmall
-            anchors.rightMargin: protocolRoot.theme.gapSmall
-            columns: root.width < 780 ? 2 : 4
-            columnSpacing: protocolRoot.theme.gap
-            rowSpacing: 2
-
-            Text {
-                text: protocolRoot.label
-                color: protocolRoot.theme.text
-                textFormat: Text.PlainText
-                font.pixelSize: protocolRoot.theme.secondaryText
-                font.weight: Font.DemiBold
-                elide: Text.ElideRight
-                Layout.preferredWidth: root.width < 780 ? 0 : 132
-                Layout.fillWidth: root.width < 780
-            }
-
-            LinkCell {
-                theme: protocolRoot.theme
-                text: protocolRoot.protocolId
-                copyable: protocolRoot.protocolId.length > 0
-                copyText: protocolRoot.protocolId
-                link: false
-                Layout.fillWidth: true
-            }
-
-            Text {
-                text: protocolRoot.stateText
-                color: protocolRoot.toneColor()
-                textFormat: Text.PlainText
-                font.pixelSize: protocolRoot.theme.dataText
-                font.weight: Font.DemiBold
-                elide: Text.ElideRight
-                Layout.preferredWidth: root.width < 780 ? 0 : 110
-                Layout.fillWidth: root.width < 780
-            }
-
-            Text {
-                text: protocolRoot.evidence
-                color: protocolRoot.theme.textMuted
-                textFormat: Text.PlainText
-                font.pixelSize: protocolRoot.theme.dataText
-                elide: Text.ElideRight
-                Layout.fillWidth: true
-            }
-        }
-
-        Rectangle {
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.bottom: parent.bottom
-            height: 1
-            color: protocolRoot.theme.outlineMuted
-            Accessible.ignored: true
-        }
-
-        function toneColor() {
-            if (protocolRoot.tone === "success") {
-                return protocolRoot.theme.success
-            }
-            if (protocolRoot.tone === "warning") {
-                return protocolRoot.theme.warning
-            }
-            if (protocolRoot.tone === "error") {
-                return protocolRoot.theme.error
-            }
-            return protocolRoot.theme.textDim
-        }
-    }
 }

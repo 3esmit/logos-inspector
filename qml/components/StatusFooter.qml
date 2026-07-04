@@ -5,6 +5,8 @@ import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import "../state"
 import "../theme"
+import "status"
+import "status/FooterFieldGroups.js" as FooterFieldGroups
 
 Pane {
     id: root
@@ -41,7 +43,7 @@ Pane {
             Repeater {
                 model: root.footerGroups("left")
 
-                SourceGroup {
+                FooterSourceGroup {
                     required property var modelData
 
                     theme: root.theme
@@ -63,7 +65,7 @@ Pane {
             Repeater {
                 model: root.footerGroups("right")
 
-                SourceGroup {
+                FooterSourceGroup {
                     required property var modelData
 
                     theme: root.theme
@@ -128,92 +130,7 @@ Pane {
     }
 
     function footerSourceGroups() {
-        return [
-            { statusKey: "network.network", keys: [
-                "network.network",
-                "network.chain_id",
-                "network.zone_id",
-                "network.channel_id",
-                "network.report_time"
-            ] },
-            { statusKey: "bedrock.node_health", keys: [
-                "bedrock.node_health",
-                "bedrock.peer_count",
-                "bedrock.sync_state",
-                "bedrock.tip_height",
-                "bedrock.tip_hash",
-                "bedrock.lib_height",
-                "bedrock.lib_hash",
-                "bedrock.tip_minus_lib",
-                "bedrock.last_tip_time",
-                "bedrock.last_lib_time",
-                "bedrock.finality_lag_seconds"
-            ] },
-            { statusKey: "lez.rpc_health", keys: [
-                "lez.rpc_health",
-                "lez.sequencer_version",
-                "lez.last_lez_block_id",
-                "lez.last_lez_block_hash",
-                "lez.last_lez_block_time",
-                "lez.pending_tx_count",
-                "lez.mempool_tx_count",
-                "lez.rejected_tx_count_recent",
-                "lez.blocks_produced_recent",
-                "lez.publish_to_bedrock_status",
-                "lez.last_published_channel_update",
-                "lez.last_finalized_callback_height",
-                "lez.pending_blocks_count"
-            ] },
-            { statusKey: "indexer.rpc_health", keys: [
-                "indexer.rpc_health",
-                "indexer.indexer_version",
-                "indexer.indexed_finalized_height",
-                "indexer.indexed_finalized_hash",
-                "indexer.indexed_channel_message",
-                "indexer.indexer_lag_vs_sequencer_head",
-                "indexer.last_indexed_time",
-                "indexer.db_health",
-                "indexer.ingestion_status"
-            ] },
-            { statusKey: "storage.module", keys: [
-                "storage.module",
-                "storage.network",
-                "storage.node_reachable",
-                "storage.nat_mode",
-                "storage.udp_discovery_port",
-                "storage.tcp_transfer_port",
-                "storage.peer_count",
-                "storage.dht_connected",
-                "storage.shared_files_count",
-                "storage.manifest_count",
-                "storage.local_storage_used",
-                "storage.active_uploads",
-                "storage.active_downloads",
-                "storage.failed_transfers_recent",
-                "storage.cid_fetch_test",
-                "storage.last_error"
-            ] },
-            { statusKey: "messaging.connection_state", keys: [
-                "messaging.connection_state",
-                "messaging.module",
-                "messaging.peer_count",
-                "messaging.active_subscriptions",
-                "messaging.content_topics",
-                "messaging.outbound_queue",
-                "messaging.message_sent_events_recent",
-                "messaging.message_propagated_events_recent",
-                "messaging.message_received_events_recent",
-                "messaging.message_error_events_recent",
-                "messaging.publish_latency_ms",
-                "messaging.receive_latency_ms",
-                "messaging.last_error"
-            ] },
-            { statusKey: "overall.status", alignRight: true, keys: [
-                "overall.status",
-                "overall.main_risk",
-                "overall.operator_action"
-            ] }
-        ]
+        return FooterFieldGroups.sourceGroups()
     }
 
     function footerFieldItem(key) {
@@ -1036,140 +953,4 @@ Pane {
         return "success"
     }
 
-    component SourceGroup: RowLayout {
-        id: groupRoot
-
-        required property Theme theme
-        property var items: []
-        property bool first: false
-        property bool compact: false
-
-        spacing: groupRoot.theme.gapSmall
-
-        Rectangle {
-            visible: !groupRoot.first && !groupRoot.compact
-            color: groupRoot.theme.outline
-            radius: width / 2
-            Layout.preferredWidth: 1
-            Layout.preferredHeight: 14
-            Layout.alignment: Qt.AlignVCenter
-            Accessible.ignored: true
-        }
-
-        Repeater {
-            model: groupRoot.items
-
-            StatusToken {
-                required property var modelData
-
-                visible: !groupRoot.compact || String(modelData.priority || "normal") !== "low"
-                theme: groupRoot.theme
-                label: String(modelData.label || "")
-                value: String(modelData.value || "")
-                accessibleValue: String(modelData.accessibleValue || modelData.value || "-")
-                tone: String(modelData.tone || "neutral")
-                fullName: String(modelData.fullName || modelData.label || "")
-                maximumTokenWidth: modelData.maximumWidth || 150
-                valueVisible: modelData.valueVisible !== false
-                showDot: modelData.showDot !== false
-                Layout.alignment: Qt.AlignVCenter
-            }
-        }
-    }
-
-    component StatusToken: Control {
-        id: token
-
-        required property Theme theme
-        property string label: ""
-        property string value: "-"
-        property string accessibleValue: value
-        property string tone: "neutral"
-        property string fullName: ""
-        property int maximumTokenWidth: 140
-        property bool valueVisible: true
-        property bool showDot: true
-
-        hoverEnabled: true
-        padding: 0
-        implicitWidth: Math.min(tokenRow.implicitWidth, maximumTokenWidth)
-        implicitHeight: 22
-
-        background: Item {}
-
-        contentItem: RowLayout {
-            id: tokenRow
-
-            spacing: token.theme.gapTiny
-
-            Rectangle {
-                visible: token.showDot
-                color: token.toneColor()
-                radius: width / 2
-                Layout.preferredWidth: 7
-                Layout.preferredHeight: 7
-                Layout.alignment: Qt.AlignVCenter
-                Accessible.ignored: true
-            }
-
-            Text {
-                text: token.label
-                color: token.theme.textDim
-                textFormat: Text.PlainText
-                font.pixelSize: token.theme.labelText
-                font.weight: Font.DemiBold
-                font.capitalization: Font.AllUppercase
-                elide: Text.ElideRight
-                Layout.maximumWidth: 74
-            }
-
-            Text {
-                text: token.value
-                visible: token.valueVisible && token.value.length > 0
-                color: token.valueColor()
-                textFormat: Text.PlainText
-                font.pixelSize: token.theme.dataText
-                font.family: "monospace"
-                font.weight: Font.Medium
-                elide: Text.ElideRight
-                Layout.maximumWidth: Math.max(44, token.maximumTokenWidth - 84)
-            }
-        }
-
-        ToolTip.visible: hovered && token.fullName.length > 0
-        ToolTip.delay: 350
-        ToolTip.text: qsTr("%1: %2").arg(token.fullName).arg(token.accessibleValue)
-
-        Accessible.role: Accessible.StaticText
-        Accessible.name: qsTr("%1: %2").arg(token.fullName.length > 0 ? token.fullName : token.label).arg(token.accessibleValue)
-
-        function toneColor() {
-            if (token.tone === "success") {
-                return token.theme.success
-            }
-            if (token.tone === "warning") {
-                return token.theme.warning
-            }
-            if (token.tone === "error") {
-                return token.theme.error
-            }
-            if (token.tone === "info") {
-                return token.theme.info
-            }
-            return token.theme.textDim
-        }
-
-        function valueColor() {
-            if (token.tone === "error") {
-                return token.theme.error
-            }
-            if (token.tone === "warning") {
-                return token.theme.warning
-            }
-            if (token.tone === "success") {
-                return token.theme.success
-            }
-            return token.theme.text
-        }
-    }
 }

@@ -2,11 +2,11 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Controls.Basic
-import QtQml.Models
 import QtQuick.Layouts
 import "../services/BridgeHelpers.js" as BridgeHelpers
 import "../state"
 import "../theme"
+import "accounts"
 
 ColumnLayout {
     id: root
@@ -37,13 +37,6 @@ ColumnLayout {
         Qt.callLater(root.resetRelatedTransactionDecodes)
     }
 
-    ListModel {
-        id: dataTabs
-
-        ListElement { value: "decoded"; label: "Decoded" }
-        ListElement { value: "raw"; label: "Raw" }
-    }
-
     Connections {
         target: root.model.registeredIdls
 
@@ -53,33 +46,13 @@ ColumnLayout {
         }
     }
 
-    ColumnLayout {
+    AccountHeaderBlock {
         visible: root.detail !== null
-        spacing: 6
-        Layout.fillWidth: true
-
-        CopyTextLine {
-            text: root.detail ? root.accountHeader(root.detail) : ""
-            theme: root.theme
-            copyText: root.detail ? root.accountCopyValue(root.detail) : ""
-            tooltipText: root.detail ? root.accountHeaderTooltip(root.detail) : ""
-            monospace: true
-            textColor: root.theme.text
-            textPixelSize: 22
-            textWeight: Font.DemiBold
-            Layout.fillWidth: true
-        }
-
-        CopyTextLine {
-            visible: root.detail && root.accountAlternate(root.detail).length > 0
-            text: root.detail ? root.accountAlternate(root.detail) : ""
-            theme: root.theme
-            copyText: root.detail ? root.accountAlternate(root.detail) : ""
-            monospace: true
-            textColor: root.theme.textMuted
-            textPixelSize: 12
-            Layout.fillWidth: true
-        }
+        theme: root.theme
+        titleText: root.detail ? root.accountHeader(root.detail) : ""
+        copyText: root.detail ? root.accountCopyValue(root.detail) : ""
+        tooltipText: root.detail ? root.accountHeaderTooltip(root.detail) : ""
+        alternateText: root.detail ? root.accountAlternate(root.detail) : ""
     }
 
     SourceStrip {
@@ -122,187 +95,29 @@ ColumnLayout {
         }
     }
 
-    SectionBlock {
+    AccountSectionBlock {
         theme: root.theme
         title: ""
         rows: root.accountRows()
+        modelRef: root.model
     }
 
-    ColumnLayout {
-        visible: root.detail !== null && !root.detail.private_reference
-        spacing: 8
-        Layout.fillWidth: true
-
-        RowLayout {
-            spacing: root.theme.gap
-            Layout.fillWidth: true
-
-            Text {
-                text: qsTr("Data [%1]").arg(root.detail ? root.numberText(root.dataBytes(root.detail.data_hex)) : "-")
-                color: root.theme.text
-                textFormat: Text.PlainText
-                font.pixelSize: 14
-                font.weight: Font.DemiBold
-                Layout.fillWidth: true
-            }
-
-            TabSwitch {
-                visible: root.detail && root.dataBytes(root.detail.data_hex) > 0
-                theme: root.theme
-                current: root.dataView
-                options: dataTabs
-                Layout.preferredWidth: 206
-                onSelected: value => root.dataView = value
-            }
-        }
-
-        Frame {
-            visible: root.detail && root.dataBytes(root.detail.data_hex) > 0
-            padding: 0
-            Layout.fillWidth: true
-
-            background: Rectangle {
-                color: root.theme.surface
-                radius: root.theme.radius
-                border.width: 1
-                border.color: root.theme.outlineMuted
-            }
-
-            contentItem: ColumnLayout {
-                spacing: 0
-
-                ColumnLayout {
-                    visible: root.dataView === "decoded"
-                    spacing: root.theme.gap
-                    Layout.fillWidth: true
-
-                    RowLayout {
-                        visible: root.idlTypeLabels.length > 0
-                        spacing: root.theme.gapSmall
-                        Layout.fillWidth: true
-                        Layout.leftMargin: 12
-                        Layout.rightMargin: 12
-                        Layout.topMargin: 12
-
-                        Text {
-                            text: qsTr("IDL Type")
-                            color: root.theme.textMuted
-                            textFormat: Text.PlainText
-                            font.pixelSize: 11
-                            font.weight: Font.DemiBold
-                            font.capitalization: Font.AllUppercase
-                            Layout.preferredWidth: 92
-                            Layout.alignment: Qt.AlignVCenter
-                        }
-
-                        ComboBox {
-                            id: idlTypeCombo
-
-                            editable: true
-                            model: root.idlTypeLabels
-                            currentIndex: root.selectedIdlTypeIndex
-                            font.pixelSize: root.theme.secondaryText
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: root.theme.controlHeight
-                            onActivated: index => root.selectIdlType(index)
-                            onAccepted: root.selectTypedIdlType(editText)
-
-                            contentItem: TextField {
-                                text: idlTypeCombo.editText
-                                color: root.theme.text
-                                placeholderText: qsTr("Search IDL type")
-                                placeholderTextColor: root.theme.textDim
-                                selectionColor: root.theme.accent
-                                selectedTextColor: root.theme.selectedText
-                                font: idlTypeCombo.font
-                                leftPadding: 10
-                                rightPadding: 10
-                                readOnly: !idlTypeCombo.editable
-                                background: null
-                            }
-
-                            background: Rectangle {
-                                radius: root.theme.radius
-                                color: idlTypeCombo.hovered || idlTypeCombo.activeFocus ? root.theme.surfaceRaised : root.theme.field
-                                border.width: idlTypeCombo.activeFocus ? 2 : 1
-                                border.color: idlTypeCombo.activeFocus ? root.theme.accent : root.theme.outlineMuted
-                            }
-
-                            Accessible.role: Accessible.ComboBox
-                            Accessible.name: qsTr("IDL type")
-                        }
-                    }
-
-                    Text {
-                        visible: root.activeDecode !== null
-                        text: qsTr("IDL Type: %1").arg(root.activeIdlTypeLabel())
-                        color: root.theme.textMuted
-                        textFormat: Text.PlainText
-                        wrapMode: Text.WrapAnywhere
-                        font.pixelSize: root.theme.dataText
-                        Layout.fillWidth: true
-                        Layout.leftMargin: 12
-                        Layout.rightMargin: 12
-                    }
-
-                    StatusMessage {
-                        visible: root.activeDecode === null
-                        theme: root.theme
-                        tone: root.activeDecodeError.length > 0 ? "warning" : "info"
-                        title: root.activeDecodeError.length > 0 ? qsTr("Decode unavailable") : qsTr("No decoded data")
-                        message: root.decodeMessage()
-                        Layout.fillWidth: true
-                        Layout.leftMargin: 12
-                        Layout.rightMargin: 12
-                        Layout.bottomMargin: 12
-                    }
-
-                    Repeater {
-                        model: root.decodedRows()
-
-                        DetailRow {
-                            required property var modelData
-
-                            theme: root.theme
-                            label: String(modelData.label || "")
-                            value: String(modelData.value || "-")
-                            subvalue: String(modelData.subvalue || "")
-                            subvalueCopyText: String(modelData.subvalueCopyText || "")
-                            linkKind: String(modelData.linkKind || "")
-                            linkValue: root.model.valueToString(modelData.linkValue)
-                            tooltipText: String(modelData.tooltipText || "")
-                            monospace: modelData.monospace !== undefined ? modelData.monospace : true
-                            onActivated: root.model.openReference(modelData.linkKind, modelData.linkValue)
-                        }
-                    }
-                }
-
-                TextArea {
-                    visible: root.dataView === "raw"
-                    readOnly: true
-                    text: root.detail ? root.detail.data_hex : ""
-                    wrapMode: TextArea.Wrap
-                    color: root.detail && root.detail.data_hex.length ? root.theme.text : root.theme.textMuted
-                    selectedTextColor: root.theme.selectedText
-                    selectionColor: root.theme.accent
-                    textFormat: Text.PlainText
-                    font.family: "monospace"
-                    font.pixelSize: root.theme.dataText
-                    leftPadding: 12
-                    rightPadding: 12
-                    topPadding: 10
-                    bottomPadding: 10
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: 150
-
-                    background: Rectangle {
-                        color: root.theme.field
-                        radius: root.theme.radius
-                        border.width: 0
-                    }
-                }
-            }
-        }
+    AccountDecodeSection {
+        theme: root.theme
+        modelRef: root.model
+        detail: root.detail
+        dataView: root.dataView
+        idlTypeLabels: root.idlTypeLabels
+        selectedIdlTypeIndex: root.selectedIdlTypeIndex
+        activeDecode: root.activeDecode
+        activeDecodeError: root.activeDecodeError
+        activeIdlTypeLabelText: root.activeIdlTypeLabel()
+        decodeStatusMessage: root.decodeMessage()
+        decodedRows: root.decodedRows()
+        onDataViewSelected: value => root.dataView = value
+        onIdlTypeSelected: index => root.selectIdlType(index)
+        onTypedIdlTypeSelected: text => root.selectTypedIdlType(text)
+        onRowActivated: (linkKind, linkValue) => root.model.openReference(linkKind, linkValue)
     }
 
     Text {
@@ -343,7 +158,7 @@ ColumnLayout {
             contentItem: ColumnLayout {
                 spacing: 0
 
-                TransactionRow {
+                AccountTransactionRow {
                     theme: root.theme
                     header: true
                     columns: [qsTr("Tx hash"), qsTr("Direction"), qsTr("Instruction"), qsTr("IDL / Program"), qsTr("Affected")]
@@ -352,7 +167,7 @@ ColumnLayout {
                 Repeater {
                     model: root.relatedRows()
 
-                    TransactionRow {
+                    AccountTransactionRow {
                         required property var modelData
 
                         theme: root.theme
@@ -1015,324 +830,4 @@ ColumnLayout {
         return text.slice(0, 120) + "..." + text.slice(-24)
     }
 
-    component SectionBlock: ColumnLayout {
-        id: sectionRoot
-
-        required property Theme theme
-        property string title: ""
-        property var rows: []
-
-        visible: rows.length > 0
-        spacing: 6
-        Layout.fillWidth: true
-
-        Text {
-            visible: sectionRoot.title.length > 0
-            text: sectionRoot.title
-            color: sectionRoot.theme.text
-            textFormat: Text.PlainText
-            font.pixelSize: 14
-            font.weight: Font.DemiBold
-            Layout.fillWidth: true
-        }
-
-        Frame {
-            padding: 0
-            Layout.fillWidth: true
-
-            background: Rectangle {
-                color: sectionRoot.theme.surface
-                radius: sectionRoot.theme.radius
-                border.width: 1
-                border.color: sectionRoot.theme.outlineMuted
-            }
-
-            contentItem: ColumnLayout {
-                spacing: 0
-
-                Repeater {
-                    model: sectionRoot.rows
-
-                    DetailRow {
-                        required property var modelData
-
-                        theme: sectionRoot.theme
-                        label: String(modelData.label || "")
-                        value: String(modelData.value || "-")
-                        subvalue: String(modelData.subvalue || "")
-                        subvalueCopyText: String(modelData.subvalueCopyText || "")
-                        linkKind: String(modelData.linkKind || "")
-                        linkValue: root.model.valueToString(modelData.linkValue)
-                        tooltipText: String(modelData.tooltipText || "")
-                        monospace: modelData.monospace !== undefined ? modelData.monospace : true
-                        onActivated: root.model.openReference(modelData.linkKind, modelData.linkValue)
-                    }
-                }
-            }
-        }
-    }
-
-    component CopyTextLine: Item {
-        id: copyLineRoot
-
-        required property Theme theme
-        property string text: ""
-        property string copyText: text
-        property string tooltipText: ""
-        property bool monospace: true
-        property color textColor: theme.text
-        property int textPixelSize: theme.dataText
-        property int textWeight: Font.Normal
-
-        Layout.fillWidth: true
-        implicitHeight: Math.max(copyLineText.implicitHeight, copyButton.implicitHeight)
-
-        Row {
-            id: copyLineRow
-
-            width: copyLineRoot.width
-            spacing: copyLineRoot.theme.gapTiny
-
-            Text {
-                id: copyLineText
-
-                text: copyLineRoot.text
-                width: Math.min(implicitWidth, Math.max(80, copyLineRoot.width - copyButton.implicitWidth - copyLineRow.spacing))
-                color: copyLineRoot.textColor
-                textFormat: Text.PlainText
-                wrapMode: Text.WrapAnywhere
-                font.family: copyLineRoot.monospace ? "monospace" : ""
-                font.pixelSize: copyLineRoot.textPixelSize
-                font.weight: copyLineRoot.textWeight
-
-                MouseArea {
-                    id: copyLineHover
-
-                    anchors.fill: parent
-                    hoverEnabled: true
-                    acceptedButtons: Qt.NoButton
-                }
-
-                ToolTip.visible: copyLineHover.containsMouse && copyLineRoot.tooltipText.length > 0
-                ToolTip.text: copyLineRoot.tooltipText
-            }
-
-            ToolButton {
-                id: copyButton
-
-                visible: copyLineRoot.copyText.length > 0
-                hoverEnabled: true
-                focusPolicy: Qt.TabFocus
-                width: 26
-                height: 26
-                padding: 0
-                onClicked: copyLineRoot.copyToClipboard()
-
-                ToolTip.visible: hovered
-                ToolTip.delay: 500
-                ToolTip.text: qsTr("Copy")
-
-                background: Rectangle {
-                    radius: copyLineRoot.theme.radius
-                    color: copyButton.down ? copyLineRoot.theme.accentMuted : (copyButton.hovered || copyButton.activeFocus ? copyLineRoot.theme.hover : "transparent")
-                    border.width: copyButton.activeFocus ? 1 : 0
-                    border.color: copyLineRoot.theme.accent
-                }
-
-                contentItem: Item {
-                    Rectangle {
-                        x: 7
-                        y: 5
-                        width: 10
-                        height: 12
-                        radius: 2
-                        color: "transparent"
-                        border.width: 1
-                        border.color: copyButton.hovered || copyButton.activeFocus ? copyLineRoot.theme.accentHover : copyLineRoot.theme.textMuted
-                    }
-
-                    Rectangle {
-                        x: 10
-                        y: 8
-                        width: 10
-                        height: 12
-                        radius: 2
-                        color: copyLineRoot.theme.surface
-                        border.width: 1
-                        border.color: copyButton.hovered || copyButton.activeFocus ? copyLineRoot.theme.accentHover : copyLineRoot.theme.textMuted
-                    }
-                }
-
-                Accessible.role: Accessible.Button
-                Accessible.name: qsTr("Copy %1").arg(copyLineRoot.text)
-            }
-        }
-
-        TextArea {
-            id: copyBuffer
-
-            visible: false
-            text: copyLineRoot.copyText
-        }
-
-        Accessible.role: Accessible.StaticText
-        Accessible.name: copyLineRoot.text
-
-        function copyToClipboard() {
-            copyBuffer.text = copyLineRoot.copyText
-            copyBuffer.forceActiveFocus()
-            copyBuffer.selectAll()
-            copyBuffer.copy()
-            copyBuffer.deselect()
-            copyLineRoot.forceActiveFocus()
-        }
-    }
-
-    component DetailRow: Item {
-        id: rowRoot
-
-        required property Theme theme
-        property string label: ""
-        property string value: ""
-        property string subvalue: ""
-        property string subvalueCopyText: ""
-        property string linkKind: ""
-        property string linkValue: ""
-        property string tooltipText: ""
-        property bool monospace: true
-        signal activated()
-
-        Layout.fillWidth: true
-        implicitHeight: Math.max(42, rowGrid.implicitHeight + 18)
-
-        GridLayout {
-            id: rowGrid
-
-            anchors.fill: parent
-            anchors.leftMargin: 12
-            anchors.rightMargin: 12
-            anchors.topMargin: 8
-            anchors.bottomMargin: 8
-            columns: 2
-            columnSpacing: 14
-            rowSpacing: 3
-
-            Text {
-                text: rowRoot.label
-                color: rowRoot.theme.textMuted
-                textFormat: Text.PlainText
-                wrapMode: Text.Wrap
-                maximumLineCount: 2
-                elide: Text.ElideRight
-                font.pixelSize: 11
-                font.weight: Font.DemiBold
-                font.capitalization: Font.AllUppercase
-                Layout.preferredWidth: 132
-                Layout.maximumWidth: 132
-                Layout.alignment: Qt.AlignTop
-            }
-
-            ColumnLayout {
-                spacing: 2
-                Layout.fillWidth: true
-
-                LinkCell {
-                    text: rowRoot.value
-                    theme: rowRoot.theme
-                    link: rowRoot.linkKind.length > 0
-                    copyText: rowRoot.linkValue.length > 0 ? rowRoot.linkValue : rowRoot.value
-                    tooltipText: rowRoot.tooltipText
-                    monospace: rowRoot.monospace
-                    wrap: true
-                    Layout.fillWidth: true
-                    onActivated: rowRoot.activated()
-                }
-
-                LinkCell {
-                    visible: rowRoot.subvalue.length > 0
-                    text: rowRoot.subvalue
-                    theme: rowRoot.theme
-                    copyable: rowRoot.subvalueCopyText.length > 0
-                    copyText: rowRoot.subvalueCopyText
-                    monospace: true
-                    wrap: true
-                    textColor: rowRoot.theme.textDim
-                    textPixelSize: 11
-                    Layout.fillWidth: true
-                }
-            }
-        }
-    }
-
-    component TransactionRow: Item {
-        id: rowRoot
-
-        required property Theme theme
-        property var columns: []
-        property string txHash: ""
-        property string programId: ""
-        property bool header: false
-        signal cellActivated(int column)
-
-        Layout.fillWidth: true
-        Layout.preferredHeight: rowRoot.header ? 36 : 42
-
-        Rectangle {
-            anchors.fill: parent
-            color: rowRoot.header ? rowRoot.theme.field : "transparent"
-            border.width: 0
-        }
-
-        GridLayout {
-            anchors.fill: parent
-            anchors.leftMargin: 14
-            anchors.rightMargin: 14
-            columns: rowRoot.columns.length > 0 ? rowRoot.columns.length : 5
-            columnSpacing: 10
-
-            Repeater {
-                model: rowRoot.columns.length > 0 ? rowRoot.columns.length : 5
-
-                LinkCell {
-                    required property int index
-
-                    theme: rowRoot.theme
-                    text: String(rowRoot.columns[index] || "-")
-                    header: rowRoot.header
-                    link: rowRoot.linkFor(index)
-                    copyText: rowRoot.copyValueFor(index)
-                    monospace: !rowRoot.header
-                    Layout.preferredWidth: rowRoot.columnWidth(index)
-                    Layout.fillWidth: index === 0 || index === 2 || index === 3
-                    onActivated: rowRoot.cellActivated(index)
-                }
-            }
-        }
-
-        function linkFor(index) {
-            return !rowRoot.header
-                && ((index === 0 && rowRoot.txHash.length > 0)
-                    || (index === 3 && rowRoot.programId.length > 0))
-        }
-
-        function columnWidth(index) {
-            if (index === 1 || index === 4) {
-                return 92
-            }
-            if (index === 2) {
-                return 160
-            }
-            return 180
-        }
-
-        function copyValueFor(index) {
-            if (index === 0 && rowRoot.txHash.length > 0) {
-                return rowRoot.txHash
-            }
-            if (index === 3 && rowRoot.programId.length > 0) {
-                return rowRoot.programId
-            }
-            return String(rowRoot.columns[index] || "")
-        }
-    }
 }
