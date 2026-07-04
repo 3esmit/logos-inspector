@@ -26,6 +26,16 @@ pub struct IndexerBlockReport {
     pub raw: Value,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct IndexerStatusReport {
+    pub state: String,
+    #[serde(rename = "indexedBlockId", skip_serializing_if = "Option::is_none")]
+    pub indexed_block_id: Option<String>,
+    #[serde(rename = "lastError", skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    pub raw: Value,
+}
+
 pub async fn indexer_block_by_hash(
     endpoint: &str,
     header_hash: &str,
@@ -62,6 +72,13 @@ pub async fn indexer_health(endpoint: &str) -> Result<Value> {
     raw_json_rpc_optional_result(endpoint, "checkHealth", Value::Array(vec![]))
         .await
         .context("failed to check indexer health")
+}
+
+pub async fn indexer_status(endpoint: &str) -> Result<IndexerStatusReport> {
+    let response = raw_json_rpc(endpoint, "getStatus", Value::Array(vec![]))
+        .await
+        .context("failed to fetch indexer status")?;
+    Ok(summarize_indexer_status_response(&response))
 }
 
 pub async fn indexer_transfer_recipients(
@@ -192,6 +209,82 @@ fn compact_transaction_account_field_strings(value: &Value, field: &str) -> Vec<
 
 pub(crate) fn next_indexer_blocks_cursor(blocks: &[IndexerBlockReport]) -> Option<u64> {
     blocks.iter().filter_map(|block| block.block_id).min()
+}
+
+pub(crate) fn summarize_indexer_status_response(response: &Value) -> IndexerStatusReport {
+    if let Some(error) = response.get("error") {
+        let error_text = value_to_string(error);
+        return IndexerStatusReport {
+            state: if indexer_status_error_is_method_not_found(error) {
+                "unavailable".to_owned()
+            } else {
+                "error".to_owned()
+            },
+            indexed_block_id: None,
+            last_error: Some(error_text),
+            raw: response.clone(),
+        };
+    }
+
+    let Some(result) = response.get("result") else {
+        return IndexerStatusReport {
+            state: "unavailable".to_owned(),
+            indexed_block_id: None,
+            last_error: Some("getStatus returned no result".to_owned()),
+            raw: response.clone(),
+        };
+    };
+
+    if result.is_null() {
+        return IndexerStatusReport {
+            state: "unavailable".to_owned(),
+            indexed_block_id: None,
+            last_error: Some("getStatus returned no result".to_owned()),
+            raw: response.clone(),
+        };
+    }
+
+    let indexed_block_id = value_string_any(
+        result,
+        &[
+            "indexedBlockId",
+            "indexed_block_id",
+            "lastIndexedBlockId",
+            "last_indexed_block_id",
+            "lastFinalizedBlockId",
+            "last_finalized_block_id",
+        ],
+    );
+    let last_error = value_string_any(result, &["lastError", "last_error", "error"]);
+    let state = value_string_any(result, &["state", "status", "phase"])
+        .or_else(|| scalar_status_text(result))
+        .or_else(|| last_error.as_ref().map(|_| "error".to_owned()))
+        .unwrap_or_else(|| "unknown".to_owned());
+
+    IndexerStatusReport {
+        state,
+        indexed_block_id,
+        last_error,
+        raw: response.clone(),
+    }
+}
+
+fn scalar_status_text(value: &Value) -> Option<String> {
+    match value {
+        Value::String(_) | Value::Bool(_) | Value::Number(_) => Some(value_to_string(value)),
+        Value::Null | Value::Array(_) | Value::Object(_) => None,
+    }
+}
+
+fn indexer_status_error_is_method_not_found(error: &Value) -> bool {
+    error
+        .get("code")
+        .and_then(Value::as_i64)
+        .is_some_and(|code| code == -32601)
+        || error
+            .get("message")
+            .map(value_to_string)
+            .is_some_and(|message| message.to_ascii_lowercase().contains("method not found"))
 }
 
 fn value_list_u32(value: Option<&Value>) -> Vec<u32> {

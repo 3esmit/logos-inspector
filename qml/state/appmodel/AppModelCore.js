@@ -13,6 +13,7 @@ function handleNetworkConfigurationChanged(root) {
         dashboardError = ""
         dashboardRefreshing = false
         dashboardRefreshSerial += 1
+        blockchainModuleReport = null
         storageModuleReport = null
         messagingModuleReport = null
         saveSettingsState()
@@ -485,4 +486,3 @@ function decodeTransactionSummaryAsync(root, summary, idlJson, callback) {
         return requestModuleAsync(inspectorModule, "decodeTransactionSummary", [summary || {}, String(idlJson || "")], qsTr("Transaction decode"), false, callback)
     }
 }
-

@@ -128,6 +128,7 @@ QtObject {
     property int networkConnectionPendingRevision: 0
     property bool dashboardRefreshing: false
     property int dashboardRefreshSerial: 0
+    property var blockchainModuleReport: null
     property var storageModuleReport: null
     property var messagingModuleReport: null
 
@@ -374,6 +375,12 @@ QtObject {
     function setNetworkConnectionPending(kind, pending) { return AppModelNetwork.setNetworkConnectionPending(root, kind, pending) }
 
     function networkConnectionIsPending(kind) { return AppModelNetwork.networkConnectionIsPending(root, kind) }
+
+    function refreshIndexerStatus() { return AppModelNetwork.refreshIndexerStatus(root) }
+
+    function indexerStatusNeedsFallback(value) { return AppModelNetwork.indexerStatusNeedsFallback(root, value) }
+
+    function probeFieldFromResponse(response) { return AppModelNetwork.probeFieldFromResponse(root, response) }
 
     function updateNetworkConnectionStatus(kind, response) { return AppModelNetwork.updateNetworkConnectionStatus(root, kind, response) }
 

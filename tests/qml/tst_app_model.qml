@@ -52,6 +52,7 @@ TestCase {
         fakeHost.responses = ({})
         model.currentView = "overview"
         model.dashboardNode = null
+        model.blockchainModuleReport = null
         model.dashboardMetricHistory = ({})
         model.dashboardMetricLastSeen = ({})
         model.dashboardMetricHistoryRevision = 0
@@ -226,6 +227,70 @@ TestCase {
         compare(model.currentView, "l2BlockDetail")
         compare(model.blockDetailValue.type, "sequencer_block")
         compare(model.blockDetailValue.status, "Submitted")
+    }
+
+    function test_indexer_status_falls_back_to_health_and_head() {
+        model.currentView = "indexer"
+        fakeHost.responses = {
+            indexerStatus: {
+                ok: true,
+                value: {
+                    state: "unavailable",
+                    lastError: "Method not found",
+                    raw: {
+                        error: {
+                            code: -32601,
+                            message: "Method not found"
+                        }
+                    }
+                },
+                text: "status unavailable",
+                error: ""
+            },
+            indexerHealth: {
+                ok: true,
+                value: {
+                    status: "healthy",
+                    health: "ok"
+                },
+                text: "healthy",
+                error: ""
+            },
+            indexerFinalizedHead: {
+                ok: true,
+                value: 42,
+                text: "42",
+                error: ""
+            }
+        }
+
+        model.refreshIndexerStatus()
+
+        compare(fakeHost.lastMethod, "indexerFinalizedHead")
+        compare(model.resultOwner, "indexer")
+        compare(model.resultIsError, false)
+        compare(model.resultValue.status.state, "unavailable")
+        compare(model.resultValue.status.indexedBlockId, 42)
+        compare(model.resultValue.indexer.health.ok, true)
+        compare(model.resultValue.indexer.head.value, 42)
+    }
+
+    function test_blockchain_module_probe_value_reads_peer_id() {
+        model.blockchainModuleReport = {
+            module: model.blockchainModule,
+            module_info: { ok: true, value: {}, label: "module", source: "logoscore modules" },
+            probes: [
+                {
+                    label: "blockchain_module.get_peer_id",
+                    source: "blockchain_module get_peer_id",
+                    ok: true,
+                    value: "peer-123",
+                    error: null
+                }
+            ]
+        }
+
+        compare(model.moduleProbeValue("blockchain", "get_peer_id"), "peer-123")
     }
 
     function test_dashboard_refresh_loads_recent_blocks_for_both_chains() {

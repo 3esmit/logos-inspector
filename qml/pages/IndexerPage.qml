@@ -29,7 +29,7 @@ ColumnLayout {
         breadcrumb: qsTr("Home / Diagnostics / LEZ Indexer")
         title: qsTr("LEZ Indexer Diagnostics")
         layerLabel: qsTr("Diagnostics")
-        subtitle: qsTr("Probe local or remote indexer health, finalized head, and raw JSON-RPC methods.")
+        subtitle: qsTr("Probe local or remote indexer sync status, health, finalized head, and raw JSON-RPC methods.")
         Layout.fillWidth: true
     }
 
@@ -62,6 +62,15 @@ ColumnLayout {
             value: root.indexerHealthText()
             delta: root.indexerHealthDelta()
             deltaColor: root.indexerHealthColor()
+        }
+
+        MetricCard {
+            theme: root.theme
+            compact: true
+            label: qsTr("Ingestion")
+            value: root.indexerStatusText()
+            delta: root.indexerStatusDelta()
+            deltaColor: root.indexerStatusColor()
         }
 
         MetricCard {
@@ -207,7 +216,7 @@ ColumnLayout {
                 theme: root.theme
                 tone: "info"
                 title: qsTr("JSON-RPC POST")
-                message: qsTr("Deep health calls checkHealth. Finalized head calls getLastFinalizedBlockId.")
+                message: qsTr("Status calls getStatus. If unsupported, the page falls back to checkHealth and getLastFinalizedBlockId.")
                 Layout.fillWidth: true
             }
 
@@ -217,8 +226,17 @@ ColumnLayout {
 
                 ActionButton {
                     theme: root.theme
-                    text: qsTr("Deep health")
+                    text: qsTr("Status")
                     primary: true
+                    enabled: !root.model.busy
+                    Layout.preferredWidth: 104
+                    accessibleName: qsTr("Fetch indexer status")
+                    onClicked: root.model.refreshIndexerStatus()
+                }
+
+                ActionButton {
+                    theme: root.theme
+                    text: qsTr("Deep health")
                     enabled: !root.model.busy
                     Layout.preferredWidth: 132
                     accessibleName: qsTr("Run indexer deep health")
@@ -296,6 +314,62 @@ ColumnLayout {
         return null
     }
 
+    function indexerStatusValue() {
+        const value = root.activeValue()
+        if (!value || typeof value !== "object" || Array.isArray(value)) {
+            return null
+        }
+        if (value.status && typeof value.status === "object") {
+            return value.status
+        }
+        if (value.state !== undefined || value.indexedBlockId !== undefined || value.lastError !== undefined || value.raw !== undefined) {
+            return value
+        }
+        return null
+    }
+
+    function indexerStatusText() {
+        const status = root.indexerStatusValue()
+        if (!status) {
+            return qsTr("Unknown")
+        }
+        return root.indexerStateDisplayText(status)
+    }
+
+    function indexerStatusDelta() {
+        const status = root.indexerStatusValue()
+        if (!status) {
+            return qsTr("getStatus")
+        }
+        const key = root.indexerStatusKey(status)
+        if ((key === "error" || key === "unavailable") && status.lastError !== undefined && status.lastError !== null) {
+            return root.valueText(status.lastError)
+        }
+        if (status.indexedBlockId !== undefined && status.indexedBlockId !== null) {
+            return qsTr("Indexed block %1").arg(root.valueText(status.indexedBlockId))
+        }
+        return qsTr("getStatus")
+    }
+
+    function indexerStatusColor() {
+        const status = root.indexerStatusValue()
+        if (!status) {
+            return root.theme.textMuted
+        }
+        switch (root.indexerStatusKey(status)) {
+        case "caught_up":
+            return root.theme.success
+        case "error":
+            return root.theme.error
+        case "connecting":
+        case "syncing":
+        case "unavailable":
+            return root.theme.warning
+        default:
+            return root.theme.textMuted
+        }
+    }
+
     function indexerHealthText() {
         const probe = root.activeIndexerProbe()
         const value = root.activeValue()
@@ -337,6 +411,10 @@ ColumnLayout {
     function indexerHeadText() {
         const probe = root.activeIndexerProbe()
         const value = root.activeValue()
+        const status = root.indexerStatusValue()
+        if (status && status.indexedBlockId !== undefined) {
+            return root.valueText(status.indexedBlockId)
+        }
         if (probe && probe.head) {
             return root.valueText(probe.head.value)
         }
@@ -352,6 +430,10 @@ ColumnLayout {
     function responseStatusText() {
         const probe = root.responseProbe()
         const value = root.activeValue()
+        const status = root.indexerStatusValue()
+        if (status) {
+            return root.indexerStateDisplayText(status)
+        }
         if (probe && probe.health) {
             return probe.health.ok ? qsTr("Reachable") : qsTr("Error")
         }
@@ -364,6 +446,10 @@ ColumnLayout {
     function responseHeadText() {
         const probe = root.responseProbe()
         const value = root.activeValue()
+        const status = root.indexerStatusValue()
+        if (status && status.indexedBlockId !== undefined) {
+            return root.valueText(status.indexedBlockId)
+        }
         if (probe && probe.head) {
             return root.valueText(probe.head.value)
         }
@@ -377,6 +463,9 @@ ColumnLayout {
     }
 
     function responseStatusColor() {
+        if (root.indexerStatusValue()) {
+            return root.indexerStatusColor()
+        }
         const status = root.responseStatusText()
         if (status === qsTr("Reachable") || status === "reachable" || status === qsTr("OK")) {
             return root.theme.success
@@ -422,6 +511,44 @@ ColumnLayout {
             return value.indexer
         }
         return null
+    }
+
+    function indexerStateDisplayText(status) {
+        switch (root.indexerStatusKey(status)) {
+        case "connecting":
+            return qsTr("Connecting")
+        case "syncing":
+            return qsTr("Syncing")
+        case "caught_up":
+            return qsTr("Caught up")
+        case "error":
+            return qsTr("Error")
+        case "unavailable":
+            return qsTr("Unavailable")
+        default:
+            return root.valueText(status && status.state !== undefined ? status.state : null)
+        }
+    }
+
+    function indexerStatusKey(status) {
+        const state = String(status && status.state !== undefined ? status.state : "").toLowerCase()
+        const error = String(status && status.lastError !== undefined ? status.lastError : "").toLowerCase()
+        if (state === "unavailable" || state === "unsupported" || error.indexOf("method not found") >= 0 || error.indexOf("-32601") >= 0) {
+            return "unavailable"
+        }
+        if (state.indexOf("error") >= 0 || state.indexOf("fail") >= 0 || error.length > 0) {
+            return "error"
+        }
+        if (state.indexOf("sync") >= 0 || state.indexOf("catch") >= 0 || state.indexOf("index") >= 0) {
+            return "syncing"
+        }
+        if (state.indexOf("connect") >= 0 || state.indexOf("start") >= 0 || state.indexOf("init") >= 0) {
+            return "connecting"
+        }
+        if (state.indexOf("caught") >= 0 || state.indexOf("ready") >= 0 || state.indexOf("synced") >= 0 || state.indexOf("online") >= 0 || state.indexOf("idle") >= 0 || state.indexOf("running") >= 0) {
+            return "caught_up"
+        }
+        return state.length ? "unknown" : ""
     }
 
     function responseEndpoint() {

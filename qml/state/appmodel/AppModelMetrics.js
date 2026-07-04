@@ -24,6 +24,9 @@ function valueToString(root, value) {
 
 function moduleReport(root, kind) {
     with (root) {
+        if (kind === "blockchain") {
+            return blockchainModuleReport || null
+        }
         if (kind === "storage") {
             return storageModuleReport || null
         }
