@@ -235,9 +235,10 @@ fn normalized_storage_source_mode(source_mode: &str) -> &'static str {
         "module" | "basecamp" | "basecamp-module" | "basecamp module" => "module",
         "rest" | "standalone-rest" | "standalone rest" | "direct-rest" => "rest",
         "metrics" | "metrics-only" | "metrics only" => "metrics",
-        "c-library" | "c library" | "library" => "c-library",
-        "local-os" | "local os" | "local diagnostics" => "local-os",
-        _ => "module",
+        "c-library" | "c library" | "library" => "unsupported",
+        "local-os" | "local os" | "local diagnostics" => "unsupported",
+        "auto" => "rest",
+        _ => "unsupported",
     }
 }
 
@@ -517,7 +518,8 @@ fn normalized_delivery_source_mode(source_mode: &str) -> &'static str {
         "metrics" | "metrics-only" | "metrics only" => "metrics",
         "network-monitor" | "network monitor" => "network-monitor",
         "discovery-crawler" | "discovery crawler" | "crawler" => "discovery-crawler",
-        _ => "module",
+        "auto" => "rest",
+        _ => "unsupported",
     }
 }
 

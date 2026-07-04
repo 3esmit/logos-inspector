@@ -112,7 +112,7 @@ ColumnLayout {
             Layout.fillWidth: true
 
             GridLayout {
-                columns: root.width < 760 ? 2 : 5
+                columns: root.width < 520 ? 1 : (root.width < 798 ? 2 : 5)
                 columnSpacing: root.theme.gap
                 rowSpacing: root.theme.gap
                 Layout.fillWidth: true
@@ -293,8 +293,7 @@ ColumnLayout {
             theme: root.theme
             readTitle: qsTr("Read-only diagnostics")
             refreshActions: [
-                { text: qsTr("Refresh node info"), width: 150, accessibleName: qsTr("Refresh Delivery node information") },
-                { text: qsTr("Refresh metrics"), width: 140, accessibleName: qsTr("Refresh Delivery metrics") }
+                { text: qsTr("Refresh status"), width: 140, accessibleName: qsTr("Refresh Delivery status") }
             ]
             pending: root.pending()
             statusText: root.statusLine()
@@ -394,7 +393,7 @@ ColumnLayout {
     }
 
     function sourceShortLabel() {
-        switch (String(root.model.messagingSourceMode || "module")) {
+        switch (root.deliverySourceMode()) {
         case "rest":
             return qsTr("REST")
         case "metrics":
@@ -787,23 +786,25 @@ ColumnLayout {
     }
 
     function restMetricsState() {
-        if (root.model.messagingSourceMode === "module") {
+        const sourceMode = root.deliverySourceMode()
+        if (sourceMode === "module") {
             return root.moduleMetricsText().length > 0 ? qsTr("metrics") : qsTr("module")
         }
-        if (root.model.messagingSourceMode === "rest") {
+        if (sourceMode === "rest") {
             return root.status().ok ? qsTr("reachable") : qsTr("unknown")
         }
-        if (root.model.messagingSourceMode === "metrics") {
+        if (sourceMode === "metrics") {
             return root.status().ok ? qsTr("scraping") : qsTr("unknown")
         }
         return qsTr("pending")
     }
 
     function restMetricsEvidence() {
-        if (root.model.messagingSourceMode === "module") {
+        const sourceMode = root.deliverySourceMode()
+        if (sourceMode === "module") {
             return root.moduleMetricsText().length > 0 ? qsTr("OpenMetrics text available") : qsTr("Module API")
         }
-        if (root.model.messagingSourceMode === "metrics") {
+        if (sourceMode === "metrics") {
             return root.shortText(root.model.messagingMetricsUrl, 48)
         }
         return root.shortText(root.model.messagingRestUrl, 48)
@@ -815,10 +816,15 @@ ColumnLayout {
     }
 
     function restMetricsTone() {
-        if (root.model.messagingSourceMode === "network-monitor" || root.model.messagingSourceMode === "discovery-crawler") {
+        const sourceMode = root.deliverySourceMode()
+        if (sourceMode === "network-monitor" || sourceMode === "discovery-crawler") {
             return "warning"
         }
         return root.statusTone()
+    }
+
+    function deliverySourceMode() {
+        return root.model.effectiveMessagingSourceMode(root.model.messagingSourceMode)
     }
 
     function valueSummary(value) {

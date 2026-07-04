@@ -9,7 +9,7 @@ use std::{
 
 use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 
 use crate::{ProgramFileInfo, program_file_info, raw_http_json};
 
@@ -158,23 +158,6 @@ pub(crate) fn default_wallet_state() -> Value {
     })
 }
 
-pub(crate) fn wallet_state_with_detected_profile(mut state: Value) -> Value {
-    let detected = detected_wallet_profile();
-    let profile = match state.as_object_mut() {
-        Some(root) => root
-            .entry("profile")
-            .or_insert_with(|| json!({ "label": "Local wallet" })),
-        None => return state,
-    };
-    let Some(profile) = profile.as_object_mut() else {
-        return state;
-    };
-
-    fill_blank_field(profile, &detected, "wallet_binary");
-    fill_blank_field(profile, &detected, "wallet_home");
-    state
-}
-
 pub(crate) fn detected_wallet_profile() -> Value {
     json!({
         "label": "Local wallet",
@@ -185,20 +168,6 @@ pub(crate) fn detected_wallet_profile() -> Value {
             .map(|path| path.display().to_string())
             .unwrap_or_default(),
     })
-}
-
-fn fill_blank_field(profile: &mut Map<String, Value>, detected: &Value, key: &str) {
-    let current = profile.get(key).and_then(Value::as_str).unwrap_or_default();
-    if !current.trim().is_empty() {
-        return;
-    }
-    let Some(value) = detected.get(key).and_then(Value::as_str) else {
-        return;
-    };
-    if value.trim().is_empty() {
-        return;
-    }
-    profile.insert(key.to_owned(), Value::String(value.to_owned()));
 }
 
 fn local_wallet_profile_status_with_env(
@@ -252,6 +221,9 @@ fn local_wallet_profile_status_with_env(
     } else if !PathBuf::from(&wallet_home).is_dir() {
         details.push("wallet home directory is not reachable".to_owned());
         status = local_wallet_worst_status(status, "down");
+    } else if !wallet_home_is_configured(Path::new(&wallet_home)) {
+        details.push("wallet home missing wallet_config.json".to_owned());
+        status = local_wallet_worst_status(status, "degraded");
     } else if home_source == "profile" {
         details.push("wallet home configured".to_owned());
     } else {
@@ -627,7 +599,11 @@ mod tests {
             return;
         };
         assert_eq!(status.home_source, LEE_WALLET_HOME_ENV);
-        assert!(status.detail.contains("LEE_WALLET_HOME_DIR configured"));
+        assert!(
+            status
+                .detail
+                .contains("wallet home missing wallet_config.json")
+        );
     }
 
     #[test]

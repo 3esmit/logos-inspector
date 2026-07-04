@@ -69,16 +69,12 @@ pub fn resolve_network_endpoints(
     let node_endpoint = node_url.unwrap_or(base.node_endpoint).to_owned();
     let has_overrides = sequencer_url.is_some() || indexer_url.is_some() || node_url.is_some();
     let profile = if has_overrides {
-        if selected_profile != CUSTOM_NETWORK_PROFILE
-            && sequencer_endpoint == base.sequencer_endpoint
-            && indexer_endpoint == base.indexer_endpoint
-            && node_endpoint == base.node_endpoint
-        {
+        let inferred =
+            infer_network_profile(&sequencer_endpoint, &indexer_endpoint, &node_endpoint);
+        if selected_profile != CUSTOM_NETWORK_PROFILE && inferred == Some(selected_profile) {
             selected_profile.to_owned()
         } else {
-            infer_network_profile(&sequencer_endpoint, &indexer_endpoint, &node_endpoint)
-                .unwrap_or(CUSTOM_NETWORK_PROFILE)
-                .to_owned()
+            inferred.unwrap_or(CUSTOM_NETWORK_PROFILE).to_owned()
         }
     } else if selected_profile == CUSTOM_NETWORK_PROFILE {
         DEFAULT_NETWORK_PROFILE.to_owned()
@@ -103,11 +99,19 @@ pub fn infer_network_profile(
     NETWORK_PROFILES
         .iter()
         .find(|profile| {
-            profile.sequencer_endpoint == sequencer_endpoint
-                && profile.indexer_endpoint == indexer_endpoint
-                && profile.node_endpoint == node_endpoint
+            profile_endpoint_matches(profile.sequencer_endpoint, sequencer_endpoint)
+                && profile_endpoint_matches(profile.indexer_endpoint, indexer_endpoint)
+                && profile_endpoint_matches(profile.node_endpoint, node_endpoint)
         })
         .map(|profile| profile.id)
+}
+
+fn profile_endpoint_matches(profile_endpoint: &str, endpoint: &str) -> bool {
+    comparable_endpoint(profile_endpoint) == comparable_endpoint(endpoint)
+}
+
+fn comparable_endpoint(endpoint: &str) -> &str {
+    endpoint.trim().trim_end_matches('/')
 }
 
 fn network_profile(profile_id: &str) -> Result<NetworkProfile> {
@@ -218,6 +222,37 @@ mod tests {
         assert_eq!(endpoints.sequencer_endpoint, sequencer);
         assert_eq!(endpoints.indexer_endpoint, DEFAULT_INDEXER_ENDPOINT);
         assert_eq!(endpoints.node_endpoint, DEFAULT_NODE_ENDPOINT);
+    }
+
+    #[test]
+    fn infer_network_profile_ignores_trailing_slashes() {
+        assert_eq!(
+            infer_network_profile(
+                "https://testnet.lez.logos.co",
+                "http://127.0.0.1:8779",
+                "http://127.0.0.1:8080"
+            ),
+            Some(DEFAULT_NETWORK_PROFILE)
+        );
+    }
+
+    #[test]
+    fn resolve_network_endpoints_infers_profile_from_trimmed_urls() {
+        let endpoints = resolve_network_endpoints(
+            Some(CUSTOM_NETWORK_PROFILE),
+            Some("https://testnet.lez.logos.co"),
+            Some("http://127.0.0.1:8779"),
+            Some("http://127.0.0.1:8080"),
+        );
+
+        assert!(endpoints.is_ok(), "{endpoints:?}");
+        let Ok(endpoints) = endpoints else {
+            return;
+        };
+        assert_eq!(endpoints.profile, DEFAULT_NETWORK_PROFILE);
+        assert_eq!(endpoints.sequencer_endpoint, "https://testnet.lez.logos.co");
+        assert_eq!(endpoints.indexer_endpoint, "http://127.0.0.1:8779");
+        assert_eq!(endpoints.node_endpoint, "http://127.0.0.1:8080");
     }
 
     #[test]

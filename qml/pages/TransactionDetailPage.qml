@@ -31,7 +31,16 @@ ColumnLayout {
     }
 
     StatusMessage {
-        visible: root.model.transactionDetailValue === null
+        visible: root.model.transactionDetailValue === null && root.model.transactionDetailError.length > 0
+        theme: root.theme
+        tone: "warning"
+        title: root.l2 ? qsTr("LEZ transaction lookup failed") : qsTr("Transaction lookup failed")
+        message: root.model.transactionDetailError
+        Layout.fillWidth: true
+    }
+
+    StatusMessage {
+        visible: root.model.transactionDetailValue === null && root.model.transactionDetailError.length === 0
         theme: root.theme
         tone: "info"
         title: root.l2 ? qsTr("LEZ transaction detail") : qsTr("Transaction detail")

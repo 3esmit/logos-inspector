@@ -68,6 +68,7 @@ function openMantleTransaction(root, hash) {
 
         const detail = transactionDetail(value)
         currentView = "transactionDetail"
+        transactionDetailError = ""
         if (detail) {
             transactionDetailValue = detail
             transactionsPageError = ""
@@ -85,8 +86,8 @@ function openMantleTransaction(root, hash) {
         }
 
         transactionDetailValue = null
-        transactionsPageError = response.error || qsTr("Mantle transaction %1 was not found.").arg(value)
-        setResult(qsTr("Mantle transaction"), transactionsPageError, true)
+        transactionDetailError = response.error || qsTr("Mantle transaction %1 was not found.").arg(value)
+        setResult(qsTr("Mantle transaction"), transactionDetailError, true, null, "transactionDetail")
     }
 }
 
@@ -111,10 +112,10 @@ function openAccount(root, account) {
             }
             if (response.ok) {
                 accountDetailValue = response.value || null
-                setResult(qsTr("Account lookup"), response.text, false, response.value)
+                setResult(qsTr("Account lookup"), response.text, false, response.value, "accounts")
             } else {
                 accountDetailValue = null
-                setResult(qsTr("Account lookup"), response.error, true, null)
+                setResult(qsTr("Account lookup"), response.error, true, null, "accounts")
             }
         })
     }
@@ -165,6 +166,7 @@ function openLezBlock(root, blockId) {
         searchResolveSerial = serial
         currentView = "l2BlockDetail"
         blockDetailValue = null
+        blockDetailError = ""
         statusText = qsTr("LEZ block lookup")
         requestModuleAsync(inspectorModule, "block", root.executionArgs([value]), qsTr("LEZ block"), false, function (response) {
             if (serial !== searchResolveSerial) {
@@ -172,10 +174,12 @@ function openLezBlock(root, blockId) {
             }
             if (response.ok && response.value !== null && response.value !== undefined) {
                 blockDetailValue = root.indexerBlockDetail(response.value, "sequencer")
-                setResult(qsTr("LEZ block"), BridgeHelpers.formatValue(blockDetailValue), false, blockDetailValue)
+                blockDetailError = ""
+                setResult(qsTr("LEZ block"), BridgeHelpers.formatValue(blockDetailValue), false, blockDetailValue, "l2BlockDetail")
             } else {
                 blockDetailValue = null
-                setResult(qsTr("LEZ block"), response.error || qsTr("LEZ block %1 was not found.").arg(value), true)
+                blockDetailError = response.error || qsTr("LEZ block %1 was not found.").arg(value)
+                setResult(qsTr("LEZ block"), blockDetailError, true, null, "l2BlockDetail")
             }
         })
     }
@@ -192,6 +196,7 @@ function resolveLezHash(root, hash) {
         searchResolveSerial = serial
         currentView = "l2BlockDetail"
         blockDetailValue = null
+        blockDetailError = ""
         statusText = qsTr("L2 lookup")
         requestModuleAsync(inspectorModule, "indexerBlockByHash", root.indexerArgs([value]), qsTr("LEZ block lookup"), false, function (response) {
             if (serial !== searchResolveSerial) {
@@ -200,7 +205,8 @@ function resolveLezHash(root, hash) {
             if (response.ok && response.value !== null && response.value !== undefined) {
                 const detail = root.indexerBlockDetail(response.value)
                 blockDetailValue = detail
-                setResult(qsTr("LEZ block"), BridgeHelpers.formatValue(detail), false, detail)
+                blockDetailError = ""
+                setResult(qsTr("LEZ block"), BridgeHelpers.formatValue(detail), false, detail, "l2BlockDetail")
                 return
             }
             root.openLezTransaction(value)
@@ -234,21 +240,23 @@ function inspectTransaction(root, hash, idl) {
         const serial = transactionAutoDecodeSerial + 1
         transactionAutoDecodeSerial = serial
         transactionDetailValue = null
-        requestModuleAsync(inspectorModule, "inspectTransaction", args, qsTr("Transaction inspection"), true, function (response) {
+        transactionDetailError = ""
+        requestModuleAsync(inspectorModule, "inspectTransaction", args, qsTr("Transaction inspection"), false, function (response) {
             if (serial !== transactionAutoDecodeSerial) {
                 return
             }
             if (response.ok) {
                 transactionDetailValue = response.value
+                transactionDetailError = ""
                 lezTransactionsPageError = ""
-                setResult(qsTr("Transaction"), response.text, false, response.value)
+                setResult(qsTr("Transaction"), response.text, false, response.value, "l2TransactionDetail")
                 if (!trimmedIdl.length) {
                     root.autoDecodeTransactionDetail(response.value)
                 }
             } else {
                 transactionDetailValue = null
-                lezTransactionsPageError = response.error
-                setResult(qsTr("Transaction"), response.error, true)
+                transactionDetailError = response.error
+                setResult(qsTr("Transaction"), response.error, true, null, "l2TransactionDetail")
             }
         })
     }
@@ -274,6 +282,7 @@ function openBlockchainBlock(root, blockOrId) {
 
         currentView = "blockDetail"
         blockDetailValue = detail
+        blockDetailError = ""
         setResult(qsTr("Block"), BridgeHelpers.formatValue(detail), false, detail)
     }
 }
@@ -286,9 +295,11 @@ function loadBlockchainBlockById(root, blockId) {
         }
         currentView = "blockDetail"
         blockDetailValue = null
+        blockDetailError = ""
         const response = requestModule(inspectorModule, "blockchainBlock", root.blockchainArgs([value]), qsTr("Block lookup"), false)
         if (response.ok) {
             blockDetailValue = blockchainBlockDetail(response.value)
+            blockDetailError = ""
             blocksPageError = ""
             setResult(qsTr("Block"), BridgeHelpers.formatValue(blockDetailValue), false, blockDetailValue)
             return
@@ -299,6 +310,7 @@ function loadBlockchainBlockById(root, blockId) {
             const retry = requestModule(inspectorModule, "blockchainBlock", root.blockchainArgs([retryValue]), qsTr("Block lookup"), false)
             if (retry.ok) {
                 blockDetailValue = blockchainBlockDetail(retry.value)
+                blockDetailError = ""
                 blocksPageError = ""
                 setResult(qsTr("Block"), BridgeHelpers.formatValue(blockDetailValue), false, blockDetailValue)
                 return
@@ -306,8 +318,8 @@ function loadBlockchainBlockById(root, blockId) {
         }
         currentView = "blockDetail"
         blockDetailValue = null
-        blocksPageError = qsTr("L1 block %1 was not found.").arg(value)
-        setResult(qsTr("Block"), blocksPageError, true)
+        blockDetailError = qsTr("L1 block %1 was not found.").arg(value)
+        setResult(qsTr("Block"), blockDetailError, true, null, "blockDetail")
     }
 }
 
@@ -316,21 +328,23 @@ function loadBlockchainBlockBySlot(root, slot) {
         const value = Math.max(0, Number(slot || 0))
         currentView = "blockDetail"
         blockDetailValue = null
+        blockDetailError = ""
         const response = requestModule(inspectorModule, "blockchainBlocks", root.blockchainArgs([value, value]), qsTr("Block lookup"), false)
         if (response.ok) {
             const blocks = Array.isArray(response.value) ? response.value : []
             if (blocks.length > 0) {
                 blockDetailValue = blockchainBlockDetail(blocks[0])
+                blockDetailError = ""
                 setResult(qsTr("Block"), BridgeHelpers.formatValue(blockDetailValue), false, blockDetailValue)
                 return
             }
-            blocksPageError = qsTr("No block found at slot %1.").arg(value)
+            blockDetailError = qsTr("No block found at slot %1.").arg(value)
             blockDetailValue = null
-            setResult(qsTr("Block"), blocksPageError, true)
+            setResult(qsTr("Block"), blockDetailError, true, null, "blockDetail")
         } else {
-            blocksPageError = response.error
+            blockDetailError = response.error
             blockDetailValue = null
-            setResult(qsTr("Block"), response.error, true)
+            setResult(qsTr("Block"), response.error, true, null, "blockDetail")
         }
     }
 }
@@ -350,6 +364,7 @@ function openBlockchainTransaction(root, transaction, block) {
         }
         currentView = "transactionDetail"
         transactionDetailValue = detail
+        transactionDetailError = ""
         setResult(qsTr("Transaction"), BridgeHelpers.formatValue(detail), false, detail)
     }
 }
@@ -404,12 +419,14 @@ function openIndexerBlock(root, headerHash, payload) {
 
         currentView = "l2BlockDetail"
         blockDetailValue = null
+        blockDetailError = ""
 
         if (payload !== undefined && payload !== null && typeof payload === "object") {
             lezBlocksPageError = ""
             const source = String(payload.source || "") === "sequencer" ? "sequencer" : ""
             const detail = root.indexerBlockDetail(payload, source)
             blockDetailValue = detail
+            blockDetailError = ""
             setResult(qsTr("LEZ block"), BridgeHelpers.formatValue(detail), false, detail)
             return
         }
@@ -417,19 +434,20 @@ function openIndexerBlock(root, headerHash, payload) {
         const response = requestModule(inspectorModule, "indexerBlockByHash", root.indexerArgs([value]), qsTr("Block lookup"), false)
         if (response.ok) {
             if (response.value === null || response.value === undefined) {
-                lezBlocksPageError = qsTr("No block found for %1.").arg(value)
+                blockDetailError = qsTr("No block found for %1.").arg(value)
                 blockDetailValue = null
-                setResult(qsTr("LEZ block"), lezBlocksPageError, true)
+                setResult(qsTr("LEZ block"), blockDetailError, true, null, "l2BlockDetail")
                 return
             }
             lezBlocksPageError = ""
             const detail = root.indexerBlockDetail(response.value)
             blockDetailValue = detail
+            blockDetailError = ""
             setResult(qsTr("LEZ block"), BridgeHelpers.formatValue(detail), false, detail)
         } else {
-            lezBlocksPageError = response.error
+            blockDetailError = response.error
             blockDetailValue = null
-            setResult(qsTr("LEZ block"), lezBlocksPageError, true)
+            setResult(qsTr("LEZ block"), blockDetailError, true, null, "l2BlockDetail")
         }
     }
 }
@@ -504,8 +522,12 @@ function openLocalWallet(root, wallet, tab) {
             )
             return
         }
-        if (localWalletTab === "bedrockNotes" && target.length > 0 && walletPublicKeyProbe.length === 0) {
+        if (localWalletTab === "bedrockNotes" && walletPublicKeyProbe !== target) {
             walletPublicKeyProbe = target
+            blockchainModuleReport = null
+            bedrockWalletModuleError = ""
+            bedrockWalletBalanceValue = null
+            bedrockWalletBalanceError = ""
         }
         setResult(
             bedrockOnly ? qsTr("Bedrock wallet") : qsTr("Local wallet"),
@@ -542,7 +564,7 @@ function programContextDetail(root, programId) {
         const normalized = root.canonicalProgramIdHex(input) || root.normalizedHexText(input)
         const accountResponse = requestModule(inspectorModule, "account", root.accountLookupArgs(input), qsTr("Program account"), false, false)
         if (!root.knownProgramIdRows().length) {
-            const response = requestModule(inspectorModule, "programs", root.executionArgs([]), qsTr("Known programs"), false, false)
+            const response = requestModule(inspectorModule, "programs", root.executionRpcArgs([]), qsTr("Known programs"), false, false)
             if (!response.ok) {
                 return root.programContextFromParts(input, normalized, null, accountResponse, response.error || qsTr("Sequencer known-program lookup failed."))
             }
@@ -654,12 +676,13 @@ function openChannel(root, channel) {
         if (detail) {
             currentView = "channels"
             channelDetailValue = detail
+            channelDetailError = ""
             setResult(qsTr("Channel"), BridgeHelpers.formatValue(detail), false, detail)
             return
         }
 
         const channelId = String(channel || "").trim()
-        const response = requestModule(inspectorModule, "channelState", root.blockchainArgs([channelId]), qsTr("Channel"), false)
+        const response = requestModule(inspectorModule, "channelState", root.blockchainRpcArgs([channelId]), qsTr("Channel"), false)
         if (response.ok) {
             const raw = response.value && typeof response.value === "object" ? response.value : {}
             const state = raw.channel && typeof raw.channel === "object" && !Array.isArray(raw.channel) ? raw.channel : raw
@@ -671,13 +694,14 @@ function openChannel(root, channel) {
             }))
             currentView = "channels"
             channelDetailValue = value
+            channelDetailError = ""
             setResult(qsTr("Channel"), BridgeHelpers.formatValue(value), false, value)
             return
         }
 
-        const value = { type: "channel", channel: channelId, error: response.error || "" }
         currentView = "channels"
-        channelDetailValue = value
-        setResult(qsTr("Channel"), response.error || BridgeHelpers.formatValue(value), response.ok !== true, value)
+        channelDetailValue = null
+        channelDetailError = response.error || qsTr("Channel %1 was not found.").arg(channelId)
+        setResult(qsTr("Channel"), channelDetailError, true, null, "channels")
     }
 }

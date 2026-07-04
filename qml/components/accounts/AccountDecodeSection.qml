@@ -62,6 +62,15 @@ ColumnLayout {
         }
     }
 
+    StatusMessage {
+        visible: root.detail && root.dataBytes(root.detail.data_hex) === 0
+        theme: root.theme
+        tone: "info"
+        title: qsTr("No account data")
+        message: root.decodeStatusMessage.length ? root.decodeStatusMessage : qsTr("No account data is available.")
+        Layout.fillWidth: true
+    }
+
     Frame {
         visible: root.detail && root.dataBytes(root.detail.data_hex) > 0
         padding: 0

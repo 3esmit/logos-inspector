@@ -265,6 +265,7 @@ ColumnLayout {
             idls: root.programContextIdlRows()
             transactions: root.programContextTransactionRows()
             account: root.programContextAccount()
+            rawText: root.model.resultText
             modelRef: root.model
         }
 
@@ -326,7 +327,7 @@ ColumnLayout {
                 primary: true
                 enabled: !root.model.busy
                 Layout.preferredWidth: 190
-                onClicked: root.model.callInspector("programs", root.model.executionArgs([]), qsTr("Known program IDs"))
+                onClicked: root.model.callInspector("programs", root.model.executionRpcArgs([]), qsTr("Known program IDs"))
             }
         }
     }
@@ -347,7 +348,7 @@ ColumnLayout {
                     id: programId
                     theme: root.theme
                     label: qsTr("Program ID")
-                    placeholderText: qsTr("Optional hex or base58")
+                    placeholderText: qsTr("Required hex or base58")
                     Layout.fillWidth: true
                 }
 
@@ -377,7 +378,7 @@ ColumnLayout {
                     theme: root.theme
                     text: qsTr("Save IDL")
                     primary: true
-                    enabled: idlJson.text.trim().length > 0
+                    enabled: idlJson.text.trim().length > 0 && root.validProgramId(programId.text)
                     Layout.fillWidth: true
                     onClicked: root.model.registerIdl(idlName.text, programId.text, idlJson.text)
                 }
@@ -395,7 +396,7 @@ ColumnLayout {
                     text: qsTr("Load known IDs")
                     enabled: !root.model.busy
                     Layout.fillWidth: true
-                    onClicked: root.model.callInspector("programs", root.model.executionArgs([]), qsTr("Known program IDs"))
+                    onClicked: root.model.callInspector("programs", root.model.executionRpcArgs([]), qsTr("Known program IDs"))
                 }
             }
         }
@@ -558,6 +559,9 @@ ColumnLayout {
         if (root.model.programTab === "binaries") {
             return qsTr("Binaries")
         }
+        if (root.model.programTab === "events") {
+            return qsTr("Events")
+        }
         return qsTr("IDLs")
     }
 
@@ -567,6 +571,9 @@ ColumnLayout {
         }
         if (root.model.programTab === "binaries") {
             return qsTr("File inspection")
+        }
+        if (root.model.programTab === "events") {
+            return qsTr("Event decode")
         }
         return qsTr("Registry")
     }
@@ -578,7 +585,15 @@ ColumnLayout {
         if (root.model.programTab === "binaries") {
             return qsTr("Inspect compiled program bytecode to derive program IDs and deployment transaction hashes.")
         }
+        if (root.model.programTab === "events") {
+            return qsTr("Decode event payloads with a user-provided IDL. Program-specific decoding stays local to the supplied IDL.")
+        }
         return qsTr("Save local IDLs, summarize their instruction/account shape, or load program IDs from the sequencer.")
+    }
+
+    function validProgramId(value) {
+        const text = String(value || "").trim()
+        return text.length > 0 && root.model.canonicalProgramIdHex(text).length > 0
     }
 
     function lastResultText() {

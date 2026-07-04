@@ -643,15 +643,21 @@ function refreshLezTransactionsPage(root, beforeBlock) {
             lezTransactionsPageBeforeBlock = before
             lezTransactionsPageRows = []
             lezTransactionsPageNextBeforeBlock = 0
+            lezTransactionsPageOverflowRows = []
+            lezTransactionsPageOverflowNextBeforeBlock = 0
             lezTransactionsPageError = qsTr("Response shape unknown. Raw JSON remains available.")
             setResult(qsTr("L2 transactions"), BridgeHelpers.formatValue(response.value), false, response.value)
             return
         }
 
         const blocks = sortedIndexerBlocks(response.value)
+        const rows = lezTransactionRowsFromBlocks(blocks)
+        const cursor = nextIndexerBlocksCursor(blocks)
         lezTransactionsPageBeforeBlock = before
-        lezTransactionsPageRows = lezTransactionRowsFromBlocks(blocks).slice(0, lezTransactionsPageLimit)
-        lezTransactionsPageNextBeforeBlock = nextIndexerBlocksCursor(blocks)
+        lezTransactionsPageRows = rows.slice(0, lezTransactionsPageLimit)
+        lezTransactionsPageOverflowRows = rows.slice(lezTransactionsPageLimit)
+        lezTransactionsPageOverflowNextBeforeBlock = cursor
+        lezTransactionsPageNextBeforeBlock = cursor
         lezTransactionsPageError = ""
         setResult(qsTr("L2 transactions"), BridgeHelpers.formatValue(lezTransactionsPageRows), false, lezTransactionsPageRows)
     }
@@ -659,6 +665,13 @@ function refreshLezTransactionsPage(root, beforeBlock) {
 
 function olderLezTransactionsPage(root) {
     with (root) {
+        if (Array.isArray(lezTransactionsPageOverflowRows) && lezTransactionsPageOverflowRows.length > 0) {
+            lezTransactionsPageRows = lezTransactionsPageOverflowRows.slice(0, lezTransactionsPageLimit)
+            lezTransactionsPageOverflowRows = lezTransactionsPageOverflowRows.slice(lezTransactionsPageLimit)
+            lezTransactionsPageNextBeforeBlock = lezTransactionsPageOverflowRows.length > 0 ? lezTransactionsPageNextBeforeBlock : lezTransactionsPageOverflowNextBeforeBlock
+            setResult(qsTr("L2 transactions"), BridgeHelpers.formatValue(lezTransactionsPageRows), false, lezTransactionsPageRows)
+            return
+        }
         if (lezTransactionsPageNextBeforeBlock > 0) {
             refreshLezTransactionsPage(lezTransactionsPageNextBeforeBlock)
         }
@@ -967,6 +980,8 @@ function refreshTransferActivityPage(root, beforeBlock, preserveHistory) {
             transferActivityBeforeBlock = before || 0
             transferActivityRows = []
             transferActivityNextBeforeBlock = 0
+            transferActivityOverflowRows = []
+            transferActivityOverflowNextBeforeBlock = 0
             transferActivityError = qsTr("Response shape unknown. Raw JSON remains available.")
             setResult(qsTr("Transfer activity"), BridgeHelpers.formatValue(recipients.value), false, recipients.value)
             return
@@ -974,7 +989,9 @@ function refreshTransferActivityPage(root, beforeBlock, preserveHistory) {
         transferActivityBeforeBlock = before || 0
         transferActivityRows = rows.slice(0, transferActivityLimit)
         const next = Number(page.next_before_block || 0)
-        transferActivityNextBeforeBlock = next > 0 ? next : nextTransferActivityBlock(transferActivityRows)
+        transferActivityOverflowRows = rows.slice(transferActivityLimit)
+        transferActivityOverflowNextBeforeBlock = next > 0 ? next : nextTransferActivityBlock(rows)
+        transferActivityNextBeforeBlock = transferActivityOverflowNextBeforeBlock
         transferActivityError = ""
         setResult(qsTr("Transfer activity"), BridgeHelpers.formatValue(transferActivityRows), false, transferActivityRows)
     }
@@ -982,6 +999,16 @@ function refreshTransferActivityPage(root, beforeBlock, preserveHistory) {
 
 function nextTransferActivityPage(root) {
     with (root) {
+        if (Array.isArray(transferActivityOverflowRows) && transferActivityOverflowRows.length > 0) {
+            const history = Array.isArray(transferActivityHistory) ? transferActivityHistory.slice(0) : []
+            history.push(transferActivityBeforeBlock)
+            transferActivityHistory = history
+            transferActivityRows = transferActivityOverflowRows.slice(0, transferActivityLimit)
+            transferActivityOverflowRows = transferActivityOverflowRows.slice(transferActivityLimit)
+            transferActivityNextBeforeBlock = transferActivityOverflowRows.length > 0 ? transferActivityNextBeforeBlock : transferActivityOverflowNextBeforeBlock
+            setResult(qsTr("Transfer activity"), BridgeHelpers.formatValue(transferActivityRows), false, transferActivityRows)
+            return
+        }
         const history = Array.isArray(transferActivityHistory) ? transferActivityHistory.slice(0) : []
         history.push(transferActivityBeforeBlock)
         transferActivityHistory = history
@@ -1076,7 +1103,7 @@ function refreshChannelsPage(root, anchorSlot) {
         const requestedSlot = Math.max(0, Number(anchorSlot === undefined || anchorSlot === null ? fallbackSlot : anchorSlot))
         const slotTo = fallbackSlot > 0 ? Math.min(requestedSlot, Number(fallbackSlot)) : requestedSlot
         const slotFrom = Math.max(0, slotTo - channelsPageWindow)
-        const report = requestModule(inspectorModule, "channelScan", root.blockchainArgs([slotFrom, slotTo]), qsTr("Channels"), false)
+        const report = requestModule(inspectorModule, "channelScan", root.blockchainRpcArgs([slotFrom, slotTo]), qsTr("Channels"), false)
         if (!report.ok) {
             channelsPageError = report.error
             setResult(qsTr("Channels"), channelsPageError, true)

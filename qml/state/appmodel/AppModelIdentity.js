@@ -61,7 +61,7 @@ function loadSettingsState(root) {
         networkProfile = root.resolvedNetworkProfile(storedNetworkProfile, sequencerUrl, indexerUrl, nodeUrl)
         blockchainSourceMode = root.normalizedCoreSourceMode(root.stringSetting(value, "blockchain_source_mode", blockchainSourceMode))
         indexerSourceMode = root.normalizedCoreSourceMode(root.stringSetting(value, "indexer_source_mode", indexerSourceMode))
-        executionSourceMode = root.normalizedCoreSourceMode(root.stringSetting(value, "execution_source_mode", executionSourceMode))
+        executionSourceMode = "rpc"
         messagingSourceMode = root.normalizedMessagingSourceMode(root.stringSetting(value, "messaging_source_mode", messagingSourceMode))
         messagingRestUrl = root.stringSetting(value, "messaging_rest_url", messagingRestUrl)
         messagingMetricsUrl = root.stringSetting(value, "messaging_metrics_url", messagingMetricsUrl)
@@ -117,7 +117,7 @@ function settingsStatePayload(root) {
             node_url: String(nodeUrl || ""),
             blockchain_source_mode: root.normalizedCoreSourceMode(blockchainSourceMode),
             indexer_source_mode: root.normalizedCoreSourceMode(indexerSourceMode),
-            execution_source_mode: root.normalizedCoreSourceMode(executionSourceMode),
+            execution_source_mode: "rpc",
             messaging_source_mode: root.normalizedMessagingSourceMode(messagingSourceMode),
             messaging_rest_url: String(messagingRestUrl || ""),
             messaging_metrics_url: String(messagingMetricsUrl || ""),
@@ -1062,12 +1062,8 @@ function tryTransactionDecodeCandidate(root, serial, summary, candidates, index,
         if (index >= candidates.length) {
             if (partialValue) {
                 transactionDetailValue = partialValue
-                if (currentView === "l2TransactionDetail") {
-                    lezTransactionsPageError = ""
-                } else {
-                    transactionsPageError = ""
-                }
-                setResult(qsTr("Transaction"), BridgeHelpers.formatValue(partialValue), false, partialValue)
+                lezTransactionsPageError = ""
+                setResult(qsTr("Transaction"), BridgeHelpers.formatValue(partialValue), false, partialValue, "l2TransactionDetail")
             }
             return
         }
@@ -1079,12 +1075,8 @@ function tryTransactionDecodeCandidate(root, serial, summary, candidates, index,
             }
             if (response.ok && response.value && root.transactionDecodeFullyConsumed(response.value)) {
                 transactionDetailValue = response.value
-                if (currentView === "l2TransactionDetail") {
-                    lezTransactionsPageError = ""
-                } else {
-                    transactionsPageError = ""
-                }
-                setResult(qsTr("Transaction"), response.text, false, response.value)
+                lezTransactionsPageError = ""
+                setResult(qsTr("Transaction"), response.text, false, response.value, "l2TransactionDetail")
                 return
             }
             const nextPartial = partialValue || (response.ok && response.value && root.transactionDecodedInstruction(response.value) ? response.value : null)

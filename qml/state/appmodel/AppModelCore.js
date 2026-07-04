@@ -362,13 +362,13 @@ function clearResult(root) {
     }
 }
 
-function setResult(root, title, text, isError, value) {
+function setResult(root, title, text, isError, value, owner) {
     with (root) {
         resultTitle = title
         resultText = text
         resultValue = value === undefined ? null : value
         resultIsError = isError
-        resultOwner = currentView
+        resultOwner = owner === undefined ? currentView : String(owner || "")
         statusText = isError ? qsTr("Error") : qsTr("Ready")
     }
 }

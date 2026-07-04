@@ -1,5 +1,5 @@
 use std::{
-    fs,
+    env, fs,
     io::{self, Write as _},
     path::Path,
 };
@@ -16,10 +16,10 @@ use logos_inspector::{
     local_indexer::{bootstrap_default_local_indexer, is_default_local_indexer_endpoint},
     modules::blockchain_module_report,
     modules::capabilities_report,
-    modules::delivery_report,
+    modules::delivery_source_report,
     modules::logoscore_status_report,
     modules::modules_report,
-    modules::storage_report,
+    modules::storage_source_report,
     overview, program_file_info, raw_rpc_report, resolve_network_endpoints, sequencer_block,
     sequencer_health, sequencer_program_ids, sequencer_transaction,
     sequencer_transaction_inspection, sequencer_transaction_inspection_with_idl,
@@ -135,10 +135,22 @@ enum CliCommand {
     Storage {
         #[arg(long)]
         cid: Option<String>,
+        #[arg(long, default_value = "rest")]
+        source_mode: String,
+        #[arg(long)]
+        rest_url: Option<String>,
+        #[arg(long)]
+        metrics_url: Option<String>,
     },
     Messaging {
         #[arg(long)]
         info_id: Option<String>,
+        #[arg(long, default_value = "rest")]
+        source_mode: String,
+        #[arg(long)]
+        rest_url: Option<String>,
+        #[arg(long)]
+        metrics_url: Option<String>,
     },
     Capabilities,
     Channels {
@@ -187,9 +199,6 @@ impl EndpointArgs {
             self.indexer_url.as_deref(),
             self.node_url.as_deref(),
         )?;
-        if is_default_local_indexer_endpoint(&endpoints.indexer_endpoint) {
-            bootstrap_default_local_indexer()?;
-        }
         Ok(endpoints)
     }
 }
@@ -211,6 +220,7 @@ pub fn run(args: CliArgs) -> Result<()> {
     match args.command {
         CliCommand::Overview(endpoints) => {
             let endpoints = endpoints.endpoints()?;
+            maybe_bootstrap_default_local_indexer(&endpoints.indexer_endpoint)?;
             let report = runtime.block_on(overview(
                 &endpoints.sequencer_endpoint,
                 &endpoints.indexer_endpoint,
@@ -292,6 +302,7 @@ pub fn run(args: CliArgs) -> Result<()> {
             endpoints,
         } => {
             let endpoints = endpoints.endpoints()?;
+            maybe_bootstrap_default_local_indexer(&endpoints.indexer_endpoint)?;
             if let Some(idl) = idl {
                 let idl_json = read_idl(&idl)?;
                 let account = runtime.block_on(account_lookup_with_idl(
@@ -376,8 +387,35 @@ pub fn run(args: CliArgs) -> Result<()> {
         CliCommand::BlockchainModule { address } => {
             print_json(&blockchain_module_report(address.as_deref()))
         }
-        CliCommand::Storage { cid } => print_json(&storage_report(cid.as_deref(), false)),
-        CliCommand::Messaging { info_id } => print_json(&delivery_report(info_id.as_deref())),
+        CliCommand::Storage {
+            cid,
+            source_mode,
+            rest_url,
+            metrics_url,
+        } => {
+            let report = runtime.block_on(storage_source_report(
+                &source_mode,
+                rest_url.as_deref(),
+                metrics_url.as_deref(),
+                cid.as_deref(),
+                false,
+            ));
+            print_json(&report)
+        }
+        CliCommand::Messaging {
+            info_id,
+            source_mode,
+            rest_url,
+            metrics_url,
+        } => {
+            let report = runtime.block_on(delivery_source_report(
+                &source_mode,
+                rest_url.as_deref(),
+                metrics_url.as_deref(),
+                info_id.as_deref(),
+            ));
+            print_json(&report)
+        }
         CliCommand::Capabilities => print_json(&capabilities_report()),
         CliCommand::Channels {
             slot_from,
@@ -403,6 +441,15 @@ pub fn run(args: CliArgs) -> Result<()> {
             print_json(&report)
         }
     }
+}
+
+fn maybe_bootstrap_default_local_indexer(endpoint: &str) -> Result<()> {
+    if env::var_os("LOGOS_INSPECTOR_ENABLE_INDEXER_AUTO_BOOTSTRAP").is_some()
+        && is_default_local_indexer_endpoint(endpoint)
+    {
+        bootstrap_default_local_indexer()?;
+    }
+    Ok(())
 }
 
 fn parse_rpc_params(params: Option<String>) -> Result<Value> {

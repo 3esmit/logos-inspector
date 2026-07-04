@@ -20,79 +20,103 @@ Control {
     readonly property int optionCount: root.options ? root.options.count : 0
 
     Layout.fillWidth: true
-    implicitWidth: root.naturalWidthTotal()
+    implicitWidth: Math.min(root.naturalWidthTotal(), root.width > 0 ? root.width : 360)
     implicitHeight: 38
     padding: 0
 
     contentItem: Item {
-        implicitWidth: tabRow.implicitWidth
+        implicitWidth: root.implicitWidth
         implicitHeight: root.implicitHeight
 
-        Row {
-            id: tabRow
+        Flickable {
+            id: tabScroller
 
             anchors.fill: parent
-            spacing: root.tabSpacing
+            boundsBehavior: Flickable.StopAtBounds
+            clip: true
+            contentWidth: tabRow.implicitWidth
+            contentHeight: height
+            flickableDirection: Flickable.HorizontalFlick
+            interactive: contentWidth > width
 
-            Repeater {
-                id: tabRepeater
+            Row {
+                id: tabRow
 
-                model: root.options
+                height: tabScroller.height
+                spacing: root.tabSpacing
 
-                delegate: Component {
-                    TabButton {
-                        id: optionTab
+                Repeater {
+                    id: tabRepeater
 
-                        required property int index
-                        required property string value
-                        required property string label
-                        readonly property bool active: root.current === value
+                    model: root.options
 
-                        text: label
-                        checked: active
-                        hoverEnabled: true
-                        activeFocusOnTab: true
-                        width: root.tabWidth(label)
-                        height: parent ? parent.height : root.implicitHeight
-                        padding: 0
-                        onClicked: root.selected(value)
-                        Keys.onLeftPressed: root.activateRelative(index, -1)
-                        Keys.onRightPressed: root.activateRelative(index, 1)
+                    delegate: Component {
+                        TabButton {
+                            id: optionTab
 
-                        contentItem: Text {
-                            text: optionTab.text
-                            color: optionTab.active ? root.theme.text : (optionTab.hovered ? root.theme.text : root.theme.textMuted)
-                            elide: Text.ElideRight
-                            textFormat: Text.PlainText
-                            verticalAlignment: Text.AlignVCenter
-                            horizontalAlignment: Text.AlignHCenter
-                            font.pixelSize: 14
-                            font.weight: optionTab.active ? Font.DemiBold : Font.Medium
-                        }
+                            required property int index
+                            required property string value
+                            required property string label
+                            readonly property bool active: root.current === value
 
-                        background: Item {
-                            Rectangle {
-                                anchors.left: parent.left
-                                anchors.right: parent.right
-                                anchors.bottom: parent.bottom
-                                height: 2
-                                color: optionTab.active ? root.theme.accent : (optionTab.hovered ? root.theme.outline : "transparent")
+                            text: qsTr(label)
+                            checked: active
+                            hoverEnabled: true
+                            activeFocusOnTab: true
+                            width: root.tabWidth(label)
+                            height: parent ? parent.height : root.implicitHeight
+                            padding: 0
+                            onActiveFocusChanged: {
+                                if (activeFocus) {
+                                    root.ensureVisible(optionTab)
+                                }
+                            }
+                            onClicked: {
+                                root.ensureVisible(optionTab)
+                                root.selected(value)
+                            }
+                            Keys.onLeftPressed: root.activateRelative(index, -1)
+                            Keys.onRightPressed: root.activateRelative(index, 1)
+
+                            contentItem: Text {
+                                text: optionTab.text
+                                color: optionTab.active ? root.theme.text : (optionTab.hovered ? root.theme.text : root.theme.textMuted)
+                                elide: Text.ElideRight
+                                textFormat: Text.PlainText
+                                verticalAlignment: Text.AlignVCenter
+                                horizontalAlignment: Text.AlignHCenter
+                                font.pixelSize: 14
+                                font.weight: optionTab.active ? Font.DemiBold : Font.Medium
                             }
 
-                            Rectangle {
-                                anchors.fill: parent
-                                visible: optionTab.activeFocus
-                                color: "transparent"
-                                radius: root.theme.radius
-                                border.width: 1
-                                border.color: root.theme.accent
-                            }
-                        }
+                            background: Item {
+                                Rectangle {
+                                    anchors.left: parent.left
+                                    anchors.right: parent.right
+                                    anchors.bottom: parent.bottom
+                                    height: 2
+                                    color: optionTab.active ? root.theme.accent : (optionTab.hovered ? root.theme.outline : "transparent")
+                                }
 
-                        Accessible.role: Accessible.PageTab
-                        Accessible.name: active ? qsTr("%1 selected").arg(label) : label
+                                Rectangle {
+                                    anchors.fill: parent
+                                    visible: optionTab.activeFocus
+                                    color: "transparent"
+                                    radius: root.theme.radius
+                                    border.width: 1
+                                    border.color: root.theme.accent
+                                }
+                            }
+
+                            Accessible.role: Accessible.PageTab
+                            Accessible.name: active ? qsTr("%1 selected").arg(label) : label
+                        }
                     }
                 }
+            }
+
+            ScrollBar.horizontal: ScrollBar {
+                policy: tabScroller.contentWidth > tabScroller.width ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff
             }
         }
 
@@ -117,7 +141,22 @@ Control {
         const nextTab = tabRepeater.itemAt(nextIndex)
         if (nextTab) {
             nextTab.forceActiveFocus()
+            root.ensureVisible(nextTab)
             root.selected(root.options.get(nextIndex).value)
+        }
+    }
+
+    function ensureVisible(item) {
+        if (!item || tabScroller.width <= 0 || tabScroller.contentWidth <= tabScroller.width) {
+            return
+        }
+
+        const left = item.x
+        const right = item.x + item.width
+        if (left < tabScroller.contentX) {
+            tabScroller.contentX = left
+        } else if (right > tabScroller.contentX + tabScroller.width) {
+            tabScroller.contentX = Math.min(right - tabScroller.width, tabScroller.contentWidth - tabScroller.width)
         }
     }
 

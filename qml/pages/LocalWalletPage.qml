@@ -22,6 +22,7 @@ ColumnLayout {
         id: walletTabs
 
         ListElement { value: "profiles"; label: "Profiles" }
+        ListElement { value: "lezAccounts"; label: "LEZ Accounts" }
         ListElement { value: "privateSync"; label: "Private Sync" }
         ListElement { value: "bedrockNotes"; label: "Bedrock Notes" }
         ListElement { value: "operations"; label: "Operations" }
@@ -68,7 +69,7 @@ ColumnLayout {
 
                 SourceStrip {
                     theme: root.theme
-                    sources: [qsTr("Local Wallet"), qsTr("Explicit Profile"), root.model.walletHomeSourceLabel()]
+                    sources: root.headerSources()
                     Layout.fillWidth: true
                 }
 
@@ -93,8 +94,8 @@ ColumnLayout {
 
                 StatusChip {
                     theme: root.theme
-                    label: qsTr("Profile")
-                    value: root.model.walletProfileUsable() ? root.shortText(root.model.walletProfileLabel, 22) : (root.model.localWalletTab === "bedrockNotes" && root.model.bedrockWalletSourceConfigured() ? qsTr("Bedrock") : qsTr("Required"))
+                    label: root.model.localWalletTab === "bedrockNotes" ? qsTr("Source") : qsTr("Profile")
+                    value: root.model.walletProfileUsable() ? root.shortText(root.model.walletProfileLabel, 22) : (root.model.localWalletTab === "bedrockNotes" && root.model.bedrockWalletSourceConfigured() ? qsTr("L1 Bedrock") : qsTr("Required"))
                     tone: root.model.walletProfileUsable() || (root.model.localWalletTab === "bedrockNotes" && root.model.bedrockWalletSourceConfigured()) ? "success" : "warning"
                     compact: true
                     showIndicator: true
@@ -114,9 +115,9 @@ ColumnLayout {
 
                 StatusChip {
                     theme: root.theme
-                    label: qsTr("Home")
-                    value: root.shortText(root.model.walletHomeDisplayLabel(), 22)
-                    detail: root.model.walletHomeDisplayLabel()
+                    label: root.model.localWalletTab === "bedrockNotes" ? qsTr("Endpoint") : qsTr("Home")
+                    value: root.model.localWalletTab === "bedrockNotes" ? root.shortText(root.model.nodeUrl, 22) : root.shortText(root.model.walletHomeDisplayLabel(), 22)
+                    detail: root.model.localWalletTab === "bedrockNotes" ? root.model.nodeUrl : root.model.walletHomeDisplayLabel()
                     tone: "neutral"
                     compact: true
                     showIndicator: true
@@ -681,6 +682,8 @@ ColumnLayout {
 
     function tabComponent(tab) {
         switch (String(tab || "")) {
+        case "lezAccounts":
+            return lezAccountsTab
         case "privateSync":
             return privateSyncTab
         case "bedrockNotes":
@@ -690,6 +693,16 @@ ColumnLayout {
         default:
             return profilesTab
         }
+    }
+
+    function headerSources() {
+        if (root.model.localWalletTab === "bedrockNotes") {
+            return [qsTr("L1 Bedrock"), qsTr("Wallet notes"), root.shortText(root.model.nodeUrl, 42)]
+        }
+        if (root.model.localWalletTab === "lezAccounts") {
+            return [qsTr("Local Wallet"), qsTr("LEZ Accounts"), root.model.walletHomeSourceLabel()]
+        }
+        return [qsTr("Local Wallet"), qsTr("Explicit Profile"), root.model.walletHomeSourceLabel()]
     }
 
     function localStatusText() {

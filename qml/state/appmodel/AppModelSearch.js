@@ -233,7 +233,7 @@ function routePrefixedSearch(root, query) {
             return true
         }
         if (prefix === "wallet") {
-            openLocalWallet(target, "profiles")
+            openLocalWallet(target, "lezAccounts")
             return true
         }
         if (prefix === "l1-wallet" || prefix === "note") {

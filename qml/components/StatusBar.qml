@@ -190,9 +190,6 @@ Pane {
         if (code === "block") {
             return qsTr("BLK")
         }
-        if (code === "transaction") {
-            return qsTr("TX")
-        }
         if (code === "account") {
             return qsTr("ACC")
         }

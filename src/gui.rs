@@ -1,8 +1,7 @@
 use std::{
-    env, fs,
+    env,
     path::{Path, PathBuf},
     process::Command,
-    time::SystemTime,
 };
 
 use anyhow::{Context as _, Result, bail};
@@ -53,7 +52,7 @@ fn standalone_program() -> Option<PathBuf> {
 
 fn sibling_standalone_program(exe: &Path) -> Option<PathBuf> {
     let sibling = exe.with_file_name(standalone_binary_name());
-    if sibling.is_file() && file_modified_at(&sibling) >= file_modified_at(exe) {
+    if sibling.is_file() {
         return Some(sibling);
     }
     None
@@ -67,20 +66,17 @@ fn standalone_binary_name() -> &'static str {
     }
 }
 
-fn file_modified_at(path: &Path) -> Option<SystemTime> {
-    fs::metadata(path)
-        .and_then(|metadata| metadata.modified())
-        .ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    use std::{thread, time::Duration};
+    use std::{
+        fs, thread,
+        time::{Duration, SystemTime},
+    };
 
     #[test]
-    fn sibling_standalone_program_ignores_older_sibling() -> Result<()> {
+    fn sibling_standalone_program_accepts_older_sibling() -> Result<()> {
         let dir = temp_test_dir("older");
         fs::create_dir_all(&dir)?;
         let exe = dir.join("logos-inspector");
@@ -92,8 +88,8 @@ mod tests {
         let selected = sibling_standalone_program(&exe);
 
         cleanup_temp_dir(&dir)?;
-        if selected.is_some() {
-            bail!("older standalone sibling should be ignored");
+        if selected.as_deref() != Some(sibling.as_path()) {
+            bail!("older standalone sibling should be selected, got {selected:?}");
         }
         Ok(())
     }

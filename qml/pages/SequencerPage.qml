@@ -51,7 +51,7 @@ ColumnLayout {
             enabled: !root.model.busy
             Layout.preferredWidth: 112
             accessibleName: qsTr("Fetch sequencer programs")
-            onClicked: root.model.callInspector("programs", root.model.executionArgs([]), qsTr("Sequencer programs"))
+            onClicked: root.model.callInspector("programs", root.model.executionRpcArgs([]), qsTr("Sequencer programs"))
         }
     }
 
