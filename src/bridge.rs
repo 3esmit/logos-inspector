@@ -1,8 +1,3 @@
-use std::{
-    env, fs,
-    path::{Path, PathBuf},
-};
-
 use anyhow::{Context as _, Result, bail};
 use serde_json::{Value, json};
 use tokio::runtime::Runtime;
@@ -24,6 +19,11 @@ use crate::{
     sequencer_transaction_inspection_with_idl, sequencer_transaction_trace,
     sequencer_transaction_trace_with_idl,
     spel::spel_idl_report,
+    state_store::{
+        RegisteredIdlEntry, detected_wallet_profile, load_idl_state, load_settings_state,
+        load_wallet_state, registered_idl_entries, save_idl_state, save_settings_state,
+        save_wallet_state,
+    },
 };
 
 pub const INSPECTOR_MODULE: &str = "logos_inspector";
@@ -583,70 +583,6 @@ fn to_value(value: impl serde::Serialize) -> Result<Value> {
     serde_json::to_value(value).context("failed to serialize bridge response")
 }
 
-fn load_idl_state() -> Result<Value> {
-    let path = idl_state_path()?;
-    if !path.is_file() {
-        return Ok(default_idl_state());
-    }
-
-    let text = fs::read_to_string(&path)
-        .with_context(|| format!("failed to read IDL state from {}", path.display()))?;
-    serde_json::from_str(&text)
-        .with_context(|| format!("failed to parse IDL state from {}", path.display()))
-}
-
-#[derive(Debug, Clone)]
-struct RegisteredIdlEntry {
-    program_id_hex: String,
-    json: String,
-}
-
-fn registered_idl_entries() -> Result<Vec<RegisteredIdlEntry>> {
-    let state = load_idl_state()?;
-    Ok(state
-        .get("idls")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|entry| {
-            let json = entry.get("json").and_then(Value::as_str)?.trim();
-            if json.is_empty() {
-                return None;
-            }
-            let program_id_hex = registered_idl_program_id_hex(entry);
-            if program_id_hex.is_empty() {
-                return None;
-            }
-            Some(RegisteredIdlEntry {
-                program_id_hex,
-                json: json.to_owned(),
-            })
-        })
-        .collect())
-}
-
-fn registered_idl_program_id_hex(entry: &Value) -> String {
-    entry
-        .get("programIdHex")
-        .or_else(|| entry.get("program_id_hex"))
-        .and_then(Value::as_str)
-        .and_then(normalized_program_id_hex_text)
-        .or_else(|| {
-            entry
-                .get("programId")
-                .or_else(|| entry.get("program_id"))
-                .and_then(Value::as_str)
-                .and_then(normalized_program_id_hex_text)
-        })
-        .unwrap_or_default()
-}
-
-fn normalized_program_id_hex_text(value: &str) -> Option<String> {
-    normalize_program_id_hex(value)
-        .ok()
-        .filter(|text| !text.is_empty())
-}
-
 fn decode_transaction_summary_with_idls(
     summary: &TransactionSummary,
     idl_entries: &[RegisteredIdlEntry],
@@ -654,7 +590,8 @@ fn decode_transaction_summary_with_idls(
     let summary_program_id = summary
         .program_id_hex
         .as_deref()
-        .and_then(normalized_program_id_hex_text)?;
+        .and_then(|value| normalize_program_id_hex(value).ok())
+        .filter(|value| !value.is_empty())?;
     let mut partial = None;
     for entry in idl_entries
         .iter()
@@ -725,267 +662,6 @@ fn enrich_account_report_related_transaction_decodes(
         }
     }
     Ok(())
-}
-
-fn save_idl_state(state: &Value) -> Result<Value> {
-    let path = idl_state_path()?;
-    let parent = path
-        .parent()
-        .context("IDL state path has no parent directory")?;
-    fs::create_dir_all(parent)
-        .with_context(|| format!("failed to create config directory {}", parent.display()))?;
-    let text = serde_json::to_string_pretty(state).context("failed to serialize IDL state")?;
-    fs::write(&path, text)
-        .with_context(|| format!("failed to write IDL state to {}", path.display()))?;
-    Ok(json!({
-        "saved": true,
-        "path": path.display().to_string(),
-    }))
-}
-
-fn default_idl_state() -> Value {
-    json!({
-        "version": 1,
-        "idls": [],
-        "account_idl_selections": {},
-    })
-}
-
-fn idl_state_path() -> Result<PathBuf> {
-    Ok(config_dir()?.join("idls.json"))
-}
-
-fn load_wallet_state() -> Result<Value> {
-    let path = wallet_state_path()?;
-    if !path.is_file() {
-        return Ok(wallet_state_with_detected_profile(default_wallet_state()));
-    }
-
-    let text = fs::read_to_string(&path)
-        .with_context(|| format!("failed to read wallet state from {}", path.display()))?;
-    let state: Value = serde_json::from_str(&text)
-        .with_context(|| format!("failed to parse wallet state from {}", path.display()))?;
-    Ok(wallet_state_with_detected_profile(state))
-}
-
-fn save_wallet_state(state: &Value) -> Result<Value> {
-    let path = wallet_state_path()?;
-    let parent = path
-        .parent()
-        .context("wallet state path has no parent directory")?;
-    fs::create_dir_all(parent)
-        .with_context(|| format!("failed to create config directory {}", parent.display()))?;
-    let text = serde_json::to_string_pretty(state).context("failed to serialize wallet state")?;
-    fs::write(&path, text)
-        .with_context(|| format!("failed to write wallet state to {}", path.display()))?;
-    Ok(json!({
-        "saved": true,
-        "path": path.display().to_string(),
-    }))
-}
-
-fn load_settings_state() -> Result<Value> {
-    let path = settings_state_path()?;
-    if !path.is_file() {
-        return Ok(default_settings_state());
-    }
-
-    let text = fs::read_to_string(&path)
-        .with_context(|| format!("failed to read settings state from {}", path.display()))?;
-    serde_json::from_str(&text)
-        .with_context(|| format!("failed to parse settings state from {}", path.display()))
-}
-
-fn save_settings_state(state: &Value) -> Result<Value> {
-    let path = settings_state_path()?;
-    let parent = path
-        .parent()
-        .context("settings state path has no parent directory")?;
-    fs::create_dir_all(parent)
-        .with_context(|| format!("failed to create config directory {}", parent.display()))?;
-    let text = serde_json::to_string_pretty(state).context("failed to serialize settings state")?;
-    fs::write(&path, text)
-        .with_context(|| format!("failed to write settings state to {}", path.display()))?;
-    Ok(json!({
-        "saved": true,
-        "path": path.display().to_string(),
-    }))
-}
-
-fn default_settings_state() -> Value {
-    json!({
-        "version": 1
-    })
-}
-
-fn default_wallet_state() -> Value {
-    json!({
-        "version": 1,
-        "profile": {
-            "label": "Local wallet",
-            "wallet_binary": "",
-            "wallet_home": "",
-            "network_profile": "",
-            "public_key_probe": ""
-        },
-        "operations": []
-    })
-}
-
-fn wallet_state_with_detected_profile(mut state: Value) -> Value {
-    let detected = detected_wallet_profile();
-    let profile = match state.as_object_mut() {
-        Some(root) => root
-            .entry("profile")
-            .or_insert_with(|| json!({ "label": "Local wallet" })),
-        None => return state,
-    };
-    let Some(profile) = profile.as_object_mut() else {
-        return state;
-    };
-
-    fill_blank_field(profile, &detected, "wallet_binary");
-    fill_blank_field(profile, &detected, "wallet_home");
-    state
-}
-
-fn fill_blank_field(profile: &mut serde_json::Map<String, Value>, detected: &Value, key: &str) {
-    let current = profile.get(key).and_then(Value::as_str).unwrap_or_default();
-    if !current.trim().is_empty() {
-        return;
-    }
-    let Some(value) = detected.get(key).and_then(Value::as_str) else {
-        return;
-    };
-    if value.trim().is_empty() {
-        return;
-    }
-    profile.insert(key.to_owned(), Value::String(value.to_owned()));
-}
-
-fn detected_wallet_profile() -> Value {
-    json!({
-        "label": "Local wallet",
-        "wallet_binary": detect_wallet_binary()
-            .map(|path| path.display().to_string())
-            .unwrap_or_default(),
-        "wallet_home": detect_wallet_home()
-            .map(|path| path.display().to_string())
-            .unwrap_or_default(),
-    })
-}
-
-fn detect_wallet_binary() -> Option<PathBuf> {
-    if let Some(path) = env_path_if_file("LOGOS_WALLET_BINARY") {
-        return Some(path);
-    }
-
-    if let Some(path) = find_binary_in_path("wallet") {
-        return Some(path);
-    }
-
-    let home = env::var_os("HOME").map(PathBuf::from)?;
-    [
-        home.join(".cargo").join("bin").join(binary_name("wallet")),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")))
-            .join("logos-execution-zone")
-            .join("target")
-            .join("release")
-            .join(binary_name("wallet")),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")))
-            .join("logos-execution-zone")
-            .join("target")
-            .join("debug")
-            .join(binary_name("wallet")),
-    ]
-    .into_iter()
-    .find(|path| path.is_file())
-}
-
-fn detect_wallet_home() -> Option<PathBuf> {
-    if let Some(path) = env_path_if_wallet_home("NSSA_WALLET_HOME_DIR") {
-        return Some(path);
-    }
-    if let Some(path) = env_path_if_wallet_home("LEE_WALLET_HOME_DIR") {
-        return Some(path);
-    }
-
-    let home = env::var_os("HOME").map(PathBuf::from)?;
-    [
-        home.join(".nssa").join("wallet"),
-        home.join(".lee").join("wallet"),
-    ]
-    .into_iter()
-    .find(|path| wallet_home_is_configured(path))
-}
-
-fn env_path_if_file(variable: &str) -> Option<PathBuf> {
-    let path = env::var_os(variable).map(PathBuf::from)?;
-    path.is_file().then_some(path)
-}
-
-fn env_path_if_wallet_home(variable: &str) -> Option<PathBuf> {
-    let path = env::var_os(variable).map(PathBuf::from)?;
-    wallet_home_is_configured(&path).then_some(path)
-}
-
-fn wallet_home_is_configured(path: &Path) -> bool {
-    path.is_dir() && path.join("wallet_config.json").is_file()
-}
-
-fn find_binary_in_path(binary: &str) -> Option<PathBuf> {
-    let binary = binary_name(binary);
-    env::var_os("PATH")
-        .into_iter()
-        .flat_map(|paths| env::split_paths(&paths).collect::<Vec<_>>())
-        .map(|path| path.join(&binary))
-        .find(|path| path.is_file())
-}
-
-fn binary_name(binary: &str) -> String {
-    if cfg!(windows) {
-        format!("{binary}.exe")
-    } else {
-        binary.to_owned()
-    }
-}
-
-fn wallet_state_path() -> Result<PathBuf> {
-    Ok(config_dir()?.join("wallet.json"))
-}
-
-fn settings_state_path() -> Result<PathBuf> {
-    Ok(config_dir()?.join("settings.json"))
-}
-
-fn config_dir() -> Result<PathBuf> {
-    if let Some(value) = env::var_os("LOGOS_INSPECTOR_CONFIG_DIR") {
-        return Ok(PathBuf::from(value));
-    }
-    if let Some(value) = env::var_os("XDG_CONFIG_HOME") {
-        return Ok(PathBuf::from(value).join("logos-inspector"));
-    }
-    if cfg!(windows)
-        && let Some(value) = env::var_os("APPDATA")
-    {
-        return Ok(PathBuf::from(value).join("Logos Inspector"));
-    }
-    if cfg!(target_os = "macos")
-        && let Some(value) = env::var_os("HOME")
-    {
-        return Ok(PathBuf::from(value)
-            .join("Library")
-            .join("Application Support")
-            .join("Logos Inspector"));
-    }
-    if let Some(value) = env::var_os("HOME") {
-        return Ok(PathBuf::from(value).join(".config").join("logos-inspector"));
-    }
-    bail!("could not determine config directory")
 }
 
 struct Args {

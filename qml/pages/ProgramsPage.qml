@@ -6,6 +6,8 @@ import QtQuick.Dialogs
 import QtQml.Models
 import QtQuick.Layouts
 import "../components"
+import "../components/common"
+import "../components/programs"
 import "../state"
 import "../theme"
 
@@ -136,7 +138,7 @@ ColumnLayout {
                 Repeater {
                     model: root.model.registeredIdls
 
-                    IdlRow {
+                    RegisteredIdlRow {
                         required property int index
                         required property string name
                         required property string programId
@@ -146,6 +148,7 @@ ColumnLayout {
                         idlName: name
                         programIdText: programId
                         fieldCount: root.idlFieldCount(json)
+                        compact: root.width < 720
                         onRemoveRequested: root.model.removeIdl(index)
                     }
                 }
@@ -235,7 +238,7 @@ ColumnLayout {
         ProgramIdList {
             visible: root.programRows().length > 0
             theme: root.theme
-            rows: root.programRows()
+            rows: root.programTableRows()
             modelRef: root.model
         }
 
@@ -247,11 +250,12 @@ ColumnLayout {
             warnings: root.idlWarningRows()
         }
 
-        ProgramFileSummary {
+        LinkedDetailSection {
             visible: root.isProgramFile(root.responseValue)
             theme: root.theme
+            title: qsTr("Program file")
             rows: root.programFileRows()
-            modelRef: root.model
+            onLinkActivated: (kind, value) => root.model.openReference(kind, value)
         }
 
         ProgramContextSummary {
@@ -403,81 +407,17 @@ ColumnLayout {
         ColumnLayout {
             spacing: 12
 
-            Item {
-                implicitWidth: 0
-                implicitHeight: 0
-                Layout.preferredWidth: 0
-                Layout.preferredHeight: 0
+            ConfirmActionPopup {
+                id: deployConfirm
 
-                Popup {
-                    id: deployConfirm
+                property string binaryPath: ""
 
-                    property string binaryPath: ""
-
-                    modal: true
-                    focus: true
-                    padding: root.theme.gap
-                    width: Math.min(root.width - 24, 460)
-                    x: Math.max(0, (root.width - width) / 2)
-                    y: 96
-                    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
-
-                    background: Rectangle {
-                        color: root.theme.surface
-                        radius: root.theme.radius
-                        border.width: 1
-                        border.color: root.theme.outline
-                    }
-
-                    contentItem: ColumnLayout {
-                        spacing: root.theme.gapSmall
-
-                        Text {
-                            text: qsTr("Deploy program binary")
-                            color: root.theme.text
-                            textFormat: Text.PlainText
-                            font.pixelSize: root.theme.primaryText
-                            font.weight: Font.DemiBold
-                            Layout.fillWidth: true
-                        }
-
-                        Text {
-                            text: qsTr("Submit deployment transaction for %1.").arg(root.model.redactedPath(deployConfirm.binaryPath))
-                            color: root.theme.textMuted
-                            textFormat: Text.PlainText
-                            wrapMode: Text.WrapAnywhere
-                            font.pixelSize: root.theme.secondaryText
-                            Layout.fillWidth: true
-                        }
-
-                        RowLayout {
-                            spacing: root.theme.gapSmall
-                            Layout.fillWidth: true
-
-                            Item {
-                                Layout.fillWidth: true
-                            }
-
-                            ActionButton {
-                                theme: root.theme
-                                text: qsTr("Cancel")
-                                onClicked: deployConfirm.close()
-                            }
-
-                            ActionButton {
-                                theme: root.theme
-                                text: qsTr("Deploy")
-                                primary: true
-                                enabled: !root.model.busy
-                                onClicked: {
-                                    const path = deployConfirm.binaryPath
-                                    deployConfirm.close()
-                                    root.model.deployProgramBinary(path)
-                                }
-                            }
-                        }
-                    }
-                }
+                theme: root.theme
+                title: qsTr("Deploy program binary")
+                message: qsTr("Submit deployment transaction for %1.").arg(root.model.redactedPath(binaryPath))
+                confirmText: qsTr("Deploy")
+                confirmEnabled: !root.model.busy
+                onAccepted: root.model.deployProgramBinary(binaryPath)
             }
 
             FileDialog {
@@ -611,522 +551,6 @@ ColumnLayout {
         }
     }
 
-    component IdlRow: Item {
-        id: rowRoot
-
-        required property Theme theme
-        property string idlName: ""
-        property string programIdText: ""
-        property int fieldCount: 0
-        signal removeRequested()
-
-        Layout.fillWidth: true
-        implicitHeight: Math.max(52, rowLayout.implicitHeight + rowRoot.theme.gapLarge)
-
-        GridLayout {
-            id: rowLayout
-
-            anchors.fill: parent
-            anchors.leftMargin: rowRoot.theme.gap
-            anchors.rightMargin: rowRoot.theme.gap
-            anchors.topMargin: rowRoot.theme.gapSmall
-            anchors.bottomMargin: rowRoot.theme.gapSmall
-            columns: root.width < 720 ? 2 : 4
-            columnSpacing: rowRoot.theme.gap
-            rowSpacing: rowRoot.theme.gapTiny
-
-            ColumnLayout {
-                spacing: rowRoot.theme.gapTiny
-                Layout.fillWidth: true
-
-                Text {
-                    text: rowRoot.idlName.length ? rowRoot.idlName : qsTr("Unnamed IDL")
-                    color: rowRoot.theme.text
-                    textFormat: Text.PlainText
-                    font.pixelSize: rowRoot.theme.secondaryText
-                    font.weight: Font.DemiBold
-                    elide: Text.ElideRight
-                    Layout.fillWidth: true
-                }
-
-                Text {
-                    text: rowRoot.programIdText.length ? rowRoot.programIdText : qsTr("No program binding")
-                    color: rowRoot.programIdText.length ? rowRoot.theme.textMuted : rowRoot.theme.textDim
-                    textFormat: Text.PlainText
-                    font.family: "monospace"
-                    font.pixelSize: rowRoot.theme.dataText
-                    elide: Text.ElideRight
-                    Layout.fillWidth: true
-                }
-            }
-
-            Text {
-                text: qsTr("%1 field(s)").arg(rowRoot.fieldCount)
-                color: rowRoot.theme.textMuted
-                textFormat: Text.PlainText
-                font.pixelSize: rowRoot.theme.dataText
-                Layout.preferredWidth: 96
-                Layout.alignment: Qt.AlignVCenter | Qt.AlignRight
-            }
-
-            ActionButton {
-                theme: rowRoot.theme
-                text: qsTr("Remove")
-                Layout.preferredWidth: 96
-                Layout.alignment: Qt.AlignVCenter | Qt.AlignRight
-                onClicked: rowRoot.removeRequested()
-            }
-        }
-    }
-
-    component ProgramIdList: ColumnLayout {
-        id: listRoot
-
-        required property Theme theme
-        property var rows: []
-        property AppModel modelRef
-
-        spacing: 6
-        Layout.fillWidth: true
-
-        Text {
-            text: qsTr("Sequencer programs")
-            color: listRoot.theme.text
-            textFormat: Text.PlainText
-            font.pixelSize: listRoot.theme.primaryText
-            font.weight: Font.DemiBold
-            Layout.fillWidth: true
-        }
-
-        Frame {
-            padding: 0
-            Layout.fillWidth: true
-
-            background: Rectangle {
-                color: listRoot.theme.field
-                radius: listRoot.theme.radius
-                border.width: 1
-                border.color: listRoot.theme.outlineMuted
-            }
-
-            contentItem: ColumnLayout {
-                spacing: 0
-
-                ProgramRow {
-                    theme: listRoot.theme
-                    header: true
-                    programIdText: qsTr("Known program ID")
-                    knownIdl: qsTr("Known IDL")
-                    binaryMatch: qsTr("Binary match")
-                    recentTx: qsTr("Recent tx")
-                    source: qsTr("Source")
-                }
-
-                Repeater {
-                    model: listRoot.rows
-
-                    ProgramRow {
-                        required property var modelData
-
-                        theme: listRoot.theme
-                        label: String(modelData.label || "-")
-                        hex: String(modelData.hex || "")
-                        base58: String(modelData.base58 || "")
-                        programIdText: String(modelData.base58 || modelData.hex || "")
-                        knownIdl: root.knownIdlText(modelData.hex)
-                        binaryMatch: qsTr("unknown")
-                        recentTx: qsTr("not loaded")
-                        source: qsTr("sequencer")
-                        modelRef: listRoot.modelRef
-                    }
-                }
-            }
-        }
-    }
-
-    component ProgramRow: Item {
-        id: rowRoot
-
-        required property Theme theme
-        property string label: ""
-        property string hex: ""
-        property string base58: ""
-        property string programIdText: ""
-        property string knownIdl: ""
-        property string binaryMatch: ""
-        property string recentTx: ""
-        property string source: ""
-        property bool header: false
-        property AppModel modelRef
-
-        Layout.fillWidth: true
-        Layout.preferredHeight: rowRoot.header ? 34 : 42
-
-        Rectangle {
-            anchors.fill: parent
-            color: rowRoot.header ? rowRoot.theme.field : "transparent"
-            border.width: 0
-        }
-
-        GridLayout {
-            anchors.fill: parent
-            anchors.leftMargin: rowRoot.theme.gap
-            anchors.rightMargin: rowRoot.theme.gap
-            columns: 5
-            columnSpacing: rowRoot.theme.gap
-
-            LinkCell {
-                theme: rowRoot.theme
-                text: rowRoot.header ? rowRoot.programIdText : root.shortHash(rowRoot.programIdText)
-                header: rowRoot.header
-                link: !rowRoot.header && (rowRoot.hex.length > 0 || rowRoot.base58.length > 0)
-                copyText: rowRoot.base58.length ? rowRoot.base58 : rowRoot.hex
-                monospace: !rowRoot.header
-                Layout.fillWidth: true
-                onActivated: rowRoot.modelRef.openReference("program", rowRoot.hex.length ? rowRoot.hex : rowRoot.base58)
-            }
-
-            LinkCell {
-                theme: rowRoot.theme
-                text: rowRoot.knownIdl
-                header: rowRoot.header
-                monospace: false
-                Layout.preferredWidth: 120
-            }
-
-            LinkCell {
-                theme: rowRoot.theme
-                text: rowRoot.binaryMatch
-                header: rowRoot.header
-                monospace: false
-                Layout.preferredWidth: 110
-            }
-
-            LinkCell {
-                theme: rowRoot.theme
-                text: rowRoot.recentTx
-                header: rowRoot.header
-                monospace: !rowRoot.header
-                Layout.preferredWidth: 96
-            }
-
-            LinkCell {
-                theme: rowRoot.theme
-                text: rowRoot.source
-                header: rowRoot.header
-                monospace: false
-                Layout.preferredWidth: 92
-            }
-        }
-    }
-
-    component IdlSummary: ColumnLayout {
-        id: summaryRoot
-
-        required property Theme theme
-        property var instructions: []
-        property var accounts: []
-        property var warnings: []
-
-        spacing: summaryRoot.theme.gap
-        Layout.fillWidth: true
-
-        SummarySection {
-            theme: summaryRoot.theme
-            title: qsTr("Instructions")
-            rows: summaryRoot.instructions
-        }
-
-        SummarySection {
-            theme: summaryRoot.theme
-            title: qsTr("Account schemas")
-            rows: summaryRoot.accounts
-        }
-
-        SummarySection {
-            visible: summaryRoot.warnings.length > 0
-            theme: summaryRoot.theme
-            title: qsTr("Warnings")
-            rows: summaryRoot.warnings
-        }
-    }
-
-    component SummarySection: ColumnLayout {
-        id: sectionRoot
-
-        required property Theme theme
-        property string title: ""
-        property var rows: []
-
-        visible: rows.length > 0
-        spacing: 6
-        Layout.fillWidth: true
-
-        Text {
-            text: sectionRoot.title
-            color: sectionRoot.theme.text
-            textFormat: Text.PlainText
-            font.pixelSize: sectionRoot.theme.primaryText
-            font.weight: Font.DemiBold
-            Layout.fillWidth: true
-        }
-
-        Frame {
-            padding: 0
-            Layout.fillWidth: true
-
-            background: Rectangle {
-                color: sectionRoot.theme.field
-                radius: sectionRoot.theme.radius
-                border.width: 1
-                border.color: sectionRoot.theme.outlineMuted
-            }
-
-            contentItem: ColumnLayout {
-                spacing: 0
-
-                Repeater {
-                    model: sectionRoot.rows
-
-                    SummaryRow {
-                        required property var modelData
-
-                        theme: sectionRoot.theme
-                        title: String(modelData.title || "-")
-                        detail: String(modelData.detail || "")
-                    }
-                }
-            }
-        }
-    }
-
-    component SummaryRow: Item {
-        id: rowRoot
-
-        required property Theme theme
-        property string title: ""
-        property string detail: ""
-
-        Layout.fillWidth: true
-        implicitHeight: Math.max(40, body.implicitHeight + rowRoot.theme.gapLarge)
-
-        ColumnLayout {
-            id: body
-
-            anchors.fill: parent
-            anchors.leftMargin: rowRoot.theme.gap
-            anchors.rightMargin: rowRoot.theme.gap
-            anchors.topMargin: rowRoot.theme.gapSmall
-            anchors.bottomMargin: rowRoot.theme.gapSmall
-            spacing: rowRoot.theme.gapTiny
-
-            Text {
-                text: rowRoot.title
-                color: rowRoot.theme.text
-                textFormat: Text.PlainText
-                font.pixelSize: rowRoot.theme.secondaryText
-                font.weight: Font.DemiBold
-                elide: Text.ElideRight
-                Layout.fillWidth: true
-            }
-
-            Text {
-                visible: rowRoot.detail.length > 0
-                text: rowRoot.detail
-                color: rowRoot.theme.textMuted
-                textFormat: Text.PlainText
-                font.family: "monospace"
-                font.pixelSize: rowRoot.theme.dataText
-                wrapMode: Text.WrapAnywhere
-                Layout.fillWidth: true
-            }
-        }
-    }
-
-    component ProgramFileSummary: ColumnLayout {
-        id: fileRoot
-
-        required property Theme theme
-        property var rows: []
-        property AppModel modelRef
-
-        spacing: 6
-        Layout.fillWidth: true
-
-        Text {
-            text: qsTr("Program file")
-            color: fileRoot.theme.text
-            textFormat: Text.PlainText
-            font.pixelSize: fileRoot.theme.primaryText
-            font.weight: Font.DemiBold
-            Layout.fillWidth: true
-        }
-
-        Frame {
-            padding: 0
-            Layout.fillWidth: true
-
-            background: Rectangle {
-                color: fileRoot.theme.field
-                radius: fileRoot.theme.radius
-                border.width: 1
-                border.color: fileRoot.theme.outlineMuted
-            }
-
-            contentItem: ColumnLayout {
-                spacing: 0
-
-                Repeater {
-                    model: fileRoot.rows
-
-                    FileRow {
-                        required property var modelData
-
-                        theme: fileRoot.theme
-                        label: String(modelData.label || "")
-                        value: String(modelData.value || "-")
-                        linkKind: String(modelData.linkKind || "")
-                        modelRef: fileRoot.modelRef
-                    }
-                }
-            }
-        }
-    }
-
-    component ProgramContextSummary: ColumnLayout {
-        id: contextRoot
-
-        required property Theme theme
-        property var rows: []
-        property var idls: []
-        property var transactions: []
-        property var account: null
-        property AppModel modelRef
-
-        spacing: 6
-        Layout.fillWidth: true
-
-        Text {
-            text: qsTr("Program")
-            color: contextRoot.theme.text
-            textFormat: Text.PlainText
-            font.pixelSize: contextRoot.theme.primaryText
-            font.weight: Font.DemiBold
-            Layout.fillWidth: true
-        }
-
-        SourceStrip {
-            theme: contextRoot.theme
-            sources: [qsTr("L2 LEZ"), qsTr("sequencer getProgramIds"), qsTr("sequencer getAccount"), qsTr("local IDL")]
-            Layout.fillWidth: true
-        }
-
-        Frame {
-            padding: 0
-            Layout.fillWidth: true
-
-            background: Rectangle {
-                color: contextRoot.theme.field
-                radius: contextRoot.theme.radius
-                border.width: 1
-                border.color: contextRoot.theme.outlineMuted
-            }
-
-            contentItem: ColumnLayout {
-                spacing: 0
-
-                Repeater {
-                    model: contextRoot.rows
-
-                    FileRow {
-                        required property var modelData
-
-                        theme: contextRoot.theme
-                        label: String(modelData.label || "")
-                        value: String(modelData.value || "-")
-                        linkKind: String(modelData.linkKind || "")
-                        modelRef: contextRoot.modelRef
-                    }
-                }
-            }
-        }
-
-        SummarySection {
-            theme: contextRoot.theme
-            title: qsTr("Registered IDLs")
-            rows: contextRoot.idls
-        }
-
-        SummarySection {
-            theme: contextRoot.theme
-            title: qsTr("Loaded recent transactions")
-            rows: contextRoot.transactions
-        }
-
-        Text {
-            visible: contextRoot.account !== null
-            text: qsTr("Program account state")
-            color: contextRoot.theme.text
-            textFormat: Text.PlainText
-            font.pixelSize: contextRoot.theme.primaryText
-            font.weight: Font.DemiBold
-            Layout.fillWidth: true
-        }
-
-        AccountDetailPane {
-            visible: contextRoot.account !== null
-            value: contextRoot.account
-            theme: contextRoot.theme
-            model: contextRoot.modelRef
-            Layout.fillWidth: true
-        }
-    }
-
-    component FileRow: Item {
-        id: rowRoot
-
-        required property Theme theme
-        property string label: ""
-        property string value: ""
-        property string linkKind: ""
-        property AppModel modelRef
-
-        Layout.fillWidth: true
-        implicitHeight: Math.max(40, rowGrid.implicitHeight + rowRoot.theme.gapLarge)
-
-        GridLayout {
-            id: rowGrid
-
-            anchors.fill: parent
-            anchors.leftMargin: rowRoot.theme.gap
-            anchors.rightMargin: rowRoot.theme.gap
-            anchors.topMargin: rowRoot.theme.gapSmall
-            anchors.bottomMargin: rowRoot.theme.gapSmall
-            columns: 2
-            columnSpacing: rowRoot.theme.gap
-
-            Text {
-                text: rowRoot.label
-                color: rowRoot.theme.textMuted
-                textFormat: Text.PlainText
-                font.pixelSize: rowRoot.theme.labelText
-                font.weight: Font.DemiBold
-                font.capitalization: Font.AllUppercase
-                Layout.preferredWidth: 132
-            }
-
-            LinkCell {
-                theme: rowRoot.theme
-                text: rowRoot.value
-                link: rowRoot.linkKind.length > 0
-                copyText: rowRoot.value
-                wrap: true
-                Layout.fillWidth: true
-                onActivated: rowRoot.modelRef.openReference(rowRoot.linkKind, rowRoot.value)
-            }
-        }
-    }
-
     function activeTabLabel() {
         if (root.model.programTab === "programIds") {
             return qsTr("Known IDs")
@@ -1241,6 +665,20 @@ ColumnLayout {
 
     function programRows() {
         return Array.isArray(root.responseValue) ? root.responseValue : []
+    }
+
+    function programTableRows() {
+        return root.programRows().map(function (row) {
+            const hex = String(row.hex || "")
+            const base58 = String(row.base58 || "")
+            return {
+                label: String(row.label || "-"),
+                hex: hex,
+                base58: base58,
+                programIdText: base58.length ? base58 : hex,
+                knownIdl: root.knownIdlText(hex)
+            }
+        })
     }
 
     function isProgramContext(value) {
