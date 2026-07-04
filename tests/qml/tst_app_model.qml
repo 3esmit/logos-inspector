@@ -53,6 +53,7 @@ TestCase {
         model.currentView = "overview"
         model.dashboardNode = null
         model.dashboardMetricHistory = ({})
+        model.dashboardMetricLastSeen = ({})
         model.dashboardMetricHistoryRevision = 0
         model.blocksPageRows = []
         model.blocksPageSlotFrom = 0
@@ -86,13 +87,51 @@ TestCase {
             "storage.files": [{ timestamp: 1, value: 2 }],
             "chain.height": [{ timestamp: 1, value: 3 }]
         }
+        model.dashboardMetricLastSeen = {
+            "messaging.messages": { timestamp: 2, value: 1 },
+            "storage.files": { timestamp: 2, value: 2 }
+        }
 
         model.clearDashboardMetricHistoryForPrefix("messaging.")
 
         compare(model.dashboardMetricHistory["messaging.messages"], undefined)
+        compare(model.dashboardMetricLastSeen["messaging.messages"], undefined)
         verify(model.dashboardMetricHistory["storage.files"] !== undefined)
+        verify(model.dashboardMetricLastSeen["storage.files"] !== undefined)
         verify(model.dashboardMetricHistory["chain.height"] !== undefined)
         compare(model.dashboardMetricHistoryRevision, 1)
+    }
+
+    function test_dashboard_metric_history_keeps_pre_change_sample() {
+        const values = [100, 100, 100, 100, 100, 101, 101, 101, 101, 102, 101, 101, 101, 102]
+        for (let i = 0; i < values.length; ++i) {
+            setTipMinusLib(values[i])
+            model.recordDashboardSnapshot()
+        }
+
+        const samples = model.dashboardMetricHistory["bedrock.tip_minus_lib"]
+        const storedValues = samples.map(function (sample) {
+            return sample.value
+        })
+
+        compare(storedValues.length, 8)
+        compare(JSON.stringify(storedValues), JSON.stringify([100, 100, 101, 101, 102, 101, 101, 102]))
+        for (let j = 1; j < samples.length; ++j) {
+            verify(samples[j].timestamp > samples[j - 1].timestamp)
+        }
+    }
+
+    function test_dashboard_metric_history_keeps_300_samples() {
+        for (let i = 0; i < 310; ++i) {
+            setTipMinusLib(i)
+            model.recordDashboardSnapshot()
+        }
+
+        const samples = model.dashboardMetricHistory["bedrock.tip_minus_lib"]
+
+        compare(samples.length, 300)
+        compare(samples[0].value, 10)
+        compare(samples[299].value, 309)
     }
 
     function test_idl_registration_delegates() {
@@ -240,5 +279,18 @@ TestCase {
         compare(model.lezBlocksPageRows.length, 2)
         compare(model.lezBlocksPageRows[0].block_id, 102)
         tryCompare(model, "dashboardRefreshing", false)
+    }
+
+    function setTipMinusLib(value) {
+        model.dashboardNode = {
+            cryptarchia_info: {
+                value: {
+                    cryptarchia_info: {
+                        slot: value,
+                        lib_slot: 0
+                    }
+                }
+            }
+        }
     }
 }

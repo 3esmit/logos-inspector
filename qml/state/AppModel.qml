@@ -122,6 +122,7 @@ QtObject {
     property var dashboardGraphSelections: defaultDashboardGraphSelections()
     property int dashboardGraphRevision: 0
     property var dashboardMetricHistory: ({})
+    property var dashboardMetricLastSeen: ({})
     property int dashboardMetricHistoryRevision: 0
     property var networkConnectionPending: ({})
     property int networkConnectionPendingRevision: 0

@@ -559,25 +559,58 @@ function recordDashboardSnapshot(root) {
             "messaging.receive_latency_ms"
         ]
         const next = copyMap(dashboardMetricHistory)
-        const timestamp = Date.now()
-        let changed = false
+        const nextSeen = copyMap(dashboardMetricLastSeen)
+        const now = Date.now()
+        let historyChanged = false
+        let seenChanged = false
         for (let i = 0; i < keys.length; ++i) {
-            const value = Number(root.dashboardMetricRawValue(keys[i]))
+            const key = keys[i]
+            const value = Number(root.dashboardMetricRawValue(key))
             if (!Number.isFinite(value)) {
                 continue
             }
-            const samples = root.normalizedDashboardSamples(next[keys[i]]).slice(-95)
-            const last = samples.length > 0 ? samples[samples.length - 1] : null
-            if (last && Number(last.value) === value) {
-                continue
+            const update = dashboardMetricSampleUpdate(root, next[key], nextSeen[key], now, value)
+            nextSeen[key] = update.lastSeen
+            seenChanged = true
+            if (update.changed) {
+                next[key] = update.samples
+                historyChanged = true
             }
-            samples.push({ timestamp: timestamp, value: value })
-            next[keys[i]] = samples
-            changed = true
         }
-        if (changed) {
+        if (seenChanged) {
+            dashboardMetricLastSeen = nextSeen
+        }
+        if (historyChanged) {
             dashboardMetricHistory = next
             dashboardMetricHistoryRevision += 1
+        }
+    }
+}
+
+function dashboardMetricSampleUpdate(root, stored, lastSeen, now, value) {
+    with (root) {
+        const samples = root.normalizedDashboardSamples(stored)
+        const previous = normalizedDashboardSample(root, lastSeen) || (samples.length > 0 ? samples[samples.length - 1] : null)
+        const timestamp = nextDashboardSampleTimestamp(root, previous, now)
+        const current = { timestamp: timestamp, value: value }
+        const lastStored = samples.length > 0 ? samples[samples.length - 1] : null
+        let changed = false
+
+        if (!lastStored) {
+            samples.push(current)
+            changed = true
+        } else if (!previous || Number(previous.value) !== value) {
+            if (previous && previous.timestamp > lastStored.timestamp && Number(previous.value) === Number(lastStored.value)) {
+                samples.push(previous)
+            }
+            samples.push(current)
+            changed = true
+        }
+
+        return {
+            samples: trimDashboardMetricSamples(root, samples),
+            lastSeen: current,
+            changed: changed
         }
     }
 }
@@ -594,6 +627,23 @@ function dashboardMetricSamples(root, key) {
         }
         const value = Number(root.dashboardMetricValue(key))
         return Number.isFinite(value) ? [{ timestamp: Date.now(), value: value }] : []
+    }
+}
+
+function normalizedDashboardSample(root, sample) {
+    with (root) {
+        if (!sample || typeof sample !== "object") {
+            return null
+        }
+        const value = Number(sample.value)
+        const timestamp = Number(sample.timestamp)
+        if (!Number.isFinite(value) || !Number.isFinite(timestamp)) {
+            return null
+        }
+        return {
+            timestamp: timestamp,
+            value: value
+        }
     }
 }
 
@@ -614,6 +664,22 @@ function normalizedDashboardSamples(root, samples) {
             })
         }
         return rows
+    }
+}
+
+function nextDashboardSampleTimestamp(root, previous, now) {
+    with (root) {
+        const timestamp = Number(now)
+        const candidate = Number.isFinite(timestamp) ? timestamp : Date.now()
+        const last = previous ? Number(previous.timestamp) : NaN
+        return Number.isFinite(last) && candidate <= last ? last + 1 : candidate
+    }
+}
+
+function trimDashboardMetricSamples(root, samples) {
+    with (root) {
+        const rows = root.normalizedDashboardSamples(samples)
+        return rows.length > 300 ? rows.slice(rows.length - 300) : rows
     }
 }
 
@@ -705,6 +771,7 @@ function clearDashboardMetricHistoryForPrefix(root, prefix) {
             return
         }
         const next = copyMap(dashboardMetricHistory)
+        const seen = copyMap(dashboardMetricLastSeen)
         let changed = false
         for (const key in next) {
             if (String(key || "").indexOf(text) === 0) {
@@ -712,10 +779,16 @@ function clearDashboardMetricHistoryForPrefix(root, prefix) {
                 changed = true
             }
         }
+        for (const seenKey in seen) {
+            if (String(seenKey || "").indexOf(text) === 0) {
+                delete seen[seenKey]
+                changed = true
+            }
+        }
         if (changed) {
             dashboardMetricHistory = next
+            dashboardMetricLastSeen = seen
             dashboardMetricHistoryRevision += 1
         }
     }
 }
-
