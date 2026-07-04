@@ -2,20 +2,13 @@ use std::{pin::Pin, sync::OnceLock};
 
 use cxx_qt::Threading;
 use cxx_qt_lib::QString;
-use logos_inspector::bridge::{INSPECTOR_MODULE, InspectorBridge};
-use serde::Serialize;
-use serde_json::Value;
+use logos_inspector::bridge::{
+    INSPECTOR_MODULE, InspectorBridge,
+    call_module_response_json as bridge_call_module_response_json,
+};
 
 #[derive(Default)]
 pub struct LogosBridgeRust;
-
-#[derive(Debug, Serialize)]
-struct BridgeResponse {
-    ok: bool,
-    value: Value,
-    text: String,
-    error: String,
-}
 
 #[cxx_qt::bridge]
 pub mod qobject {
@@ -99,31 +92,16 @@ impl qobject::LogosBridge {
 }
 
 fn call_module_response_json(module: &str, method: &str, args_json: &str) -> String {
-    let response = match call_module(module, method, args_json) {
-        Ok(value) => BridgeResponse {
-            ok: true,
-            text: format_value(&value),
-            value,
-            error: String::new(),
-        },
-        Err(error) => BridgeResponse {
-            ok: false,
-            value: Value::Null,
-            text: String::new(),
-            error: format!("{error:#}"),
-        },
-    };
-
-    serde_json::to_string(&response).unwrap_or_else(|error| {
-        format!(
-            r#"{{"ok":false,"value":null,"text":"","error":"failed to serialize bridge response: {error}"}}"#
-        )
-    })
-}
-
-fn call_module(module: &str, method: &str, args_json: &str) -> anyhow::Result<Value> {
-    let args = serde_json::from_str(args_json)?;
-    bridge()?.call_module(module, method, args)
+    match bridge() {
+        Ok(bridge) => bridge_call_module_response_json(bridge, module, method, args_json),
+        Err(error) => serde_json::json!({
+            "ok": false,
+            "value": null,
+            "text": "",
+            "error": format!("{error:#}"),
+        })
+        .to_string(),
+    }
 }
 
 fn bridge() -> anyhow::Result<&'static InspectorBridge> {
@@ -137,11 +115,4 @@ fn bridge() -> anyhow::Result<&'static InspectorBridge> {
     BRIDGE
         .get()
         .ok_or_else(|| anyhow::anyhow!("failed to initialize {INSPECTOR_MODULE} bridge"))
-}
-
-fn format_value(value: &Value) -> String {
-    match value {
-        Value::String(value) => value.clone(),
-        value => serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string()),
-    }
 }

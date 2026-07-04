@@ -9,7 +9,7 @@ description = "Native CLI and GUI inspector for Logos networks"
 publish = false
 
 [workspace]
-members = [".", "crates/standalone-gui"]
+members = [".", "crates/core-ffi", "crates/standalone-gui"]
 default-members = ["."]
 resolver = "3"
 

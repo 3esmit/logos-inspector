@@ -1,0 +1,36 @@
+[package]
+name = "logos-inspector-core-ffi"
+version = "0.2.0-rc6"
+edition = "2024"
+rust-version = "1.94"
+license = "MIT"
+publish = false
+
+[lib]
+name = "logos_inspector_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+logos-inspector = { path = "../..", default-features = false }
+serde_json = "1"
+
+[lints.rust]
+future_incompatible = { level = "deny", priority = -1 }
+rust_2018_idioms = { level = "deny", priority = -1 }
+unsafe_op_in_unsafe_fn = "deny"
+unused_imports = "deny"
+unused_must_use = "deny"
+warnings = { level = "deny", priority = -1 }
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+dbg_macro = "deny"
+expect_used = "deny"
+let_underscore_must_use = "deny"
+panic = "deny"
+print_stderr = "deny"
+print_stdout = "deny"
+todo = "deny"
+unimplemented = "deny"
+unwrap_in_result = "deny"
+unwrap_used = "deny"

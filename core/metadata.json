@@ -1,0 +1,33 @@
+{
+  "name": "logos_inspector",
+  "display_name": "Logos Inspector",
+  "version": "0.2.0-rc6",
+  "description": "Core runtime module for Logos Inspector",
+  "author": "Logos Core Team",
+  "type": "core",
+  "interface": "universal",
+  "category": "tools",
+  "main": "logos_inspector_plugin",
+  "dependencies": [],
+  "include": [],
+  "capabilities": [],
+  "nix": {
+    "packages": {
+      "build": [],
+      "runtime": []
+    },
+    "external_libraries": [
+      {
+        "name": "logos_inspector_core"
+      }
+    ],
+    "cmake": {
+      "find_packages": [],
+      "extra_sources": [],
+      "extra_include_dirs": [
+        "lib"
+      ],
+      "extra_link_libraries": []
+    }
+  }
+}

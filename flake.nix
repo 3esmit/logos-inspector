@@ -23,6 +23,8 @@
         "aarch64-darwin"
       ];
 
+      coreSystems = standaloneSystems;
+
       circuitsVersion = "0.5.3";
 
       circuitsTargets = {
@@ -158,10 +160,68 @@
           sourceFilter path type && isRuntimeAsset;
       };
 
+      coreModuleSource = lib.cleanSourceWith {
+        src = ./core;
+        filter = sourceFilter;
+      };
+
       qmlModule = logos-module-builder.lib.mkLogosQmlModule {
         src = source;
         configFile = ./metadata.json;
         flakeInputs = inputs;
+      };
+
+      mkCoreFfiPackage = pkgs:
+        let
+          circuitsArtifact = mkCircuitsArtifact pkgs;
+          lezSource = pkgs.fetchzip {
+            url = "https://github.com/logos-blockchain/logos-execution-zone/archive/e37876a64028a335eb693198a1ed6a0e875ec5b4.tar.gz";
+            hash = "sha256-ltLcysXUdVUXAe25Tl8x7e7ZsTzj1sHlyS3glp97TAo=";
+          };
+          rapidsnark = mkRapidsnark pkgs;
+        in
+        pkgs.rustPlatform.buildRustPackage {
+          pname = "logos-inspector-core-ffi";
+          version = "0.2.0-rc6";
+          src = standaloneRustSource;
+          cargoLock = {
+            lockFile = ./Cargo.lock;
+            allowBuiltinFetchGit = true;
+          };
+          cargoBuildFlags = [
+            "--package"
+            "logos-inspector-core-ffi"
+          ];
+          env = {
+            LBC_ROOT_DIR = "${circuitsArtifact}";
+            LOGOS_BLOCKCHAIN_CIRCUITS = "${circuitsArtifact}";
+            RAPIDSNARK_LIB_DIR = "${rapidsnark}";
+            RISC0_SKIP_BUILD = "1";
+          };
+          preBuild = ''
+            rm -rf /build/cargo-vendor-dir/artifacts
+            ln -s ${lezSource}/artifacts /build/cargo-vendor-dir/artifacts
+          '';
+          postInstall = ''
+            mkdir -p "$out/include"
+            cp ${./core/lib/logos_inspector_core.h} "$out/include/"
+          '';
+          doCheck = false;
+        };
+
+      coreFfiPackages = forSystems coreSystems (pkgs: {
+        default = mkCoreFfiPackage pkgs;
+      });
+
+      coreModule = logos-module-builder.lib.mkLogosModule {
+        src = coreModuleSource;
+        configFile = ./core/metadata.json;
+        flakeInputs = inputs;
+        externalLibInputs = {
+          logos_inspector_core = {
+            packages = coreFfiPackages;
+          };
+        };
       };
 
       mkStandaloneBinary = pkgs: { buildType, staticRapidsnarkFeature }:
@@ -320,6 +380,14 @@ EOF
             standalone = standalonePackages.${system};
           } // lib.optionalAttrs (builtins.hasAttr system standaloneDevPackages) {
             standalone-dev = standaloneDevPackages.${system};
+          } // lib.optionalAttrs (builtins.elem system coreSystems) {
+            core = coreModule.packages.${system}.default;
+            core-ffi = coreFfiPackages.${system}.default;
+            core-lib = coreModule.packages.${system}.lib;
+            core-lgx = coreModule.packages.${system}.lgx;
+            core-lgx-portable = coreModule.packages.${system}.lgx-portable;
+            logos_inspector = coreModule.packages.${system}.default;
+            logos_inspector-lgx = coreModule.packages.${system}.lgx;
           })
         qmlModule.packages;
       apps = builtins.mapAttrs

@@ -6,6 +6,10 @@ function callModule(logosObject, moduleName, method, args) {
     }
 
     try {
+        if (moduleName === "logos_inspector" && method !== "moduleVersion") {
+            const raw = logosObject.callModule(moduleName, "call", [method, JSON.stringify(args || [])])
+            return parseModuleResponseJson(raw)
+        }
         const value = logosObject.callModule(moduleName, method, args || [])
         return {
             ok: true,

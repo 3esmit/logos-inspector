@@ -33,10 +33,44 @@ TestCase {
         }
     }
 
+    QtObject {
+        id: basecampHost
+
+        property int callCount: 0
+        property string lastModule: ""
+        property string lastMethod: ""
+        property var lastArgs: []
+
+        function callModule(moduleName, method, args) {
+            callCount += 1
+            lastModule = String(moduleName || "")
+            lastMethod = String(method || "")
+            lastArgs = args || []
+            if (lastModule === "logos_inspector" && lastMethod === "call") {
+                return JSON.stringify({
+                    ok: true,
+                    value: {
+                        method: lastArgs[0],
+                        args: JSON.parse(String(lastArgs[1] || "[]"))
+                    },
+                    text: "OK",
+                    error: ""
+                })
+            }
+            return "direct"
+        }
+    }
+
     BridgeClient {
         id: bridgeClient
 
         host: fakeHost
+    }
+
+    BridgeClient {
+        id: basecampBridgeClient
+
+        host: basecampHost
     }
 
     AppModel {
@@ -50,6 +84,10 @@ TestCase {
         fakeHost.lastMethod = ""
         fakeHost.lastArgs = []
         fakeHost.responses = ({})
+        basecampHost.callCount = 0
+        basecampHost.lastModule = ""
+        basecampHost.lastMethod = ""
+        basecampHost.lastArgs = []
         model.currentView = "overview"
         model.dashboardNode = null
         model.blockchainModuleReport = null
@@ -78,6 +116,29 @@ TestCase {
         model.accountIdlSelectionRevision = 0
         model.walletPublicKeyProbe = ""
         model.bedrockWalletModuleError = ""
+    }
+
+    function test_basecamp_bridge_routes_inspector_calls_through_generic_call() {
+        const response = basecampBridgeClient.callModule("logos_inspector", "blockchainLiveBlocks", ["http://127.0.0.1:8080", 1, 2, 3])
+
+        compare(basecampHost.callCount, 1)
+        compare(basecampHost.lastModule, "logos_inspector")
+        compare(basecampHost.lastMethod, "call")
+        compare(basecampHost.lastArgs[0], "blockchainLiveBlocks")
+        compare(JSON.parse(basecampHost.lastArgs[1])[3], 3)
+        verify(response.ok)
+        compare(response.value.method, "blockchainLiveBlocks")
+        compare(response.value.args[1], 1)
+    }
+
+    function test_basecamp_bridge_keeps_inspector_module_version_direct() {
+        const response = basecampBridgeClient.callModule("logos_inspector", "moduleVersion", [])
+
+        compare(basecampHost.callCount, 1)
+        compare(basecampHost.lastModule, "logos_inspector")
+        compare(basecampHost.lastMethod, "moduleVersion")
+        verify(response.ok)
+        compare(response.value, "direct")
     }
 
     function test_navigation_delegates() {
