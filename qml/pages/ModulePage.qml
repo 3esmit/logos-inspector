@@ -4,6 +4,7 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import "../components"
+import "../components/modules"
 import "../state"
 import "../theme"
 
@@ -168,6 +169,16 @@ ColumnLayout {
                 value: root.responseTargetText()
                 delta: root.responseTargetDetail()
             }
+        }
+
+        DetailRow {
+            visible: !root.model.resultIsError && root.moduleKind === "blockchain" && root.hasResponse
+            theme: root.theme
+            label: qsTr("Module peer ID")
+            value: root.blockchainPeerIdText()
+            copyText: root.blockchainPeerIdCopyText()
+            source: qsTr("module/config identity")
+            Layout.fillWidth: true
         }
 
         ProbeList {
@@ -843,6 +854,72 @@ ColumnLayout {
         root.appendModuleReport(rows, value.capabilities, qsTr("Capabilities"))
 
         return rows
+    }
+
+    function blockchainPeerIdProbe() {
+        const value = root.responseValue
+        if (!value || typeof value !== "object" || Array.isArray(value)) {
+            return root.model.moduleProbe("blockchain", "get_peer_id")
+        }
+        if (root.isBlockchainModuleReport(value)) {
+            return root.findModuleProbe(value, "get_peer_id")
+        }
+        if (root.isBlockchainModuleReport(value.blockchain)) {
+            return root.findModuleProbe(value.blockchain, "get_peer_id")
+        }
+        return root.model.moduleProbe("blockchain", "get_peer_id")
+    }
+
+    function blockchainPeerIdText() {
+        const probe = root.blockchainPeerIdProbe()
+        if (!probe) {
+            return qsTr("Unavailable")
+        }
+        if (probe.ok !== true) {
+            return probe.error ? qsTr("Unavailable: %1").arg(root.valueText(probe.error)) : qsTr("Unavailable")
+        }
+        const value = root.probeScalarText(probe.value)
+        return value.length > 0 ? value : qsTr("Unavailable")
+    }
+
+    function blockchainPeerIdCopyText() {
+        const probe = root.blockchainPeerIdProbe()
+        if (!probe || probe.ok !== true) {
+            return ""
+        }
+        return root.probeScalarText(probe.value)
+    }
+
+    function probeScalarText(value) {
+        if (value === undefined || value === null || value === "") {
+            return ""
+        }
+        const scalar = root.model.scalarValue(value)
+        if (scalar === null || scalar === undefined || scalar === "") {
+            return root.valueText(value)
+        }
+        return String(scalar)
+    }
+
+    function isBlockchainModuleReport(value) {
+        return value && typeof value === "object" && !Array.isArray(value) && String(value.module || "") === root.model.blockchainModule
+    }
+
+    function findModuleProbe(report, method) {
+        if (!report || typeof report !== "object" || Array.isArray(report)) {
+            return null
+        }
+        const wanted = String(method || "")
+        const probes = Array.isArray(report.probes) ? report.probes : []
+        for (let i = 0; i < probes.length; ++i) {
+            const probe = probes[i] || {}
+            const label = String(probe.label || "")
+            const source = String(probe.source || "")
+            if (label.indexOf("." + wanted) >= 0 || source.indexOf(" " + wanted) >= 0) {
+                return probe
+            }
+        }
+        return null
     }
 
     function appendModuleReport(rows, report, prefix) {

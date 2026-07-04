@@ -6,7 +6,7 @@ use crate::{
     AccountTransactionSummary, TransactionIdlInspectionReport, TransactionSummary, account_lookup,
     account_lookup_with_idl, bedrock_wallet_balance, blockchain, channels,
     decode_account_data_hex_with_idl, decode_event_data_hex_with_idl, indexer_block_by_hash,
-    indexer_blocks, indexer_health, indexer_transfer_recipients,
+    indexer_blocks, indexer_health, indexer_status, indexer_transfer_recipients,
     inspect_transaction_summary_with_idl, last_sequencer_block_id, local_wallet_deploy_program,
     local_wallet_profile_status, logoscore,
     modules::{
@@ -192,6 +192,13 @@ impl InspectorBridge {
                     "status": "healthy",
                     "health": health,
                 }))
+            }
+            "indexerStatus" => {
+                let args = Args::new(args)?;
+                to_value(
+                    self.runtime
+                        .block_on(indexer_status(args.string(0, "indexer endpoint")?))?,
+                )
             }
             "indexerFinalizedHead" => {
                 let args = Args::new(args)?;
@@ -753,5 +760,25 @@ impl Args {
             }
             value => Ok(value.clone()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn indexer_status_bridge_requires_endpoint_argument() -> Result<()> {
+        let bridge = InspectorBridge::new()?;
+
+        let result = bridge.call_module(INSPECTOR_MODULE, "indexerStatus", json!([]));
+
+        let Err(error) = result else {
+            bail!("expected missing indexer endpoint to fail");
+        };
+        if !error.to_string().contains("indexer endpoint is required") {
+            bail!("unexpected error: {error:#}");
+        }
+        Ok(())
     }
 }

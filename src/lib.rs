@@ -49,11 +49,13 @@ pub use idl::{
 };
 pub(crate) use indexer::summarize_indexer_transaction;
 pub use indexer::{
-    IndexerBlockReport, indexer_block_by_hash, indexer_blocks, indexer_health,
-    indexer_transfer_recipients,
+    IndexerBlockReport, IndexerStatusReport, indexer_block_by_hash, indexer_blocks, indexer_health,
+    indexer_status, indexer_transfer_recipients,
 };
 #[cfg(test)]
-pub(crate) use indexer::{next_indexer_blocks_cursor, summarize_indexer_block};
+pub(crate) use indexer::{
+    next_indexer_blocks_cursor, summarize_indexer_block, summarize_indexer_status_response,
+};
 pub use network::{
     CUSTOM_NETWORK_PROFILE, DEFAULT_INDEXER_ENDPOINT, DEFAULT_NETWORK_PROFILE,
     DEFAULT_NODE_ENDPOINT, DEFAULT_SEQUENCER_ENDPOINT, LOCAL_SEQUENCER_ENDPOINT, NetworkEndpoints,
@@ -318,6 +320,65 @@ mod tests {
         assert_eq!(summary.hash, "tx-deploy");
         assert_eq!(summary.kind, "ProgramDeployment");
         assert_eq!(summary.bytecode_len, Some(1234));
+    }
+
+    #[test]
+    fn summarize_indexer_status_response_maps_status_object() {
+        let raw = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "state": "syncing",
+                "indexedBlockId": "42",
+                "lastError": "behind tip"
+            }
+        });
+
+        let summary = summarize_indexer_status_response(&raw);
+
+        assert_eq!(summary.state, "syncing");
+        assert_eq!(summary.indexed_block_id.as_deref(), Some("42"));
+        assert_eq!(summary.last_error.as_deref(), Some("behind tip"));
+        assert_eq!(summary.raw, raw);
+    }
+
+    #[test]
+    fn summarize_indexer_status_response_maps_string_result() {
+        let raw = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": "caught up"
+        });
+
+        let summary = summarize_indexer_status_response(&raw);
+
+        assert_eq!(summary.state, "caught up");
+        assert_eq!(summary.indexed_block_id, None);
+        assert_eq!(summary.last_error, None);
+    }
+
+    #[test]
+    fn summarize_indexer_status_response_marks_method_not_found_unavailable() {
+        let raw = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "error": {
+                "code": -32601,
+                "message": "Method not found"
+            }
+        });
+
+        let summary = summarize_indexer_status_response(&raw);
+
+        assert_eq!(summary.state, "unavailable");
+        assert_eq!(summary.indexed_block_id, None);
+        assert!(
+            summary
+                .last_error
+                .as_deref()
+                .is_some_and(|error| error.contains("Method not found"))
+        );
+        assert_eq!(summary.raw, raw);
     }
 
     #[test]

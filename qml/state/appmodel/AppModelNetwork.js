@@ -109,6 +109,95 @@ function queryNetworkConnection(root, kind, showResult, includeSensitiveProbe) {
     }
 }
 
+function refreshIndexerStatus(root) {
+    with (root) {
+        const statusResponse = root.requestModule(root.inspectorModule, "indexerStatus", [indexerUrl], qsTr("Indexer status"), false, false)
+        if (!statusResponse.ok) {
+            root.setResult(qsTr("Indexer status"), statusResponse.error, true, null)
+            return statusResponse
+        }
+
+        const statusValue = statusResponse.value && typeof statusResponse.value === "object" && !Array.isArray(statusResponse.value)
+            ? root.copyMap(statusResponse.value)
+            : { state: root.valueToString(statusResponse.value) }
+        if (!root.indexerStatusNeedsFallback(statusValue)) {
+            root.setResult(qsTr("Indexer status"), statusResponse.text, false, statusResponse.value)
+            return statusResponse
+        }
+
+        const healthResponse = root.requestModule(root.inspectorModule, "indexerHealth", [indexerUrl], qsTr("Indexer health"), false, false)
+        const headResponse = root.requestModule(root.inspectorModule, "indexerFinalizedHead", [indexerUrl], qsTr("Indexer head"), false, false)
+        if (statusValue.indexedBlockId === undefined && headResponse.ok === true) {
+            const head = root.scalarValue(headResponse.value)
+            if (head !== null) {
+                statusValue.indexedBlockId = head
+            }
+        }
+        if ((statusValue.lastError === undefined || statusValue.lastError === null || statusValue.lastError === "")
+                && (healthResponse.ok !== true || headResponse.ok !== true)) {
+            const errors = []
+            if (healthResponse.ok !== true && healthResponse.error) {
+                errors.push(String(healthResponse.error))
+            }
+            if (headResponse.ok !== true && headResponse.error) {
+                errors.push(String(headResponse.error))
+            }
+            if (errors.length > 0) {
+                statusValue.lastError = errors.join("\n")
+            }
+        }
+
+        const fallbackValue = {
+            status: statusValue,
+            indexer: {
+                endpoint: indexerUrl,
+                health: root.probeFieldFromResponse(healthResponse),
+                head: root.probeFieldFromResponse(headResponse),
+                programs: null
+            }
+        }
+        root.setResult(qsTr("Indexer status"), BridgeHelpers.formatValue(fallbackValue), false, fallbackValue)
+        return {
+            ok: true,
+            value: fallbackValue,
+            text: BridgeHelpers.formatValue(fallbackValue),
+            error: ""
+        }
+    }
+}
+
+function indexerStatusNeedsFallback(root, value) {
+    with (root) {
+        const status = value && value.status && typeof value.status === "object" ? value.status : value
+        if (!status || typeof status !== "object") {
+            return false
+        }
+        const state = String(status.state || "").toLowerCase()
+        const error = String(status.lastError || status.last_error || "").toLowerCase()
+        return state === "unavailable"
+            || state === "unsupported"
+            || error.indexOf("method not found") >= 0
+            || error.indexOf("-32601") >= 0
+    }
+}
+
+function probeFieldFromResponse(root, response) {
+    with (root) {
+        if (response && response.ok === true) {
+            return {
+                ok: true,
+                value: response.value === undefined ? null : response.value,
+                error: null
+            }
+        }
+        return {
+            ok: false,
+            value: null,
+            error: response && response.error ? String(response.error) : qsTr("unavailable")
+        }
+    }
+}
+
 function networkConnectionRequest(root, kind, includeSensitiveProbe) {
     with (root) {
         switch (kind) {
@@ -142,6 +231,7 @@ function networkConnectionKindForMethod(root, method) {
         switch (String(method || "")) {
         case "blockchainNode":
             return "blockchain"
+        case "indexerStatus":
         case "indexerFinalizedHead":
             return "indexer"
         case "head":
@@ -198,7 +288,22 @@ function networkConnectionSummary(root, kind, value) {
             const info = value && value.cryptarchia_info ? value.cryptarchia_info : null
             return info && info.slot !== undefined ? qsTr("slot %1").arg(info.slot) : qsTr("node reachable")
         }
-        if (kind === "indexer" || kind === "execution") {
+        if (kind === "indexer") {
+            if (value && typeof value === "object") {
+                const status = value.status && typeof value.status === "object" ? value.status : value
+                const state = String(status.state || "")
+                const indexedBlockId = status.indexedBlockId !== undefined ? status.indexedBlockId : null
+                if (state.length && indexedBlockId !== null) {
+                    return qsTr("%1, head %2").arg(state).arg(root.valueText(indexedBlockId))
+                }
+                if (state.length) {
+                    return state
+                }
+            }
+            const scalar = root.scalarValue(value)
+            return scalar !== null ? qsTr("head %1").arg(root.valueText(scalar)) : qsTr("reachable")
+        }
+        if (kind === "execution") {
             const scalar = root.scalarValue(value)
             return scalar !== null ? qsTr("head %1").arg(root.valueText(scalar)) : qsTr("reachable")
         }
@@ -741,4 +846,3 @@ function scalarValue(root, value) {
         return null
     }
 }
-

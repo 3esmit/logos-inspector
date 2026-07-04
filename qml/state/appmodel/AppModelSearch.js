@@ -75,6 +75,8 @@ function updateDashboardCache(root, method, value) {
             dashboardNode = value
         } else if (method === "indexerBlocks") {
             dashboardBlocks = value || []
+        } else if (method === "blockchainModuleReport") {
+            blockchainModuleReport = value || null
         } else if (method === "account") {
             accountDetailValue = value || null
         } else if (method === "storageReport" || method === "storageSourceReport") {
