@@ -244,6 +244,83 @@ mod tests {
     }
 
     #[test]
+    fn summarize_indexer_transaction_maps_compact_public_payload() {
+        let program_id = [1_u32; 8];
+        let program_id_base58 = program_id_base58(program_id);
+        let program_id_hex = program_id_hex(program_id);
+        let raw = serde_json::json!({
+            "type": "Public",
+            "hash": "tx-public",
+            "program_id": program_id_base58,
+            "accounts": [
+                { "account_id": "acct-a", "nonce": 1 },
+                { "account_id": "acct-b", "nonce": "2" }
+            ],
+            "instruction_data": [3, "4"],
+            "signature_count": 2
+        });
+
+        let summary = summarize_indexer_transaction(&raw, 2);
+
+        assert_eq!(summary.index, 2);
+        assert_eq!(summary.hash, "tx-public");
+        assert_eq!(summary.kind, "Public");
+        assert_eq!(
+            summary.program_id_hex.as_deref(),
+            Some(program_id_hex.as_str())
+        );
+        assert_eq!(summary.account_ids, vec!["acct-a", "acct-b"]);
+        assert_eq!(summary.nonces, vec!["1", "2"]);
+        assert_eq!(summary.instruction_data, vec![3, 4]);
+        assert_eq!(summary.raw, raw);
+    }
+
+    #[test]
+    fn summarize_indexer_transaction_maps_compact_privacy_payload() {
+        let raw = serde_json::json!({
+            "type": "PrivacyPreserving",
+            "hash": "tx-private",
+            "accounts": [
+                { "account_id": "acct-a", "nonce": "9" }
+            ],
+            "new_commitments_count": 3,
+            "nullifiers_count": 1,
+            "encrypted_states_count": 2,
+            "validity_window_start": "10",
+            "validity_window_end": "20",
+            "signature_count": 1,
+            "proof_size": 4096
+        });
+
+        let summary = summarize_indexer_transaction(&raw, 0);
+
+        assert_eq!(summary.hash, "tx-private");
+        assert_eq!(summary.kind, "PrivacyPreserving");
+        assert_eq!(summary.account_ids, vec!["acct-a"]);
+        assert_eq!(summary.nonces, vec!["9"]);
+        assert!(summary.instruction_data.is_empty());
+        assert_eq!(
+            summary.raw.get("proof_size").and_then(Value::as_u64),
+            Some(4096)
+        );
+    }
+
+    #[test]
+    fn summarize_indexer_transaction_maps_compact_program_deployment_payload() {
+        let raw = serde_json::json!({
+            "type": "ProgramDeployment",
+            "hash": "tx-deploy",
+            "bytecode_size": "1234"
+        });
+
+        let summary = summarize_indexer_transaction(&raw, 0);
+
+        assert_eq!(summary.hash, "tx-deploy");
+        assert_eq!(summary.kind, "ProgramDeployment");
+        assert_eq!(summary.bytecode_len, Some(1234));
+    }
+
+    #[test]
     fn summarize_account_transaction_marks_signer_outgoing() -> Result<()> {
         let key = lee::PrivateKey::try_new([1_u8; 32]).context("valid private key")?;
         let public_key = PublicKey::new_from_private_key(&key);
@@ -290,6 +367,25 @@ mod tests {
                     ]]
                 }
             }
+        });
+
+        let summary = summarize_account_transaction(&raw, 0, &account_id);
+
+        if summary.direction.as_deref() != Some("incoming") {
+            bail!("expected incoming direction, got {:?}", summary.direction);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn summarize_account_transaction_marks_compact_account_incoming() -> Result<()> {
+        let account_id = AccountId::new([7_u8; 32]).to_string();
+        let raw = serde_json::json!({
+            "type": "Public",
+            "hash": "abcd",
+            "accounts": [
+                { "account_id": account_id.clone(), "nonce": "4" }
+            ]
         });
 
         let summary = summarize_account_transaction(&raw, 0, &account_id);
@@ -350,6 +446,41 @@ mod tests {
             Some(program_id_hex.as_str())
         );
         assert_eq!(summary.raw, raw);
+    }
+
+    #[test]
+    fn summarize_indexer_block_maps_compact_top_level_transactions() {
+        let header_hash = "ab".repeat(32);
+        let parent_hash = "cd".repeat(32);
+        let raw = serde_json::json!({
+            "block_id": "45",
+            "hash": header_hash.clone(),
+            "prev_block_hash": parent_hash.clone(),
+            "timestamp": "1001",
+            "bedrock_status": "Finalized",
+            "transactions": [{
+                "type": "Public",
+                "hash": "tx-public",
+                "accounts": [{ "account_id": "acct-a", "nonce": 1 }],
+                "instruction_data": [1, 2]
+            }]
+        });
+
+        let summary = summarize_indexer_block(&raw);
+
+        assert_eq!(summary.block_id, Some(45));
+        assert_eq!(summary.header_hash.as_deref(), Some(header_hash.as_str()));
+        assert_eq!(summary.parent_hash.as_deref(), Some(parent_hash.as_str()));
+        assert_eq!(summary.timestamp, Some(1001));
+        assert_eq!(summary.tx_count, 1);
+        assert_eq!(
+            summary.transactions.first().map(|tx| tx.kind.as_str()),
+            Some("Public")
+        );
+        assert_eq!(
+            summary.transactions.first().map(|tx| tx.hash.as_str()),
+            Some("tx-public")
+        );
     }
 
     #[test]

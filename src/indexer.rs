@@ -111,6 +111,27 @@ pub(crate) fn summarize_indexer_transaction(
     value: &Value,
     index: usize,
 ) -> AccountTransactionSummary {
+    if let Some(kind) = compact_transaction_kind(value) {
+        return AccountTransactionSummary {
+            index,
+            hash: value
+                .get("hash")
+                .map(value_to_string)
+                .unwrap_or_else(|| "-".to_owned()),
+            kind,
+            direction: None,
+            program_id_hex: value
+                .get("program_id")
+                .map(value_to_string)
+                .map(|program_id| normalize_program_id_hex(&program_id).unwrap_or(program_id)),
+            account_ids: compact_transaction_account_field_strings(value, "account_id"),
+            nonces: compact_transaction_account_field_strings(value, "nonce"),
+            instruction_data: value_list_u32(value.get("instruction_data")),
+            bytecode_len: value_usize(value.get("bytecode_size")),
+            raw: value.clone(),
+        };
+    }
+
     let (kind, payload) = enum_payload(value);
     let empty = Value::Null;
     let message = payload.get("message").unwrap_or(&empty);
@@ -149,6 +170,26 @@ fn indexer_transaction_account_ids(message: &Value) -> Vec<String> {
     account_ids
 }
 
+fn compact_transaction_kind(value: &Value) -> Option<String> {
+    value
+        .get("type")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|kind| !kind.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn compact_transaction_account_field_strings(value: &Value, field: &str) -> Vec<String> {
+    value
+        .get("accounts")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|account| account.get(field))
+        .map(value_to_string)
+        .collect()
+}
+
 pub(crate) fn next_indexer_blocks_cursor(blocks: &[IndexerBlockReport]) -> Option<u64> {
     blocks.iter().filter_map(|block| block.block_id).min()
 }
@@ -171,6 +212,16 @@ fn value_list_u32(value: Option<&Value>) -> Vec<u32> {
             .collect(),
         None => Vec::new(),
     }
+}
+
+fn value_usize(value: Option<&Value>) -> Option<usize> {
+    value
+        .and_then(|value| {
+            value
+                .as_u64()
+                .or_else(|| value.as_str().and_then(|value| value.trim().parse().ok()))
+        })
+        .and_then(|value| usize::try_from(value).ok())
 }
 
 fn value_u64_any(value: &Value, keys: &[&str]) -> Option<u64> {
