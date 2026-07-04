@@ -20,10 +20,10 @@ use crate::{
     sequencer_transaction_trace_with_idl,
     spel::spel_idl_report,
     state_store::{
-        RegisteredIdlEntry, detected_wallet_profile, load_idl_state, load_settings_state,
-        load_wallet_state, registered_idl_entries, save_idl_state, save_settings_state,
-        save_wallet_state,
+        RegisteredIdlEntry, load_idl_state, load_settings_state, load_wallet_state,
+        registered_idl_entries, save_idl_state, save_settings_state, save_wallet_state,
     },
+    wallet::detected_wallet_profile,
 };
 
 pub const INSPECTOR_MODULE: &str = "logos_inspector";

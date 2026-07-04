@@ -2,7 +2,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::{
-    indexer_health, last_sequencer_block_id, logos_node_cryptarchia_info,
+    indexer_health, last_sequencer_block_id, logos_node_cryptarchia_info, probe::ProbeField,
     raw_json_rpc_optional_result, sequencer_health, sequencer_program_ids,
 };
 
@@ -11,31 +11,6 @@ pub struct InspectorScope {
     pub name: &'static str,
     pub area: &'static str,
     pub status: &'static str,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ProbeField {
-    pub ok: bool,
-    pub value: Option<Value>,
-    pub error: Option<String>,
-}
-
-impl ProbeField {
-    fn ok(value: impl Serialize) -> Self {
-        Self {
-            ok: true,
-            value: Some(serde_json::to_value(value).unwrap_or(Value::Null)),
-            error: None,
-        }
-    }
-
-    fn err(error: impl std::fmt::Display) -> Self {
-        Self {
-            ok: false,
-            value: None,
-            error: Some(error.to_string()),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize)]
