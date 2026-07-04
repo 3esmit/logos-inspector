@@ -17,6 +17,9 @@ ColumnLayout {
     required property AppModel model
     property string lastOperation: qsTr("None")
     property string activeTopic: "/logos-inspector/1/chat/proto"
+    property string pendingDeliveryMethod: ""
+    property string pendingDeliveryLabel: ""
+    property var pendingDeliveryArgs: []
 
     width: parent ? parent.width : 900
     spacing: root.theme.gapLarge
@@ -38,7 +41,7 @@ ColumnLayout {
         breadcrumb: qsTr("Home / Network / Delivery")
         title: qsTr("Delivery")
         layerLabel: qsTr("Network")
-        subtitle: qsTr("Subscribe to content topics and send messages through the configured Delivery source.")
+        subtitle: qsTr("Inspect Delivery health, node info, version, and metrics through the configured REST source.")
         Layout.fillWidth: true
     }
 
@@ -58,7 +61,7 @@ ColumnLayout {
             theme: root.theme
             label: qsTr("Source")
             value: root.model.deliverySourceLabel()
-            tone: root.deliveryModuleSource() ? "success" : "warning"
+            tone: root.deliveryDataSource() ? "success" : "warning"
             Layout.fillWidth: true
         }
 
@@ -162,11 +165,20 @@ ColumnLayout {
             title: qsTr("Messages")
 
             StatusMessage {
-                visible: !root.deliveryModuleSource()
+                visible: !root.deliveryRestSource()
                 theme: root.theme
                 tone: "warning"
-                title: qsTr("Module source required")
-                message: qsTr("Select the Delivery module source in Settings to run subscribe, unsubscribe, and send operations.")
+                title: qsTr("REST source required")
+                message: qsTr("Subscribe, unsubscribe, and send use the configured Waku REST source.")
+                Layout.fillWidth: true
+            }
+
+            StatusMessage {
+                visible: root.deliveryRestSource() && !root.model.messagingMutatingDiagnosticsEnabled
+                theme: root.theme
+                tone: "warning"
+                title: qsTr("Mutating diagnostics off")
+                message: qsTr("Enable mutating diagnostics in Settings before subscribe, unsubscribe, or send.")
                 Layout.fillWidth: true
             }
 
@@ -202,7 +214,7 @@ ColumnLayout {
                     primary: true
                     enabled: root.messageControlsEnabled(topicField.text)
                     Layout.preferredWidth: 124
-                    onClicked: root.runDelivery("deliverySubscribe", [topicField.text.trim()], qsTr("Subscribe"))
+                    onClicked: root.confirmDelivery("deliverySubscribe", [topicField.text.trim()], qsTr("Subscribe"))
                 }
 
                 ActionButton {
@@ -210,7 +222,7 @@ ColumnLayout {
                     text: qsTr("Unsubscribe")
                     enabled: root.messageControlsEnabled(topicField.text)
                     Layout.preferredWidth: 136
-                    onClicked: root.runDelivery("deliveryUnsubscribe", [topicField.text.trim()], qsTr("Unsubscribe"))
+                    onClicked: root.confirmDelivery("deliveryUnsubscribe", [topicField.text.trim()], qsTr("Unsubscribe"))
                 }
 
                 ActionButton {
@@ -218,7 +230,7 @@ ColumnLayout {
                     text: qsTr("Send")
                     enabled: root.messageControlsEnabled(topicField.text) && payloadField.text.length > 0
                     Layout.preferredWidth: 104
-                    onClicked: root.runDelivery("deliverySend", [topicField.text.trim(), payloadField.text], qsTr("Send message"))
+                    onClicked: root.confirmDelivery("deliverySend", [topicField.text.trim(), payloadField.text], qsTr("Send message"))
                 }
 
                 Item {
@@ -226,6 +238,17 @@ ColumnLayout {
                 }
             }
         }
+    }
+
+    ConfirmActionPopup {
+        id: deliveryConfirm
+
+        theme: root.theme
+        title: root.pendingDeliveryLabel
+        message: qsTr("This will call the configured Waku REST source and may change node relay state.")
+        confirmText: root.pendingDeliveryLabel
+        confirmEnabled: root.pendingDeliveryMethod.length > 0
+        onAccepted: root.runPendingDelivery()
     }
 
     Component {
@@ -344,23 +367,44 @@ ColumnLayout {
 
     function sourceBadges() {
         const sources = [qsTr("Delivery"), root.model.deliverySourceLabel()]
-        if (root.deliveryModuleSource()) {
-            sources.push(root.model.deliveryModule)
-        } else {
-            sources.push(root.model.deliverySourceTarget())
-        }
+        sources.push(root.model.deliverySourceTarget())
         sources.push(root.model.messagingNetworkPreset)
         return sources
     }
 
     function deliveryModuleSource() {
-        const mode = root.model.effectiveMessagingSourceMode(root.model.messagingSourceMode)
-        return mode === "module" || mode === "basecamp" || mode === "basecamp-module" || mode === "basecamp module"
+        return false
+    }
+
+    function deliveryRestSource() {
+        return String(root.model.effectiveMessagingSourceMode(root.model.messagingSourceMode) || "").toLowerCase() === "rest"
+    }
+
+    function deliveryDataSource() {
+        const mode = String(root.model.effectiveMessagingSourceMode(root.model.messagingSourceMode) || "").toLowerCase()
+        return mode === "rest" || mode === "metrics"
     }
 
     function deliveryArgs(extra) {
-        const args = [root.model.effectiveMessagingSourceMode(root.model.messagingSourceMode), root.model.messagingRestUrl]
+        const args = [root.model.effectiveMessagingSourceMode(root.model.messagingSourceMode), root.model.messagingRestUrl, root.model.messagingMutatingDiagnosticsEnabled === true]
         return args.concat(extra || [])
+    }
+
+    function confirmDelivery(method, args, label) {
+        root.pendingDeliveryMethod = String(method || "")
+        root.pendingDeliveryArgs = args || []
+        root.pendingDeliveryLabel = String(label || "")
+        deliveryConfirm.open()
+    }
+
+    function runPendingDelivery() {
+        if (!root.pendingDeliveryMethod.length) {
+            return
+        }
+        root.runDelivery(root.pendingDeliveryMethod, root.pendingDeliveryArgs, root.pendingDeliveryLabel)
+        root.pendingDeliveryMethod = ""
+        root.pendingDeliveryArgs = []
+        root.pendingDeliveryLabel = ""
     }
 
     function runDelivery(method, args, label) {
@@ -410,7 +454,7 @@ ColumnLayout {
     }
 
     function messageControlsEnabled(topic) {
-        return !root.model.busy && root.deliveryModuleSource() && root.validContentTopic(topic)
+        return !root.model.busy && root.deliveryRestSource() && root.model.messagingMutatingDiagnosticsEnabled && root.validContentTopic(topic)
     }
 
     function validContentTopic(topic) {

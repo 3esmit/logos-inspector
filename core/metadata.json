@@ -8,13 +8,7 @@
   "interface": "universal",
   "category": "tools",
   "main": "logos_inspector_plugin",
-  "dependencies": [
-    "blockchain_module",
-    "lez_indexer_module",
-    "storage_module",
-    "delivery_module",
-    "capability_module"
-  ],
+  "dependencies": [],
   "include": [],
   "capabilities": [],
   "nix": {

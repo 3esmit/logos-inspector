@@ -69,12 +69,7 @@ ColumnLayout {
         ListElement {
             key: "auto"
             label: "Auto"
-            summary: "Basecamp module when embedded, RPC when standalone"
-        }
-        ListElement {
-            key: "module"
-            label: "Basecamp module"
-            summary: "Use local logoscore module bridge"
+            summary: "Use configured direct RPC endpoint"
         }
         ListElement {
             key: "rpc"
@@ -89,12 +84,7 @@ ColumnLayout {
         ListElement {
             key: "auto"
             label: "Auto"
-            summary: "Basecamp module when embedded, direct Waku REST when standalone"
-        }
-        ListElement {
-            key: "module"
-            label: "Basecamp module"
-            summary: "Local logoscore delivery_module bridge"
+            summary: "Use direct Waku REST"
         }
         ListElement {
             key: "rest"
@@ -114,12 +104,7 @@ ColumnLayout {
         ListElement {
             key: "auto"
             label: "Auto"
-            summary: "Basecamp module when embedded, standalone REST when standalone"
-        }
-        ListElement {
-            key: "module"
-            label: "Basecamp module"
-            summary: "Local logoscore storage_module bridge"
+            summary: "Use standalone REST"
         }
         ListElement {
             key: "rest"
@@ -466,7 +451,7 @@ ColumnLayout {
         NetworkConnectionPanel {
             theme: settingsRoot.theme
             title: qsTr("Bedrock Blockchain")
-            subtitle: qsTr("Source used for node health, consensus, blocks, and supported blockchain module calls.")
+            subtitle: qsTr("Source used for node health, consensus, blocks, and Bedrock RPC inspection.")
             kind: "blockchain"
             pageWidth: settingsRoot.width
             busy: settingsRoot.model.busy
@@ -475,7 +460,7 @@ ColumnLayout {
             endpoint: settingsRoot.model.nodeUrl
             primaryFieldVisible: true
             moduleName: settingsRoot.model.blockchainModule
-            moduleFieldVisible: settingsRoot.model.effectiveCoreSourceMode(settingsRoot.model.blockchainSourceMode) === "module"
+            moduleFieldVisible: false
             sourceSelectorVisible: true
             sourceOptions: coreSourceOptions
             sourceIndex: settingsRoot.coreSourceIndexFor(settingsRoot.model.blockchainSourceMode)
@@ -496,7 +481,7 @@ ColumnLayout {
         NetworkConnectionPanel {
             theme: settingsRoot.theme
             title: qsTr("Indexer")
-            subtitle: qsTr("Source used for finalized head, block lookup, transfer activity, and transaction history.")
+            subtitle: qsTr("Source used for finalized head, block lookup, transfer activity, and transaction history over RPC.")
             kind: "indexer"
             pageWidth: settingsRoot.width
             busy: settingsRoot.model.busy
@@ -505,7 +490,7 @@ ColumnLayout {
             endpoint: settingsRoot.model.indexerUrl
             primaryFieldVisible: true
             moduleName: settingsRoot.model.indexerModule
-            moduleFieldVisible: settingsRoot.model.effectiveCoreSourceMode(settingsRoot.model.indexerSourceMode) === "module"
+            moduleFieldVisible: false
             sourceSelectorVisible: true
             sourceOptions: coreSourceOptions
             sourceIndex: settingsRoot.coreSourceIndexFor(settingsRoot.model.indexerSourceMode)
@@ -757,7 +742,7 @@ ColumnLayout {
     }
 
     function deliverySourceIndexFor(value) {
-        const source = String(value || "module")
+        const source = String(value || "auto")
         for (let i = 0; i < deliverySourceOptions.count; ++i) {
             if (deliverySourceOptions.get(i).key === source) {
                 return i
@@ -768,13 +753,13 @@ ColumnLayout {
 
     function deliverySourceModeAt(index) {
         if (index < 0 || index >= deliverySourceOptions.count) {
-            return "module"
+            return "auto"
         }
         return deliverySourceOptions.get(index).key
     }
 
     function storageSourceIndexFor(value) {
-        const source = String(value || "module")
+        const source = String(value || "auto")
         for (let i = 0; i < storageSourceOptions.count; ++i) {
             if (storageSourceOptions.get(i).key === source) {
                 return i
@@ -785,7 +770,7 @@ ColumnLayout {
 
     function storageSourceModeAt(index) {
         if (index < 0 || index >= storageSourceOptions.count) {
-            return "module"
+            return "auto"
         }
         return storageSourceOptions.get(index).key
     }
@@ -923,7 +908,7 @@ ColumnLayout {
                 { key: "indexer.ingestion_status", label: qsTr("ingestion_status"), detail: qsTr("running, stalled, or backfilling") }
             ] },
             { title: qsTr("Storage"), fields: [
-                { key: "storage.module", label: qsTr("module"), detail: qsTr("loaded, running, or stopped") },
+                { key: "storage.module", label: qsTr("source"), detail: qsTr("REST or metrics source status") },
                 { key: "storage.network", label: qsTr("network"), detail: qsTr("Storage preset or network name") },
                 { key: "storage.node_reachable", label: qsTr("node_reachable"), detail: qsTr("Storage node reachability") },
                 { key: "storage.nat_mode", label: qsTr("nat_mode"), detail: qsTr("upnp, port-forward, or manual") },
@@ -941,7 +926,7 @@ ColumnLayout {
                 { key: "storage.last_error", label: qsTr("last_error"), detail: qsTr("Latest storage error") }
             ] },
             { title: qsTr("Messaging / Delivery"), fields: [
-                { key: "messaging.module", label: qsTr("module"), detail: qsTr("loaded, running, or stopped") },
+                { key: "messaging.module", label: qsTr("source"), detail: qsTr("REST or metrics source status") },
                 { key: "messaging.connection_state", label: qsTr("connection_state"), detail: qsTr("connected, disconnected, or connecting") },
                 { key: "messaging.peer_count", label: qsTr("peer_count"), detail: qsTr("Delivery peers") },
                 { key: "messaging.active_subscriptions", label: qsTr("active_subscriptions"), detail: qsTr("Not exposed by current Delivery metrics") },

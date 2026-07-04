@@ -1,23 +1,24 @@
+use std::path::Path;
+
 use anyhow::{Context as _, Result, bail};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+use reqwest::{Method, StatusCode, header};
 use serde_json::{Value, json};
 use tokio::runtime::Runtime;
 
 use crate::{
-    AccountTransactionSummary, IndexerBlockReport, ProbeReport, TransactionIdlInspectionReport,
-    TransactionSummary, account_lookup, account_lookup_with_idl, bedrock_wallet_balance,
-    blockchain, channels, decode_account_data_hex_with_idl, decode_event_data_hex_with_idl,
-    indexer_block_by_hash, indexer_blocks, indexer_health, indexer_status,
-    indexer_transfer_recipients, inspect_transaction_summary_with_idl, last_sequencer_block_id,
-    local_wallet_deploy_program, local_wallet_profile_status, logoscore,
-    modules::{
-        blockchain_module_report, capabilities_report, delivery_report, delivery_source_report,
-        logoscore_status_report, modules_report, storage_report, storage_source_report,
-    },
+    AccountTransactionSummary, TransactionIdlInspectionReport, TransactionSummary, account_lookup,
+    account_lookup_with_idl, bedrock_wallet_balance, blockchain, channels,
+    decode_account_data_hex_with_idl, decode_event_data_hex_with_idl, indexer_block_by_hash,
+    indexer_blocks, indexer_health, indexer_status, indexer_transfer_recipients,
+    inspect_transaction_summary_with_idl, last_sequencer_block_id, local_wallet_deploy_program,
+    local_wallet_profile_status, logoscore,
+    modules::{delivery_source_report, logoscore_status_report, storage_source_report},
     normalize_program_id_hex, overview, program_file_info, raw_http_json,
-    raw_json_rpc_optional_result, raw_rpc_report, sequencer_block, sequencer_blocks,
-    sequencer_program_ids, sequencer_transaction, sequencer_transaction_inspection,
-    sequencer_transaction_inspection_with_idl, sequencer_transaction_trace,
-    sequencer_transaction_trace_with_idl,
+    raw_json_rpc_optional_result, raw_rpc_report, response_excerpt, sequencer_block,
+    sequencer_blocks, sequencer_program_ids, sequencer_transaction,
+    sequencer_transaction_inspection, sequencer_transaction_inspection_with_idl,
+    sequencer_transaction_trace, sequencer_transaction_trace_with_idl,
     spel::spel_idl_report,
     state_store::{
         RegisteredIdlEntry, load_idl_state, load_settings_state, load_wallet_state,
@@ -30,9 +31,8 @@ pub const INSPECTOR_MODULE: &str = "logos_inspector";
 const BLOCKCHAIN_MODULE: &str = "blockchain_module";
 const INDEXER_MODULE: &str = "lez_indexer_module";
 const EXECUTION_MODULE: &str = "logos_execution_zone";
-const STORAGE_MODULE: &str = "storage_module";
-const DELIVERY_MODULE: &str = "delivery_module";
 const DEFAULT_STORAGE_REST_ENDPOINT: &str = "http://127.0.0.1:8080/api/storage/v1";
+const DEFAULT_DELIVERY_REST_ENDPOINT: &str = "http://127.0.0.1:8645";
 
 #[derive(Debug, serde::Serialize)]
 struct BridgeResponse {
@@ -162,9 +162,6 @@ impl InspectorBridge {
                 let source = args.source_endpoint(0, "node endpoint")?;
                 let slot_from = args.u64(source.next_index, "slot from")?;
                 let slot_to = args.u64(source.next_index + 1, "slot to")?;
-                if source.mode == SourceMode::Module {
-                    return self.blockchain_module_blocks(slot_from, slot_to);
-                }
                 if let Some(limit) = args.value(source.next_index + 2).and_then(Value::as_u64) {
                     to_value(self.runtime.block_on(blockchain::blockchain_recent_blocks(
                         source.endpoint,
@@ -189,9 +186,6 @@ impl InspectorBridge {
                     .value(source.next_index + 2)
                     .and_then(Value::as_u64)
                     .unwrap_or(50);
-                if source.mode == SourceMode::Module {
-                    return self.blockchain_module_live_blocks(slot_from, slot_to, limit);
-                }
                 to_value(
                     self.runtime
                         .block_on(blockchain::blockchain_live_blocks_snapshot(
@@ -205,10 +199,6 @@ impl InspectorBridge {
             "blockchainBlock" => {
                 let args = Args::new(args)?;
                 let source = args.source_endpoint(0, "node endpoint")?;
-                if source.mode == SourceMode::Module {
-                    return self
-                        .blockchain_module_block(args.string(source.next_index, "block id")?);
-                }
                 to_value(self.runtime.block_on(blockchain::blockchain_block(
                     source.endpoint,
                     args.string(source.next_index, "block id")?,
@@ -217,11 +207,6 @@ impl InspectorBridge {
             "blockchainTransaction" => {
                 let args = Args::new(args)?;
                 let source = args.source_endpoint(0, "node endpoint")?;
-                if source.mode == SourceMode::Module {
-                    return self.blockchain_module_transaction(
-                        args.string(source.next_index, "transaction id")?,
-                    );
-                }
                 to_value(self.runtime.block_on(blockchain::blockchain_transaction(
                     source.endpoint,
                     args.string(source.next_index, "transaction id")?,
@@ -249,9 +234,6 @@ impl InspectorBridge {
             "indexerHealth" => {
                 let args = Args::new(args)?;
                 let source = args.source_endpoint(0, "indexer endpoint")?;
-                if source.mode == SourceMode::Module {
-                    return self.indexer_module_health();
-                }
                 let health = self.runtime.block_on(indexer_health(source.endpoint))?;
                 Ok(json!({
                     "status": "healthy",
@@ -261,17 +243,11 @@ impl InspectorBridge {
             "indexerStatus" => {
                 let args = Args::new(args)?;
                 let source = args.source_endpoint(0, "indexer endpoint")?;
-                if source.mode == SourceMode::Module {
-                    return self.indexer_module_status();
-                }
                 to_value(self.runtime.block_on(indexer_status(source.endpoint))?)
             }
             "indexerFinalizedHead" => {
                 let args = Args::new(args)?;
                 let source = args.source_endpoint(0, "indexer endpoint")?;
-                if source.mode == SourceMode::Module {
-                    return self.indexer_module_finalized_head();
-                }
                 to_value(self.runtime.block_on(raw_json_rpc_optional_result(
                     source.endpoint,
                     "getLastFinalizedBlockId",
@@ -287,9 +263,6 @@ impl InspectorBridge {
                     .and_then(Value::as_u64)
                     .unwrap_or(10)
                     .min(50);
-                if source.mode == SourceMode::Module {
-                    return self.indexer_module_blocks(before, limit);
-                }
                 to_value(
                     self.runtime
                         .block_on(indexer_blocks(source.endpoint, before, limit))?,
@@ -298,11 +271,6 @@ impl InspectorBridge {
             "indexerBlockByHash" => {
                 let args = Args::new(args)?;
                 let source = args.source_endpoint(0, "indexer endpoint")?;
-                if source.mode == SourceMode::Module {
-                    return self.indexer_module_block_by_hash(
-                        args.string(source.next_index, "block header hash")?,
-                    );
-                }
                 to_value(self.runtime.block_on(indexer_block_by_hash(
                     source.endpoint,
                     args.string(source.next_index, "block header hash")?,
@@ -317,9 +285,6 @@ impl InspectorBridge {
                     .and_then(Value::as_u64)
                     .unwrap_or(50)
                     .min(50);
-                if source.mode == SourceMode::Module {
-                    return self.indexer_module_transfer_recipients(before, limit);
-                }
                 to_value(self.runtime.block_on(indexer_transfer_recipients(
                     source.endpoint,
                     before,
@@ -387,137 +352,63 @@ impl InspectorBridge {
                 let args = Args::new(args)?;
                 save_settings_state(args.value(0).context("settings state is required")?)
             }
-            "modules" => to_value(modules_report()),
+            "modules" => bail!("Basecamp module reports are not supported as Inspector sources"),
             "logoscoreStatus" => to_value(logoscore_status_report()),
-            "blockchainModuleReport" => {
-                let args = Args::new(args)?;
-                to_value(blockchain_module_report(args.optional_string(0)))
-            }
-            "storageReport" => {
-                let args = Args::new(args)?;
-                to_value(storage_report(args.optional_string(0), false))
-            }
+            "blockchainModuleReport" => bail!(
+                "blockchain_module does not satisfy Inspector Bedrock requirements; use blockchainNode over RPC"
+            ),
+            "storageReport" => bail!(
+                "storage_module does not satisfy Inspector storage requirements; use storageSourceReport over REST"
+            ),
             "storageSourceReport" => {
                 let args = Args::new(args)?;
                 to_value(self.runtime.block_on(storage_source_report(
-                    args.optional_string(0).unwrap_or("module"),
+                    args.optional_string(0).unwrap_or("rest"),
                     args.optional_string(1),
                     args.optional_string(2),
                     args.optional_string(3),
                     args.optional_bool(4),
                 )))
             }
-            "deliveryReport" => {
-                let args = Args::new(args)?;
-                to_value(delivery_report(args.optional_string(0)))
-            }
+            "deliveryReport" => bail!(
+                "delivery_module does not satisfy Inspector messaging diagnostics; use deliverySourceReport over REST"
+            ),
             "deliverySourceReport" => {
                 let args = Args::new(args)?;
                 to_value(self.runtime.block_on(delivery_source_report(
-                    args.optional_string(0).unwrap_or("module"),
+                    args.optional_string(0).unwrap_or("rest"),
                     args.optional_string(1),
                     args.optional_string(2),
-                    args.optional_string(3),
                 )))
             }
             "storageManifests" => self.storage_manifests(args),
             "storageExists" => self.storage_exists(args),
-            "storageDownloadManifest" => {
-                let args = Args::new(args)?;
-                self.require_storage_module_source(args.optional_string(0).unwrap_or("module"))?;
-                self.call_logoscore_module(
-                    STORAGE_MODULE,
-                    "downloadManifest",
-                    json!([args.string(2, "CID")?]),
-                )
-            }
-            "storageFetch" => {
-                let args = Args::new(args)?;
-                self.require_storage_module_source(args.optional_string(0).unwrap_or("module"))?;
-                self.call_logoscore_module(STORAGE_MODULE, "fetch", json!([args.string(2, "CID")?]))
-            }
-            "storageUploadUrl" => {
-                let args = Args::new(args)?;
-                self.require_storage_module_source(args.optional_string(0).unwrap_or("module"))?;
-                self.call_logoscore_module(
-                    STORAGE_MODULE,
-                    "uploadUrl",
-                    json!([
-                        args.string(2, "file path or URL")?,
-                        args.u64(3, "chunk size")?
-                    ]),
-                )
-            }
-            "storageDownloadToUrl" => {
-                let args = Args::new(args)?;
-                self.require_storage_module_source(args.optional_string(0).unwrap_or("module"))?;
-                self.call_logoscore_module(
-                    STORAGE_MODULE,
-                    "downloadToUrl",
-                    json!([
-                        args.string(2, "CID")?,
-                        args.string(3, "destination path")?,
-                        args.optional_bool(4),
-                        args.u64(5, "chunk size")?
-                    ]),
-                )
-            }
-            "storageRemove" => {
-                let args = Args::new(args)?;
-                self.require_storage_module_source(args.optional_string(0).unwrap_or("module"))?;
-                self.call_logoscore_module(
-                    STORAGE_MODULE,
-                    "remove",
-                    json!([args.string(2, "CID")?]),
-                )
-            }
+            "storageDownloadManifest" => self.storage_download_manifest(args),
+            "storageFetch" => self.storage_fetch(args),
+            "storageUploadUrl" => self.storage_upload_path(args),
+            "storageDownloadToUrl" => self.storage_download_to_path(args),
+            "storageRemove" => self.storage_remove(args),
             "deliveryCreateNode" => {
-                let args = Args::new(args)?;
-                self.require_delivery_module_source(args.optional_string(0).unwrap_or("module"))?;
-                self.call_logoscore_module(
-                    DELIVERY_MODULE,
-                    "createNode",
-                    json!([args.string(2, "node configuration")?]),
+                bail!(
+                    "delivery node lifecycle actions are disabled until REST action adapter support exists"
                 )
             }
             "deliveryStart" => {
-                let args = Args::new(args)?;
-                self.require_delivery_module_source(args.optional_string(0).unwrap_or("module"))?;
-                self.call_logoscore_module(DELIVERY_MODULE, "start", json!([]))
+                bail!(
+                    "delivery node lifecycle actions are disabled until REST action adapter support exists"
+                )
             }
             "deliveryStop" => {
-                let args = Args::new(args)?;
-                self.require_delivery_module_source(args.optional_string(0).unwrap_or("module"))?;
-                self.call_logoscore_module(DELIVERY_MODULE, "stop", json!([]))
-            }
-            "deliverySubscribe" => {
-                let args = Args::new(args)?;
-                self.require_delivery_module_source(args.optional_string(0).unwrap_or("module"))?;
-                self.call_logoscore_module(
-                    DELIVERY_MODULE,
-                    "subscribe",
-                    json!([args.string(2, "content topic")?]),
+                bail!(
+                    "delivery node lifecycle actions are disabled until REST action adapter support exists"
                 )
             }
-            "deliveryUnsubscribe" => {
-                let args = Args::new(args)?;
-                self.require_delivery_module_source(args.optional_string(0).unwrap_or("module"))?;
-                self.call_logoscore_module(
-                    DELIVERY_MODULE,
-                    "unsubscribe",
-                    json!([args.string(2, "content topic")?]),
-                )
+            "deliverySubscribe" => self.delivery_subscription(args, Method::POST),
+            "deliveryUnsubscribe" => self.delivery_subscription(args, Method::DELETE),
+            "deliverySend" => self.delivery_send(args),
+            "capabilitiesReport" => {
+                bail!("capability_module does not expose Inspector capability listing")
             }
-            "deliverySend" => {
-                let args = Args::new(args)?;
-                self.require_delivery_module_source(args.optional_string(0).unwrap_or("module"))?;
-                self.call_logoscore_module(
-                    DELIVERY_MODULE,
-                    "send",
-                    json!([args.string(2, "content topic")?, args.string(3, "payload")?]),
-                )
-            }
-            "capabilitiesReport" => to_value(capabilities_report()),
             "callModule" => {
                 let args = Args::new(args)?;
                 let module = args.string(0, "module name")?;
@@ -638,25 +529,6 @@ impl InspectorBridge {
         to_value(logoscore::call(module, method, &args)?)
     }
 
-    fn call_logoscore_module_value(
-        &self,
-        module: &str,
-        method: &str,
-        args: Value,
-    ) -> Result<Value> {
-        let args = Args::new(args)?
-            .iter()
-            .map(|value| {
-                value
-                    .as_str()
-                    .map(ToOwned::to_owned)
-                    .unwrap_or_else(|| value.to_string())
-            })
-            .collect::<Vec<_>>();
-        let output = logoscore::call(module, method, &args)?;
-        parse_json_string_value(unwrap_logoscore_call_value(output.value))
-    }
-
     fn require_rpc_source(&self, source: &SourceEndpoint<'_>, method: &str) -> Result<()> {
         if source.mode == SourceMode::Rpc {
             return Ok(());
@@ -668,149 +540,10 @@ impl InspectorBridge {
     }
 
     fn blockchain_node_report(&self, source: &SourceEndpoint<'_>) -> Result<Value> {
-        if source.mode == SourceMode::Rpc {
-            return to_value(
-                self.runtime
-                    .block_on(blockchain::blockchain_node_report(source.endpoint)),
-            );
-        }
-
-        let cryptarchia_info = self
-            .call_logoscore_module_value(BLOCKCHAIN_MODULE, "get_cryptarchia_info", json!([]))
-            .map(normalize_module_cryptarchia_info);
-        let peer_id = self.call_logoscore_module_value(BLOCKCHAIN_MODULE, "get_peer_id", json!([]));
-        to_value(blockchain::BlockchainNodeReport {
-            endpoint: BLOCKCHAIN_MODULE.to_owned(),
-            cryptarchia_info: ProbeReport::from_result(
-                "cryptarchia info",
-                "logoscore call blockchain_module get_cryptarchia_info",
-                cryptarchia_info,
-            ),
-            headers: ProbeReport::err(
-                "headers",
-                "blockchain_module",
-                "blockchain_module does not expose cryptarchia headers",
-            ),
-            network_info: ProbeReport::from_result(
-                "network info",
-                "logoscore call blockchain_module get_peer_id",
-                peer_id.map(|value| json!({ "peer_id": value })),
-            ),
-            mantle_metrics: ProbeReport::err(
-                "mantle metrics",
-                "blockchain_module",
-                "blockchain_module does not expose mantle metrics",
-            ),
-        })
-    }
-
-    fn blockchain_module_blocks(&self, slot_from: u64, slot_to: u64) -> Result<Value> {
-        if slot_from > slot_to {
-            bail!("slot_from must be less than or equal to slot_to");
-        }
-        self.call_logoscore_module_value(
-            BLOCKCHAIN_MODULE,
-            "get_blocks",
-            json!([slot_from, slot_to]),
+        to_value(
+            self.runtime
+                .block_on(blockchain::blockchain_node_report(source.endpoint)),
         )
-    }
-
-    fn blockchain_module_live_blocks(
-        &self,
-        slot_from: u64,
-        slot_to: u64,
-        limit: u64,
-    ) -> Result<Value> {
-        let blocks = self.blockchain_module_blocks(slot_from, slot_to)?;
-        let blocks = value_array(blocks)
-            .into_iter()
-            .take(limit.clamp(1, 500) as usize)
-            .collect::<Vec<_>>();
-        to_value(blockchain::BlockchainLiveBlocksReport {
-            endpoint: BLOCKCHAIN_MODULE.to_owned(),
-            source: "blockchain_module.get_blocks".to_owned(),
-            blocks,
-            unknown_events: Vec::new(),
-        })
-    }
-
-    fn blockchain_module_block(&self, block_id: &str) -> Result<Value> {
-        self.call_logoscore_module_value(BLOCKCHAIN_MODULE, "get_block", json!([block_id]))
-    }
-
-    fn blockchain_module_transaction(&self, tx_hash: &str) -> Result<Value> {
-        self.call_logoscore_module_value(BLOCKCHAIN_MODULE, "get_transaction", json!([tx_hash]))
-    }
-
-    fn indexer_module_health(&self) -> Result<Value> {
-        let status = self.indexer_module_status_value()?;
-        Ok(json!({
-            "status": "healthy",
-            "health": status,
-        }))
-    }
-
-    fn indexer_module_status(&self) -> Result<Value> {
-        to_value(crate::indexer::summarize_indexer_status_response(&json!({
-            "result": self.indexer_module_status_value()?
-        })))
-    }
-
-    fn indexer_module_status_value(&self) -> Result<Value> {
-        let value = self.call_logoscore_module_value(INDEXER_MODULE, "getStatus", json!([]))?;
-        if value.as_str().is_some_and(|text| text.trim().is_empty()) {
-            return Ok(json!({
-                "state": "unavailable",
-                "lastError": "indexer module returned empty status",
-            }));
-        }
-        Ok(value)
-    }
-
-    fn indexer_module_finalized_head(&self) -> Result<Value> {
-        self.call_logoscore_module_value(INDEXER_MODULE, "getLastFinalizedBlockId", json!([]))
-    }
-
-    fn indexer_module_block_reports(
-        &self,
-        before: Option<u64>,
-        limit: u64,
-    ) -> Result<Vec<IndexerBlockReport>> {
-        let before = indexer_module_before_arg(before);
-        let blocks =
-            self.call_logoscore_module_value(INDEXER_MODULE, "getBlocks", json!([before, limit]))?;
-        let blocks = blocks
-            .as_array()
-            .context("lez_indexer_module getBlocks result was not an array")?;
-        Ok(blocks
-            .iter()
-            .map(crate::indexer::summarize_indexer_block)
-            .collect())
-    }
-
-    fn indexer_module_blocks(&self, before: Option<u64>, limit: u64) -> Result<Value> {
-        to_value(self.indexer_module_block_reports(before, limit)?)
-    }
-
-    fn indexer_module_block_by_hash(&self, header_hash: &str) -> Result<Value> {
-        let value = self.call_logoscore_module_value(
-            INDEXER_MODULE,
-            "getBlockByHash",
-            json!([header_hash]),
-        )?;
-        let value = module_lookup_value_or_null(value);
-        if value.is_null() {
-            return Ok(Value::Null);
-        }
-        to_value(crate::indexer::summarize_indexer_block(&value))
-    }
-
-    fn indexer_module_transfer_recipients(&self, before: Option<u64>, limit: u64) -> Result<Value> {
-        let blocks = self.indexer_module_block_reports(before, limit)?;
-        to_value(crate::transfers::TransferActivityPage {
-            next_before_block: crate::indexer::next_indexer_blocks_cursor(&blocks),
-            recipients: crate::transfers::transfer_recipient_summaries_from_blocks(&blocks),
-        })
     }
 
     fn execution_head(&self, source: &SourceEndpoint<'_>) -> Result<Value> {
@@ -823,53 +556,147 @@ impl InspectorBridge {
 
     fn storage_manifests(&self, args: Value) -> Result<Value> {
         let args = Args::new(args)?;
-        if storage_source_is_rest(args.optional_string(0).unwrap_or("module")) {
-            return to_value(
-                self.runtime.block_on(raw_http_json(
-                    args.optional_string(1)
-                        .unwrap_or(DEFAULT_STORAGE_REST_ENDPOINT),
-                    "/data",
-                ))?,
-            );
-        }
-        self.require_storage_module_source(args.optional_string(0).unwrap_or("module"))?;
-        self.call_logoscore_module(STORAGE_MODULE, "manifests", json!([]))
+        let source = storage_rest_source(&args)?;
+        to_value(
+            self.runtime
+                .block_on(raw_http_json(source.endpoint, "/data"))?,
+        )
     }
 
     fn storage_exists(&self, args: Value) -> Result<Value> {
         let args = Args::new(args)?;
-        let cid = args.string(2, "CID")?;
-        if storage_source_is_rest(args.optional_string(0).unwrap_or("module")) {
-            return to_value(
-                self.runtime.block_on(raw_http_json(
-                    args.optional_string(1)
-                        .unwrap_or(DEFAULT_STORAGE_REST_ENDPOINT),
-                    &format!("/data/{cid}/exists"),
-                ))?,
-            );
-        }
-        self.require_storage_module_source(args.optional_string(0).unwrap_or("module"))?;
-        self.call_logoscore_module(STORAGE_MODULE, "exists", json!([cid]))
+        let source = storage_rest_source(&args)?;
+        let cid = args.string(source.next_index, "CID")?;
+        to_value(self.runtime.block_on(raw_http_json(
+            source.endpoint,
+            &format!("/data/{cid}/exists"),
+        ))?)
     }
 
-    fn require_storage_module_source(&self, source_mode: &str) -> Result<()> {
-        if storage_source_is_module(source_mode) {
-            return Ok(());
-        }
-        bail!(
-            "storage operation requires the storage module source; current source mode is `{}`",
-            source_mode.trim()
-        )
+    fn storage_download_manifest(&self, args: Value) -> Result<Value> {
+        let args = Args::new(args)?;
+        let source = storage_rest_source(&args)?;
+        require_mutating_diagnostics(&args, source.next_index, "storage network action")?;
+        let cid = args.string(source.next_index + 1, "CID")?;
+        to_value(self.runtime.block_on(raw_http_json(
+            source.endpoint,
+            &format!("/data/{cid}/network/manifest"),
+        ))?)
     }
 
-    fn require_delivery_module_source(&self, source_mode: &str) -> Result<()> {
-        if delivery_source_is_module(source_mode) {
-            return Ok(());
+    fn storage_fetch(&self, args: Value) -> Result<Value> {
+        let args = Args::new(args)?;
+        let source = storage_rest_source(&args)?;
+        require_mutating_diagnostics(&args, source.next_index, "storage network action")?;
+        let cid = args.string(source.next_index + 1, "CID")?;
+        self.runtime
+            .block_on(rest_json_request(
+                Method::POST,
+                source.endpoint,
+                &format!("/data/{cid}/network"),
+                None,
+            ))
+            .with_context(|| format!("failed to start storage network fetch for {cid}"))
+    }
+
+    fn storage_upload_path(&self, args: Value) -> Result<Value> {
+        let args = Args::new(args)?;
+        let source = storage_rest_source(&args)?;
+        require_mutating_diagnostics(&args, source.next_index, "storage upload action")?;
+        let path = args.string(source.next_index + 1, "file path")?;
+        if path.starts_with("http://") || path.starts_with("https://") {
+            bail!("storage REST upload expects a local file path");
         }
-        bail!(
-            "delivery operation requires the delivery module source; current source mode is `{}`",
-            source_mode.trim()
-        )
+        let block_size = args
+            .value(source.next_index + 2)
+            .and_then(Value::as_u64)
+            .unwrap_or(65_536);
+        self.runtime
+            .block_on(storage_rest_upload(source.endpoint, path, block_size))
+            .with_context(|| format!("failed to upload `{path}` through storage REST"))
+    }
+
+    fn storage_download_to_path(&self, args: Value) -> Result<Value> {
+        let args = Args::new(args)?;
+        let source = storage_rest_source(&args)?;
+        require_mutating_diagnostics(&args, source.next_index, "storage download action")?;
+        let cid = args.string(source.next_index + 1, "CID")?;
+        let path = args.string(source.next_index + 2, "download path")?;
+        let local_only = args.optional_bool(source.next_index + 3);
+        self.runtime
+            .block_on(storage_rest_download(
+                source.endpoint,
+                cid,
+                path,
+                local_only,
+            ))
+            .with_context(|| format!("failed to download storage CID {cid} to `{path}`"))
+    }
+
+    fn storage_remove(&self, args: Value) -> Result<Value> {
+        let args = Args::new(args)?;
+        let source = storage_rest_source(&args)?;
+        require_mutating_diagnostics(&args, source.next_index, "storage remove action")?;
+        let cid = args.string(source.next_index + 1, "CID")?;
+        self.runtime
+            .block_on(rest_empty_request(
+                Method::DELETE,
+                source.endpoint,
+                &format!("/data/{cid}"),
+                None,
+            ))
+            .with_context(|| format!("failed to remove storage CID {cid}"))?;
+        Ok(json!({
+            "removed": true,
+            "cid": cid,
+            "endpoint": source.endpoint,
+        }))
+    }
+
+    fn delivery_subscription(&self, args: Value, method: Method) -> Result<Value> {
+        let args = Args::new(args)?;
+        let source = delivery_rest_source(&args)?;
+        require_mutating_diagnostics(&args, source.next_index, "delivery message action")?;
+        let topic = args.string(source.next_index + 1, "content topic")?;
+        self.runtime
+            .block_on(rest_empty_request(
+                method.clone(),
+                source.endpoint,
+                "/relay/v1/auto/subscriptions",
+                Some(json!([topic])),
+            ))
+            .with_context(|| format!("failed to update relay subscription for {topic}"))?;
+        Ok(json!({
+            "subscribed": method == Method::POST,
+            "contentTopic": topic,
+            "endpoint": source.endpoint,
+        }))
+    }
+
+    fn delivery_send(&self, args: Value) -> Result<Value> {
+        let args = Args::new(args)?;
+        let source = delivery_rest_source(&args)?;
+        require_mutating_diagnostics(&args, source.next_index, "delivery message action")?;
+        let topic = args.string(source.next_index + 1, "content topic")?;
+        let payload = args.string(source.next_index + 2, "message payload")?;
+        let body = json!({
+            "payload": BASE64_STANDARD.encode(payload.as_bytes()),
+            "contentTopic": topic,
+        });
+        self.runtime
+            .block_on(rest_empty_request(
+                Method::POST,
+                source.endpoint,
+                "/relay/v1/auto/messages",
+                Some(body),
+            ))
+            .with_context(|| format!("failed to send relay message on {topic}"))?;
+        Ok(json!({
+            "sent": true,
+            "contentTopic": topic,
+            "bytes": payload.len(),
+            "endpoint": source.endpoint,
+        }))
     }
 }
 
@@ -927,87 +754,6 @@ fn format_bridge_value(value: &Value) -> String {
     match value {
         Value::String(value) => value.clone(),
         value => serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string()),
-    }
-}
-
-fn storage_source_is_module(source_mode: &str) -> bool {
-    matches!(
-        source_mode.trim().to_ascii_lowercase().as_str(),
-        "module" | "basecamp" | "basecamp-module" | "basecamp module"
-    )
-}
-
-fn storage_source_is_rest(source_mode: &str) -> bool {
-    matches!(
-        source_mode.trim().to_ascii_lowercase().as_str(),
-        "rest" | "standalone-rest" | "standalone rest" | "direct-rest"
-    )
-}
-
-fn delivery_source_is_module(source_mode: &str) -> bool {
-    matches!(
-        source_mode.trim().to_ascii_lowercase().as_str(),
-        "module" | "basecamp" | "basecamp-module" | "basecamp module"
-    )
-}
-
-fn unwrap_logoscore_call_value(value: Value) -> Value {
-    if let Some(inner) = value
-        .get("result")
-        .and_then(|result| result.get("value"))
-        .cloned()
-    {
-        inner
-    } else {
-        value
-    }
-}
-
-fn parse_json_string_value(value: Value) -> Result<Value> {
-    let Value::String(text) = value else {
-        return Ok(value);
-    };
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return Ok(Value::String(text));
-    }
-    Ok(serde_json::from_str(trimmed).unwrap_or(Value::String(text)))
-}
-
-fn indexer_module_before_arg(before: Option<u64>) -> String {
-    before.map_or_else(String::new, |value| value.to_string())
-}
-
-fn module_lookup_value_or_null(value: Value) -> Value {
-    match value {
-        Value::String(text) if text.trim().is_empty() => Value::Null,
-        value => value,
-    }
-}
-
-fn normalize_module_cryptarchia_info(value: Value) -> Value {
-    if value
-        .get("cryptarchia_info")
-        .is_some_and(|value| !value.is_null())
-    {
-        return value;
-    }
-    json!({ "cryptarchia_info": value })
-}
-
-fn value_array(value: Value) -> Vec<Value> {
-    match value {
-        Value::Array(items) => items,
-        Value::Object(mut object) => object
-            .remove("blocks")
-            .or_else(|| object.remove("items"))
-            .or_else(|| object.remove("result"))
-            .and_then(|value| match value {
-                Value::Array(items) => Some(items),
-                _ => None,
-            })
-            .unwrap_or_default(),
-        _ => Vec::new(),
     }
 }
 
@@ -1133,6 +879,11 @@ struct AccountSources<'a> {
     next_index: usize,
 }
 
+struct RestSource<'a> {
+    endpoint: &'a str,
+    next_index: usize,
+}
+
 impl Args {
     fn new(value: Value) -> Result<Self> {
         let values = value
@@ -1254,6 +1005,181 @@ fn source_module_for_label(label: &str) -> &'static str {
     }
 }
 
+fn storage_rest_source(args: &Args) -> Result<RestSource<'_>> {
+    rest_source(
+        args,
+        DEFAULT_STORAGE_REST_ENDPOINT,
+        "storage",
+        "Storage REST data actions",
+    )
+}
+
+fn delivery_rest_source(args: &Args) -> Result<RestSource<'_>> {
+    rest_source(
+        args,
+        DEFAULT_DELIVERY_REST_ENDPOINT,
+        "delivery",
+        "Delivery REST message actions",
+    )
+}
+
+fn require_mutating_diagnostics(args: &Args, index: usize, label: &str) -> Result<()> {
+    if args.optional_bool(index) {
+        return Ok(());
+    }
+    bail!("{label} requires mutating diagnostics to be enabled")
+}
+
+fn rest_source<'a>(
+    args: &'a Args,
+    default_endpoint: &'static str,
+    source_name: &str,
+    action_name: &str,
+) -> Result<RestSource<'a>> {
+    let mode = args.optional_string(0).unwrap_or("rest");
+    let normalized = mode.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "auto" | "rest" | "standalone" | "standalone-rest" | "standalone rest" | "direct-rest"
+        | "direct rest" | "module" | "basecamp" | "basecamp-module" | "basecamp module" => {
+            Ok(RestSource {
+                endpoint: args.optional_string(1).unwrap_or(default_endpoint),
+                next_index: 2,
+            })
+        }
+        "metrics" => bail!("{action_name} require {source_name} REST source, not metrics"),
+        _ => bail!("{source_name} source mode `{mode}` is not supported"),
+    }
+}
+
+async fn storage_rest_upload(endpoint: &str, path: &str, block_size: u64) -> Result<Value> {
+    let bytes = tokio::fs::read(path)
+        .await
+        .with_context(|| format!("failed to read upload file `{path}`"))?;
+    let filename = Path::new(path)
+        .file_name()
+        .map(|value| value.to_string_lossy().into_owned())
+        .filter(|value| !value.is_empty());
+    let mut request = reqwest::Client::new()
+        .post(rest_url(endpoint, &format!("/data?blockSize={block_size}")))
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .body(bytes);
+    if let Some(filename) = filename {
+        request = request.header(
+            header::CONTENT_DISPOSITION,
+            format!(
+                "attachment; filename=\"{}\"",
+                filename.replace(['\\', '"'], "_")
+            ),
+        );
+    }
+    let text = send_text(request, "storage upload").await?;
+    Ok(json!({
+        "cid": text.trim(),
+        "path": path,
+        "bytes": tokio::fs::metadata(path).await.map(|metadata| metadata.len()).unwrap_or(0),
+        "endpoint": endpoint,
+    }))
+}
+
+async fn storage_rest_download(
+    endpoint: &str,
+    cid: &str,
+    path: &str,
+    local_only: bool,
+) -> Result<Value> {
+    let route = if local_only {
+        format!("/data/{cid}")
+    } else {
+        format!("/data/{cid}/network/stream")
+    };
+    let response = reqwest::Client::new()
+        .get(rest_url(endpoint, &route))
+        .send()
+        .await
+        .with_context(|| format!("failed to call {}", rest_url(endpoint, &route)))?;
+    let status = response.status();
+    let bytes = response
+        .bytes()
+        .await
+        .context("failed to read storage download response body")?;
+    if !status.is_success() {
+        bail!(
+            "storage download failed with status {status}: {}",
+            response_excerpt_bytes(&bytes)
+        );
+    }
+    tokio::fs::write(path, &bytes)
+        .await
+        .with_context(|| format!("failed to write download file `{path}`"))?;
+    Ok(json!({
+        "cid": cid,
+        "path": path,
+        "bytes": bytes.len(),
+        "source": if local_only { "local" } else { "network" },
+        "endpoint": endpoint,
+    }))
+}
+
+async fn rest_json_request(
+    method: Method,
+    endpoint: &str,
+    path: &str,
+    body: Option<Value>,
+) -> Result<Value> {
+    let url = rest_url(endpoint, path);
+    let mut request = reqwest::Client::new().request(method, &url);
+    if let Some(body) = body {
+        request = request.json(&body);
+    }
+    let text = send_text(request, &url).await?;
+    serde_json::from_str(&text)
+        .with_context(|| format!("invalid JSON response: {}", response_excerpt(&text)))
+}
+
+async fn rest_empty_request(
+    method: Method,
+    endpoint: &str,
+    path: &str,
+    body: Option<Value>,
+) -> Result<()> {
+    let url = rest_url(endpoint, path);
+    let mut request = reqwest::Client::new().request(method, &url);
+    if let Some(body) = body {
+        request = request.json(&body);
+    }
+    let _ = send_text(request, &url).await?;
+    Ok(())
+}
+
+async fn send_text(request: reqwest::RequestBuilder, label: &str) -> Result<String> {
+    let response = request
+        .send()
+        .await
+        .with_context(|| format!("failed to call {label}"))?;
+    let status = response.status();
+    let text = response
+        .text()
+        .await
+        .context("failed to read http response body")?;
+    if !status.is_success() && status != StatusCode::NO_CONTENT {
+        bail!(
+            "http call `{label}` failed with status {status}: {}",
+            response_excerpt(&text)
+        );
+    }
+    Ok(text)
+}
+
+fn rest_url(endpoint: &str, path: &str) -> String {
+    let endpoint = endpoint.trim_end_matches('/');
+    let path = path.trim_start_matches('/');
+    format!("{endpoint}/{path}")
+}
+
+fn response_excerpt_bytes(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).chars().take(400).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1346,27 +1272,84 @@ mod tests {
     }
 
     #[test]
-    fn unwrap_logoscore_call_value_returns_nested_value() {
-        let value = unwrap_logoscore_call_value(json!({
-            "result": {
-                "value": {
-                    "height": 7
-                }
-            }
-        }));
+    fn storage_rest_source_rewrites_legacy_module_mode_to_rest() -> Result<()> {
+        let args = Args::new(json!([
+            "module",
+            "http://127.0.0.1:8080/api/storage/v1",
+            "cid"
+        ]))?;
+        let source = storage_rest_source(&args)?;
 
-        assert_eq!(value.pointer("/height").and_then(Value::as_u64), Some(7));
+        if source.endpoint != "http://127.0.0.1:8080/api/storage/v1" || source.next_index != 2 {
+            bail!("unexpected storage source");
+        }
+        Ok(())
     }
 
     #[test]
-    fn indexer_module_before_arg_uses_empty_string_for_latest() {
-        assert_eq!(indexer_module_before_arg(None), "");
-        assert_eq!(indexer_module_before_arg(Some(42)), "42");
+    fn delivery_rest_source_rejects_metrics_for_message_actions() -> Result<()> {
+        let args = Args::new(json!(["metrics", "http://127.0.0.1:8008/metrics", "topic"]))?;
+        let result = delivery_rest_source(&args);
+
+        let Err(error) = result else {
+            bail!("expected metrics source to fail");
+        };
+        if !error.to_string().contains("require delivery REST source") {
+            bail!("unexpected error: {error:#}");
+        }
+        Ok(())
     }
 
     #[test]
-    fn empty_module_lookup_value_is_null() {
-        assert!(module_lookup_value_or_null(json!("  ")).is_null());
-        assert_eq!(module_lookup_value_or_null(json!("value")), json!("value"));
+    fn delivery_mutations_require_mutating_diagnostics_flag() -> Result<()> {
+        let bridge = InspectorBridge::new()?;
+        let result = bridge.call_module(
+            INSPECTOR_MODULE,
+            "deliverySend",
+            json!([
+                "rest",
+                "http://127.0.0.1:8645",
+                false,
+                "/app/1/chat/proto",
+                "hello"
+            ]),
+        );
+
+        let Err(error) = result else {
+            bail!("expected disabled mutating diagnostics to fail");
+        };
+        if !error
+            .to_string()
+            .contains("requires mutating diagnostics to be enabled")
+        {
+            bail!("unexpected error: {error:#}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn storage_mutations_require_mutating_diagnostics_flag() -> Result<()> {
+        let bridge = InspectorBridge::new()?;
+        let result = bridge.call_module(
+            INSPECTOR_MODULE,
+            "storageFetch",
+            json!([
+                "rest",
+                "http://127.0.0.1:8080/api/storage/v1",
+                false,
+                "zDvtest"
+            ]),
+        );
+
+        let Err(error) = result else {
+            bail!("expected disabled mutating diagnostics to fail");
+        };
+        if !error
+            .to_string()
+            .contains("requires mutating diagnostics to be enabled")
+        {
+            bail!("unexpected error: {error:#}");
+        }
+        Ok(())
     }
 }

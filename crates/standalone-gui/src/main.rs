@@ -4,8 +4,15 @@ use std::{env, path::PathBuf};
 
 use anyhow::{Context as _, Result};
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
+use logos_inspector::local_indexer::bootstrap_default_local_indexer_for_saved_settings;
+
+const ENABLE_INDEXER_AUTO_BOOTSTRAP_ENV: &str = "LOGOS_INSPECTOR_ENABLE_INDEXER_AUTO_BOOTSTRAP";
 
 fn main() -> Result<()> {
+    if env::var_os(ENABLE_INDEXER_AUTO_BOOTSTRAP_ENV).is_some() {
+        bootstrap_default_local_indexer_for_saved_settings()?;
+    }
+
     let mut app = QGuiApplication::new();
     let mut engine = QQmlApplicationEngine::new();
     let entry = qml_entry()?;

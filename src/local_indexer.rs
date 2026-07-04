@@ -8,8 +8,9 @@ use std::{
 };
 
 use anyhow::{Context as _, Result, bail};
+use serde_json::Value;
 
-use crate::DEFAULT_INDEXER_ENDPOINT;
+use crate::{DEFAULT_INDEXER_ENDPOINT, state_store::load_settings_state};
 
 const LEZ_DIR_ENV: &str = "LOGOS_EXECUTION_ZONE_DIR";
 const DISABLE_AUTO_BUILD_ENV: &str = "LOGOS_INSPECTOR_DISABLE_INDEXER_AUTO_BUILD";
@@ -43,12 +44,33 @@ pub fn bootstrap_default_local_indexer() -> Result<()> {
     Ok(())
 }
 
+pub fn bootstrap_default_local_indexer_for_saved_settings() -> Result<()> {
+    if saved_settings_use_default_local_indexer()? {
+        bootstrap_default_local_indexer()?;
+    }
+    Ok(())
+}
+
 #[must_use]
 pub fn is_default_local_indexer_endpoint(endpoint: &str) -> bool {
     let endpoint = endpoint.trim().trim_end_matches('/');
     endpoint == DEFAULT_INDEXER_ENDPOINT.trim_end_matches('/')
         || endpoint == "http://localhost:8779"
         || endpoint == "http://[::1]:8779"
+}
+
+fn saved_settings_use_default_local_indexer() -> Result<bool> {
+    let settings = load_settings_state()?;
+    Ok(is_default_local_indexer_endpoint(
+        saved_settings_indexer_endpoint(&settings),
+    ))
+}
+
+fn saved_settings_indexer_endpoint(settings: &Value) -> &str {
+    settings
+        .get("indexer_url")
+        .and_then(Value::as_str)
+        .unwrap_or(DEFAULT_INDEXER_ENDPOINT)
 }
 
 fn local_indexer_is_reachable() -> bool {
@@ -201,6 +223,28 @@ mod tests {
             "https://testnet.lez.logos.co/"
         ));
         assert!(!is_default_local_indexer_endpoint("http://127.0.0.1:8080/"));
+    }
+
+    #[test]
+    fn saved_settings_indexer_endpoint_defaults_to_local() {
+        let settings = serde_json::json!({ "version": 1 });
+
+        assert!(is_default_local_indexer_endpoint(
+            saved_settings_indexer_endpoint(&settings)
+        ));
+    }
+
+    #[test]
+    fn saved_settings_indexer_endpoint_preserves_remote_override() {
+        let settings = serde_json::json!({
+            "version": 1,
+            "indexer_url": "https://indexer.example/"
+        });
+
+        assert_eq!(
+            saved_settings_indexer_endpoint(&settings),
+            "https://indexer.example/"
+        );
     }
 
     #[test]

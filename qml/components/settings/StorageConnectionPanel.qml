@@ -53,12 +53,6 @@ Panel {
             onActivated: index => root.modelRef.storageSourceMode = root.sourceModeAt(index)
         }
 
-        InfoField {
-            theme: root.theme
-            label: qsTr("Module API")
-            value: root.modelRef.storageModule
-        }
-
         FieldRow {
             theme: root.theme
             label: qsTr("REST URL")
@@ -168,7 +162,7 @@ Panel {
         theme: root.theme
         tone: "warning"
         title: qsTr("Source unavailable")
-        message: qsTr("The saved source mode no longer has an adapter. Select Auto, Basecamp module, Standalone REST, or Metrics only.")
+        message: qsTr("The saved source mode no longer has an adapter. Select Auto, Standalone REST, or Metrics only.")
         Layout.fillWidth: true
     }
 
@@ -226,6 +220,6 @@ Panel {
     }
 
     function storageDataEnabled() {
-        return root.storageSourceMode() === "module" || root.storageSourceMode() === "rest"
+        return root.storageSourceMode() === "rest"
     }
 }

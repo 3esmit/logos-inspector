@@ -18,6 +18,9 @@ ColumnLayout {
     property var manifests: []
     property string lastOperation: qsTr("None")
     property string activeCid: ""
+    property string pendingStorageMethod: ""
+    property string pendingStorageLabel: ""
+    property var pendingStorageArgs: []
 
     width: parent ? parent.width : 900
     spacing: root.theme.gapLarge
@@ -42,7 +45,7 @@ ColumnLayout {
         breadcrumb: qsTr("Home / Network / Storage")
         title: qsTr("Storage")
         layerLabel: qsTr("Network")
-        subtitle: qsTr("Share, find, download, and remove content through the configured Storage source.")
+        subtitle: qsTr("Inspect local manifests and CID presence through the configured Storage REST source.")
         Layout.fillWidth: true
     }
 
@@ -268,26 +271,26 @@ ColumnLayout {
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Fetch")
-                    enabled: !root.model.busy && cidField.text.trim().length > 0 && root.storageModuleSource()
+                    enabled: !root.model.busy && cidField.text.trim().length > 0 && root.storageMutatingSource()
                     Layout.preferredWidth: 104
-                    onClicked: root.runStorage("storageDownloadManifest", [cidField.text.trim()], qsTr("Fetch manifest"))
+                    onClicked: root.confirmStorage("storageDownloadManifest", [cidField.text.trim()], qsTr("Fetch manifest"))
                 }
 
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Cache")
-                    enabled: !root.model.busy && cidField.text.trim().length > 0 && root.storageModuleSource()
+                    enabled: !root.model.busy && cidField.text.trim().length > 0 && root.storageMutatingSource()
                     Layout.preferredWidth: 104
-                    onClicked: root.runStorage("storageFetch", [cidField.text.trim()], qsTr("Cache CID"))
+                    onClicked: root.confirmStorage("storageFetch", [cidField.text.trim()], qsTr("Cache CID"))
                 }
 
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Download")
                     primary: true
-                    enabled: !root.model.busy && cidField.text.trim().length > 0 && cidDestination.text.trim().length > 0 && root.storageModuleSource()
+                    enabled: !root.model.busy && cidField.text.trim().length > 0 && cidDestination.text.trim().length > 0 && root.storageMutatingSource()
                     Layout.preferredWidth: 124
-                    onClicked: root.runStorage("storageDownloadToUrl", [cidField.text.trim(), cidDestination.text.trim(), localOnly.checked, root.chunkSizeValue(chunkSize.text)], qsTr("Download CID"))
+                    onClicked: root.confirmStorage("storageDownloadToUrl", [cidField.text.trim(), cidDestination.text.trim(), localOnly.checked, root.chunkSizeValue(chunkSize.text)], qsTr("Download CID"))
                 }
 
                 Item {
@@ -304,7 +307,7 @@ ColumnLayout {
 
                     text: qsTr("Local only")
                     checked: false
-                    enabled: root.storageModuleSource()
+                    enabled: root.storageMutatingSource()
                     palette.text: root.theme.text
                     Layout.preferredWidth: 132
                 }
@@ -332,8 +335,17 @@ ColumnLayout {
                 visible: !root.storageModuleSource()
                 theme: root.theme
                 tone: "warning"
-                title: qsTr("Module source required")
-                message: qsTr("Select the Storage module source in Settings to run upload, download, fetch, and remove operations.")
+                title: qsTr("REST source required")
+                message: qsTr("Upload, download, fetch, and remove use the configured Storage REST source.")
+                Layout.fillWidth: true
+            }
+
+            StatusMessage {
+                visible: root.storageRestSource() && !root.model.storageMutatingDiagnosticsEnabled
+                theme: root.theme
+                tone: "warning"
+                title: qsTr("Mutating diagnostics off")
+                message: qsTr("Enable mutating diagnostics in Settings before upload, download, fetch, or remove.")
                 Layout.fillWidth: true
             }
 
@@ -347,7 +359,7 @@ ColumnLayout {
                     id: uploadPath
 
                     theme: root.theme
-                    label: qsTr("File path or URL")
+                    label: qsTr("File path")
                     placeholderText: qsTr("/home/user/file.bin")
                     Layout.fillWidth: true
                 }
@@ -391,25 +403,25 @@ ColumnLayout {
                     theme: root.theme
                     text: qsTr("Upload")
                     primary: true
-                    enabled: !root.model.busy && root.storageModuleSource() && uploadPath.text.trim().length > 0
+                    enabled: !root.model.busy && root.storageMutatingSource() && uploadPath.text.trim().length > 0
                     Layout.preferredWidth: 112
-                    onClicked: root.runStorage("storageUploadUrl", [uploadPath.text.trim(), root.chunkSizeValue(transferChunkSize.text)], qsTr("Upload file"))
+                    onClicked: root.confirmStorage("storageUploadUrl", [uploadPath.text.trim(), root.chunkSizeValue(transferChunkSize.text)], qsTr("Upload file"))
                 }
 
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Download")
-                    enabled: !root.model.busy && root.storageModuleSource() && downloadCid.text.trim().length > 0 && downloadPath.text.trim().length > 0
+                    enabled: !root.model.busy && root.storageMutatingSource() && downloadCid.text.trim().length > 0 && downloadPath.text.trim().length > 0
                     Layout.preferredWidth: 124
-                    onClicked: root.runStorage("storageDownloadToUrl", [downloadCid.text.trim(), downloadPath.text.trim(), false, root.chunkSizeValue(transferChunkSize.text)], qsTr("Download file"))
+                    onClicked: root.confirmStorage("storageDownloadToUrl", [downloadCid.text.trim(), downloadPath.text.trim(), false, root.chunkSizeValue(transferChunkSize.text)], qsTr("Download file"))
                 }
 
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Remove")
-                    enabled: !root.model.busy && root.storageModuleSource() && downloadCid.text.trim().length > 0
+                    enabled: !root.model.busy && root.storageMutatingSource() && downloadCid.text.trim().length > 0
                     Layout.preferredWidth: 112
-                    onClicked: root.runStorage("storageRemove", [downloadCid.text.trim()], qsTr("Remove CID"))
+                    onClicked: root.confirmStorage("storageRemove", [downloadCid.text.trim()], qsTr("Remove CID"))
                 }
 
                 Item {
@@ -461,6 +473,17 @@ ColumnLayout {
         }
     }
 
+    ConfirmActionPopup {
+        id: storageConfirm
+
+        theme: root.theme
+        title: root.pendingStorageLabel
+        message: qsTr("This will call the configured Storage REST source and may change local node state or local files.")
+        confirmText: root.pendingStorageLabel
+        confirmEnabled: root.pendingStorageMethod.length > 0
+        onAccepted: root.runPendingStorage()
+    }
+
     function tabComponent(tab) {
         switch (String(tab || "")) {
         case "cid":
@@ -495,16 +518,19 @@ ColumnLayout {
     }
 
     function storageModuleSource() {
-        const mode = String(root.model.effectiveStorageSourceMode(root.model.storageSourceMode) || "").toLowerCase()
-        return mode === "module" || mode === "basecamp" || mode === "basecamp-module" || mode === "basecamp module"
+        return root.storageRestSource()
     }
 
     function storageRestSource() {
         return String(root.model.effectiveStorageSourceMode(root.model.storageSourceMode) || "").toLowerCase() === "rest"
     }
 
+    function storageMutatingSource() {
+        return root.storageRestSource() && root.model.storageMutatingDiagnosticsEnabled === true
+    }
+
     function storageDataSource() {
-        return root.storageModuleSource() || root.storageRestSource()
+        return root.storageRestSource()
     }
 
     function storageArgs(extra) {
@@ -533,6 +559,23 @@ ColumnLayout {
         root.appendOperation(label, response)
         root.lastOperation = response.ok ? label : qsTr("Error")
         return response
+    }
+
+    function confirmStorage(method, args, label) {
+        root.pendingStorageMethod = String(method || "")
+        root.pendingStorageArgs = [root.model.storageMutatingDiagnosticsEnabled === true].concat(args || [])
+        root.pendingStorageLabel = String(label || "")
+        storageConfirm.open()
+    }
+
+    function runPendingStorage() {
+        if (!root.pendingStorageMethod.length) {
+            return
+        }
+        root.runStorage(root.pendingStorageMethod, root.pendingStorageArgs, root.pendingStorageLabel)
+        root.pendingStorageMethod = ""
+        root.pendingStorageArgs = []
+        root.pendingStorageLabel = ""
     }
 
     function appendOperation(label, response) {
@@ -589,16 +632,17 @@ ColumnLayout {
         }
         return root.manifests.map(function (manifest) {
             const row = manifest || {}
+            const metadata = row.manifest || {}
             const cid = String(row.cid || row.CID || row.id || "")
-            const name = String(row.filename || row.name || row.path || cid || qsTr("Untitled"))
-            const size = row.datasetSize || row.size || row.bytes || row.totalSize || "-"
-            const blockSize = row.blockSize || row.block_size || ""
+            const name = String(metadata.filename || row.filename || row.name || row.path || cid || qsTr("Untitled"))
+            const size = metadata.datasetSize || row.datasetSize || row.size || row.bytes || row.totalSize || "-"
+            const blockSize = metadata.blockSize || row.blockSize || row.block_size || ""
             return {
                 cid: cid,
                 name: name,
-                detail: blockSize ? qsTr("block %1").arg(blockSize) : String(row.treeCid || row.tree_cid || ""),
+                detail: blockSize ? qsTr("block %1").arg(blockSize) : String(metadata.treeCid || row.treeCid || row.tree_cid || ""),
                 size: String(size),
-                mime: String(row.mimetype || row.mimeType || row.contentType || "-")
+                mime: String(metadata.mimetype || row.mimetype || row.mimeType || row.contentType || "-")
             }
         })
     }
