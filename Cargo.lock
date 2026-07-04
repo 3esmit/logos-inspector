@@ -4395,6 +4395,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "logos-inspector-core-ffi"
+version = "0.2.0-rc6"
+dependencies = [
+ "logos-inspector",
+ "serde_json",
+]
+
+[[package]]
 name = "logos-inspector-standalone-gui"
 version = "0.2.0-rc6"
 dependencies = [

@@ -10,7 +10,9 @@ inspectors for Logos messaging, storage, and other services.
 - `src/main.rs`: native GUI and CLI entry point.
 - `src/cli.rs`: CLI shell over the shared library.
 - `src/gui.rs`: thin launcher for the standalone QML flake app.
+- `crates/core-ffi`: C ABI bridge used by the Basecamp core module package.
 - `crates/standalone-gui`: CXX-Qt standalone host over the shared QML UI.
+- `core/`: Logos core module package named `logos_inspector`.
 - `qml/Main.qml`, `qml/`: Logos QML UI plugin.
 
 The CLI calls the package library directly. The QML GUI follows the Logos UI
@@ -29,20 +31,72 @@ The host must provide the declared runtime modules for inspection actions.
 
 ## Build
 
-Build the tool:
-
-```bash
-cargo build
-```
-
-Run checks:
+Prepare the Logos blockchain circuits once per machine or CI workspace:
 
 ```bash
 python3 scripts/setup-circuits.py v0.5.3 /tmp/logos-blockchain-circuits
 export LOGOS_BLOCKCHAIN_CIRCUITS=/tmp/logos-blockchain-circuits
+export RISC0_SKIP_BUILD=1
+```
+
+Build the CLI/native launcher crate:
+
+```bash
+cargo build -p logos-inspector
+```
+
+Build the standalone QML host alongside the launcher:
+
+```bash
+cargo build -p logos-inspector -p logos-inspector-standalone-gui
+```
+
+Run the standard Rust verification set:
+
+```bash
 cargo fmt --all -- --check
-RISC0_SKIP_BUILD=1 cargo check
-RISC0_SKIP_BUILD=1 cargo clippy --all-targets -- -D warnings
+cargo check
+cargo clippy --all-targets -- -D warnings
+cargo test
+```
+
+Run QML smoke tests:
+
+```bash
+QT_QPA_PLATFORM=offscreen qmltestrunner -input tests/qml/tst_app_model.qml
+QT_QPA_PLATFORM=offscreen qmltestrunner -input tests/qml/tst_common_controls.qml
+qmllint qml/pages/BlocksPage.qml qml/state/AppModel.qml qml/state/appmodel/AppModelPages.js
+```
+
+Check the Nix standalone build plan before running a full build:
+
+```bash
+df -h /
+nix build --dry-run .#standalone
+```
+
+Build plugin outputs:
+
+```bash
+nix build
+```
+
+Build the Basecamp core runtime module:
+
+```bash
+nix build .#core-lgx
+```
+
+Build the Basecamp UI plugin LGX:
+
+```bash
+nix build .#lgx
+```
+
+Build the standalone Nix package:
+
+```bash
+nix build --max-jobs 1 --cores 2 .#standalone
 ```
 
 On Windows, run the same script with Python and set the environment variable in
@@ -107,16 +161,13 @@ The Basecamp plugin requires a matching `logos_inspector` runtime module. If
 the UI is updated without rebuilding or reinstalling that module, calls can fail
 with `unknown inspector method`.
 
+Build both Basecamp packages, then install `.#core-lgx` as the core module and
+`.#lgx` as the UI plugin from Basecamp's **Install LGX Package** action.
+
 Run the standalone QML host:
 
 ```bash
 nix run .#standalone
-```
-
-Build plugin outputs:
-
-```bash
-nix build
 ```
 
 ## Configuration

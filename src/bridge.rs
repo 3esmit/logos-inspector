@@ -31,6 +31,14 @@ const STORAGE_MODULE: &str = "storage_module";
 const DELIVERY_MODULE: &str = "delivery_module";
 const DEFAULT_STORAGE_REST_ENDPOINT: &str = "http://127.0.0.1:8080/api/storage/v1";
 
+#[derive(Debug, serde::Serialize)]
+struct BridgeResponse {
+    ok: bool,
+    value: Value,
+    text: String,
+    error: String,
+}
+
 pub struct InspectorBridge {
     runtime: Runtime,
 }
@@ -593,6 +601,63 @@ impl InspectorBridge {
             "delivery operation requires the delivery module source; current source mode is `{}`",
             source_mode.trim()
         )
+    }
+}
+
+pub fn call_module_response_json(
+    bridge: &InspectorBridge,
+    module: &str,
+    method: &str,
+    args_json: &str,
+) -> String {
+    let result = serde_json::from_str(args_json)
+        .context("failed to parse bridge args")
+        .and_then(|args| bridge.call_module(module, method, args));
+    bridge_response_json(result)
+}
+
+pub fn call_inspector_response_json(
+    bridge: &InspectorBridge,
+    method: &str,
+    args_json: &str,
+) -> String {
+    call_module_response_json(bridge, INSPECTOR_MODULE, method, args_json)
+}
+
+fn bridge_response_json(result: Result<Value>) -> String {
+    let response = match result {
+        Ok(value) => BridgeResponse {
+            ok: true,
+            text: format_bridge_value(&value),
+            value,
+            error: String::new(),
+        },
+        Err(error) => BridgeResponse {
+            ok: false,
+            value: Value::Null,
+            text: String::new(),
+            error: format!("{error:#}"),
+        },
+    };
+
+    match serde_json::to_string(&response) {
+        Ok(value) => value,
+        Err(error) => {
+            let fallback = json!({
+                "ok": false,
+                "value": null,
+                "text": "",
+                "error": format!("failed to serialize bridge response: {error}"),
+            });
+            fallback.to_string()
+        }
+    }
+}
+
+fn format_bridge_value(value: &Value) -> String {
+    match value {
+        Value::String(value) => value.clone(),
+        value => serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string()),
     }
 }
 
