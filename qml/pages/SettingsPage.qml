@@ -80,16 +80,6 @@ ColumnLayout {
             label: "Metrics only"
             summary: "Scrape a Prometheus/OpenMetrics endpoint"
         }
-        ListElement {
-            key: "network-monitor"
-            label: "Network monitor"
-            summary: "Fleet monitor source; adapter pending"
-        }
-        ListElement {
-            key: "discovery-crawler"
-            label: "Discovery crawler"
-            summary: "Preset and bootnode crawl; adapter pending"
-        }
     }
 
     ListModel {
@@ -968,15 +958,6 @@ ColumnLayout {
                 checked: settingsRoot.model.messagingMutatingDiagnosticsEnabled
                 onToggled: settingsRoot.model.messagingMutatingDiagnosticsEnabled = checked
             }
-        }
-
-        StatusMessage {
-            visible: settingsRoot.model.messagingSourceMode === "network-monitor" || settingsRoot.model.messagingSourceMode === "discovery-crawler"
-            theme: deliveryRoot.theme
-            tone: "warning"
-            title: qsTr("Adapter pending")
-            message: qsTr("This source profile is saved for layout and future wiring. Query status reports it as unavailable until the backend adapter exists.")
-            Layout.fillWidth: true
         }
 
         RowLayout {

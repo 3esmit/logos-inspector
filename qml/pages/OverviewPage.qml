@@ -343,6 +343,7 @@ ColumnLayout {
             "storage.local_storage_used",
             "storage.active_uploads",
             "storage.active_downloads",
+            "storage.failed_transfers_recent",
             "storage.failed_transfers_total",
             "messaging.peer_count",
             "messaging.active_subscriptions",
@@ -423,6 +424,8 @@ ColumnLayout {
             return qsTr("upload requests total")
         case "storage.active_downloads":
             return qsTr("download requests total")
+        case "storage.failed_transfers_recent":
+            return qsTr("transfer failures in window")
         case "storage.failed_transfers_total":
             return qsTr("transfer failures total")
         }
