@@ -1,10 +1,11 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
-import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import "../state"
 import "../theme"
+import "common"
+import "../utils/UiFormat.js" as UiFormat
 
 ColumnLayout {
     id: root
@@ -123,6 +124,11 @@ ColumnLayout {
             theme: root.theme
             title: qsTr("Source")
             rows: root.sourceRows()
+            labelWidth: 132
+            surfaceColor: root.theme.surface
+            onLinkActivated: function (kind, value) {
+                root.model.openReference(kind, value)
+            }
         }
 
         DetailSection {
@@ -130,6 +136,11 @@ ColumnLayout {
             theme: root.theme
             title: qsTr("Account references")
             rows: root.accountReferenceRows()
+            labelWidth: 132
+            surfaceColor: root.theme.surface
+            onLinkActivated: function (kind, value) {
+                root.model.openReference(kind, value)
+            }
         }
 
         Text {
@@ -141,44 +152,21 @@ ColumnLayout {
             Layout.fillWidth: true
         }
 
-        Frame {
-            padding: 0
+        DataTableFrame {
+            theme: root.theme
             Layout.fillWidth: true
-
-            background: Rectangle {
-                color: root.theme.surface
-                radius: root.theme.radius
-                border.width: 1
-                border.color: root.theme.outlineMuted
-            }
-
-            contentItem: ColumnLayout {
-                spacing: 0
-
-                TransferRow {
-                    theme: root.theme
-                    header: true
-                    columns: [qsTr("Tx"), qsTr("L2 block"), qsTr("Header"), qsTr("Amount")]
-                }
-
-                Repeater {
-                    model: root.transferRows()
-
-                    TransferRow {
-                        required property var modelData
-
-                        theme: root.theme
-                        columns: [modelData.tx, modelData.slot, modelData.block, modelData.value]
-                        txHash: modelData.txHash
-                        blockHash: modelData.blockHash
-                        onCellActivated: function (column) {
-                            if (column === 0) {
-                                root.model.openTransaction(modelData.txHash)
-                            } else if (column === 2) {
-                                root.model.openIndexerBlock(modelData.blockHash)
-                            }
-                        }
-                    }
+            headerCells: [
+                { text: qsTr("Tx"), width: 180 },
+                { text: qsTr("L2 block"), width: 96, fill: true },
+                { text: qsTr("Header"), width: 180, fill: true },
+                { text: qsTr("Amount"), width: 92 }
+            ]
+            rows: root.transferRows()
+            onCellActivated: function (row, column, cell, rowData) {
+                if (column === 0 && rowData.txHash.length > 0) {
+                    root.model.openTransaction(rowData.txHash)
+                } else if (column === 2 && rowData.blockHash.length > 0) {
+                    root.model.openIndexerBlock(rowData.blockHash)
                 }
             }
         }
@@ -187,6 +175,11 @@ ColumnLayout {
             theme: root.theme
             title: qsTr("Raw extraction")
             rows: root.rawRows()
+            labelWidth: 132
+            surfaceColor: root.theme.surface
+            onLinkActivated: function (kind, value) {
+                root.model.openReference(kind, value)
+            }
         }
     }
 
@@ -211,10 +204,12 @@ ColumnLayout {
         const rows = root.detail ? root.detail.transfers : []
         if (!rows.length) {
             return [{
-                slot: "-",
-                tx: qsTr("No observed transfers in loaded range"),
-                block: "-",
-                value: "-",
+                cells: [
+                    { text: qsTr("No observed transfers in loaded range"), width: 180, monospace: false },
+                    { text: "-", width: 96, fill: true },
+                    { text: "-", width: 180, fill: true },
+                    { text: "-", width: 92 }
+                ],
                 txHash: "",
                 blockHash: ""
             }]
@@ -223,10 +218,12 @@ ColumnLayout {
             const txHash = String(transfer.tx_hash || transfer.hash || "")
             const blockHash = String(transfer.block_hash || transfer.block || "")
             return {
-                slot: root.numberText(transfer.slot),
-                tx: root.shortHash(txHash),
-                block: root.shortHash(blockHash),
-                value: root.detail && root.detail.source === "account_refs" ? root.valueText(transfer.value) : root.coinText(transfer.value),
+                cells: [
+                    { text: UiFormat.shortHash(txHash), width: 180, link: txHash.length > 0, copyText: txHash },
+                    { text: root.numberText(transfer.slot), width: 96, fill: true },
+                    { text: UiFormat.shortHash(blockHash), width: 180, fill: true, link: blockHash.length > 0, copyText: blockHash },
+                    { text: root.detail && root.detail.source === "account_refs" ? root.valueText(transfer.value) : root.coinText(transfer.value), width: 92 }
+                ],
                 txHash: txHash,
                 blockHash: blockHash
             }
@@ -287,214 +284,10 @@ ColumnLayout {
     }
 
     function valueText(value) {
-        if (value === undefined || value === null || value === "") {
-            return "-"
-        }
-        if (typeof value === "number") {
-            return value.toLocaleString(Qt.locale(), "f", Number.isInteger(value) ? 0 : 2)
-        }
-        return String(value)
+        return UiFormat.valueText(value)
     }
 
     function numberText(value) {
-        if (value === undefined || value === null || value === "") {
-            return "-"
-        }
-        const numeric = Number(value)
-        if (Number.isFinite(numeric)) {
-            return numeric.toLocaleString(Qt.locale(), "f", 0)
-        }
-        return String(value)
-    }
-
-    function shortHash(value) {
-        const text = String(value || "")
-        if (text.length <= 16) {
-            return text.length ? text : "-"
-        }
-        return text.slice(0, 8) + "..." + text.slice(-6)
-    }
-
-    function shortRecipient(value) {
-        const text = String(value || "")
-        if (text.length <= 18) {
-            return text.length ? text : "-"
-        }
-        return text.slice(0, 12) + "..." + text.slice(-8)
-    }
-
-    component TransferRow: Item {
-        id: rowRoot
-
-        required property Theme theme
-        property var columns: []
-        property string txHash: ""
-        property string blockHash: ""
-        property bool header: false
-        signal cellActivated(int column)
-
-        Layout.fillWidth: true
-        Layout.preferredHeight: rowRoot.header ? 36 : 42
-
-        Rectangle {
-            anchors.fill: parent
-            color: rowRoot.header ? rowRoot.theme.field : "transparent"
-            border.width: 0
-        }
-
-        GridLayout {
-            anchors.fill: parent
-            anchors.leftMargin: 14
-            anchors.rightMargin: 14
-            columns: 4
-            columnSpacing: 10
-
-            Repeater {
-                model: 4
-
-                LinkCell {
-                    required property int index
-
-                    theme: rowRoot.theme
-                    text: String(rowRoot.columns[index] || "-")
-                    header: rowRoot.header
-                    link: rowRoot.linkFor(index)
-                    copyable: rowRoot.copyValueFor(index).length > 0 && !rowRoot.header
-                    copyText: rowRoot.copyValueFor(index)
-                    monospace: !rowRoot.header
-                    Layout.preferredWidth: rowRoot.columnWidth(index)
-                    Layout.fillWidth: index === 1 || index === 2
-                    onActivated: rowRoot.cellActivated(index)
-                }
-            }
-        }
-
-        function linkFor(index) {
-            return !rowRoot.header
-                && ((index === 0 && rowRoot.txHash.length > 0)
-                    || (index === 2 && rowRoot.blockHash.length > 0))
-        }
-
-        function copyValueFor(index) {
-            if (index === 0 && rowRoot.txHash.length > 0) {
-                return rowRoot.txHash
-            }
-            if (index === 2 && rowRoot.blockHash.length > 0) {
-                return rowRoot.blockHash
-            }
-            return String(rowRoot.columns[index] || "")
-        }
-
-        function columnWidth(index) {
-            if (index === 3) {
-                return 92
-            }
-            if (index === 1) {
-                return 96
-            }
-            return 180
-        }
-    }
-
-    component DetailSection: ColumnLayout {
-        id: sectionRoot
-
-        required property Theme theme
-        property string title: ""
-        property var rows: []
-
-        visible: rows.length > 0
-        spacing: 6
-        Layout.fillWidth: true
-
-        Text {
-            text: sectionRoot.title
-            color: sectionRoot.theme.text
-            textFormat: Text.PlainText
-            font.pixelSize: sectionRoot.theme.primaryText
-            font.weight: Font.DemiBold
-            Layout.fillWidth: true
-        }
-
-        Frame {
-            padding: 0
-            Layout.fillWidth: true
-
-            background: Rectangle {
-                color: sectionRoot.theme.surface
-                radius: sectionRoot.theme.radius
-                border.width: 1
-                border.color: sectionRoot.theme.outlineMuted
-            }
-
-            contentItem: ColumnLayout {
-                spacing: 0
-
-                Repeater {
-                    model: sectionRoot.rows
-
-                    DetailRow {
-                        required property var modelData
-
-                        theme: sectionRoot.theme
-                        label: String(modelData.label || "")
-                        value: String(modelData.value || "-")
-                        copyText: String(modelData.copyText !== undefined ? modelData.copyText : modelData.value || "")
-                        linkKind: String(modelData.linkKind || "")
-                        linkValue: String(modelData.linkValue || "")
-                        onActivated: root.model.openReference(linkKind, linkValue)
-                    }
-                }
-            }
-        }
-    }
-
-    component DetailRow: Item {
-        id: detailRowRoot
-
-        required property Theme theme
-        property string label: ""
-        property string value: "-"
-        property string copyText: value
-        property string linkKind: ""
-        property string linkValue: ""
-        signal activated()
-
-        Layout.fillWidth: true
-        implicitHeight: Math.max(40, rowBody.implicitHeight + 16)
-
-        GridLayout {
-            id: rowBody
-
-            anchors.fill: parent
-            anchors.leftMargin: 12
-            anchors.rightMargin: 12
-            anchors.topMargin: 8
-            anchors.bottomMargin: 8
-            columns: 2
-            columnSpacing: 12
-
-            Text {
-                text: detailRowRoot.label
-                color: detailRowRoot.theme.textMuted
-                textFormat: Text.PlainText
-                font.pixelSize: detailRowRoot.theme.labelText
-                font.weight: Font.DemiBold
-                font.capitalization: Font.AllUppercase
-                Layout.preferredWidth: 132
-            }
-
-            LinkCell {
-                theme: detailRowRoot.theme
-                text: detailRowRoot.value
-                link: detailRowRoot.linkKind.length > 0
-                copyable: detailRowRoot.copyText.length > 0
-                copyText: detailRowRoot.copyText
-                monospace: true
-                wrap: true
-                Layout.fillWidth: true
-                onActivated: detailRowRoot.activated()
-            }
-        }
+        return UiFormat.numberText(value)
     }
 }

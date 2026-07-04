@@ -1,11 +1,12 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
-import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import "../components"
+import "../components/common"
 import "../state"
 import "../theme"
+import "../utils/UiFormat.js" as UiFormat
 
 ColumnLayout {
     id: root
@@ -38,44 +39,21 @@ ColumnLayout {
         }
     }
 
-    Frame {
-        padding: 0
+    DataTableFrame {
+        theme: root.theme
         Layout.fillWidth: true
-
-        background: Rectangle {
-            color: root.theme.surface
-            radius: root.theme.radius
-            border.width: 1
-            border.color: root.theme.outlineMuted
-        }
-
-        contentItem: ColumnLayout {
-            spacing: 0
-
-            TransactionRow {
-                theme: root.theme
-                header: true
-                columns: [qsTr("L2 block"), qsTr("Tx hash"), qsTr("Kind"), qsTr("Words / bytes")]
-            }
-
-            Repeater {
-                model: root.transactionRows()
-
-                TransactionRow {
-                    required property var modelData
-
-                    theme: root.theme
-                    columns: [modelData.block, modelData.hash, modelData.kind, modelData.words]
-                    txHash: modelData.txHash
-                    blockHash: modelData.blockHash
-                    onCellActivated: function (column) {
-                        if (column === 0 && modelData.blockHash.length > 0) {
-                            root.model.openReference("indexerBlock", modelData.blockHash)
-                        } else if (column === 1 && modelData.txHash.length > 0) {
-                            root.model.openReference("transaction", modelData.txHash)
-                        }
-                    }
-                }
+        headerCells: [
+            { text: qsTr("L2 block"), width: 96 },
+            { text: qsTr("Tx hash"), width: 180, fill: true },
+            { text: qsTr("Kind"), width: 180, fill: true },
+            { text: qsTr("Words / bytes"), width: 72 }
+        ]
+        rows: root.transactionRows()
+        onCellActivated: function (row, column, cell, rowData) {
+            if (column === 0 && rowData.blockHash.length > 0) {
+                root.model.openReference("indexerBlock", rowData.blockHash)
+            } else if (column === 1 && rowData.txHash.length > 0) {
+                root.model.openReference("transaction", rowData.txHash)
             }
         }
     }
@@ -93,22 +71,28 @@ ColumnLayout {
         const transactions = root.model.lezTransactionsPageRows || [];
         if (!transactions.length) {
             return [{
-                block: "-",
-                hash: qsTr("No indexed transactions"),
-                kind: "-",
-                words: "-",
+                cells: [
+                    { text: "-", width: 96 },
+                    { text: qsTr("No indexed transactions"), width: 180, fill: true, monospace: false },
+                    { text: "-", width: 180, fill: true },
+                    { text: "-", width: 72 }
+                ],
                 txHash: "",
                 blockHash: ""
             }];
         }
         return transactions.map(function (tx) {
+            const txHash = root.validHash(tx.hash) ? String(tx.hash || "") : ""
+            const blockHash = String(tx.block_hash || "")
             return {
-                block: root.numberText(tx.block_id),
-                hash: root.shortHash(tx.hash),
-                kind: String(tx.kind || "-"),
-                words: root.numberText(tx.ops),
-                txHash: root.validHash(tx.hash) ? String(tx.hash || "") : "",
-                blockHash: String(tx.block_hash || "")
+                cells: [
+                    { text: root.numberText(tx.block_id), width: 96, link: blockHash.length > 0, copyText: blockHash },
+                    { text: UiFormat.shortHash(tx.hash), width: 180, fill: true, link: txHash.length > 0, copyText: txHash },
+                    { text: String(tx.kind || "-"), width: 180, fill: true, monospace: false },
+                    { text: root.numberText(tx.ops), width: 72 }
+                ],
+                txHash: txHash,
+                blockHash: blockHash
             };
         });
     }
@@ -126,98 +110,6 @@ ColumnLayout {
     }
 
     function numberText(value) {
-        if (value === undefined || value === null || value === "") {
-            return "-";
-        }
-        if (typeof value === "number") {
-            return value.toLocaleString(Qt.locale(), "f", 0);
-        }
-        return String(value);
-    }
-
-    function shortHash(value) {
-        const text = String(value || "");
-        if (text.length <= 16) {
-            return text.length ? text : "-";
-        }
-        return text.slice(0, 8) + "..." + text.slice(-6);
-    }
-
-    component TransactionRow: Item {
-        id: rowRoot
-
-        required property Theme theme
-        property var columns: []
-        property string txHash: ""
-        property string blockHash: ""
-        property bool header: false
-        signal cellActivated(int column)
-
-        Layout.fillWidth: true
-        Layout.preferredHeight: rowRoot.header ? 36 : 42
-
-        Rectangle {
-            anchors.fill: parent
-            color: rowRoot.header ? rowRoot.theme.field : "transparent"
-            border.width: 0
-        }
-
-        Rectangle {
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.bottom: parent.bottom
-            height: 1
-            color: rowRoot.theme.outlineMuted
-        }
-
-        GridLayout {
-            anchors.fill: parent
-            anchors.leftMargin: 14
-            anchors.rightMargin: 14
-            columns: 4
-            columnSpacing: 10
-
-            Repeater {
-                model: 4
-
-                LinkCell {
-                    required property int index
-
-                    theme: rowRoot.theme
-                    text: String(rowRoot.columns[index] || "-")
-                    header: rowRoot.header
-                    link: rowRoot.linkFor(index)
-                    copyText: rowRoot.copyValueFor(index)
-                    monospace: !rowRoot.header
-                    Layout.preferredWidth: rowRoot.columnWidth(index)
-                    Layout.fillWidth: index === 1 || index === 2
-                    onActivated: rowRoot.cellActivated(index)
-                }
-            }
-        }
-
-        function linkFor(index) {
-            return !rowRoot.header && ((index === 0 && rowRoot.blockHash.length > 0) || (index === 1 && rowRoot.txHash.length > 0));
-        }
-
-        function copyValueFor(index) {
-            if (index === 0 && rowRoot.blockHash.length > 0) {
-                return rowRoot.blockHash;
-            }
-            if (index === 1 && rowRoot.txHash.length > 0) {
-                return rowRoot.txHash;
-            }
-            return String(rowRoot.columns[index] || "");
-        }
-
-        function columnWidth(index) {
-            if (index === 0) {
-                return 96;
-            }
-            if (index === 3) {
-                return 72;
-            }
-            return 180;
-        }
+        return UiFormat.numberText(value);
     }
 }

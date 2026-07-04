@@ -1,11 +1,12 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
-import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import "../components"
+import "../components/common"
 import "../state"
 import "../theme"
+import "../utils/UiFormat.js" as UiFormat
 
 ColumnLayout {
     id: root
@@ -38,38 +39,20 @@ ColumnLayout {
         }
     }
 
-    Frame {
-        padding: 0
+    DataTableFrame {
+        theme: root.theme
         Layout.fillWidth: true
-
-        background: Rectangle {
-            color: root.theme.surface
-            radius: root.theme.radius
-            border.width: 1
-            border.color: root.theme.outlineMuted
-        }
-
-        contentItem: ColumnLayout {
-            spacing: 0
-
-            ChannelRow {
-                theme: root.theme
-                header: true
-                columns: [qsTr("Channel"), qsTr("Label"), qsTr("Last L1 slot"), qsTr("Balance"), qsTr("Keys")]
-            }
-
-            Repeater {
-                model: root.channelRows()
-
-                ChannelRow {
-                    required property var modelData
-
-                    theme: root.theme
-                    columns: [modelData.channel, modelData.label, modelData.lastSlot, modelData.balance, modelData.keys]
-                    channel: modelData.channelRaw
-                    selected: root.isSelectedChannel(modelData.channelRaw)
-                    onChannelActivated: root.model.openChannel(modelData.raw)
-                }
+        headerCells: [
+            { text: qsTr("Channel"), width: 210, fill: true },
+            { text: qsTr("Label"), width: 120 },
+            { text: qsTr("Last L1 slot"), width: 86 },
+            { text: qsTr("Balance"), width: 86 },
+            { text: qsTr("Keys"), width: 86 }
+        ]
+        rows: root.channelRows()
+        onCellActivated: function (row, column, cell, rowData) {
+            if (column === 0 && rowData.channelRaw.length > 0) {
+                root.model.openChannel(rowData.raw)
             }
         }
     }
@@ -102,24 +85,31 @@ ColumnLayout {
         const channels = root.model.channelsPageRows || [];
         if (!channels.length) {
             return [{
-                channel: qsTr("No channels in loaded range"),
                 channelRaw: "",
-                label: "-",
-                lastSlot: "-",
-                balance: "-",
-                keys: "-",
-                raw: {}
+                cells: [
+                    { text: qsTr("No channels in loaded range"), width: 210, fill: true, monospace: false },
+                    { text: "-", width: 120 },
+                    { text: "-", width: 86 },
+                    { text: "-", width: 86 },
+                    { text: "-", width: 86 }
+                ],
+                raw: {},
+                selected: false
             }];
         }
         return channels.map(function (channel) {
+            const channelId = String(channel.channel || "")
             return {
-                channel: root.shortId(channel.channel),
-                channelRaw: String(channel.channel || ""),
-                label: root.blankText(channel.label),
-                lastSlot: root.numberText(channel.last_slot),
-                balance: root.blankText(channel.balance),
-                keys: root.numberText(channel.keys),
-                raw: channel
+                channelRaw: channelId,
+                cells: [
+                    { text: UiFormat.shortId(channelId), width: 210, fill: true, link: channelId.length > 0, copyText: channelId },
+                    { text: root.blankText(channel.label), width: 120, monospace: false },
+                    { text: root.numberText(channel.last_slot), width: 86 },
+                    { text: root.blankText(channel.balance), width: 86 },
+                    { text: root.numberText(channel.keys), width: 86 }
+                ],
+                raw: channel,
+                selected: root.isSelectedChannel(channelId)
             };
         });
     }
@@ -132,17 +122,7 @@ ColumnLayout {
     }
 
     function numberText(value) {
-        if (value === undefined || value === null || value === "") {
-            return "-";
-        }
-        if (typeof value === "number") {
-            return value.toLocaleString(Qt.locale(), "f", 0);
-        }
-        const numeric = Number(value);
-        if (Number.isFinite(numeric)) {
-            return numeric.toLocaleString(Qt.locale(), "f", 0);
-        }
-        return String(value);
+        return UiFormat.numberText(value);
     }
 
     function slotRangeText() {
@@ -170,87 +150,4 @@ ColumnLayout {
         return detail !== null && String(detail.channel || "") === String(channel || "");
     }
 
-    function shortId(value) {
-        const text = String(value || "");
-        if (text.length <= 16) {
-            return text.length ? text : "-";
-        }
-        return text.slice(0, 8) + "..." + text.slice(-6);
-    }
-
-    component ChannelRow: Item {
-        id: rowRoot
-
-        required property Theme theme
-        property var columns: []
-        property string channel: ""
-        property bool header: false
-        property bool selected: false
-        signal channelActivated()
-
-        Layout.fillWidth: true
-        Layout.preferredHeight: rowRoot.header ? 36 : 42
-
-        Rectangle {
-            anchors.fill: parent
-            color: rowRoot.header ? rowRoot.theme.field : (rowRoot.selected ? rowRoot.theme.accentMuted : "transparent")
-            border.width: 0
-        }
-
-        Rectangle {
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.bottom: parent.bottom
-            height: 1
-            color: rowRoot.theme.outlineMuted
-        }
-
-        GridLayout {
-            anchors.fill: parent
-            anchors.leftMargin: 14
-            anchors.rightMargin: 14
-            columns: 5
-            columnSpacing: 10
-
-            Repeater {
-                model: 5
-
-                LinkCell {
-                    required property int index
-
-                    theme: rowRoot.theme
-                    text: String(rowRoot.columns[index] || "-")
-                    header: rowRoot.header
-                    link: rowRoot.linkFor(index)
-                    copyText: rowRoot.channel.length > 0 ? rowRoot.channel : String(rowRoot.columns[index] || "")
-                    monospace: !rowRoot.header
-                    textColor: rowRoot.textColor(index)
-                    Layout.preferredWidth: rowRoot.columnWidth(index)
-                    Layout.fillWidth: index === 0
-                    onActivated: rowRoot.channelActivated()
-                }
-            }
-        }
-
-        function linkFor(index) {
-            return !rowRoot.header && index === 0 && rowRoot.channel.length > 0;
-        }
-
-        function textColor(index) {
-            if (rowRoot.linkFor(index)) {
-                return rowRoot.theme.accent;
-            }
-            return rowRoot.header ? rowRoot.theme.textMuted : rowRoot.theme.text;
-        }
-
-        function columnWidth(index) {
-            if (index === 0) {
-                return 210;
-            }
-            if (index === 1) {
-                return 120;
-            }
-            return 86;
-        }
-    }
 }

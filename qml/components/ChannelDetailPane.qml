@@ -1,10 +1,11 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
-import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import "../state"
 import "../theme"
+import "common"
+import "../utils/UiFormat.js" as UiFormat
 
 ColumnLayout {
     id: root
@@ -90,68 +91,48 @@ ColumnLayout {
         }
     }
 
-    SectionBlock {
+    DetailSection {
         theme: root.theme
         title: qsTr("Activity")
         rows: root.activityRows()
+        labelWidth: 128
+        surfaceColor: root.theme.surface
+        onLinkActivated: function (kind, value) {
+            root.model.openReference(kind, value)
+        }
     }
 
-    SectionBlock {
+    DetailSection {
         theme: root.theme
         title: qsTr("Evidence")
         rows: root.evidenceRows()
+        labelWidth: 128
+        surfaceColor: root.theme.surface
+        onLinkActivated: function (kind, value) {
+            root.model.openReference(kind, value)
+        }
     }
 
-    SectionBlock {
+    DetailSection {
         theme: root.theme
         title: qsTr("Live snapshot")
         rows: root.snapshotRows()
+        labelWidth: 128
+        surfaceColor: root.theme.surface
+        onLinkActivated: function (kind, value) {
+            root.model.openReference(kind, value)
+        }
     }
 
-    ColumnLayout {
+    DetailSection {
         visible: root.detail !== null
-        spacing: 8
-        Layout.fillWidth: true
-
-        Text {
-            text: qsTr("Keys")
-            color: root.theme.text
-            textFormat: Text.PlainText
-            font.pixelSize: 14
-            font.weight: Font.DemiBold
-            Layout.fillWidth: true
-        }
-
-        Frame {
-            padding: 0
-            Layout.fillWidth: true
-
-            background: Rectangle {
-                color: root.theme.surface
-                radius: root.theme.radius
-                border.width: 1
-                border.color: root.theme.outlineMuted
-            }
-
-            contentItem: ColumnLayout {
-                spacing: 0
-
-                Repeater {
-                    model: root.keyRows()
-
-                    DetailRow {
-                        required property var modelData
-
-                        theme: root.theme
-                        label: String(modelData.label || "")
-                        value: String(modelData.value || "-")
-                        linkKind: String(modelData.linkKind || "")
-                        linkValue: root.model.valueToString(modelData.linkValue)
-                        monospace: true
-                        onActivated: root.model.openReference(modelData.linkKind, modelData.linkValue)
-                    }
-                }
-            }
+        theme: root.theme
+        title: qsTr("Keys")
+        rows: root.keyRows()
+        labelWidth: 128
+        surfaceColor: root.theme.surface
+        onLinkActivated: function (kind, value) {
+            root.model.openReference(kind, value)
         }
     }
 
@@ -253,29 +234,15 @@ ColumnLayout {
     }
 
     function valueText(value) {
-        if (value === undefined || value === null || value === "") {
-            return "-"
-        }
-        return String(value)
+        return UiFormat.valueText(value)
     }
 
     function numberText(value) {
-        if (value === undefined || value === null || value === "") {
-            return "-"
-        }
-        const numeric = Number(value)
-        if (Number.isFinite(numeric)) {
-            return numeric % 1 === 0 ? numeric.toLocaleString(Qt.locale(), "f", 0) : String(value)
-        }
-        return String(value)
+        return UiFormat.numberText(value)
     }
 
     function shortId(value) {
-        const text = String(value || "")
-        if (text.length <= 16) {
-            return text.length ? text : "-"
-        }
-        return text.slice(0, 8) + "..." + text.slice(-6)
+        return UiFormat.shortId(value)
     }
 
     function isLikelyAccount(value) {
@@ -283,110 +250,4 @@ ColumnLayout {
         return text.length >= 32 && text.length <= 128 && /^[1-9A-HJ-NP-Za-km-z]+$/.test(text)
     }
 
-    component SectionBlock: ColumnLayout {
-        id: sectionRoot
-
-        required property Theme theme
-        property string title: ""
-        property var rows: []
-
-        visible: rows.length > 0
-        spacing: 6
-        Layout.fillWidth: true
-
-        Text {
-            visible: sectionRoot.title.length > 0
-            text: sectionRoot.title
-            color: sectionRoot.theme.text
-            textFormat: Text.PlainText
-            font.pixelSize: 14
-            font.weight: Font.DemiBold
-            Layout.fillWidth: true
-        }
-
-        Frame {
-            padding: 0
-            Layout.fillWidth: true
-
-            background: Rectangle {
-                color: sectionRoot.theme.surface
-                radius: sectionRoot.theme.radius
-                border.width: 1
-                border.color: sectionRoot.theme.outlineMuted
-            }
-
-            contentItem: ColumnLayout {
-                spacing: 0
-
-                Repeater {
-                    model: sectionRoot.rows
-
-                    DetailRow {
-                        required property var modelData
-
-                        theme: sectionRoot.theme
-                        label: String(modelData.label || "")
-                        value: String(modelData.value || "-")
-                        linkKind: String(modelData.linkKind || "")
-                        linkValue: root.model.valueToString(modelData.linkValue)
-                        monospace: modelData.monospace !== undefined ? modelData.monospace : true
-                        copyable: modelData.copyable !== undefined ? modelData.copyable : String(modelData.linkKind || "").length > 0
-                        onActivated: root.model.openReference(modelData.linkKind, modelData.linkValue)
-                    }
-                }
-            }
-        }
-    }
-
-    component DetailRow: Item {
-        id: rowRoot
-
-        required property Theme theme
-        property string label: ""
-        property string value: ""
-        property string linkKind: ""
-        property string linkValue: ""
-        property bool monospace: true
-        property bool copyable: linkKind.length > 0
-        signal activated()
-
-        Layout.fillWidth: true
-        implicitHeight: Math.max(42, rowGrid.implicitHeight + 18)
-
-        GridLayout {
-            id: rowGrid
-
-            anchors.fill: parent
-            anchors.leftMargin: 12
-            anchors.rightMargin: 12
-            anchors.topMargin: 8
-            anchors.bottomMargin: 8
-            columns: 2
-            columnSpacing: 14
-            rowSpacing: 3
-
-            Text {
-                text: rowRoot.label
-                color: rowRoot.theme.textMuted
-                textFormat: Text.PlainText
-                font.pixelSize: 11
-                font.weight: Font.DemiBold
-                font.capitalization: Font.AllUppercase
-                Layout.preferredWidth: 128
-                Layout.alignment: Qt.AlignTop
-            }
-
-            LinkCell {
-                text: rowRoot.value
-                theme: rowRoot.theme
-                link: rowRoot.linkKind.length > 0
-                copyable: rowRoot.copyable
-                copyText: rowRoot.linkValue.length > 0 ? rowRoot.linkValue : rowRoot.value
-                monospace: rowRoot.monospace
-                wrap: true
-                Layout.fillWidth: true
-                onActivated: rowRoot.activated()
-            }
-        }
-    }
 }

@@ -5,6 +5,7 @@ import QtQuick.Controls.Basic
 import QtQml.Models
 import QtQuick.Layouts
 import "../components"
+import "../components/common"
 import "../state"
 import "../theme"
 
@@ -95,6 +96,8 @@ ColumnLayout {
                     label: qsTr("Profile")
                     value: root.model.walletProfileUsable() ? root.shortText(root.model.walletProfileLabel, 22) : (root.model.localWalletTab === "bedrockNotes" && root.model.bedrockWalletSourceConfigured() ? qsTr("Bedrock") : qsTr("Required"))
                     tone: root.model.walletProfileUsable() || (root.model.localWalletTab === "bedrockNotes" && root.model.bedrockWalletSourceConfigured()) ? "success" : "warning"
+                    compact: true
+                    showIndicator: true
                     Layout.fillWidth: true
                 }
 
@@ -104,6 +107,8 @@ ColumnLayout {
                     value: root.localStatusText()
                     detail: root.localStatusDetail()
                     tone: root.localStatusTone()
+                    compact: true
+                    showIndicator: true
                     Layout.fillWidth: true
                 }
 
@@ -113,6 +118,8 @@ ColumnLayout {
                     value: root.shortText(root.model.walletHomeDisplayLabel(), 22)
                     detail: root.model.walletHomeDisplayLabel()
                     tone: "neutral"
+                    compact: true
+                    showIndicator: true
                     Layout.fillWidth: true
                 }
 
@@ -122,6 +129,8 @@ ColumnLayout {
                     value: root.model.bedrockWalletBalanceValue !== null ? qsTr("Loaded") : qsTr("Idle")
                     detail: root.shortText(root.model.nodeUrl, 42)
                     tone: root.model.bedrockWalletBalanceValue !== null ? "success" : "neutral"
+                    compact: true
+                    showIndicator: true
                     Layout.fillWidth: true
                 }
             }
@@ -584,100 +593,6 @@ ColumnLayout {
             monospace: true
             wrap: true
             Layout.fillWidth: true
-        }
-    }
-
-    component StatusChip: Rectangle {
-        id: chipRoot
-
-        required property Theme theme
-        property string label: ""
-        property string value: "-"
-        property string detail: ""
-        property string tone: "neutral"
-
-        radius: chipRoot.theme.radius
-        color: chipRoot.fillColor()
-        border.width: 1
-        border.color: chipRoot.borderColor()
-        implicitHeight: 46
-        Layout.minimumWidth: 150
-
-        RowLayout {
-            anchors.fill: parent
-            anchors.margins: chipRoot.theme.gapSmall
-            spacing: chipRoot.theme.gapSmall
-
-            Rectangle {
-                radius: width / 2
-                color: chipRoot.accentColor()
-                Layout.preferredWidth: 8
-                Layout.preferredHeight: 8
-                Layout.alignment: Qt.AlignTop
-                Layout.topMargin: 5
-            }
-
-            ColumnLayout {
-                spacing: 1
-                Layout.fillWidth: true
-
-                Text {
-                    text: chipRoot.label
-                    color: chipRoot.theme.textMuted
-                    textFormat: Text.PlainText
-                    font.pixelSize: chipRoot.theme.labelText
-                    font.weight: Font.DemiBold
-                    font.capitalization: Font.AllUppercase
-                    elide: Text.ElideRight
-                    Layout.fillWidth: true
-                }
-
-                Text {
-                    text: chipRoot.value.length ? chipRoot.value : "-"
-                    color: chipRoot.theme.text
-                    textFormat: Text.PlainText
-                    font.pixelSize: chipRoot.theme.secondaryText
-                    font.family: chipRoot.value.length > 18 ? "monospace" : ""
-                    elide: Text.ElideMiddle
-                    Layout.fillWidth: true
-                }
-            }
-        }
-
-        Accessible.role: Accessible.StaticText
-        Accessible.name: chipRoot.detail.length ? "%1: %2, %3".arg(chipRoot.label).arg(chipRoot.value).arg(chipRoot.detail) : "%1: %2".arg(chipRoot.label).arg(chipRoot.value)
-
-        function accentColor() {
-            if (chipRoot.tone === "success") {
-                return chipRoot.theme.success
-            }
-            if (chipRoot.tone === "warning") {
-                return chipRoot.theme.warning
-            }
-            if (chipRoot.tone === "error") {
-                return chipRoot.theme.error
-            }
-            return chipRoot.theme.textDim
-        }
-
-        function fillColor() {
-            if (chipRoot.tone === "success") {
-                return chipRoot.theme.successMuted
-            }
-            if (chipRoot.tone === "warning") {
-                return chipRoot.theme.warningMuted
-            }
-            if (chipRoot.tone === "error") {
-                return chipRoot.theme.errorMuted
-            }
-            return chipRoot.theme.field
-        }
-
-        function borderColor() {
-            if (chipRoot.tone === "success" || chipRoot.tone === "warning" || chipRoot.tone === "error") {
-                return chipRoot.accentColor()
-            }
-            return chipRoot.theme.outlineMuted
         }
     }
 

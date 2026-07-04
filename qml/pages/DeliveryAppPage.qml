@@ -5,6 +5,7 @@ import QtQuick.Controls.Basic
 import QtQml.Models
 import QtQuick.Layouts
 import "../components"
+import "../components/common"
 import "../services/BridgeHelpers.js" as BridgeHelpers
 import "../state"
 import "../theme"
@@ -302,7 +303,7 @@ ColumnLayout {
                 Repeater {
                     model: operationLog.count > 0 ? operationLog : emptyOperationModel
 
-                    delegate: OperationRow {
+                    delegate: OperationHistoryRow {
                         required property string time
                         required property string label
                         required property string status
@@ -440,133 +441,4 @@ ColumnLayout {
         return Qt.formatTime(new Date(), "HH:mm:ss")
     }
 
-    component StatusChip: Rectangle {
-        id: chipRoot
-
-        required property Theme theme
-        property string label: ""
-        property string value: "-"
-        property string tone: "neutral"
-
-        radius: chipRoot.theme.radius
-        color: chipRoot.fillColor()
-        border.width: 1
-        border.color: chipRoot.borderColor()
-        implicitHeight: 50
-        Layout.minimumWidth: 150
-
-        ColumnLayout {
-            anchors.fill: parent
-            anchors.margins: chipRoot.theme.gapSmall
-            spacing: 2
-
-            Text {
-                text: chipRoot.label
-                color: chipRoot.theme.textMuted
-                textFormat: Text.PlainText
-                font.pixelSize: chipRoot.theme.labelText
-                font.weight: Font.DemiBold
-                font.capitalization: Font.AllUppercase
-                elide: Text.ElideRight
-                Layout.fillWidth: true
-            }
-
-            Text {
-                text: chipRoot.value.length ? chipRoot.value : "-"
-                color: chipRoot.theme.text
-                textFormat: Text.PlainText
-                font.pixelSize: chipRoot.theme.secondaryText
-                font.weight: Font.Medium
-                elide: Text.ElideMiddle
-                Layout.fillWidth: true
-            }
-        }
-
-        function fillColor() {
-            if (chipRoot.tone === "success") {
-                return chipRoot.theme.successMuted
-            }
-            if (chipRoot.tone === "warning") {
-                return chipRoot.theme.warningMuted
-            }
-            if (chipRoot.tone === "error") {
-                return chipRoot.theme.errorMuted
-            }
-            return chipRoot.theme.field
-        }
-
-        function borderColor() {
-            if (chipRoot.tone === "success") {
-                return chipRoot.theme.success
-            }
-            if (chipRoot.tone === "warning") {
-                return chipRoot.theme.warning
-            }
-            if (chipRoot.tone === "error") {
-                return chipRoot.theme.error
-            }
-            return chipRoot.theme.outlineMuted
-        }
-    }
-
-    component OperationRow: Rectangle {
-        id: opRoot
-
-        required property Theme theme
-        property string timeText: ""
-        property string labelText: ""
-        property string statusText: ""
-        property string detailText: ""
-
-        radius: opRoot.theme.radius
-        color: opRoot.theme.field
-        border.width: 1
-        border.color: opRoot.statusText === "error" ? opRoot.theme.error : opRoot.theme.outlineMuted
-        implicitHeight: 62
-        Layout.fillWidth: true
-
-        GridLayout {
-            anchors.fill: parent
-            anchors.margins: opRoot.theme.gapSmall
-            columns: 4
-            columnSpacing: opRoot.theme.gap
-
-            Text {
-                text: opRoot.timeText
-                color: opRoot.theme.textDim
-                textFormat: Text.PlainText
-                font.family: "monospace"
-                font.pixelSize: opRoot.theme.dataText
-                Layout.preferredWidth: 64
-            }
-
-            Text {
-                text: opRoot.labelText
-                color: opRoot.theme.text
-                textFormat: Text.PlainText
-                font.pixelSize: opRoot.theme.secondaryText
-                font.weight: Font.Medium
-                elide: Text.ElideRight
-                Layout.preferredWidth: 150
-            }
-
-            Text {
-                text: opRoot.statusText
-                color: opRoot.statusText === "error" ? opRoot.theme.error : opRoot.theme.success
-                textFormat: Text.PlainText
-                font.pixelSize: opRoot.theme.secondaryText
-                font.weight: Font.DemiBold
-                Layout.preferredWidth: 56
-            }
-
-            Text {
-                text: opRoot.detailText
-                color: opRoot.theme.textMuted
-                textFormat: Text.PlainText
-                font.pixelSize: opRoot.theme.dataText
-                elide: Text.ElideRight
-                Layout.fillWidth: true
-            }
-        }
-    }
 }
