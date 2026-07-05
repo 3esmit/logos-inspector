@@ -189,6 +189,18 @@ Item {
     }
 
     Shortcut {
+        sequence: "Alt+Left"
+        enabled: appModel.canNavigateBack()
+        onActivated: appModel.navigateBack()
+    }
+
+    Shortcut {
+        sequence: "Alt+Right"
+        enabled: appModel.canNavigateForward()
+        onActivated: appModel.navigateForward()
+    }
+
+    Shortcut {
         sequence: "Ctrl+L"
         onActivated: statusBar.focusLookup()
     }

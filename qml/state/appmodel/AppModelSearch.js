@@ -306,9 +306,10 @@ function openStorageCid(root, cid) {
             selectView("storage")
             return
         }
+        pushNavigationHistory()
         storageCidProbe = value
         storageAppTab = "cid"
-        currentView = "storage"
+        selectView("storage", false)
         setResult(qsTr("Storage CID"), qsTr("Storage CID context: %1").arg(value), false, {
             cid: value,
             source: root.storageSourceTarget()
@@ -359,6 +360,7 @@ function resolveSearchHash(root, hash) {
             return
         }
 
+        pushNavigationHistory()
         const serial = searchResolveSerial + 1
         searchResolveSerial = serial
         statusText = qsTr("Search")
@@ -367,42 +369,48 @@ function resolveSearchHash(root, hash) {
                 return
             }
             if (response.ok && response.value !== null && response.value !== undefined) {
-                currentView = "l2BlockDetail"
+                selectView("l2BlockDetail", false)
                 blockDetailValue = root.indexerBlockDetail(response.value)
                 setResult(qsTr("LEZ block"), BridgeHelpers.formatValue(blockDetailValue), false, blockDetailValue)
                 return
             }
-            root.resolveSearchTransaction(serial, value)
+            root.resolveSearchTransaction(serial, value, false)
         })
     }
 }
 
-function resolveSearchTransaction(root, serial, hash) {
+function resolveSearchTransaction(root, serial, hash, recordHistory) {
     with (root) {
+        if (recordHistory !== false) {
+            pushNavigationHistory()
+        }
         requestModuleAsync(inspectorModule, "inspectTransaction", root.executionArgs([hash]), qsTr("Transaction inspection"), false, function (response) {
             if (serial !== searchResolveSerial) {
                 return
             }
             if (response.ok && response.value !== null && response.value !== undefined) {
-                currentView = "l2TransactionDetail"
+                selectView("l2TransactionDetail", false)
                 transactionDetailValue = response.value
                 lezTransactionsPageError = ""
                 setResult(qsTr("LEZ transaction"), response.text, false, response.value)
                 root.autoDecodeTransactionDetail(response.value)
                 return
             }
-            root.resolveSearchAccount(serial, hash)
+            root.resolveSearchAccount(serial, hash, false)
         })
     }
 }
 
-function resolveSearchAccount(root, serial, account) {
+function resolveSearchAccount(root, serial, account, recordHistory) {
     with (root) {
+        if (recordHistory !== false) {
+            pushNavigationHistory()
+        }
         requestModuleAsync(inspectorModule, "account", root.accountLookupArgs(account), qsTr("Account lookup"), false, function (response) {
             if (serial !== searchResolveSerial) {
                 return
             }
-            currentView = "accounts"
+            selectView("accounts", false)
             accountTab = "lookup"
             if (response.ok) {
                 accountDetailValue = response.value || null

@@ -27,6 +27,40 @@ Pane {
             Layout.fillWidth: true
             Layout.alignment: Qt.AlignVCenter
 
+            ActionButton {
+                theme: root.theme
+                text: ""
+                iconOnly: true
+                iconName: "back"
+                enabled: root.model.canNavigateBack()
+                Layout.preferredWidth: 34
+                Layout.preferredHeight: 34
+                accessibleName: qsTr("Back")
+                ToolTip.visible: hovered && root.model.canNavigateBack()
+                ToolTip.delay: 350
+                ToolTip.text: root.model.navigationBackLabel().length
+                    ? qsTr("Back to %1").arg(root.model.navigationBackLabel())
+                    : qsTr("Back")
+                onClicked: root.model.navigateBack()
+            }
+
+            ActionButton {
+                theme: root.theme
+                text: ""
+                iconOnly: true
+                iconName: "forward"
+                enabled: root.model.canNavigateForward()
+                Layout.preferredWidth: 34
+                Layout.preferredHeight: 34
+                accessibleName: qsTr("Forward")
+                ToolTip.visible: hovered && root.model.canNavigateForward()
+                ToolTip.delay: 350
+                ToolTip.text: root.model.navigationForwardLabel().length
+                    ? qsTr("Forward to %1").arg(root.model.navigationForwardLabel())
+                    : qsTr("Forward")
+                onClicked: root.model.navigateForward()
+            }
+
             Rectangle {
                 color: root.model.busy ? root.theme.warning : root.resultColor()
                 radius: 4

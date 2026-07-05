@@ -181,6 +181,11 @@ QtObject {
     property int programOpenSerial: 0
     property var navExpanded: ({ l1: true, l2: true, network: true, diagnostics: false, local: true, system: true })
     property int navRevision: 0
+    property var navigationBackStack: []
+    property var navigationForwardStack: []
+    property int navigationRevision: 0
+    property bool navigationRestoring: false
+    readonly property int navigationHistoryLimit: 80
 
     onCurrentViewChanged: expandNavGroupForView(currentView)
     onNetworkProfileChanged: handleNetworkConfigurationChanged()
@@ -247,9 +252,29 @@ QtObject {
 
     function viewTitle() { return AppModelCore.viewTitle(root) }
 
-    function selectView(view) { return AppModelCore.selectView(root, view) }
+    function normalizedNavigationView(view) { return AppModelCore.normalizedNavigationView(root, view) }
 
-    function openSettings(section, subsection) { return AppModelCore.openSettings(root, section, subsection) }
+    function navigationSnapshot() { return AppModelCore.navigationSnapshot(root) }
+
+    function pushNavigationHistory() { return AppModelCore.pushNavigationHistory(root) }
+
+    function restoreNavigationSnapshot(snapshot) { return AppModelCore.restoreNavigationSnapshot(root, snapshot) }
+
+    function canNavigateBack() { return AppModelCore.canNavigateBack(root) }
+
+    function canNavigateForward() { return AppModelCore.canNavigateForward(root) }
+
+    function navigateBack() { return AppModelCore.navigateBack(root) }
+
+    function navigateForward() { return AppModelCore.navigateForward(root) }
+
+    function navigationBackLabel() { return AppModelCore.navigationBackLabel(root) }
+
+    function navigationForwardLabel() { return AppModelCore.navigationForwardLabel(root) }
+
+    function selectView(view, recordHistory) { return AppModelCore.selectView(root, view, recordHistory) }
+
+    function openSettings(section, subsection, recordHistory) { return AppModelCore.openSettings(root, section, subsection, recordHistory) }
 
     function clearResult() { return AppModelCore.clearResult(root) }
 
@@ -809,9 +834,9 @@ QtObject {
 
     function resolveSearchHash(hash) { return AppModelSearch.resolveSearchHash(root, hash) }
 
-    function resolveSearchTransaction(serial, hash) { return AppModelSearch.resolveSearchTransaction(root, serial, hash) }
+    function resolveSearchTransaction(serial, hash, recordHistory) { return AppModelSearch.resolveSearchTransaction(root, serial, hash, recordHistory) }
 
-    function resolveSearchAccount(serial, account) { return AppModelSearch.resolveSearchAccount(root, serial, account) }
+    function resolveSearchAccount(serial, account, recordHistory) { return AppModelSearch.resolveSearchAccount(root, serial, account, recordHistory) }
 
     function viewKeyForQuery(query) { return AppModelSearch.viewKeyForQuery(root, query) }
 
@@ -833,9 +858,9 @@ QtObject {
 
     function resolveLezHash(hash) { return AppModelOpeners.resolveLezHash(root, hash) }
 
-    function openLezTransaction(hash) { return AppModelOpeners.openLezTransaction(root, hash) }
+    function openLezTransaction(hash, recordHistory) { return AppModelOpeners.openLezTransaction(root, hash, recordHistory) }
 
-    function inspectTransaction(hash, idl) { return AppModelOpeners.inspectTransaction(root, hash, idl) }
+    function inspectTransaction(hash, idl, recordHistory) { return AppModelOpeners.inspectTransaction(root, hash, idl, recordHistory) }
 
     function openBlockchainBlock(blockOrId) { return AppModelOpeners.openBlockchainBlock(root, blockOrId) }
 
