@@ -67,7 +67,7 @@ Panel {
         FieldRow {
             theme: root.theme
             label: qsTr("Metrics URL")
-            enabled: root.messagingSourceMode() === "metrics"
+            enabled: root.messagingMetricsEnabled()
             opacity: enabled ? 1 : 0.56
             sourceText: root.modelRef.messagingMetricsUrl
             syncSourceText: true
@@ -144,7 +144,7 @@ Panel {
     }
 
     function sourceIndexFor(value) {
-        const source = String(value || "auto")
+        const source = root.modelRef.normalizedMessagingSourceMode(value)
         for (let i = 0; i < root.sourceOptions.count; ++i) {
             if (root.sourceOptions.get(i).key === source) {
                 return i
@@ -162,5 +162,10 @@ Panel {
 
     function messagingSourceMode() {
         return root.modelRef.effectiveMessagingSourceMode(root.modelRef.messagingSourceMode)
+    }
+
+    function messagingMetricsEnabled() {
+        const source = root.messagingSourceMode()
+        return source === "rest" || source === "metrics"
     }
 }

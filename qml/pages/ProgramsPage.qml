@@ -408,19 +408,6 @@ ColumnLayout {
         ColumnLayout {
             spacing: 12
 
-            ConfirmActionPopup {
-                id: deployConfirm
-
-                property string binaryPath: ""
-
-                theme: root.theme
-                title: qsTr("Deploy program binary")
-                message: qsTr("Submit deployment transaction for %1.").arg(root.model.redactedPath(binaryPath))
-                confirmText: qsTr("Deploy")
-                confirmEnabled: !root.model.busy
-                onAccepted: root.model.deployProgramBinary(binaryPath)
-            }
-
             FileDialog {
                 id: programFileDialog
 
@@ -499,17 +486,14 @@ ColumnLayout {
                     onClicked: root.model.callInspector("programFile", [programPath.text], qsTr("Program file"))
                 }
 
-                ActionButton {
-                    visible: root.model.walletProfileConfigured()
-                    theme: root.theme
-                    text: qsTr("Deploy")
-                    enabled: !root.model.busy && programPath.text.trim().length > 0
-                    Layout.preferredWidth: 124
-                    onClicked: {
-                        deployConfirm.binaryPath = programPath.text.trim()
-                        deployConfirm.open()
-                    }
-                }
+            }
+
+            StatusMessage {
+                theme: root.theme
+                tone: "info"
+                title: qsTr("Read-only wallet policy")
+                message: qsTr("Standalone inspection can inspect program binaries. Wallet program deployment is disabled.")
+                Layout.fillWidth: true
             }
         }
     }

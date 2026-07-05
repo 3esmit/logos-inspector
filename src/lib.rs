@@ -95,7 +95,8 @@ pub(crate) use transfers::transfer_recipient_summaries_from_blocks;
 pub use transfers::{RecipientTransferSummary, TransferActivityPage, TransferRecipientSummary};
 pub use wallet::{
     LEE_WALLET_HOME_ENV, LOCAL_WALLET_HOME_ENV, LocalWalletDeployReport, LocalWalletProfileStatus,
-    bedrock_wallet_balance, local_wallet_deploy_program, local_wallet_profile_status,
+    LocalWalletSyncPrivateReport, bedrock_wallet_balance, local_wallet_deploy_program,
+    local_wallet_profile_status, local_wallet_sync_private,
 };
 
 pub const ACCOUNT_TRANSACTION_LIMIT: usize = 20;
@@ -592,7 +593,7 @@ mod tests {
     }
 
     #[test]
-    fn transfer_recipient_summaries_ignore_untyped_transfer_outputs() {
+    fn transfer_recipient_summaries_prefer_generic_transfer_outputs() {
         let raw = serde_json::json!({
             "Public": {
                 "hash": "tx-a",
@@ -623,22 +624,22 @@ mod tests {
             recipients
                 .first()
                 .map(|recipient| recipient.recipient.as_str()),
-            Some("account-111111111111")
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         );
         assert_eq!(
             recipients
                 .first()
                 .and_then(|recipient| recipient.received.as_deref()),
-            None
+            Some("12")
         );
         assert_eq!(recipients.first().map(|recipient| recipient.txs), Some(1));
         assert_eq!(
             recipients.first().map(|recipient| recipient.outputs),
-            Some(0)
+            Some(2)
         );
         assert_eq!(
             recipients.first().map(|recipient| recipient.references),
-            Some(1)
+            Some(0)
         );
         assert_eq!(
             recipients.first().and_then(|recipient| recipient.last_slot),
@@ -648,7 +649,7 @@ mod tests {
             recipients
                 .first()
                 .map(|recipient| recipient.transfers.len()),
-            Some(1)
+            Some(2)
         );
         assert_eq!(
             recipients
@@ -668,7 +669,7 @@ mod tests {
             recipients
                 .first()
                 .map(|recipient| recipient.source.as_str()),
-            Some("account_refs")
+            Some("transfer_outputs")
         );
     }
 

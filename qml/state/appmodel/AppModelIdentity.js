@@ -355,31 +355,15 @@ function checkedLocalWalletProfile(root) {
 
 function deployProgramBinary(root, programPath) {
     with (root) {
-        if (busy) {
-            setResult(qsTr("Program deploy"), qsTr("Another inspection is already running."), true)
-            return null
+        const message = qsTr("Wallet program deployment is disabled by the read-only wallet policy.")
+        setResult(qsTr("Program deploy"), message, true)
+        appendLocalWalletOperation(qsTr("Deploy program"), "disabled", message)
+        return {
+            ok: false,
+            text: "",
+            value: null,
+            error: message
         }
-
-        const path = String(programPath || "").trim()
-        if (!path.length) {
-            setResult(qsTr("Program deploy"), qsTr("Program binary path is required."), true)
-            return null
-        }
-        if (!walletProfileConfigured()) {
-            openLocalWallet("", "profiles")
-            return null
-        }
-
-        busy = true
-        statusText = qsTr("Deploy program")
-        return requestModuleAsync(inspectorModule, "localWalletDeployProgram", [walletProfile(), path], qsTr("Program deploy"), true, function (response) {
-            busy = false
-            if (response.ok) {
-                appendLocalWalletOperation(qsTr("Deploy program"), "submitted", root.deployProgramOperationDetail(response.value))
-            } else {
-                appendLocalWalletOperation(qsTr("Deploy program"), "down", response.error || qsTr("Deployment failed."))
-            }
-        })
     }
 }
 
@@ -395,6 +379,39 @@ function deployProgramOperationDetail(root, value) {
             return qsTr("tx %1").arg(root.shortHash(tx))
         }
         return qsTr("submitted")
+    }
+}
+
+function syncPrivateWallet(root) {
+    with (root) {
+        if (busy) {
+            setResult(qsTr("Private sync"), qsTr("Another inspection is already running."), true)
+            return null
+        }
+        if (!walletProfileConfigured()) {
+            openLocalWallet("", "profiles")
+            return null
+        }
+
+        busy = true
+        statusText = qsTr("Private sync")
+        return requestModuleAsync(inspectorModule, "localWalletSyncPrivate", [walletProfile()], qsTr("Private sync"), true, function (response) {
+            busy = false
+            if (response.ok) {
+                appendLocalWalletOperation(qsTr("Private sync"), "submitted", root.privateSyncOperationDetail(response.value))
+            } else {
+                appendLocalWalletOperation(qsTr("Private sync"), "down", response.error || qsTr("Private sync failed."))
+            }
+        })
+    }
+}
+
+function privateSyncOperationDetail(root, value) {
+    with (root) {
+        const report = value || {}
+        const status = String(report.status || "submitted")
+        const home = String(report.wallet_home_source || "")
+        return home.length ? qsTr("%1, home %2").arg(status).arg(home) : status
     }
 }
 
@@ -456,14 +473,17 @@ function refreshBedrockWalletModule(root, address) {
         bedrockWalletModuleError = ""
         statusText = qsTr("Bedrock wallet")
         blockchainModuleReport = null
-        bedrockWalletModuleError = qsTr("Bedrock wallet module inspection is not supported; use REST Balance.")
-        appendLocalWalletOperation(qsTr("Bedrock wallet module"), "unsupported", target.length ? target : bedrockWalletModuleError)
-        return {
-            ok: false,
-            text: "",
-            value: null,
-            error: bedrockWalletModuleError
-        }
+        return requestModuleAsync(inspectorModule, "blockchainModuleReport", [target], qsTr("Bedrock wallet"), false, function (response) {
+            if (response.ok) {
+                blockchainModuleReport = response.value || null
+                bedrockWalletModuleError = root.moduleLastError("blockchain")
+                appendLocalWalletOperation(qsTr("Bedrock wallet module"), bedrockWalletModuleError.length ? "degraded" : "ok", target.length ? target : qsTr("module report"))
+            } else {
+                blockchainModuleReport = null
+                bedrockWalletModuleError = response.error || qsTr("Bedrock wallet module query failed.")
+                appendLocalWalletOperation(qsTr("Bedrock wallet module"), "down", bedrockWalletModuleError)
+            }
+        })
     }
 }
 
@@ -1025,15 +1045,6 @@ function transactionDecodeCandidates(root, summary) {
             }
         }
 
-        for (let k = 0; k < registeredIdls.count; ++k) {
-            const entry = root.idlEntryAt(k)
-            if (!root.candidateListHasEntry(candidates, entry.key)) {
-                candidates.push({
-                    entry: entry,
-                    cached: false
-                })
-            }
-        }
         return candidates
     }
 }

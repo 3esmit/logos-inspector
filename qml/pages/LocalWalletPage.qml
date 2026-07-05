@@ -338,6 +338,32 @@ ColumnLayout {
                         value: root.model.walletHomeDisplayLabel()
                         copyText: ""
                     }
+
+                    RowLayout {
+                        spacing: root.theme.gapSmall
+                        Layout.fillWidth: true
+
+                        ActionButton {
+                            theme: root.theme
+                            text: qsTr("Sync private")
+                            primary: true
+                            enabled: !root.model.busy && root.model.walletProfileConfigured()
+                            Layout.preferredWidth: 132
+                            onClicked: privateSyncConfirm.open()
+                        }
+
+                        ActionButton {
+                            theme: root.theme
+                            text: qsTr("Settings")
+                            enabled: !root.model.busy
+                            Layout.preferredWidth: 112
+                            onClicked: root.model.openSettings("wallet", "")
+                        }
+
+                        Item {
+                            Layout.fillWidth: true
+                        }
+                    }
                 }
             }
         }
@@ -397,6 +423,17 @@ ColumnLayout {
                         onClicked: {
                             root.model.saveWalletState()
                             root.model.queryBedrockWalletBalance()
+                        }
+                    }
+
+                    ActionButton {
+                        theme: root.theme
+                        text: qsTr("Refresh module")
+                        enabled: !root.model.busy
+                        Layout.preferredWidth: 136
+                        onClicked: {
+                            root.model.saveWalletState()
+                            root.model.refreshBedrockWalletModule(root.model.walletPublicKeyProbe)
                         }
                     }
 
@@ -634,6 +671,17 @@ ColumnLayout {
         }
     }
 
+    ConfirmActionPopup {
+        id: privateSyncConfirm
+
+        theme: root.theme
+        title: qsTr("Sync private wallet")
+        message: qsTr("This runs the configured local wallet sync-private command and may update local wallet state.")
+        confirmText: qsTr("Sync private")
+        confirmEnabled: !root.model.busy && root.model.walletProfileConfigured()
+        onAccepted: root.model.syncPrivateWallet()
+    }
+
     Component {
         id: operationsTab
 
@@ -740,7 +788,11 @@ ColumnLayout {
     }
 
     function hasBlockchainWalletReport() {
-        return false
+        const report = root.model.blockchainModuleReport
+        return report !== null
+            && typeof report === "object"
+            && !Array.isArray(report)
+            && String(report.module || "") === root.model.blockchainModule
     }
 
     function knownAddressRows() {

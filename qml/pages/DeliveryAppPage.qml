@@ -373,7 +373,7 @@ ColumnLayout {
     }
 
     function deliveryModuleSource() {
-        return false
+        return String(root.model.effectiveMessagingSourceMode(root.model.messagingSourceMode) || "").toLowerCase() === "module"
     }
 
     function deliveryRestSource() {
@@ -382,7 +382,7 @@ ColumnLayout {
 
     function deliveryDataSource() {
         const mode = String(root.model.effectiveMessagingSourceMode(root.model.messagingSourceMode) || "").toLowerCase()
-        return mode === "rest" || mode === "metrics"
+        return mode === "rest" || mode === "metrics" || mode === "module"
     }
 
     function deliveryArgs(extra) {

@@ -330,6 +330,10 @@ QtObject {
 
     function deployProgramOperationDetail(value) { return AppModelIdentity.deployProgramOperationDetail(root, value) }
 
+    function syncPrivateWallet() { return AppModelIdentity.syncPrivateWallet(root) }
+
+    function privateSyncOperationDetail(value) { return AppModelIdentity.privateSyncOperationDetail(root, value) }
+
     function queryBedrockWalletBalance() { return AppModelIdentity.queryBedrockWalletBalance(root) }
 
     function isBedrockHexId(value) { return AppModelIdentity.isBedrockHexId(root, value) }

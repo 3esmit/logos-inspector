@@ -11,9 +11,12 @@ use crate::{
     account_lookup_with_idl, bedrock_wallet_balance, blockchain, channels,
     decode_account_data_hex_with_idl, decode_event_data_hex_with_idl, indexer_block_by_hash,
     indexer_blocks, indexer_health, indexer_status, indexer_transfer_recipients,
-    inspect_transaction_summary_with_idl, last_sequencer_block_id, local_wallet_deploy_program,
-    local_wallet_profile_status, logoscore,
-    modules::{delivery_source_report, logoscore_status_report, storage_source_report},
+    inspect_transaction_summary_with_idl, last_sequencer_block_id, local_wallet_profile_status,
+    local_wallet_sync_private, logoscore,
+    modules::{
+        blockchain_module_report, delivery_source_report, logoscore_status_report,
+        storage_source_report,
+    },
     normalize_program_id_hex, overview, program_file_info, raw_http_json,
     raw_json_rpc_optional_result, raw_rpc_report, response_excerpt, sequencer_block,
     sequencer_blocks, sequencer_program_ids, sequencer_transaction,
@@ -31,6 +34,7 @@ pub const INSPECTOR_MODULE: &str = "logos_inspector";
 const BLOCKCHAIN_MODULE: &str = "blockchain_module";
 const INDEXER_MODULE: &str = "lez_indexer_module";
 const EXECUTION_MODULE: &str = "logos_execution_zone";
+const DELIVERY_MODULE: &str = "delivery_module";
 const DEFAULT_STORAGE_REST_ENDPOINT: &str = "http://127.0.0.1:8080/api/storage/v1";
 const DEFAULT_DELIVERY_REST_ENDPOINT: &str = "http://127.0.0.1:8645";
 
@@ -320,12 +324,14 @@ impl InspectorBridge {
                 )?)
             }
             "localWalletDeployProgram" => {
+                bail!("wallet program deployment is disabled by the read-only wallet policy")
+            }
+            "localWalletSyncPrivate" => {
                 let args = Args::new(args)?;
-                to_value(local_wallet_deploy_program(
+                to_value(local_wallet_sync_private(
                     args.value(0)
                         .cloned()
                         .context("local wallet profile is required")?,
-                    args.string(1, "program path")?,
                 )?)
             }
             "bedrockWalletBalance" => {
@@ -354,9 +360,10 @@ impl InspectorBridge {
             }
             "modules" => bail!("Basecamp module reports are not supported as Inspector sources"),
             "logoscoreStatus" => to_value(logoscore_status_report()),
-            "blockchainModuleReport" => bail!(
-                "blockchain_module does not satisfy Inspector Bedrock requirements; use blockchainNode over RPC"
-            ),
+            "blockchainModuleReport" => {
+                let args = Args::new(args)?;
+                to_value(blockchain_module_report(args.optional_string(0)))
+            }
             "storageReport" => bail!(
                 "storage_module does not satisfy Inspector storage requirements; use storageSourceReport over REST"
             ),
@@ -388,21 +395,9 @@ impl InspectorBridge {
             "storageUploadUrl" => self.storage_upload_path(args),
             "storageDownloadToUrl" => self.storage_download_to_path(args),
             "storageRemove" => self.storage_remove(args),
-            "deliveryCreateNode" => {
-                bail!(
-                    "delivery node lifecycle actions are disabled until REST action adapter support exists"
-                )
-            }
-            "deliveryStart" => {
-                bail!(
-                    "delivery node lifecycle actions are disabled until REST action adapter support exists"
-                )
-            }
-            "deliveryStop" => {
-                bail!(
-                    "delivery node lifecycle actions are disabled until REST action adapter support exists"
-                )
-            }
+            "deliveryCreateNode" => self.delivery_module_action(args, "createNode"),
+            "deliveryStart" => self.delivery_module_action(args, "start"),
+            "deliveryStop" => self.delivery_module_action(args, "stop"),
             "deliverySubscribe" => self.delivery_subscription(args, Method::POST),
             "deliveryUnsubscribe" => self.delivery_subscription(args, Method::DELETE),
             "deliverySend" => self.delivery_send(args),
@@ -576,8 +571,12 @@ impl InspectorBridge {
     fn storage_download_manifest(&self, args: Value) -> Result<Value> {
         let args = Args::new(args)?;
         let source = storage_rest_source(&args)?;
-        require_mutating_diagnostics(&args, source.next_index, "storage network action")?;
-        let cid = args.string(source.next_index + 1, "CID")?;
+        let cid_index = if matches!(args.value(source.next_index), Some(Value::Bool(_))) {
+            source.next_index + 1
+        } else {
+            source.next_index
+        };
+        let cid = args.string(cid_index, "CID")?;
         to_value(self.runtime.block_on(raw_http_json(
             source.endpoint,
             &format!("/data/{cid}/network/manifest"),
@@ -680,14 +679,14 @@ impl InspectorBridge {
         let topic = args.string(source.next_index + 1, "content topic")?;
         let payload = args.string(source.next_index + 2, "message payload")?;
         let body = json!({
+            "contentTopic": topic,
             "payload": BASE64_STANDARD.encode(payload.as_bytes()),
         });
-        let path = format!("/relay/v1/auto/messages/{}", path_segment(topic));
         self.runtime
             .block_on(rest_empty_request(
                 Method::POST,
                 source.endpoint,
-                &path,
+                "/relay/v1/auto/messages",
                 Some(body),
             ))
             .with_context(|| format!("failed to send relay message on {topic}"))?;
@@ -697,6 +696,22 @@ impl InspectorBridge {
             "bytes": payload.len(),
             "endpoint": source.endpoint,
         }))
+    }
+
+    fn delivery_module_action(&self, args: Value, method: &str) -> Result<Value> {
+        let args = Args::new(args)?;
+        let start_index = if let Some(source) = args.optional_string(0).filter(|source| {
+            is_delivery_source_token(source) || is_delivery_module_source_token(source)
+        }) {
+            if !is_delivery_module_source_token(source) {
+                bail!("delivery node lifecycle actions require delivery module source");
+            }
+            3
+        } else {
+            0
+        };
+        let call_args = args.iter().skip(start_index).cloned().collect::<Vec<_>>();
+        self.call_logoscore_module(DELIVERY_MODULE, method, Value::Array(call_args))
     }
 }
 
@@ -1176,29 +1191,35 @@ fn rest_url(endpoint: &str, path: &str) -> String {
     format!("{endpoint}/{path}")
 }
 
-fn path_segment(value: &str) -> String {
-    let mut encoded = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                encoded.push(char::from(byte));
-            }
-            _ => {
-                encoded.push('%');
-                encoded.push(hex_digit(byte >> 4));
-                encoded.push(hex_digit(byte & 0x0f));
-            }
-        }
-    }
-    encoded
+fn is_delivery_source_token(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "auto"
+            | "rest"
+            | "direct-rest"
+            | "direct waku rest"
+            | "waku-rest"
+            | "metrics"
+            | "metrics-only"
+            | "metrics only"
+            | "module"
+            | "basecamp"
+            | "basecamp-module"
+            | "basecamp module"
+            | "network-monitor"
+            | "network monitor"
+            | "discovery-crawler"
+            | "discovery crawler"
+            | "crawler"
+            | "unsupported"
+    )
 }
 
-fn hex_digit(value: u8) -> char {
-    match value {
-        0..=9 => char::from(b'0' + value),
-        10..=15 => char::from(b'A' + (value - 10)),
-        _ => '0',
-    }
+fn is_delivery_module_source_token(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "module" | "basecamp" | "basecamp-module" | "basecamp module"
+    )
 }
 
 fn response_excerpt_bytes(bytes: &[u8]) -> String {
@@ -1241,14 +1262,6 @@ mod tests {
             bail!("unexpected error: {error:#}");
         }
         Ok(())
-    }
-
-    #[test]
-    fn path_segment_encodes_delivery_content_topic_slashes() {
-        assert_eq!(
-            path_segment("/logos-inspector/1/chat/proto"),
-            "%2Flogos-inspector%2F1%2Fchat%2Fproto"
-        );
     }
 
     #[test]

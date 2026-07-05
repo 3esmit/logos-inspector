@@ -16,6 +16,7 @@ use crate::{ProgramFileInfo, program_file_info, raw_http_json};
 pub const LOCAL_WALLET_HOME_ENV: &str = "NSSA_WALLET_HOME_DIR";
 pub const LEE_WALLET_HOME_ENV: &str = "LEE_WALLET_HOME_DIR";
 const LOCAL_WALLET_DEPLOY_TIMEOUT: Duration = Duration::from_secs(120);
+const LOCAL_WALLET_SYNC_TIMEOUT: Duration = Duration::from_secs(120);
 const LOCAL_WALLET_VERSION_TIMEOUT: Duration = Duration::from_secs(5);
 const LOCAL_WALLET_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const LOCAL_WALLET_OUTPUT_LIMIT: usize = 4096;
@@ -49,6 +50,20 @@ pub struct LocalWalletDeployReport {
     pub exit_status: String,
     #[serde(flatten)]
     pub program: ProgramFileInfo,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub stdout: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub stderr: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LocalWalletSyncPrivateReport {
+    pub source: String,
+    pub status: String,
+    pub command: String,
+    pub wallet_home_source: String,
+    pub submitted_at: String,
+    pub exit_status: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub stdout: String,
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -126,6 +141,54 @@ pub fn local_wallet_deploy_program(
         stdout: local_wallet_output_text(&output.stdout, &redactions),
         stderr: local_wallet_output_text(&output.stderr, &redactions),
         program,
+    })
+}
+
+pub fn local_wallet_sync_private(profile: Value) -> Result<LocalWalletSyncPrivateReport> {
+    let profile: LocalWalletProfileInput =
+        serde_json::from_value(profile).context("failed to parse local wallet profile")?;
+    let wallet_binary = profile.wallet_binary.trim();
+    if wallet_binary.is_empty() {
+        bail!("wallet binary is required to sync private wallet state");
+    }
+    if local_wallet_binary_is_path_like(wallet_binary) && !Path::new(wallet_binary).is_file() {
+        bail!("wallet binary is not reachable");
+    }
+
+    let explicit_home = profile.wallet_home.trim();
+    let nssa_env_home = env::var(LOCAL_WALLET_HOME_ENV).unwrap_or_default();
+    let lee_env_home = env::var(LEE_WALLET_HOME_ENV).unwrap_or_default();
+    let (wallet_home, wallet_home_source) = if !explicit_home.is_empty() {
+        (explicit_home.to_owned(), "profile")
+    } else if !nssa_env_home.trim().is_empty() {
+        (nssa_env_home.trim().to_owned(), LOCAL_WALLET_HOME_ENV)
+    } else if !lee_env_home.trim().is_empty() {
+        (lee_env_home.trim().to_owned(), LEE_WALLET_HOME_ENV)
+    } else {
+        (String::new(), "none")
+    };
+    if wallet_home.is_empty() {
+        bail!("wallet home directory is required to sync private wallet state");
+    }
+    if !Path::new(&wallet_home).is_dir() {
+        bail!("wallet home directory is not reachable");
+    }
+
+    let mut redactions = vec![wallet_home.as_str()];
+    if local_wallet_binary_is_path_like(wallet_binary) {
+        redactions.push(wallet_binary);
+    }
+    let output = local_wallet_sync_private_output(wallet_binary, &wallet_home, &redactions)?;
+
+    Ok(LocalWalletSyncPrivateReport {
+        source: "local_wallet_cli".to_owned(),
+        status: "submitted".to_owned(),
+        command: "wallet account sync-private".to_owned(),
+        wallet_home_source: wallet_home_source.to_owned(),
+        submitted_at: unix_time_text(),
+        exit_status: output.status.to_string(),
+        stdout: local_wallet_output_text(&output.stdout, &redactions),
+        stderr: local_wallet_output_text(&output.stderr, &redactions),
     })
 }
 
@@ -315,6 +378,22 @@ fn local_wallet_deploy_program_output(
         command,
         "wallet deploy-program",
         LOCAL_WALLET_DEPLOY_TIMEOUT,
+        redactions,
+    )
+}
+
+fn local_wallet_sync_private_output(
+    binary: &str,
+    wallet_home: &str,
+    redactions: &[&str],
+) -> Result<Output> {
+    let mut command = Command::new(binary);
+    configure_local_wallet_command(&mut command, wallet_home);
+    command.arg("account").arg("sync-private");
+    run_local_wallet_command(
+        command,
+        "wallet account sync-private",
+        LOCAL_WALLET_SYNC_TIMEOUT,
         redactions,
     )
 }
