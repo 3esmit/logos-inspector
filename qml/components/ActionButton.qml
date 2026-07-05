@@ -67,6 +67,20 @@ Button {
                 }
             }
         }
+
+        Text {
+            visible: root.iconOnly && (root.iconName === "back" || root.iconName === "forward")
+            anchors.fill: parent
+            text: root.iconName === "forward" ? ">" : "<"
+            color: root.contentColor()
+            textFormat: Text.PlainText
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+            font.family: "monospace"
+            font.pixelSize: 17
+            font.weight: Font.DemiBold
+            Accessible.ignored: true
+        }
     }
 
     background: Rectangle {

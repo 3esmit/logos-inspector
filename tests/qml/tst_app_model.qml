@@ -98,6 +98,16 @@ TestCase {
         basecampHost.lastArgs = []
         basecampHost.serializeResults = false
         model.currentView = "overview"
+        model.statusText = "Ready"
+        model.resultTitle = "Output"
+        model.resultText = ""
+        model.resultValue = null
+        model.resultIsError = false
+        model.resultOwner = ""
+        model.navigationBackStack = []
+        model.navigationForwardStack = []
+        model.navigationRevision = 0
+        model.navigationRestoring = false
         model.dashboardNode = null
         model.dashboardSequencerBlocks = []
         model.blockchainModuleReport = null
@@ -139,6 +149,13 @@ TestCase {
         model.transferActivityHistory = []
         model.transferActivityError = ""
         model.blockDetailValue = null
+        model.blockDetailError = ""
+        model.transactionDetailValue = null
+        model.transactionDetailError = ""
+        model.accountDetailValue = null
+        model.transferRecipientDetailValue = null
+        model.channelDetailValue = null
+        model.channelDetailError = ""
         model.blockchainSourceMode = "auto"
         model.indexerSourceMode = "auto"
         model.executionSourceMode = "rpc"
@@ -488,6 +505,100 @@ TestCase {
         compare(model.currentView, "programs")
         compare(model.parentNavKeyForView("programs"), "l2")
         compare(model.navTokenForView("programs"), "PRG")
+    }
+
+    function test_navigation_history_tracks_page_selection() {
+        verify(!model.canNavigateBack())
+        verify(!model.canNavigateForward())
+
+        model.selectView("blocks")
+
+        compare(model.currentView, "blocks")
+        verify(model.canNavigateBack())
+        compare(model.navigationBackLabel(), "Dashboard")
+        verify(!model.canNavigateForward())
+
+        model.selectView("transactions")
+
+        compare(model.currentView, "transactions")
+        compare(model.navigationBackStack.length, 2)
+
+        model.navigateBack()
+
+        compare(model.currentView, "blocks")
+        verify(model.canNavigateBack())
+        verify(model.canNavigateForward())
+        compare(model.navigationForwardLabel(), "Mantle Tx")
+
+        model.selectView("programs")
+
+        compare(model.currentView, "programs")
+        verify(!model.canNavigateForward())
+    }
+
+    function test_navigation_history_restores_detail_state() {
+        model.currentView = "blockDetail"
+        model.blockDetailValue = { type: "blockchain_block", hash: "old-block", slot: 1 }
+        model.resultTitle = "Block"
+        model.resultText = "old result"
+        model.resultValue = { hash: "old-block" }
+        model.resultOwner = "blockDetail"
+
+        model.pushNavigationHistory()
+
+        model.blockDetailValue = { type: "blockchain_block", hash: "new-block", slot: 2 }
+        model.resultText = "new result"
+        model.resultValue = { hash: "new-block" }
+
+        compare(model.navigationBackLabel(), "Block old-block")
+
+        model.navigateBack()
+
+        compare(model.currentView, "blockDetail")
+        verify(model.blockDetailValue !== null)
+        compare(model.blockDetailValue.hash, "old-block")
+        compare(model.resultText, "old result")
+        compare(model.resultOwner, "blockDetail")
+        verify(model.canNavigateForward())
+
+        model.navigateForward()
+
+        compare(model.currentView, "blockDetail")
+        verify(model.blockDetailValue !== null)
+        compare(model.blockDetailValue.hash, "new-block")
+        compare(model.resultText, "new result")
+    }
+
+    function test_navigation_history_records_deep_block_opener() {
+        model.currentView = "blockDetail"
+        model.blockDetailValue = { type: "blockchain_block", hash: "old-block", slot: 1 }
+        model.resultTitle = "Block"
+        model.resultText = "old result"
+        model.resultValue = { hash: "old-block" }
+        model.resultOwner = "blockDetail"
+        model.blocksPageRows = [
+            { header: { slot: 7, id: "new-block" }, transactions: [] }
+        ]
+
+        model.openBlockchainBlock("7")
+
+        compare(model.currentView, "blockDetail")
+        verify(model.blockDetailValue !== null)
+        compare(model.blockDetailValue.hash, "new-block")
+        compare(model.navigationBackStack.length, 1)
+
+        model.navigateBack()
+
+        compare(model.currentView, "blockDetail")
+        verify(model.blockDetailValue !== null)
+        compare(model.blockDetailValue.hash, "old-block")
+        compare(model.resultText, "old result")
+
+        model.navigateForward()
+
+        compare(model.currentView, "blockDetail")
+        verify(model.blockDetailValue !== null)
+        compare(model.blockDetailValue.hash, "new-block")
     }
 
     function test_dashboard_metric_history_prefix_clear() {

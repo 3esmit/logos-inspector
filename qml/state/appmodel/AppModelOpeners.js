@@ -67,7 +67,8 @@ function openMantleTransaction(root, hash) {
         }
 
         const detail = transactionDetail(value)
-        currentView = "transactionDetail"
+        pushNavigationHistory()
+        selectView("transactionDetail", false)
         transactionDetailError = ""
         if (detail) {
             transactionDetailValue = detail
@@ -103,7 +104,8 @@ function openAccount(root, account) {
         }
         const serial = searchResolveSerial + 1
         searchResolveSerial = serial
-        currentView = "accounts"
+        pushNavigationHistory()
+        selectView("accounts", false)
         accountTab = "lookup"
         statusText = qsTr("Account lookup")
         requestModuleAsync(inspectorModule, "account", root.accountLookupArgs(value), qsTr("Account lookup"), false, function (response) {
@@ -124,7 +126,8 @@ function openAccount(root, account) {
 function openPrivateAccountReference(root, account) {
     with (root) {
         const value = String(account || "").trim()
-        currentView = "localWallet"
+        pushNavigationHistory()
+        selectView("localWallet", false)
         localWalletTab = "privateSync"
         localWalletLookupTarget = value.length && value.indexOf("Private/") !== 0 ? "Private/" + value : value
         const detail = {
@@ -168,7 +171,8 @@ function openLezBlock(root, blockId) {
 
         const serial = searchResolveSerial + 1
         searchResolveSerial = serial
-        currentView = "l2BlockDetail"
+        pushNavigationHistory()
+        selectView("l2BlockDetail", false)
         blockDetailValue = null
         blockDetailError = ""
         statusText = qsTr("LEZ block lookup")
@@ -198,7 +202,8 @@ function resolveLezHash(root, hash) {
 
         const serial = searchResolveSerial + 1
         searchResolveSerial = serial
-        currentView = "l2BlockDetail"
+        pushNavigationHistory()
+        selectView("l2BlockDetail", false)
         blockDetailValue = null
         blockDetailError = ""
         statusText = qsTr("L2 lookup")
@@ -213,12 +218,12 @@ function resolveLezHash(root, hash) {
                 setResult(qsTr("LEZ block"), BridgeHelpers.formatValue(detail), false, detail, "l2BlockDetail")
                 return
             }
-            root.openLezTransaction(value)
+            root.openLezTransaction(value, false)
         })
     }
 }
 
-function openLezTransaction(root, hash) {
+function openLezTransaction(root, hash, recordHistory) {
     with (root) {
         const value = String(hash || "").trim()
         if (!value.length) {
@@ -226,19 +231,25 @@ function openLezTransaction(root, hash) {
         }
 
         searchResolveSerial += 1
-        currentView = "l2TransactionDetail"
-        inspectTransaction(value, "")
+        if (recordHistory !== false) {
+            pushNavigationHistory()
+        }
+        selectView("l2TransactionDetail", false)
+        inspectTransaction(value, "", false)
     }
 }
 
-function inspectTransaction(root, hash, idl) {
+function inspectTransaction(root, hash, idl, recordHistory) {
     with (root) {
         const value = String(hash || "").trim()
         if (!value.length) {
             return
         }
 
-        currentView = "l2TransactionDetail"
+        if (recordHistory !== false) {
+            pushNavigationHistory()
+        }
+        selectView("l2TransactionDetail", false)
         const trimmedIdl = String(idl || "").trim()
         const args = root.executionArgs(trimmedIdl.length ? [value, trimmedIdl] : [value])
         const serial = transactionAutoDecodeSerial + 1
@@ -284,7 +295,8 @@ function openBlockchainBlock(root, blockOrId) {
             return
         }
 
-        currentView = "blockDetail"
+        pushNavigationHistory()
+        selectView("blockDetail", false)
         blockDetailValue = detail
         blockDetailError = ""
         setResult(qsTr("Block"), BridgeHelpers.formatValue(detail), false, detail)
@@ -297,7 +309,8 @@ function loadBlockchainBlockById(root, blockId) {
         if (!value.length) {
             return
         }
-        currentView = "blockDetail"
+        pushNavigationHistory()
+        selectView("blockDetail", false)
         blockDetailValue = null
         blockDetailError = ""
         const response = requestModule(inspectorModule, "blockchainBlock", root.blockchainArgs([value]), qsTr("Block lookup"), false)
@@ -320,7 +333,7 @@ function loadBlockchainBlockById(root, blockId) {
                 return
             }
         }
-        currentView = "blockDetail"
+        selectView("blockDetail", false)
         blockDetailValue = null
         blockDetailError = qsTr("L1 block %1 was not found.").arg(value)
         setResult(qsTr("Block"), blockDetailError, true, null, "blockDetail")
@@ -330,7 +343,8 @@ function loadBlockchainBlockById(root, blockId) {
 function loadBlockchainBlockBySlot(root, slot) {
     with (root) {
         const value = Math.max(0, Number(slot || 0))
-        currentView = "blockDetail"
+        pushNavigationHistory()
+        selectView("blockDetail", false)
         blockDetailValue = null
         blockDetailError = ""
         const response = requestModule(inspectorModule, "blockchainBlocks", root.blockchainArgs([value, value]), qsTr("Block lookup"), false)
@@ -366,7 +380,8 @@ function openBlockchainTransaction(root, transaction, block) {
             ops: Array.isArray(tx.operations) ? tx.operations : [],
             raw: tx.raw || null
         }
-        currentView = "transactionDetail"
+        pushNavigationHistory()
+        selectView("transactionDetail", false)
         transactionDetailValue = detail
         transactionDetailError = ""
         setResult(qsTr("Transaction"), BridgeHelpers.formatValue(detail), false, detail)
@@ -421,7 +436,8 @@ function openIndexerBlock(root, headerHash, payload) {
             return
         }
 
-        currentView = "l2BlockDetail"
+        pushNavigationHistory()
+        selectView("l2BlockDetail", false)
         blockDetailValue = null
         blockDetailError = ""
 
@@ -494,7 +510,8 @@ function openLocalWallet(root, wallet, tab) {
         const target = String(wallet || "").trim()
         const targetTab = String(tab || "").length ? String(tab || "") : "profiles"
         const bedrockOnly = targetTab === "bedrockNotes"
-        currentView = "localWallet"
+        pushNavigationHistory()
+        selectView("localWallet", false)
         localWalletTab = targetTab
         localWalletLookupTarget = target
         transferRecipientDetailValue = null
@@ -557,7 +574,8 @@ function openProgram(root, programId) {
             selectView("programs")
             return
         }
-        currentView = "programs"
+        pushNavigationHistory()
+        selectView("programs", false)
         programTab = "programIds"
         const normalized = root.canonicalProgramIdHex(value) || root.normalizedHexText(value)
         const serial = programOpenSerial + 1
@@ -684,13 +702,14 @@ function openRecipient(root, recipient) {
         }
 
         const detail = transferRecipientDetailById(value)
+        pushNavigationHistory()
         if (detail) {
-            currentView = "transferActivity"
+            selectView("transferActivity", false)
             transferRecipientDetailValue = detail
             setResult(qsTr("Transfer recipient"), BridgeHelpers.formatValue(detail), false, detail)
             return
         }
-        currentView = "transferActivity"
+        selectView("transferActivity", false)
         transferRecipientDetailValue = null
         setResult(qsTr("Transfer recipient"), qsTr("No transfer recipient found for %1 in the loaded finalized L2 block window.").arg(value), true, null)
     }
@@ -699,8 +718,9 @@ function openRecipient(root, recipient) {
 function openChannel(root, channel) {
     with (root) {
         const detail = typeof channel === "object" ? channelDetail(channel) : channelDetailById(channel)
+        pushNavigationHistory()
         if (detail) {
-            currentView = "channels"
+            selectView("channels", false)
             channelDetailValue = detail
             channelDetailError = ""
             setResult(qsTr("Channel"), BridgeHelpers.formatValue(detail), false, detail)
@@ -718,14 +738,14 @@ function openChannel(root, channel) {
                 raw: raw,
                 source_confidence: "node"
             }))
-            currentView = "channels"
+            selectView("channels", false)
             channelDetailValue = value
             channelDetailError = ""
             setResult(qsTr("Channel"), BridgeHelpers.formatValue(value), false, value)
             return
         }
 
-        currentView = "channels"
+        selectView("channels", false)
         channelDetailValue = null
         channelDetailError = response.error || qsTr("Channel %1 was not found.").arg(channelId)
         setResult(qsTr("Channel"), channelDetailError, true, null, "channels")
