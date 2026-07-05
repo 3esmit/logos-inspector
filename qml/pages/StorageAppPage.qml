@@ -21,6 +21,7 @@ ColumnLayout {
     property string pendingStorageMethod: ""
     property string pendingStorageLabel: ""
     property var pendingStorageArgs: []
+    property string terminalStorageOperationId: ""
 
     width: parent ? parent.width : 900
     spacing: root.theme.gapLarge
@@ -53,6 +54,15 @@ ColumnLayout {
                 root.activeCid = root.model.storageCidProbe
             }
         }
+    }
+
+    Timer {
+        id: storageOperationPoll
+
+        interval: 500
+        repeat: true
+        running: root.activeStorageOperationRunning()
+        onTriggered: root.pollStorageOperation(false)
     }
 
     PageHeader {
@@ -105,6 +115,14 @@ ColumnLayout {
             label: qsTr("Last")
             value: root.lastOperation
             tone: root.model.resultIsError && root.model.resultOwner === root.model.currentView ? "error" : "neutral"
+            Layout.fillWidth: true
+        }
+
+        StatusChip {
+            theme: root.theme
+            label: qsTr("Active")
+            value: root.activeStorageStatusText()
+            tone: root.activeStorageTone()
             Layout.fillWidth: true
         }
     }
@@ -306,9 +324,9 @@ ColumnLayout {
                     theme: root.theme
                     text: qsTr("Download")
                     primary: true
-                    enabled: !root.model.busy && cidField.text.trim().length > 0 && cidDestination.text.trim().length > 0 && root.storageMutatingSource()
+                    enabled: !root.model.busy && !root.activeStorageOperationRunning() && cidField.text.trim().length > 0 && cidDestination.text.trim().length > 0 && root.storageMutatingSource()
                     Layout.preferredWidth: 124
-                    onClicked: root.confirmStorage("storageDownloadToUrl", [cidField.text.trim(), cidDestination.text.trim(), localOnly.checked, root.chunkSizeValue(chunkSize.text)], qsTr("Download CID"))
+                    onClicked: root.confirmStorage("storageDownloadToUrl", [cidField.text.trim(), cidDestination.text.trim(), localOnly.checked], qsTr("Download CID"))
                 }
 
                 Item {
@@ -330,14 +348,7 @@ ColumnLayout {
                     Layout.preferredWidth: 132
                 }
 
-                FieldRow {
-                    id: chunkSize
-
-                    theme: root.theme
-                    label: qsTr("Chunk size")
-                    text: "65536"
-                    Layout.fillWidth: true
-                }
+                Item { Layout.fillWidth: true }
             }
         }
     }
@@ -410,7 +421,7 @@ ColumnLayout {
                     id: transferChunkSize
 
                     theme: root.theme
-                    label: qsTr("Chunk size")
+                    label: qsTr("Upload block size")
                     text: "65536"
                     Layout.fillWidth: true
                 }
@@ -432,9 +443,9 @@ ColumnLayout {
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Download")
-                    enabled: !root.model.busy && root.storageMutatingSource() && downloadCid.text.trim().length > 0 && downloadPath.text.trim().length > 0
+                    enabled: !root.model.busy && !root.activeStorageOperationRunning() && root.storageMutatingSource() && downloadCid.text.trim().length > 0 && downloadPath.text.trim().length > 0
                     Layout.preferredWidth: 124
-                    onClicked: root.confirmStorage("storageDownloadToUrl", [downloadCid.text.trim(), downloadPath.text.trim(), false, root.chunkSizeValue(transferChunkSize.text)], qsTr("Download file"))
+                    onClicked: root.confirmStorage("storageDownloadToUrl", [downloadCid.text.trim(), downloadPath.text.trim(), false], qsTr("Download file"))
                 }
 
                 ActionButton {
@@ -446,6 +457,38 @@ ColumnLayout {
                 }
 
                 Item {
+                    Layout.fillWidth: true
+                }
+            }
+
+            StatusMessage {
+                visible: root.activeStorageOperationKnown()
+                theme: root.theme
+                tone: root.activeStorageTone()
+                title: root.activeStorageStatusText()
+                message: root.activeStorageDetailText()
+                Layout.fillWidth: true
+            }
+
+            RowLayout {
+                visible: root.activeStorageOperationRunning()
+                spacing: root.theme.gapSmall
+                Layout.fillWidth: true
+
+                ActionButton {
+                    theme: root.theme
+                    text: qsTr("Cancel")
+                    enabled: root.activeStorageOperationRunning()
+                    Layout.preferredWidth: 112
+                    onClicked: root.cancelStorageOperation()
+                }
+
+                Text {
+                    text: root.activeStorageProgressText()
+                    color: root.theme.textMuted
+                    textFormat: Text.PlainText
+                    elide: Text.ElideRight
+                    font.pixelSize: root.theme.secondaryText
                     Layout.fillWidth: true
                 }
             }
@@ -589,10 +632,86 @@ ColumnLayout {
         if (!root.pendingStorageMethod.length) {
             return
         }
-        root.runStorage(root.pendingStorageMethod, root.pendingStorageArgs, root.pendingStorageLabel)
+        if (root.pendingStorageMethod === "storageDownloadToUrl") {
+            root.startStorageDownload(root.pendingStorageArgs, root.pendingStorageLabel)
+        } else {
+            root.runStorage(root.pendingStorageMethod, root.pendingStorageArgs, root.pendingStorageLabel)
+        }
         root.pendingStorageMethod = ""
         root.pendingStorageArgs = []
         root.pendingStorageLabel = ""
+    }
+
+    function startStorageDownload(args, label) {
+        if (root.activeStorageOperationRunning()) {
+            const blocked = {
+                ok: false,
+                text: "",
+                error: qsTr("A storage download is already running.")
+            }
+            root.appendOperation(label, blocked)
+            root.lastOperation = qsTr("Busy")
+            return blocked
+        }
+        const response = root.model.callInspector("storageDownloadStart", root.storageArgs(args), label)
+        root.appendOperation(label, response)
+        root.lastOperation = response.ok ? qsTr("Download started") : qsTr("Error")
+        if (response.ok) {
+            root.terminalStorageOperationId = ""
+            root.model.updateStorageActiveOperation(response.value)
+            storageOperationPoll.restart()
+            root.model.storageAppTab = "operations"
+        }
+        return response
+    }
+
+    function pollStorageOperation(showResult) {
+        const operation = root.activeStorageOperation()
+        const operationId = String(operation && operation.operationId ? operation.operationId : "")
+        if (!operationId.length) {
+            storageOperationPoll.stop()
+            return
+        }
+        root.model.requestModuleAsync(root.model.inspectorModule, "storageOperationStatus", [operationId], qsTr("Storage operation"), showResult === true, function (response) {
+            if (!response || !response.ok) {
+                storageOperationPoll.stop()
+                return
+            }
+            root.model.updateStorageActiveOperation(response.value)
+            if (root.activeStorageOperationTerminal(response.value)) {
+                storageOperationPoll.stop()
+                root.appendTerminalStorageOperation(response.value)
+            }
+        })
+    }
+
+    function cancelStorageOperation() {
+        const operation = root.activeStorageOperation()
+        const operationId = String(operation && operation.operationId ? operation.operationId : "")
+        if (!operationId.length) {
+            return
+        }
+        const response = root.model.callInspector("storageOperationCancel", [operationId], qsTr("Cancel storage operation"))
+        if (response.ok) {
+            root.model.updateStorageActiveOperation(response.value)
+            storageOperationPoll.restart()
+        }
+        root.appendOperation(qsTr("Cancel download"), response)
+    }
+
+    function appendTerminalStorageOperation(operation) {
+        const operationId = String(operation && operation.operationId ? operation.operationId : "")
+        if (!operationId.length || root.terminalStorageOperationId === operationId) {
+            return
+        }
+        root.terminalStorageOperationId = operationId
+        const ok = String(operation.status || "") === "completed"
+        root.appendOperation(qsTr("Download file"), {
+            ok: ok,
+            value: operation.result || operation,
+            error: String(operation.error || "")
+        })
+        root.lastOperation = ok ? qsTr("Download complete") : qsTr("Download stopped")
     }
 
     function appendOperation(label, response) {
@@ -605,6 +724,91 @@ ColumnLayout {
         while (operationLog.count > 20) {
             operationLog.remove(operationLog.count - 1)
         }
+    }
+
+    function activeStorageOperation() {
+        const revision = root.model.storageActiveOperationRevision
+        return root.model.storageActiveOperation || null
+    }
+
+    function activeStorageOperationKnown() {
+        const operation = root.activeStorageOperation()
+        return operation && String(operation.operationId || "").length > 0
+    }
+
+    function activeStorageOperationRunning() {
+        const operation = root.activeStorageOperation()
+        const status = String(operation && operation.status ? operation.status : "")
+        return status === "running" || status === "canceling"
+    }
+
+    function activeStorageOperationTerminal(operation) {
+        const status = String(operation && operation.status ? operation.status : "")
+        return status === "completed" || status === "failed" || status === "canceled"
+    }
+
+    function activeStorageStatusText() {
+        const operation = root.activeStorageOperation()
+        const status = String(operation && operation.status ? operation.status : "")
+        switch (status) {
+        case "running":
+            return qsTr("Downloading")
+        case "canceling":
+            return qsTr("Canceling")
+        case "completed":
+            return qsTr("Complete")
+        case "failed":
+            return qsTr("Failed")
+        case "canceled":
+            return qsTr("Canceled")
+        default:
+            return qsTr("Idle")
+        }
+    }
+
+    function activeStorageTone() {
+        const operation = root.activeStorageOperation()
+        const status = String(operation && operation.status ? operation.status : "")
+        if (status === "completed") {
+            return "success"
+        }
+        if (status === "failed") {
+            return "error"
+        }
+        if (status === "running" || status === "canceling") {
+            return "warning"
+        }
+        return "neutral"
+    }
+
+    function activeStorageDetailText() {
+        const operation = root.activeStorageOperation()
+        if (!operation) {
+            return qsTr("No active operation.")
+        }
+        const detail = [
+            root.shortText(operation.cid, 28),
+            root.activeStorageProgressText(),
+            root.shortText(operation.path, 48)
+        ].filter(value => String(value || "").length > 0)
+        if (operation.error) {
+            detail.push(String(operation.error))
+        }
+        return detail.join(" / ")
+    }
+
+    function activeStorageProgressText() {
+        const operation = root.activeStorageOperation()
+        if (!operation) {
+            return ""
+        }
+        const written = Number(operation.bytesWritten || 0)
+        const total = Number(operation.contentLength || 0)
+        if (Number.isFinite(total) && total > 0) {
+            const percent = Math.min(100, Math.max(0, Math.floor((written / total) * 100)))
+            return qsTr("%1 / %2 bytes (%3%)").arg(root.model.valueText(written)).arg(root.model.valueText(total)).arg(percent)
+        }
+        return qsTr("%1 bytes").arg(root.model.valueText(written))
     }
 
     function operationPayload(value) {

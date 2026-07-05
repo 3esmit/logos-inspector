@@ -398,6 +398,8 @@ ColumnLayout {
             return qsTr("REST")
         case "metrics":
             return qsTr("Metrics")
+        case "network-monitor":
+            return qsTr("Monitor")
         case "unsupported":
             return qsTr("Unsupported")
         default:
@@ -514,6 +516,7 @@ ColumnLayout {
             root.statusRow(qsTr("Store"), root.metricKnown("messaging.store_peers") ? qsTr("observed") : qsTr("unknown"), root.metricDisplay("messaging.store_peers"), root.metricKnown("messaging.store_peers") ? "success" : "neutral"),
             root.statusRow(qsTr("Filter"), root.metricKnown("messaging.filter_peers") ? qsTr("observed") : qsTr("unknown"), root.metricDisplay("messaging.filter_peers"), root.metricKnown("messaging.filter_peers") ? "success" : "neutral"),
             root.statusRow(qsTr("Lightpush"), root.metricKnown("messaging.lightpush_peers") ? qsTr("observed") : qsTr("unknown"), root.metricDisplay("messaging.lightpush_peers"), root.metricKnown("messaging.lightpush_peers") ? "success" : "neutral"),
+            root.statusRow(qsTr("Discovery"), root.networkMonitorPeerCount() !== null ? qsTr("observed") : qsTr("unknown"), root.networkMonitorPeerCount() !== null ? qsTr("%1 peer(s)").arg(root.networkMonitorPeerCount()) : qsTr("No network monitor peer snapshot."), root.networkMonitorPeerCount() !== null ? "success" : "neutral"),
             root.statusRow(qsTr("RLN / spam protection"), qsTr("unknown"), qsTr("No passive metric selected"), "neutral")
         ]
     }
@@ -536,11 +539,15 @@ ColumnLayout {
     }
 
     function topologyRows() {
+        const discovered = root.networkMonitorPeerCount()
+        const topics = root.networkMonitorTopicCount()
+        const servicePeers = root.servicePeerCount()
         return [
             root.statusRow(qsTr("Local connected peers"), root.metricKnown("messaging.peer_count") ? qsTr("observed") : qsTr("unknown"), root.metricDisplay("messaging.peer_count"), root.metricKnown("messaging.peer_count") ? "success" : "neutral"),
-            root.statusRow(qsTr("Relay mesh peers"), qsTr("unknown"), qsTr("Current passive source does not expose mesh edges."), "neutral"),
-            root.statusRow(qsTr("Discovery peers"), qsTr("unknown"), qsTr("Discovery crawler source is pending."), "neutral"),
-            root.statusRow(qsTr("Service peers"), qsTr("unknown"), qsTr("Protocol-specific service peers not exposed by passive source."), "neutral")
+            root.statusRow(qsTr("Relay mesh peers"), root.metricKnown("messaging.pubsub_peers") ? qsTr("observed") : qsTr("unknown"), root.metricDisplay("messaging.pubsub_peers"), root.metricKnown("messaging.pubsub_peers") ? "success" : "neutral"),
+            root.statusRow(qsTr("Discovery peers"), discovered !== null ? qsTr("observed") : qsTr("unknown"), discovered !== null ? qsTr("%1 peer(s)").arg(discovered) : qsTr("No network monitor peer snapshot."), discovered !== null ? "success" : "neutral"),
+            root.statusRow(qsTr("Service peers"), servicePeers !== null ? qsTr("observed") : qsTr("unknown"), servicePeers !== null ? qsTr("%1 service peer(s)").arg(servicePeers) : qsTr("No Store/Filter/Lightpush peer metrics."), servicePeers !== null ? "success" : "neutral"),
+            root.statusRow(qsTr("Content topics"), topics !== null ? qsTr("observed") : qsTr("unknown"), topics !== null ? qsTr("%1 topic(s)").arg(topics) : qsTr("No network monitor topic snapshot."), topics !== null ? "success" : "neutral")
         ]
     }
 
@@ -548,6 +555,14 @@ ColumnLayout {
         return [
             root.metricRow(qsTr("Peer count"), "messaging.peer_count"),
             root.metricRow(qsTr("Pubsub peers"), "messaging.pubsub_peers"),
+            root.metricRow(qsTr("Network ingress"), "messaging.network_ingress_recent"),
+            root.metricRow(qsTr("Network egress"), "messaging.network_egress_recent"),
+            root.metricRow(qsTr("Relay ingress"), "messaging.relay_ingress_recent"),
+            root.metricRow(qsTr("Relay egress"), "messaging.relay_egress_recent"),
+            root.metricRow(qsTr("Service ingress"), "messaging.service_ingress_recent"),
+            root.metricRow(qsTr("Service egress"), "messaging.service_egress_recent"),
+            root.metricRow(qsTr("Sent events"), "messaging.message_sent_events_recent"),
+            root.metricRow(qsTr("Propagated events"), "messaging.message_propagated_events_recent"),
             root.metricRow(qsTr("Messages in window"), "messaging.message_received_events_recent"),
             root.metricRow(qsTr("Errors in window"), "messaging.message_error_events_recent"),
             root.metricRow(qsTr("Store peers"), "messaging.store_peers"),
@@ -683,19 +698,24 @@ ColumnLayout {
     }
 
     function topicRows() {
+        const topics = root.networkMonitorTopicCount()
         return [
             root.metricRow(qsTr("Pubsub peers"), "messaging.pubsub_peers"),
             root.metricRow(qsTr("Content topics"), "messaging.content_topics"),
-            root.statusRow(qsTr("Topic-to-shard mapping"), qsTr("unknown"), qsTr("Requires topic metadata or network monitor source."), "neutral"),
-            root.statusRow(qsTr("Query pressure"), qsTr("unknown"), qsTr("Store/filter query pressure not available from passive source."), "neutral")
+            root.statusRow(qsTr("Topic-to-shard mapping"), topics !== null ? qsTr("observed") : qsTr("unknown"), topics !== null ? qsTr("%1 content topic(s)").arg(topics) : qsTr("Requires topic metadata or network monitor source."), topics !== null ? "success" : "neutral"),
+            root.metricRow(qsTr("Store query pressure"), "messaging.store_query_requests_recent"),
+            root.metricRow(qsTr("Filter query pressure"), "messaging.filter_requests_recent")
         ]
     }
 
     function storeRows() {
         return [
-            root.statusRow(qsTr("Store mounted state"), qsTr("unknown"), qsTr("No Store admin or metrics source selected."), "neutral"),
-            root.statusRow(qsTr("Store peers"), qsTr("unknown"), qsTr("Service peer list unavailable."), "neutral"),
-            root.statusRow(qsTr("Manual query"), qsTr("not queried"), qsTr("Default query must use includeData=false."), "neutral"),
+            root.protocolStatusRow(qsTr("Store mounted state"), "Store", "messaging.store_peers"),
+            root.metricRow(qsTr("Store peers"), "messaging.store_peers"),
+            root.metricRow(qsTr("Stored messages"), "messaging.store_messages"),
+            root.metricRow(qsTr("Store query rate"), "messaging.store_query_requests_recent"),
+            root.metricRow(qsTr("Store errors"), "messaging.store_errors_recent"),
+            root.statusRow(qsTr("Manual query"), qsTr("available"), qsTr("Network / Delivery Store tab uses includeData=false by default."), "success"),
             root.statusRow(qsTr("Payload viewing"), qsTr("disabled"), qsTr("Payload bytes stay hidden unless a future query opts in."), "success")
         ]
     }
@@ -740,7 +760,23 @@ ColumnLayout {
 
     function metricRow(label, key) {
         const known = root.metricKnown(key)
-        return root.statusRow(label, known ? root.metricDisplay(key) : qsTr("n/a"), known ? qsTr("OpenMetrics value") : qsTr("Metric not exposed by current source."), known ? "success" : "neutral")
+        return root.statusRow(label, known ? root.metricDisplay(key) : qsTr("n/a"), known ? root.metricEvidence(key) : qsTr("Metric not exposed by current source."), known ? "success" : "neutral")
+    }
+
+    function metricEvidence(key) {
+        return root.model.dashboardMetricUsesWindow(key) ? qsTr("%1 s window").arg(root.model.messagingRollingWindow) : qsTr("OpenMetrics value")
+    }
+
+    function protocolStatusRow(label, protocol, metricKey) {
+        const rows = root.protocolHealthRows()
+        const needle = String(protocol || "").toLowerCase()
+        for (let i = 0; i < rows.length; ++i) {
+            const row = rows[i]
+            if (String(row.label || "").toLowerCase().indexOf(needle) >= 0) {
+                return root.statusRow(label, row.state, row.evidence, row.tone)
+            }
+        }
+        return root.statusRow(label, root.metricKnown(metricKey) ? qsTr("observed") : qsTr("unknown"), root.metricKnown(metricKey) ? root.metricDisplay(metricKey) : qsTr("No protocol health or peer metric."), root.metricKnown(metricKey) ? "success" : "neutral")
     }
 
     function protocolRow(label, protocolId, signalKey) {
@@ -794,6 +830,9 @@ ColumnLayout {
         if (sourceMode === "metrics") {
             return root.status().ok ? qsTr("scraping") : qsTr("unknown")
         }
+        if (sourceMode === "network-monitor") {
+            return root.status().ok ? qsTr("monitor") : qsTr("unknown")
+        }
         return qsTr("pending")
     }
 
@@ -804,6 +843,11 @@ ColumnLayout {
         }
         if (sourceMode === "metrics") {
             return root.shortText(root.model.messagingMetricsUrl, 48)
+        }
+        if (sourceMode === "network-monitor") {
+            return qsTr("%1; metrics %2")
+                .arg(root.shortText(root.model.deliverySourceTarget(), 24))
+                .arg(root.shortText(root.model.messagingMetricsUrl, 24))
         }
         return root.shortText(root.model.messagingRestUrl, 48)
     }
@@ -823,6 +867,60 @@ ColumnLayout {
 
     function deliverySourceMode() {
         return root.model.effectiveMessagingSourceMode(root.model.messagingSourceMode)
+    }
+
+    function networkMonitorPeerCount() {
+        return root.countValue(root.probeValue("allPeersInfo"))
+    }
+
+    function networkMonitorTopicCount() {
+        const value = root.probeValue("contentTopics")
+        const count = root.countValue(value)
+        if (count !== null) {
+            return count
+        }
+        const metric = root.model.dashboardMetricValue("messaging.content_topics")
+        return metric === null || metric === undefined ? null : Number(metric)
+    }
+
+    function servicePeerCount() {
+        let total = 0
+        let found = false
+        const keys = ["messaging.store_peers", "messaging.filter_peers", "messaging.lightpush_peers"]
+        for (let i = 0; i < keys.length; ++i) {
+            const value = Number(root.model.dashboardMetricValue(keys[i]))
+            if (Number.isFinite(value)) {
+                total += value
+                found = true
+            }
+        }
+        return found ? total : null
+    }
+
+    function countValue(value) {
+        if (value === undefined || value === null) {
+            return null
+        }
+        const scalar = root.model.scalarValue(value)
+        if (typeof scalar === "number" && Number.isFinite(scalar)) {
+            return scalar
+        }
+        if (Array.isArray(value)) {
+            return value.length
+        }
+        if (typeof value === "object") {
+            const keys = ["peers", "allPeers", "all_peers", "contentTopics", "content_topics", "topics", "items", "value", "result"]
+            for (let i = 0; i < keys.length; ++i) {
+                if (value[keys[i]] !== undefined) {
+                    const nested = root.countValue(value[keys[i]])
+                    if (nested !== null) {
+                        return nested
+                    }
+                }
+            }
+            return Object.keys(value).length
+        }
+        return null
     }
 
     function valueSummary(value) {

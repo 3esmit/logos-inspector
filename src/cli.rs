@@ -7,13 +7,14 @@ use std::{
 use anyhow::{Context as _, Result};
 use clap::{Args as ClapArgs, Parser, Subcommand};
 use logos_inspector::{
-    account_lookup, account_lookup_with_idl,
+    account_lookup, account_lookup_with_idl, bedrock_wallet_balance,
     blockchain::blockchain_blocks,
     blockchain::blockchain_node_report,
     channels::channel_scan,
     decode_account_data_hex_with_idl, decode_event_data_hex_with_idl,
     decode_instruction_words_with_idl, last_sequencer_block_id,
     local_indexer::{bootstrap_default_local_indexer, is_default_local_indexer_endpoint},
+    local_wallet_accounts, local_wallet_profile_status,
     modules::blockchain_module_report,
     modules::capabilities_report,
     modules::delivery_source_report,
@@ -167,6 +168,33 @@ enum CliCommand {
         method: String,
         params: Option<String>,
     },
+    Wallet {
+        #[command(subcommand)]
+        command: WalletCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum WalletCommand {
+    Status(WalletProfileArgs),
+    Accounts(WalletProfileArgs),
+    BedrockBalance {
+        public_key: String,
+        #[arg(long)]
+        tip: Option<String>,
+        #[command(flatten)]
+        endpoints: EndpointArgs,
+    },
+}
+
+#[derive(Debug, Clone, ClapArgs)]
+struct WalletProfileArgs {
+    #[arg(long)]
+    wallet_binary: Option<String>,
+    #[arg(long)]
+    wallet_home: Option<String>,
+    #[arg(long)]
+    network_profile: Option<String>,
 }
 
 #[derive(Debug, Clone, ClapArgs)]
@@ -436,6 +464,37 @@ pub fn run(args: CliArgs) -> Result<()> {
             let report = runtime.block_on(raw_rpc_report(&endpoint, &method, params))?;
             print_json(&report)
         }
+        CliCommand::Wallet { command } => match command {
+            WalletCommand::Status(profile) => {
+                print_json(&local_wallet_profile_status(profile.value())?)
+            }
+            WalletCommand::Accounts(profile) => {
+                print_json(&local_wallet_accounts(profile.value())?)
+            }
+            WalletCommand::BedrockBalance {
+                public_key,
+                tip,
+                endpoints,
+            } => {
+                let endpoints = endpoints.endpoints()?;
+                let balance = runtime.block_on(bedrock_wallet_balance(
+                    &endpoints.node_endpoint,
+                    &public_key,
+                    tip.as_deref(),
+                ))?;
+                print_json(&balance)
+            }
+        },
+    }
+}
+
+impl WalletProfileArgs {
+    fn value(&self) -> Value {
+        serde_json::json!({
+            "wallet_binary": self.wallet_binary.as_deref().unwrap_or_default(),
+            "wallet_home": self.wallet_home.as_deref().unwrap_or_default(),
+            "network_profile": self.network_profile.as_deref().unwrap_or_default(),
+        })
     }
 }
 

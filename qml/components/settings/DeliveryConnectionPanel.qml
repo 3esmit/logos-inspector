@@ -56,7 +56,7 @@ Panel {
         FieldRow {
             theme: root.theme
             label: qsTr("Waku REST URL")
-            enabled: root.messagingSourceMode() === "rest"
+            enabled: root.messagingSourceMode() === "rest" || root.messagingSourceMode() === "network-monitor"
             opacity: enabled ? 1 : 0.56
             sourceText: root.modelRef.messagingRestUrl
             syncSourceText: true
@@ -158,6 +158,6 @@ Panel {
 
     function messagingMetricsEnabled() {
         const source = root.messagingSourceMode()
-        return source === "rest" || source === "metrics"
+        return source === "rest" || source === "metrics" || source === "network-monitor"
     }
 }

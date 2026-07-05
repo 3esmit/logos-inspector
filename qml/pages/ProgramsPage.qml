@@ -700,7 +700,7 @@ ColumnLayout {
             { label: qsTr("Known program"), value: root.programVerificationText(value), linkKind: "" },
             { label: qsTr("Program ID"), value: programBase58 !== "-" ? programBase58 : programId, linkKind: verified ? "program" : "" },
             { label: qsTr("Program ID (0x)"), value: programHex, linkKind: verified ? "program" : "" },
-            { label: qsTr("Program account state"), value: value.account !== null && value.account !== undefined ? accountLookup : root.valueText(value.account_error), linkKind: value.account !== null && value.account !== undefined ? "account" : "" },
+            { label: qsTr("Inspect as account"), value: accountLookup, linkKind: accountLookup !== "-" ? "account" : "" },
             { label: qsTr("Sequencer label"), value: root.valueText(value.known_label), linkKind: "" }
         ]
         if (value.verification_detail !== undefined && String(value.verification_detail || "").length > 0) {

@@ -101,6 +101,10 @@ TestCase {
         model.dashboardNode = null
         model.dashboardSequencerBlocks = []
         model.blockchainModuleReport = null
+        model.storageModuleReport = null
+        model.messagingModuleReport = null
+        model.storageActiveOperation = null
+        model.storageActiveOperationRevision = 0
         model.networkConnectionStatus = ({})
         model.networkConnectionStatusRevision = 0
         model.dashboardMetricHistory = ({})
@@ -151,6 +155,10 @@ TestCase {
         model.accountIdlSelectionRevision = 0
         model.walletPublicKeyProbe = ""
         model.bedrockWalletModuleError = ""
+        model.walletBinary = ""
+        model.walletHome = ""
+        model.localWalletStatus = null
+        model.localWalletStatusError = ""
     }
 
     function test_basecamp_bridge_routes_inspector_calls_through_generic_call() {
@@ -338,6 +346,13 @@ TestCase {
     }
 
     function test_storage_unsupported_pending_modes_stay_inert() {
+        compare(model.normalizedStorageSourceMode("module"), "module")
+        model.storageSourceMode = "module"
+        compare(model.effectiveStorageSourceMode(model.storageSourceMode), "module")
+        compare(model.storageSourceReportArgs(false)[0], "module")
+        compare(model.storageSourceReportArgs(false)[1], "")
+        compare(model.storageSourceTarget(), model.storageModule)
+
         compare(model.normalizedStorageSourceMode("c-library"), "unsupported")
         compare(model.normalizedStorageSourceMode("local-os"), "unsupported")
         model.storageSourceMode = "unsupported"
@@ -345,7 +360,18 @@ TestCase {
         compare(model.storageSourceReportArgs(false)[0], "unsupported")
     }
 
-    function test_delivery_rest_health_allows_missing_connection_status() {
+    function test_delivery_network_monitor_source_is_supported() {
+        compare(model.normalizedMessagingSourceMode("network-monitor"), "network-monitor")
+        model.messagingSourceMode = "network-monitor"
+
+        compare(model.effectiveMessagingSourceMode(model.messagingSourceMode), "network-monitor")
+        compare(model.deliverySourceReportArgs()[0], "network-monitor")
+        compare(model.deliverySourceReportArgs()[1], model.configuredMessagingRestUrl())
+        compare(model.deliverySourceReportArgs()[2], model.messagingMetricsUrl)
+        compare(model.deliverySourceTarget(), model.configuredMessagingRestUrl())
+    }
+
+    function test_delivery_rest_health_rejects_missing_connection_status() {
         const report = {
             module: "delivery_rest",
             probes: [
@@ -354,7 +380,7 @@ TestCase {
             ]
         }
 
-        verify(model.deliveryReportHealthy(report))
+        verify(!model.deliveryReportHealthy(report))
     }
 
     function test_delivery_rest_health_rejects_unhealthy_node_without_connection_status() {
@@ -367,6 +393,90 @@ TestCase {
         }
 
         verify(!model.deliveryReportHealthy(report))
+    }
+
+    function test_delivery_metrics_health_requires_known_metric_family() {
+        verify(model.deliveryReportHealthy({
+            module: "delivery_metrics",
+            probes: [
+                { label: "delivery_metrics.collectOpenMetricsText", ok: true, value: "libp2p_peers 3\n" }
+            ]
+        }))
+        verify(!model.deliveryReportHealthy({
+            module: "delivery_metrics",
+            probes: [
+                { label: "delivery_metrics.collectOpenMetricsText", ok: true, value: "process_cpu_seconds_total 3\n" }
+            ]
+        }))
+    }
+
+    function test_delivery_network_monitor_health_accepts_peer_snapshot() {
+        verify(model.deliveryReportHealthy({
+            module: "delivery_network_monitor",
+            probes: [
+                { label: "delivery_network_monitor.allPeersInfo", ok: true, value: [{ peerId: "peer-a" }] }
+            ]
+        }))
+    }
+
+    function test_delivery_throughput_metric_aliases() {
+        model.messagingModuleReport = {
+            module: "delivery_metrics",
+            probes: [
+                {
+                    label: "delivery_metrics.collectOpenMetricsText",
+                    ok: true,
+                    value: [
+                        "libp2p_network_bytes_total{direction=\"in\"} 20",
+                        "waku_service_requests_total{service=\"/vac/waku/store-query/3.0.0\"} 4",
+                        "waku_store_messages 7"
+                    ].join("\n")
+                }
+            ]
+        }
+
+        compare(model.dashboardMetricRawValue("messaging.network_ingress_recent"), 20)
+        compare(model.dashboardMetricRawValue("messaging.store_query_requests_recent"), 4)
+        compare(model.dashboardMetricRawValue("messaging.store_messages"), 7)
+    }
+
+    function test_storage_active_operation_state_updates_revision() {
+        const before = model.storageActiveOperationRevision
+
+        model.updateStorageActiveOperation({ operationId: "op-1", status: "running" })
+
+        verify(model.storageActiveOperationRevision > before)
+        compare(model.storageActiveOperation.operationId, "op-1")
+
+        model.clearStorageActiveOperation()
+
+        compare(model.storageActiveOperation, null)
+    }
+
+    function test_wallet_profile_configured_accepts_checked_env_home_source() {
+        model.walletBinary = "/usr/bin/lee-wallet"
+        model.walletHome = ""
+        model.localWalletStatus = {
+            status: "ok",
+            home_source: "LEE_WALLET_HOME_DIR"
+        }
+
+        verify(model.walletHomeConfigured())
+        verify(model.walletProfileConfigured())
+    }
+
+    function test_transfer_recipient_lookup_uses_overflow_rows() {
+        model.transferActivityRows = [
+            { recipient: "visible", account_ref: "visible", source: "transfer_outputs", transfers: [] }
+        ]
+        model.transferActivityOverflowRows = [
+            { recipient: "overflow", account_ref: "overflow", source: "transfer_outputs", transfers: [] }
+        ]
+
+        const detail = model.transferRecipientDetailById("overflow")
+
+        verify(detail !== null)
+        compare(detail.address, "overflow")
     }
 
     function test_navigation_delegates() {

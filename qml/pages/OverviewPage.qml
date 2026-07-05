@@ -551,6 +551,22 @@ ColumnLayout {
     }
 
     function l1BlockRows() {
+        const dashboardL1Blocks = root.model.dashboardL1Blocks || []
+        if (dashboardL1Blocks.length > 0) {
+            return dashboardL1Blocks.slice(0, 5).map(function (block) {
+                const header = block.header || {}
+                const transactions = Array.isArray(block.transactions) ? block.transactions : []
+                const hash = root.model.blockHash(block)
+                return {
+                    slot: root.numberText(header.slot),
+                    slotRaw: String(header.slot || ""),
+                    header: root.shortHash(hash),
+                    tx: root.numberText(transactions.length),
+                    status: root.model.blockStatus(block),
+                    blockHash: hash
+                }
+            })
+        }
         const blocks = root.model.blocksPageRows || []
         if (blocks.length > 0 && root.blocksPageRowsAreCurrent()) {
             return blocks.slice(0, 5).map(function (block) {

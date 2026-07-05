@@ -102,6 +102,11 @@ ColumnLayout {
             summary: "Scrape a Prometheus/OpenMetrics endpoint"
         }
         ListElement {
+            key: "network-monitor"
+            label: "Network monitor"
+            summary: "Inspect fleet topology from allpeersinfo, contenttopics, and metrics"
+        }
+        ListElement {
             key: "unsupported"
             label: "Unsupported saved source"
             summary: "Select a supported source to replace this saved value"
@@ -115,6 +120,11 @@ ColumnLayout {
             key: "auto"
             label: "Auto"
             summary: "Use standalone REST"
+        }
+        ListElement {
+            key: "module"
+            label: "Storage module"
+            summary: "Use storage_module through logoscore for read-only node and content checks"
         }
         ListElement {
             key: "rest"
@@ -382,7 +392,7 @@ ColumnLayout {
                     FieldRow {
                         theme: settingsRoot.theme
                         label: qsTr("Wallet home")
-                        placeholderText: qsTr("$NSSA_WALLET_HOME_DIR")
+                        placeholderText: qsTr("$LEE_WALLET_HOME_DIR")
                         sourceText: settingsRoot.model.walletHome
                         syncSourceText: true
                         onTextEdited: text => {

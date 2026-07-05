@@ -519,7 +519,16 @@ ColumnLayout {
     }
 
     function probeKnown(method) {
-        return root.probeValue(method) !== null
+        const probe = root.probe(method)
+        if (!probe || probe.ok !== true || probe.value === undefined || probe.value === null) {
+            return false
+        }
+        return !root.probeSkipped(probe)
+    }
+
+    function probeSkipped(probe) {
+        const value = probe && probe.value
+        return value && typeof value === "object" && value.skipped === true
     }
 
     function metricDisplay(key) {
@@ -639,7 +648,7 @@ ColumnLayout {
             root.metricRow(qsTr("Recent transfer failures"), "storage.failed_transfers_recent"),
             root.metricRow(qsTr("Historical transfer failures"), "storage.failed_transfers_total"),
             root.statusRow(qsTr("Provider lookup"), qsTr("idle"), qsTr("Explicit diagnostic only."), "neutral"),
-            root.statusRow(qsTr("Network download"), qsTr("idle"), qsTr("No operation created by background polling."), "success")
+            root.activeDownloadRow()
         ]
     }
 
@@ -679,8 +688,45 @@ ColumnLayout {
             root.metricRow(qsTr("Recent transfer failures"), "storage.failed_transfers_recent"),
             root.metricRow(qsTr("Historical transfer failures"), "storage.failed_transfers_total"),
             root.statusRow(qsTr("Upload diagnostics"), qsTr("disabled"), qsTr("Mutating diagnostics require explicit backend support."), root.model.storageMutatingDiagnosticsEnabled ? "warning" : "neutral"),
-            root.statusRow(qsTr("Download diagnostics"), qsTr("idle"), qsTr("Future download probes run asynchronously with progress and cancel."), "neutral")
+            root.activeDownloadRow()
         ]
+    }
+
+    function activeDownloadRow() {
+        const operation = root.activeStorageOperation()
+        const status = String(operation && operation.status ? operation.status : "")
+        if (!operation || !status.length) {
+            return root.statusRow(qsTr("Network download"), qsTr("idle"), qsTr("No active background download."), "success")
+        }
+        let tone = "neutral"
+        if (status === "running" || status === "canceling") {
+            tone = "warning"
+        } else if (status === "completed") {
+            tone = "success"
+        } else if (status === "failed") {
+            tone = "error"
+        }
+        return root.statusRow(qsTr("Network download"), status, root.activeStorageOperationDetail(operation), tone)
+    }
+
+    function activeStorageOperation() {
+        const revision = root.model.storageActiveOperationRevision
+        return root.model.storageActiveOperation || null
+    }
+
+    function activeStorageOperationDetail(operation) {
+        const written = Number(operation && operation.bytesWritten ? operation.bytesWritten : 0)
+        const total = Number(operation && operation.contentLength ? operation.contentLength : 0)
+        const path = operation && operation.path ? root.shortText(operation.path, 42) : qsTr("n/a")
+        if (Number.isFinite(total) && total > 0) {
+            const percent = Math.min(100, Math.max(0, Math.floor((written / total) * 100)))
+            return qsTr("%1 / %2 bytes (%3%) to %4")
+                .arg(root.model.valueText(written))
+                .arg(root.model.valueText(total))
+                .arg(percent)
+                .arg(path)
+        }
+        return qsTr("%1 bytes to %2").arg(root.model.valueText(written)).arg(path)
     }
 
     function cidRows() {

@@ -1,10 +1,19 @@
-use std::path::Path;
+use std::{
+    collections::HashMap,
+    path::Path,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
+};
 
 use anyhow::{Context as _, Result, bail};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
-use reqwest::{Method, StatusCode, header};
+use reqwest::{Method, StatusCode, Url, header};
 use serde_json::{Value, json};
+use tokio::io::AsyncWriteExt as _;
 use tokio::runtime::Runtime;
+use tokio_util::io::ReaderStream;
 
 use crate::{
     AccountTransactionSummary, TransactionIdlInspectionReport, TransactionSummary, account_lookup,
@@ -14,8 +23,8 @@ use crate::{
     inspect_transaction_summary_with_idl, last_sequencer_block_id, local_wallet_accounts,
     local_wallet_profile_status, local_wallet_sync_private, logoscore,
     modules::{
-        blockchain_module_report, delivery_source_report, logoscore_status_report,
-        storage_source_report,
+        blockchain_module_report, delivery_report, delivery_source_report, logoscore_status_report,
+        storage_report, storage_source_report,
     },
     normalize_program_id_hex, overview, program_file_info, raw_http_json,
     raw_json_rpc_optional_result, raw_rpc_report, response_excerpt, sequencer_block,
@@ -37,6 +46,7 @@ const EXECUTION_MODULE: &str = "logos_execution_zone";
 const DELIVERY_MODULE: &str = "delivery_module";
 const DEFAULT_STORAGE_REST_ENDPOINT: &str = "http://127.0.0.1:8080/api/storage/v1";
 const DEFAULT_DELIVERY_REST_ENDPOINT: &str = "http://127.0.0.1:8645";
+const MAX_DELIVERY_STORE_PAGE_SIZE: u64 = 100;
 
 #[derive(Debug, serde::Serialize)]
 struct BridgeResponse {
@@ -48,12 +58,57 @@ struct BridgeResponse {
 
 pub struct InspectorBridge {
     runtime: Runtime,
+    storage_operations: StorageOperationRegistry,
+    next_storage_operation_id: AtomicU64,
+}
+
+type StorageOperationRegistry = Arc<Mutex<HashMap<String, StorageOperation>>>;
+
+struct StorageOperation {
+    label: String,
+    cid: String,
+    path: String,
+    endpoint: String,
+    source: String,
+    status: StorageOperationStatus,
+    bytes_written: u64,
+    content_length: Option<u64>,
+    error: Option<String>,
+    result: Option<Value>,
+    cancel_requested: Arc<AtomicBool>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StorageOperationStatus {
+    Running,
+    Canceling,
+    Completed,
+    Failed,
+    Canceled,
+}
+
+impl StorageOperationStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Canceling => "canceling",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Canceled => "canceled",
+        }
+    }
+
+    fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Failed | Self::Canceled)
+    }
 }
 
 impl InspectorBridge {
     pub fn new() -> Result<Self> {
         Ok(Self {
             runtime: Runtime::new().context("failed to create tokio runtime")?,
+            storage_operations: Arc::new(Mutex::new(HashMap::new())),
+            next_storage_operation_id: AtomicU64::new(1),
         })
     }
 
@@ -328,6 +383,9 @@ impl InspectorBridge {
             }
             "localWalletSyncPrivate" => {
                 let args = Args::new(args)?;
+                if args.string(1, "private sync confirmation")? != "confirm-sync-private" {
+                    bail!("private wallet sync requires explicit confirmation");
+                }
                 to_value(local_wallet_sync_private(
                     args.value(0)
                         .cloned()
@@ -372,9 +430,13 @@ impl InspectorBridge {
                 let args = Args::new(args)?;
                 to_value(blockchain_module_report(args.optional_string(0)))
             }
-            "storageReport" => bail!(
-                "storage_module does not satisfy Inspector storage requirements; use storageSourceReport over REST"
-            ),
+            "storageReport" => {
+                let args = Args::new(args)?;
+                to_value(storage_report(
+                    args.optional_string(0),
+                    args.optional_bool(1),
+                ))
+            }
             "storageSourceReport" => {
                 let args = Args::new(args)?;
                 to_value(self.runtime.block_on(storage_source_report(
@@ -385,9 +447,10 @@ impl InspectorBridge {
                     args.optional_bool(4),
                 )))
             }
-            "deliveryReport" => bail!(
-                "delivery_module does not satisfy Inspector messaging diagnostics; use deliverySourceReport over REST"
-            ),
+            "deliveryReport" => {
+                let args = Args::new(args)?;
+                to_value(delivery_report(args.optional_string(0)))
+            }
             "deliverySourceReport" => {
                 let args = Args::new(args)?;
                 to_value(self.runtime.block_on(delivery_source_report(
@@ -402,6 +465,9 @@ impl InspectorBridge {
             "storageFetch" => self.storage_fetch(args),
             "storageUploadUrl" => self.storage_upload_path(args),
             "storageDownloadToUrl" => self.storage_download_to_path(args),
+            "storageDownloadStart" => self.storage_download_start(args),
+            "storageOperationStatus" => self.storage_operation_status(args),
+            "storageOperationCancel" => self.storage_operation_cancel(args),
             "storageRemove" => self.storage_remove(args),
             "deliveryCreateNode" => self.delivery_module_action(args, "createNode"),
             "deliveryStart" => self.delivery_module_action(args, "start"),
@@ -411,6 +477,7 @@ impl InspectorBridge {
                 self.delivery_subscription(args, Method::DELETE, "unsubscribe")
             }
             "deliverySend" => self.delivery_send(args),
+            "deliveryStoreQuery" => self.delivery_store_query(args),
             "capabilitiesReport" => {
                 bail!("capability_module does not expose Inspector capability listing")
             }
@@ -642,6 +709,103 @@ impl InspectorBridge {
             .with_context(|| format!("failed to download storage CID {cid} to `{path}`"))
     }
 
+    fn storage_download_start(&self, args: Value) -> Result<Value> {
+        let args = Args::new(args)?;
+        let source = storage_rest_source(&args)?;
+        require_mutating_diagnostics(&args, source.next_index, "storage download action")?;
+        let endpoint = source.endpoint.to_owned();
+        let cid = args.string(source.next_index + 1, "CID")?.to_owned();
+        let path = args
+            .string(source.next_index + 2, "download path")?
+            .to_owned();
+        let local_only = args.optional_bool(source.next_index + 3);
+        let operation_id = format!(
+            "storage-download-{}",
+            self.next_storage_operation_id
+                .fetch_add(1, Ordering::Relaxed)
+        );
+        let cancel_requested = Arc::new(AtomicBool::new(false));
+        let operation = StorageOperation {
+            label: "Storage download".to_owned(),
+            cid: cid.clone(),
+            path: path.clone(),
+            endpoint: endpoint.clone(),
+            source: if local_only { "local" } else { "network" }.to_owned(),
+            status: StorageOperationStatus::Running,
+            bytes_written: 0,
+            content_length: None,
+            error: None,
+            result: None,
+            cancel_requested: Arc::clone(&cancel_requested),
+        };
+        {
+            let mut operations = self
+                .storage_operations
+                .lock()
+                .map_err(|_| anyhow::anyhow!("storage operation registry is unavailable"))?;
+            if operations
+                .values()
+                .any(|operation| !operation.status.is_terminal())
+            {
+                bail!("a storage download is already running");
+            }
+            operations.insert(operation_id.clone(), operation);
+        }
+
+        let registry = Arc::clone(&self.storage_operations);
+        let task_id = operation_id.clone();
+        self.runtime.spawn(async move {
+            let result = storage_rest_download_tracked(
+                &endpoint,
+                &cid,
+                &path,
+                local_only,
+                &registry,
+                &task_id,
+                &cancel_requested,
+            )
+            .await;
+            finish_storage_operation(&registry, &task_id, &cancel_requested, result);
+        });
+
+        self.storage_operation_value(&operation_id)
+    }
+
+    fn storage_operation_status(&self, args: Value) -> Result<Value> {
+        let args = Args::new(args)?;
+        self.storage_operation_value(args.string(0, "storage operation id")?)
+    }
+
+    fn storage_operation_cancel(&self, args: Value) -> Result<Value> {
+        let args = Args::new(args)?;
+        let operation_id = args.string(0, "storage operation id")?;
+        {
+            let mut operations = self
+                .storage_operations
+                .lock()
+                .map_err(|_| anyhow::anyhow!("storage operation registry is unavailable"))?;
+            let operation = operations
+                .get_mut(operation_id)
+                .with_context(|| format!("storage operation `{operation_id}` was not found"))?;
+            if !operation.status.is_terminal() {
+                operation.cancel_requested.store(true, Ordering::Relaxed);
+                operation.status = StorageOperationStatus::Canceling;
+            }
+        }
+        self.storage_operation_value(operation_id)
+    }
+
+    fn storage_operation_value(&self, operation_id: &str) -> Result<Value> {
+        let operations = self
+            .storage_operations
+            .lock()
+            .map_err(|_| anyhow::anyhow!("storage operation registry is unavailable"))?;
+        let operation = operations
+            .get(operation_id)
+            .with_context(|| format!("storage operation `{operation_id}` was not found"))?;
+        Ok(storage_operation_value(operation_id, operation))
+    }
+
     fn storage_remove(&self, args: Value) -> Result<Value> {
         let args = Args::new(args)?;
         let source = storage_rest_source(&args)?;
@@ -729,6 +893,45 @@ impl InspectorBridge {
         }))
     }
 
+    fn delivery_store_query(&self, args: Value) -> Result<Value> {
+        let args = Args::new(args)?;
+        let source = delivery_rest_source(&args)?;
+        let peer_addr = args.optional_string(source.next_index + 1);
+        let content_topics = args.optional_string(source.next_index + 2);
+        let pubsub_topic = args.optional_string(source.next_index + 3);
+        let cursor = args.optional_string(source.next_index + 4);
+        let page_size = args
+            .value(source.next_index + 5)
+            .and_then(Value::as_u64)
+            .unwrap_or(20)
+            .clamp(1, MAX_DELIVERY_STORE_PAGE_SIZE);
+        let ascending = args.optional_bool(source.next_index + 6);
+        let include_data = args.optional_bool(source.next_index + 7);
+        let query = delivery_store_query_url(
+            source.endpoint,
+            DeliveryStoreQuery {
+                peer_addr,
+                content_topics,
+                pubsub_topic,
+                cursor,
+                page_size,
+                ascending,
+                include_data,
+            },
+        )?;
+        let value = self
+            .runtime
+            .block_on(raw_http_json_url(query.as_str()))
+            .context("failed to query Delivery Store")?;
+        Ok(json!({
+            "endpoint": source.endpoint,
+            "includeData": include_data,
+            "pageSize": page_size,
+            "query": query.as_str(),
+            "value": value,
+        }))
+    }
+
     fn delivery_module_action(&self, args: Value, method: &str) -> Result<Value> {
         let args = Args::new(args)?;
         let start_index = if let Some(source) = args.optional_string(0).filter(|source| {
@@ -737,8 +940,10 @@ impl InspectorBridge {
             if !is_delivery_module_source_token(source) {
                 bail!("delivery node lifecycle actions require delivery module source");
             }
+            require_mutating_diagnostics(&args, 2, "delivery node lifecycle action")?;
             3
         } else {
+            require_mutating_diagnostics(&args, 0, "delivery node lifecycle action")?;
             0
         };
         let call_args = args.iter().skip(start_index).cloned().collect::<Vec<_>>();
@@ -930,6 +1135,16 @@ struct RestSource<'a> {
     next_index: usize,
 }
 
+struct DeliveryStoreQuery<'a> {
+    peer_addr: Option<&'a str>,
+    content_topics: Option<&'a str>,
+    pubsub_topic: Option<&'a str>,
+    cursor: Option<&'a str>,
+    page_size: u64,
+    ascending: bool,
+    include_data: bool,
+}
+
 impl Args {
     fn new(value: Value) -> Result<Self> {
         let values = value
@@ -1099,17 +1314,23 @@ fn rest_source<'a>(
 }
 
 async fn storage_rest_upload(endpoint: &str, path: &str, block_size: u64) -> Result<Value> {
-    let bytes = tokio::fs::read(path)
+    let file = tokio::fs::File::open(path)
         .await
-        .with_context(|| format!("failed to read upload file `{path}`"))?;
+        .with_context(|| format!("failed to open upload file `{path}`"))?;
+    let bytes = file
+        .metadata()
+        .await
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
     let filename = Path::new(path)
         .file_name()
         .map(|value| value.to_string_lossy().into_owned())
         .filter(|value| !value.is_empty());
+    let body = reqwest::Body::wrap_stream(ReaderStream::new(file));
     let mut request = reqwest::Client::new()
         .post(rest_url(endpoint, &format!("/data?blockSize={block_size}")))
         .header(header::CONTENT_TYPE, "application/octet-stream")
-        .body(bytes);
+        .body(body);
     if let Some(filename) = filename {
         request = request.header(
             header::CONTENT_DISPOSITION,
@@ -1123,7 +1344,7 @@ async fn storage_rest_upload(endpoint: &str, path: &str, block_size: u64) -> Res
     Ok(json!({
         "cid": text.trim(),
         "path": path,
-        "bytes": tokio::fs::metadata(path).await.map(|metadata| metadata.len()).unwrap_or(0),
+        "bytes": bytes,
         "endpoint": endpoint,
     }))
 }
@@ -1145,26 +1366,236 @@ async fn storage_rest_download(
         .await
         .with_context(|| format!("failed to call {}", rest_url(endpoint, &route)))?;
     let status = response.status();
-    let bytes = response
-        .bytes()
-        .await
-        .context("failed to read storage download response body")?;
     if !status.is_success() {
+        let bytes = response
+            .bytes()
+            .await
+            .context("failed to read storage download error body")?;
         bail!(
             "storage download failed with status {status}: {}",
             response_excerpt_bytes(&bytes)
         );
     }
-    tokio::fs::write(path, &bytes)
+    let temp_path = format!("{path}.part");
+    let mut file = tokio::fs::File::create(&temp_path)
         .await
-        .with_context(|| format!("failed to write download file `{path}`"))?;
+        .with_context(|| format!("failed to create download file `{temp_path}`"))?;
+    let mut response = response;
+    let mut bytes = 0_u64;
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .context("failed to read storage download response chunk")?
+    {
+        file.write_all(&chunk)
+            .await
+            .with_context(|| format!("failed to write download file `{temp_path}`"))?;
+        bytes = bytes.saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
+    }
+    file.flush()
+        .await
+        .with_context(|| format!("failed to flush download file `{temp_path}`"))?;
+    drop(file);
+    tokio::fs::rename(&temp_path, path)
+        .await
+        .with_context(|| format!("failed to move `{temp_path}` to `{path}`"))?;
     Ok(json!({
         "cid": cid,
         "path": path,
-        "bytes": bytes.len(),
+        "bytes": bytes,
         "source": if local_only { "local" } else { "network" },
         "endpoint": endpoint,
     }))
+}
+
+async fn storage_rest_download_tracked(
+    endpoint: &str,
+    cid: &str,
+    path: &str,
+    local_only: bool,
+    registry: &StorageOperationRegistry,
+    operation_id: &str,
+    cancel_requested: &AtomicBool,
+) -> Result<Value> {
+    if cancel_requested.load(Ordering::Relaxed) {
+        bail!("storage download canceled");
+    }
+    let route = if local_only {
+        format!("/data/{cid}")
+    } else {
+        format!("/data/{cid}/network/stream")
+    };
+    let response = reqwest::Client::new()
+        .get(rest_url(endpoint, &route))
+        .send()
+        .await
+        .with_context(|| format!("failed to call {}", rest_url(endpoint, &route)))?;
+    let status = response.status();
+    if !status.is_success() {
+        let bytes = response
+            .bytes()
+            .await
+            .context("failed to read storage download error body")?;
+        bail!(
+            "storage download failed with status {status}: {}",
+            response_excerpt_bytes(&bytes)
+        );
+    }
+    update_storage_operation(registry, operation_id, |operation| {
+        operation.content_length = response.content_length();
+    });
+    let temp_path = format!("{path}.part");
+    let mut file = tokio::fs::File::create(&temp_path)
+        .await
+        .with_context(|| format!("failed to create download file `{temp_path}`"))?;
+    let mut response = response;
+    let mut bytes = 0_u64;
+    let result = async {
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .context("failed to read storage download response chunk")?
+        {
+            if cancel_requested.load(Ordering::Relaxed) {
+                bail!("storage download canceled");
+            }
+            file.write_all(&chunk)
+                .await
+                .with_context(|| format!("failed to write download file `{temp_path}`"))?;
+            bytes = bytes.saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
+            update_storage_operation(registry, operation_id, |operation| {
+                operation.bytes_written = bytes;
+            });
+        }
+        file.flush()
+            .await
+            .with_context(|| format!("failed to flush download file `{temp_path}`"))?;
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+    drop(file);
+    if let Err(error) = result {
+        let _ignored = tokio::fs::remove_file(&temp_path).await;
+        return Err(error);
+    }
+    if cancel_requested.load(Ordering::Relaxed) {
+        let _ignored = tokio::fs::remove_file(&temp_path).await;
+        bail!("storage download canceled");
+    }
+    tokio::fs::rename(&temp_path, path)
+        .await
+        .with_context(|| format!("failed to move `{temp_path}` to `{path}`"))?;
+    Ok(json!({
+        "cid": cid,
+        "path": path,
+        "bytes": bytes,
+        "source": if local_only { "local" } else { "network" },
+        "endpoint": endpoint,
+    }))
+}
+
+fn finish_storage_operation(
+    registry: &StorageOperationRegistry,
+    operation_id: &str,
+    cancel_requested: &AtomicBool,
+    result: Result<Value>,
+) {
+    update_storage_operation(registry, operation_id, |operation| match result {
+        Ok(value) => {
+            operation.status = StorageOperationStatus::Completed;
+            operation.result = Some(value);
+            operation.error = None;
+        }
+        Err(error) if cancel_requested.load(Ordering::Relaxed) => {
+            operation.status = StorageOperationStatus::Canceled;
+            operation.error = Some(error.to_string());
+        }
+        Err(error) => {
+            operation.status = StorageOperationStatus::Failed;
+            operation.error = Some(error.to_string());
+        }
+    });
+}
+
+fn update_storage_operation(
+    registry: &StorageOperationRegistry,
+    operation_id: &str,
+    update: impl FnOnce(&mut StorageOperation),
+) {
+    if let Ok(mut operations) = registry.lock()
+        && let Some(operation) = operations.get_mut(operation_id)
+    {
+        update(operation);
+    }
+}
+
+fn storage_operation_value(operation_id: &str, operation: &StorageOperation) -> Value {
+    json!({
+        "operationId": operation_id,
+        "label": &operation.label,
+        "cid": &operation.cid,
+        "path": &operation.path,
+        "endpoint": &operation.endpoint,
+        "source": &operation.source,
+        "status": operation.status.as_str(),
+        "bytesWritten": operation.bytes_written,
+        "contentLength": operation.content_length,
+        "progress": match operation.content_length {
+            Some(total) if total > 0 => Some(operation.bytes_written as f64 / total as f64),
+            _ => None,
+        },
+        "error": operation.error.as_deref(),
+        "result": operation.result.as_ref(),
+        "cancellable": !operation.status.is_terminal(),
+    })
+}
+
+fn delivery_store_query_url(endpoint: &str, store_query: DeliveryStoreQuery<'_>) -> Result<Url> {
+    let mut url = Url::parse(&rest_url(endpoint, "/store/v3/messages"))
+        .context("invalid Delivery REST endpoint")?;
+    {
+        let mut query = url.query_pairs_mut();
+        if let Some(peer_addr) = store_query.peer_addr {
+            query.append_pair("peerAddr", peer_addr);
+        }
+        if let Some(content_topics) = store_query.content_topics {
+            query.append_pair("contentTopics", content_topics);
+        }
+        if let Some(pubsub_topic) = store_query.pubsub_topic {
+            query.append_pair("pubsubTopic", pubsub_topic);
+        }
+        if let Some(cursor) = store_query.cursor {
+            query.append_pair("cursor", cursor);
+        }
+        query.append_pair(
+            "includeData",
+            if store_query.include_data {
+                "true"
+            } else {
+                "false"
+            },
+        );
+        query.append_pair("pageSize", &store_query.page_size.to_string());
+        query.append_pair(
+            "ascending",
+            if store_query.ascending {
+                "true"
+            } else {
+                "false"
+            },
+        );
+    }
+    Ok(url)
+}
+
+async fn raw_http_json_url(url: &str) -> Result<Value> {
+    let text = send_text(reqwest::Client::new().get(url), url).await?;
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Ok(Value::Null);
+    }
+    serde_json::from_str(trimmed)
+        .with_context(|| format!("invalid JSON response: {}", response_excerpt(trimmed)))
 }
 
 async fn rest_json_request(
@@ -1422,6 +1853,34 @@ mod tests {
     }
 
     #[test]
+    fn delivery_store_query_url_defaults_to_hashes_only_and_caps_page_size() -> Result<()> {
+        let url = delivery_store_query_url(
+            "http://127.0.0.1:8645/",
+            DeliveryStoreQuery {
+                peer_addr: Some("/ip4/127.0.0.1/tcp/60001/p2p/peer-a"),
+                content_topics: Some("/app/1/chat/proto"),
+                pubsub_topic: None,
+                cursor: None,
+                page_size: MAX_DELIVERY_STORE_PAGE_SIZE,
+                ascending: true,
+                include_data: false,
+            },
+        )?;
+        let text = url.as_str();
+
+        if !text.contains("/store/v3/messages?") {
+            bail!("unexpected store path: {text}");
+        }
+        if !text.contains("includeData=false") || !text.contains("pageSize=100") {
+            bail!("unexpected safe query parameters: {text}");
+        }
+        if !text.contains("peerAddr=%2Fip4%2F127.0.0.1") {
+            bail!("peer address was not url encoded: {text}");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn delivery_mutations_require_mutating_diagnostics_flag() -> Result<()> {
         let bridge = InspectorBridge::new()?;
         let result = bridge.call_module(
@@ -1468,6 +1927,57 @@ mod tests {
         if !error
             .to_string()
             .contains("requires mutating diagnostics to be enabled")
+        {
+            bail!("unexpected error: {error:#}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn storage_background_download_rejects_existing_active_operation() -> Result<()> {
+        let bridge = InspectorBridge::new()?;
+        {
+            let mut operations = bridge
+                .storage_operations
+                .lock()
+                .map_err(|_| anyhow::anyhow!("storage operation registry is unavailable"))?;
+            operations.insert(
+                "existing".to_owned(),
+                StorageOperation {
+                    label: "Storage download".to_owned(),
+                    cid: "cid-a".to_owned(),
+                    path: "/tmp/a".to_owned(),
+                    endpoint: "http://127.0.0.1:8080/api/storage/v1".to_owned(),
+                    source: "network".to_owned(),
+                    status: StorageOperationStatus::Running,
+                    bytes_written: 0,
+                    content_length: None,
+                    error: None,
+                    result: None,
+                    cancel_requested: Arc::new(AtomicBool::new(false)),
+                },
+            );
+        }
+
+        let result = bridge.call_module(
+            INSPECTOR_MODULE,
+            "storageDownloadStart",
+            json!([
+                "rest",
+                "http://127.0.0.1:8080/api/storage/v1",
+                true,
+                "cid-b",
+                "/tmp/b",
+                false
+            ]),
+        );
+
+        let Err(error) = result else {
+            bail!("expected active download to block a second start");
+        };
+        if !error
+            .to_string()
+            .contains("a storage download is already running")
         {
             bail!("unexpected error: {error:#}");
         }

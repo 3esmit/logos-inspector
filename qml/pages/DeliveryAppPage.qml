@@ -28,6 +28,7 @@ ColumnLayout {
         id: deliveryTabs
 
         ListElement { value: "messages"; label: "Messages" }
+        ListElement { value: "store"; label: "Store" }
         ListElement { value: "node"; label: "Node" }
         ListElement { value: "operations"; label: "Operations" }
     }
@@ -278,7 +279,7 @@ ColumnLayout {
                     primary: true
                     enabled: !root.model.busy && root.deliveryModuleSource() && nodeConfig.text.trim().length > 0
                     Layout.preferredWidth: 112
-                    onClicked: root.runDelivery("deliveryCreateNode", [nodeConfig.text.trim()], qsTr("Create node"))
+                    onClicked: root.confirmDelivery("deliveryCreateNode", [nodeConfig.text.trim()], qsTr("Create node"))
                 }
 
                 ActionButton {
@@ -286,7 +287,7 @@ ColumnLayout {
                     text: qsTr("Start")
                     enabled: !root.model.busy && root.deliveryModuleSource()
                     Layout.preferredWidth: 96
-                    onClicked: root.runDelivery("deliveryStart", [], qsTr("Start node"))
+                    onClicked: root.confirmDelivery("deliveryStart", [], qsTr("Start node"))
                 }
 
                 ActionButton {
@@ -294,7 +295,7 @@ ColumnLayout {
                     text: qsTr("Stop")
                     enabled: !root.model.busy && root.deliveryModuleSource()
                     Layout.preferredWidth: 96
-                    onClicked: root.runDelivery("deliveryStop", [], qsTr("Stop node"))
+                    onClicked: root.confirmDelivery("deliveryStop", [], qsTr("Stop node"))
                 }
 
                 ActionButton {
@@ -303,6 +304,115 @@ ColumnLayout {
                     enabled: !root.model.busy
                     Layout.preferredWidth: 112
                     onClicked: root.model.openSettings("network", "messaging")
+                }
+
+                Item {
+                    Layout.fillWidth: true
+                }
+            }
+        }
+    }
+
+    Component {
+        id: storeTab
+
+        Panel {
+            theme: root.theme
+            title: qsTr("Store")
+
+            StatusMessage {
+                visible: !root.deliveryRestSource()
+                theme: root.theme
+                tone: "warning"
+                title: qsTr("REST source required")
+                message: qsTr("Store queries use Direct Waku REST.")
+                Layout.fillWidth: true
+            }
+
+            GridLayout {
+                columns: root.width < 760 ? 1 : 2
+                columnSpacing: root.theme.gap
+                rowSpacing: root.theme.gap
+                Layout.fillWidth: true
+
+                FieldRow {
+                    id: storePeer
+
+                    theme: root.theme
+                    label: qsTr("Peer address")
+                    placeholderText: qsTr("/ip4/127.0.0.1/tcp/60001/p2p/...")
+                    Layout.fillWidth: true
+                }
+
+                FieldRow {
+                    id: storeContentTopics
+
+                    theme: root.theme
+                    label: qsTr("Content topics")
+                    placeholderText: qsTr("/myapp/1/chat/proto")
+                    sourceText: root.activeTopic
+                    syncSourceText: true
+                    Layout.fillWidth: true
+                    onTextEdited: text => root.activeTopic = text
+                }
+
+                FieldRow {
+                    id: storePubsubTopic
+
+                    theme: root.theme
+                    label: qsTr("Pubsub topic")
+                    placeholderText: qsTr("/waku/2/rs/16/32")
+                    Layout.fillWidth: true
+                }
+
+                FieldRow {
+                    id: storeCursor
+
+                    theme: root.theme
+                    label: qsTr("Cursor")
+                    placeholderText: qsTr("optional")
+                    Layout.fillWidth: true
+                }
+
+                FieldRow {
+                    id: storePageSize
+
+                    theme: root.theme
+                    label: qsTr("Page size")
+                    text: "20"
+                    Layout.fillWidth: true
+                }
+
+                CheckBox {
+                    id: storeIncludeData
+
+                    text: qsTr("Include payloads")
+                    checked: false
+                    enabled: root.deliveryRestSource()
+                    palette.text: root.theme.text
+                    Layout.fillWidth: true
+                }
+            }
+
+            RowLayout {
+                spacing: root.theme.gapSmall
+                Layout.fillWidth: true
+
+                ActionButton {
+                    theme: root.theme
+                    text: qsTr("Query Store")
+                    primary: true
+                    enabled: !root.model.busy && root.deliveryRestSource()
+                    Layout.preferredWidth: 132
+                    onClicked: root.runDelivery("deliveryStoreQuery", [
+                        storePeer.text.trim(),
+                        storeContentTopics.text.trim(),
+                        storePubsubTopic.text.trim(),
+                        storeCursor.text.trim(),
+                        root.storePageSizeValue(storePageSize.text),
+                        true,
+                        storeIncludeData.checked
+                    ], qsTr("Store query"))
                 }
 
                 Item {
@@ -356,6 +466,8 @@ ColumnLayout {
 
     function tabComponent(tab) {
         switch (String(tab || "")) {
+        case "store":
+            return storeTab
         case "node":
             return nodeTab
         case "operations":
@@ -386,7 +498,7 @@ ColumnLayout {
 
     function deliveryDataSource() {
         const mode = String(root.model.effectiveMessagingSourceMode(root.model.messagingSourceMode) || "").toLowerCase()
-        return mode === "rest" || mode === "metrics" || mode === "module"
+        return mode === "rest" || mode === "metrics" || mode === "module" || mode === "network-monitor"
     }
 
     function deliveryArgs(extra) {
@@ -475,6 +587,14 @@ ColumnLayout {
             return value
         }
         return value.slice(0, 12) + "..." + value.slice(value.length - 12)
+    }
+
+    function storePageSizeValue(value) {
+        const parsed = Number(String(value || "").trim())
+        if (!Number.isFinite(parsed)) {
+            return 20
+        }
+        return Math.max(1, Math.min(100, Math.floor(parsed)))
     }
 
     function defaultNodeConfig() {

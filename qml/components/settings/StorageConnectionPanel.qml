@@ -162,7 +162,7 @@ Panel {
         theme: root.theme
         tone: "warning"
         title: qsTr("Source unavailable")
-        message: qsTr("The saved source mode no longer has an adapter. Select Auto, Standalone REST, or Metrics only.")
+        message: qsTr("The saved source mode no longer has an adapter. Select Auto, Storage module, Standalone REST, or Metrics only.")
         Layout.fillWidth: true
     }
 

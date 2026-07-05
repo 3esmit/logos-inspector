@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 use crate::{ProgramFileInfo, program_file_info, raw_http_json};
 
-pub const LOCAL_WALLET_HOME_ENV: &str = "NSSA_WALLET_HOME_DIR";
+pub const LOCAL_WALLET_HOME_ENV: &str = "LEE_WALLET_HOME_DIR";
 const LOCAL_WALLET_DEPLOY_TIMEOUT: Duration = Duration::from_secs(120);
 const LOCAL_WALLET_SYNC_TIMEOUT: Duration = Duration::from_secs(120);
 const LOCAL_WALLET_LIST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -129,11 +129,11 @@ pub fn local_wallet_deploy_program(
     }
 
     let explicit_home = profile.wallet_home.trim();
-    let nssa_env_home = env::var(LOCAL_WALLET_HOME_ENV).unwrap_or_default();
+    let env_wallet_home = env::var(LOCAL_WALLET_HOME_ENV).unwrap_or_default();
     let (wallet_home, wallet_home_source) = if !explicit_home.is_empty() {
         (explicit_home.to_owned(), "profile")
-    } else if !nssa_env_home.trim().is_empty() {
-        (nssa_env_home.trim().to_owned(), LOCAL_WALLET_HOME_ENV)
+    } else if !env_wallet_home.trim().is_empty() {
+        (env_wallet_home.trim().to_owned(), LOCAL_WALLET_HOME_ENV)
     } else {
         (String::new(), "none")
     };
@@ -179,11 +179,11 @@ pub fn local_wallet_sync_private(profile: Value) -> Result<LocalWalletSyncPrivat
     }
 
     let explicit_home = profile.wallet_home.trim();
-    let nssa_env_home = env::var(LOCAL_WALLET_HOME_ENV).unwrap_or_default();
+    let env_wallet_home = env::var(LOCAL_WALLET_HOME_ENV).unwrap_or_default();
     let (wallet_home, wallet_home_source) = if !explicit_home.is_empty() {
         (explicit_home.to_owned(), "profile")
-    } else if !nssa_env_home.trim().is_empty() {
-        (nssa_env_home.trim().to_owned(), LOCAL_WALLET_HOME_ENV)
+    } else if !env_wallet_home.trim().is_empty() {
+        (env_wallet_home.trim().to_owned(), LOCAL_WALLET_HOME_ENV)
     } else {
         (String::new(), "none")
     };
@@ -224,11 +224,11 @@ pub fn local_wallet_accounts(profile: Value) -> Result<LocalWalletAccountsReport
     }
 
     let explicit_home = profile.wallet_home.trim();
-    let nssa_env_home = env::var(LOCAL_WALLET_HOME_ENV).unwrap_or_default();
+    let env_wallet_home = env::var(LOCAL_WALLET_HOME_ENV).unwrap_or_default();
     let (wallet_home, wallet_home_source) = if !explicit_home.is_empty() {
         (explicit_home.to_owned(), "profile")
-    } else if !nssa_env_home.trim().is_empty() {
-        (nssa_env_home.trim().to_owned(), LOCAL_WALLET_HOME_ENV)
+    } else if !env_wallet_home.trim().is_empty() {
+        (env_wallet_home.trim().to_owned(), LOCAL_WALLET_HOME_ENV)
     } else {
         (String::new(), "none")
     };
@@ -247,6 +247,12 @@ pub fn local_wallet_accounts(profile: Value) -> Result<LocalWalletAccountsReport
         redactions.push(wallet_binary);
     }
     let output = local_wallet_accounts_output(wallet_binary, &wallet_home, &redactions)?;
+    if output.stdout.len() > LOCAL_WALLET_OUTPUT_LIMIT {
+        bail!(
+            "wallet account list output exceeded {} bytes; refusing to parse partial account data",
+            LOCAL_WALLET_OUTPUT_LIMIT
+        );
+    }
     let stdout = local_wallet_output_text(&output.stdout, &redactions);
     let stderr = local_wallet_output_text(&output.stderr, &redactions);
     let accounts = parse_local_wallet_accounts_output(&stdout);
@@ -823,7 +829,7 @@ mod tests {
     }
 
     #[test]
-    fn local_wallet_profile_status_accepts_nssa_wallet_home_env() {
+    fn local_wallet_profile_status_accepts_lee_wallet_home_env() {
         let status = local_wallet_profile_status_with_env(
             serde_json::json!({
                 "wallet_binary": "",

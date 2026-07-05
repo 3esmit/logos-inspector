@@ -33,7 +33,9 @@ ColumnLayout {
 
     SourceStrip {
         theme: root.theme
-        sources: [qsTr("L2 LEZ"), qsTr("sequencer getProgramIds"), qsTr("sequencer getAccount"), qsTr("local IDL")]
+        sources: root.account !== null
+            ? [qsTr("L2 LEZ"), qsTr("sequencer getProgramIds"), qsTr("sequencer getAccount"), qsTr("local IDL")]
+            : [qsTr("L2 LEZ"), qsTr("sequencer getProgramIds"), qsTr("local IDL")]
         Layout.fillWidth: true
     }
 

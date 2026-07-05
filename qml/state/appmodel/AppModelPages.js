@@ -1118,7 +1118,7 @@ function transferRecipientDetailById(root, value) {
         if (!wanted.length) {
             return null
         }
-        const rows = transferActivityRows || []
+        const rows = (transferActivityRows || []).concat(transferActivityOverflowRows || [])
         for (let i = 0; i < rows.length; ++i) {
             const row = rows[i]
             if (normalizedHashOrValue(row.recipient || row.address) === wanted) {
