@@ -11,6 +11,7 @@ import "appmodel/AppModelOpeners.js" as AppModelOpeners
 import "appmodel/AppModelRegistry.js" as AppModelRegistry
 import "appmodel/AppModelFavorites.js" as AppModelFavorites
 import "appmodel/AppModelLocalNodes.js" as AppModelLocalNodes
+import "appmodel/AppModelSocial.js" as AppModelSocial
 
 QtObject {
     id: root
@@ -108,6 +109,18 @@ QtObject {
     property int messagingRollingWindow: 120
     property bool messagingAdminRestEnabled: false
     property bool messagingMutatingDiagnosticsEnabled: false
+    property int socialCommentPageSize: 20
+    property string socialIdentityDefaultMode: "perConversation"
+    property string selectedSocialIdentityKey: ""
+    property var socialConversationIdentityKeys: ({})
+    property int socialIdentityRevision: 0
+    property var socialCommentState: ({})
+    property int socialCommentRevision: 0
+    property var socialSharedIdls: ({})
+    property string sharedIdlPolicy: "suggestion"
+    property bool sharedIdlAutoShare: false
+    property var socialAutoSharedIdls: ({})
+    property int sharedIdlRevision: 0
     property string storageSourceMode: "auto"
     property string storageRestUrl: "http://127.0.0.1:8080/api/storage/v1"
     property string storageMetricsUrl: "http://127.0.0.1:8008/metrics"
@@ -160,6 +173,7 @@ QtObject {
     property var messagingModuleReport: null
 
     property ListModel registeredIdls: ListModel {}
+    property ListModel socialIdentities: ListModel {}
     property bool idlStateLoaded: false
     property bool walletStateLoaded: false
     property bool settingsStateLoaded: false
@@ -228,6 +242,11 @@ QtObject {
     onMessagingRollingWindowChanged: saveSettingsState()
     onMessagingAdminRestEnabledChanged: saveSettingsState()
     onMessagingMutatingDiagnosticsEnabledChanged: saveSettingsState()
+    onSocialCommentPageSizeChanged: saveSettingsState()
+    onSocialIdentityDefaultModeChanged: saveSettingsState()
+    onSelectedSocialIdentityKeyChanged: saveSettingsState()
+    onSharedIdlPolicyChanged: saveSettingsState()
+    onSharedIdlAutoShareChanged: saveSettingsState()
     onStorageSourceModeChanged: handleStorageConfigurationChanged()
     onStorageRestUrlChanged: handleStorageConfigurationChanged()
     onStorageMetricsUrlChanged: handleStorageConfigurationChanged()
@@ -350,6 +369,80 @@ QtObject {
     function saveSettingsState() { return AppModelIdentity.saveSettingsState(root) }
 
     function settingsStatePayload() { return AppModelIdentity.settingsStatePayload(root) }
+
+    function socialCommentTopic(layer, entity, id) { return AppModelSocial.socialCommentTopic(root, layer, entity, id) }
+
+    function socialLezAccountIdlTopic(accountId) { return AppModelSocial.socialLezAccountIdlTopic(root, accountId) }
+
+    function socialComments(topic) { return AppModelSocial.socialComments(root, topic) }
+
+    function socialCommentStateForTopic(topic) { return AppModelSocial.socialCommentState(root, topic) }
+
+    function loadSocialComments(topic, reset, pageSize, expectedAccountId) { return AppModelSocial.loadSocialComments(root, topic, reset, pageSize, expectedAccountId) }
+
+    function setSocialCommentState(topic, state) { return AppModelSocial.setSocialCommentState(root, topic, state) }
+
+    function socialCommentRowsFromMessages(messages) { return AppModelSocial.socialCommentRowsFromMessages(root, messages) }
+
+    function mergeSocialCommentRows(existingRows, incomingRows) { return AppModelSocial.mergeSocialCommentRows(root, existingRows, incomingRows) }
+
+    function socialStoreCursor(value) { return AppModelSocial.socialStoreCursor(root, value) }
+
+    function lastSocialMessageCursor(messages) { return AppModelSocial.lastSocialMessageCursor(root, messages) }
+
+    function postSocialComment(topic, body, identityKey) { return AppModelSocial.postSocialComment(root, topic, body, identityKey) }
+
+    function socialDeliveryArgs(extra) { return AppModelSocial.socialDeliveryArgs(root, extra) }
+
+    function socialMessageSourceAvailable() { return AppModelSocial.socialMessageSourceAvailable(root) }
+
+    function socialStoreAvailable() { return AppModelSocial.socialStoreAvailable(root) }
+
+    function socialCommentSendAvailable(topic) { return AppModelSocial.socialCommentSendAvailable(root, topic) }
+
+    function validSocialTopic(topic) { return AppModelSocial.validSocialTopic(root, topic) }
+
+    function socialPageSize(pageSize) { return AppModelSocial.socialPageSize(root, pageSize) }
+
+    function loadSocialSettings(value) { return AppModelSocial.loadSocialSettings(root, value) }
+
+    function socialSettingsPayload() { return AppModelSocial.socialSettingsPayload(root) }
+
+    function socialIdentityRows() { return AppModelSocial.socialIdentityRows(root) }
+
+    function createSocialIdentity(displayName) { return AppModelSocial.createSocialIdentity(root, displayName) }
+
+    function socialIdentityForKey(key) { return AppModelSocial.socialIdentityForKey(root, key) }
+
+    function socialIdentityForConversation(topic, key) { return AppModelSocial.socialIdentityForConversation(root, topic, key) }
+
+    function selectSocialIdentity(key) { return AppModelSocial.selectSocialIdentity(root, key) }
+
+    function setSocialIdentityDefaultMode(mode) { return AppModelSocial.setSocialIdentityDefaultMode(root, mode) }
+
+    function normalizedSocialIdentityDefaultMode(value) { return AppModelSocial.normalizedSocialIdentityDefaultMode(value) }
+
+    function socialIdentityPayload(identity) { return AppModelSocial.socialIdentityPayload(root, identity) }
+
+    function setSharedIdlPolicy(policy) { return AppModelSocial.setSharedIdlPolicy(root, policy) }
+
+    function normalizedSharedIdlPolicy(value) { return AppModelSocial.normalizedSharedIdlPolicy(value) }
+
+    function setSharedIdlAutoShare(enabled) { return AppModelSocial.setSharedIdlAutoShare(root, enabled) }
+
+    function refreshSharedIdlsForAccount(accountId, dataHex, ownerProgramId) { return AppModelSocial.refreshSharedIdlsForAccount(root, accountId, dataHex, ownerProgramId) }
+
+    function verifiedSharedIdlEntry(accountId, dataHex, ownerProgramId, topic, payload) { return AppModelSocial.verifiedSharedIdlEntry(root, accountId, dataHex, ownerProgramId, topic, payload) }
+
+    function applySharedIdlPolicy(accountId, entry) { return AppModelSocial.applySharedIdlPolicy(root, accountId, entry) }
+
+    function sharedIdlSuggestions(accountId) { return AppModelSocial.sharedIdlSuggestions(root, accountId) }
+
+    function sharedIdlEntriesForAccount(accountId, ownerProgramId) { return AppModelSocial.sharedIdlEntriesForAccount(root, accountId, ownerProgramId) }
+
+    function publishAccountIdl(accountId, ownerProgramId, idlEntry) { return AppModelSocial.publishAccountIdl(root, accountId, ownerProgramId, idlEntry) }
+
+    function maybeAutoShareAccountIdl(accountId, ownerProgramId, idlEntry) { return AppModelSocial.maybeAutoShareAccountIdl(root, accountId, ownerProgramId, idlEntry) }
 
     function backupSettingsToStorage(encrypted) { return AppModelIdentity.backupSettingsToStorage(root, encrypted) }
 

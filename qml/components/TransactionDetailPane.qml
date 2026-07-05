@@ -291,6 +291,15 @@ ColumnLayout {
         }
     }
 
+    SocialPanel {
+        visible: root.detail !== null
+        theme: root.theme
+        model: root.model
+        title: qsTr("Transaction comments")
+        topic: root.socialTopic()
+        Layout.fillWidth: true
+    }
+
     function normalize(value) {
         if (!value || typeof value !== "object" || Array.isArray(value)) {
             return null
@@ -568,6 +577,13 @@ ColumnLayout {
 
     function favoriteButtonAccessibleName() {
         return root.model.isFavoriteEntry(root.favoriteEntry) ? qsTr("Remove transaction from favorites") : qsTr("Add transaction to favorites")
+    }
+
+    function socialTopic() {
+        if (!root.detail || !root.detail.hash.length) {
+            return ""
+        }
+        return root.model.socialCommentTopic(root.detail.mode === "blockchain" ? "cryptarchia" : "lez", "transaction", root.detail.hash)
     }
 
 }

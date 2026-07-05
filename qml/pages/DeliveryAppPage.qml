@@ -28,6 +28,7 @@ ColumnLayout {
         id: deliveryTabs
 
         ListElement { value: "messages"; label: "Messages" }
+        ListElement { value: "identity"; label: "Identity" }
         ListElement { value: "store"; label: "Store" }
         ListElement { value: "node"; label: "Node" }
         ListElement { value: "operations"; label: "Operations" }
@@ -314,6 +315,130 @@ ColumnLayout {
     }
 
     Component {
+        id: identityTab
+
+        Panel {
+            theme: root.theme
+            title: qsTr("Identity")
+
+            GridLayout {
+                columns: root.width < 760 ? 1 : 2
+                columnSpacing: root.theme.gap
+                rowSpacing: root.theme.gap
+                Layout.fillWidth: true
+
+                FieldRow {
+                    id: identityName
+
+                    theme: root.theme
+                    label: qsTr("Display name")
+                    placeholderText: qsTr("Pseudonym")
+                    Layout.fillWidth: true
+                }
+
+                RowLayout {
+                    spacing: root.theme.gapSmall
+                    Layout.fillWidth: true
+                    Layout.alignment: Qt.AlignBottom
+
+                    ActionButton {
+                        theme: root.theme
+                        text: qsTr("Create")
+                        primary: true
+                        Layout.preferredWidth: 104
+                        onClicked: {
+                            root.model.createSocialIdentity(identityName.text)
+                            identityName.text = ""
+                        }
+                    }
+
+                    ActionButton {
+                        theme: root.theme
+                        text: root.model.socialIdentityDefaultMode === "manual" ? qsTr("Manual default") : qsTr("Per-topic default")
+                        selected: root.model.socialIdentityDefaultMode !== "manual"
+                        Layout.preferredWidth: 172
+                        onClicked: root.model.setSocialIdentityDefaultMode(root.model.socialIdentityDefaultMode === "manual" ? "perConversation" : "manual")
+                    }
+
+                    Item {
+                        Layout.fillWidth: true
+                    }
+                }
+            }
+
+            StatusMessage {
+                theme: root.theme
+                tone: "info"
+                title: qsTr("Posting identity")
+                message: root.identityStatusText()
+                Layout.fillWidth: true
+            }
+
+            ColumnLayout {
+                spacing: root.theme.gapSmall
+                Layout.fillWidth: true
+
+                Repeater {
+                    model: root.identityRows()
+
+                    Frame {
+                        id: identityFrame
+
+                        required property var modelData
+
+                        padding: root.theme.gap
+                        Layout.fillWidth: true
+
+                        background: Rectangle {
+                            color: root.theme.field
+                            radius: root.theme.radius
+                            border.width: 1
+                            border.color: root.model.selectedSocialIdentityKey === String(identityFrame.modelData.key || "") ? root.theme.accent : root.theme.outlineMuted
+                        }
+
+                        contentItem: RowLayout {
+                            spacing: root.theme.gapSmall
+
+                            ColumnLayout {
+                                spacing: 2
+                                Layout.fillWidth: true
+
+                                Text {
+                                    text: String(identityFrame.modelData.displayName || qsTr("Pseudonym"))
+                                    color: root.theme.text
+                                    textFormat: Text.PlainText
+                                    elide: Text.ElideRight
+                                    font.pixelSize: root.theme.primaryText
+                                    font.weight: Font.DemiBold
+                                    Layout.fillWidth: true
+                                }
+
+                                Text {
+                                    text: String(identityFrame.modelData.localId || "")
+                                    color: root.theme.textDim
+                                    textFormat: Text.PlainText
+                                    elide: Text.ElideMiddle
+                                    font.family: "monospace"
+                                    font.pixelSize: root.theme.labelText
+                                    Layout.fillWidth: true
+                                }
+                            }
+
+                            ActionButton {
+                                theme: root.theme
+                                text: root.model.selectedSocialIdentityKey === String(identityFrame.modelData.key || "") ? qsTr("Selected") : qsTr("Use")
+                                selected: root.model.selectedSocialIdentityKey === String(identityFrame.modelData.key || "")
+                                Layout.preferredWidth: 104
+                                onClicked: root.model.selectSocialIdentity(identityFrame.modelData.key)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Component {
         id: storeTab
 
         Panel {
@@ -466,6 +591,8 @@ ColumnLayout {
 
     function tabComponent(tab) {
         switch (String(tab || "")) {
+        case "identity":
+            return identityTab
         case "store":
             return storeTab
         case "node":
@@ -482,6 +609,18 @@ ColumnLayout {
         sources.push(root.model.deliverySourceTarget())
         sources.push(root.model.messagingNetworkPreset)
         return sources
+    }
+
+    function identityRows() {
+        const revision = root.model.socialIdentityRevision
+        return root.model.socialIdentityRows()
+    }
+
+    function identityStatusText() {
+        if (root.model.socialIdentityDefaultMode === "manual") {
+            return qsTr("Manual mode reuses the selected pseudonym until changed.")
+        }
+        return qsTr("Per-topic mode creates a new pseudonym for each new conversation and reuses it for that topic.")
     }
 
     function deliveryModuleSource() {

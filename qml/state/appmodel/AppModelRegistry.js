@@ -97,7 +97,11 @@ function registerIdl(root, name, programId, json, programBinary) {
             programId: resolvedProgramId,
             programIdHex: resolvedProgramIdHex,
             programBinary: String(programBinary || "").trim(),
-            json: json
+            json: json,
+            source: "local",
+            sharedTopic: "",
+            sharedIdentity: ({}),
+            sharedAccountId: ""
         })
         saveIdlState()
         if (transactionDetailValue !== null) {

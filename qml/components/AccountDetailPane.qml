@@ -60,6 +60,14 @@ ColumnLayout {
         }
     }
 
+    Connections {
+        target: root.model
+
+        function onSharedIdlRevisionChanged() {
+            Qt.callLater(root.resetDecodeState)
+        }
+    }
+
     AccountHeaderBlock {
         visible: root.detail !== null
         theme: root.theme
@@ -477,6 +485,61 @@ ColumnLayout {
         }
     }
 
+    ColumnLayout {
+        visible: root.detail !== null && !root.detail.private_reference
+        spacing: root.theme.gapSmall
+        Layout.fillWidth: true
+
+        RowLayout {
+            spacing: root.theme.gapSmall
+            Layout.fillWidth: true
+
+            Text {
+                text: qsTr("Shared IDLs")
+                color: root.theme.text
+                textFormat: Text.PlainText
+                font.pixelSize: 14
+                font.weight: Font.DemiBold
+                Layout.fillWidth: true
+            }
+
+            ActionButton {
+                theme: root.theme
+                text: qsTr("Find")
+                enabled: root.detail !== null && root.model.socialStoreAvailable() && root.model.sharedIdlPolicy !== "disabled"
+                Layout.preferredWidth: 92
+                onClicked: root.model.refreshSharedIdlsForAccount(root.accountCacheId(), root.detail ? root.detail.data_hex : "", root.ownerProgramId())
+            }
+
+            ActionButton {
+                theme: root.theme
+                text: qsTr("Share")
+                enabled: root.canShareActiveIdl()
+                Layout.preferredWidth: 96
+                onClicked: shareIdlConfirm.open()
+            }
+        }
+
+        StatusMessage {
+            visible: root.sharedIdlSuggestionRows().length > 0
+            theme: root.theme
+            tone: "info"
+            title: qsTr("Verified shared IDLs")
+            message: root.sharedIdlSuggestionText()
+            Layout.fillWidth: true
+        }
+    }
+
+    SocialPanel {
+        visible: root.detail !== null && !root.detail.private_reference
+        theme: root.theme
+        model: root.model
+        title: qsTr("Account comments")
+        topic: root.accountSocialTopic()
+        expectedAccountId: root.accountCacheId()
+        Layout.fillWidth: true
+    }
+
     ConfirmActionPopup {
         id: instructionConfirm
 
@@ -485,6 +548,17 @@ ColumnLayout {
         message: root.interactionConfirmMessage()
         confirmText: qsTr("Send")
         onAccepted: root.model.sendIdlInstruction(root.pendingInstructionRequest || root.interactionRequest())
+    }
+
+    ConfirmActionPopup {
+        id: shareIdlConfirm
+
+        theme: root.theme
+        title: qsTr("Share account IDL")
+        message: qsTr("This sends the selected IDL as a public Delivery message for %1.").arg(root.shortId(root.accountCacheId()))
+        confirmText: qsTr("Share")
+        confirmEnabled: root.canShareActiveIdl()
+        onAccepted: root.model.publishAccountIdl(root.accountCacheId(), root.ownerProgramId(), root.shareIdlEntry())
     }
 
     function normalize(value) {
@@ -618,6 +692,9 @@ ColumnLayout {
         if (!root.detail.private_reference && !root.activeDecode) {
             root.autoSelectDecode()
         }
+        if (!root.detail.private_reference && root.detail.data_hex.length) {
+            root.model.refreshSharedIdlsForAccount(root.accountCacheId(), root.detail.data_hex, root.ownerProgramId())
+        }
     }
 
     function sourceItems() {
@@ -671,7 +748,7 @@ ColumnLayout {
     }
 
     function autoSelectDecode() {
-        if (!root.detail || !root.detail.data_hex.length || root.model.registeredIdls.count === 0) {
+        if (!root.detail || !root.detail.data_hex.length) {
             return
         }
 
@@ -687,6 +764,7 @@ ColumnLayout {
                 root.activeIdlLabel = String(response.entry.name || qsTr("IDL"))
                 root.selectedIdlTypeIndex = root.indexForTypeInIdlKey(response.entry.key, response.value.account_type)
                 root.model.cacheAccountIdlSelection(root.accountCacheId(), response.entry, response.value.account_type, root.ownerProgramId())
+                root.model.maybeAutoShareAccountIdl(root.accountCacheId(), root.ownerProgramId(), response.entry)
             } else {
                 root.activeDecodeError = response.error || ""
             }
@@ -711,6 +789,7 @@ ColumnLayout {
                 root.activeDecodeError = ""
                 if (root.model.accountDecodeFullyConsumed(response.value)) {
                     root.model.cacheAccountIdlSelection(root.accountCacheId(), option, response.value.account_type || option.accountType, root.ownerProgramId())
+                    root.model.maybeAutoShareAccountIdl(root.accountCacheId(), root.ownerProgramId(), option)
                 }
             } else {
                 root.activeDecode = null
@@ -1104,10 +1183,45 @@ ColumnLayout {
         if (!root.detail || !root.detail.data_hex.length) {
             return qsTr("No account data is available.")
         }
-        if (root.model.registeredIdls.count === 0) {
+        if (root.model.registeredIdls.count === 0 && root.sharedIdlSuggestionRows().length === 0) {
             return qsTr("Register an account IDL in Programs to decode this data.")
         }
         return qsTr("No registered IDL type decoded this data.")
+    }
+
+    function accountSocialTopic() {
+        return root.detail ? root.model.socialCommentTopic("lez", "account", root.accountCacheId()) : ""
+    }
+
+    function shareIdlEntry() {
+        return root.interactionIdlEntry()
+    }
+
+    function canShareActiveIdl() {
+        const entry = root.shareIdlEntry()
+        return root.detail !== null
+            && !root.detail.private_reference
+            && root.activeDecode !== null
+            && root.model.accountDecodeFullyConsumed(root.activeDecode)
+            && entry !== null
+            && String(entry.json || "").length > 0
+            && String(entry.source || "") !== "shared"
+            && root.model.socialCommentSendAvailable(root.model.socialLezAccountIdlTopic(root.accountCacheId()))
+    }
+
+    function sharedIdlSuggestionRows() {
+        const revision = root.model.sharedIdlRevision
+        return root.model.sharedIdlSuggestions(root.accountCacheId())
+    }
+
+    function sharedIdlSuggestionText() {
+        const rows = root.sharedIdlSuggestionRows()
+        if (!rows.length) {
+            return ""
+        }
+        return rows.map(function (entry) {
+            return String(entry.name || qsTr("Shared IDL"))
+        }).join(", ")
     }
 
     function accountRows() {

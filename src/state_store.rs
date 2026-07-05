@@ -121,6 +121,13 @@ fn default_settings_state() -> Value {
         "execution_refresh_rate": 30,
         "messaging_refresh_rate": 30,
         "storage_refresh_rate": 30,
+        "social_identities": [],
+        "social_identity_default_mode": "perConversation",
+        "social_selected_identity_key": "",
+        "social_conversation_identity_keys": {},
+        "shared_idl_policy": "suggestion",
+        "shared_idl_auto_share": false,
+        "social_auto_shared_idls": {},
         "favorites": []
     })
 }

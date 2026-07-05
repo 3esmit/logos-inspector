@@ -174,8 +174,21 @@ TestCase {
         basecampModel.messagingSourceMode = "auto"
         basecampModel.storageSourceMode = "auto"
         model.registeredIdls.clear()
+        model.socialIdentities.clear()
         model.idlStateLoaded = false
         model.walletStateLoaded = false
+        model.settingsStateLoaded = false
+        model.socialIdentityDefaultMode = "perConversation"
+        model.selectedSocialIdentityKey = ""
+        model.socialConversationIdentityKeys = ({})
+        model.socialIdentityRevision = 0
+        model.socialCommentState = ({})
+        model.socialCommentRevision = 0
+        model.socialSharedIdls = ({})
+        model.sharedIdlPolicy = "suggestion"
+        model.sharedIdlAutoShare = false
+        model.socialAutoSharedIdls = ({})
+        model.sharedIdlRevision = 0
         model.accountIdlSelections = ({})
         model.accountIdlSelectionRevision = 0
         model.walletPublicKeyProbe = ""
@@ -654,6 +667,178 @@ TestCase {
 
         compare(fakeHost.lastMethod, "saveSettingsState")
         compare(fakeHost.lastArgs[0].favorites.length, 2)
+    }
+
+    function test_social_settings_round_trip_identity_and_shared_idl_policy() {
+        fakeHost.responses = {
+            loadSettingsState: {
+                ok: true,
+                value: {
+                    social_identities: [
+                        {
+                            key: "local-1",
+                            display_name: "Ada",
+                            local_id: "local-1",
+                            key_material: "secret",
+                            created_at: "2026-07-05T00:00:00.000Z"
+                        }
+                    ],
+                    social_identity_default_mode: "manual",
+                    social_selected_identity_key: "local-1",
+                    social_conversation_identity_keys: {
+                        "/lez/account/a/comments": "local-1"
+                    },
+                    shared_idl_policy: "sessionOnly",
+                    shared_idl_auto_share: true
+                },
+                text: "OK",
+                error: ""
+            }
+        }
+
+        model.loadSettingsState()
+
+        compare(model.socialIdentities.count, 1)
+        compare(model.socialIdentities.get(0).displayName, "Ada")
+        compare(model.socialIdentityDefaultMode, "manual")
+        compare(model.selectedSocialIdentityKey, "local-1")
+        compare(model.sharedIdlPolicy, "sessionOnly")
+        compare(model.sharedIdlAutoShare, true)
+        const payload = model.settingsStatePayload()
+        compare(payload.social_identities.length, 1)
+        compare(payload.social_identity_default_mode, "manual")
+        compare(payload.shared_idl_policy, "sessionOnly")
+        compare(payload.shared_idl_auto_share, true)
+    }
+
+    function test_social_comment_topics_for_supported_detail_kinds() {
+        compare(model.socialCommentTopic("cryptarchia", "transaction", "tx-1"), "/cryptarchia/transaction/tx-1/comments")
+        compare(model.socialCommentTopic("cryptarchia", "block", "block-1"), "/cryptarchia/block/block-1/comments")
+        compare(model.socialCommentTopic("cryptarchia", "account", "account-1"), "/cryptarchia/account/account-1/comments")
+        compare(model.socialCommentTopic("lez", "transaction", "tx-2"), "/lez/transaction/tx-2/comments")
+        compare(model.socialCommentTopic("lez", "block", "102"), "/lez/block/102/comments")
+        compare(model.socialCommentTopic("lez", "account", "account-2"), "/lez/account/account-2/comments")
+        compare(model.socialLezAccountIdlTopic("account-2"), "/lez/account/account-2/idl")
+        compare(model.socialCommentTopic("lez", "account", "bad/id"), "")
+    }
+
+    function test_social_comment_paging_appends_without_replacing_rows() {
+        const first = [{
+            key: "cursor-1",
+            cursor: "cursor-1",
+            displayName: "Ada",
+            body: "first",
+            createdAt: "2026-07-05T00:00:00.000Z"
+        }]
+        const second = [{
+            key: "cursor-2",
+            cursor: "cursor-2",
+            displayName: "Bea",
+            body: "second",
+            createdAt: "2026-07-05T00:01:00.000Z"
+        }]
+
+        model.setSocialCommentState("/lez/account/a/comments", {
+            rows: first,
+            cursor: "cursor-1",
+            loading: false,
+            error: "",
+            exhausted: false
+        })
+        const merged = model.mergeSocialCommentRows(model.socialComments("/lez/account/a/comments"), second)
+
+        compare(merged.length, 2)
+        compare(merged[0].body, "first")
+        compare(merged[1].body, "second")
+    }
+
+    function test_social_identity_default_creates_per_topic_and_reuses_same_topic() {
+        model.settingsStateLoaded = true
+
+        const first = model.socialIdentityForConversation("/lez/account/a/comments", "")
+        const again = model.socialIdentityForConversation("/lez/account/a/comments", "")
+        const second = model.socialIdentityForConversation("/lez/account/b/comments", "")
+
+        compare(model.socialIdentities.count, 2)
+        compare(first.key, again.key)
+        verify(first.key !== second.key)
+        compare(model.socialConversationIdentityKeys["/lez/account/a/comments"], first.key)
+        compare(fakeHost.lastMethod, "saveSettingsState")
+    }
+
+    function test_shared_idl_policies_store_register_or_ignore_verified_entries() {
+        model.idlStateLoaded = true
+        const sharedEntry = {
+            key: "shared-1",
+            name: "Shared",
+            programId: "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+            programIdHex: "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+            json: "{\"name\":\"Shared\",\"accounts\":[]}",
+            source: "shared",
+            sharedTopic: "/lez/account/account-1/idl",
+            sharedIdentity: { display_name: "Ada" },
+            sharedAccountId: "account-1",
+            accountType: "State"
+        }
+
+        model.setSharedIdlPolicy("disabled")
+        verify(!model.applySharedIdlPolicy("account-1", sharedEntry))
+        compare(model.sharedIdlSuggestions("account-1").length, 0)
+
+        model.setSharedIdlPolicy("suggestion")
+        verify(model.applySharedIdlPolicy("account-1", sharedEntry))
+        compare(model.sharedIdlSuggestions("account-1").length, 1)
+        compare(model.registeredIdls.count, 0)
+
+        model.socialSharedIdls = ({})
+        model.setSharedIdlPolicy("sessionOnly")
+        verify(model.applySharedIdlPolicy("account-1", sharedEntry))
+        compare(model.sharedIdlEntriesForAccount("account-1", sharedEntry.programIdHex).length, 1)
+        compare(model.registeredIdls.count, 0)
+
+        model.setSharedIdlPolicy("autoRegister")
+        verify(model.applySharedIdlPolicy("account-1", sharedEntry))
+        compare(model.registeredIdls.count, 1)
+        compare(model.registeredIdls.get(0).source, "shared")
+    }
+
+    function test_local_idl_priority_beats_shared_match() {
+        const programIdHex = "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+        const localEntry = {
+            key: "local-1",
+            name: "Local",
+            programId: "0x" + programIdHex,
+            programIdHex: programIdHex,
+            programBinary: "",
+            json: "{\"name\":\"Local\",\"accounts\":[]}",
+            source: "local",
+            sharedTopic: "",
+            sharedIdentity: {},
+            sharedAccountId: ""
+        }
+        const sharedEntry = {
+            key: "shared-1",
+            name: "Shared",
+            programId: "0x" + programIdHex,
+            programIdHex: programIdHex,
+            programBinary: "",
+            json: "{\"name\":\"Shared\",\"accounts\":[]}",
+            source: "shared",
+            sharedTopic: "/lez/account/account-1/idl",
+            sharedIdentity: {},
+            sharedAccountId: "account-1",
+            accountType: "State"
+        }
+        model.registeredIdls.append(localEntry)
+        model.setSharedIdlPolicy("sessionOnly")
+        model.applySharedIdlPolicy("account-1", sharedEntry)
+        model.cacheAccountIdlSelection("account-1", sharedEntry, "State", programIdHex)
+
+        const candidates = model.accountDecodeCandidates("account-1", programIdHex)
+
+        compare(candidates.length, 2)
+        compare(candidates[0].entry.key, "local-1")
+        compare(candidates[1].entry.key, "shared-1")
     }
 
     function test_settings_backup_to_storage_uses_wallet_profile_and_persists_cid() {

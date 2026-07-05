@@ -35,6 +35,7 @@ use crate::{
     sequencer_transaction_inspection, sequencer_transaction_inspection_with_idl,
     sequencer_transaction_trace, sequencer_transaction_trace_with_idl,
     settings_backup::{export_app_settings_backup, restore_app_settings_backup},
+    social::social_messages_from_store,
     spel::spel_idl_report,
     state_store::{
         RegisteredIdlEntry, load_idl_state, load_settings_state, load_wallet_state,
@@ -588,6 +589,7 @@ impl InspectorBridge {
             }
             "deliverySend" => self.delivery_send(args),
             "deliveryStoreQuery" => self.delivery_store_query(args),
+            "socialMessagesFromStore" => self.social_messages_from_store(args),
             "capabilitiesReport" => {
                 bail!("capability_module does not expose Inspector capability listing")
             }
@@ -1109,6 +1111,16 @@ impl InspectorBridge {
             "query": query.as_str(),
             "value": value,
         }))
+    }
+
+    fn social_messages_from_store(&self, args: Value) -> Result<Value> {
+        let args = Args::new(args)?;
+        let topic = args.string(0, "social topic")?;
+        let value = args
+            .value(1)
+            .context("Delivery Store response is required")?;
+        let expected_account = args.optional_string(2);
+        to_value(social_messages_from_store(topic, value, expected_account))
     }
 
     fn delivery_module_action(&self, args: Value, method: &str) -> Result<Value> {
@@ -2113,6 +2125,32 @@ mod tests {
         }
         if !text.contains("peerAddr=%2Fip4%2F127.0.0.1") {
             bail!("peer address was not url encoded: {text}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn delivery_store_query_url_supports_comment_cursor_and_payloads() -> Result<()> {
+        let url = delivery_store_query_url(
+            "http://127.0.0.1:8645/",
+            DeliveryStoreQuery {
+                peer_addr: None,
+                content_topics: Some("/lez/account/account-1/comments"),
+                pubsub_topic: None,
+                cursor: Some("cursor-1"),
+                page_size: 25,
+                ascending: true,
+                include_data: true,
+            },
+        )?;
+        let text = url.as_str();
+
+        if !text.contains("contentTopics=%2Flez%2Faccount%2Faccount-1%2Fcomments")
+            || !text.contains("cursor=cursor-1")
+            || !text.contains("pageSize=25")
+            || !text.contains("includeData=true")
+        {
+            bail!("unexpected comment store query parameters: {text}");
         }
         Ok(())
     }
