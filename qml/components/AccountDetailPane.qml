@@ -27,6 +27,7 @@ ColumnLayout {
     property int relatedTransactionDecodeRevision: 0
     property int relatedTransactionDecodeSerial: 0
     readonly property string nullAddressBase58: "11111111111111111111111111111111"
+    readonly property var favoriteEntry: root.detail ? root.model.favoriteAccountEntry(root.detail) : null
 
     visible: detail !== null
     spacing: 14
@@ -53,6 +54,32 @@ ColumnLayout {
         copyText: root.detail ? root.accountCopyValue(root.detail) : ""
         tooltipText: root.detail ? root.accountHeaderTooltip(root.detail) : ""
         alternateText: root.detail ? root.accountAlternate(root.detail) : ""
+    }
+
+    RowLayout {
+        visible: root.detail !== null
+        spacing: root.theme.gapSmall
+        Layout.fillWidth: true
+
+        ActionButton {
+            theme: root.theme
+            text: root.favoriteButtonText()
+            selected: root.model.isFavoriteEntry(root.favoriteEntry)
+            enabled: root.favoriteEntry !== null
+            Layout.preferredWidth: 118
+            accessibleName: root.favoriteButtonAccessibleName()
+            onClicked: root.model.toggleFavorite(root.favoriteEntry)
+        }
+
+        Text {
+            text: root.detail && root.detail.private_reference ? qsTr("Private account reference") : qsTr("Public account")
+            color: root.theme.textDim
+            textFormat: Text.PlainText
+            elide: Text.ElideRight
+            font.pixelSize: root.theme.secondaryText
+            Layout.fillWidth: true
+            Layout.alignment: Qt.AlignVCenter
+        }
     }
 
     SourceStrip {
@@ -284,6 +311,14 @@ ColumnLayout {
             return ""
         }
         return root.accountCopyValue(detail)
+    }
+
+    function favoriteButtonText() {
+        return root.model.isFavoriteEntry(root.favoriteEntry) ? qsTr("Favorited") : qsTr("Favorite")
+    }
+
+    function favoriteButtonAccessibleName() {
+        return root.model.isFavoriteEntry(root.favoriteEntry) ? qsTr("Remove account from favorites") : qsTr("Add account to favorites")
     }
 
     function resetDecodeState() {

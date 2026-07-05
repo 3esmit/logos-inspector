@@ -14,12 +14,14 @@ TestCase {
         property int callCount: 0
         property string lastMethod: ""
         property var lastArgs: []
+        property var calls: []
         property var responses: ({})
 
         function callModuleJson(moduleName, method, argsJson) {
             callCount += 1
             lastMethod = String(method || "")
             lastArgs = JSON.parse(String(argsJson || "[]"))
+            calls = calls.concat([{ method: lastMethod, args: lastArgs }])
             const response = responses[lastMethod]
             if (response !== undefined) {
                 return JSON.stringify(response)
@@ -91,6 +93,7 @@ TestCase {
         fakeHost.callCount = 0
         fakeHost.lastMethod = ""
         fakeHost.lastArgs = []
+        fakeHost.calls = []
         fakeHost.responses = ({})
         basecampHost.callCount = 0
         basecampHost.lastModule = ""
@@ -108,6 +111,9 @@ TestCase {
         model.navigationForwardStack = []
         model.navigationRevision = 0
         model.navigationRestoring = false
+        model.favorites = []
+        model.favoritesRevision = 0
+        model.favoritesFilter = "all"
         model.dashboardNode = null
         model.dashboardSequencerBlocks = []
         model.blockchainModuleReport = null
@@ -505,6 +511,182 @@ TestCase {
         compare(model.currentView, "programs")
         compare(model.parentNavKeyForView("programs"), "l2")
         compare(model.navTokenForView("programs"), "PRG")
+    }
+
+    function test_favorites_toggle_and_filter_rows() {
+        const blockEntry = model.favoriteBlockEntry({
+            type: "blockchain_block",
+            hash: "block-hash",
+            slot: 12,
+            height: 12
+        })
+        const txEntry = model.favoriteTransactionEntry({
+            mode: "lez",
+            hash: "tx-hash",
+            kind: "transfer"
+        })
+
+        verify(blockEntry !== null)
+        compare(blockEntry.kind, "block")
+        compare(blockEntry.layer, "l1")
+        verify(txEntry !== null)
+        compare(txEntry.kind, "transaction")
+        compare(txEntry.layer, "l2")
+
+        verify(model.addFavorite(blockEntry))
+        verify(model.addFavorite(txEntry))
+        compare(model.favoriteCount("all"), 2)
+        compare(model.favoriteCount("block"), 1)
+        compare(model.favoriteRows("block")[0].value, "block-hash")
+        verify(model.isFavoriteEntry(blockEntry))
+
+        verify(model.toggleFavorite(blockEntry))
+        verify(!model.isFavoriteEntry(blockEntry))
+        compare(model.favoriteCount("all"), 1)
+    }
+
+    function test_favorites_persist_in_settings_state() {
+        fakeHost.responses = {
+            loadSettingsState: {
+                ok: true,
+                value: {
+                    favorites: [
+                        {
+                            kind: "account",
+                            layer: "l2",
+                            value: "account-1",
+                            open_kind: "account",
+                            title: "Account account-1",
+                            created_at: "2026-07-05T00:00:00.000Z"
+                        }
+                    ]
+                },
+                text: "OK",
+                error: ""
+            }
+        }
+
+        model.loadSettingsState()
+
+        compare(model.favorites.length, 1)
+        compare(model.favorites[0].value, "account-1")
+        compare(model.settingsStatePayload().favorites.length, 1)
+
+        fakeHost.callCount = 0
+        fakeHost.lastMethod = ""
+        fakeHost.lastArgs = []
+        const txEntry = {
+            kind: "transaction",
+            layer: "l1",
+            value: "tx-1",
+            open_kind: "mantleTransaction",
+            title: "Mantle transaction tx-1",
+            created_at: "2026-07-05T00:01:00.000Z"
+        }
+
+        verify(model.addFavorite(txEntry))
+
+        compare(fakeHost.lastMethod, "saveSettingsState")
+        compare(fakeHost.lastArgs[0].favorites.length, 2)
+    }
+
+    function test_settings_backup_to_storage_uses_wallet_profile_and_persists_cid() {
+        model.settingsStateLoaded = true
+        model.idlStateLoaded = true
+        model.walletStateLoaded = true
+        model.storageMutatingDiagnosticsEnabled = true
+        model.walletHome = "/tmp/wallet-home"
+        model.settingsBackupEncrypted = true
+        fakeHost.responses = {
+            storageBackupSettings: {
+                ok: true,
+                value: {
+                    cid: "cid-backup",
+                    encrypted: true
+                },
+                text: "OK",
+                error: ""
+            }
+        }
+
+        verify(model.backupSettingsToStorage(true))
+
+        const backupCalls = fakeHost.calls.filter(function (call) {
+            return call.method === "storageBackupSettings"
+        })
+        compare(backupCalls.length, 1)
+        compare(backupCalls[0].args[0], "rest")
+        compare(backupCalls[0].args[1], model.configuredStorageRestUrl())
+        compare(backupCalls[0].args[2], true)
+        compare(backupCalls[0].args[3], true)
+        compare(backupCalls[0].args[4].wallet_home, "/tmp/wallet-home")
+        compare(model.settingsBackupCid, "cid-backup")
+        compare(model.settingsRestoreCid, "cid-backup")
+    }
+
+    function test_settings_restore_from_storage_reloads_local_state() {
+        model.settingsStateLoaded = true
+        model.idlStateLoaded = true
+        model.walletStateLoaded = true
+        model.storageMutatingDiagnosticsEnabled = true
+        model.walletHome = "/tmp/wallet-home"
+        model.settingsBackupEncrypted = true
+        fakeHost.responses = {
+            storageRestoreSettings: {
+                ok: true,
+                value: {
+                    restored: true,
+                    encrypted: true,
+                    idl_count: 2,
+                    favorites: 3
+                },
+                text: "OK",
+                error: ""
+            },
+            loadSettingsState: {
+                ok: true,
+                value: {
+                    favorites: []
+                },
+                text: "OK",
+                error: ""
+            },
+            loadIdlState: {
+                ok: true,
+                value: {
+                    idls: [],
+                    account_idl_selections: {}
+                },
+                text: "OK",
+                error: ""
+            },
+            loadWalletState: {
+                ok: true,
+                value: {
+                    profile: {
+                        label: "Local wallet",
+                        wallet_home: "/tmp/wallet-home"
+                    },
+                    operations: []
+                },
+                text: "OK",
+                error: ""
+            }
+        }
+
+        verify(model.restoreSettingsFromStorage("cid-restore", true))
+
+        const restoreCalls = fakeHost.calls.filter(function (call) {
+            return call.method === "storageRestoreSettings"
+        })
+        compare(restoreCalls.length, 1)
+        compare(restoreCalls[0].args[3], "cid-restore")
+        compare(restoreCalls[0].args[4].wallet_home, "/tmp/wallet-home")
+        verify(fakeHost.calls.some(function (call) { return call.method === "loadSettingsState" }))
+        verify(fakeHost.calls.some(function (call) { return call.method === "loadIdlState" }))
+        verify(fakeHost.calls.some(function (call) { return call.method === "loadWalletState" }))
+        compare(model.settingsBackupCid, "cid-restore")
+        verify(model.settingsBackupStatus.indexOf("2 IDLs") >= 0)
     }
 
     function test_navigation_history_tracks_page_selection() {

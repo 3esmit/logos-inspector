@@ -16,6 +16,7 @@ ColumnLayout {
     required property AppModel model
     property var value: null
     readonly property var detail: normalize(value)
+    readonly property var favoriteEntry: root.detail ? root.model.favoriteTransactionEntry(root.detail) : null
     property string transactionView: "decoded"
 
     visible: detail !== null
@@ -53,6 +54,31 @@ ColumnLayout {
             font.family: "monospace"
             font.pixelSize: 12
             Layout.fillWidth: true
+        }
+
+        RowLayout {
+            spacing: root.theme.gapSmall
+            Layout.fillWidth: true
+
+            ActionButton {
+                theme: root.theme
+                text: root.favoriteButtonText()
+                selected: root.model.isFavoriteEntry(root.favoriteEntry)
+                enabled: root.favoriteEntry !== null
+                Layout.preferredWidth: 118
+                accessibleName: root.favoriteButtonAccessibleName()
+                onClicked: root.model.toggleFavorite(root.favoriteEntry)
+            }
+
+            Text {
+                text: root.detail && root.detail.mode === "blockchain" ? qsTr("Mantle transaction") : qsTr("LEZ transaction")
+                color: root.theme.textDim
+                textFormat: Text.PlainText
+                elide: Text.ElideRight
+                font.pixelSize: root.theme.secondaryText
+                Layout.fillWidth: true
+                Layout.alignment: Qt.AlignVCenter
+            }
         }
     }
 
@@ -534,6 +560,14 @@ ColumnLayout {
             return value
         }
         return JSON.stringify(value, null, 2)
+    }
+
+    function favoriteButtonText() {
+        return root.model.isFavoriteEntry(root.favoriteEntry) ? qsTr("Favorited") : qsTr("Favorite")
+    }
+
+    function favoriteButtonAccessibleName() {
+        return root.model.isFavoriteEntry(root.favoriteEntry) ? qsTr("Remove transaction from favorites") : qsTr("Add transaction to favorites")
     }
 
 }

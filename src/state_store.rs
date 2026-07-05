@@ -120,7 +120,8 @@ fn default_settings_state() -> Value {
         "indexer_refresh_rate": 30,
         "execution_refresh_rate": 30,
         "messaging_refresh_rate": 30,
-        "storage_refresh_rate": 30
+        "storage_refresh_rate": 30,
+        "favorites": []
     })
 }
 

@@ -105,6 +105,7 @@ function navTreeItems(root) {
                 token: "LOC",
                 layer: "local",
                 children: [
+                    { key: "favorites", view: "favorites", label: qsTr("Favorites"), token: "FAV", layer: "local" },
                     { key: "localWallet", view: "localWallet", label: qsTr("Wallet"), token: "WAL", layer: "local" }
                 ]
             },

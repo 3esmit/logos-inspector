@@ -14,6 +14,7 @@ ColumnLayout {
     required property AppModel model
     property var value: null
     readonly property var detail: normalize(value)
+    readonly property var favoriteEntry: root.detail ? root.model.favoriteBlockEntry(root.detail) : null
 
     visible: detail !== null
     spacing: 14
@@ -45,6 +46,31 @@ ColumnLayout {
             textPixelSize: 12
             Layout.fillWidth: true
             onActivated: root.model.openReference(root.isLezBlock() ? "indexerBlock" : "block", root.detail.hash)
+        }
+
+        RowLayout {
+            spacing: root.theme.gapSmall
+            Layout.fillWidth: true
+
+            ActionButton {
+                theme: root.theme
+                text: root.favoriteButtonText()
+                selected: root.model.isFavoriteEntry(root.favoriteEntry)
+                enabled: root.favoriteEntry !== null
+                Layout.preferredWidth: 118
+                accessibleName: root.favoriteButtonAccessibleName()
+                onClicked: root.model.toggleFavorite(root.favoriteEntry)
+            }
+
+            Text {
+                text: root.isLezBlock() ? qsTr("LEZ block") : qsTr("Bedrock block")
+                color: root.theme.textDim
+                textFormat: Text.PlainText
+                elide: Text.ElideRight
+                font.pixelSize: root.theme.secondaryText
+                Layout.fillWidth: true
+                Layout.alignment: Qt.AlignVCenter
+            }
         }
     }
 
@@ -269,6 +295,14 @@ ColumnLayout {
             return root.theme.warning
         }
         return root.theme.textMuted
+    }
+
+    function favoriteButtonText() {
+        return root.model.isFavoriteEntry(root.favoriteEntry) ? qsTr("Favorited") : qsTr("Favorite")
+    }
+
+    function favoriteButtonAccessibleName() {
+        return root.model.isFavoriteEntry(root.favoriteEntry) ? qsTr("Remove block from favorites") : qsTr("Add block to favorites")
     }
 
 }

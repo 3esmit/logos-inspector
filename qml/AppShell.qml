@@ -249,6 +249,8 @@ Item {
             return accountsPage
         case "programs":
             return programsPage
+        case "favorites":
+            return favoritesPage
         case "localWallet":
             return localWalletPage
         case "indexer":
@@ -438,6 +440,14 @@ Item {
     Component {
         id: programsPage
         ProgramsPage {
+            theme: theme
+            model: appModel
+        }
+    }
+
+    Component {
+        id: favoritesPage
+        FavoritesPage {
             theme: theme
             model: appModel
         }
