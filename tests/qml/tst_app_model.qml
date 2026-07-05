@@ -245,13 +245,14 @@ TestCase {
         compare(model.effectiveMessagingSourceMode(model.messagingSourceMode), "rest")
         compare(model.deliverySourceReportArgs()[0], "rest")
         compare(model.deliverySourceReportArgs()[1], model.configuredMessagingRestUrl())
-        compare(model.deliverySourceReportArgs()[2], "")
+        compare(model.deliverySourceReportArgs()[2], model.messagingMetricsUrl)
         compare(model.deliverySourceTarget(), model.configuredMessagingRestUrl())
 
         compare(model.normalizedStorageSourceMode(model.storageSourceMode), "auto")
         compare(model.effectiveStorageSourceMode(model.storageSourceMode), "rest")
         compare(model.storageSourceReportArgs(false)[0], "rest")
         compare(model.storageSourceReportArgs(false)[1], model.configuredStorageRestUrl())
+        compare(model.storageSourceReportArgs(false)[2], model.storageMetricsUrl)
         compare(model.storageSourceTarget(), model.configuredStorageRestUrl())
     }
 
@@ -259,12 +260,13 @@ TestCase {
         compare(basecampModel.effectiveMessagingSourceMode(basecampModel.messagingSourceMode), "rest")
         compare(basecampModel.deliverySourceReportArgs()[0], "rest")
         compare(basecampModel.deliverySourceReportArgs()[1], basecampModel.configuredMessagingRestUrl())
-        compare(basecampModel.deliverySourceReportArgs()[2], "")
+        compare(basecampModel.deliverySourceReportArgs()[2], basecampModel.messagingMetricsUrl)
         compare(basecampModel.deliverySourceTarget(), basecampModel.configuredMessagingRestUrl())
 
         compare(basecampModel.effectiveStorageSourceMode(basecampModel.storageSourceMode), "rest")
         compare(basecampModel.storageSourceReportArgs(false)[0], "rest")
         compare(basecampModel.storageSourceReportArgs(false)[1], basecampModel.configuredStorageRestUrl())
+        compare(basecampModel.storageSourceReportArgs(false)[2], basecampModel.storageMetricsUrl)
         compare(basecampModel.storageSourceTarget(), basecampModel.configuredStorageRestUrl())
     }
 

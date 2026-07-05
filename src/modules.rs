@@ -48,11 +48,25 @@ pub fn modules_report() -> LogosModulesReport {
 }
 
 pub fn blockchain_module_report(address: Option<&str>) -> ModuleReport {
-    let _ = address;
+    let mut probes = vec![
+        call_probe(BLOCKCHAIN_MODULE, "get_blockchain_state", &[]),
+        call_probe(BLOCKCHAIN_MODULE, "wallet_get_known_addresses", &[]),
+    ];
+    if let Some(address) = optional(address) {
+        probes.extend([
+            call_probe(BLOCKCHAIN_MODULE, "wallet_get_balance", &[address]),
+            call_probe(BLOCKCHAIN_MODULE, "wallet_get_notes", &[address]),
+            call_probe(
+                BLOCKCHAIN_MODULE,
+                "wallet_get_claimable_vouchers",
+                &[address],
+            ),
+        ]);
+    }
     ModuleReport {
         module: BLOCKCHAIN_MODULE.to_owned(),
         module_info: module_info_probe(BLOCKCHAIN_MODULE),
-        probes: Vec::new(),
+        probes,
     }
 }
 
@@ -88,6 +102,7 @@ pub async fn storage_source_report(
     privileged_debug_enabled: bool,
 ) -> ModuleReport {
     match normalized_storage_source_mode(source_mode) {
+        "module" => storage_report(cid, privileged_debug_enabled),
         "rest" => {
             storage_rest_report(
                 rest_endpoint,
@@ -214,7 +229,7 @@ fn unsupported_storage_source_report(mode: &str) -> ModuleReport {
 
 fn normalized_storage_source_mode(source_mode: &str) -> &'static str {
     match source_mode.trim().to_ascii_lowercase().as_str() {
-        "module" | "basecamp" | "basecamp-module" | "basecamp module" => "rest",
+        "module" | "basecamp" | "basecamp-module" | "basecamp module" => "module",
         "rest" | "standalone-rest" | "standalone rest" | "direct-rest" => "rest",
         "metrics" | "metrics-only" | "metrics only" => "metrics",
         "c-library" | "c library" | "library" => "unsupported",
@@ -282,6 +297,7 @@ pub async fn delivery_source_report(
     metrics_endpoint: Option<&str>,
 ) -> ModuleReport {
     match normalized_delivery_source_mode(source_mode) {
+        "module" => delivery_report(None),
         "rest" => delivery_rest_report(rest_endpoint, metrics_endpoint).await,
         "metrics" => delivery_metrics_report(metrics_endpoint).await,
         mode => unsupported_delivery_source_report(mode),
@@ -493,7 +509,7 @@ fn unsupported_delivery_source_report(mode: &str) -> ModuleReport {
 
 fn normalized_delivery_source_mode(source_mode: &str) -> &'static str {
     match source_mode.trim().to_ascii_lowercase().as_str() {
-        "module" | "basecamp" | "basecamp-module" | "basecamp module" => "rest",
+        "module" | "basecamp" | "basecamp-module" | "basecamp module" => "module",
         "rest" | "direct-rest" | "direct waku rest" | "waku-rest" => "rest",
         "metrics" | "metrics-only" | "metrics only" => "metrics",
         "network-monitor" | "network monitor" => "network-monitor",

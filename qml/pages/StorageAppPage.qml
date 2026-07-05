@@ -271,9 +271,9 @@ ColumnLayout {
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Fetch")
-                    enabled: !root.model.busy && cidField.text.trim().length > 0 && root.storageMutatingSource()
+                    enabled: !root.model.busy && cidField.text.trim().length > 0 && root.storageDataSource()
                     Layout.preferredWidth: 104
-                    onClicked: root.confirmStorage("storageDownloadManifest", [cidField.text.trim()], qsTr("Fetch manifest"))
+                    onClicked: root.runStorage("storageDownloadManifest", [cidField.text.trim()], qsTr("Fetch manifest"))
                 }
 
                 ActionButton {

@@ -102,7 +102,7 @@ Pane {
         const rows = []
         const keys = group.keys || []
         const statusKey = String(group.statusKey || "")
-        if (statusKey.length > 0 && root.footerGroupVisible(keys)) {
+        if (statusKey.length > 0 && root.model.footerFieldEnabled(statusKey) && root.footerGroupVisible(keys)) {
             const statusItem = root.footerFieldItem(statusKey)
             if (!statusItem.hidden) {
                 rows.push(statusItem)

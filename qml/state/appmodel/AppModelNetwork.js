@@ -462,6 +462,12 @@ function storageReportReady(root, report) {
         if (moduleName === "storage_metrics") {
             return true
         }
+        if (moduleName === "storage_rest") {
+            return root.reportProbeOk(report, "peerId")
+                && root.reportProbeOk(report, "spr")
+                && root.reportProbeOk(report, "space")
+                && root.reportProbeOk(report, "manifests")
+        }
         return root.reportProbeOk(report, "peerId")
             || root.reportProbeOk(report, "spr")
             || root.reportProbeOk(report, "space")
@@ -646,7 +652,7 @@ function deliverySourceReportArgs(root) {
         return [
             source,
             source === "rest" ? root.configuredMessagingRestUrl() : "",
-            source === "metrics" ? String(messagingMetricsUrl || "") : ""
+            source === "rest" || source === "metrics" ? String(messagingMetricsUrl || "") : ""
         ]
     }
 }
@@ -659,10 +665,16 @@ function deliverySourceLabel(root) {
         }
         const effective = root.effectiveMessagingSourceMode(messagingSourceMode)
         switch (effective) {
+        case "module":
+            return qsTr("Delivery module")
         case "rest":
             return qsTr("Direct Waku REST")
         case "metrics":
             return qsTr("Metrics only")
+        case "network-monitor":
+            return qsTr("Network monitor")
+        case "discovery-crawler":
+            return qsTr("Discovery crawler")
         case "unsupported":
             return qsTr("Unsupported source")
         default:
@@ -674,6 +686,8 @@ function deliverySourceLabel(root) {
 function deliverySourceTarget(root) {
     with (root) {
         switch (root.effectiveMessagingSourceMode(messagingSourceMode)) {
+        case "module":
+            return deliveryModule
         case "rest":
             return root.configuredMessagingRestUrl()
         case "metrics":
@@ -769,6 +783,18 @@ function normalizedMessagingSourceMode(root, value) {
     with (root) {
         const source = String(value || "auto").trim().toLowerCase()
         switch (source) {
+        case "module":
+        case "basecamp":
+        case "basecamp-module":
+        case "basecamp module":
+            return "module"
+        case "network-monitor":
+        case "network monitor":
+            return "network-monitor"
+        case "discovery-crawler":
+        case "discovery crawler":
+        case "crawler":
+            return "discovery-crawler"
         case "rest":
         case "direct-rest":
         case "direct waku rest":
@@ -778,6 +804,8 @@ function normalizedMessagingSourceMode(root, value) {
         case "metrics-only":
         case "metrics only":
             return "metrics"
+        case "unsupported":
+            return "unsupported"
         case "auto":
         default:
             return "auto"
@@ -797,10 +825,11 @@ function effectiveMessagingSourceMode(root, value) {
 
 function storageSourceReportArgs(root, includeCidProbe) {
     with (root) {
+        const source = root.effectiveStorageSourceMode(storageSourceMode)
         return [
-            root.effectiveStorageSourceMode(storageSourceMode),
-            root.effectiveStorageSourceMode(storageSourceMode) === "rest" ? root.configuredStorageRestUrl() : "",
-            root.effectiveStorageSourceMode(storageSourceMode) === "metrics" ? String(storageMetricsUrl || "") : "",
+            source,
+            source === "rest" ? root.configuredStorageRestUrl() : "",
+            source === "rest" || source === "metrics" ? String(storageMetricsUrl || "") : "",
             includeCidProbe === true ? String(storageCidProbe || "") : "",
             storagePrivilegedDebugEnabled === true
         ]
@@ -815,6 +844,8 @@ function storageSourceLabel(root) {
         }
         const effective = root.effectiveStorageSourceMode(storageSourceMode)
         switch (effective) {
+        case "module":
+            return qsTr("Storage module")
         case "rest":
             return qsTr("Standalone REST")
         case "metrics":
@@ -830,6 +861,8 @@ function storageSourceLabel(root) {
 function storageSourceTarget(root) {
     with (root) {
         switch (root.effectiveStorageSourceMode(storageSourceMode)) {
+        case "module":
+            return storageModule
         case "rest":
             return root.configuredStorageRestUrl()
         case "metrics":
@@ -853,6 +886,11 @@ function normalizedStorageSourceMode(root, value) {
     with (root) {
         const source = String(value || "auto").trim().toLowerCase()
         switch (source) {
+        case "module":
+        case "basecamp":
+        case "basecamp-module":
+        case "basecamp module":
+            return "module"
         case "rest":
         case "standalone-rest":
         case "standalone rest":

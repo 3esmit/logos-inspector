@@ -124,14 +124,18 @@ function openAccount(root, account) {
 function openPrivateAccountReference(root, account) {
     with (root) {
         const value = String(account || "").trim()
-        currentView = "accounts"
-        accountTab = "lookup"
-        accountDetailValue = {
+        currentView = "localWallet"
+        localWalletTab = "privateSync"
+        localWalletLookupTarget = value.length && value.indexOf("Private/") !== 0 ? "Private/" + value : value
+        const detail = {
             type: "private_account_reference",
-            account_id: value.length && value.indexOf("Private/") !== 0 ? "Private/" + value : value,
+            account_id: localWalletLookupTarget,
             source: "local_wallet_required"
         }
-        setResult(qsTr("Private account reference"), qsTr("Private account state is local wallet state. Public RPC can only expose public effects, commitments, nullifiers, or proofs when available."), false, accountDetailValue)
+        setResult(qsTr("Private account reference"), qsTr("Private account state is local wallet state. Sync the configured local wallet profile to inspect local private state."), !walletProfileConfigured(), detail)
+        if (walletProfileConfigured()) {
+            checkLocalWalletProfile(false)
+        }
     }
 }
 

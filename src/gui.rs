@@ -45,10 +45,22 @@ fn standalone_program() -> Option<PathBuf> {
 
 fn sibling_standalone_program(exe: &Path) -> Option<PathBuf> {
     let sibling = exe.with_file_name(standalone_binary_name());
-    if sibling.is_file() {
+    if sibling.is_file() && sibling_is_current_enough(exe, &sibling) {
         return Some(sibling);
     }
     None
+}
+
+fn sibling_is_current_enough(exe: &Path, sibling: &Path) -> bool {
+    let exe_mtime = exe.metadata().and_then(|metadata| metadata.modified()).ok();
+    let sibling_mtime = sibling
+        .metadata()
+        .and_then(|metadata| metadata.modified())
+        .ok();
+    match (exe_mtime, sibling_mtime) {
+        (Some(exe_mtime), Some(sibling_mtime)) => sibling_mtime >= exe_mtime,
+        _ => true,
+    }
 }
 
 fn standalone_binary_name() -> &'static str {
@@ -69,7 +81,7 @@ mod tests {
     };
 
     #[test]
-    fn sibling_standalone_program_accepts_older_sibling() -> Result<()> {
+    fn sibling_standalone_program_rejects_older_sibling() -> Result<()> {
         let dir = temp_test_dir("older");
         fs::create_dir_all(&dir)?;
         let exe = dir.join("logos-inspector");
@@ -81,8 +93,8 @@ mod tests {
         let selected = sibling_standalone_program(&exe);
 
         cleanup_temp_dir(&dir)?;
-        if selected.as_deref() != Some(sibling.as_path()) {
-            bail!("older standalone sibling should be selected, got {selected:?}");
+        if selected.is_some() {
+            bail!("older standalone sibling should not be selected, got {selected:?}");
         }
         Ok(())
     }

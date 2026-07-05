@@ -216,7 +216,8 @@ Panel {
     }
 
     function storageMetricsEnabled() {
-        return root.storageSourceMode() === "metrics"
+        const source = root.storageSourceMode()
+        return source === "rest" || source === "metrics"
     }
 
     function storageDataEnabled() {

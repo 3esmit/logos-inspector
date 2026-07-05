@@ -92,9 +92,29 @@ ColumnLayout {
             summary: "Read-only health, info, version, and optional metrics"
         }
         ListElement {
+            key: "module"
+            label: "Delivery module"
+            summary: "Use delivery_module through logoscore for node lifecycle and module diagnostics"
+        }
+        ListElement {
             key: "metrics"
             label: "Metrics only"
             summary: "Scrape a Prometheus/OpenMetrics endpoint"
+        }
+        ListElement {
+            key: "network-monitor"
+            label: "Network monitor"
+            summary: "Saved source without a standalone adapter"
+        }
+        ListElement {
+            key: "discovery-crawler"
+            label: "Discovery crawler"
+            summary: "Saved source without a standalone adapter"
+        }
+        ListElement {
+            key: "unsupported"
+            label: "Unsupported saved source"
+            summary: "Select a supported source to replace this saved value"
         }
     }
 
@@ -110,6 +130,11 @@ ColumnLayout {
             key: "rest"
             label: "Standalone REST"
             summary: "Read-only space, identity, local data, debug, and metrics"
+        }
+        ListElement {
+            key: "module"
+            label: "Storage module"
+            summary: "Use storage_module through logoscore for module diagnostics"
         }
         ListElement {
             key: "metrics"
