@@ -21,7 +21,9 @@ use crate::{
     decode_account_data_hex_with_idl, decode_event_data_hex_with_idl, indexer_block_by_hash,
     indexer_blocks, indexer_health, indexer_status, indexer_transfer_recipients,
     inspect_transaction_summary_with_idl, last_sequencer_block_id, local_wallet_accounts,
-    local_wallet_profile_status, local_wallet_sync_private, logoscore,
+    local_wallet_command, local_wallet_create_account, local_wallet_deploy_program,
+    local_wallet_profile_status, local_wallet_send_transaction, local_wallet_sync_private,
+    logoscore,
     modules::{
         blockchain_module_report, delivery_report, delivery_source_report, logoscore_status_report,
         storage_report, storage_source_report,
@@ -379,8 +381,62 @@ impl InspectorBridge {
                         .context("local wallet profile is required")?,
                 )?)
             }
+            "localWalletCreateAccount" => {
+                let args = Args::new(args)?;
+                if args.optional_string(3) != Some("confirm-create-account") {
+                    bail!("wallet account creation requires explicit confirmation");
+                }
+                to_value(local_wallet_create_account(
+                    args.value(0)
+                        .cloned()
+                        .context("local wallet profile is required")?,
+                    args.string(1, "account privacy")?,
+                    args.optional_string(2),
+                )?)
+            }
+            "localWalletSendTransaction" => {
+                let args = Args::new(args)?;
+                if args.optional_string(2) != Some("confirm-send-transaction") {
+                    bail!("wallet transaction send requires explicit confirmation");
+                }
+                to_value(local_wallet_send_transaction(
+                    args.value(0)
+                        .cloned()
+                        .context("local wallet profile is required")?,
+                    args.value(1)
+                        .cloned()
+                        .context("wallet send request is required")?,
+                )?)
+            }
+            "localWalletCommand" => {
+                let args = Args::new(args)?;
+                if args.optional_string(2) != Some("confirm-wallet-command") {
+                    bail!("wallet command requires explicit confirmation");
+                }
+                let command_args = serde_json::from_value::<Vec<String>>(
+                    args.value(1)
+                        .cloned()
+                        .context("wallet command arguments are required")?,
+                )
+                .context("wallet command arguments must be a string array")?;
+                to_value(local_wallet_command(
+                    args.value(0)
+                        .cloned()
+                        .context("local wallet profile is required")?,
+                    command_args,
+                )?)
+            }
             "localWalletDeployProgram" => {
-                bail!("wallet program deployment is disabled by the read-only wallet policy")
+                let args = Args::new(args)?;
+                if args.optional_string(2) != Some("confirm-deploy-program") {
+                    bail!("program deployment requires explicit confirmation");
+                }
+                to_value(local_wallet_deploy_program(
+                    args.value(0)
+                        .cloned()
+                        .context("local wallet profile is required")?,
+                    args.string(1, "program path")?,
+                )?)
             }
             "localWalletSyncPrivate" => {
                 let args = Args::new(args)?;
@@ -2057,6 +2113,152 @@ mod tests {
         if !error
             .to_string()
             .contains("requires mutating diagnostics to be enabled")
+        {
+            bail!("unexpected error: {error:#}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn local_wallet_deploy_program_requires_confirmation() -> Result<()> {
+        let bridge = InspectorBridge::new()?;
+        let result = bridge.call_module(
+            INSPECTOR_MODULE,
+            "localWalletDeployProgram",
+            json!([
+                {
+                    "wallet_binary": "wallet",
+                    "wallet_home": ".",
+                    "network_profile": "local"
+                },
+                "program.bin"
+            ]),
+        );
+
+        let Err(error) = result else {
+            bail!("expected missing deployment confirmation to fail");
+        };
+        if !error
+            .to_string()
+            .contains("program deployment requires explicit confirmation")
+        {
+            bail!("unexpected error: {error:#}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn local_wallet_deploy_program_reaches_wallet_validation_after_confirmation() -> Result<()> {
+        let bridge = InspectorBridge::new()?;
+        let result = bridge.call_module(
+            INSPECTOR_MODULE,
+            "localWalletDeployProgram",
+            json!([
+                {
+                    "wallet_binary": "",
+                    "wallet_home": ".",
+                    "network_profile": "local"
+                },
+                "program.bin",
+                "confirm-deploy-program"
+            ]),
+        );
+
+        let Err(error) = result else {
+            bail!("expected wallet validation to fail");
+        };
+        if !error
+            .to_string()
+            .contains("wallet binary is required to deploy program binary")
+        {
+            bail!("unexpected error: {error:#}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn local_wallet_create_account_requires_confirmation() -> Result<()> {
+        let bridge = InspectorBridge::new()?;
+        let result = bridge.call_module(
+            INSPECTOR_MODULE,
+            "localWalletCreateAccount",
+            json!([
+                {
+                    "wallet_binary": "wallet",
+                    "wallet_home": ".",
+                    "network_profile": "local"
+                },
+                "public",
+                ""
+            ]),
+        );
+
+        let Err(error) = result else {
+            bail!("expected missing create confirmation to fail");
+        };
+        if !error
+            .to_string()
+            .contains("wallet account creation requires explicit confirmation")
+        {
+            bail!("unexpected error: {error:#}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn local_wallet_send_transaction_requires_confirmation() -> Result<()> {
+        let bridge = InspectorBridge::new()?;
+        let result = bridge.call_module(
+            INSPECTOR_MODULE,
+            "localWalletSendTransaction",
+            json!([
+                {
+                    "wallet_binary": "wallet",
+                    "wallet_home": ".",
+                    "network_profile": "local"
+                },
+                {
+                    "from": "Public/source",
+                    "to": "Public/recipient",
+                    "amount": "1"
+                }
+            ]),
+        );
+
+        let Err(error) = result else {
+            bail!("expected missing send confirmation to fail");
+        };
+        if !error
+            .to_string()
+            .contains("wallet transaction send requires explicit confirmation")
+        {
+            bail!("unexpected error: {error:#}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn local_wallet_command_requires_confirmation() -> Result<()> {
+        let bridge = InspectorBridge::new()?;
+        let result = bridge.call_module(
+            INSPECTOR_MODULE,
+            "localWalletCommand",
+            json!([
+                {
+                    "wallet_binary": "wallet",
+                    "wallet_home": ".",
+                    "network_profile": "local"
+                },
+                ["account", "list"]
+            ]),
+        );
+
+        let Err(error) = result else {
+            bail!("expected missing wallet command confirmation to fail");
+        };
+        if !error
+            .to_string()
+            .contains("wallet command requires explicit confirmation")
         {
             bail!("unexpected error: {error:#}");
         }

@@ -1,4 +1,5 @@
 .import "../../services/BridgeHelpers.js" as BridgeHelpers
+.import "../../utils/UiFormat.js" as UiFormat
 
 function loadIdlState(root) {
     with (root) {
@@ -450,17 +451,177 @@ function checkedLocalWalletProfile(root) {
     }
 }
 
+function createWalletAccount(root) {
+    with (root) {
+        if (busy) {
+            setResult(qsTr("Wallet account"), qsTr("Another inspection is already running."), true)
+            return null
+        }
+        if (!walletProfileConfigured()) {
+            openLocalWallet("", "profiles")
+            setResult(qsTr("Wallet account"), qsTr("Configure wallet binary and wallet home before creating an account."), true)
+            return null
+        }
+        const privacy = String(walletCreatePrivacy || "public").toLowerCase() === "private" ? "private" : "public"
+        const label = String(walletCreateLabel || "").trim()
+
+        busy = true
+        statusText = qsTr("Wallet account")
+        return requestModuleAsync(inspectorModule, "localWalletCreateAccount", [walletProfile(), privacy, label, "confirm-create-account"], qsTr("Wallet account"), true, function (response) {
+            busy = false
+            if (response.ok) {
+                appendLocalWalletOperation(qsTr("Create account"), "created", root.walletCommandOperationDetail(response.value))
+                walletCreateLabel = ""
+            } else {
+                appendLocalWalletOperation(qsTr("Create account"), "down", response.error || qsTr("Account creation failed."))
+            }
+        })
+    }
+}
+
+function sendWalletTransaction(root) {
+    with (root) {
+        if (busy) {
+            setResult(qsTr("Wallet send"), qsTr("Another inspection is already running."), true)
+            return null
+        }
+        if (!walletProfileConfigured()) {
+            openLocalWallet("", "profiles")
+            setResult(qsTr("Wallet send"), qsTr("Configure wallet binary and wallet home before sending a transaction."), true)
+            return null
+        }
+        const request = {
+            from: String(walletSendFrom || "").trim(),
+            to: String(walletSendTo || "").trim(),
+            to_keys: String(walletSendToKeys || "").trim(),
+            to_npk: String(walletSendToNpk || "").trim(),
+            to_vpk: String(walletSendToVpk || "").trim(),
+            to_identifier: String(walletSendToIdentifier || "").trim(),
+            amount: String(walletSendAmount || "").trim()
+        }
+        if (!request.from.length || !request.amount.length) {
+            setResult(qsTr("Wallet send"), qsTr("Sender and amount are required."), true)
+            return null
+        }
+        if (!request.to.length && !request.to_keys.length && (!request.to_npk.length || !request.to_vpk.length)) {
+            setResult(qsTr("Wallet send"), qsTr("Recipient account, keys file, or NPK/VPK pair is required."), true)
+            return null
+        }
+
+        busy = true
+        statusText = qsTr("Wallet send")
+        return requestModuleAsync(inspectorModule, "localWalletSendTransaction", [walletProfile(), request, "confirm-send-transaction"], qsTr("Wallet send"), true, function (response) {
+            busy = false
+            if (response.ok) {
+                appendLocalWalletOperation(qsTr("Send transaction"), "submitted", root.walletCommandOperationDetail(response.value))
+            } else {
+                appendLocalWalletOperation(qsTr("Send transaction"), "down", response.error || qsTr("Wallet send failed."))
+            }
+        })
+    }
+}
+
+function readIncomingWalletTransactions(root) {
+    with (root) {
+        if (busy) {
+            setResult(qsTr("Read incoming"), qsTr("Another inspection is already running."), true)
+            return null
+        }
+        if (!walletProfileConfigured()) {
+            openLocalWallet("", "profiles")
+            setResult(qsTr("Read incoming"), qsTr("Configure wallet binary and wallet home before reading incoming transactions."), true)
+            return null
+        }
+
+        busy = true
+        statusText = qsTr("Read incoming")
+        return requestModuleAsync(inspectorModule, "localWalletSyncPrivate", [walletProfile(), "confirm-sync-private"], qsTr("Read incoming"), true, function (response) {
+            busy = false
+            if (response.ok) {
+                appendLocalWalletOperation(qsTr("Read incoming"), "submitted", root.privateSyncOperationDetail(response.value))
+            } else {
+                appendLocalWalletOperation(qsTr("Read incoming"), "down", response.error || qsTr("Incoming transaction read failed."))
+            }
+        })
+    }
+}
+
+function runWalletCommand(root, commandArgs) {
+    with (root) {
+        const args = Array.isArray(commandArgs) ? commandArgs : []
+        if (busy) {
+            setResult(qsTr("Wallet command"), qsTr("Another inspection is already running."), true)
+            return null
+        }
+        if (!walletProfileConfigured()) {
+            openLocalWallet("", "profiles")
+            setResult(qsTr("Wallet command"), qsTr("Configure wallet binary and wallet home before running wallet commands."), true)
+            return null
+        }
+        if (!args.length) {
+            setResult(qsTr("Wallet command"), qsTr("Wallet command arguments are required."), true)
+            return null
+        }
+
+        busy = true
+        statusText = qsTr("Wallet command")
+        return requestModuleAsync(inspectorModule, "localWalletCommand", [walletProfile(), args, "confirm-wallet-command"], qsTr("Wallet command"), true, function (response) {
+            busy = false
+            if (response.ok) {
+                appendLocalWalletOperation(qsTr("Wallet command"), "completed", root.walletCommandOperationDetail(response.value))
+            } else {
+                appendLocalWalletOperation(qsTr("Wallet command"), "down", response.error || qsTr("Wallet command failed."))
+            }
+        })
+    }
+}
+
+function walletCommandOperationDetail(root, value) {
+    with (root) {
+        const report = value || {}
+        const tx = String(report.tx_hash || report.txHash || "")
+        if (tx.length) {
+            return qsTr("tx %1").arg(UiFormat.shortHash(tx))
+        }
+        const account = String(report.account_id || report.accountId || "")
+        if (account.length) {
+            return UiFormat.shortId(account)
+        }
+        const command = String(report.command || "")
+        if (command.length) {
+            return command
+        }
+        return String(report.status || qsTr("completed"))
+    }
+}
+
 function deployProgramBinary(root, programPath) {
     with (root) {
-        const message = qsTr("Wallet program deployment is disabled by the read-only wallet policy.")
-        setResult(qsTr("Program deploy"), message, true)
-        appendLocalWalletOperation(qsTr("Deploy program"), "disabled", message)
-        return {
-            ok: false,
-            text: "",
-            value: null,
-            error: message
+        const path = String(programPath || "").trim()
+        if (busy) {
+            setResult(qsTr("Program deploy"), qsTr("Another inspection is already running."), true)
+            return null
         }
+        if (!path.length) {
+            setResult(qsTr("Program deploy"), qsTr("Program binary path is required."), true)
+            return null
+        }
+        if (!walletProfileConfigured()) {
+            openLocalWallet("", "profiles")
+            setResult(qsTr("Program deploy"), qsTr("Configure wallet binary and wallet home before deploying a program."), true)
+            return null
+        }
+
+        busy = true
+        statusText = qsTr("Program deploy")
+        return requestModuleAsync(inspectorModule, "localWalletDeployProgram", [walletProfile(), path, "confirm-deploy-program"], qsTr("Program deploy"), true, function (response) {
+            busy = false
+            if (response.ok) {
+                appendLocalWalletOperation(qsTr("Deploy program"), "submitted", root.deployProgramOperationDetail(response.value))
+            } else {
+                appendLocalWalletOperation(qsTr("Deploy program"), "down", response.error || qsTr("Program deployment failed."))
+            }
+        })
     }
 }
 
@@ -470,10 +631,10 @@ function deployProgramOperationDetail(root, value) {
         const program = String(report.program_id_base58 || report.program_id_hex || "")
         const tx = String(report.deployment_tx_hash || "")
         if (program.length > 0 && tx.length > 0) {
-            return qsTr("%1, tx %2").arg(root.shortHash(program)).arg(root.shortHash(tx))
+            return qsTr("%1, tx %2").arg(UiFormat.shortHash(program)).arg(UiFormat.shortHash(tx))
         }
         if (tx.length > 0) {
-            return qsTr("tx %1").arg(root.shortHash(tx))
+            return qsTr("tx %1").arg(UiFormat.shortHash(tx))
         }
         return qsTr("submitted")
     }

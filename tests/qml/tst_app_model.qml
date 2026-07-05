@@ -102,6 +102,7 @@ TestCase {
         basecampHost.serializeResults = false
         model.currentView = "overview"
         model.statusText = "Ready"
+        model.busy = false
         model.resultTitle = "Output"
         model.resultText = ""
         model.resultValue = null
@@ -174,14 +175,26 @@ TestCase {
         basecampModel.storageSourceMode = "auto"
         model.registeredIdls.clear()
         model.idlStateLoaded = false
+        model.walletStateLoaded = false
         model.accountIdlSelections = ({})
         model.accountIdlSelectionRevision = 0
         model.walletPublicKeyProbe = ""
         model.bedrockWalletModuleError = ""
         model.walletBinary = ""
         model.walletHome = ""
+        model.walletCreatePrivacy = "public"
+        model.walletCreateLabel = ""
+        model.walletSendFrom = ""
+        model.walletSendTo = ""
+        model.walletSendToKeys = ""
+        model.walletSendToNpk = ""
+        model.walletSendToVpk = ""
+        model.walletSendToIdentifier = ""
+        model.walletSendAmount = ""
+        model.walletAdvancedCommand = ""
         model.localWalletStatus = null
         model.localWalletStatusError = ""
+        model.localWalletOperations = []
     }
 
     function test_basecamp_bridge_routes_inspector_calls_through_generic_call() {
@@ -851,6 +864,192 @@ TestCase {
         compare(model.registeredIdls.get(0).name, "Sample")
         compare(model.registeredIdls.get(0).programIdHex, programId.slice(2))
         compare(fakeHost.lastMethod, "saveIdlState")
+    }
+
+    function test_deploy_program_binary_uses_wallet_confirmation_and_logs_operation() {
+        model.walletStateLoaded = true
+        model.walletBinary = "/usr/bin/lee-wallet"
+        model.walletHome = "/tmp/wallet-home"
+        fakeHost.responses = {
+            localWalletDeployProgram: {
+                ok: true,
+                value: {
+                    source: "local_wallet_cli",
+                    status: "submitted",
+                    program_id_hex: "abc123",
+                    deployment_tx_hash: "tx123"
+                },
+                text: "OK",
+                error: ""
+            }
+        }
+
+        model.deployProgramBinary("/tmp/program.bin")
+
+        tryVerify(function () {
+            return fakeHost.calls.some(function (call) {
+                return call.method === "localWalletDeployProgram"
+            })
+        })
+        const deployCalls = fakeHost.calls.filter(function (call) {
+            return call.method === "localWalletDeployProgram"
+        })
+        compare(deployCalls.length, 1)
+        compare(deployCalls[0].args[0].wallet_binary, "/usr/bin/lee-wallet")
+        compare(deployCalls[0].args[0].wallet_home, "/tmp/wallet-home")
+        compare(deployCalls[0].args[1], "/tmp/program.bin")
+        compare(deployCalls[0].args[2], "confirm-deploy-program")
+        compare(model.localWalletOperations.length, 1)
+        compare(model.localWalletOperations[0].label, "Deploy program")
+        compare(model.localWalletOperations[0].status, "submitted")
+    }
+
+    function test_create_wallet_account_uses_confirmation_and_logs_operation() {
+        model.walletStateLoaded = true
+        model.walletBinary = "/usr/bin/lee-wallet"
+        model.walletHome = "/tmp/wallet-home"
+        model.walletCreatePrivacy = "private"
+        model.walletCreateLabel = "receiver"
+        fakeHost.responses = {
+            localWalletCreateAccount: {
+                ok: true,
+                value: {
+                    source: "local_wallet_cli",
+                    status: "created",
+                    command: "wallet account new private",
+                    account_id: "Private/abc123"
+                },
+                text: "OK",
+                error: ""
+            }
+        }
+
+        model.createWalletAccount()
+
+        tryVerify(function () {
+            return fakeHost.calls.some(function (call) {
+                return call.method === "localWalletCreateAccount"
+            })
+        })
+        const calls = fakeHost.calls.filter(function (call) {
+            return call.method === "localWalletCreateAccount"
+        })
+        compare(calls.length, 1)
+        compare(calls[0].args[0].wallet_binary, "/usr/bin/lee-wallet")
+        compare(calls[0].args[1], "private")
+        compare(calls[0].args[2], "receiver")
+        compare(calls[0].args[3], "confirm-create-account")
+        compare(model.walletCreateLabel, "")
+        compare(model.localWalletOperations[0].label, "Create account")
+        compare(model.localWalletOperations[0].status, "created")
+    }
+
+    function test_send_wallet_transaction_uses_confirmation_and_logs_operation() {
+        model.walletStateLoaded = true
+        model.walletBinary = "/usr/bin/lee-wallet"
+        model.walletHome = "/tmp/wallet-home"
+        model.walletSendFrom = "Public/source"
+        model.walletSendTo = "Private/recipient"
+        model.walletSendAmount = "37"
+        fakeHost.responses = {
+            localWalletSendTransaction: {
+                ok: true,
+                value: {
+                    source: "local_wallet_cli",
+                    status: "submitted",
+                    command: "wallet auth-transfer send",
+                    tx_hash: "tx123"
+                },
+                text: "OK",
+                error: ""
+            }
+        }
+
+        model.sendWalletTransaction()
+
+        tryVerify(function () {
+            return fakeHost.calls.some(function (call) {
+                return call.method === "localWalletSendTransaction"
+            })
+        })
+        const calls = fakeHost.calls.filter(function (call) {
+            return call.method === "localWalletSendTransaction"
+        })
+        compare(calls.length, 1)
+        compare(calls[0].args[1].from, "Public/source")
+        compare(calls[0].args[1].to, "Private/recipient")
+        compare(calls[0].args[1].amount, "37")
+        compare(calls[0].args[2], "confirm-send-transaction")
+        compare(model.localWalletOperations[0].label, "Send transaction")
+        compare(model.localWalletOperations[0].status, "submitted")
+    }
+
+    function test_read_incoming_wallet_transactions_uses_private_sync_confirmation() {
+        model.walletStateLoaded = true
+        model.walletBinary = "/usr/bin/lee-wallet"
+        model.walletHome = "/tmp/wallet-home"
+        fakeHost.responses = {
+            localWalletSyncPrivate: {
+                ok: true,
+                value: {
+                    source: "local_wallet_cli",
+                    status: "submitted",
+                    wallet_home_source: "profile"
+                },
+                text: "OK",
+                error: ""
+            }
+        }
+
+        model.readIncomingWalletTransactions()
+
+        tryVerify(function () {
+            return fakeHost.calls.some(function (call) {
+                return call.method === "localWalletSyncPrivate"
+            })
+        })
+        const syncCalls = fakeHost.calls.filter(function (call) {
+            return call.method === "localWalletSyncPrivate"
+        })
+        compare(syncCalls.length, 1)
+        compare(syncCalls[0].args[1], "confirm-sync-private")
+        compare(model.localWalletOperations[0].label, "Read incoming")
+        compare(model.localWalletOperations[0].status, "submitted")
+    }
+
+    function test_run_wallet_command_uses_confirmation_and_logs_operation() {
+        model.walletStateLoaded = true
+        model.walletBinary = "/usr/bin/lee-wallet"
+        model.walletHome = "/tmp/wallet-home"
+        fakeHost.responses = {
+            localWalletCommand: {
+                ok: true,
+                value: {
+                    source: "local_wallet_cli",
+                    status: "completed",
+                    command: "wallet account get --account-id Public/abc"
+                },
+                text: "OK",
+                error: ""
+            }
+        }
+
+        model.runWalletCommand(["account", "get", "--account-id", "Public/abc"])
+
+        tryVerify(function () {
+            return fakeHost.calls.some(function (call) {
+                return call.method === "localWalletCommand"
+            })
+        })
+        const calls = fakeHost.calls.filter(function (call) {
+            return call.method === "localWalletCommand"
+        })
+        compare(calls.length, 1)
+        compare(calls[0].args[1][0], "account")
+        compare(calls[0].args[1][2], "--account-id")
+        compare(calls[0].args[2], "confirm-wallet-command")
+        compare(model.localWalletOperations[0].label, "Wallet command")
+        compare(model.localWalletOperations[0].status, "completed")
     }
 
     function test_blocks_page_uses_tip_range_and_blocks_backend() {

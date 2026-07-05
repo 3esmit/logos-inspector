@@ -96,9 +96,10 @@ pub(crate) use transfers::transfer_recipient_summaries_from_blocks;
 pub use transfers::{RecipientTransferSummary, TransferActivityPage, TransferRecipientSummary};
 pub use wallet::{
     LOCAL_WALLET_HOME_ENV, LocalWalletAccountRow, LocalWalletAccountsReport,
-    LocalWalletDeployReport, LocalWalletProfileStatus, LocalWalletSyncPrivateReport,
-    bedrock_wallet_balance, local_wallet_accounts, local_wallet_deploy_program,
-    local_wallet_profile_status, local_wallet_sync_private,
+    LocalWalletCommandReport, LocalWalletDeployReport, LocalWalletProfileStatus,
+    LocalWalletSyncPrivateReport, bedrock_wallet_balance, local_wallet_accounts,
+    local_wallet_command, local_wallet_create_account, local_wallet_deploy_program,
+    local_wallet_profile_status, local_wallet_send_transaction, local_wallet_sync_private,
 };
 
 pub const ACCOUNT_TRANSACTION_LIMIT: usize = 20;

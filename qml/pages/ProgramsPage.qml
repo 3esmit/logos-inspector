@@ -476,6 +476,7 @@ ColumnLayout {
 
             RowLayout {
                 spacing: root.theme.gapSmall
+                Layout.fillWidth: true
 
                 ActionButton {
                     theme: root.theme
@@ -486,14 +487,46 @@ ColumnLayout {
                     onClicked: root.model.callInspector("programFile", [programPath.text], qsTr("Program file"))
                 }
 
+                ActionButton {
+                    theme: root.theme
+                    text: qsTr("Deploy")
+                    enabled: !root.model.busy && programPath.text.trim().length > 0 && root.model.walletProfileConfigured()
+                    Layout.preferredWidth: 124
+                    onClicked: deployProgramConfirm.open()
+                }
+
+                ActionButton {
+                    theme: root.theme
+                    text: qsTr("Wallet")
+                    enabled: !root.model.busy
+                    Layout.preferredWidth: 104
+                    onClicked: root.model.openLocalWallet("", "profiles")
+                }
+
+                Item {
+                    Layout.fillWidth: true
+                }
             }
 
             StatusMessage {
                 theme: root.theme
-                tone: "info"
-                title: qsTr("Read-only wallet policy")
-                message: qsTr("Standalone inspection can inspect program binaries. Wallet program deployment is disabled.")
+                tone: root.model.walletProfileConfigured() ? "info" : "warning"
+                title: root.model.walletProfileConfigured() ? qsTr("Deploy ready") : qsTr("Local wallet required")
+                message: root.model.walletProfileConfigured()
+                    ? qsTr("Deployment uses the configured local wallet and writes through wallet deploy-program.")
+                    : qsTr("Configure wallet binary and wallet home before deploying program binaries.")
                 Layout.fillWidth: true
+            }
+
+            ConfirmActionPopup {
+                id: deployProgramConfirm
+
+                theme: root.theme
+                title: qsTr("Deploy program")
+                message: qsTr("This runs the configured local wallet deploy-program command for %1.").arg(root.shortPath(programPath.text))
+                confirmText: qsTr("Deploy")
+                confirmEnabled: !root.model.busy && programPath.text.trim().length > 0 && root.model.walletProfileConfigured()
+                onAccepted: root.model.deployProgramBinary(programPath.text)
             }
         }
     }
@@ -567,7 +600,7 @@ ColumnLayout {
             return qsTr("Load the sequencer known-program table before binding local IDLs or binaries.")
         }
         if (root.model.programTab === "binaries") {
-            return qsTr("Inspect compiled program bytecode to derive program IDs and deployment transaction hashes.")
+            return qsTr("Inspect compiled program bytecode, then deploy it with the configured local wallet.")
         }
         if (root.model.programTab === "events") {
             return qsTr("Decode event payloads with a user-provided IDL. Program-specific decoding stays local to the supplied IDL.")
@@ -884,6 +917,17 @@ ColumnLayout {
             return text.length ? text : "-"
         }
         return text.slice(0, 8) + "..." + text.slice(-6)
+    }
+
+    function shortPath(value) {
+        const text = String(value || "").trim()
+        if (!text.length) {
+            return qsTr("the selected binary")
+        }
+        if (text.length <= 48) {
+            return text
+        }
+        return "..." + text.slice(-45)
     }
 
     function localPathFromFileUrl(fileUrl) {
