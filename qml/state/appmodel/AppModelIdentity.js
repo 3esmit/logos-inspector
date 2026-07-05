@@ -220,6 +220,7 @@ function walletProfile(root) {
 function walletProfileConfigured(root) {
     with (root) {
         return String(walletBinary || "").trim().length > 0
+            && String(walletHome || "").trim().length > 0
     }
 }
 
@@ -401,6 +402,36 @@ function syncPrivateWallet(root) {
                 appendLocalWalletOperation(qsTr("Private sync"), "submitted", root.privateSyncOperationDetail(response.value))
             } else {
                 appendLocalWalletOperation(qsTr("Private sync"), "down", response.error || qsTr("Private sync failed."))
+            }
+        })
+    }
+}
+
+function queryLocalWalletAccounts(root, showResult) {
+    with (root) {
+        if (busy) {
+            setResult(qsTr("Wallet accounts"), qsTr("Another inspection is already running."), true)
+            return null
+        }
+        if (!walletProfileConfigured()) {
+            localWalletAccountsError = qsTr("Configure wallet binary and wallet home before listing wallet accounts.")
+            setResult(qsTr("Wallet accounts"), localWalletAccountsError, true)
+            return null
+        }
+
+        busy = true
+        statusText = qsTr("Wallet accounts")
+        return requestModuleAsync(inspectorModule, "localWalletAccounts", [walletProfile()], qsTr("Wallet accounts"), showResult === true, function (response) {
+            busy = false
+            if (response.ok) {
+                localWalletAccountsValue = response.value || null
+                localWalletAccountsError = ""
+                const count = response.value && Array.isArray(response.value.accounts) ? response.value.accounts.length : 0
+                appendLocalWalletOperation(qsTr("Wallet accounts"), "loaded", qsTr("%1 accounts").arg(count))
+            } else {
+                localWalletAccountsValue = null
+                localWalletAccountsError = response.error || qsTr("Wallet account list failed.")
+                appendLocalWalletOperation(qsTr("Wallet accounts"), "down", localWalletAccountsError)
             }
         })
     }
@@ -815,7 +846,14 @@ function cachedIdlEntryForAccount(root, accountId, ownerProgramId) {
     with (root) {
         const selection = accountIdlSelection(accountId, ownerProgramId)
         const entry = selection ? root.idlEntryForKey(selection.idlKey) : null
-        return entry && String(entry.programIdHex || "").length > 0 ? entry : null
+        if (!entry || String(entry.programIdHex || "").length === 0) {
+            return null
+        }
+        const owner = root.accountOwnerCacheKey(ownerProgramId)
+        if (owner.length > 0 && String(entry.programIdHex || "") !== owner) {
+            return null
+        }
+        return entry
     }
 }
 
@@ -955,16 +993,6 @@ function accountDecodeCandidates(root, accountId, ownerProgramId) {
                     accountType: "",
                     cached: false,
                     ownerMatched: true
-                })
-            }
-        }
-        for (let i = 0; i < registeredIdls.count; ++i) {
-            const entry = root.idlEntryAt(i)
-            if (!root.candidateListHasEntry(candidates, entry.key)) {
-                candidates.push({
-                    entry: entry,
-                    accountType: "",
-                    cached: false
                 })
             }
         }

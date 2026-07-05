@@ -104,16 +104,8 @@ Panel {
 
         SafetyToggle {
             theme: root.theme
-            text: qsTr("Admin REST")
-            detail: qsTr("Allows privileged read-only admin endpoints when a future adapter uses them.")
-            checked: root.modelRef.messagingAdminRestEnabled
-            onToggled: root.modelRef.messagingAdminRestEnabled = checked
-        }
-
-        SafetyToggle {
-            theme: root.theme
             text: qsTr("Mutating diagnostics")
-            detail: qsTr("Allows future publish, subscribe, dial, and lightpush probes after per-action confirmation.")
+            detail: qsTr("Allows publish, subscribe, and unsubscribe actions after per-action confirmation.")
             checked: root.modelRef.messagingMutatingDiagnosticsEnabled
             onToggled: root.modelRef.messagingMutatingDiagnosticsEnabled = checked
         }

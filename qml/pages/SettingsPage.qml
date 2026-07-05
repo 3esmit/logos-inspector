@@ -94,22 +94,12 @@ ColumnLayout {
         ListElement {
             key: "module"
             label: "Delivery module"
-            summary: "Use delivery_module through logoscore for node lifecycle and module diagnostics"
+            summary: "Use delivery_module through logoscore for node lifecycle, subscriptions, and sends"
         }
         ListElement {
             key: "metrics"
             label: "Metrics only"
             summary: "Scrape a Prometheus/OpenMetrics endpoint"
-        }
-        ListElement {
-            key: "network-monitor"
-            label: "Network monitor"
-            summary: "Saved source without a standalone adapter"
-        }
-        ListElement {
-            key: "discovery-crawler"
-            label: "Discovery crawler"
-            summary: "Saved source without a standalone adapter"
         }
         ListElement {
             key: "unsupported"
@@ -130,11 +120,6 @@ ColumnLayout {
             key: "rest"
             label: "Standalone REST"
             summary: "Read-only space, identity, local data, debug, and metrics"
-        }
-        ListElement {
-            key: "module"
-            label: "Storage module"
-            summary: "Use storage_module through logoscore for module diagnostics"
         }
         ListElement {
             key: "metrics"
@@ -397,7 +382,7 @@ ColumnLayout {
                     FieldRow {
                         theme: settingsRoot.theme
                         label: qsTr("Wallet home")
-                        placeholderText: qsTr("$NSSA_WALLET_HOME_DIR or $LEE_WALLET_HOME_DIR")
+                        placeholderText: qsTr("$NSSA_WALLET_HOME_DIR")
                         sourceText: settingsRoot.model.walletHome
                         syncSourceText: true
                         onTextEdited: text => {

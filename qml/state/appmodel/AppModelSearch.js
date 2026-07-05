@@ -142,6 +142,11 @@ function routeSearch(root, query) {
             return
         }
 
+        if (root.isStorageCid(value)) {
+            openStorageCid(value)
+            return
+        }
+
         openAccount(value)
     }
 }
@@ -235,6 +240,14 @@ function routePrefixedSearch(root, query) {
             openLocalWallet(target, "lezAccounts")
             return true
         }
+        if (prefix === "cid" || prefix === "storage") {
+            if (target.length > 0) {
+                openStorageCid(target)
+            } else {
+                selectView("storage")
+            }
+            return true
+        }
         if (prefix === "l1-wallet" || prefix === "note") {
             openLocalWallet(target, "bedrockNotes")
             return true
@@ -278,6 +291,43 @@ function isSearchPrefix(root, prefix) {
             || value === "block" || value === "tx" || value === "transaction" || value === "account"
             || value === "public" || value === "private" || value === "program" || value === "wallet"
             || value === "l1-wallet" || value === "note" || value === "recipient" || value === "module"
+            || value === "cid" || value === "storage"
+    }
+}
+
+function openStorageCid(root, cid) {
+    with (root) {
+        const value = String(cid || "").trim()
+        if (!value.length) {
+            selectView("storage")
+            return
+        }
+        storageCidProbe = value
+        storageAppTab = "cid"
+        currentView = "storage"
+        setResult(qsTr("Storage CID"), qsTr("Storage CID context: %1").arg(value), false, {
+            cid: value,
+            source: root.storageSourceTarget()
+        })
+        if (root.storageSourceTarget().length > 0) {
+            root.queryNetworkConnection("storage", false, true)
+        }
+    }
+}
+
+function isStorageCid(root, value) {
+    with (root) {
+        const text = String(value || "").trim()
+        if (text.length < 20 || /\s/.test(text)) {
+            return false
+        }
+        if (/^Qm[1-9A-HJ-NP-Za-km-z]{44}$/.test(text)) {
+            return true
+        }
+        if (/^b[a-z2-7]{20,}$/i.test(text)) {
+            return true
+        }
+        return /^z[1-9A-HJ-NP-Za-km-z]{20,}$/.test(text)
     }
 }
 

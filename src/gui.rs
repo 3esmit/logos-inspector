@@ -5,8 +5,13 @@ use std::{
 };
 
 use anyhow::{Context as _, Result, bail};
+use logos_inspector::local_indexer::bootstrap_default_local_indexer_for_saved_settings;
 
 pub fn run() -> Result<()> {
+    if env::var_os("LOGOS_INSPECTOR_ENABLE_INDEXER_AUTO_BOOTSTRAP").is_some() {
+        bootstrap_default_local_indexer_for_saved_settings()?;
+    }
+
     if let Some(program) = standalone_program() {
         let status = Command::new(&program)
             .status()

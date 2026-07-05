@@ -115,7 +115,12 @@ fn default_idl_state() -> Value {
 
 fn default_settings_state() -> Value {
     json!({
-        "version": 1
+        "version": 1,
+        "blockchain_refresh_rate": 30,
+        "indexer_refresh_rate": 30,
+        "execution_refresh_rate": 30,
+        "messaging_refresh_rate": 30,
+        "storage_refresh_rate": 30
     })
 }
 

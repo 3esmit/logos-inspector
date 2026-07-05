@@ -94,8 +94,9 @@ pub use transactions::{
 pub(crate) use transfers::transfer_recipient_summaries_from_blocks;
 pub use transfers::{RecipientTransferSummary, TransferActivityPage, TransferRecipientSummary};
 pub use wallet::{
-    LEE_WALLET_HOME_ENV, LOCAL_WALLET_HOME_ENV, LocalWalletDeployReport, LocalWalletProfileStatus,
-    LocalWalletSyncPrivateReport, bedrock_wallet_balance, local_wallet_deploy_program,
+    LOCAL_WALLET_HOME_ENV, LocalWalletAccountRow, LocalWalletAccountsReport,
+    LocalWalletDeployReport, LocalWalletProfileStatus, LocalWalletSyncPrivateReport,
+    bedrock_wallet_balance, local_wallet_accounts, local_wallet_deploy_program,
     local_wallet_profile_status, local_wallet_sync_private,
 };
 

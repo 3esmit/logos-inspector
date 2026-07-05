@@ -1,8 +1,8 @@
 use std::{
-    env,
+    env, fs,
     net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
     thread,
     time::{Duration, Instant},
 };
@@ -17,9 +17,14 @@ const DISABLE_AUTO_BUILD_ENV: &str = "LOGOS_INSPECTOR_DISABLE_INDEXER_AUTO_BUILD
 const INDEXER_SERVICE: &str = "logos-lez-indexer.service";
 const INDEXER_PACKAGE: &str = "indexer_service";
 const INDEXER_BINARY_RELATIVE_PATH: &str = "target/release/indexer_service";
+const INDEXER_DATA_DIR_RELATIVE_PATH: &str = ".logos-inspector-indexer";
 const INDEXER_CARGO_TOML_RELATIVE_PATHS: &[&str] = &[
     "lez/indexer/service/Cargo.toml",
     "indexer/service/Cargo.toml",
+];
+const INDEXER_CONFIG_RELATIVE_PATHS: &[&str] = &[
+    "lez/indexer/service/configs/debug/indexer_config.json",
+    "indexer/service/configs/debug/indexer_config.json",
 ];
 const LOCAL_INDEXER_ADDR: &str = "127.0.0.1:8779";
 
@@ -38,6 +43,9 @@ pub fn bootstrap_default_local_indexer() -> Result<()> {
     }
 
     if restart_user_service_if_available(INDEXER_SERVICE)? {
+        wait_for_local_indexer(Duration::from_secs(20))?;
+    } else {
+        spawn_indexer_service(&workspace, &binary)?;
         wait_for_local_indexer(Duration::from_secs(20))?;
     }
 
@@ -124,6 +132,34 @@ fn wait_for_local_indexer(timeout: Duration) -> Result<()> {
     bail!("local indexer did not listen on {LOCAL_INDEXER_ADDR} after restart");
 }
 
+fn spawn_indexer_service(workspace: &Path, binary: &Path) -> Result<()> {
+    let config = indexer_config_path(workspace)
+        .with_context(|| format!("{INDEXER_PACKAGE} debug config not found"))?;
+    let data_dir = workspace.join(INDEXER_DATA_DIR_RELATIVE_PATH);
+    fs::create_dir_all(&data_dir).with_context(|| {
+        format!(
+            "failed to create indexer data directory {}",
+            data_dir.display()
+        )
+    })?;
+
+    let mut command = Command::new(binary);
+    command
+        .arg(config)
+        .arg("--data-dir")
+        .arg(&data_dir)
+        .args(["--port", "8779"])
+        .current_dir(workspace)
+        .env("RISC0_DEV_MODE", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let _child = command
+        .spawn()
+        .with_context(|| format!("failed to start {}", binary.display()))?;
+    Ok(())
+}
+
 fn user_service_exists(unit: &str) -> bool {
     let Ok(output) = Command::new("systemctl")
         .args(["--user", "show", unit, "-p", "FragmentPath", "--value"])
@@ -172,6 +208,13 @@ fn workspace_has_indexer_service(path: &Path) -> bool {
     INDEXER_CARGO_TOML_RELATIVE_PATHS
         .iter()
         .any(|relative_path| path.join(relative_path).is_file())
+}
+
+fn indexer_config_path(workspace: &Path) -> Option<PathBuf> {
+    INDEXER_CONFIG_RELATIVE_PATHS
+        .iter()
+        .map(|relative_path| workspace.join(relative_path))
+        .find(|path| path.is_file())
 }
 
 fn lez_workspace_candidates() -> Vec<PathBuf> {

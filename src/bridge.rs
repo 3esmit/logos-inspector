@@ -11,8 +11,8 @@ use crate::{
     account_lookup_with_idl, bedrock_wallet_balance, blockchain, channels,
     decode_account_data_hex_with_idl, decode_event_data_hex_with_idl, indexer_block_by_hash,
     indexer_blocks, indexer_health, indexer_status, indexer_transfer_recipients,
-    inspect_transaction_summary_with_idl, last_sequencer_block_id, local_wallet_profile_status,
-    local_wallet_sync_private, logoscore,
+    inspect_transaction_summary_with_idl, last_sequencer_block_id, local_wallet_accounts,
+    local_wallet_profile_status, local_wallet_sync_private, logoscore,
     modules::{
         blockchain_module_report, delivery_source_report, logoscore_status_report,
         storage_source_report,
@@ -334,6 +334,14 @@ impl InspectorBridge {
                         .context("local wallet profile is required")?,
                 )?)
             }
+            "localWalletAccounts" => {
+                let args = Args::new(args)?;
+                to_value(local_wallet_accounts(
+                    args.value(0)
+                        .cloned()
+                        .context("local wallet profile is required")?,
+                )?)
+            }
             "bedrockWalletBalance" => {
                 let args = Args::new(args)?;
                 to_value(self.runtime.block_on(bedrock_wallet_balance(
@@ -398,8 +406,10 @@ impl InspectorBridge {
             "deliveryCreateNode" => self.delivery_module_action(args, "createNode"),
             "deliveryStart" => self.delivery_module_action(args, "start"),
             "deliveryStop" => self.delivery_module_action(args, "stop"),
-            "deliverySubscribe" => self.delivery_subscription(args, Method::POST),
-            "deliveryUnsubscribe" => self.delivery_subscription(args, Method::DELETE),
+            "deliverySubscribe" => self.delivery_subscription(args, Method::POST, "subscribe"),
+            "deliveryUnsubscribe" => {
+                self.delivery_subscription(args, Method::DELETE, "unsubscribe")
+            }
             "deliverySend" => self.delivery_send(args),
             "capabilitiesReport" => {
                 bail!("capability_module does not expose Inspector capability listing")
@@ -652,8 +662,21 @@ impl InspectorBridge {
         }))
     }
 
-    fn delivery_subscription(&self, args: Value, method: Method) -> Result<Value> {
+    fn delivery_subscription(
+        &self,
+        args: Value,
+        method: Method,
+        module_method: &str,
+    ) -> Result<Value> {
         let args = Args::new(args)?;
+        if let Some(module_args) = delivery_module_message_args(&args)? {
+            require_mutating_diagnostics(&args, module_args.flag_index, "delivery message action")?;
+            return self.call_logoscore_module(
+                DELIVERY_MODULE,
+                module_method,
+                Value::Array(module_args.values),
+            );
+        }
         let source = delivery_rest_source(&args)?;
         require_mutating_diagnostics(&args, source.next_index, "delivery message action")?;
         let topic = args.string(source.next_index + 1, "content topic")?;
@@ -674,6 +697,14 @@ impl InspectorBridge {
 
     fn delivery_send(&self, args: Value) -> Result<Value> {
         let args = Args::new(args)?;
+        if let Some(module_args) = delivery_module_message_args(&args)? {
+            require_mutating_diagnostics(&args, module_args.flag_index, "delivery message action")?;
+            return self.call_logoscore_module(
+                DELIVERY_MODULE,
+                "send",
+                Value::Array(module_args.values),
+            );
+        }
         let source = delivery_rest_source(&args)?;
         require_mutating_diagnostics(&args, source.next_index, "delivery message action")?;
         let topic = args.string(source.next_index + 1, "content topic")?;
@@ -1055,11 +1086,12 @@ fn rest_source<'a>(
     let normalized = mode.trim().to_ascii_lowercase();
     match normalized.as_str() {
         "auto" | "rest" | "standalone" | "standalone-rest" | "standalone rest" | "direct-rest"
-        | "direct rest" | "module" | "basecamp" | "basecamp-module" | "basecamp module" => {
-            Ok(RestSource {
-                endpoint: args.optional_string(1).unwrap_or(default_endpoint),
-                next_index: 2,
-            })
+        | "direct rest" => Ok(RestSource {
+            endpoint: args.optional_string(1).unwrap_or(default_endpoint),
+            next_index: 2,
+        }),
+        "module" | "basecamp" | "basecamp-module" | "basecamp module" => {
+            bail!("{action_name} require {source_name} REST source, not module")
         }
         "metrics" => bail!("{action_name} require {source_name} REST source, not metrics"),
         _ => bail!("{source_name} source mode `{mode}` is not supported"),
@@ -1222,6 +1254,31 @@ fn is_delivery_module_source_token(value: &str) -> bool {
     )
 }
 
+struct DeliveryModuleArgs {
+    flag_index: usize,
+    values: Vec<Value>,
+}
+
+fn delivery_module_message_args(args: &Args) -> Result<Option<DeliveryModuleArgs>> {
+    let Some(source) = args
+        .optional_string(0)
+        .filter(|source| is_delivery_source_token(source))
+    else {
+        return Ok(None);
+    };
+    if !is_delivery_module_source_token(source) {
+        return Ok(None);
+    }
+    let values = args.iter().skip(3).cloned().collect::<Vec<_>>();
+    if values.is_empty() {
+        bail!("delivery module message arguments are required");
+    }
+    Ok(Some(DeliveryModuleArgs {
+        flag_index: 2,
+        values,
+    }))
+}
+
 fn response_excerpt_bytes(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).chars().take(400).collect()
 }
@@ -1318,16 +1375,34 @@ mod tests {
     }
 
     #[test]
-    fn storage_rest_source_rewrites_legacy_module_mode_to_rest() -> Result<()> {
+    fn storage_rest_source_rejects_module_mode_for_rest_actions() -> Result<()> {
         let args = Args::new(json!([
             "module",
             "http://127.0.0.1:8080/api/storage/v1",
             "cid"
         ]))?;
-        let source = storage_rest_source(&args)?;
+        let result = storage_rest_source(&args);
 
-        if source.endpoint != "http://127.0.0.1:8080/api/storage/v1" || source.next_index != 2 {
-            bail!("unexpected storage source");
+        let Err(error) = result else {
+            bail!("expected module source to fail");
+        };
+        if !error.to_string().contains("require storage REST source") {
+            bail!("unexpected error: {error:#}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn delivery_module_message_args_accepts_module_source_shape() -> Result<()> {
+        let args = Args::new(json!(["module", "", true, "/app/1/chat/proto", "hello"]))?;
+        let Some(module_args) = delivery_module_message_args(&args)? else {
+            bail!("expected module args");
+        };
+
+        if module_args.flag_index != 2
+            || module_args.values != vec![json!("/app/1/chat/proto"), json!("hello")]
+        {
+            bail!("unexpected module args");
         }
         Ok(())
     }

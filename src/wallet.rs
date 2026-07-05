@@ -14,9 +14,9 @@ use serde_json::{Value, json};
 use crate::{ProgramFileInfo, program_file_info, raw_http_json};
 
 pub const LOCAL_WALLET_HOME_ENV: &str = "NSSA_WALLET_HOME_DIR";
-pub const LEE_WALLET_HOME_ENV: &str = "LEE_WALLET_HOME_DIR";
 const LOCAL_WALLET_DEPLOY_TIMEOUT: Duration = Duration::from_secs(120);
 const LOCAL_WALLET_SYNC_TIMEOUT: Duration = Duration::from_secs(120);
+const LOCAL_WALLET_LIST_TIMEOUT: Duration = Duration::from_secs(30);
 const LOCAL_WALLET_VERSION_TIMEOUT: Duration = Duration::from_secs(5);
 const LOCAL_WALLET_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const LOCAL_WALLET_OUTPUT_LIMIT: usize = 4096;
@@ -70,6 +70,33 @@ pub struct LocalWalletSyncPrivateReport {
     pub stderr: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct LocalWalletAccountsReport {
+    pub source: String,
+    pub status: String,
+    pub command: String,
+    pub wallet_home_source: String,
+    pub checked_at: String,
+    pub accounts: Vec<LocalWalletAccountRow>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub stdout: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub stderr: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct LocalWalletAccountRow {
+    pub typed_id: String,
+    pub account_id: String,
+    pub privacy: String,
+    pub label: String,
+    pub chain_index: String,
+    pub state: String,
+    pub detail: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 struct LocalWalletProfileInput {
     #[serde(default, alias = "walletBinary")]
@@ -84,7 +111,6 @@ pub fn local_wallet_profile_status(profile: Value) -> Result<LocalWalletProfileS
     local_wallet_profile_status_with_env(
         profile,
         env::var(LOCAL_WALLET_HOME_ENV).unwrap_or_default(),
-        env::var(LEE_WALLET_HOME_ENV).unwrap_or_default(),
     )
 }
 
@@ -104,13 +130,10 @@ pub fn local_wallet_deploy_program(
 
     let explicit_home = profile.wallet_home.trim();
     let nssa_env_home = env::var(LOCAL_WALLET_HOME_ENV).unwrap_or_default();
-    let lee_env_home = env::var(LEE_WALLET_HOME_ENV).unwrap_or_default();
     let (wallet_home, wallet_home_source) = if !explicit_home.is_empty() {
         (explicit_home.to_owned(), "profile")
     } else if !nssa_env_home.trim().is_empty() {
         (nssa_env_home.trim().to_owned(), LOCAL_WALLET_HOME_ENV)
-    } else if !lee_env_home.trim().is_empty() {
-        (lee_env_home.trim().to_owned(), LEE_WALLET_HOME_ENV)
     } else {
         (String::new(), "none")
     };
@@ -157,13 +180,10 @@ pub fn local_wallet_sync_private(profile: Value) -> Result<LocalWalletSyncPrivat
 
     let explicit_home = profile.wallet_home.trim();
     let nssa_env_home = env::var(LOCAL_WALLET_HOME_ENV).unwrap_or_default();
-    let lee_env_home = env::var(LEE_WALLET_HOME_ENV).unwrap_or_default();
     let (wallet_home, wallet_home_source) = if !explicit_home.is_empty() {
         (explicit_home.to_owned(), "profile")
     } else if !nssa_env_home.trim().is_empty() {
         (nssa_env_home.trim().to_owned(), LOCAL_WALLET_HOME_ENV)
-    } else if !lee_env_home.trim().is_empty() {
-        (lee_env_home.trim().to_owned(), LEE_WALLET_HOME_ENV)
     } else {
         (String::new(), "none")
     };
@@ -189,6 +209,57 @@ pub fn local_wallet_sync_private(profile: Value) -> Result<LocalWalletSyncPrivat
         exit_status: output.status.to_string(),
         stdout: local_wallet_output_text(&output.stdout, &redactions),
         stderr: local_wallet_output_text(&output.stderr, &redactions),
+    })
+}
+
+pub fn local_wallet_accounts(profile: Value) -> Result<LocalWalletAccountsReport> {
+    let profile: LocalWalletProfileInput =
+        serde_json::from_value(profile).context("failed to parse local wallet profile")?;
+    let wallet_binary = profile.wallet_binary.trim();
+    if wallet_binary.is_empty() {
+        bail!("wallet binary is required to list wallet accounts");
+    }
+    if local_wallet_binary_is_path_like(wallet_binary) && !Path::new(wallet_binary).is_file() {
+        bail!("wallet binary is not reachable");
+    }
+
+    let explicit_home = profile.wallet_home.trim();
+    let nssa_env_home = env::var(LOCAL_WALLET_HOME_ENV).unwrap_or_default();
+    let (wallet_home, wallet_home_source) = if !explicit_home.is_empty() {
+        (explicit_home.to_owned(), "profile")
+    } else if !nssa_env_home.trim().is_empty() {
+        (nssa_env_home.trim().to_owned(), LOCAL_WALLET_HOME_ENV)
+    } else {
+        (String::new(), "none")
+    };
+    if wallet_home.is_empty() {
+        bail!("wallet home directory is required to list wallet accounts");
+    }
+    if !Path::new(&wallet_home).is_dir() {
+        bail!("wallet home directory is not reachable");
+    }
+    if !wallet_home_is_configured(Path::new(&wallet_home)) {
+        bail!("wallet home missing wallet_config.json");
+    }
+
+    let mut redactions = vec![wallet_home.as_str()];
+    if local_wallet_binary_is_path_like(wallet_binary) {
+        redactions.push(wallet_binary);
+    }
+    let output = local_wallet_accounts_output(wallet_binary, &wallet_home, &redactions)?;
+    let stdout = local_wallet_output_text(&output.stdout, &redactions);
+    let stderr = local_wallet_output_text(&output.stderr, &redactions);
+    let accounts = parse_local_wallet_accounts_output(&stdout);
+
+    Ok(LocalWalletAccountsReport {
+        source: "local_wallet_cli".to_owned(),
+        status: "loaded".to_owned(),
+        command: "wallet account list --long".to_owned(),
+        wallet_home_source: wallet_home_source.to_owned(),
+        checked_at: unix_time_text(),
+        accounts,
+        stdout,
+        stderr,
     })
 }
 
@@ -236,7 +307,6 @@ pub(crate) fn detected_wallet_profile() -> Value {
 fn local_wallet_profile_status_with_env(
     profile: Value,
     nssa_env_home: String,
-    lee_env_home: String,
 ) -> Result<LocalWalletProfileStatus> {
     let profile: LocalWalletProfileInput =
         serde_json::from_value(profile).context("failed to parse local wallet profile")?;
@@ -244,8 +314,6 @@ fn local_wallet_profile_status_with_env(
     let explicit_home = profile.wallet_home.trim();
     let (env_home, env_home_source) = if !nssa_env_home.trim().is_empty() {
         (nssa_env_home, Some(LOCAL_WALLET_HOME_ENV))
-    } else if !lee_env_home.trim().is_empty() {
-        (lee_env_home, Some(LEE_WALLET_HOME_ENV))
     } else {
         (String::new(), None)
     };
@@ -398,6 +466,22 @@ fn local_wallet_sync_private_output(
     )
 }
 
+fn local_wallet_accounts_output(
+    binary: &str,
+    wallet_home: &str,
+    redactions: &[&str],
+) -> Result<Output> {
+    let mut command = Command::new(binary);
+    configure_local_wallet_command(&mut command, wallet_home);
+    command.arg("account").arg("list").arg("--long");
+    run_local_wallet_command(
+        command,
+        "wallet account list --long",
+        LOCAL_WALLET_LIST_TIMEOUT,
+        redactions,
+    )
+}
+
 fn configure_local_wallet_command(command: &mut Command, wallet_home: &str) {
     command.env_clear();
     for name in LOCAL_WALLET_ENV_ALLOWLIST {
@@ -407,7 +491,6 @@ fn configure_local_wallet_command(command: &mut Command, wallet_home: &str) {
     }
     if !wallet_home.trim().is_empty() {
         command.env(LOCAL_WALLET_HOME_ENV, wallet_home);
-        command.env(LEE_WALLET_HOME_ENV, wallet_home);
     }
 }
 
@@ -482,6 +565,95 @@ fn local_wallet_output_text(output: &[u8], redactions: &[&str]) -> String {
         }
     }
     redacted.chars().take(LOCAL_WALLET_OUTPUT_LIMIT).collect()
+}
+
+fn parse_local_wallet_accounts_output(text: &str) -> Vec<LocalWalletAccountRow> {
+    let mut rows = Vec::new();
+    let mut current: Option<LocalWalletAccountRow> = None;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if !line.chars().next().is_some_and(char::is_whitespace)
+            && let Some(row) = parse_wallet_account_header(trimmed)
+        {
+            if let Some(row) = current.replace(row) {
+                rows.push(row);
+            }
+            continue;
+        }
+        let Some(row) = current.as_mut() else {
+            continue;
+        };
+        if trimmed.starts_with('{') {
+            match serde_json::from_str::<Value>(trimmed) {
+                Ok(value) => {
+                    row.state = "loaded".to_owned();
+                    row.data = Some(value);
+                }
+                Err(_) => push_wallet_account_detail(row, trimmed),
+            }
+        } else if trimmed.eq_ignore_ascii_case("uninitialized") {
+            row.state = "uninitialized".to_owned();
+            push_wallet_account_detail(row, trimmed);
+        } else if trimmed.to_ascii_lowercase().starts_with("error ") {
+            row.state = "error".to_owned();
+            push_wallet_account_detail(row, trimmed);
+        } else {
+            push_wallet_account_detail(row, trimmed);
+        }
+    }
+
+    if let Some(row) = current {
+        rows.push(row);
+    }
+    rows
+}
+
+fn parse_wallet_account_header(line: &str) -> Option<LocalWalletAccountRow> {
+    let public_index = line.find("Public/");
+    let private_index = line.find("Private/");
+    let id_index = match (public_index, private_index) {
+        (Some(public), Some(private)) => public.min(private),
+        (Some(public), None) => public,
+        (None, Some(private)) => private,
+        (None, None) => return None,
+    };
+    let chain_index = line[..id_index].trim();
+    let rest = line[id_index..].trim();
+    let label = rest
+        .split_once('[')
+        .and_then(|(_, suffix)| suffix.split_once(']').map(|(label, _)| label.trim()))
+        .unwrap_or_default();
+    let typed_id = rest
+        .split_once('[')
+        .map_or(rest, |(id, _)| id)
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches(',');
+    let (privacy, account_id) = typed_id.split_once('/')?;
+    Some(LocalWalletAccountRow {
+        typed_id: typed_id.to_owned(),
+        account_id: account_id.to_owned(),
+        privacy: privacy.to_ascii_lowercase(),
+        label: label.to_owned(),
+        chain_index: chain_index.to_owned(),
+        state: "unknown".to_owned(),
+        detail: String::new(),
+        data: None,
+    })
+}
+
+fn push_wallet_account_detail(row: &mut LocalWalletAccountRow, detail: &str) {
+    if row.detail.is_empty() {
+        row.detail = detail.to_owned();
+    } else {
+        row.detail.push_str("; ");
+        row.detail.push_str(detail);
+    }
 }
 
 fn local_wallet_worst_status(current: &str, candidate: &str) -> &'static str {
@@ -563,9 +735,6 @@ fn detect_wallet_home() -> Option<PathBuf> {
     if let Some(path) = env_path_if_wallet_home(LOCAL_WALLET_HOME_ENV) {
         return Some(path);
     }
-    if let Some(path) = env_path_if_wallet_home(LEE_WALLET_HOME_ENV) {
-        return Some(path);
-    }
     None
 }
 
@@ -639,7 +808,6 @@ mod tests {
                 "network_profile": "local"
             }),
             String::new(),
-            String::new(),
         );
 
         assert!(status.is_ok(), "{status:?}");
@@ -655,14 +823,13 @@ mod tests {
     }
 
     #[test]
-    fn local_wallet_profile_status_accepts_lee_wallet_home_env() {
+    fn local_wallet_profile_status_accepts_nssa_wallet_home_env() {
         let status = local_wallet_profile_status_with_env(
             serde_json::json!({
                 "wallet_binary": "",
                 "wallet_home": "",
                 "network_profile": "local"
             }),
-            String::new(),
             ".".to_owned(),
         );
 
@@ -670,12 +837,41 @@ mod tests {
         let Ok(status) = status else {
             return;
         };
-        assert_eq!(status.home_source, LEE_WALLET_HOME_ENV);
+        assert_eq!(status.home_source, LOCAL_WALLET_HOME_ENV);
         assert!(
             status
                 .detail
                 .contains("wallet home missing wallet_config.json")
         );
+    }
+
+    #[test]
+    fn parse_local_wallet_accounts_output_extracts_rows_and_json() {
+        let rows = parse_local_wallet_accounts_output(
+            r#"m/0 Public/7wHg9sbJwc6h3NP1S9bekfAzB8CHifEcxKswCKUt3YQo [main]
+  Regular account
+  {"balance":42,"program_owner":"owner","data":"","nonce":1}
+Private/3oCG8gqdKLMegw4rRfyaMQvuPHpcASt7xwttsmnZLSkw
+  Uninitialized"#,
+        );
+
+        assert_eq!(rows.len(), 2);
+        let [public_account, private_account] = rows.as_slice() else {
+            return;
+        };
+        assert_eq!(public_account.privacy, "public");
+        assert_eq!(public_account.label, "main");
+        assert_eq!(public_account.chain_index, "m/0");
+        assert_eq!(public_account.state, "loaded");
+        assert_eq!(
+            public_account
+                .data
+                .as_ref()
+                .and_then(|value| value.get("balance")),
+            Some(&serde_json::json!(42))
+        );
+        assert_eq!(private_account.privacy, "private");
+        assert_eq!(private_account.state, "uninitialized");
     }
 
     #[test]

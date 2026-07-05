@@ -501,7 +501,7 @@ function openLocalWallet(root, wallet, tab) {
         if (bedrockOnly && !bedrockWalletSourceConfigured()) {
             setResult(
                 qsTr("Bedrock wallet"),
-                qsTr("Configure a Bedrock node endpoint before querying wallet notes."),
+                qsTr("Configure a Bedrock node endpoint before querying wallet balance."),
                 true,
                 null
             )
@@ -510,11 +510,23 @@ function openLocalWallet(root, wallet, tab) {
         if (!bedrockOnly && !walletProfileConfigured()) {
             setResult(
                 qsTr("Local wallet"),
-                qsTr("Configure an explicit local wallet profile. Transfer recipients use recipient:<id>; wallet:<id> is reserved for local wallet state."),
+                qsTr("Configure wallet binary and wallet home. Transfer recipients use recipient:<id>; wallet:<id> is reserved for local wallet state."),
                 true,
                 null
             )
             return
+        }
+        if (!bedrockOnly) {
+            const status = root.checkedLocalWalletProfile()
+            if (!status.ok) {
+                setResult(
+                    qsTr("Local wallet"),
+                    status.detail.length ? status.detail : qsTr("Local wallet profile is not usable."),
+                    true,
+                    null
+                )
+                return
+            }
         }
         if (localWalletTab === "bedrockNotes" && walletPublicKeyProbe !== target) {
             walletPublicKeyProbe = target
@@ -529,9 +541,6 @@ function openLocalWallet(root, wallet, tab) {
             false,
             walletProfile()
         )
-        if (!bedrockOnly) {
-            checkLocalWalletProfile(false)
-        }
     }
 }
 

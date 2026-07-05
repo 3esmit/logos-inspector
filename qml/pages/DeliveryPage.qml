@@ -398,10 +398,8 @@ ColumnLayout {
             return qsTr("REST")
         case "metrics":
             return qsTr("Metrics")
-        case "network-monitor":
-            return qsTr("Monitor")
-        case "discovery-crawler":
-            return qsTr("Crawler")
+        case "unsupported":
+            return qsTr("Unsupported")
         default:
             return qsTr("Module")
         }
@@ -817,7 +815,7 @@ ColumnLayout {
 
     function restMetricsTone() {
         const sourceMode = root.deliverySourceMode()
-        if (sourceMode === "network-monitor" || sourceMode === "discovery-crawler") {
+        if (sourceMode === "unsupported") {
             return "warning"
         }
         return root.statusTone()
