@@ -31,16 +31,26 @@ Item {
     }
 
     Component.onCompleted: {
-        appModel.loadSettingsState()
-        appModel.loadIdlState()
-        appModel.loadWalletState()
         root.schedulePageLoaderUpdate()
         const initialReference = root.initialReferenceFromArguments()
-        if (initialReference.length > 0) {
+        Qt.callLater(function () {
+            appModel.loadSettingsState()
+            root.schedulePageLoaderUpdate()
+            if (appModel.currentView === "overview" && appModel.dashboardRefreshInterval() > 0 && appModel.bridgeSupportsAsync()) {
+                Qt.callLater(function () {
+                    appModel.refreshDashboard()
+                })
+            }
             Qt.callLater(function () {
-                appModel.routeSearch(initialReference)
+                appModel.loadIdlState()
+                appModel.loadWalletState()
+                if (initialReference.length > 0) {
+                    Qt.callLater(function () {
+                        appModel.routeSearch(initialReference)
+                    })
+                }
             })
-        }
+        })
     }
 
     Timer {

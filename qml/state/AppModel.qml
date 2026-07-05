@@ -33,6 +33,7 @@ QtObject {
     property var dashboardOverview: null
     property var dashboardNode: null
     property var dashboardBlocks: []
+    property var dashboardSequencerBlocks: []
     property string dashboardError: ""
     property var blockDetailValue: null
     property string blockDetailError: ""
@@ -64,6 +65,8 @@ QtObject {
     property int lezBlocksPageNextBeforeBlock: 0
     property int lezBlocksPageLimit: 20
     property string lezBlocksPageError: ""
+    property bool lezBlocksPageLoading: false
+    property int lezBlocksPageRequestSerial: 0
     property var lezTransactionsPageRows: []
     property int lezTransactionsPageBeforeBlock: 0
     property int lezTransactionsPageNextBeforeBlock: 0
@@ -170,6 +173,7 @@ QtObject {
     property int accountAutoDecodeSerial: 0
     property int transactionAutoDecodeSerial: 0
     property int searchResolveSerial: 0
+    property int programOpenSerial: 0
     property var navExpanded: ({ l1: true, l2: true, network: true, diagnostics: false, local: true, system: true })
     property int navRevision: 0
 
@@ -267,6 +271,8 @@ QtObject {
     function requestModule(moduleName, method, args, label, showResult, cacheResult) { return AppModelCore.requestModule(root, moduleName, method, args, label, showResult, cacheResult) }
 
     function requestModuleAsync(moduleName, method, args, label, showResult, callback, acceptResponse) { return AppModelCore.requestModuleAsync(root, moduleName, method, args, label, showResult, callback, acceptResponse) }
+
+    function bridgeSupportsAsync() { return bridge.hasAsyncCalls() }
 
     function decodeAccountData(dataHex, idlJson, accountType) { return AppModelCore.decodeAccountData(root, dataHex, idlJson, accountType) }
 
@@ -462,6 +468,8 @@ QtObject {
 
     function deliverySourceTarget() { return AppModelNetwork.deliverySourceTarget(root) }
 
+    function configuredMessagingRestUrl() { return AppModelNetwork.configuredMessagingRestUrl(root) }
+
     function normalizedMessagingSourceMode(value) { return AppModelNetwork.normalizedMessagingSourceMode(root, value) }
 
     function effectiveMessagingSourceMode(value) { return AppModelNetwork.effectiveMessagingSourceMode(root, value === undefined ? messagingSourceMode : value) }
@@ -487,6 +495,8 @@ QtObject {
     function storageSourceLabel() { return AppModelNetwork.storageSourceLabel(root) }
 
     function storageSourceTarget() { return AppModelNetwork.storageSourceTarget(root) }
+
+    function configuredStorageRestUrl() { return AppModelNetwork.configuredStorageRestUrl(root) }
 
     function normalizedStorageSourceMode(value) { return AppModelNetwork.normalizedStorageSourceMode(root, value) }
 
@@ -676,6 +686,8 @@ QtObject {
 
     function refreshLezBlocksPage(beforeBlock) { return AppModelPages.refreshLezBlocksPage(root, beforeBlock) }
 
+    function finishLezBlocksPage(beforeBlock, sequencerResponse, indexerResponse) { return AppModelPages.finishLezBlocksPage(root, beforeBlock, sequencerResponse, indexerResponse) }
+
     function olderLezBlocksPage() { return AppModelPages.olderLezBlocksPage(root) }
 
     function newerLezBlocksPage() { return AppModelPages.newerLezBlocksPage(root) }
@@ -691,6 +703,8 @@ QtObject {
     function setLezTransactionsPageLimit(limit) { return AppModelPages.setLezTransactionsPageLimit(root, limit) }
 
     function sortedIndexerBlocks(blocks) { return AppModelPages.sortedIndexerBlocks(root, blocks) }
+
+    function mergedLezBlocks(sequencerBlocks, indexerBlocks, limit) { return AppModelPages.mergedLezBlocks(root, sequencerBlocks, indexerBlocks, limit) }
 
     function indexerBlockId(block) { return AppModelPages.indexerBlockId(root, block) }
 

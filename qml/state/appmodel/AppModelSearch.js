@@ -5,10 +5,6 @@ function refreshDashboard(root) {
         if (dashboardRefreshing) {
             return
         }
-        if (!busy) {
-            refreshBlocksPage()
-            refreshLezBlocksPage()
-        }
         const refreshId = dashboardRefreshSerial + 1
         const configRevision = networkConfigurationRevision
         dashboardRefreshSerial = refreshId
@@ -17,6 +13,7 @@ function refreshDashboard(root) {
         const requests = [
             { module: inspectorModule, method: "overview", args: [sequencerUrl, indexerUrl, nodeUrl], label: qsTr("Dashboard overview") },
             { module: inspectorModule, method: "blockchainNode", args: root.blockchainArgs([]), label: qsTr("Blockchain node") },
+            { module: inspectorModule, method: "sequencerBlocks", args: root.executionArgs([null, 5]), label: qsTr("Latest L2 blocks") },
             { module: inspectorModule, method: "indexerBlocks", args: root.indexerArgs([null, 10]), label: qsTr("Latest blocks") },
             { module: inspectorModule, method: "storageSourceReport", args: root.storageSourceReportArgs(false), label: qsTr("Storage source") },
             { module: inspectorModule, method: "deliverySourceReport", args: root.deliverySourceReportArgs(), label: qsTr("Delivery source") }
@@ -75,6 +72,8 @@ function updateDashboardCache(root, method, value) {
             dashboardNode = value
         } else if (method === "indexerBlocks") {
             dashboardBlocks = value || []
+        } else if (method === "sequencerBlocks") {
+            dashboardSequencerBlocks = value || []
         } else if (method === "blockchainModuleReport") {
             blockchainModuleReport = value || null
         } else if (method === "account") {

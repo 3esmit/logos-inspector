@@ -344,7 +344,9 @@ function updateNetworkConnectionStatus(root, kind, response) {
 function networkConnectionSummary(root, kind, value) {
     with (root) {
         if (kind === "blockchain") {
-            const info = value && value.cryptarchia_info ? value.cryptarchia_info : null
+            const probe = value && value.cryptarchia_info ? value.cryptarchia_info : null
+            const payload = probe && probe.value ? probe.value : probe
+            const info = payload && payload.cryptarchia_info ? payload.cryptarchia_info : payload
             return info && info.slot !== undefined ? qsTr("slot %1").arg(info.slot) : qsTr("node reachable")
         }
         if (kind === "indexer") {
@@ -596,7 +598,7 @@ function deliverySourceReportArgs(root) {
         const source = root.effectiveMessagingSourceMode(messagingSourceMode)
         return [
             source,
-            String(messagingRestUrl || ""),
+            source === "rest" ? root.configuredMessagingRestUrl() : "",
             source === "metrics" ? String(messagingMetricsUrl || "") : ""
         ]
     }
@@ -606,7 +608,7 @@ function deliverySourceLabel(root) {
     with (root) {
         const source = root.normalizedMessagingSourceMode(messagingSourceMode)
         if (source === "auto") {
-            return qsTr("Auto: Direct Waku REST")
+            return qsTr("Auto: not detected")
         }
         const effective = root.effectiveMessagingSourceMode(messagingSourceMode)
         switch (effective) {
@@ -626,12 +628,19 @@ function deliverySourceTarget(root) {
     with (root) {
         switch (root.effectiveMessagingSourceMode(messagingSourceMode)) {
         case "rest":
-            return String(messagingRestUrl || "")
+            return root.configuredMessagingRestUrl()
         case "metrics":
             return String(messagingMetricsUrl || "")
         default:
-            return String(messagingRestUrl || "")
+            return ""
         }
+    }
+}
+
+function configuredMessagingRestUrl(root) {
+    with (root) {
+        const value = String(messagingRestUrl || "").trim()
+        return value.length ? value : "http://127.0.0.1:8645"
     }
 }
 
@@ -735,7 +744,7 @@ function effectiveMessagingSourceMode(root, value) {
         if (source !== "auto") {
             return source
         }
-        return "rest"
+        return "unsupported"
     }
 }
 
@@ -743,8 +752,8 @@ function storageSourceReportArgs(root, includeCidProbe) {
     with (root) {
         return [
             root.effectiveStorageSourceMode(storageSourceMode),
-            String(storageRestUrl || ""),
-            String(storageMetricsUrl || ""),
+            root.effectiveStorageSourceMode(storageSourceMode) === "rest" ? root.configuredStorageRestUrl() : "",
+            root.effectiveStorageSourceMode(storageSourceMode) === "metrics" ? String(storageMetricsUrl || "") : "",
             includeCidProbe === true ? String(storageCidProbe || "") : "",
             storagePrivilegedDebugEnabled === true
         ]
@@ -755,7 +764,7 @@ function storageSourceLabel(root) {
     with (root) {
         const source = root.normalizedStorageSourceMode(storageSourceMode)
         if (source === "auto") {
-            return qsTr("Auto: Standalone REST")
+            return qsTr("Auto: not detected")
         }
         const effective = root.effectiveStorageSourceMode(storageSourceMode)
         switch (effective) {
@@ -775,14 +784,21 @@ function storageSourceTarget(root) {
     with (root) {
         switch (root.effectiveStorageSourceMode(storageSourceMode)) {
         case "rest":
-            return String(storageRestUrl || "")
+            return root.configuredStorageRestUrl()
         case "metrics":
             return String(storageMetricsUrl || "")
         case "unsupported":
             return ""
         default:
-            return String(storageRestUrl || "")
+            return ""
         }
+    }
+}
+
+function configuredStorageRestUrl(root) {
+    with (root) {
+        const value = String(storageRestUrl || "").trim()
+        return value.length ? value : "http://127.0.0.1:8080/api/storage/v1"
     }
 }
 
@@ -820,7 +836,7 @@ function effectiveStorageSourceMode(root, value) {
         if (source !== "auto") {
             return source
         }
-        return "rest"
+        return "unsupported"
     }
 }
 

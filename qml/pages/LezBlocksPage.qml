@@ -29,7 +29,7 @@ ColumnLayout {
         rangeText: root.rangeText()
         canGoNewer: root.model.lezBlocksPageBeforeBlock > 0
         canGoOlder: root.model.lezBlocksPageNextBeforeBlock > 0
-        busy: root.model.busy
+        busy: root.model.busy || root.model.lezBlocksPageLoading
         Layout.fillWidth: true
         onRefresh: root.model.refreshLezBlocksPage(root.model.lezBlocksPageBeforeBlock > 0 ? root.model.lezBlocksPageBeforeBlock : null)
         onNewer: root.model.newerLezBlocksPage()

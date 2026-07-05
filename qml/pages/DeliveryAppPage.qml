@@ -386,7 +386,7 @@ ColumnLayout {
     }
 
     function deliveryArgs(extra) {
-        const args = [root.model.effectiveMessagingSourceMode(root.model.messagingSourceMode), root.model.messagingRestUrl, root.model.messagingMutatingDiagnosticsEnabled === true]
+        const args = [root.model.effectiveMessagingSourceMode(root.model.messagingSourceMode), root.model.configuredMessagingRestUrl(), root.model.messagingMutatingDiagnosticsEnabled === true]
         return args.concat(extra || [])
     }
 

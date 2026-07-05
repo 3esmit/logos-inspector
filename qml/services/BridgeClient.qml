@@ -22,6 +22,10 @@ QtObject {
         return BridgeHelpers.callModule(root.host, moduleName, method, args || [])
     }
 
+    function hasAsyncCalls() {
+        return root.host && root.host["callModuleJsonAsync"]
+    }
+
     function callModuleAsync(moduleName, method, args, callback) {
         const requestId = root.nextRequestId
         root.nextRequestId += 1
