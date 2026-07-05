@@ -562,7 +562,6 @@ function openProgram(root, programId) {
         const normalized = root.canonicalProgramIdHex(value) || root.normalizedHexText(value)
         const serial = programOpenSerial + 1
         programOpenSerial = serial
-        let accountResponse = null
         let lookupError = ""
         const detail = root.programContextFromParts(value, normalized, root.knownProgramRow(normalized), null, "")
         setResult(qsTr("Program"), BridgeHelpers.formatValue(detail), false, detail)
@@ -571,14 +570,10 @@ function openProgram(root, programId) {
             if (serial !== programOpenSerial) {
                 return
             }
-            const updated = root.programContextFromParts(value, normalized, root.knownProgramRow(normalized), accountResponse, lookupError)
+            const updated = root.programContextFromParts(value, normalized, root.knownProgramRow(normalized), null, lookupError)
             setResult(qsTr("Program"), BridgeHelpers.formatValue(updated), false, updated)
         }
 
-        requestModuleAsync(inspectorModule, "account", root.accountLookupArgs(value), qsTr("Program account"), false, function (response) {
-            accountResponse = response
-            updateDetail()
-        })
         if (!root.knownProgramIdRows().length) {
             requestModuleAsync(inspectorModule, "programs", root.executionRpcArgs([]), qsTr("Known programs"), false, function (response) {
                 if (!response.ok) {
@@ -594,14 +589,13 @@ function programContextDetail(root, programId) {
     with (root) {
         const input = String(programId || "").trim()
         const normalized = root.canonicalProgramIdHex(input) || root.normalizedHexText(input)
-        const accountResponse = requestModule(inspectorModule, "account", root.accountLookupArgs(input), qsTr("Program account"), false, false)
         if (!root.knownProgramIdRows().length) {
             const response = requestModule(inspectorModule, "programs", root.executionRpcArgs([]), qsTr("Known programs"), false, false)
             if (!response.ok) {
-                return root.programContextFromParts(input, normalized, null, accountResponse, response.error || qsTr("Sequencer known-program lookup failed."))
+                return root.programContextFromParts(input, normalized, null, null, response.error || qsTr("Sequencer known-program lookup failed."))
             }
         }
-        return root.programContextFromParts(input, normalized, root.knownProgramRow(normalized), accountResponse, "")
+        return root.programContextFromParts(input, normalized, root.knownProgramRow(normalized), null, "")
     }
 }
 
@@ -629,7 +623,7 @@ function programContextFromParts(root, input, normalized, knownRow, accountRespo
             account_error: accountResponse && accountResponse.ok !== true ? String(accountResponse.error || "") : "",
             idls: idls,
             recent_transactions: txs,
-            source: "sequencer getProgramIds + getAccount"
+            source: "sequencer getProgramIds + local IDL"
         }
     }
 }

@@ -49,6 +49,8 @@ pub fn modules_report() -> LogosModulesReport {
 
 pub fn blockchain_module_report(address: Option<&str>) -> ModuleReport {
     let mut probes = vec![
+        call_probe(BLOCKCHAIN_MODULE, "get_peer_id", &[]),
+        call_probe(BLOCKCHAIN_MODULE, "get_cryptarchia_info", &[]),
         call_probe(BLOCKCHAIN_MODULE, "get_blockchain_state", &[]),
         call_probe(BLOCKCHAIN_MODULE, "wallet_get_known_addresses", &[]),
     ];
@@ -121,7 +123,7 @@ async fn storage_rest_report(
     rest_endpoint: Option<&str>,
     metrics_endpoint: Option<&str>,
     cid: Option<&str>,
-    _privileged_debug_enabled: bool,
+    privileged_debug_enabled: bool,
 ) -> ModuleReport {
     let endpoint = optional(rest_endpoint).unwrap_or(DEFAULT_STORAGE_REST_ENDPOINT);
     let space_source = http_url(endpoint, "/space");
@@ -144,12 +146,20 @@ async fn storage_rest_report(
         ProbeReport::from_result("storage_rest.peerId", peer_id_source, peer_id),
         ProbeReport::from_result("storage_rest.manifests", data_source, manifests),
     ];
-    let debug_source = http_url(endpoint, "/debug/info");
-    probes.push(ProbeReport::from_result(
-        "storage_rest.debug",
-        debug_source,
-        raw_http_value(endpoint, "/debug/info").await,
-    ));
+    if privileged_debug_enabled {
+        let debug_source = http_url(endpoint, "/debug/info");
+        probes.push(ProbeReport::from_result(
+            "storage_rest.debug",
+            debug_source,
+            raw_http_value(endpoint, "/debug/info").await,
+        ));
+    } else {
+        probes.push(ProbeReport::ok(
+            "storage_rest.privilegedProbe",
+            "disabled",
+            json!({ "skipped": true }),
+        ));
+    }
     if let Some(cid) = optional(cid) {
         let path = format!("/data/{cid}/exists");
         probes.push(ProbeReport::from_result(
@@ -227,7 +237,7 @@ fn unsupported_storage_source_report(mode: &str) -> ModuleReport {
 
 fn normalized_storage_source_mode(source_mode: &str) -> &'static str {
     match source_mode.trim().to_ascii_lowercase().as_str() {
-        "module" | "basecamp" | "basecamp-module" | "basecamp module" => "unsupported",
+        "module" | "basecamp" | "basecamp-module" | "basecamp module" => "module",
         "rest" | "standalone-rest" | "standalone rest" | "direct-rest" => "rest",
         "metrics" | "metrics-only" | "metrics only" => "metrics",
         "c-library" | "c library" | "library" => "unsupported",
@@ -298,6 +308,7 @@ pub async fn delivery_source_report(
         "module" => delivery_report(None),
         "rest" => delivery_rest_report(rest_endpoint, metrics_endpoint).await,
         "metrics" => delivery_metrics_report(metrics_endpoint).await,
+        "network-monitor" => delivery_network_monitor_report(rest_endpoint, metrics_endpoint).await,
         mode => unsupported_delivery_source_report(mode),
     }
 }
@@ -493,6 +504,44 @@ async fn metrics_probe(metrics_endpoint: &str) -> ProbeReport {
     )
 }
 
+async fn delivery_network_monitor_report(
+    rest_endpoint: Option<&str>,
+    metrics_endpoint: Option<&str>,
+) -> ModuleReport {
+    let endpoint = optional(rest_endpoint).unwrap_or(DEFAULT_DELIVERY_REST_ENDPOINT);
+    let all_peers_source = http_url(endpoint, "/allpeersinfo");
+    let content_topics_source = http_url(endpoint, "/contenttopics");
+    let (all_peers, content_topics) = tokio::join!(
+        raw_http_value(endpoint, "/allpeersinfo"),
+        raw_http_value(endpoint, "/contenttopics"),
+    );
+    let all_peers_probe = ProbeReport::from_result(
+        "delivery_network_monitor.allPeersInfo",
+        all_peers_source,
+        all_peers,
+    );
+    let mut probes = vec![
+        all_peers_probe.clone(),
+        ProbeReport::from_result(
+            "delivery_network_monitor.contentTopics",
+            content_topics_source,
+            content_topics,
+        ),
+    ];
+    if let Some(metrics_endpoint) = optional(metrics_endpoint) {
+        probes.push(ProbeReport::from_result(
+            "delivery_network_monitor.collectOpenMetricsText",
+            metrics_endpoint,
+            raw_http_text_url(metrics_endpoint).await,
+        ));
+    }
+    ModuleReport {
+        module: "delivery_network_monitor".to_owned(),
+        module_info: all_peers_probe,
+        probes,
+    }
+}
+
 fn unsupported_delivery_source_report(mode: &str) -> ModuleReport {
     ModuleReport {
         module: format!("delivery_{mode}"),
@@ -510,8 +559,8 @@ fn normalized_delivery_source_mode(source_mode: &str) -> &'static str {
         "module" | "basecamp" | "basecamp-module" | "basecamp module" => "module",
         "rest" | "direct-rest" | "direct waku rest" | "waku-rest" => "rest",
         "metrics" | "metrics-only" | "metrics only" => "metrics",
-        "network-monitor" | "network monitor" => "unsupported",
-        "discovery-crawler" | "discovery crawler" | "crawler" => "unsupported",
+        "network-monitor" | "network monitor" | "discovery-crawler" | "discovery crawler"
+        | "crawler" => "network-monitor",
         "auto" => "rest",
         _ => "unsupported",
     }
@@ -634,6 +683,24 @@ mod tests {
         assert_eq!(
             normalize_storage_exists(json!({ "has": false }), "cid-a"),
             json!(false)
+        );
+    }
+
+    #[test]
+    fn storage_source_normalizer_keeps_module_source() {
+        assert_eq!(normalized_storage_source_mode("module"), "module");
+        assert_eq!(normalized_storage_source_mode("basecamp module"), "module");
+    }
+
+    #[test]
+    fn delivery_source_normalizer_keeps_network_monitor_source() {
+        assert_eq!(
+            normalized_delivery_source_mode("network-monitor"),
+            "network-monitor"
+        );
+        assert_eq!(
+            normalized_delivery_source_mode("discovery crawler"),
+            "network-monitor"
         );
     }
 

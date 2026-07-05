@@ -458,29 +458,116 @@ function dashboardMetricRawValue(root, key) {
         case "storage.failed_transfers_total":
             return root.moduleMetricSum("storage", ["storage_block_exchange_requests_failed_total", "storage_block_exchange_peer_timeouts_total"])
         case "messaging.peer_count":
-            return root.moduleMetricValue("messaging", ["libp2p_peers", "waku_peers", "messaging_peer_count", "peer_count"])
+            return root.moduleMetricValue("messaging", [
+                { name: "libp2p_peers", labels: { type: "connected" } },
+                "libp2p_peers",
+                "waku_peers",
+                "messaging_peer_count",
+                "peer_count"
+            ])
         case "messaging.active_subscriptions":
             return root.moduleMetricValue("messaging", ["active_subscriptions"])
         case "messaging.pubsub_peers":
-            return root.moduleMetricValue("messaging", ["libp2p_pubsub_peers"])
+            return root.moduleMetricValue("messaging", ["libp2p_pubsub_peers", "waku_relay_peers", "relay_peers"])
         case "messaging.store_peers":
-            return root.moduleMetricValue("messaging", ["waku_store_peers"])
+            return root.moduleMetricValue("messaging", [
+                "waku_store_peers",
+                { name: "waku_service_peers", labels: { service: "/vac/waku/store-query/3.0.0" } },
+                "store_peers"
+            ])
         case "messaging.filter_peers":
-            return root.moduleMetricValue("messaging", ["waku_filter_peers"])
+            return root.moduleMetricValue("messaging", [
+                "waku_filter_peers",
+                { name: "waku_service_peers", labels: { service: "/vac/waku/filter-subscribe/2.0.0-beta1" } },
+                "filter_peers"
+            ])
         case "messaging.lightpush_peers":
-            return root.moduleMetricValue("messaging", ["waku_lightpush_peers"])
+            return root.moduleMetricValue("messaging", [
+                "waku_lightpush_peers",
+                { name: "waku_service_peers", labels: { service: "/vac/waku/lightpush/2.0.0-beta1" } },
+                { name: "waku_service_peers", labels: { service: "/vac/waku/lightpush/3.0.0" } },
+                "lightpush_peers"
+            ])
         case "messaging.content_topics":
             return root.moduleMetricValue("messaging", ["content_topics"])
         case "messaging.outbound_queue":
             return root.moduleMetricValue("messaging", ["outbound_queue"])
         case "messaging.message_sent_events_recent":
-            return null
+            return root.moduleMetricSum("messaging", [
+                "waku_lightpush_v3_messages",
+                "waku_lightpush_messages",
+                { name: "waku_service_requests_total", labels: { service: "/vac/waku/lightpush/2.0.0-beta1" } },
+                { name: "waku_service_requests_total", labels: { service: "/vac/waku/lightpush/3.0.0" } }
+            ])
         case "messaging.message_propagated_events_recent":
-            return null
+            return root.moduleMetricValue("messaging", ["waku_node_messages_total", "waku_node_messages"])
         case "messaging.message_received_events_recent":
             return root.moduleMetricValue("messaging", ["waku_node_messages_total", "waku_node_messages", "message_received_events_recent"])
         case "messaging.message_error_events_recent":
-            return root.moduleMetricValue("messaging", ["waku_node_errors_total", "waku_node_errors", "message_error_events_recent"])
+            return root.moduleMetricSum("messaging", [
+                "waku_node_errors_total",
+                "waku_node_errors",
+                "waku_store_errors_total",
+                "waku_filter_errors_total",
+                "waku_lightpush_errors_total",
+                "waku_lightpush_v3_errors_total",
+                "message_error_events_recent"
+            ])
+        case "messaging.network_ingress_recent":
+            return root.moduleMetricValue("messaging", [
+                { name: "libp2p_network_bytes_total", labels: { direction: "in" } },
+                "libp2p_network_bytes_in_total"
+            ])
+        case "messaging.network_egress_recent":
+            return root.moduleMetricValue("messaging", [
+                { name: "libp2p_network_bytes_total", labels: { direction: "out" } },
+                "libp2p_network_bytes_out_total"
+            ])
+        case "messaging.relay_ingress_recent":
+            return root.moduleMetricValue("messaging", [
+                { name: "waku_relay_network_bytes_total", labels: { direction: "in" } },
+                "waku_relay_network_bytes_in_total"
+            ])
+        case "messaging.relay_egress_recent":
+            return root.moduleMetricValue("messaging", [
+                { name: "waku_relay_network_bytes_total", labels: { direction: "out" } },
+                "waku_relay_network_bytes_out_total"
+            ])
+        case "messaging.service_ingress_recent":
+            return root.moduleMetricValue("messaging", [
+                { name: "waku_service_network_bytes_total", labels: { direction: "in" } },
+                "waku_service_network_bytes_in_total"
+            ])
+        case "messaging.service_egress_recent":
+            return root.moduleMetricValue("messaging", [
+                { name: "waku_service_network_bytes_total", labels: { direction: "out" } },
+                "waku_service_network_bytes_out_total"
+            ])
+        case "messaging.store_query_requests_recent":
+            return root.moduleMetricSum("messaging", [
+                "waku_store_queries_total",
+                { name: "waku_service_requests_total", labels: { service: "/vac/waku/store-query/3.0.0" } }
+            ])
+        case "messaging.filter_requests_recent":
+            return root.moduleMetricSum("messaging", [
+                "waku_filter_requests_total",
+                { name: "waku_service_requests_total", labels: { service: "/vac/waku/filter-subscribe/2.0.0-beta1" } }
+            ])
+        case "messaging.lightpush_requests_recent":
+            return root.moduleMetricSum("messaging", [
+                "waku_lightpush_v3_messages",
+                { name: "waku_service_requests_total", labels: { service: "/vac/waku/lightpush/2.0.0-beta1" } },
+                { name: "waku_service_requests_total", labels: { service: "/vac/waku/lightpush/3.0.0" } }
+            ])
+        case "messaging.peer_exchange_requests_recent":
+            return root.moduleMetricSum("messaging", [
+                "waku_px_peers_sent_total",
+                { name: "waku_service_requests_total", labels: { service: "/vac/waku/peer-exchange/2.0.0-alpha1" } }
+            ])
+        case "messaging.store_messages":
+            return root.moduleMetricValue("messaging", ["waku_store_messages", "waku_archive_messages"])
+        case "messaging.store_errors_recent":
+            return root.moduleMetricSum("messaging", ["waku_store_errors_total", "waku_archive_errors_total"])
         case "messaging.publish_latency_ms":
             return null
         case "messaging.receive_latency_ms":
@@ -498,6 +585,18 @@ function dashboardMetricValue(root, key) {
         case "messaging.message_error_events_recent":
         case "storage.failed_transfers_recent":
             return root.dashboardMetricWindowDelta(key)
+        case "messaging.network_ingress_recent":
+        case "messaging.network_egress_recent":
+        case "messaging.relay_ingress_recent":
+        case "messaging.relay_egress_recent":
+        case "messaging.service_ingress_recent":
+        case "messaging.service_egress_recent":
+        case "messaging.store_query_requests_recent":
+        case "messaging.filter_requests_recent":
+        case "messaging.lightpush_requests_recent":
+        case "messaging.peer_exchange_requests_recent":
+        case "messaging.store_errors_recent":
+            return root.dashboardMetricWindowDelta(key)
         default:
             return root.dashboardMetricRawValue(key)
         }
@@ -508,6 +607,17 @@ function dashboardMetricUsesWindow(root, key) {
     with (root) {
         return key === "messaging.message_received_events_recent"
             || key === "messaging.message_error_events_recent"
+            || key === "messaging.network_ingress_recent"
+            || key === "messaging.network_egress_recent"
+            || key === "messaging.relay_ingress_recent"
+            || key === "messaging.relay_egress_recent"
+            || key === "messaging.service_ingress_recent"
+            || key === "messaging.service_egress_recent"
+            || key === "messaging.store_query_requests_recent"
+            || key === "messaging.filter_requests_recent"
+            || key === "messaging.lightpush_requests_recent"
+            || key === "messaging.peer_exchange_requests_recent"
+            || key === "messaging.store_errors_recent"
             || key === "storage.failed_transfers_recent"
     }
 }
@@ -570,6 +680,18 @@ function recordDashboardSnapshot(root) {
             "messaging.message_propagated_events_recent",
             "messaging.message_received_events_recent",
             "messaging.message_error_events_recent",
+            "messaging.network_ingress_recent",
+            "messaging.network_egress_recent",
+            "messaging.relay_ingress_recent",
+            "messaging.relay_egress_recent",
+            "messaging.service_ingress_recent",
+            "messaging.service_egress_recent",
+            "messaging.store_query_requests_recent",
+            "messaging.filter_requests_recent",
+            "messaging.lightpush_requests_recent",
+            "messaging.peer_exchange_requests_recent",
+            "messaging.store_messages",
+            "messaging.store_errors_recent",
             "messaging.publish_latency_ms",
             "messaging.receive_latency_ms"
         ]

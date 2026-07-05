@@ -220,7 +220,17 @@ function walletProfile(root) {
 function walletProfileConfigured(root) {
     with (root) {
         return String(walletBinary || "").trim().length > 0
-            && String(walletHome || "").trim().length > 0
+            && root.walletHomeConfigured()
+    }
+}
+
+function walletHomeConfigured(root) {
+    with (root) {
+        if (String(walletHome || "").trim().length > 0) {
+            return true
+        }
+        const source = String(localWalletStatus && localWalletStatus.home_source ? localWalletStatus.home_source : "")
+        return source.length > 0 && source !== "none"
     }
 }
 
@@ -396,7 +406,7 @@ function syncPrivateWallet(root) {
 
         busy = true
         statusText = qsTr("Private sync")
-        return requestModuleAsync(inspectorModule, "localWalletSyncPrivate", [walletProfile()], qsTr("Private sync"), true, function (response) {
+        return requestModuleAsync(inspectorModule, "localWalletSyncPrivate", [walletProfile(), "confirm-sync-private"], qsTr("Private sync"), true, function (response) {
             busy = false
             if (response.ok) {
                 appendLocalWalletOperation(qsTr("Private sync"), "submitted", root.privateSyncOperationDetail(response.value))
@@ -414,7 +424,7 @@ function queryLocalWalletAccounts(root, showResult) {
             return null
         }
         if (!walletProfileConfigured()) {
-            localWalletAccountsError = qsTr("Configure wallet binary and wallet home before listing wallet accounts.")
+            localWalletAccountsError = qsTr("Configure wallet binary and wallet home, or check a profile that resolves $LEE_WALLET_HOME_DIR.")
             setResult(qsTr("Wallet accounts"), localWalletAccountsError, true)
             return null
         }

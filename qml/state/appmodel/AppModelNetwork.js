@@ -542,7 +542,12 @@ function deliveryReportHealthy(root, report) {
     with (root) {
         const moduleName = String(report && report.module ? report.module : "")
         if (moduleName === "delivery_metrics") {
-            return true
+            return deliveryMetricsEvidencePresent(root, report)
+        }
+        if (moduleName === "delivery_network_monitor") {
+            return root.reportProbeOk(report, "allPeersInfo")
+                || root.reportProbeOk(report, "contentTopics")
+                || deliveryMetricsEvidencePresent(root, report)
         }
         if (moduleName === "delivery_rest" && !root.reportProbeOk(report, "health")) {
             return false
@@ -550,11 +555,7 @@ function deliveryReportHealthy(root, report) {
         const nodeProbe = root.reportProbe(report, "nodeHealth")
         const connectionProbe = root.reportProbe(report, "connectionStatus")
         if (moduleName === "delivery_rest" && !connectionProbe) {
-            if (!nodeProbe) {
-                return true
-            }
-            const nodeHealth = nodeProbe.ok === true ? nodeProbe.value : null
-            return root.deliveryHealthValueOk(nodeHealth, false)
+            return false
         }
         if (moduleName === deliveryModule && !nodeProbe && !connectionProbe) {
             return root.deliveryModuleRuntimeHealthy(report)
@@ -565,6 +566,35 @@ function deliveryReportHealthy(root, report) {
         const nodeHealth = nodeProbe && nodeProbe.ok === true ? nodeProbe.value : null
         const connectionStatus = connectionProbe && connectionProbe.ok === true ? connectionProbe.value : null
         return root.deliveryHealthValueOk(nodeHealth, false) && root.deliveryHealthValueOk(connectionStatus, false)
+    }
+}
+
+function deliveryMetricsEvidencePresent(root, report) {
+    with (root) {
+        const probe = root.reportProbe(report, "collectOpenMetricsText")
+        if (!probe || probe.ok !== true || probe.value === undefined || probe.value === null) {
+            return false
+        }
+        const text = root.openMetricsTextFromValue(probe.value)
+        if (!text.length) {
+            return false
+        }
+        const knownNames = [
+            "libp2p_peers",
+            "waku_peers",
+            "libp2p_pubsub_peers",
+            "waku_node_messages_total",
+            "waku_node_errors_total",
+            "waku_store_queries_total",
+            "waku_filter_peers",
+            "waku_lightpush_peers"
+        ]
+        for (let i = 0; i < knownNames.length; ++i) {
+            if (text.indexOf(knownNames[i]) >= 0) {
+                return true
+            }
+        }
+        return false
     }
 }
 
@@ -651,8 +681,8 @@ function deliverySourceReportArgs(root) {
         const source = root.effectiveMessagingSourceMode(messagingSourceMode)
         return [
             source,
-            source === "rest" ? root.configuredMessagingRestUrl() : "",
-            source === "rest" || source === "metrics" ? String(messagingMetricsUrl || "") : ""
+            source === "rest" || source === "network-monitor" ? root.configuredMessagingRestUrl() : "",
+            source === "rest" || source === "metrics" || source === "network-monitor" ? String(messagingMetricsUrl || "") : ""
         ]
     }
 }
@@ -671,6 +701,8 @@ function deliverySourceLabel(root) {
             return qsTr("Direct Waku REST")
         case "metrics":
             return qsTr("Metrics only")
+        case "network-monitor":
+            return qsTr("Network monitor")
         case "unsupported":
             return qsTr("Unsupported source")
         default:
@@ -688,6 +720,8 @@ function deliverySourceTarget(root) {
             return root.configuredMessagingRestUrl()
         case "metrics":
             return String(messagingMetricsUrl || "")
+        case "network-monitor":
+            return root.configuredMessagingRestUrl()
         default:
             return ""
         }
@@ -789,7 +823,7 @@ function normalizedMessagingSourceMode(root, value) {
         case "discovery-crawler":
         case "discovery crawler":
         case "crawler":
-            return "unsupported"
+            return "network-monitor"
         case "rest":
         case "direct-rest":
         case "direct waku rest":
@@ -799,6 +833,8 @@ function normalizedMessagingSourceMode(root, value) {
         case "metrics-only":
         case "metrics only":
             return "metrics"
+        case "network-monitor":
+            return "network-monitor"
         case "unsupported":
             return "unsupported"
         case "auto":
@@ -839,6 +875,8 @@ function storageSourceLabel(root) {
         }
         const effective = root.effectiveStorageSourceMode(storageSourceMode)
         switch (effective) {
+        case "module":
+            return qsTr("Storage module")
         case "rest":
             return qsTr("Standalone REST")
         case "metrics":
@@ -854,6 +892,8 @@ function storageSourceLabel(root) {
 function storageSourceTarget(root) {
     with (root) {
         switch (root.effectiveStorageSourceMode(storageSourceMode)) {
+        case "module":
+            return storageModule
         case "rest":
             return root.configuredStorageRestUrl()
         case "metrics":
@@ -881,7 +921,7 @@ function normalizedStorageSourceMode(root, value) {
         case "basecamp":
         case "basecamp-module":
         case "basecamp module":
-            return "unsupported"
+            return "module"
         case "rest":
         case "standalone-rest":
         case "standalone rest":

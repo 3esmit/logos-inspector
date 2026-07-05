@@ -128,6 +128,15 @@ cargo run -- cli block <block-id>
 cargo run -- cli tx <tx-hash>
 cargo run -- cli account <account-id>
 cargo run -- cli account <account-id> --idl <idl.json> --idl-account <account-type>
+cargo run -- cli blockchain-node
+cargo run -- cli blockchain-blocks --slot-from 0 --slot-to 100
+cargo run -- cli channels --slot-from 0 --slot-to 100
+cargo run -- cli blockchain-module
+cargo run -- cli storage --source-mode rest --cid <cid>
+cargo run -- cli messaging --source-mode rest
+cargo run -- cli wallet status --wallet-binary <wallet> --wallet-home <wallet-home>
+cargo run -- cli wallet accounts --wallet-binary <wallet> --wallet-home <wallet-home>
+cargo run -- cli wallet bedrock-balance <64-hex-public-key>
 cargo run -- cli decode-account --data-hex <hex> --idl <idl.json> --idl-account <account-type>
 cargo run -- cli decode-instruction --program-id <program-id> --words <u32-list> --idl <idl.json> --accounts <account-list>
 cargo run -- cli program-file <program.bin>
@@ -186,6 +195,7 @@ Default endpoints:
 
 - Sequencer: `https://testnet.lez.logos.co/`
 - Indexer: `http://127.0.0.1:8779/`
+- Bedrock node: `http://127.0.0.1:8080/`
 
 Both CLI and GUI allow endpoint override.
 

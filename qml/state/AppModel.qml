@@ -32,6 +32,7 @@ QtObject {
     property string resultOwner: ""
     property var dashboardOverview: null
     property var dashboardNode: null
+    property var dashboardL1Blocks: []
     property var dashboardBlocks: []
     property var dashboardSequencerBlocks: []
     property string dashboardError: ""
@@ -115,6 +116,8 @@ QtObject {
     property bool storagePrivilegedDebugEnabled: false
     property bool storageMutatingDiagnosticsEnabled: false
     property string storageCidProbe: ""
+    property var storageActiveOperation: null
+    property int storageActiveOperationRevision: 0
 
     property string sequencerTab: "blocks"
     property string storageAppTab: "files"
@@ -306,6 +309,8 @@ QtObject {
 
     function walletProfileConfigured() { return AppModelIdentity.walletProfileConfigured(root) }
 
+    function walletHomeConfigured() { return AppModelIdentity.walletHomeConfigured(root) }
+
     function bedrockWalletSourceConfigured() { return AppModelIdentity.bedrockWalletSourceConfigured(root) }
 
     function walletProfileUsable() { return AppModelIdentity.walletProfileUsable(root) }
@@ -323,6 +328,16 @@ QtObject {
     function redactedPath(path) { return AppModelIdentity.redactedPath(root, path) }
 
     function storageDisplayPath(path) { return AppModelIdentity.storageDisplayPath(root, path) }
+
+    function updateStorageActiveOperation(value) {
+        storageActiveOperation = value || null
+        storageActiveOperationRevision += 1
+    }
+
+    function clearStorageActiveOperation() {
+        storageActiveOperation = null
+        storageActiveOperationRevision += 1
+    }
 
     function checkLocalWalletProfile(showResult) { return AppModelIdentity.checkLocalWalletProfile(root, showResult) }
 

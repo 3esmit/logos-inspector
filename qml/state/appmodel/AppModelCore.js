@@ -9,6 +9,7 @@ function handleNetworkConfigurationChanged(root) {
         networkConnectionPendingRevision += 1
         dashboardOverview = null
         dashboardNode = null
+        dashboardL1Blocks = []
         dashboardBlocks = []
         dashboardSequencerBlocks = []
         dashboardError = ""
@@ -17,6 +18,8 @@ function handleNetworkConfigurationChanged(root) {
         blockchainModuleReport = null
         storageModuleReport = null
         messagingModuleReport = null
+        storageActiveOperation = null
+        storageActiveOperationRevision += 1
         blocksLiveEnabled = false
         blocksLiveError = ""
         blocksLiveSource = ""
@@ -53,7 +56,8 @@ function navTreeItems(root) {
                 children: [
                     { key: "blocks", view: "blocks", label: qsTr("Blocks"), token: "L1B", layer: "l1" },
                     { key: "transactions", view: "transactions", label: qsTr("Mantle Tx"), token: "L1T", layer: "l1" },
-                    { key: "channels", view: "channels", label: qsTr("Channels"), token: "L1C", layer: "l1" }
+                    { key: "channels", view: "channels", label: qsTr("Channels"), token: "L1C", layer: "l1" },
+                    { key: "blockchain", view: "blockchain", label: qsTr("Node / Module"), token: "L1N", layer: "l1" }
                 ]
             },
             {
@@ -88,7 +92,6 @@ function navTreeItems(root) {
                 token: "DIA",
                 layer: "system",
                 children: [
-                    { key: "blockchain", view: "blockchain", label: qsTr("Bedrock Node"), token: "L1N", layer: "system" },
                     { key: "indexer", view: "indexer", label: qsTr("LEZ Indexer"), token: "IDX", layer: "system" },
                     { key: "storageDiagnostics", view: "diagnosticsStorage", label: qsTr("Storage"), token: "DST", layer: "system" },
                     { key: "deliveryDiagnostics", view: "diagnosticsDelivery", label: qsTr("Delivery"), token: "DDL", layer: "system" },

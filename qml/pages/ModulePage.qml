@@ -574,6 +574,9 @@ ColumnLayout {
     }
 
     function moduleLayer() {
+        if (root.moduleKind === "blockchain") {
+            return qsTr("L1 Bedrock")
+        }
         return qsTr("Diagnostics")
     }
 

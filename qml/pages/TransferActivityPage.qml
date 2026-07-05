@@ -28,7 +28,7 @@ ColumnLayout {
 
     SourceStrip {
         theme: root.theme
-        sources: [qsTr("L2 Indexer"), qsTr("account-reference scan"), qsTr("finalized blocks")]
+        sources: [qsTr("L2 Indexer"), root.transferSourceLabel(), qsTr("finalized blocks")]
         Layout.fillWidth: true
     }
 
@@ -132,6 +132,16 @@ ColumnLayout {
                 ]
             };
         });
+    }
+
+    function transferSourceLabel() {
+        const rows = (root.model.transferActivityRows || []).concat(root.model.transferActivityOverflowRows || [])
+        for (let i = 0; i < rows.length; ++i) {
+            if (String(rows[i].source || "") === "transfer_outputs") {
+                return qsTr("transfer-output scan")
+            }
+        }
+        return qsTr("account-reference fallback")
     }
 
     function recipientHeaderCells() {

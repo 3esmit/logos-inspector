@@ -13,6 +13,7 @@ function refreshDashboard(root) {
         const requests = [
             { module: inspectorModule, method: "overview", args: [sequencerUrl, indexerUrl, nodeUrl], label: qsTr("Dashboard overview") },
             { module: inspectorModule, method: "blockchainNode", args: root.blockchainArgs([]), label: qsTr("Blockchain node") },
+            { module: inspectorModule, method: "blockchainLiveBlocks", args: root.blockchainArgs([0, 9007199254740991, 5]), label: qsTr("Latest L1 blocks") },
             { module: inspectorModule, method: "sequencerBlocks", args: root.executionArgs([null, 5]), label: qsTr("Latest L2 blocks") },
             { module: inspectorModule, method: "indexerBlocks", args: root.indexerArgs([null, 10]), label: qsTr("Latest blocks") },
             { module: inspectorModule, method: "storageSourceReport", args: root.storageSourceReportArgs(false), label: qsTr("Storage source") },
@@ -49,6 +50,7 @@ function refreshDashboard(root) {
                         setResult(qsTr("Dashboard"), BridgeHelpers.formatValue({
                             overview: dashboardOverview || null,
                             node: dashboardNode || null,
+                            l1Blocks: dashboardL1Blocks || [],
                             blocks: dashboardBlocks || [],
                             storage: storageModuleReport || null,
                             messaging: messagingModuleReport || null
@@ -70,6 +72,8 @@ function updateDashboardCache(root, method, value) {
             dashboardOverview = value
         } else if (method === "blockchainNode") {
             dashboardNode = value
+        } else if (method === "blockchainLiveBlocks") {
+            dashboardL1Blocks = value && Array.isArray(value.blocks) ? value.blocks : []
         } else if (method === "indexerBlocks") {
             dashboardBlocks = value || []
         } else if (method === "sequencerBlocks") {
