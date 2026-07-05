@@ -7,6 +7,7 @@ import "../services/BridgeHelpers.js" as BridgeHelpers
 import "../state"
 import "../theme"
 import "accounts"
+import "common"
 
 ColumnLayout {
     id: root
@@ -26,6 +27,12 @@ ColumnLayout {
     property var relatedTransactionDecodeMap: ({})
     property int relatedTransactionDecodeRevision: 0
     property int relatedTransactionDecodeSerial: 0
+    property int interactionInstructionIndex: 0
+    property var interactionAccountValues: ({})
+    property var interactionArgValues: ({})
+    property string interactionProgramBinary: ""
+    property int interactionRevision: 0
+    property var pendingInstructionRequest: null
     readonly property string nullAddressBase58: "11111111111111111111111111111111"
     readonly property var favoriteEntry: root.detail ? root.model.favoriteAccountEntry(root.detail) : null
 
@@ -36,6 +43,11 @@ ColumnLayout {
     onDetailChanged: {
         Qt.callLater(root.resetDecodeState)
         Qt.callLater(root.resetRelatedTransactionDecodes)
+        Qt.callLater(root.resetInteractionState)
+    }
+
+    onActiveDecodeChanged: {
+        Qt.callLater(root.resetInteractionState)
     }
 
     Connections {
@@ -44,6 +56,7 @@ ColumnLayout {
         function onCountChanged() {
             Qt.callLater(root.resetDecodeState)
             Qt.callLater(root.resetRelatedTransactionDecodes)
+            Qt.callLater(root.resetInteractionState)
         }
     }
 
@@ -147,6 +160,256 @@ ColumnLayout {
         onRowActivated: (linkKind, linkValue) => root.model.openReference(linkKind, linkValue)
     }
 
+    ColumnLayout {
+        visible: root.canInteractWithIdl()
+        spacing: 8
+        Layout.fillWidth: true
+
+        Text {
+            text: qsTr("Interact")
+            color: root.theme.text
+            textFormat: Text.PlainText
+            font.pixelSize: 14
+            font.weight: Font.DemiBold
+            Layout.fillWidth: true
+        }
+
+        Frame {
+            padding: root.theme.gap
+            Layout.fillWidth: true
+
+            background: Rectangle {
+                color: root.theme.surface
+                radius: root.theme.radius
+                border.width: 1
+                border.color: root.theme.outlineMuted
+            }
+
+            contentItem: ColumnLayout {
+                spacing: root.theme.gapSmall
+
+                GridLayout {
+                    columns: root.width < 700 ? 1 : 2
+                    columnSpacing: root.theme.gap
+                    rowSpacing: root.theme.gapSmall
+                    Layout.fillWidth: true
+
+                    ColumnLayout {
+                        spacing: 6
+                        Layout.fillWidth: true
+
+                        Text {
+                            text: qsTr("Instruction")
+                            color: root.theme.textMuted
+                            textFormat: Text.PlainText
+                            font.pixelSize: root.theme.secondaryText
+                            font.weight: Font.Medium
+                            Layout.fillWidth: true
+                        }
+
+                        ComboBox {
+                            id: instructionCombo
+                            model: root.interactionInstructionLabels()
+                            currentIndex: root.interactionInstructionIndex
+                            textRole: ""
+                            hoverEnabled: true
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: root.theme.controlHeight
+                            onActivated: index => root.selectInteractionInstruction(index)
+
+                            contentItem: TextField {
+                                text: instructionCombo.displayText
+                                color: root.theme.text
+                                verticalAlignment: Text.AlignVCenter
+                                leftPadding: 12
+                                rightPadding: 24
+                                readOnly: true
+                                clip: true
+                                background: null
+                                font.pixelSize: root.theme.primaryText
+                            }
+
+                            background: Rectangle {
+                                radius: root.theme.radius
+                                color: instructionCombo.hovered || instructionCombo.activeFocus ? root.theme.surfaceRaised : root.theme.field
+                                border.width: instructionCombo.activeFocus ? 2 : 1
+                                border.color: instructionCombo.activeFocus ? root.theme.accent : root.theme.outlineMuted
+                            }
+
+                            popup: Popup {
+                                y: instructionCombo.height
+                                width: instructionCombo.width
+                                implicitHeight: Math.min(contentItem.implicitHeight, 280)
+                                padding: 1
+
+                                contentItem: ListView {
+                                    clip: true
+                                    implicitHeight: contentHeight
+                                    model: instructionCombo.popup.visible ? instructionCombo.delegateModel : null
+                                    currentIndex: instructionCombo.highlightedIndex
+                                }
+
+                                background: Rectangle {
+                                    color: root.theme.surface
+                                    radius: root.theme.radius
+                                    border.width: 1
+                                    border.color: root.theme.outline
+                                }
+                            }
+
+                            delegate: ItemDelegate {
+                                id: instructionDelegate
+
+                                required property string modelData
+
+                                width: instructionCombo.width
+                                text: modelData
+                                hoverEnabled: true
+                                contentItem: Text {
+                                    text: instructionDelegate.text
+                                    color: root.theme.text
+                                    textFormat: Text.PlainText
+                                    elide: Text.ElideRight
+                                    verticalAlignment: Text.AlignVCenter
+                                    font.pixelSize: root.theme.primaryText
+                                }
+                                background: Rectangle {
+                                    color: instructionDelegate.hovered ? root.theme.hover : root.theme.surface
+                                }
+                            }
+
+                            Accessible.role: Accessible.ComboBox
+                            Accessible.name: qsTr("Instruction")
+                        }
+                    }
+
+                    FieldRow {
+                        theme: root.theme
+                        label: qsTr("Program binary")
+                        placeholderText: qsTr("program.bin")
+                        sourceText: root.interactionProgramBinary
+                        syncSourceText: true
+                        Layout.fillWidth: true
+                        onTextEdited: text => {
+                            root.interactionProgramBinary = text
+                            root.interactionRevision += 1
+                        }
+                    }
+                }
+
+                GridLayout {
+                    visible: root.interactionAccountFields().length > 0
+                    columns: root.width < 700 ? 1 : 2
+                    columnSpacing: root.theme.gap
+                    rowSpacing: root.theme.gapSmall
+                    Layout.fillWidth: true
+
+                    Repeater {
+                        model: root.interactionAccountFields()
+
+                        FieldRow {
+                            required property var modelData
+
+                            theme: root.theme
+                            label: modelData.label
+                            placeholderText: modelData.placeholder
+                            sourceText: {
+                                const revision = root.interactionRevision
+                                return root.interactionFieldValue("account", modelData.name)
+                            }
+                            syncSourceText: true
+                            Layout.fillWidth: true
+                            onTextEdited: text => root.setInteractionFieldValue("account", modelData.name, text)
+                        }
+                    }
+                }
+
+                GridLayout {
+                    visible: root.interactionArgFields().length > 0
+                    columns: root.width < 700 ? 1 : 2
+                    columnSpacing: root.theme.gap
+                    rowSpacing: root.theme.gapSmall
+                    Layout.fillWidth: true
+
+                    Repeater {
+                        model: root.interactionArgFields()
+
+                        FieldRow {
+                            required property var modelData
+
+                            theme: root.theme
+                            label: modelData.label
+                            placeholderText: modelData.placeholder
+                            sourceText: {
+                                const revision = root.interactionRevision
+                                return root.interactionFieldValue("arg", modelData.name)
+                            }
+                            syncSourceText: true
+                            Layout.fillWidth: true
+                            onTextEdited: text => root.setInteractionFieldValue("arg", modelData.name, text)
+                        }
+                    }
+                }
+
+                StatusMessage {
+                    visible: root.model.idlInstructionError.length > 0
+                    theme: root.theme
+                    tone: "warning"
+                    title: qsTr("Instruction")
+                    message: root.model.idlInstructionError
+                    Layout.fillWidth: true
+                }
+
+                Text {
+                    visible: root.interactionPreviewText().length > 0
+                    text: root.interactionPreviewText()
+                    color: root.theme.textMuted
+                    textFormat: Text.PlainText
+                    wrapMode: Text.WrapAnywhere
+                    font.pixelSize: root.theme.secondaryText
+                    Layout.fillWidth: true
+                }
+
+                RowLayout {
+                    spacing: root.theme.gapSmall
+                    Layout.fillWidth: true
+
+                    ActionButton {
+                        theme: root.theme
+                        text: qsTr("Preview")
+                        enabled: root.interactionInputsComplete()
+                        Layout.preferredWidth: 112
+                        onClicked: root.model.previewIdlInstruction(root.interactionRequest())
+                    }
+
+                    ActionButton {
+                        theme: root.theme
+                        text: qsTr("Configure wallet")
+                        visible: !root.model.walletHomeConfigured()
+                        Layout.preferredWidth: 156
+                        onClicked: root.model.openLocalWallet("", "profiles")
+                    }
+
+                    Item {
+                        Layout.fillWidth: true
+                    }
+
+                    ActionButton {
+                        theme: root.theme
+                        text: qsTr("Send")
+                        primary: true
+                        enabled: root.interactionInputsComplete() && root.model.walletHomeConfigured()
+                        Layout.preferredWidth: 112
+                        onClicked: {
+                            root.pendingInstructionRequest = root.interactionRequest()
+                            instructionConfirm.open()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     Text {
         visible: root.detail && !root.detail.private_reference && root.detail.related_transactions_error.length > 0
         text: root.detail ? root.detail.related_transactions_error : ""
@@ -212,6 +475,16 @@ ColumnLayout {
                 }
             }
         }
+    }
+
+    ConfirmActionPopup {
+        id: instructionConfirm
+
+        theme: root.theme
+        title: qsTr("Send IDL instruction")
+        message: root.interactionConfirmMessage()
+        confirmText: qsTr("Send")
+        onAccepted: root.model.sendIdlInstruction(root.pendingInstructionRequest || root.interactionRequest())
     }
 
     function normalize(value) {
@@ -457,6 +730,310 @@ ColumnLayout {
                 return
             }
         }
+    }
+
+    function resetInteractionState() {
+        const entry = root.interactionIdlEntry()
+        root.interactionInstructionIndex = 0
+        root.interactionAccountValues = ({})
+        root.interactionArgValues = ({})
+        root.interactionProgramBinary = entry ? String(entry.programBinary || "") : ""
+        root.pendingInstructionRequest = null
+        root.model.idlInstructionPreviewValue = null
+        root.model.idlInstructionError = ""
+        root.interactionRevision += 1
+        Qt.callLater(root.prefillInteractionAccounts)
+    }
+
+    function interactionIdlEntry() {
+        if (root.selectedIdlTypeIndex >= 0 && root.selectedIdlTypeIndex < root.idlTypeOptions.length) {
+            const option = root.idlTypeOptions[root.selectedIdlTypeIndex]
+            const entry = root.model.idlEntryForKey(option.idlKey)
+            return entry || option
+        }
+        return root.model.cachedIdlEntryForAccount(root.accountCacheId(), root.ownerProgramId())
+    }
+
+    function interactionIdlObject() {
+        const entry = root.interactionIdlEntry()
+        if (!entry || !String(entry.json || "").length) {
+            return null
+        }
+        const parsed = BridgeHelpers.parseJson(String(entry.json || ""))
+        return parsed.ok && parsed.value ? parsed.value : null
+    }
+
+    function canInteractWithIdl() {
+        if (!root.detail || root.detail.private_reference || !root.activeDecode || root.activeDecodeError.length > 0) {
+            return false
+        }
+        if (!root.model.accountDecodeFullyConsumed(root.activeDecode)) {
+            return false
+        }
+        const idl = root.interactionIdlObject()
+        return idl !== null && Array.isArray(idl.instructions) && idl.instructions.length > 0
+    }
+
+    function interactionInstructions() {
+        const idl = root.interactionIdlObject()
+        if (!idl || !Array.isArray(idl.instructions)) {
+            return []
+        }
+        const rows = []
+        for (let i = 0; i < idl.instructions.length; ++i) {
+            const instruction = idl.instructions[i] || {}
+            if (String(instruction.name || "").length > 0) {
+                rows.push(instruction)
+            }
+        }
+        return rows
+    }
+
+    function interactionInstructionLabels() {
+        return root.interactionInstructions().map(instruction => String(instruction.name || ""))
+    }
+
+    function interactionInstruction() {
+        const instructions = root.interactionInstructions()
+        if (instructions.length === 0) {
+            return null
+        }
+        const index = Math.max(0, Math.min(root.interactionInstructionIndex, instructions.length - 1))
+        return instructions[index] || null
+    }
+
+    function selectInteractionInstruction(index) {
+        root.interactionInstructionIndex = Math.max(0, Number(index || 0))
+        root.interactionAccountValues = ({})
+        root.interactionArgValues = ({})
+        root.model.idlInstructionPreviewValue = null
+        root.model.idlInstructionError = ""
+        root.interactionRevision += 1
+        Qt.callLater(root.prefillInteractionAccounts)
+    }
+
+    function prefillInteractionAccounts() {
+        if (!root.detail) {
+            return
+        }
+        const fields = root.interactionAccountFields()
+        const currentAccount = root.accountCopyValue(root.detail)
+        if (!fields.length || !currentAccount.length) {
+            return
+        }
+        let index = 0
+        for (let i = 0; i < fields.length; ++i) {
+            if (fields[i].required === true) {
+                index = i
+                break
+            }
+        }
+        const field = fields[index]
+        const values = root.copyInteractionMap(root.interactionAccountValues)
+        if (!String(values[field.name] || "").trim().length) {
+            values[field.name] = currentAccount
+            root.interactionAccountValues = values
+            root.interactionRevision += 1
+        }
+    }
+
+    function interactionAccountFields() {
+        const instruction = root.interactionInstruction()
+        const accounts = instruction && Array.isArray(instruction.accounts) ? instruction.accounts : []
+        const rows = []
+        const seen = {}
+        for (let i = 0; i < accounts.length; ++i) {
+            const account = accounts[i] || {}
+            if (account.pda !== undefined) {
+                continue
+            }
+            const name = String(account.name || "")
+            if (!name.length) {
+                continue
+            }
+            const rest = account.rest === true
+            const signer = account.signer === true
+            rows.push({
+                name: name,
+                label: signer ? qsTr("%1 signer").arg(root.displayLabel(name)) : root.displayLabel(name),
+                placeholder: rest ? qsTr("Public/<id>, Private/<id>") : qsTr("Public/<id> or Private/<id>"),
+                required: !rest,
+                rest: rest
+            })
+            seen[name] = true
+        }
+        for (let j = 0; j < accounts.length; ++j) {
+            const pda = accounts[j] && accounts[j].pda ? accounts[j].pda : null
+            const seeds = pda && Array.isArray(pda.seeds) ? pda.seeds : []
+            for (let k = 0; k < seeds.length; ++k) {
+                const seed = seeds[k] || {}
+                const path = String(seed.path || "")
+                if (String(seed.kind || "") === "account" && path.length > 0 && seen[path] !== true) {
+                    rows.push({
+                        name: path,
+                        label: qsTr("%1 seed").arg(root.displayLabel(path)),
+                        placeholder: qsTr("Public/<id>"),
+                        required: true,
+                        rest: false
+                    })
+                    seen[path] = true
+                }
+            }
+        }
+        return rows
+    }
+
+    function interactionArgFields() {
+        const instruction = root.interactionInstruction()
+        const args = instruction && Array.isArray(instruction.args) ? instruction.args : []
+        const rows = []
+        for (let i = 0; i < args.length; ++i) {
+            const arg = args[i] || {}
+            const name = String(arg.name || "")
+            if (!name.length) {
+                continue
+            }
+            const typeLabel = root.interactionTypeLabel(arg.type)
+            rows.push({
+                name: name,
+                label: qsTr("%1 (%2)").arg(root.displayLabel(name)).arg(typeLabel),
+                placeholder: root.interactionPlaceholder(arg.type),
+                required: true
+            })
+        }
+        return rows
+    }
+
+    function interactionTypeLabel(typeValue) {
+        if (typeof typeValue === "string") {
+            return typeValue
+        }
+        if (!typeValue || typeof typeValue !== "object") {
+            return "value"
+        }
+        if (typeValue.array && Array.isArray(typeValue.array)) {
+            const elem = root.interactionTypeLabel(typeValue.array[0])
+            const count = typeValue.array.length > 1 ? String(typeValue.array[1]) : "?"
+            return "[" + elem + "; " + count + "]"
+        }
+        if (typeValue.vec !== undefined) {
+            return "Vec<" + root.interactionTypeLabel(typeValue.vec) + ">"
+        }
+        if (typeValue.option !== undefined) {
+            return "Option<" + root.interactionTypeLabel(typeValue.option) + ">"
+        }
+        if (typeValue.defined !== undefined) {
+            return String(typeValue.defined || "defined")
+        }
+        return "value"
+    }
+
+    function interactionPlaceholder(typeValue) {
+        const label = root.interactionTypeLabel(typeValue)
+        if (label === "bool") {
+            return qsTr("true or false")
+        }
+        if (label.indexOf("[u8;") === 0) {
+            return qsTr("0x...")
+        }
+        if (label.indexOf("Vec<") === 0) {
+            return qsTr("comma values")
+        }
+        return qsTr("value")
+    }
+
+    function interactionFieldValue(kind, name) {
+        const revision = root.interactionRevision
+        const values = kind === "account" ? root.interactionAccountValues : root.interactionArgValues
+        return String((values || {})[name] || "")
+    }
+
+    function setInteractionFieldValue(kind, name, text) {
+        const values = root.copyInteractionMap(kind === "account" ? root.interactionAccountValues : root.interactionArgValues)
+        values[name] = String(text || "")
+        if (kind === "account") {
+            root.interactionAccountValues = values
+        } else {
+            root.interactionArgValues = values
+        }
+        root.model.idlInstructionPreviewValue = null
+        root.model.idlInstructionError = ""
+        root.interactionRevision += 1
+    }
+
+    function copyInteractionMap(source) {
+        const copy = {}
+        const current = source || {}
+        for (const key in current) {
+            copy[key] = current[key]
+        }
+        return copy
+    }
+
+    function interactionPrivateMode() {
+        const values = root.interactionAccountValues || {}
+        for (const key in values) {
+            if (String(values[key] || "").trim().toLowerCase().indexOf("private/") === 0) {
+                return true
+            }
+        }
+        return false
+    }
+
+    function interactionInputsComplete() {
+        if (!root.canInteractWithIdl() || !root.interactionInstruction()) {
+            return false
+        }
+        const accounts = root.interactionAccountFields()
+        for (let i = 0; i < accounts.length; ++i) {
+            if (accounts[i].required === true && !root.interactionFieldValue("account", accounts[i].name).trim().length) {
+                return false
+            }
+        }
+        const args = root.interactionArgFields()
+        for (let j = 0; j < args.length; ++j) {
+            if (args[j].required === true && !root.interactionFieldValue("arg", args[j].name).trim().length) {
+                return false
+            }
+        }
+        return !root.interactionPrivateMode() || root.interactionProgramBinary.trim().length > 0
+    }
+
+    function interactionRequest() {
+        const entry = root.interactionIdlEntry() || {}
+        const instruction = root.interactionInstruction() || {}
+        return {
+            idl_json: String(entry.json || ""),
+            program_id_hex: String(entry.programIdHex || root.ownerProgramId()),
+            program_binary: String(root.interactionProgramBinary || "").trim(),
+            dependency_binaries: [],
+            instruction: String(instruction.name || ""),
+            accounts: root.copyInteractionMap(root.interactionAccountValues),
+            args: root.copyInteractionMap(root.interactionArgValues)
+        }
+    }
+
+    function interactionPreviewText() {
+        const report = root.model.idlInstructionPreviewValue
+        const instruction = root.interactionInstruction()
+        if (!report || !instruction || String(report.instruction || "") !== String(instruction.name || "")) {
+            return ""
+        }
+        const tx = String(report.tx_hash || report.txHash || "")
+        if (tx.length > 0) {
+            return qsTr("%1 transaction %2").arg(String(report.mode || "submitted")).arg(root.shortId(tx))
+        }
+        const words = Array.isArray(report.instruction_words) ? report.instruction_words.length : 0
+        return qsTr("%1 preview, %2 word(s)").arg(String(report.mode || "public")).arg(words)
+    }
+
+    function interactionConfirmMessage() {
+        const instruction = root.interactionInstruction()
+        const name = instruction ? String(instruction.name || qsTr("instruction")) : qsTr("instruction")
+        if (root.interactionPrivateMode()) {
+            return qsTr("Submit private transaction for %1. Wallet will execute and prove locally.").arg(name)
+        }
+        return qsTr("Submit public transaction for %1.").arg(name)
     }
 
     function indexForType(accountType) {

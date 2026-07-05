@@ -22,8 +22,8 @@ use crate::{
     indexer_blocks, indexer_health, indexer_status, indexer_transfer_recipients,
     inspect_transaction_summary_with_idl, last_sequencer_block_id, local_wallet_accounts,
     local_wallet_command, local_wallet_create_account, local_wallet_deploy_program,
-    local_wallet_profile_status, local_wallet_send_transaction, local_wallet_sync_private,
-    logoscore,
+    local_wallet_instruction_preview, local_wallet_instruction_submit, local_wallet_profile_status,
+    local_wallet_send_transaction, local_wallet_sync_private, logoscore,
     modules::{
         blockchain_module_report, delivery_report, delivery_source_report, logoscore_status_report,
         storage_report, storage_source_report,
@@ -407,6 +407,30 @@ impl InspectorBridge {
                         .cloned()
                         .context("wallet send request is required")?,
                 )?)
+            }
+            "localWalletInstructionPreview" => {
+                let args = Args::new(args)?;
+                to_value(local_wallet_instruction_preview(
+                    args.value(0)
+                        .cloned()
+                        .context("IDL instruction request is required")?,
+                )?)
+            }
+            "localWalletInstructionSubmit" => {
+                let args = Args::new(args)?;
+                if args.optional_string(2) != Some("confirm-idl-instruction") {
+                    bail!("IDL instruction send requires explicit confirmation");
+                }
+                to_value(
+                    self.runtime.block_on(local_wallet_instruction_submit(
+                        args.value(0)
+                            .cloned()
+                            .context("local wallet profile is required")?,
+                        args.value(1)
+                            .cloned()
+                            .context("IDL instruction request is required")?,
+                    ))?,
+                )
             }
             "localWalletCommand" => {
                 let args = Args::new(args)?;
@@ -2231,6 +2255,37 @@ mod tests {
         if !error
             .to_string()
             .contains("wallet transaction send requires explicit confirmation")
+        {
+            bail!("unexpected error: {error:#}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn local_wallet_instruction_submit_requires_confirmation() -> Result<()> {
+        let bridge = InspectorBridge::new()?;
+        let result = bridge.call_module(
+            INSPECTOR_MODULE,
+            "localWalletInstructionSubmit",
+            json!([
+                {
+                    "wallet_home": ".",
+                    "network_profile": "local"
+                },
+                {
+                    "idl_json": "{}",
+                    "program_id_hex": "00",
+                    "instruction": "set"
+                }
+            ]),
+        );
+
+        let Err(error) = result else {
+            bail!("expected missing IDL instruction confirmation to fail");
+        };
+        if !error
+            .to_string()
+            .contains("IDL instruction send requires explicit confirmation")
         {
             bail!("unexpected error: {error:#}");
         }

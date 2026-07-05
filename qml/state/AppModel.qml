@@ -183,6 +183,8 @@ QtObject {
     property var localWalletOperations: []
     property var localWalletAccountsValue: null
     property string localWalletAccountsError: ""
+    property var idlInstructionPreviewValue: null
+    property string idlInstructionError: ""
     property var bedrockWalletBalanceValue: null
     property string bedrockWalletBalanceError: ""
     property string bedrockWalletModuleError: ""
@@ -420,6 +422,12 @@ QtObject {
     function isBedrockHexId(value) { return AppModelIdentity.isBedrockHexId(root, value) }
 
     function appendLocalWalletOperation(label, status, detail) { return AppModelIdentity.appendLocalWalletOperation(root, label, status, detail) }
+
+    function previewIdlInstruction(request) { return AppModelIdentity.previewIdlInstruction(root, request) }
+
+    function sendIdlInstruction(request) { return AppModelIdentity.sendIdlInstruction(root, request) }
+
+    function idlInstructionOperationDetail(value) { return AppModelIdentity.idlInstructionOperationDetail(root, value) }
 
     function refreshBedrockWalletModule(address) { return AppModelIdentity.refreshBedrockWalletModule(root, address) }
 
@@ -943,7 +951,7 @@ QtObject {
 
     function updateKnownProgramIds(value) { return AppModelRegistry.updateKnownProgramIds(root, value) }
 
-    function registerIdl(name, programId, json) { return AppModelRegistry.registerIdl(root, name, programId, json) }
+    function registerIdl(name, programId, json, programBinary) { return AppModelRegistry.registerIdl(root, name, programId, json, programBinary) }
 
     function removeIdl(index) { return AppModelRegistry.removeIdl(root, index) }
 

@@ -755,6 +755,76 @@ function appendLocalWalletOperation(root, label, status, detail) {
     }
 }
 
+function previewIdlInstruction(root, request) {
+    with (root) {
+        if (busy) {
+            setResult(qsTr("IDL instruction"), qsTr("Another inspection is already running."), true)
+            return null
+        }
+
+        busy = true
+        statusText = qsTr("IDL instruction")
+        idlInstructionError = ""
+        return requestModuleAsync(inspectorModule, "localWalletInstructionPreview", [request || {}], qsTr("IDL instruction"), false, function (response) {
+            busy = false
+            if (response.ok) {
+                idlInstructionPreviewValue = response.value || null
+                idlInstructionError = ""
+            } else {
+                idlInstructionPreviewValue = null
+                idlInstructionError = response.error || qsTr("Instruction preview failed.")
+            }
+        })
+    }
+}
+
+function sendIdlInstruction(root, request) {
+    with (root) {
+        if (busy) {
+            setResult(qsTr("IDL instruction"), qsTr("Another inspection is already running."), true)
+            return null
+        }
+        if (!walletHomeConfigured()) {
+            openLocalWallet("", "profiles")
+            setResult(qsTr("IDL instruction"), qsTr("Configure wallet home before sending an IDL instruction."), true)
+            return null
+        }
+
+        busy = true
+        statusText = qsTr("IDL instruction")
+        idlInstructionError = ""
+        return requestModuleAsync(inspectorModule, "localWalletInstructionSubmit", [walletProfile(), request || {}, "confirm-idl-instruction"], qsTr("IDL instruction"), true, function (response) {
+            busy = false
+            if (response.ok) {
+                idlInstructionPreviewValue = response.value || null
+                idlInstructionError = ""
+                appendLocalWalletOperation(qsTr("IDL instruction"), "submitted", root.idlInstructionOperationDetail(response.value))
+            } else {
+                idlInstructionError = response.error || qsTr("Instruction send failed.")
+                appendLocalWalletOperation(qsTr("IDL instruction"), "down", idlInstructionError)
+            }
+        })
+    }
+}
+
+function idlInstructionOperationDetail(root, value) {
+    with (root) {
+        const report = value || {}
+        const tx = String(report.tx_hash || report.txHash || "")
+        if (tx.length > 0) {
+            return qsTr("%1 %2, tx %3")
+                .arg(String(report.mode || "tx"))
+                .arg(String(report.instruction || "instruction"))
+                .arg(UiFormat.shortHash(tx))
+        }
+        const words = Array.isArray(report.instruction_words) ? report.instruction_words.length : 0
+        return qsTr("%1 %2, %3 word(s)")
+            .arg(String(report.mode || "preview"))
+            .arg(String(report.instruction || "instruction"))
+            .arg(words)
+    }
+}
+
 function refreshBedrockWalletModule(root, address) {
     with (root) {
         const target = String(address === undefined || address === null ? walletPublicKeyProbe : address).trim()
@@ -1002,6 +1072,7 @@ function normalizedIdlEntry(root, entry, fallbackIndex) {
             name: name,
             programId: programId,
             programIdHex: programIdHex,
+            programBinary: String(row.programBinary || row.program_binary || ""),
             json: json
         }
     }
@@ -1010,7 +1081,7 @@ function normalizedIdlEntry(root, entry, fallbackIndex) {
 function idlEntryAt(root, index) {
     with (root) {
         if (index < 0 || index >= registeredIdls.count) {
-            return { key: "", name: "", programId: "", json: "" }
+            return { key: "", name: "", programId: "", programIdHex: "", programBinary: "", json: "" }
         }
         const row = registeredIdls.get(index)
         return root.normalizedIdlEntry(row, index)

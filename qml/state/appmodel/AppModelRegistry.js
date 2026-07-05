@@ -66,7 +66,7 @@ function updateKnownProgramIds(root, value) {
     }
 }
 
-function registerIdl(root, name, programId, json) {
+function registerIdl(root, name, programId, json, programBinary) {
     with (root) {
         if (!json.trim().length) {
             setResult(qsTr("IDL registry"), qsTr("IDL JSON is required."), true)
@@ -96,6 +96,7 @@ function registerIdl(root, name, programId, json) {
             name: resolvedName,
             programId: resolvedProgramId,
             programIdHex: resolvedProgramIdHex,
+            programBinary: String(programBinary || "").trim(),
             json: json
         })
         saveIdlState()
@@ -157,4 +158,3 @@ function applyProfile(root, index) {
         messagingNetworkPreset = "logos.test"
     }
 }
-
