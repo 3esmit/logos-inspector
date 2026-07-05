@@ -133,6 +133,10 @@ QtObject {
     property string storageCidProbe: ""
     property var storageActiveOperation: null
     property int storageActiveOperationRevision: 0
+    property var nodeOperations: ({})
+    property var nodeOperationEventSeq: ({})
+    property var nodeOperationHistory: []
+    property int nodeOperationsRevision: 0
     property string settingsBackupCid: ""
     property string settingsRestoreCid: ""
     property bool settingsBackupEncrypted: false
@@ -349,6 +353,24 @@ QtObject {
     function requestModule(moduleName, method, args, label, showResult, cacheResult) { return AppModelCore.requestModule(root, moduleName, method, args, label, showResult, cacheResult) }
 
     function requestModuleAsync(moduleName, method, args, label, showResult, callback, acceptResponse) { return AppModelCore.requestModuleAsync(root, moduleName, method, args, label, showResult, callback, acceptResponse) }
+
+    function nodeOperationStart(request, showResult, callback) { return AppModelCore.nodeOperationStart(root, request, showResult, callback) }
+
+    function nodeOperationStatus(operationId, showResult, callback) { return AppModelCore.nodeOperationStatus(root, operationId, showResult, callback) }
+
+    function nodeOperationEvents(operationId, afterSeq, showResult, callback) { return AppModelCore.nodeOperationEvents(root, operationId, afterSeq, showResult, callback) }
+
+    function nodeOperationCancel(operationId, showResult, callback) { return AppModelCore.nodeOperationCancel(root, operationId, showResult, callback) }
+
+    function updateNodeOperation(operation) { return AppModelCore.updateNodeOperation(root, operation) }
+
+    function nodeOperationTerminal(operation) { return AppModelCore.nodeOperationTerminal(root, operation) }
+
+    function nodeOperationResponse(operation) { return AppModelCore.nodeOperationResponse(root, operation) }
+
+    function appendNodeOperationHistory(operation, detail) { return AppModelCore.appendNodeOperationHistory(root, operation, detail) }
+
+    function nodeOperationHistoryRows(domain) { return AppModelCore.nodeOperationHistoryRows(root, domain) }
 
     function bridgeSupportsAsync() { return bridge.hasAsyncCalls() }
 

@@ -50,15 +50,26 @@ function runLocalNodeAction(root, action, node, networkId, workspacePath, label)
             request.workspace_path = workspace
         }
 
+        const operationLabel = String(label || localNodeActionLabel(action))
         busy = true
-        statusText = label || localNodeActionLabel(action)
-        return requestModuleAsync(inspectorModule, "localNodesAction", [networkProfile, request, "confirm-local-node-action"], statusText, true, function (response) {
+        statusText = operationLabel
+        return requestModuleAsync(inspectorModule, "localNodesAction", [networkProfile, request, "confirm-local-node-action"], operationLabel, true, function (response) {
             busy = false
             if (response.ok) {
                 localNodesReport = response.value || null
                 localNodesOperations = response.value && Array.isArray(response.value.operations) ? response.value.operations : []
                 localNodesError = ""
                 localNodesRevision += 1
+                appendNodeOperationHistory({
+                    domain: "localNodes",
+                    method: "localNodesAction",
+                    status: "completed",
+                    label: operationLabel,
+                    result: {
+                        status: "completed",
+                        detail: localNodeActionDetail(localNodesOperations, request)
+                    }
+                }, localNodeActionDetail(localNodesOperations, request))
                 refreshLocalDevnets()
             } else {
                 localNodesError = response.error || qsTr("Local node action failed.")
@@ -70,16 +81,54 @@ function runLocalNodeAction(root, action, node, networkId, workspacePath, label)
 
 function appendLocalNodeOperation(root, label, status, detail) {
     with (root) {
+        const labelText = String(label || qsTr("Local nodes"))
+        const statusText = String(status || "failed")
+        const detailText = String(detail || "")
         const rows = Array.isArray(localNodesOperations) ? localNodesOperations.slice(0) : []
         rows.push({
             time: new Date().toLocaleTimeString(Qt.locale(), "hh:mm:ss"),
-            action: String(label || qsTr("Local nodes")),
-            status: String(status || "failed"),
-            detail: String(detail || "")
+            action: labelText,
+            status: statusText,
+            detail: detailText
         })
         localNodesOperations = rows.slice(-50)
         localNodesRevision += 1
+        appendNodeOperationHistory({
+            domain: "localNodes",
+            method: "localNodesAction",
+            status: statusText === "failed" ? "failed" : "completed",
+            label: labelText,
+            result: {
+                status: statusText,
+                detail: detailText
+            },
+            error: statusText === "failed" ? detailText : ""
+        }, detailText)
     }
+}
+
+function localNodeActionDetail(operations, request) {
+    const rows = Array.isArray(operations) ? operations : []
+    if (rows.length > 0) {
+        const row = rows[rows.length - 1] || {}
+        const detail = String(row.detail || "")
+        if (detail.length) {
+            return detail
+        }
+        const status = String(row.status || "")
+        if (status.length) {
+            return status
+        }
+    }
+    const node = request && request.node ? String(request.node) : ""
+    if (node.length) {
+        return node
+    }
+    const network = request && request.network_id ? String(request.network_id) : ""
+    if (network.length) {
+        return network
+    }
+    return ""
 }
 
 function localNodeActionLabel(root, action) {

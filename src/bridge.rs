@@ -5,6 +5,8 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
+    thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context as _, Result, bail};
@@ -63,28 +65,67 @@ struct BridgeResponse {
 
 pub struct InspectorBridge {
     runtime: Runtime,
-    storage_operations: StorageOperationRegistry,
-    next_storage_operation_id: AtomicU64,
+    node_operations: NodeOperationRegistry,
+    next_node_operation_id: AtomicU64,
 }
 
-type StorageOperationRegistry = Arc<Mutex<HashMap<String, StorageOperation>>>;
+type NodeOperationRegistry = Arc<Mutex<HashMap<String, NodeOperationRecord>>>;
 
-struct StorageOperation {
-    label: String,
-    cid: String,
-    path: String,
+#[derive(Debug, Clone)]
+struct NodeOperationRequest {
+    domain: String,
+    source_mode: String,
     endpoint: String,
-    source: String,
-    status: StorageOperationStatus,
+    module: String,
+    method: String,
+    args: Value,
+    mutating_enabled: bool,
+    label: String,
+}
+
+#[derive(Debug, Clone)]
+struct NodeOperation {
+    operation_id: String,
+    domain: String,
+    backend: String,
+    method: String,
+    status: NodeOperationStatus,
+    label: String,
+    context: Value,
+    external_session_id: Option<String>,
+    progress: Option<f64>,
     bytes_written: u64,
     content_length: Option<u64>,
-    error: Option<String>,
     result: Option<Value>,
+    error: Option<String>,
+    cancellable: bool,
+    started_at: u64,
+    updated_at: u64,
+}
+
+#[derive(Debug, Clone)]
+struct NodeOperationEvent {
+    seq: u64,
+    operation_id: String,
+    domain: String,
+    method: String,
+    phase: String,
+    external_session_id: Option<String>,
+    message: String,
+    progress: Option<f64>,
+    result: Option<Value>,
+    error: Option<String>,
+    timestamp: u64,
+}
+
+struct NodeOperationRecord {
+    operation: NodeOperation,
+    events: Vec<NodeOperationEvent>,
     cancel_requested: Arc<AtomicBool>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum StorageOperationStatus {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NodeOperationStatus {
     Running,
     Canceling,
     Completed,
@@ -92,7 +133,7 @@ enum StorageOperationStatus {
     Canceled,
 }
 
-impl StorageOperationStatus {
+impl NodeOperationStatus {
     fn as_str(self) -> &'static str {
         match self {
             Self::Running => "running",
@@ -112,8 +153,8 @@ impl InspectorBridge {
     pub fn new() -> Result<Self> {
         Ok(Self {
             runtime: Runtime::new().context("failed to create tokio runtime")?,
-            storage_operations: Arc::new(Mutex::new(HashMap::new())),
-            next_storage_operation_id: AtomicU64::new(1),
+            node_operations: Arc::new(Mutex::new(HashMap::new())),
+            next_node_operation_id: AtomicU64::new(1),
         })
     }
 
@@ -383,33 +424,18 @@ impl InspectorBridge {
                         .context("local wallet profile is required")?,
                 )?)
             }
-            "localWalletCreateAccount" => {
-                let args = Args::new(args)?;
-                if args.optional_string(3) != Some("confirm-create-account") {
-                    bail!("wallet account creation requires explicit confirmation");
-                }
-                to_value(local_wallet_create_account(
-                    args.value(0)
-                        .cloned()
-                        .context("local wallet profile is required")?,
-                    args.string(1, "account privacy")?,
-                    args.optional_string(2),
-                )?)
-            }
-            "localWalletSendTransaction" => {
-                let args = Args::new(args)?;
-                if args.optional_string(2) != Some("confirm-send-transaction") {
-                    bail!("wallet transaction send requires explicit confirmation");
-                }
-                to_value(local_wallet_send_transaction(
-                    args.value(0)
-                        .cloned()
-                        .context("local wallet profile is required")?,
-                    args.value(1)
-                        .cloned()
-                        .context("wallet send request is required")?,
-                )?)
-            }
+            "localWalletCreateAccount" => self.run_legacy_node_operation(
+                "wallet",
+                "localWalletCreateAccount",
+                args,
+                "Wallet account",
+            ),
+            "localWalletSendTransaction" => self.run_legacy_node_operation(
+                "wallet",
+                "localWalletSendTransaction",
+                args,
+                "Wallet send",
+            ),
             "localWalletInstructionPreview" => {
                 let args = Args::new(args)?;
                 to_value(local_wallet_instruction_preview(
@@ -418,63 +444,30 @@ impl InspectorBridge {
                         .context("IDL instruction request is required")?,
                 )?)
             }
-            "localWalletInstructionSubmit" => {
-                let args = Args::new(args)?;
-                if args.optional_string(2) != Some("confirm-idl-instruction") {
-                    bail!("IDL instruction send requires explicit confirmation");
-                }
-                to_value(
-                    self.runtime.block_on(local_wallet_instruction_submit(
-                        args.value(0)
-                            .cloned()
-                            .context("local wallet profile is required")?,
-                        args.value(1)
-                            .cloned()
-                            .context("IDL instruction request is required")?,
-                    ))?,
-                )
-            }
-            "localWalletCommand" => {
-                let args = Args::new(args)?;
-                if args.optional_string(2) != Some("confirm-wallet-command") {
-                    bail!("wallet command requires explicit confirmation");
-                }
-                let command_args = serde_json::from_value::<Vec<String>>(
-                    args.value(1)
-                        .cloned()
-                        .context("wallet command arguments are required")?,
-                )
-                .context("wallet command arguments must be a string array")?;
-                to_value(local_wallet_command(
-                    args.value(0)
-                        .cloned()
-                        .context("local wallet profile is required")?,
-                    command_args,
-                )?)
-            }
-            "localWalletDeployProgram" => {
-                let args = Args::new(args)?;
-                if args.optional_string(2) != Some("confirm-deploy-program") {
-                    bail!("program deployment requires explicit confirmation");
-                }
-                to_value(local_wallet_deploy_program(
-                    args.value(0)
-                        .cloned()
-                        .context("local wallet profile is required")?,
-                    args.string(1, "program path")?,
-                )?)
-            }
-            "localWalletSyncPrivate" => {
-                let args = Args::new(args)?;
-                if args.string(1, "private sync confirmation")? != "confirm-sync-private" {
-                    bail!("private wallet sync requires explicit confirmation");
-                }
-                to_value(local_wallet_sync_private(
-                    args.value(0)
-                        .cloned()
-                        .context("local wallet profile is required")?,
-                )?)
-            }
+            "localWalletInstructionSubmit" => self.run_legacy_node_operation(
+                "wallet",
+                "localWalletInstructionSubmit",
+                args,
+                "IDL instruction",
+            ),
+            "localWalletCommand" => self.run_legacy_node_operation(
+                "wallet",
+                "localWalletCommand",
+                args,
+                "Wallet command",
+            ),
+            "localWalletDeployProgram" => self.run_legacy_node_operation(
+                "wallet",
+                "localWalletDeployProgram",
+                args,
+                "Program deploy",
+            ),
+            "localWalletSyncPrivate" => self.run_legacy_node_operation(
+                "wallet",
+                "localWalletSyncPrivate",
+                args,
+                "Private sync",
+            ),
             "localWalletAccounts" => {
                 let args = Args::new(args)?;
                 to_value(local_wallet_accounts(
@@ -495,20 +488,12 @@ impl InspectorBridge {
                     args.optional_string(0).unwrap_or("default"),
                 )?)
             }
-            "localNodesAction" => {
-                let args = Args::new(args)?;
-                let request = serde_json::from_value::<LocalNodeActionRequest>(
-                    args.value(1)
-                        .cloned()
-                        .context("local node action request is required")?,
-                )
-                .context("failed to parse local node action request")?;
-                to_value(local_nodes_action(
-                    args.optional_string(0).unwrap_or("default"),
-                    request,
-                    args.optional_string(2),
-                )?)
-            }
+            "localNodesAction" => self.run_legacy_node_operation(
+                "localNodes",
+                "localNodesAction",
+                args,
+                "Local node action",
+            ),
             "bedrockWalletBalance" => {
                 let args = Args::new(args)?;
                 to_value(self.runtime.block_on(bedrock_wallet_balance(
@@ -556,6 +541,10 @@ impl InspectorBridge {
                     args.optional_bool(4),
                 )))
             }
+            "nodeOperationStart" => self.node_operation_start(args),
+            "nodeOperationStatus" => self.node_operation_status(args),
+            "nodeOperationEvents" => self.node_operation_events(args),
+            "nodeOperationCancel" => self.node_operation_cancel(args),
             "deliveryReport" => {
                 let args = Args::new(args)?;
                 to_value(delivery_report(args.optional_string(0)))
@@ -568,26 +557,69 @@ impl InspectorBridge {
                     args.optional_string(2),
                 )))
             }
-            "storageManifests" => self.storage_manifests(args),
+            "storageManifests" => self.run_legacy_node_operation(
+                "storage",
+                "storageManifests",
+                args,
+                "Storage manifests",
+            ),
             "storageExists" => self.storage_exists(args),
-            "storageDownloadManifest" => self.storage_download_manifest(args),
-            "storageFetch" => self.storage_fetch(args),
-            "storageUploadUrl" => self.storage_upload_path(args),
+            "storageDownloadManifest" => self.run_legacy_node_operation(
+                "storage",
+                "storageDownloadManifest",
+                args,
+                "Storage manifest",
+            ),
+            "storageFetch" => {
+                self.run_legacy_node_operation("storage", "storageFetch", args, "Storage fetch")
+            }
+            "storageUploadUrl" => self.run_legacy_node_operation(
+                "storage",
+                "storageUploadUrl",
+                args,
+                "Storage upload",
+            ),
             "storageBackupSettings" => self.storage_backup_settings(args),
             "storageRestoreSettings" => self.storage_restore_settings(args),
-            "storageDownloadToUrl" => self.storage_download_to_path(args),
+            "storageDownloadToUrl" => self.run_legacy_node_operation(
+                "storage",
+                "storageDownloadToUrl",
+                args,
+                "Storage download",
+            ),
             "storageDownloadStart" => self.storage_download_start(args),
             "storageOperationStatus" => self.storage_operation_status(args),
             "storageOperationCancel" => self.storage_operation_cancel(args),
-            "storageRemove" => self.storage_remove(args),
-            "deliveryCreateNode" => self.delivery_module_action(args, "createNode"),
-            "deliveryStart" => self.delivery_module_action(args, "start"),
-            "deliveryStop" => self.delivery_module_action(args, "stop"),
-            "deliverySubscribe" => self.delivery_subscription(args, Method::POST, "subscribe"),
-            "deliveryUnsubscribe" => {
-                self.delivery_subscription(args, Method::DELETE, "unsubscribe")
+            "storageRemove" => {
+                self.run_legacy_node_operation("storage", "storageRemove", args, "Storage remove")
             }
-            "deliverySend" => self.delivery_send(args),
+            "deliveryCreateNode" => self.run_legacy_node_operation(
+                "delivery",
+                "deliveryCreateNode",
+                args,
+                "Delivery create node",
+            ),
+            "deliveryStart" => {
+                self.run_legacy_node_operation("delivery", "deliveryStart", args, "Delivery start")
+            }
+            "deliveryStop" => {
+                self.run_legacy_node_operation("delivery", "deliveryStop", args, "Delivery stop")
+            }
+            "deliverySubscribe" => self.run_legacy_node_operation(
+                "delivery",
+                "deliverySubscribe",
+                args,
+                "Delivery subscribe",
+            ),
+            "deliveryUnsubscribe" => self.run_legacy_node_operation(
+                "delivery",
+                "deliveryUnsubscribe",
+                args,
+                "Delivery unsubscribe",
+            ),
+            "deliverySend" => {
+                self.run_legacy_node_operation("delivery", "deliverySend", args, "Delivery send")
+            }
             "deliveryStoreQuery" => self.delivery_store_query(args),
             "socialMessagesFromStore" => self.social_messages_from_store(args),
             "capabilitiesReport" => {
@@ -738,13 +770,237 @@ impl InspectorBridge {
         )
     }
 
-    fn storage_manifests(&self, args: Value) -> Result<Value> {
+    fn node_operation_start(&self, args: Value) -> Result<Value> {
         let args = Args::new(args)?;
-        let source = storage_rest_source(&args)?;
-        to_value(
-            self.runtime
-                .block_on(raw_http_json(source.endpoint, "/data"))?,
-        )
+        let request = node_operation_request_from_value(
+            args.value(0)
+                .cloned()
+                .context("node operation request is required")?,
+        )?;
+        self.start_node_operation(request)
+    }
+
+    fn node_operation_status(&self, args: Value) -> Result<Value> {
+        let args = Args::new(args)?;
+        self.node_operation_value(args.string(0, "node operation id")?)
+    }
+
+    fn node_operation_events(&self, args: Value) -> Result<Value> {
+        let args = Args::new(args)?;
+        let operation_id = args.string(0, "node operation id")?;
+        let after_seq = args.value(1).and_then(Value::as_u64).unwrap_or(0);
+        let operations = self
+            .node_operations
+            .lock()
+            .map_err(|_| anyhow::anyhow!("node operation registry is unavailable"))?;
+        let record = operations
+            .get(operation_id)
+            .with_context(|| format!("node operation `{operation_id}` was not found"))?;
+        let events = record
+            .events
+            .iter()
+            .filter(|event| event.seq > after_seq)
+            .map(node_operation_event_value)
+            .collect::<Vec<_>>();
+        let next_seq = record.events.last().map_or(after_seq, |event| event.seq);
+        Ok(json!({
+            "operation": node_operation_value(&record.operation),
+            "events": events,
+            "nextSeq": next_seq,
+        }))
+    }
+
+    fn node_operation_cancel(&self, args: Value) -> Result<Value> {
+        let args = Args::new(args)?;
+        let operation_id = args.string(0, "node operation id")?;
+        {
+            let mut operations = self
+                .node_operations
+                .lock()
+                .map_err(|_| anyhow::anyhow!("node operation registry is unavailable"))?;
+            let record = operations
+                .get_mut(operation_id)
+                .with_context(|| format!("node operation `{operation_id}` was not found"))?;
+            if !record.operation.status.is_terminal() && record.operation.cancellable {
+                record.cancel_requested.store(true, Ordering::Relaxed);
+                record.operation.status = NodeOperationStatus::Canceling;
+                record.operation.updated_at = now_millis();
+                push_node_operation_event_locked(
+                    record,
+                    "canceling",
+                    "cancel requested",
+                    None,
+                    None,
+                    None,
+                );
+            } else if !record.operation.status.is_terminal() {
+                push_node_operation_event_locked(
+                    record,
+                    "cancel_ignored",
+                    "operation is not cancellable",
+                    None,
+                    None,
+                    None,
+                );
+            }
+        }
+        self.node_operation_value(operation_id)
+    }
+
+    fn start_node_operation(&self, request: NodeOperationRequest) -> Result<Value> {
+        let operation_id = format!(
+            "{}-{}-{}",
+            request.domain,
+            normalized_operation_method(&request.method),
+            self.next_node_operation_id.fetch_add(1, Ordering::Relaxed)
+        );
+        let now = now_millis();
+        let cancel_requested = Arc::new(AtomicBool::new(false));
+        let operation = NodeOperation {
+            operation_id: operation_id.clone(),
+            domain: request.domain.clone(),
+            backend: node_operation_backend(&request),
+            method: request.method.clone(),
+            status: NodeOperationStatus::Running,
+            label: request.label.clone(),
+            context: node_operation_context(&request),
+            external_session_id: None,
+            progress: None,
+            bytes_written: 0,
+            content_length: None,
+            result: None,
+            error: None,
+            cancellable: node_operation_cancellable(&request),
+            started_at: now,
+            updated_at: now,
+        };
+        {
+            let mut operations = self
+                .node_operations
+                .lock()
+                .map_err(|_| anyhow::anyhow!("node operation registry is unavailable"))?;
+            if request.domain == "storage"
+                && request.method == "storageDownloadToUrl"
+                && operations.values().any(active_storage_download_operation)
+            {
+                bail!("a storage download operation is already running");
+            }
+            operations.insert(
+                operation_id.clone(),
+                NodeOperationRecord {
+                    operation,
+                    events: Vec::new(),
+                    cancel_requested: Arc::clone(&cancel_requested),
+                },
+            );
+        }
+        update_node_operation(&self.node_operations, &operation_id, |record| {
+            push_node_operation_event_locked(
+                record,
+                "started",
+                "operation started",
+                Some(0.0),
+                None,
+                None,
+            );
+        });
+
+        let registry = Arc::clone(&self.node_operations);
+        let task_operation_id = operation_id.clone();
+        self.runtime.spawn(async move {
+            let result =
+                execute_node_operation(request, &registry, &task_operation_id, &cancel_requested)
+                    .await;
+            finish_node_operation(&registry, &task_operation_id, &cancel_requested, result);
+        });
+
+        self.node_operation_value(&operation_id)
+    }
+
+    fn run_legacy_node_operation(
+        &self,
+        domain: &str,
+        method: &str,
+        args: Value,
+        label: &str,
+    ) -> Result<Value> {
+        let request = NodeOperationRequest {
+            domain: domain.to_owned(),
+            source_mode: String::new(),
+            endpoint: String::new(),
+            module: String::new(),
+            method: method.to_owned(),
+            args,
+            mutating_enabled: false,
+            label: label.to_owned(),
+        };
+        let operation = self.start_node_operation(request)?;
+        let operation_id = operation
+            .get("operationId")
+            .and_then(Value::as_str)
+            .context("node operation id is missing")?
+            .to_owned();
+        let result = self.wait_for_node_operation_result(&operation_id);
+        self.remove_node_operation(&operation_id);
+        result
+    }
+
+    fn wait_for_node_operation_result(&self, operation_id: &str) -> Result<Value> {
+        loop {
+            let operation = {
+                let operations = self
+                    .node_operations
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("node operation registry is unavailable"))?;
+                operations
+                    .get(operation_id)
+                    .with_context(|| format!("node operation `{operation_id}` was not found"))?
+                    .operation
+                    .clone()
+            };
+            if operation.status.is_terminal() {
+                return match operation.status {
+                    NodeOperationStatus::Completed => Ok(operation.result.unwrap_or(Value::Null)),
+                    NodeOperationStatus::Canceled => {
+                        bail!(
+                            "{}",
+                            operation
+                                .error
+                                .unwrap_or_else(|| "node operation canceled".to_owned())
+                        )
+                    }
+                    NodeOperationStatus::Failed => {
+                        bail!(
+                            "{}",
+                            operation
+                                .error
+                                .unwrap_or_else(|| "node operation failed".to_owned())
+                        )
+                    }
+                    NodeOperationStatus::Running | NodeOperationStatus::Canceling => {
+                        bail!("node operation is still running")
+                    }
+                };
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
+
+    fn node_operation_value(&self, operation_id: &str) -> Result<Value> {
+        let operations = self
+            .node_operations
+            .lock()
+            .map_err(|_| anyhow::anyhow!("node operation registry is unavailable"))?;
+        let record = operations
+            .get(operation_id)
+            .with_context(|| format!("node operation `{operation_id}` was not found"))?;
+        Ok(node_operation_value(&record.operation))
+    }
+
+    fn remove_node_operation(&self, operation_id: &str) {
+        if let Ok(mut operations) = self.node_operations.lock() {
+            operations.remove(operation_id);
+        }
     }
 
     fn storage_exists(&self, args: Value) -> Result<Value> {
@@ -755,53 +1011,6 @@ impl InspectorBridge {
             source.endpoint,
             &format!("/data/{cid}/exists"),
         ))?)
-    }
-
-    fn storage_download_manifest(&self, args: Value) -> Result<Value> {
-        let args = Args::new(args)?;
-        let source = storage_rest_source(&args)?;
-        let cid_index = if matches!(args.value(source.next_index), Some(Value::Bool(_))) {
-            source.next_index + 1
-        } else {
-            source.next_index
-        };
-        let cid = args.string(cid_index, "CID")?;
-        to_value(self.runtime.block_on(raw_http_json(
-            source.endpoint,
-            &format!("/data/{cid}/network/manifest"),
-        ))?)
-    }
-
-    fn storage_fetch(&self, args: Value) -> Result<Value> {
-        let args = Args::new(args)?;
-        let source = storage_rest_source(&args)?;
-        require_mutating_diagnostics(&args, source.next_index, "storage network action")?;
-        let cid = args.string(source.next_index + 1, "CID")?;
-        self.runtime
-            .block_on(rest_json_request(
-                Method::POST,
-                source.endpoint,
-                &format!("/data/{cid}/network"),
-                None,
-            ))
-            .with_context(|| format!("failed to start storage network fetch for {cid}"))
-    }
-
-    fn storage_upload_path(&self, args: Value) -> Result<Value> {
-        let args = Args::new(args)?;
-        let source = storage_rest_source(&args)?;
-        require_mutating_diagnostics(&args, source.next_index, "storage upload action")?;
-        let path = args.string(source.next_index + 1, "file path")?;
-        if path.starts_with("http://") || path.starts_with("https://") {
-            bail!("storage REST upload expects a local file path");
-        }
-        let block_size = args
-            .value(source.next_index + 2)
-            .and_then(Value::as_u64)
-            .unwrap_or(65_536);
-        self.runtime
-            .block_on(storage_rest_upload(source.endpoint, path, block_size))
-            .with_context(|| format!("failed to upload `{path}` through storage REST"))
     }
 
     fn storage_backup_settings(&self, args: Value) -> Result<Value> {
@@ -873,205 +1082,27 @@ impl InspectorBridge {
         }))
     }
 
-    fn storage_download_to_path(&self, args: Value) -> Result<Value> {
-        let args = Args::new(args)?;
-        let source = storage_rest_source(&args)?;
-        require_mutating_diagnostics(&args, source.next_index, "storage download action")?;
-        let cid = args.string(source.next_index + 1, "CID")?;
-        let path = args.string(source.next_index + 2, "download path")?;
-        let local_only = args.optional_bool(source.next_index + 3);
-        self.runtime
-            .block_on(storage_rest_download(
-                source.endpoint,
-                cid,
-                path,
-                local_only,
-            ))
-            .with_context(|| format!("failed to download storage CID {cid} to `{path}`"))
-    }
-
     fn storage_download_start(&self, args: Value) -> Result<Value> {
-        let args = Args::new(args)?;
-        let source = storage_rest_source(&args)?;
-        require_mutating_diagnostics(&args, source.next_index, "storage download action")?;
-        let endpoint = source.endpoint.to_owned();
-        let cid = args.string(source.next_index + 1, "CID")?.to_owned();
-        let path = args
-            .string(source.next_index + 2, "download path")?
-            .to_owned();
-        let local_only = args.optional_bool(source.next_index + 3);
-        let operation_id = format!(
-            "storage-download-{}",
-            self.next_storage_operation_id
-                .fetch_add(1, Ordering::Relaxed)
-        );
-        let cancel_requested = Arc::new(AtomicBool::new(false));
-        let operation = StorageOperation {
+        self.start_node_operation(NodeOperationRequest {
+            domain: "storage".to_owned(),
+            source_mode: String::new(),
+            endpoint: String::new(),
+            module: String::new(),
+            method: "storageDownloadToUrl".to_owned(),
+            args,
+            mutating_enabled: false,
             label: "Storage download".to_owned(),
-            cid: cid.clone(),
-            path: path.clone(),
-            endpoint: endpoint.clone(),
-            source: if local_only { "local" } else { "network" }.to_owned(),
-            status: StorageOperationStatus::Running,
-            bytes_written: 0,
-            content_length: None,
-            error: None,
-            result: None,
-            cancel_requested: Arc::clone(&cancel_requested),
-        };
-        {
-            let mut operations = self
-                .storage_operations
-                .lock()
-                .map_err(|_| anyhow::anyhow!("storage operation registry is unavailable"))?;
-            if operations
-                .values()
-                .any(|operation| !operation.status.is_terminal())
-            {
-                bail!("a storage download is already running");
-            }
-            operations.insert(operation_id.clone(), operation);
-        }
-
-        let registry = Arc::clone(&self.storage_operations);
-        let task_id = operation_id.clone();
-        self.runtime.spawn(async move {
-            let result = storage_rest_download_tracked(
-                &endpoint,
-                &cid,
-                &path,
-                local_only,
-                &registry,
-                &task_id,
-                &cancel_requested,
-            )
-            .await;
-            finish_storage_operation(&registry, &task_id, &cancel_requested, result);
-        });
-
-        self.storage_operation_value(&operation_id)
+        })
     }
 
     fn storage_operation_status(&self, args: Value) -> Result<Value> {
         let args = Args::new(args)?;
-        self.storage_operation_value(args.string(0, "storage operation id")?)
+        self.node_operation_value(args.string(0, "storage operation id")?)
     }
 
     fn storage_operation_cancel(&self, args: Value) -> Result<Value> {
         let args = Args::new(args)?;
-        let operation_id = args.string(0, "storage operation id")?;
-        {
-            let mut operations = self
-                .storage_operations
-                .lock()
-                .map_err(|_| anyhow::anyhow!("storage operation registry is unavailable"))?;
-            let operation = operations
-                .get_mut(operation_id)
-                .with_context(|| format!("storage operation `{operation_id}` was not found"))?;
-            if !operation.status.is_terminal() {
-                operation.cancel_requested.store(true, Ordering::Relaxed);
-                operation.status = StorageOperationStatus::Canceling;
-            }
-        }
-        self.storage_operation_value(operation_id)
-    }
-
-    fn storage_operation_value(&self, operation_id: &str) -> Result<Value> {
-        let operations = self
-            .storage_operations
-            .lock()
-            .map_err(|_| anyhow::anyhow!("storage operation registry is unavailable"))?;
-        let operation = operations
-            .get(operation_id)
-            .with_context(|| format!("storage operation `{operation_id}` was not found"))?;
-        Ok(storage_operation_value(operation_id, operation))
-    }
-
-    fn storage_remove(&self, args: Value) -> Result<Value> {
-        let args = Args::new(args)?;
-        let source = storage_rest_source(&args)?;
-        require_mutating_diagnostics(&args, source.next_index, "storage remove action")?;
-        let cid = args.string(source.next_index + 1, "CID")?;
-        self.runtime
-            .block_on(rest_empty_request(
-                Method::DELETE,
-                source.endpoint,
-                &format!("/data/{cid}"),
-                None,
-            ))
-            .with_context(|| format!("failed to remove storage CID {cid}"))?;
-        Ok(json!({
-            "removed": true,
-            "cid": cid,
-            "endpoint": source.endpoint,
-        }))
-    }
-
-    fn delivery_subscription(
-        &self,
-        args: Value,
-        method: Method,
-        module_method: &str,
-    ) -> Result<Value> {
-        let args = Args::new(args)?;
-        if let Some(module_args) = delivery_module_message_args(&args)? {
-            require_mutating_diagnostics(&args, module_args.flag_index, "delivery message action")?;
-            return self.call_logoscore_module(
-                DELIVERY_MODULE,
-                module_method,
-                Value::Array(module_args.values),
-            );
-        }
-        let source = delivery_rest_source(&args)?;
-        require_mutating_diagnostics(&args, source.next_index, "delivery message action")?;
-        let topic = args.string(source.next_index + 1, "content topic")?;
-        self.runtime
-            .block_on(rest_empty_request(
-                method.clone(),
-                source.endpoint,
-                "/relay/v1/auto/subscriptions",
-                Some(json!([topic])),
-            ))
-            .with_context(|| format!("failed to update relay subscription for {topic}"))?;
-        Ok(json!({
-            "subscribed": method == Method::POST,
-            "contentTopic": topic,
-            "endpoint": source.endpoint,
-        }))
-    }
-
-    fn delivery_send(&self, args: Value) -> Result<Value> {
-        let args = Args::new(args)?;
-        if let Some(module_args) = delivery_module_message_args(&args)? {
-            require_mutating_diagnostics(&args, module_args.flag_index, "delivery message action")?;
-            return self.call_logoscore_module(
-                DELIVERY_MODULE,
-                "send",
-                Value::Array(module_args.values),
-            );
-        }
-        let source = delivery_rest_source(&args)?;
-        require_mutating_diagnostics(&args, source.next_index, "delivery message action")?;
-        let topic = args.string(source.next_index + 1, "content topic")?;
-        let payload = args.string(source.next_index + 2, "message payload")?;
-        let body = json!({
-            "contentTopic": topic,
-            "payload": BASE64_STANDARD.encode(payload.as_bytes()),
-        });
-        self.runtime
-            .block_on(rest_empty_request(
-                Method::POST,
-                source.endpoint,
-                "/relay/v1/auto/messages",
-                Some(body),
-            ))
-            .with_context(|| format!("failed to send relay message on {topic}"))?;
-        Ok(json!({
-            "sent": true,
-            "contentTopic": topic,
-            "bytes": payload.len(),
-            "endpoint": source.endpoint,
-        }))
+        self.node_operation_cancel(json!([args.string(0, "storage operation id")?]))
     }
 
     fn delivery_store_query(&self, args: Value) -> Result<Value> {
@@ -1121,24 +1152,6 @@ impl InspectorBridge {
             .context("Delivery Store response is required")?;
         let expected_account = args.optional_string(2);
         to_value(social_messages_from_store(topic, value, expected_account))
-    }
-
-    fn delivery_module_action(&self, args: Value, method: &str) -> Result<Value> {
-        let args = Args::new(args)?;
-        let start_index = if let Some(source) = args.optional_string(0).filter(|source| {
-            is_delivery_source_token(source) || is_delivery_module_source_token(source)
-        }) {
-            if !is_delivery_module_source_token(source) {
-                bail!("delivery node lifecycle actions require delivery module source");
-            }
-            require_mutating_diagnostics(&args, 2, "delivery node lifecycle action")?;
-            3
-        } else {
-            require_mutating_diagnostics(&args, 0, "delivery node lifecycle action")?;
-            0
-        };
-        let call_args = args.iter().skip(start_index).cloned().collect::<Vec<_>>();
-        self.call_logoscore_module(DELIVERY_MODULE, method, Value::Array(call_args))
     }
 }
 
@@ -1201,6 +1214,1216 @@ fn format_bridge_value(value: &Value) -> String {
 
 fn to_value(value: impl serde::Serialize) -> Result<Value> {
     serde_json::to_value(value).context("failed to serialize bridge response")
+}
+
+fn node_operation_request_from_value(value: Value) -> Result<NodeOperationRequest> {
+    let object = value
+        .as_object()
+        .context("node operation request must be a JSON object")?;
+    let method = object_string(object, "method")
+        .filter(|value| !value.is_empty())
+        .context("node operation method is required")?;
+    let domain = object_string(object, "domain").unwrap_or_else(|| node_operation_domain(&method));
+    let args = object
+        .get("args")
+        .cloned()
+        .unwrap_or_else(|| Value::Array(Vec::new()));
+    let mut request = NodeOperationRequest {
+        domain,
+        source_mode: object_string(object, "sourceMode").unwrap_or_default(),
+        endpoint: object_string(object, "endpoint").unwrap_or_default(),
+        module: object_string(object, "module").unwrap_or_default(),
+        method,
+        args,
+        mutating_enabled: object
+            .get("mutatingEnabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        label: object_string(object, "label").unwrap_or_default(),
+    };
+    request.args = normalized_node_operation_args(&request);
+    Ok(request)
+}
+
+fn object_string(object: &serde_json::Map<String, Value>, key: &str) -> Option<String> {
+    object
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn node_operation_domain(method: &str) -> String {
+    if method.starts_with("storage") {
+        "storage".to_owned()
+    } else if method.starts_with("delivery") {
+        "delivery".to_owned()
+    } else if method.starts_with("localNodes") || method.starts_with("localDevnet") {
+        "localNodes".to_owned()
+    } else if method.starts_with("localWallet") || method.starts_with("bedrockWallet") {
+        "wallet".to_owned()
+    } else if method.starts_with("indexer") {
+        "indexer".to_owned()
+    } else if method.starts_with("blockchain") {
+        "blockchain".to_owned()
+    } else {
+        "execution".to_owned()
+    }
+}
+
+fn node_operation_backend(request: &NodeOperationRequest) -> String {
+    if !request.source_mode.is_empty() {
+        return request.source_mode.clone();
+    }
+    if !request.module.is_empty() {
+        return request.module.clone();
+    }
+    if !request.endpoint.is_empty() {
+        return request.endpoint.clone();
+    }
+    request
+        .args
+        .as_array()
+        .and_then(|values| values.first())
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("direct")
+        .to_owned()
+}
+
+fn node_operation_context(request: &NodeOperationRequest) -> Value {
+    let mut context = serde_json::Map::new();
+    if !request.endpoint.is_empty() {
+        context.insert("endpoint".to_owned(), json!(request.endpoint));
+    }
+    if !request.source_mode.is_empty() {
+        context.insert("source".to_owned(), json!(request.source_mode));
+    }
+    if request.mutating_enabled {
+        context.insert("mutatingEnabled".to_owned(), json!(true));
+    }
+    if request.domain == "storage"
+        && let Ok(args) = Args::new(request.args.clone())
+        && let Ok(source) = storage_rest_source(&args)
+    {
+        context.insert("endpoint".to_owned(), json!(source.endpoint));
+        match request.method.as_str() {
+            "storageDownloadToUrl" => {
+                if let Some(cid) = args.optional_string(source.next_index + 1) {
+                    context.insert("cid".to_owned(), json!(cid));
+                }
+                if let Some(path) = args.optional_string(source.next_index + 2) {
+                    context.insert("path".to_owned(), json!(path));
+                }
+                context.insert(
+                    "source".to_owned(),
+                    json!(if args.optional_bool(source.next_index + 3) {
+                        "local"
+                    } else {
+                        "network"
+                    }),
+                );
+            }
+            "storageUploadUrl" => {
+                if let Some(path) = args.optional_string(source.next_index + 1) {
+                    context.insert("path".to_owned(), json!(path));
+                }
+            }
+            "storageFetch" | "storageRemove" => {
+                if let Some(cid) = args.optional_string(source.next_index + 1) {
+                    context.insert("cid".to_owned(), json!(cid));
+                }
+            }
+            "storageDownloadManifest" => {
+                let cid_index = if matches!(args.value(source.next_index), Some(Value::Bool(_))) {
+                    source.next_index + 1
+                } else {
+                    source.next_index
+                };
+                if let Some(cid) = args.optional_string(cid_index) {
+                    context.insert("cid".to_owned(), json!(cid));
+                }
+            }
+            _ => {}
+        }
+    }
+    Value::Object(context)
+}
+
+fn normalized_node_operation_args(request: &NodeOperationRequest) -> Value {
+    if request.source_mode.is_empty() && request.endpoint.is_empty() {
+        return request.args.clone();
+    }
+    let Some(values) = request.args.as_array() else {
+        return request.args.clone();
+    };
+    if node_operation_args_have_source(request, values) {
+        return request.args.clone();
+    }
+    let mode = if request.source_mode.is_empty() {
+        default_source_mode_for_domain(&request.domain)
+    } else {
+        request.source_mode.clone()
+    };
+    let endpoint = if request.endpoint.is_empty() {
+        default_endpoint_for_domain(&request.domain)
+    } else {
+        request.endpoint.clone()
+    };
+    let mut normalized = vec![json!(mode), json!(endpoint)];
+    if node_operation_uses_mutating_flag(request) {
+        normalized.push(json!(request.mutating_enabled));
+    }
+    let payload_start = if storage_or_delivery_domain(&request.domain)
+        && values
+            .first()
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .is_some_and(|first| {
+                first == endpoint || first.starts_with("http://") || first.starts_with("https://")
+            }) {
+        1
+    } else {
+        0
+    };
+    normalized.extend(values.iter().skip(payload_start).cloned());
+    Value::Array(normalized)
+}
+
+fn node_operation_args_have_source(request: &NodeOperationRequest, values: &[Value]) -> bool {
+    let Some(first) = values
+        .first()
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return false;
+    };
+    if storage_or_delivery_domain(&request.domain) {
+        return is_storage_source_token(first) || is_delivery_source_token(first);
+    }
+    first == request.endpoint
+        || first.starts_with("http://")
+        || first.starts_with("https://")
+        || SourceMode::from_token(first).is_some()
+}
+
+fn storage_or_delivery_domain(domain: &str) -> bool {
+    matches!(domain, "storage" | "delivery")
+}
+
+fn is_storage_source_token(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "auto"
+            | "rest"
+            | "standalone"
+            | "standalone-rest"
+            | "standalone rest"
+            | "direct-rest"
+            | "direct rest"
+            | "module"
+            | "basecamp"
+            | "basecamp-module"
+            | "basecamp module"
+            | "metrics"
+    )
+}
+
+fn default_source_mode_for_domain(domain: &str) -> String {
+    match domain {
+        "delivery" | "storage" => "rest".to_owned(),
+        _ => "rpc".to_owned(),
+    }
+}
+
+fn default_endpoint_for_domain(domain: &str) -> String {
+    match domain {
+        "delivery" => DEFAULT_DELIVERY_REST_ENDPOINT.to_owned(),
+        "storage" => DEFAULT_STORAGE_REST_ENDPOINT.to_owned(),
+        _ => String::new(),
+    }
+}
+
+fn node_operation_uses_mutating_flag(request: &NodeOperationRequest) -> bool {
+    matches!(
+        request.method.as_str(),
+        "storageFetch"
+            | "storageUploadUrl"
+            | "storageDownloadToUrl"
+            | "storageRemove"
+            | "deliverySubscribe"
+            | "deliveryUnsubscribe"
+            | "deliverySend"
+            | "deliveryCreateNode"
+            | "deliveryStart"
+            | "deliveryStop"
+    )
+}
+
+fn node_operation_cancellable(request: &NodeOperationRequest) -> bool {
+    request.domain == "storage" && request.method == "storageDownloadToUrl"
+}
+
+fn normalized_operation_method(method: &str) -> String {
+    let normalized = method
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    if normalized.is_empty() {
+        "operation".to_owned()
+    } else {
+        normalized
+    }
+}
+
+async fn execute_node_operation(
+    request: NodeOperationRequest,
+    registry: &NodeOperationRegistry,
+    operation_id: &str,
+    cancel_requested: &AtomicBool,
+) -> Result<Value> {
+    if request.domain == "storage" && storage_module_operation_gated(&request) {
+        bail!("{}", storage_module_operation_gated_message());
+    }
+    match request.method.as_str() {
+        "storageManifests" => execute_storage_manifests(&request).await,
+        "storageDownloadManifest" => execute_storage_download_manifest(&request).await,
+        "storageFetch" => execute_storage_fetch(&request).await,
+        "storageUploadUrl" => execute_storage_upload(&request).await,
+        "storageDownloadToUrl" => {
+            execute_storage_download(&request, registry, operation_id, cancel_requested).await
+        }
+        "storageRemove" => execute_storage_remove(&request).await,
+        "deliverySubscribe" => {
+            execute_delivery_subscription(&request, Method::POST, "subscribe").await
+        }
+        "deliveryUnsubscribe" => {
+            execute_delivery_subscription(&request, Method::DELETE, "unsubscribe").await
+        }
+        "deliverySend" => execute_delivery_send(&request).await,
+        "deliveryCreateNode" => execute_delivery_module_action(&request, "createNode").await,
+        "deliveryStart" => execute_delivery_module_action(&request, "start").await,
+        "deliveryStop" => execute_delivery_module_action(&request, "stop").await,
+        "deliveryStoreQuery" => execute_delivery_store_query(&request).await,
+        "localNodesAction" => execute_local_nodes_action(&request).await,
+        "localWalletCreateAccount" => execute_wallet_create_account(&request).await,
+        "localWalletSendTransaction" => execute_wallet_send_transaction(&request).await,
+        "localWalletInstructionSubmit" => execute_wallet_instruction_submit(&request).await,
+        "localWalletCommand" => execute_wallet_command(&request).await,
+        "localWalletDeployProgram" => execute_wallet_deploy_program(&request).await,
+        "localWalletSyncPrivate" => execute_wallet_sync_private(&request).await,
+        "localWalletAccounts" => execute_wallet_accounts(&request).await,
+        "blockchainNode" => execute_blockchain_node(&request).await,
+        "blockchainBlocks" => execute_blockchain_blocks(&request).await,
+        "blockchainLiveBlocks" => execute_blockchain_live_blocks(&request).await,
+        "blockchainBlock" => execute_blockchain_block(&request).await,
+        "blockchainTransaction" => execute_blockchain_transaction(&request).await,
+        "head" => execute_execution_head(&request).await,
+        "programs" => execute_programs(&request).await,
+        "block" => execute_sequencer_block(&request).await,
+        "sequencerBlocks" => execute_sequencer_blocks(&request).await,
+        "transaction" => execute_sequencer_transaction(&request).await,
+        "inspectTransaction" => execute_inspect_transaction(&request).await,
+        "traceTransaction" => execute_trace_transaction(&request).await,
+        "account" => execute_account_operation(&request).await,
+        "indexerHealth" => execute_indexer_health_operation(&request).await,
+        "indexerStatus" => execute_indexer_status_operation(&request).await,
+        "indexerFinalizedHead" => execute_indexer_finalized_head(&request).await,
+        "indexerBlocks" => execute_indexer_blocks_operation(&request).await,
+        "indexerBlockByHash" => execute_indexer_block_by_hash_operation(&request).await,
+        "indexerTransferRecipients" => {
+            execute_indexer_transfer_recipients_operation(&request).await
+        }
+        _ => bail!("unknown node operation method `{}`", request.method),
+    }
+}
+
+fn storage_module_operation_gated(request: &NodeOperationRequest) -> bool {
+    let mode = if !request.source_mode.is_empty() {
+        request.source_mode.as_str()
+    } else {
+        request
+            .args
+            .as_array()
+            .and_then(|values| values.first())
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+    };
+    matches!(
+        mode.trim().to_ascii_lowercase().as_str(),
+        "module" | "basecamp" | "basecamp-module" | "basecamp module"
+    ) && matches!(
+        request.method.as_str(),
+        "storageFetch"
+            | "storageUploadUrl"
+            | "storageDownloadToUrl"
+            | "storageRemove"
+            | "storageDownloadManifest"
+    )
+}
+
+fn storage_module_operation_gated_message() -> &'static str {
+    "storage module transfers are gated until module-info lists operation events and dispatch/progress/final events share a stable session id; see local draft issue .3esmit/github/logos-co/logos-storage-module/issues/draft/storage-module-operation-events.md"
+}
+
+async fn execute_storage_manifests(request: &NodeOperationRequest) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    let source = storage_rest_source(&args)?;
+    to_value(raw_http_json(source.endpoint, "/data").await?)
+}
+
+async fn execute_storage_download_manifest(request: &NodeOperationRequest) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    let source = storage_rest_source(&args)?;
+    let cid_index = if matches!(args.value(source.next_index), Some(Value::Bool(_))) {
+        source.next_index + 1
+    } else {
+        source.next_index
+    };
+    let cid = args.string(cid_index, "CID")?;
+    to_value(raw_http_json(source.endpoint, &format!("/data/{cid}/network/manifest")).await?)
+}
+
+async fn execute_storage_fetch(request: &NodeOperationRequest) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    let source = storage_rest_source(&args)?;
+    require_mutating_diagnostics(&args, source.next_index, "storage network action")?;
+    let cid = args.string(source.next_index + 1, "CID")?;
+    rest_json_request(
+        Method::POST,
+        source.endpoint,
+        &format!("/data/{cid}/network"),
+        None,
+    )
+    .await
+    .with_context(|| format!("failed to start storage network fetch for {cid}"))
+}
+
+async fn execute_storage_upload(request: &NodeOperationRequest) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    let source = storage_rest_source(&args)?;
+    require_mutating_diagnostics(&args, source.next_index, "storage upload action")?;
+    let path = args.string(source.next_index + 1, "file path")?;
+    if path.starts_with("http://") || path.starts_with("https://") {
+        bail!("storage REST upload expects a local file path");
+    }
+    let block_size = args
+        .value(source.next_index + 2)
+        .and_then(Value::as_u64)
+        .unwrap_or(65_536);
+    storage_rest_upload(source.endpoint, path, block_size)
+        .await
+        .with_context(|| format!("failed to upload `{path}` through storage REST"))
+}
+
+async fn execute_storage_download(
+    request: &NodeOperationRequest,
+    registry: &NodeOperationRegistry,
+    operation_id: &str,
+    cancel_requested: &AtomicBool,
+) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    let source = storage_rest_source(&args)?;
+    require_mutating_diagnostics(&args, source.next_index, "storage download action")?;
+    let cid = args.string(source.next_index + 1, "CID")?;
+    let path = args.string(source.next_index + 2, "download path")?;
+    let local_only = args.optional_bool(source.next_index + 3);
+    storage_rest_download_tracked(
+        source.endpoint,
+        cid,
+        path,
+        local_only,
+        registry,
+        operation_id,
+        cancel_requested,
+    )
+    .await
+    .with_context(|| format!("failed to download storage CID {cid} to `{path}`"))
+}
+
+async fn execute_storage_remove(request: &NodeOperationRequest) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    let source = storage_rest_source(&args)?;
+    require_mutating_diagnostics(&args, source.next_index, "storage remove action")?;
+    let cid = args.string(source.next_index + 1, "CID")?;
+    rest_empty_request(
+        Method::DELETE,
+        source.endpoint,
+        &format!("/data/{cid}"),
+        None,
+    )
+    .await
+    .with_context(|| format!("failed to remove storage CID {cid}"))?;
+    Ok(json!({
+        "removed": true,
+        "cid": cid,
+        "endpoint": source.endpoint,
+    }))
+}
+
+async fn execute_delivery_subscription(
+    request: &NodeOperationRequest,
+    method: Method,
+    module_method: &'static str,
+) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    if let Some(module_args) = delivery_module_message_args(&args)? {
+        require_mutating_diagnostics(&args, module_args.flag_index, "delivery message action")?;
+        return blocking_value("delivery module message action", move || {
+            logoscore_call_value(
+                DELIVERY_MODULE,
+                module_method,
+                Value::Array(module_args.values),
+            )
+        })
+        .await;
+    }
+    let source = delivery_rest_source(&args)?;
+    require_mutating_diagnostics(&args, source.next_index, "delivery message action")?;
+    let topic = args.string(source.next_index + 1, "content topic")?;
+    rest_empty_request(
+        method.clone(),
+        source.endpoint,
+        "/relay/v1/auto/subscriptions",
+        Some(json!([topic])),
+    )
+    .await
+    .with_context(|| format!("failed to update relay subscription for {topic}"))?;
+    Ok(json!({
+        "subscribed": method == Method::POST,
+        "contentTopic": topic,
+        "endpoint": source.endpoint,
+    }))
+}
+
+async fn execute_delivery_send(request: &NodeOperationRequest) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    if let Some(module_args) = delivery_module_message_args(&args)? {
+        require_mutating_diagnostics(&args, module_args.flag_index, "delivery message action")?;
+        bail!(
+            "delivery module send is gated until messageSent/messageError events can be correlated with the dispatch request id; use Delivery REST source for send diagnostics"
+        );
+    }
+    let source = delivery_rest_source(&args)?;
+    require_mutating_diagnostics(&args, source.next_index, "delivery message action")?;
+    let topic = args.string(source.next_index + 1, "content topic")?;
+    let payload = args.string(source.next_index + 2, "message payload")?;
+    let body = json!({
+        "contentTopic": topic,
+        "payload": BASE64_STANDARD.encode(payload.as_bytes()),
+    });
+    rest_empty_request(
+        Method::POST,
+        source.endpoint,
+        "/relay/v1/auto/messages",
+        Some(body),
+    )
+    .await
+    .with_context(|| format!("failed to send relay message on {topic}"))?;
+    Ok(json!({
+        "sent": true,
+        "contentTopic": topic,
+        "bytes": payload.len(),
+        "endpoint": source.endpoint,
+    }))
+}
+
+async fn execute_delivery_module_action(
+    request: &NodeOperationRequest,
+    method: &'static str,
+) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    let start_index = if let Some(source) = args.optional_string(0).filter(|source| {
+        is_delivery_source_token(source) || is_delivery_module_source_token(source)
+    }) {
+        if !is_delivery_module_source_token(source) {
+            bail!("delivery node lifecycle actions require delivery module source");
+        }
+        require_mutating_diagnostics(&args, 2, "delivery node lifecycle action")?;
+        3
+    } else {
+        require_mutating_diagnostics(&args, 0, "delivery node lifecycle action")?;
+        0
+    };
+    let call_args = args.iter().skip(start_index).cloned().collect::<Vec<_>>();
+    blocking_value("delivery module node action", move || {
+        logoscore_call_value(DELIVERY_MODULE, method, Value::Array(call_args))
+    })
+    .await
+}
+
+async fn execute_delivery_store_query(request: &NodeOperationRequest) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    let source = delivery_rest_source(&args)?;
+    let peer_addr = args.optional_string(source.next_index + 1);
+    let content_topics = args.optional_string(source.next_index + 2);
+    let pubsub_topic = args.optional_string(source.next_index + 3);
+    let cursor = args.optional_string(source.next_index + 4);
+    let page_size = args
+        .value(source.next_index + 5)
+        .and_then(Value::as_u64)
+        .unwrap_or(20)
+        .clamp(1, MAX_DELIVERY_STORE_PAGE_SIZE);
+    let ascending = args.optional_bool(source.next_index + 6);
+    let include_data = args.optional_bool(source.next_index + 7);
+    let query = delivery_store_query_url(
+        source.endpoint,
+        DeliveryStoreQuery {
+            peer_addr,
+            content_topics,
+            pubsub_topic,
+            cursor,
+            page_size,
+            ascending,
+            include_data,
+        },
+    )?;
+    let value = raw_http_json_url(query.as_str())
+        .await
+        .context("failed to query Delivery Store")?;
+    Ok(json!({
+        "endpoint": source.endpoint,
+        "includeData": include_data,
+        "pageSize": page_size,
+        "query": query.as_str(),
+        "value": value,
+    }))
+}
+
+async fn execute_local_nodes_action(request: &NodeOperationRequest) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    let action_request = serde_json::from_value::<LocalNodeActionRequest>(
+        args.value(1)
+            .cloned()
+            .context("local node action request is required")?,
+    )
+    .context("failed to parse local node action request")?;
+    let profile = args.optional_string(0).unwrap_or("default").to_owned();
+    let confirmation = args.optional_string(2).map(ToOwned::to_owned);
+    blocking_value("local node action", move || {
+        to_value(local_nodes_action(
+            &profile,
+            action_request,
+            confirmation.as_deref(),
+        )?)
+    })
+    .await
+}
+
+async fn execute_wallet_create_account(request: &NodeOperationRequest) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    if args.optional_string(3) != Some("confirm-create-account") {
+        bail!("wallet account creation requires explicit confirmation");
+    }
+    let profile = args
+        .value(0)
+        .cloned()
+        .context("local wallet profile is required")?;
+    let privacy = args.string(1, "account privacy")?.to_owned();
+    let label = args.optional_string(2).map(ToOwned::to_owned);
+    blocking_value("wallet account creation", move || {
+        to_value(local_wallet_create_account(
+            profile,
+            &privacy,
+            label.as_deref(),
+        )?)
+    })
+    .await
+}
+
+async fn execute_wallet_send_transaction(request: &NodeOperationRequest) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    if args.optional_string(2) != Some("confirm-send-transaction") {
+        bail!("wallet transaction send requires explicit confirmation");
+    }
+    let profile = args
+        .value(0)
+        .cloned()
+        .context("local wallet profile is required")?;
+    let send_request = args
+        .value(1)
+        .cloned()
+        .context("wallet send request is required")?;
+    blocking_value("wallet transaction send", move || {
+        to_value(local_wallet_send_transaction(profile, send_request)?)
+    })
+    .await
+}
+
+async fn execute_wallet_instruction_submit(request: &NodeOperationRequest) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    if args.optional_string(2) != Some("confirm-idl-instruction") {
+        bail!("IDL instruction send requires explicit confirmation");
+    }
+    to_value(
+        local_wallet_instruction_submit(
+            args.value(0)
+                .cloned()
+                .context("local wallet profile is required")?,
+            args.value(1)
+                .cloned()
+                .context("IDL instruction request is required")?,
+        )
+        .await?,
+    )
+}
+
+async fn execute_wallet_command(request: &NodeOperationRequest) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    if args.optional_string(2) != Some("confirm-wallet-command") {
+        bail!("wallet command requires explicit confirmation");
+    }
+    let command_args = serde_json::from_value::<Vec<String>>(
+        args.value(1)
+            .cloned()
+            .context("wallet command arguments are required")?,
+    )
+    .context("wallet command arguments must be a string array")?;
+    let profile = args
+        .value(0)
+        .cloned()
+        .context("local wallet profile is required")?;
+    blocking_value("wallet command", move || {
+        to_value(local_wallet_command(profile, command_args)?)
+    })
+    .await
+}
+
+async fn execute_wallet_deploy_program(request: &NodeOperationRequest) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    if args.optional_string(2) != Some("confirm-deploy-program") {
+        bail!("program deployment requires explicit confirmation");
+    }
+    let profile = args
+        .value(0)
+        .cloned()
+        .context("local wallet profile is required")?;
+    let program_path = args.string(1, "program path")?.to_owned();
+    blocking_value("program deployment", move || {
+        to_value(local_wallet_deploy_program(profile, &program_path)?)
+    })
+    .await
+}
+
+async fn execute_wallet_sync_private(request: &NodeOperationRequest) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    if args.string(1, "private sync confirmation")? != "confirm-sync-private" {
+        bail!("private wallet sync requires explicit confirmation");
+    }
+    let profile = args
+        .value(0)
+        .cloned()
+        .context("local wallet profile is required")?;
+    blocking_value("private wallet sync", move || {
+        to_value(local_wallet_sync_private(profile)?)
+    })
+    .await
+}
+
+async fn execute_wallet_accounts(request: &NodeOperationRequest) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    let profile = args
+        .value(0)
+        .cloned()
+        .context("local wallet profile is required")?;
+    blocking_value("wallet accounts", move || {
+        to_value(local_wallet_accounts(profile)?)
+    })
+    .await
+}
+
+async fn execute_blockchain_node(request: &NodeOperationRequest) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    let source = args.source_endpoint(0, "node endpoint")?;
+    to_value(blockchain::blockchain_node_report(source.endpoint).await)
+}
+
+async fn execute_blockchain_blocks(request: &NodeOperationRequest) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    let source = args.source_endpoint(0, "node endpoint")?;
+    let slot_from = args.u64(source.next_index, "slot from")?;
+    let slot_to = args.u64(source.next_index + 1, "slot to")?;
+    if let Some(limit) = args.value(source.next_index + 2).and_then(Value::as_u64) {
+        to_value(
+            blockchain::blockchain_recent_blocks(source.endpoint, slot_from, slot_to, limit)
+                .await?,
+        )
+    } else {
+        to_value(blockchain::blockchain_blocks(source.endpoint, slot_from, slot_to).await?)
+    }
+}
+
+async fn execute_blockchain_live_blocks(request: &NodeOperationRequest) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    let source = args.source_endpoint(0, "node endpoint")?;
+    let slot_from = args.u64(source.next_index, "slot from")?;
+    let slot_to = args.u64(source.next_index + 1, "slot to")?;
+    let limit = args
+        .value(source.next_index + 2)
+        .and_then(Value::as_u64)
+        .unwrap_or(50);
+    to_value(
+        blockchain::blockchain_live_blocks_snapshot(source.endpoint, slot_from, slot_to, limit)
+            .await?,
+    )
+}
+
+async fn execute_blockchain_block(request: &NodeOperationRequest) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    let source = args.source_endpoint(0, "node endpoint")?;
+    to_value(
+        blockchain::blockchain_block(source.endpoint, args.string(source.next_index, "block id")?)
+            .await?,
+    )
+}
+
+async fn execute_blockchain_transaction(request: &NodeOperationRequest) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    let source = args.source_endpoint(0, "node endpoint")?;
+    to_value(
+        blockchain::blockchain_transaction(
+            source.endpoint,
+            args.string(source.next_index, "transaction id")?,
+        )
+        .await?,
+    )
+}
+
+async fn execute_execution_head(request: &NodeOperationRequest) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    let source = args.source_endpoint(0, "sequencer endpoint")?;
+    require_rpc_operation_source(&source, "head")?;
+    to_value(last_sequencer_block_id(source.endpoint).await?)
+}
+
+async fn execute_programs(request: &NodeOperationRequest) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    let source = args.source_endpoint(0, "sequencer endpoint")?;
+    require_rpc_operation_source(&source, "programs")?;
+    to_value(sequencer_program_ids(source.endpoint).await?)
+}
+
+async fn execute_sequencer_block(request: &NodeOperationRequest) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    let source = args.source_endpoint(0, "sequencer endpoint")?;
+    require_rpc_operation_source(&source, "block")?;
+    to_value(sequencer_block(source.endpoint, args.u64(source.next_index, "block id")?).await?)
+}
+
+async fn execute_sequencer_blocks(request: &NodeOperationRequest) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    let source = args.source_endpoint(0, "sequencer endpoint")?;
+    require_rpc_operation_source(&source, "sequencerBlocks")?;
+    let before = args.value(source.next_index).and_then(Value::as_u64);
+    let limit = args
+        .value(source.next_index + 1)
+        .and_then(Value::as_u64)
+        .unwrap_or(10)
+        .min(50);
+    to_value(sequencer_blocks(source.endpoint, before, limit).await?)
+}
+
+async fn execute_sequencer_transaction(request: &NodeOperationRequest) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    let source = args.source_endpoint(0, "sequencer endpoint")?;
+    require_rpc_operation_source(&source, "transaction")?;
+    to_value(
+        sequencer_transaction(
+            source.endpoint,
+            args.string(source.next_index, "transaction hash")?,
+        )
+        .await?,
+    )
+}
+
+async fn execute_inspect_transaction(request: &NodeOperationRequest) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    let source = args.source_endpoint(0, "sequencer endpoint")?;
+    require_rpc_operation_source(&source, "inspectTransaction")?;
+    let endpoint = source.endpoint;
+    let hash = args.string(source.next_index, "transaction hash")?;
+    let idl = args.optional_string(source.next_index + 1);
+    if let Some(idl) = idl {
+        return to_value(sequencer_transaction_inspection_with_idl(endpoint, hash, idl).await?);
+    }
+    let inspection = sequencer_transaction_inspection(endpoint, hash).await?;
+    let Some(inspection) = inspection else {
+        return Ok(Value::Null);
+    };
+    if let Some(report) =
+        decode_transaction_summary_with_idls(&inspection.raw_summary, &registered_idl_entries()?)
+    {
+        return to_value(Some(report));
+    }
+    to_value(Some(inspection))
+}
+
+async fn execute_trace_transaction(request: &NodeOperationRequest) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    let source = args.source_endpoint(0, "sequencer endpoint")?;
+    require_rpc_operation_source(&source, "traceTransaction")?;
+    let endpoint = source.endpoint;
+    let hash = args.string(source.next_index, "transaction hash")?;
+    if let Some(idl) = args.optional_string(source.next_index + 1) {
+        to_value(sequencer_transaction_trace_with_idl(endpoint, hash, idl).await?)
+    } else {
+        to_value(sequencer_transaction_trace(endpoint, hash).await?)
+    }
+}
+
+async fn execute_account_operation(request: &NodeOperationRequest) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    let account_args = args.account_sources()?;
+    if account_args.execution_mode == SourceMode::Module {
+        bail!(
+            "{EXECUTION_MODULE} does not expose Inspector account reads; use sequencer RPC for account inspection"
+        );
+    }
+    if account_args.indexer_mode == SourceMode::Module {
+        bail!(
+            "{INDEXER_MODULE} account reads do not satisfy Inspector decode/history needs; use indexer RPC for account inspection"
+        );
+    }
+    let idl = args.optional_string(account_args.next_index);
+    let mut value = if let Some(idl) = idl {
+        to_value(
+            account_lookup_with_idl(
+                account_args.sequencer_endpoint,
+                account_args.indexer_endpoint,
+                account_args.account,
+                idl,
+                args.optional_string(account_args.next_index + 1),
+            )
+            .await?,
+        )?
+    } else {
+        to_value(
+            account_lookup(
+                account_args.sequencer_endpoint,
+                account_args.indexer_endpoint,
+                account_args.account,
+            )
+            .await?,
+        )?
+    };
+    enrich_account_related_transaction_decodes(&mut value)?;
+    Ok(value)
+}
+
+async fn execute_indexer_health_operation(request: &NodeOperationRequest) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    let source = args.source_endpoint(0, "indexer endpoint")?;
+    let health = indexer_health(source.endpoint).await?;
+    Ok(json!({
+        "status": "healthy",
+        "health": health,
+    }))
+}
+
+async fn execute_indexer_status_operation(request: &NodeOperationRequest) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    let source = args.source_endpoint(0, "indexer endpoint")?;
+    to_value(indexer_status(source.endpoint).await?)
+}
+
+async fn execute_indexer_finalized_head(request: &NodeOperationRequest) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    let source = args.source_endpoint(0, "indexer endpoint")?;
+    to_value(
+        raw_json_rpc_optional_result(
+            source.endpoint,
+            "getLastFinalizedBlockId",
+            Value::Array(vec![]),
+        )
+        .await?,
+    )
+}
+
+async fn execute_indexer_blocks_operation(request: &NodeOperationRequest) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    let source = args.source_endpoint(0, "indexer endpoint")?;
+    let before = args.value(source.next_index).and_then(Value::as_u64);
+    let limit = args
+        .value(source.next_index + 1)
+        .and_then(Value::as_u64)
+        .unwrap_or(10)
+        .min(50);
+    to_value(indexer_blocks(source.endpoint, before, limit).await?)
+}
+
+async fn execute_indexer_block_by_hash_operation(request: &NodeOperationRequest) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    let source = args.source_endpoint(0, "indexer endpoint")?;
+    to_value(
+        indexer_block_by_hash(
+            source.endpoint,
+            args.string(source.next_index, "block header hash")?,
+        )
+        .await?,
+    )
+}
+
+async fn execute_indexer_transfer_recipients_operation(
+    request: &NodeOperationRequest,
+) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    let source = args.source_endpoint(0, "indexer endpoint")?;
+    let before = args.value(source.next_index).and_then(Value::as_u64);
+    let limit = args
+        .value(source.next_index + 1)
+        .and_then(Value::as_u64)
+        .unwrap_or(50)
+        .min(50);
+    to_value(indexer_transfer_recipients(source.endpoint, before, limit).await?)
+}
+
+fn require_rpc_operation_source(source: &SourceEndpoint<'_>, method: &str) -> Result<()> {
+    if source.mode == SourceMode::Rpc {
+        return Ok(());
+    }
+    bail!(
+        "`{method}` is not exposed by the selected Basecamp module source `{}`; use RPC source for this call",
+        source.module
+    )
+}
+
+async fn blocking_value(
+    label: &'static str,
+    task: impl FnOnce() -> Result<Value> + Send + 'static,
+) -> Result<Value> {
+    tokio::task::spawn_blocking(task)
+        .await
+        .with_context(|| format!("{label} task failed"))?
+}
+
+fn logoscore_call_value(module: &str, method: &str, args: Value) -> Result<Value> {
+    let args = Args::new(args)?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| value.to_string())
+        })
+        .collect::<Vec<_>>();
+    to_value(logoscore::call(module, method, &args)?)
+}
+
+fn now_millis() -> u64 {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    u64::try_from(millis).unwrap_or(u64::MAX)
+}
+
+fn update_node_operation(
+    registry: &NodeOperationRegistry,
+    operation_id: &str,
+    update: impl FnOnce(&mut NodeOperationRecord),
+) {
+    if let Ok(mut operations) = registry.lock()
+        && let Some(record) = operations.get_mut(operation_id)
+    {
+        update(record);
+    }
+}
+
+fn active_storage_download_operation(record: &NodeOperationRecord) -> bool {
+    record.operation.domain == "storage"
+        && record.operation.method == "storageDownloadToUrl"
+        && !record.operation.status.is_terminal()
+}
+
+fn update_node_operation_progress(
+    registry: &NodeOperationRegistry,
+    operation_id: &str,
+    bytes_written: u64,
+    content_length: Option<u64>,
+) {
+    update_node_operation(registry, operation_id, |record| {
+        record.operation.bytes_written = bytes_written;
+        if content_length.is_some() {
+            record.operation.content_length = content_length;
+        }
+        let progress = operation_progress(bytes_written, record.operation.content_length);
+        record.operation.progress = progress;
+        push_node_operation_event_locked(
+            record,
+            "progress",
+            "operation progress",
+            progress,
+            None,
+            None,
+        );
+    });
+}
+
+fn finish_node_operation(
+    registry: &NodeOperationRegistry,
+    operation_id: &str,
+    cancel_requested: &AtomicBool,
+    result: Result<Value>,
+) {
+    update_node_operation(registry, operation_id, |record| match result {
+        Ok(value) => {
+            record.operation.status = NodeOperationStatus::Completed;
+            record.operation.external_session_id = external_session_id(&value);
+            record.operation.result = Some(value.clone());
+            record.operation.error = None;
+            record.operation.progress = Some(1.0);
+            record.operation.updated_at = now_millis();
+            push_node_operation_event_locked(
+                record,
+                "completed",
+                "operation completed",
+                Some(1.0),
+                Some(value),
+                None,
+            );
+        }
+        Err(error) if cancel_requested.load(Ordering::Relaxed) => {
+            let error_text = error.to_string();
+            record.operation.status = NodeOperationStatus::Canceled;
+            record.operation.error = Some(error_text.clone());
+            record.operation.updated_at = now_millis();
+            push_node_operation_event_locked(
+                record,
+                "canceled",
+                "operation canceled",
+                record.operation.progress,
+                None,
+                Some(error_text),
+            );
+        }
+        Err(error) => {
+            let error_text = error.to_string();
+            record.operation.status = NodeOperationStatus::Failed;
+            record.operation.error = Some(error_text.clone());
+            record.operation.updated_at = now_millis();
+            push_node_operation_event_locked(
+                record,
+                "failed",
+                "operation failed",
+                record.operation.progress,
+                None,
+                Some(error_text),
+            );
+        }
+    });
+}
+
+fn push_node_operation_event_locked(
+    record: &mut NodeOperationRecord,
+    phase: &str,
+    message: &str,
+    progress: Option<f64>,
+    result: Option<Value>,
+    error: Option<String>,
+) {
+    if let Some(value) = progress {
+        record.operation.progress = Some(value);
+    }
+    record.operation.updated_at = now_millis();
+    let seq = u64::try_from(record.events.len())
+        .unwrap_or(u64::MAX)
+        .saturating_add(1);
+    record.events.push(NodeOperationEvent {
+        seq,
+        operation_id: record.operation.operation_id.clone(),
+        domain: record.operation.domain.clone(),
+        method: record.operation.method.clone(),
+        phase: phase.to_owned(),
+        external_session_id: record.operation.external_session_id.clone(),
+        message: message.to_owned(),
+        progress,
+        result,
+        error,
+        timestamp: now_millis(),
+    });
+}
+
+fn operation_progress(bytes_written: u64, content_length: Option<u64>) -> Option<f64> {
+    match content_length {
+        Some(total) if total > 0 => Some(bytes_written as f64 / total as f64),
+        _ => None,
+    }
+}
+
+fn external_session_id(value: &Value) -> Option<String> {
+    let object = value.as_object()?;
+    for key in [
+        "sessionId",
+        "session_id",
+        "operationId",
+        "operation_id",
+        "requestId",
+        "request_id",
+    ] {
+        if let Some(value) = object
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            return Some(value.to_owned());
+        }
+    }
+    None
+}
+
+fn node_operation_value(operation: &NodeOperation) -> Value {
+    let mut value = json!({
+        "operationId": operation.operation_id,
+        "domain": operation.domain,
+        "backend": operation.backend,
+        "method": operation.method,
+        "status": operation.status.as_str(),
+        "label": operation.label,
+        "externalSessionId": operation.external_session_id,
+        "progress": operation.progress,
+        "bytesWritten": operation.bytes_written,
+        "contentLength": operation.content_length,
+        "result": operation.result,
+        "error": operation.error,
+        "cancellable": operation.cancellable && !operation.status.is_terminal(),
+        "startedAt": operation.started_at,
+        "updatedAt": operation.updated_at,
+        "context": operation.context,
+    });
+    if let (Value::Object(target), Value::Object(context)) = (&mut value, &operation.context) {
+        for key in ["cid", "path", "endpoint", "source"] {
+            if let Some(context_value) = context.get(key) {
+                target.insert(key.to_owned(), context_value.clone());
+            }
+        }
+    }
+    value
+}
+
+fn node_operation_event_value(event: &NodeOperationEvent) -> Value {
+    json!({
+        "seq": event.seq,
+        "operationId": event.operation_id,
+        "domain": event.domain,
+        "method": event.method,
+        "phase": event.phase,
+        "externalSessionId": event.external_session_id,
+        "message": event.message,
+        "progress": event.progress,
+        "result": event.result,
+        "error": event.error,
+        "timestamp": event.timestamp,
+    })
 }
 
 fn decode_transaction_summary_with_idls(
@@ -1569,65 +2792,6 @@ async fn storage_rest_upload_bytes(
     }))
 }
 
-async fn storage_rest_download(
-    endpoint: &str,
-    cid: &str,
-    path: &str,
-    local_only: bool,
-) -> Result<Value> {
-    let route = if local_only {
-        format!("/data/{cid}")
-    } else {
-        format!("/data/{cid}/network/stream")
-    };
-    let response = reqwest::Client::new()
-        .get(rest_url(endpoint, &route))
-        .send()
-        .await
-        .with_context(|| format!("failed to call {}", rest_url(endpoint, &route)))?;
-    let status = response.status();
-    if !status.is_success() {
-        let bytes = response
-            .bytes()
-            .await
-            .context("failed to read storage download error body")?;
-        bail!(
-            "storage download failed with status {status}: {}",
-            response_excerpt_bytes(&bytes)
-        );
-    }
-    let temp_path = format!("{path}.part");
-    let mut file = tokio::fs::File::create(&temp_path)
-        .await
-        .with_context(|| format!("failed to create download file `{temp_path}`"))?;
-    let mut response = response;
-    let mut bytes = 0_u64;
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .context("failed to read storage download response chunk")?
-    {
-        file.write_all(&chunk)
-            .await
-            .with_context(|| format!("failed to write download file `{temp_path}`"))?;
-        bytes = bytes.saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
-    }
-    file.flush()
-        .await
-        .with_context(|| format!("failed to flush download file `{temp_path}`"))?;
-    drop(file);
-    tokio::fs::rename(&temp_path, path)
-        .await
-        .with_context(|| format!("failed to move `{temp_path}` to `{path}`"))?;
-    Ok(json!({
-        "cid": cid,
-        "path": path,
-        "bytes": bytes,
-        "source": if local_only { "local" } else { "network" },
-        "endpoint": endpoint,
-    }))
-}
-
 async fn storage_rest_download_bytes(
     endpoint: &str,
     cid: &str,
@@ -1662,7 +2826,7 @@ async fn storage_rest_download_tracked(
     cid: &str,
     path: &str,
     local_only: bool,
-    registry: &StorageOperationRegistry,
+    registry: &NodeOperationRegistry,
     operation_id: &str,
     cancel_requested: &AtomicBool,
 ) -> Result<Value> {
@@ -1690,9 +2854,7 @@ async fn storage_rest_download_tracked(
             response_excerpt_bytes(&bytes)
         );
     }
-    update_storage_operation(registry, operation_id, |operation| {
-        operation.content_length = response.content_length();
-    });
+    update_node_operation_progress(registry, operation_id, 0, response.content_length());
     let temp_path = format!("{path}.part");
     let mut file = tokio::fs::File::create(&temp_path)
         .await
@@ -1712,9 +2874,7 @@ async fn storage_rest_download_tracked(
                 .await
                 .with_context(|| format!("failed to write download file `{temp_path}`"))?;
             bytes = bytes.saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
-            update_storage_operation(registry, operation_id, |operation| {
-                operation.bytes_written = bytes;
-            });
+            update_node_operation_progress(registry, operation_id, bytes, None);
         }
         file.flush()
             .await
@@ -1741,62 +2901,6 @@ async fn storage_rest_download_tracked(
         "source": if local_only { "local" } else { "network" },
         "endpoint": endpoint,
     }))
-}
-
-fn finish_storage_operation(
-    registry: &StorageOperationRegistry,
-    operation_id: &str,
-    cancel_requested: &AtomicBool,
-    result: Result<Value>,
-) {
-    update_storage_operation(registry, operation_id, |operation| match result {
-        Ok(value) => {
-            operation.status = StorageOperationStatus::Completed;
-            operation.result = Some(value);
-            operation.error = None;
-        }
-        Err(error) if cancel_requested.load(Ordering::Relaxed) => {
-            operation.status = StorageOperationStatus::Canceled;
-            operation.error = Some(error.to_string());
-        }
-        Err(error) => {
-            operation.status = StorageOperationStatus::Failed;
-            operation.error = Some(error.to_string());
-        }
-    });
-}
-
-fn update_storage_operation(
-    registry: &StorageOperationRegistry,
-    operation_id: &str,
-    update: impl FnOnce(&mut StorageOperation),
-) {
-    if let Ok(mut operations) = registry.lock()
-        && let Some(operation) = operations.get_mut(operation_id)
-    {
-        update(operation);
-    }
-}
-
-fn storage_operation_value(operation_id: &str, operation: &StorageOperation) -> Value {
-    json!({
-        "operationId": operation_id,
-        "label": &operation.label,
-        "cid": &operation.cid,
-        "path": &operation.path,
-        "endpoint": &operation.endpoint,
-        "source": &operation.source,
-        "status": operation.status.as_str(),
-        "bytesWritten": operation.bytes_written,
-        "contentLength": operation.content_length,
-        "progress": match operation.content_length {
-            Some(total) if total > 0 => Some(operation.bytes_written as f64 / total as f64),
-            _ => None,
-        },
-        "error": operation.error.as_deref(),
-        "result": operation.result.as_ref(),
-        "cancellable": !operation.status.is_terminal(),
-    })
 }
 
 fn delivery_store_query_url(endpoint: &str, store_query: DeliveryStoreQuery<'_>) -> Result<Url> {
@@ -1966,6 +3070,38 @@ fn response_excerpt_bytes(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_node_operation_record(
+        operation_id: &str,
+        domain: &str,
+        method: &str,
+        status: NodeOperationStatus,
+        cancellable: bool,
+        cancel_requested: Arc<AtomicBool>,
+    ) -> NodeOperationRecord {
+        NodeOperationRecord {
+            operation: NodeOperation {
+                operation_id: operation_id.to_owned(),
+                domain: domain.to_owned(),
+                backend: "test".to_owned(),
+                method: method.to_owned(),
+                status,
+                label: "Test operation".to_owned(),
+                context: Value::Null,
+                external_session_id: None,
+                progress: None,
+                bytes_written: 0,
+                content_length: None,
+                result: None,
+                error: None,
+                cancellable,
+                started_at: 1,
+                updated_at: 1,
+            },
+            events: Vec::new(),
+            cancel_requested,
+        }
+    }
 
     #[test]
     fn indexer_status_bridge_requires_endpoint_argument() -> Result<()> {
@@ -2407,52 +3543,244 @@ mod tests {
     }
 
     #[test]
-    fn storage_background_download_rejects_existing_active_operation() -> Result<()> {
+    fn node_operation_cancel_marks_cancelable_operation() -> Result<()> {
+        let bridge = InspectorBridge::new()?;
+        let cancel_requested = Arc::new(AtomicBool::new(false));
+        {
+            let mut operations = bridge
+                .node_operations
+                .lock()
+                .map_err(|_| anyhow::anyhow!("node operation registry is unavailable"))?;
+            operations.insert(
+                "existing".to_owned(),
+                NodeOperationRecord {
+                    operation: NodeOperation {
+                        operation_id: "existing".to_owned(),
+                        domain: "storage".to_owned(),
+                        backend: "rest".to_owned(),
+                        method: "storageDownloadToUrl".to_owned(),
+                        status: NodeOperationStatus::Running,
+                        label: "Storage download".to_owned(),
+                        context: json!({
+                            "cid": "cid-a",
+                            "path": "/tmp/a",
+                            "endpoint": "http://127.0.0.1:8080/api/storage/v1",
+                            "source": "network"
+                        }),
+                        external_session_id: None,
+                        progress: None,
+                        bytes_written: 0,
+                        content_length: None,
+                        result: None,
+                        error: None,
+                        cancellable: true,
+                        started_at: 1,
+                        updated_at: 1,
+                    },
+                    events: Vec::new(),
+                    cancel_requested: Arc::clone(&cancel_requested),
+                },
+            );
+        }
+
+        let value =
+            bridge.call_module(INSPECTOR_MODULE, "nodeOperationCancel", json!(["existing"]))?;
+
+        if value.get("status").and_then(Value::as_str) != Some("canceling") {
+            bail!("expected canceling status: {value}");
+        }
+        if !cancel_requested.load(Ordering::Relaxed) {
+            bail!("expected cancel flag to be set");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn node_operation_start_accepts_storage_download_request() -> Result<()> {
+        let bridge = InspectorBridge::new()?;
+        let value = bridge.call_module(
+            INSPECTOR_MODULE,
+            "nodeOperationStart",
+            json!([{
+                "domain": "storage",
+                "sourceMode": "rest",
+                "endpoint": "http://127.0.0.1:8080/api/storage/v1",
+                "method": "storageDownloadToUrl",
+                "args": ["cid-b", "/tmp/b", false],
+                "mutatingEnabled": true,
+                "label": "Storage download"
+            }]),
+        )?;
+
+        if value.get("domain").and_then(Value::as_str) != Some("storage")
+            || value.get("method").and_then(Value::as_str) != Some("storageDownloadToUrl")
+            || value.get("cancellable").and_then(Value::as_bool) != Some(true)
+            || value.get("cid").and_then(Value::as_str) != Some("cid-b")
+        {
+            bail!("unexpected operation value: {value}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn node_operation_request_normalizes_storage_endpoint_first_args() -> Result<()> {
+        let request = node_operation_request_from_value(json!({
+            "domain": "storage",
+            "sourceMode": "rest",
+            "endpoint": "http://127.0.0.1:8080/api/storage/v1",
+            "method": "storageDownloadManifest",
+            "args": ["http://127.0.0.1:8080/api/storage/v1", "z-storage"]
+        }))?;
+
+        if request.args != json!(["rest", "http://127.0.0.1:8080/api/storage/v1", "z-storage"]) {
+            bail!("unexpected normalized args: {}", request.args);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn node_operation_request_normalizes_delivery_endpoint_first_args() -> Result<()> {
+        let request = node_operation_request_from_value(json!({
+            "domain": "delivery",
+            "sourceMode": "rest",
+            "endpoint": "http://127.0.0.1:8645",
+            "method": "deliverySend",
+            "mutatingEnabled": true,
+            "args": ["http://127.0.0.1:8645", "/waku/2/default/proto", "hello"]
+        }))?;
+
+        if request.args
+            != json!([
+                "rest",
+                "http://127.0.0.1:8645",
+                true,
+                "/waku/2/default/proto",
+                "hello"
+            ])
+        {
+            bail!("unexpected normalized args: {}", request.args);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn node_operation_request_keeps_delivery_store_query_read_only_args() -> Result<()> {
+        let request = node_operation_request_from_value(json!({
+            "domain": "delivery",
+            "sourceMode": "rest",
+            "endpoint": "http://127.0.0.1:8645",
+            "method": "deliveryStoreQuery",
+            "args": ["peer-a", "/topic/1/a/proto", "/waku/2/default-waku/proto", "cursor-a", 10, true, true]
+        }))?;
+
+        if request.args
+            != json!([
+                "rest",
+                "http://127.0.0.1:8645",
+                "peer-a",
+                "/topic/1/a/proto",
+                "/waku/2/default-waku/proto",
+                "cursor-a",
+                10,
+                true,
+                true
+            ])
+        {
+            bail!("unexpected normalized args: {}", request.args);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn node_operation_start_rejects_second_storage_download() -> Result<()> {
         let bridge = InspectorBridge::new()?;
         {
             let mut operations = bridge
-                .storage_operations
+                .node_operations
                 .lock()
-                .map_err(|_| anyhow::anyhow!("storage operation registry is unavailable"))?;
+                .map_err(|_| anyhow::anyhow!("node operation registry is unavailable"))?;
             operations.insert(
-                "existing".to_owned(),
-                StorageOperation {
-                    label: "Storage download".to_owned(),
-                    cid: "cid-a".to_owned(),
-                    path: "/tmp/a".to_owned(),
-                    endpoint: "http://127.0.0.1:8080/api/storage/v1".to_owned(),
-                    source: "network".to_owned(),
-                    status: StorageOperationStatus::Running,
-                    bytes_written: 0,
-                    content_length: None,
-                    error: None,
-                    result: None,
-                    cancel_requested: Arc::new(AtomicBool::new(false)),
-                },
+                "storage-download-existing".to_owned(),
+                test_node_operation_record(
+                    "storage-download-existing",
+                    "storage",
+                    "storageDownloadToUrl",
+                    NodeOperationStatus::Running,
+                    true,
+                    Arc::new(AtomicBool::new(false)),
+                ),
             );
         }
 
         let result = bridge.call_module(
             INSPECTOR_MODULE,
-            "storageDownloadStart",
-            json!([
-                "rest",
-                "http://127.0.0.1:8080/api/storage/v1",
-                true,
-                "cid-b",
-                "/tmp/b",
-                false
-            ]),
+            "nodeOperationStart",
+            json!([{
+                "domain": "storage",
+                "sourceMode": "rest",
+                "endpoint": "http://127.0.0.1:8080/api/storage/v1",
+                "method": "storageDownloadToUrl",
+                "args": ["cid-c", "/tmp/c", false],
+                "mutatingEnabled": true,
+                "label": "Storage download"
+            }]),
         );
 
         let Err(error) = result else {
-            bail!("expected active download to block a second start");
+            bail!("expected duplicate storage download to fail");
+        };
+        if !error.to_string().contains("storage download operation") {
+            bail!("unexpected error: {error:#}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn delivery_module_send_is_gated_until_events_are_correlated() -> Result<()> {
+        let bridge = InspectorBridge::new()?;
+        let result = bridge.call_module(
+            INSPECTOR_MODULE,
+            "deliverySend",
+            json!(["module", "", true, "/waku/2/default/proto", "hello"]),
+        );
+
+        let Err(error) = result else {
+            bail!("expected module delivery send to be gated");
+        };
+        if !error.to_string().contains("delivery module send is gated") {
+            bail!("unexpected error: {error:#}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_wallet_operation_record_is_removed_after_wait() -> Result<()> {
+        let bridge = InspectorBridge::new()?;
+        let result = bridge.run_legacy_node_operation(
+            "wallet",
+            "localWalletCreateAccount",
+            json!([]),
+            "Wallet account",
+        );
+
+        let Err(error) = result else {
+            bail!("expected wallet operation to fail before execution");
         };
         if !error
             .to_string()
-            .contains("a storage download is already running")
+            .contains("wallet account creation requires explicit confirmation")
         {
             bail!("unexpected error: {error:#}");
+        }
+        let operations = bridge
+            .node_operations
+            .lock()
+            .map_err(|_| anyhow::anyhow!("node operation registry is unavailable"))?;
+        if !operations.is_empty() {
+            bail!(
+                "expected legacy operation registry cleanup, found {operations_len}",
+                operations_len = operations.len()
+            );
         }
         Ok(())
     }

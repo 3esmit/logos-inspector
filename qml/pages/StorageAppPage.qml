@@ -22,6 +22,7 @@ ColumnLayout {
     property string pendingStorageLabel: ""
     property var pendingStorageArgs: []
     property string terminalStorageOperationId: ""
+    property bool storageOperationStartPending: false
 
     width: parent ? parent.width : 900
     spacing: root.theme.gapLarge
@@ -315,7 +316,7 @@ ColumnLayout {
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Cache")
-                    enabled: !root.model.busy && cidField.text.trim().length > 0 && root.storageMutatingSource()
+                    enabled: !root.model.busy && !root.storageOperationBusy() && cidField.text.trim().length > 0 && root.storageMutatingSource()
                     Layout.preferredWidth: 104
                     onClicked: root.confirmStorage("storageFetch", [cidField.text.trim()], qsTr("Cache CID"))
                 }
@@ -324,7 +325,7 @@ ColumnLayout {
                     theme: root.theme
                     text: qsTr("Download")
                     primary: true
-                    enabled: !root.model.busy && !root.activeStorageOperationRunning() && cidField.text.trim().length > 0 && cidDestination.text.trim().length > 0 && root.storageMutatingSource()
+                    enabled: !root.model.busy && !root.storageOperationBusy() && cidField.text.trim().length > 0 && cidDestination.text.trim().length > 0 && root.storageMutatingSource()
                     Layout.preferredWidth: 124
                     onClicked: root.confirmStorage("storageDownloadToUrl", [cidField.text.trim(), cidDestination.text.trim(), localOnly.checked], qsTr("Download CID"))
                 }
@@ -435,7 +436,7 @@ ColumnLayout {
                     theme: root.theme
                     text: qsTr("Upload")
                     primary: true
-                    enabled: !root.model.busy && root.storageMutatingSource() && uploadPath.text.trim().length > 0
+                    enabled: !root.model.busy && !root.storageOperationBusy() && root.storageMutatingSource() && uploadPath.text.trim().length > 0
                     Layout.preferredWidth: 112
                     onClicked: root.confirmStorage("storageUploadUrl", [uploadPath.text.trim(), root.chunkSizeValue(transferChunkSize.text)], qsTr("Upload file"))
                 }
@@ -443,7 +444,7 @@ ColumnLayout {
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Download")
-                    enabled: !root.model.busy && !root.activeStorageOperationRunning() && root.storageMutatingSource() && downloadCid.text.trim().length > 0 && downloadPath.text.trim().length > 0
+                    enabled: !root.model.busy && !root.storageOperationBusy() && root.storageMutatingSource() && downloadCid.text.trim().length > 0 && downloadPath.text.trim().length > 0
                     Layout.preferredWidth: 124
                     onClicked: root.confirmStorage("storageDownloadToUrl", [downloadCid.text.trim(), downloadPath.text.trim(), false], qsTr("Download file"))
                 }
@@ -451,7 +452,7 @@ ColumnLayout {
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Remove")
-                    enabled: !root.model.busy && root.storageMutatingSource() && downloadCid.text.trim().length > 0
+                    enabled: !root.model.busy && !root.storageOperationBusy() && root.storageMutatingSource() && downloadCid.text.trim().length > 0
                     Layout.preferredWidth: 112
                     onClicked: root.confirmStorage("storageRemove", [downloadCid.text.trim()], qsTr("Remove CID"))
                 }
@@ -478,7 +479,8 @@ ColumnLayout {
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Cancel")
-                    enabled: root.activeStorageOperationRunning()
+                    visible: root.activeStorageOperationCancelable()
+                    enabled: root.activeStorageOperationCancelable()
                     Layout.preferredWidth: 112
                     onClicked: root.cancelStorageOperation()
                 }
@@ -615,6 +617,9 @@ ColumnLayout {
     }
 
     function runStorage(method, args, label) {
+        if (String(method || "") !== "storageExists") {
+            return root.startStorageOperation(method, args, label)
+        }
         const response = root.model.callInspector(method, root.storageArgs(args), label)
         root.appendOperation(label, response)
         root.lastOperation = response.ok ? label : qsTr("Error")
@@ -632,37 +637,49 @@ ColumnLayout {
         if (!root.pendingStorageMethod.length) {
             return
         }
-        if (root.pendingStorageMethod === "storageDownloadToUrl") {
-            root.startStorageDownload(root.pendingStorageArgs, root.pendingStorageLabel)
-        } else {
-            root.runStorage(root.pendingStorageMethod, root.pendingStorageArgs, root.pendingStorageLabel)
-        }
+        root.startStorageOperation(root.pendingStorageMethod, root.pendingStorageArgs, root.pendingStorageLabel)
         root.pendingStorageMethod = ""
         root.pendingStorageArgs = []
         root.pendingStorageLabel = ""
     }
 
-    function startStorageDownload(args, label) {
-        if (root.activeStorageOperationRunning()) {
+    function startStorageOperation(method, args, label) {
+        if (root.storageOperationBusy()) {
             const blocked = {
                 ok: false,
                 text: "",
-                error: qsTr("A storage download is already running.")
+                error: qsTr("A storage operation is already running.")
             }
             root.appendOperation(label, blocked)
             root.lastOperation = qsTr("Busy")
             return blocked
         }
-        const response = root.model.callInspector("storageDownloadStart", root.storageArgs(args), label)
-        root.appendOperation(label, response)
-        root.lastOperation = response.ok ? qsTr("Download started") : qsTr("Error")
-        if (response.ok) {
-            root.terminalStorageOperationId = ""
-            root.model.updateStorageActiveOperation(response.value)
-            storageOperationPoll.restart()
-            root.model.storageAppTab = "operations"
+        const request = {
+            domain: "storage",
+            sourceMode: root.model.effectiveStorageSourceMode(root.model.storageSourceMode),
+            endpoint: root.model.configuredStorageRestUrl(),
+            module: root.model.storageModule,
+            method: String(method || ""),
+            args: root.storageArgs(args),
+            mutatingEnabled: root.model.storageMutatingDiagnosticsEnabled === true,
+            label: String(label || "")
         }
-        return response
+        root.lastOperation = qsTr("Starting")
+        root.storageOperationStartPending = true
+        root.model.nodeOperationStart(request, false, function (response) {
+            root.storageOperationStartPending = false
+            root.appendOperation(label, response)
+            root.lastOperation = response && response.ok ? qsTr("Started") : qsTr("Error")
+            if (response && response.ok) {
+                root.terminalStorageOperationId = ""
+                root.model.updateStorageActiveOperation(response.value)
+                storageOperationPoll.restart()
+                root.model.storageAppTab = "operations"
+            } else {
+                root.model.setResult(String(label || qsTr("Storage operation")), String((response && response.error) || qsTr("Storage operation failed.")), true, null)
+            }
+        })
+        return null
     }
 
     function pollStorageOperation(showResult) {
@@ -672,9 +689,19 @@ ColumnLayout {
             storageOperationPoll.stop()
             return
         }
-        root.model.requestModuleAsync(root.model.inspectorModule, "storageOperationStatus", [operationId], qsTr("Storage operation"), showResult === true, function (response) {
+        root.model.nodeOperationStatus(operationId, showResult === true, function (response) {
             if (!response || !response.ok) {
+                const failedOperation = {
+                    operationId: operationId,
+                    domain: "storage",
+                    method: String(operation && operation.method ? operation.method : ""),
+                    status: "failed",
+                    label: String(operation && operation.label ? operation.label : qsTr("Storage operation")),
+                    error: String((response && response.error) || qsTr("Storage operation status failed."))
+                }
+                root.model.updateStorageActiveOperation(failedOperation)
                 storageOperationPoll.stop()
+                root.appendTerminalStorageOperation(failedOperation)
                 return
             }
             root.model.updateStorageActiveOperation(response.value)
@@ -691,12 +718,13 @@ ColumnLayout {
         if (!operationId.length) {
             return
         }
-        const response = root.model.callInspector("storageOperationCancel", [operationId], qsTr("Cancel storage operation"))
-        if (response.ok) {
-            root.model.updateStorageActiveOperation(response.value)
-            storageOperationPoll.restart()
-        }
-        root.appendOperation(qsTr("Cancel download"), response)
+        root.model.nodeOperationCancel(operationId, false, function (response) {
+            if (response && response.ok) {
+                root.model.updateStorageActiveOperation(response.value)
+                storageOperationPoll.restart()
+            }
+            root.appendOperation(qsTr("Cancel operation"), response)
+        })
     }
 
     function appendTerminalStorageOperation(operation) {
@@ -706,12 +734,25 @@ ColumnLayout {
         }
         root.terminalStorageOperationId = operationId
         const ok = String(operation.status || "") === "completed"
-        root.appendOperation(qsTr("Download file"), {
+        root.appendOperation(String(operation.label || qsTr("Storage operation")), {
             ok: ok,
             value: operation.result || operation,
             error: String(operation.error || "")
         })
-        root.lastOperation = ok ? qsTr("Download complete") : qsTr("Download stopped")
+        root.model.appendNodeOperationHistory(operation, root.activeStorageDetailText())
+        root.setStorageOperationResult(operation)
+        root.lastOperation = ok ? qsTr("Complete") : qsTr("Stopped")
+    }
+
+    function setStorageOperationResult(operation) {
+        const label = String(operation && operation.label ? operation.label : qsTr("Storage operation"))
+        const ok = String(operation && operation.status ? operation.status : "") === "completed"
+        if (ok) {
+            const value = operation && operation.result !== undefined && operation.result !== null ? operation.result : operation
+            root.model.setResult(label, BridgeHelpers.formatValue(value), false, value)
+        } else {
+            root.model.setResult(label, String(operation && operation.error ? operation.error : qsTr("Storage operation failed.")), true, null)
+        }
     }
 
     function appendOperation(label, response) {
@@ -742,6 +783,16 @@ ColumnLayout {
         return status === "running" || status === "canceling"
     }
 
+    function storageOperationBusy() {
+        return root.storageOperationStartPending || root.activeStorageOperationRunning()
+    }
+
+    function activeStorageOperationCancelable() {
+        const operation = root.activeStorageOperation()
+        const status = String(operation && operation.status ? operation.status : "")
+        return (status === "running" || status === "canceling") && operation && operation.cancellable === true
+    }
+
     function activeStorageOperationTerminal(operation) {
         const status = String(operation && operation.status ? operation.status : "")
         return status === "completed" || status === "failed" || status === "canceled"
@@ -752,7 +803,7 @@ ColumnLayout {
         const status = String(operation && operation.status ? operation.status : "")
         switch (status) {
         case "running":
-            return qsTr("Downloading")
+            return String(operation && operation.label ? operation.label : qsTr("Running"))
         case "canceling":
             return qsTr("Canceling")
         case "completed":
@@ -817,6 +868,9 @@ ColumnLayout {
         }
         if (value && value.result && value.result.value !== undefined) {
             return value.result.value
+        }
+        if (value && value.result !== undefined && value.result !== null) {
+            return value.result
         }
         if (value && value.value !== undefined) {
             return value.value
