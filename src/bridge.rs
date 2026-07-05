@@ -31,6 +31,7 @@ use crate::{
     sequencer_blocks, sequencer_program_ids, sequencer_transaction,
     sequencer_transaction_inspection, sequencer_transaction_inspection_with_idl,
     sequencer_transaction_trace, sequencer_transaction_trace_with_idl,
+    settings_backup::{export_app_settings_backup, restore_app_settings_backup},
     spel::spel_idl_report,
     state_store::{
         RegisteredIdlEntry, load_idl_state, load_settings_state, load_wallet_state,
@@ -464,6 +465,8 @@ impl InspectorBridge {
             "storageDownloadManifest" => self.storage_download_manifest(args),
             "storageFetch" => self.storage_fetch(args),
             "storageUploadUrl" => self.storage_upload_path(args),
+            "storageBackupSettings" => self.storage_backup_settings(args),
+            "storageRestoreSettings" => self.storage_restore_settings(args),
             "storageDownloadToUrl" => self.storage_download_to_path(args),
             "storageDownloadStart" => self.storage_download_start(args),
             "storageOperationStatus" => self.storage_operation_status(args),
@@ -690,6 +693,75 @@ impl InspectorBridge {
         self.runtime
             .block_on(storage_rest_upload(source.endpoint, path, block_size))
             .with_context(|| format!("failed to upload `{path}` through storage REST"))
+    }
+
+    fn storage_backup_settings(&self, args: Value) -> Result<Value> {
+        let args = Args::new(args)?;
+        let source = storage_rest_source(&args)?;
+        require_mutating_diagnostics(&args, source.next_index, "settings backup action")?;
+        let encrypted = args.optional_bool(source.next_index + 1);
+        let wallet_profile = args.value(source.next_index + 2);
+        let block_size = args
+            .value(source.next_index + 3)
+            .and_then(Value::as_u64)
+            .unwrap_or(65_536);
+        let payload = export_app_settings_backup(encrypted, wallet_profile)?;
+        let bytes =
+            serde_json::to_vec_pretty(&payload).context("failed to serialize settings backup")?;
+        let upload = self
+            .runtime
+            .block_on(storage_rest_upload_bytes(
+                source.endpoint,
+                "logos-inspector-settings-backup.json",
+                &bytes,
+                block_size,
+            ))
+            .context("failed to upload settings backup through storage REST")?;
+        let cid = upload
+            .get("cid")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        Ok(json!({
+            "cid": cid,
+            "bytes": bytes.len(),
+            "endpoint": source.endpoint,
+            "encrypted": encrypted,
+            "upload": upload,
+        }))
+    }
+
+    fn storage_restore_settings(&self, args: Value) -> Result<Value> {
+        let args = Args::new(args)?;
+        let source = storage_rest_source(&args)?;
+        require_mutating_diagnostics(&args, source.next_index, "settings restore action")?;
+        let cid = args.string(source.next_index + 1, "backup CID")?;
+        let wallet_profile = args.value(source.next_index + 2);
+        let local_only = args.optional_bool(source.next_index + 3);
+        let bytes = self
+            .runtime
+            .block_on(storage_rest_download_bytes(
+                source.endpoint,
+                cid,
+                local_only,
+            ))
+            .with_context(|| format!("failed to download settings backup CID {cid}"))?;
+        let payload: Value = serde_json::from_slice(&bytes)
+            .with_context(|| format!("settings backup CID {cid} did not contain JSON"))?;
+        let summary = restore_app_settings_backup(&payload, wallet_profile)?;
+        Ok(json!({
+            "restored": true,
+            "cid": cid,
+            "bytes": bytes.len(),
+            "endpoint": source.endpoint,
+            "source": if local_only { "local" } else { "network" },
+            "encrypted": summary.encrypted,
+            "settings": summary.settings_restored,
+            "idls": summary.idl_restored,
+            "wallet": summary.wallet_restored,
+            "favorites": summary.favorites_count,
+            "idl_count": summary.idl_count,
+        }))
     }
 
     fn storage_download_to_path(&self, args: Value) -> Result<Value> {
@@ -1349,6 +1421,35 @@ async fn storage_rest_upload(endpoint: &str, path: &str, block_size: u64) -> Res
     }))
 }
 
+async fn storage_rest_upload_bytes(
+    endpoint: &str,
+    filename: &str,
+    bytes: &[u8],
+    block_size: u64,
+) -> Result<Value> {
+    let text = send_text(
+        reqwest::Client::new()
+            .post(rest_url(endpoint, &format!("/data?blockSize={block_size}")))
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(
+                header::CONTENT_DISPOSITION,
+                format!(
+                    "attachment; filename=\"{}\"",
+                    filename.replace(['\\', '"'], "_")
+                ),
+            )
+            .body(bytes.to_vec()),
+        "storage settings backup upload",
+    )
+    .await?;
+    Ok(json!({
+        "cid": text.trim(),
+        "filename": filename,
+        "bytes": bytes.len(),
+        "endpoint": endpoint,
+    }))
+}
+
 async fn storage_rest_download(
     endpoint: &str,
     cid: &str,
@@ -1406,6 +1507,35 @@ async fn storage_rest_download(
         "source": if local_only { "local" } else { "network" },
         "endpoint": endpoint,
     }))
+}
+
+async fn storage_rest_download_bytes(
+    endpoint: &str,
+    cid: &str,
+    local_only: bool,
+) -> Result<Vec<u8>> {
+    let route = if local_only {
+        format!("/data/{cid}")
+    } else {
+        format!("/data/{cid}/network/stream")
+    };
+    let response = reqwest::Client::new()
+        .get(rest_url(endpoint, &route))
+        .send()
+        .await
+        .with_context(|| format!("failed to call {}", rest_url(endpoint, &route)))?;
+    let status = response.status();
+    let bytes = response
+        .bytes()
+        .await
+        .context("failed to read storage backup download body")?;
+    if !status.is_success() {
+        bail!(
+            "storage backup download failed with status {status}: {}",
+            response_excerpt_bytes(&bytes)
+        );
+    }
+    Ok(bytes.to_vec())
 }
 
 async fn storage_rest_download_tracked(

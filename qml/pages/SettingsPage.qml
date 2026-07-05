@@ -4,6 +4,7 @@ import QtQuick
 import QtQml.Models
 import QtQuick.Layouts
 import "../components"
+import "../components/common"
 import "../components/settings"
 import "../state"
 import "../theme"
@@ -13,6 +14,7 @@ ColumnLayout {
 
     required property Theme theme
     required property AppModel model
+    property string pendingSettingsRestoreCid: ""
 
     width: parent ? parent.width : 900
     spacing: 16
@@ -260,7 +262,150 @@ ColumnLayout {
                     }
                 }
             }
+
+            Panel {
+                theme: settingsRoot.theme
+                title: qsTr("Backups")
+
+                RowLayout {
+                    spacing: settingsRoot.theme.gap
+                    Layout.fillWidth: true
+
+                    Text {
+                        text: qsTr("Back up local settings, registered IDLs, wallet profile, and favorites to Logos Storage.")
+                        color: settingsRoot.theme.textMuted
+                        textFormat: Text.PlainText
+                        wrapMode: Text.Wrap
+                        font.pixelSize: settingsRoot.theme.secondaryText
+                        Layout.fillWidth: true
+                    }
+
+                    StatusPill {
+                        theme: settingsRoot.theme
+                        text: settingsRoot.model.settingsBackupAvailable() ? qsTr("Ready") : qsTr("Blocked")
+                        colorToken: settingsRoot.model.settingsBackupAvailable() ? settingsRoot.theme.success : settingsRoot.theme.warning
+                    }
+                }
+
+                StatusMessage {
+                    visible: !settingsRoot.model.settingsBackupAvailable()
+                    theme: settingsRoot.theme
+                    tone: "warning"
+                    title: qsTr("Storage backup unavailable")
+                    message: qsTr("Select Standalone REST storage and enable mutating diagnostics in Network / Storage.")
+                    Layout.fillWidth: true
+                }
+
+                GridLayout {
+                    columns: settingsRoot.width < 760 ? 1 : 2
+                    columnSpacing: settingsRoot.theme.gap
+                    rowSpacing: settingsRoot.theme.gap
+                    Layout.fillWidth: true
+
+                    InfoField {
+                        theme: settingsRoot.theme
+                        label: qsTr("Storage REST")
+                        value: settingsRoot.model.configuredStorageRestUrl()
+                    }
+
+                    FieldRow {
+                        id: settingsBackupCidField
+
+                        theme: settingsRoot.theme
+                        label: qsTr("Backup CID")
+                        placeholderText: qsTr("zDv...")
+                        sourceText: settingsRoot.model.settingsRestoreCid.length ? settingsRoot.model.settingsRestoreCid : settingsRoot.model.settingsBackupCid
+                        syncSourceText: true
+                        onTextEdited: text => settingsRoot.model.settingsRestoreCid = String(text || "").trim()
+                    }
+                }
+
+                RowLayout {
+                    spacing: settingsRoot.theme.gapSmall
+                    Layout.fillWidth: true
+
+                    SafetyToggle {
+                        theme: settingsRoot.theme
+                        text: qsTr("Encrypt with wallet")
+                        checked: settingsRoot.model.settingsBackupEncrypted
+                        enabled: settingsRoot.model.walletHomeConfigured()
+                        detail: qsTr("Uses the configured wallet home. Restore requires the same wallet config.")
+                        Layout.preferredWidth: 220
+                        onToggled: settingsRoot.model.settingsBackupEncrypted = checked
+                    }
+
+                    Text {
+                        text: settingsRoot.walletBackupHint()
+                        color: settingsRoot.model.settingsBackupEncrypted && !settingsRoot.model.walletHomeConfigured() ? settingsRoot.theme.warning : settingsRoot.theme.textMuted
+                        textFormat: Text.PlainText
+                        elide: Text.ElideRight
+                        font.pixelSize: settingsRoot.theme.secondaryText
+                        Layout.fillWidth: true
+                    }
+                }
+
+                RowLayout {
+                    spacing: settingsRoot.theme.gapSmall
+                    Layout.fillWidth: true
+
+                    ActionButton {
+                        theme: settingsRoot.theme
+                        text: qsTr("Back Up")
+                        primary: true
+                        enabled: !settingsRoot.model.busy
+                            && settingsRoot.model.settingsBackupAvailable()
+                            && (!settingsRoot.model.settingsBackupEncrypted || settingsRoot.model.walletHomeConfigured())
+                        Layout.preferredWidth: 112
+                        onClicked: settingsRoot.model.backupSettingsToStorage(settingsRoot.model.settingsBackupEncrypted)
+                    }
+
+                    ActionButton {
+                        theme: settingsRoot.theme
+                        text: qsTr("Restore")
+                        enabled: !settingsRoot.model.busy
+                            && settingsRoot.model.settingsBackupAvailable()
+                            && settingsBackupCidField.text.trim().length > 0
+                        Layout.preferredWidth: 112
+                        onClicked: {
+                            settingsRoot.pendingSettingsRestoreCid = settingsBackupCidField.text.trim()
+                            settingsRestoreConfirm.open()
+                        }
+                    }
+
+                    ActionButton {
+                        theme: settingsRoot.theme
+                        text: qsTr("Storage")
+                        enabled: !settingsRoot.model.busy
+                        Layout.preferredWidth: 104
+                        onClicked: settingsRoot.model.openSettings("network", "storage")
+                    }
+
+                    Item {
+                        Layout.fillWidth: true
+                    }
+                }
+
+                StatusMessage {
+                    visible: settingsRoot.model.settingsBackupStatus.length > 0
+                    theme: settingsRoot.theme
+                    tone: settingsRoot.model.resultIsError && settingsRoot.model.resultOwner === settingsRoot.model.currentView ? "error" : "info"
+                    title: qsTr("Backup status")
+                    message: settingsRoot.model.settingsBackupStatus
+                    Layout.fillWidth: true
+                }
+            }
         }
+    }
+
+    ConfirmActionPopup {
+        id: settingsRestoreConfirm
+
+        theme: settingsRoot.theme
+        title: qsTr("Restore settings")
+        message: qsTr("This replaces local settings, registered IDLs, wallet profile, and favorites with the selected backup.")
+        confirmText: qsTr("Restore")
+        confirmEnabled: settingsRoot.pendingSettingsRestoreCid.length > 0
+        onAccepted: settingsRoot.model.restoreSettingsFromStorage(settingsRoot.pendingSettingsRestoreCid, settingsRoot.model.settingsBackupEncrypted)
     }
 
     Component {
@@ -732,6 +877,16 @@ ColumnLayout {
             return settingsRoot.theme.success
         }
         return settingsRoot.theme.textMuted
+    }
+
+    function walletBackupHint() {
+        if (!settingsRoot.model.settingsBackupEncrypted) {
+            return qsTr("Plain backup. Use wallet encryption for private or portable profiles.")
+        }
+        if (!settingsRoot.model.walletHomeConfigured()) {
+            return qsTr("Configure Wallet home before encrypted backup or restore.")
+        }
+        return qsTr("Encrypted restore requires the same wallet config.")
     }
 
     function updateSequencerUrl(value) {

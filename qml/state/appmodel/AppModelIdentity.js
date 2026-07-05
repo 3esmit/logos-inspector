@@ -79,6 +79,9 @@ function loadSettingsState(root) {
         storageLocalDiagnosticsEnabled = root.boolSetting(value, "storage_local_diagnostics_enabled", storageLocalDiagnosticsEnabled)
         storagePrivilegedDebugEnabled = root.boolSetting(value, "storage_privileged_debug_enabled", storagePrivilegedDebugEnabled)
         storageMutatingDiagnosticsEnabled = root.boolSetting(value, "storage_mutating_diagnostics_enabled", storageMutatingDiagnosticsEnabled)
+        settingsBackupCid = root.stringSetting(value, "settings_backup_cid", settingsBackupCid)
+        settingsRestoreCid = settingsBackupCid
+        settingsBackupEncrypted = root.boolSetting(value, "settings_backup_encrypted", settingsBackupEncrypted)
         blockchainRefreshRate = root.canonicalRefreshRate(root.numberSetting(value, "blockchain_refresh_rate", blockchainRefreshRate))
         indexerRefreshRate = root.canonicalRefreshRate(root.numberSetting(value, "indexer_refresh_rate", indexerRefreshRate))
         executionRefreshRate = root.canonicalRefreshRate(root.numberSetting(value, "execution_refresh_rate", executionRefreshRate))
@@ -92,6 +95,8 @@ function loadSettingsState(root) {
             dashboardGraphSelections = root.mergeMap(root.defaultDashboardGraphSelections(), value.dashboard_graphs)
             dashboardGraphRevision += 1
         }
+        favorites = root.normalizedFavoriteEntries(value.favorites)
+        favoritesRevision += 1
         settingsStateLoaded = true
     }
 }
@@ -134,14 +139,95 @@ function settingsStatePayload(root) {
             storage_local_diagnostics_enabled: storageLocalDiagnosticsEnabled === true,
             storage_privileged_debug_enabled: storagePrivilegedDebugEnabled === true,
             storage_mutating_diagnostics_enabled: storageMutatingDiagnosticsEnabled === true,
+            settings_backup_cid: String(settingsBackupCid || ""),
+            settings_backup_encrypted: settingsBackupEncrypted === true,
             blockchain_refresh_rate: root.canonicalRefreshRate(blockchainRefreshRate),
             indexer_refresh_rate: root.canonicalRefreshRate(indexerRefreshRate),
             execution_refresh_rate: root.canonicalRefreshRate(executionRefreshRate),
             messaging_refresh_rate: root.canonicalRefreshRate(messagingRefreshRate),
             storage_refresh_rate: root.canonicalRefreshRate(storageRefreshRate),
             footer_fields: footerFieldSelections || {},
-            dashboard_graphs: dashboardGraphSelections || {}
+            dashboard_graphs: dashboardGraphSelections || {},
+            favorites: root.normalizedFavoriteEntries(favorites)
         }
+    }
+}
+
+function backupSettingsToStorage(root, encrypted) {
+    with (root) {
+        if (!root.settingsBackupAvailable()) {
+            settingsBackupStatus = qsTr("Storage REST with mutating diagnostics is required.")
+            return false
+        }
+        settingsBackupEncrypted = encrypted === true
+        saveSettingsState()
+        saveIdlState()
+        saveWalletState()
+        const response = root.callInspector("storageBackupSettings", [
+            root.effectiveStorageSourceMode(storageSourceMode),
+            root.configuredStorageRestUrl(),
+            storageMutatingDiagnosticsEnabled === true,
+            settingsBackupEncrypted,
+            walletProfile(),
+            65536
+        ], qsTr("Settings backup"))
+        if (!response.ok) {
+            settingsBackupStatus = response.error || qsTr("Settings backup failed.")
+            return false
+        }
+        const cid = String(response.value && response.value.cid ? response.value.cid : "")
+        settingsBackupCid = cid
+        settingsRestoreCid = cid
+        settingsBackupStatus = settingsBackupEncrypted
+            ? qsTr("Encrypted backup stored as %1.").arg(cid)
+            : qsTr("Backup stored as %1.").arg(cid)
+        saveSettingsState()
+        return true
+    }
+}
+
+function restoreSettingsFromStorage(root, cid, useWallet) {
+    with (root) {
+        const backupCid = String(cid || "").trim()
+        if (backupCid.length === 0) {
+            settingsBackupStatus = qsTr("Backup CID is required.")
+            return false
+        }
+        if (!root.settingsBackupAvailable()) {
+            settingsBackupStatus = qsTr("Storage REST with mutating diagnostics is required.")
+            return false
+        }
+        const response = root.callInspector("storageRestoreSettings", [
+            root.effectiveStorageSourceMode(storageSourceMode),
+            root.configuredStorageRestUrl(),
+            storageMutatingDiagnosticsEnabled === true,
+            backupCid,
+            useWallet === true ? walletProfile() : ({}),
+            false
+        ], qsTr("Settings restore"))
+        if (!response.ok) {
+            settingsBackupStatus = response.error || qsTr("Settings restore failed.")
+            return false
+        }
+        loadSettingsState()
+        loadIdlState()
+        loadWalletState()
+        settingsBackupCid = backupCid
+        settingsRestoreCid = backupCid
+        settingsBackupEncrypted = response.value && response.value.encrypted === true
+        settingsBackupStatus = qsTr("Restored %1 IDLs and %2 favorites from %3.")
+            .arg(Number(response.value && response.value.idl_count ? response.value.idl_count : 0))
+            .arg(Number(response.value && response.value.favorites ? response.value.favorites : 0))
+            .arg(backupCid)
+        saveSettingsState()
+        return true
+    }
+}
+
+function settingsBackupAvailable(root) {
+    with (root) {
+        return root.effectiveStorageSourceMode(storageSourceMode) === "rest"
+            && storageMutatingDiagnosticsEnabled === true
     }
 }
 

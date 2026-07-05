@@ -15,6 +15,7 @@ mod probe;
 mod programs;
 mod rpc;
 mod sequencer;
+mod settings_backup;
 pub mod spel;
 mod state_store;
 mod transactions;
