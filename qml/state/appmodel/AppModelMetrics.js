@@ -454,7 +454,7 @@ function dashboardMetricRawValue(root, key) {
         case "storage.active_downloads":
             return root.moduleMetricValue("storage", ["storage_active_downloads", "active_downloads", "storage_api_downloads"])
         case "storage.failed_transfers_recent":
-            return root.moduleMetricValue("storage", ["storage_failed_transfers_recent", "failed_transfers_recent"])
+            return root.dashboardMetricRawValue("storage.failed_transfers_total")
         case "storage.failed_transfers_total":
             return root.moduleMetricSum("storage", ["storage_block_exchange_requests_failed_total", "storage_block_exchange_peer_timeouts_total"])
         case "messaging.peer_count":
@@ -496,6 +496,7 @@ function dashboardMetricValue(root, key) {
         switch (key) {
         case "messaging.message_received_events_recent":
         case "messaging.message_error_events_recent":
+        case "storage.failed_transfers_recent":
             return root.dashboardMetricWindowDelta(key)
         default:
             return root.dashboardMetricRawValue(key)
@@ -507,6 +508,7 @@ function dashboardMetricUsesWindow(root, key) {
     with (root) {
         return key === "messaging.message_received_events_recent"
             || key === "messaging.message_error_events_recent"
+            || key === "storage.failed_transfers_recent"
     }
 }
 
@@ -521,7 +523,16 @@ function dashboardMetricWindowDelta(root, key) {
         if (samples.length === 0 || Number(samples[samples.length - 1].value) !== current) {
             samples.push({ timestamp: timestamp, value: current })
         }
-        return root.windowDeltaFromSamples(samples, timestamp, Math.max(1, Number(messagingRollingWindow || 0)) * 1000)
+        return root.windowDeltaFromSamples(samples, timestamp, root.dashboardMetricWindowMs(key))
+    }
+}
+
+function dashboardMetricWindowMs(root, key) {
+    with (root) {
+        if (String(key || "").indexOf("storage.") === 0) {
+            return Math.max(1, Number(storageRollingWindow || 0)) * 1000
+        }
+        return Math.max(1, Number(messagingRollingWindow || 0)) * 1000
     }
 }
 
@@ -549,6 +560,7 @@ function recordDashboardSnapshot(root) {
             "storage.local_storage_used",
             "storage.active_uploads",
             "storage.active_downloads",
+            "storage.failed_transfers_recent",
             "storage.failed_transfers_total",
             "messaging.peer_count",
             "messaging.active_subscriptions",
@@ -689,7 +701,7 @@ function trimDashboardMetricSamples(root, samples) {
 function dashboardMetricWindowSamples(root, key) {
     with (root) {
         const samples = root.normalizedDashboardSamples(dashboardMetricHistory[String(key || "")])
-        const windowMs = Math.max(1, Number(messagingRollingWindow || 0)) * 1000
+        const windowMs = root.dashboardMetricWindowMs(key)
         const rows = []
         for (let i = 0; i < samples.length; ++i) {
             const delta = root.windowDeltaFromSamples(samples.slice(0, i + 1), samples[i].timestamp, windowMs)

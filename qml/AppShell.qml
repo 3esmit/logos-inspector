@@ -326,7 +326,7 @@ Item {
             model: appModel
             moduleKind: "blockchain"
             title: qsTr("Bedrock Node Diagnostics")
-            subtitle: qsTr("Inspect Bedrock node state, L1 block windows, and blockchain module calls.")
+            subtitle: qsTr("Inspect Bedrock node state and L1 block windows through direct node HTTP.")
         }
     }
 

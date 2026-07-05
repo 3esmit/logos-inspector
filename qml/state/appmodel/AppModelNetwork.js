@@ -671,10 +671,6 @@ function deliverySourceLabel(root) {
             return qsTr("Direct Waku REST")
         case "metrics":
             return qsTr("Metrics only")
-        case "network-monitor":
-            return qsTr("Network monitor")
-        case "discovery-crawler":
-            return qsTr("Discovery crawler")
         case "unsupported":
             return qsTr("Unsupported source")
         default:
@@ -790,11 +786,10 @@ function normalizedMessagingSourceMode(root, value) {
             return "module"
         case "network-monitor":
         case "network monitor":
-            return "network-monitor"
         case "discovery-crawler":
         case "discovery crawler":
         case "crawler":
-            return "discovery-crawler"
+            return "unsupported"
         case "rest":
         case "direct-rest":
         case "direct waku rest":
@@ -844,8 +839,6 @@ function storageSourceLabel(root) {
         }
         const effective = root.effectiveStorageSourceMode(storageSourceMode)
         switch (effective) {
-        case "module":
-            return qsTr("Storage module")
         case "rest":
             return qsTr("Standalone REST")
         case "metrics":
@@ -861,8 +854,6 @@ function storageSourceLabel(root) {
 function storageSourceTarget(root) {
     with (root) {
         switch (root.effectiveStorageSourceMode(storageSourceMode)) {
-        case "module":
-            return storageModule
         case "rest":
             return root.configuredStorageRestUrl()
         case "metrics":
@@ -890,7 +881,7 @@ function normalizedStorageSourceMode(root, value) {
         case "basecamp":
         case "basecamp-module":
         case "basecamp module":
-            return "module"
+            return "unsupported"
         case "rest":
         case "standalone-rest":
         case "standalone rest":

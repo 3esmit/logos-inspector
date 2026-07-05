@@ -165,16 +165,16 @@ ColumnLayout {
             title: qsTr("Messages")
 
             StatusMessage {
-                visible: !root.deliveryRestSource()
+                visible: !root.deliveryMessageSource()
                 theme: root.theme
                 tone: "warning"
-                title: qsTr("REST source required")
-                message: qsTr("Subscribe, unsubscribe, and send use the configured Waku REST source.")
+                title: qsTr("Message source required")
+                message: qsTr("Subscribe, unsubscribe, and send use Direct Waku REST or Delivery module source.")
                 Layout.fillWidth: true
             }
 
             StatusMessage {
-                visible: root.deliveryRestSource() && !root.model.messagingMutatingDiagnosticsEnabled
+                visible: root.deliveryMessageSource() && !root.model.messagingMutatingDiagnosticsEnabled
                 theme: root.theme
                 tone: "warning"
                 title: qsTr("Mutating diagnostics off")
@@ -245,7 +245,7 @@ ColumnLayout {
 
         theme: root.theme
         title: root.pendingDeliveryLabel
-        message: qsTr("This will call the configured Waku REST source and may change node relay state.")
+        message: qsTr("This will call the configured Delivery source and may change node relay state.")
         confirmText: root.pendingDeliveryLabel
         confirmEnabled: root.pendingDeliveryMethod.length > 0
         onAccepted: root.runPendingDelivery()
@@ -380,6 +380,10 @@ ColumnLayout {
         return String(root.model.effectiveMessagingSourceMode(root.model.messagingSourceMode) || "").toLowerCase() === "rest"
     }
 
+    function deliveryMessageSource() {
+        return root.deliveryRestSource() || root.deliveryModuleSource()
+    }
+
     function deliveryDataSource() {
         const mode = String(root.model.effectiveMessagingSourceMode(root.model.messagingSourceMode) || "").toLowerCase()
         return mode === "rest" || mode === "metrics" || mode === "module"
@@ -454,7 +458,7 @@ ColumnLayout {
     }
 
     function messageControlsEnabled(topic) {
-        return !root.model.busy && root.deliveryRestSource() && root.model.messagingMutatingDiagnosticsEnabled && root.validContentTopic(topic)
+        return !root.model.busy && root.deliveryMessageSource() && root.model.messagingMutatingDiagnosticsEnabled && root.validContentTopic(topic)
     }
 
     function validContentTopic(topic) {

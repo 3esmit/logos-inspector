@@ -121,7 +121,7 @@ async fn storage_rest_report(
     rest_endpoint: Option<&str>,
     metrics_endpoint: Option<&str>,
     cid: Option<&str>,
-    privileged_debug_enabled: bool,
+    _privileged_debug_enabled: bool,
 ) -> ModuleReport {
     let endpoint = optional(rest_endpoint).unwrap_or(DEFAULT_STORAGE_REST_ENDPOINT);
     let space_source = http_url(endpoint, "/space");
@@ -144,14 +144,12 @@ async fn storage_rest_report(
         ProbeReport::from_result("storage_rest.peerId", peer_id_source, peer_id),
         ProbeReport::from_result("storage_rest.manifests", data_source, manifests),
     ];
-    if privileged_debug_enabled {
-        let debug_source = http_url(endpoint, "/debug/info");
-        probes.push(ProbeReport::from_result(
-            "storage_rest.debug",
-            debug_source,
-            raw_http_value(endpoint, "/debug/info").await,
-        ));
-    }
+    let debug_source = http_url(endpoint, "/debug/info");
+    probes.push(ProbeReport::from_result(
+        "storage_rest.debug",
+        debug_source,
+        raw_http_value(endpoint, "/debug/info").await,
+    ));
     if let Some(cid) = optional(cid) {
         let path = format!("/data/{cid}/exists");
         probes.push(ProbeReport::from_result(
@@ -229,7 +227,7 @@ fn unsupported_storage_source_report(mode: &str) -> ModuleReport {
 
 fn normalized_storage_source_mode(source_mode: &str) -> &'static str {
     match source_mode.trim().to_ascii_lowercase().as_str() {
-        "module" | "basecamp" | "basecamp-module" | "basecamp module" => "module",
+        "module" | "basecamp" | "basecamp-module" | "basecamp module" => "unsupported",
         "rest" | "standalone-rest" | "standalone rest" | "direct-rest" => "rest",
         "metrics" | "metrics-only" | "metrics only" => "metrics",
         "c-library" | "c library" | "library" => "unsupported",
@@ -512,8 +510,8 @@ fn normalized_delivery_source_mode(source_mode: &str) -> &'static str {
         "module" | "basecamp" | "basecamp-module" | "basecamp module" => "module",
         "rest" | "direct-rest" | "direct waku rest" | "waku-rest" => "rest",
         "metrics" | "metrics-only" | "metrics only" => "metrics",
-        "network-monitor" | "network monitor" => "network-monitor",
-        "discovery-crawler" | "discovery crawler" | "crawler" => "discovery-crawler",
+        "network-monitor" | "network monitor" => "unsupported",
+        "discovery-crawler" | "discovery crawler" | "crawler" => "unsupported",
         "auto" => "rest",
         _ => "unsupported",
     }

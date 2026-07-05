@@ -17,7 +17,7 @@ ColumnLayout {
     required property AppModel model
     property var manifests: []
     property string lastOperation: qsTr("None")
-    property string activeCid: ""
+    property string activeCid: root.model.storageCidProbe
     property string pendingStorageMethod: ""
     property string pendingStorageLabel: ""
     property var pendingStorageArgs: []
@@ -38,7 +38,22 @@ ColumnLayout {
         id: operationLog
     }
 
-    Component.onCompleted: root.refreshManifests(false)
+    Component.onCompleted: {
+        if (root.activeCid.length === 0 && root.model.storageCidProbe.length > 0) {
+            root.activeCid = root.model.storageCidProbe
+        }
+        root.refreshManifests(false)
+    }
+
+    Connections {
+        target: root.model
+
+        function onStorageCidProbeChanged() {
+            if (root.activeCid !== root.model.storageCidProbe) {
+                root.activeCid = root.model.storageCidProbe
+            }
+        }
+    }
 
     PageHeader {
         theme: root.theme
@@ -243,7 +258,10 @@ ColumnLayout {
                     sourceText: root.activeCid
                     syncSourceText: true
                     Layout.fillWidth: true
-                    onTextEdited: text => root.activeCid = text
+                    onTextEdited: text => {
+                        root.activeCid = text
+                        root.model.storageCidProbe = String(text || "").trim()
+                    }
                 }
 
                 FieldRow {
@@ -332,7 +350,7 @@ ColumnLayout {
             title: qsTr("Transfer")
 
             StatusMessage {
-                visible: !root.storageModuleSource()
+                visible: !root.storageRestSource()
                 theme: root.theme
                 tone: "warning"
                 title: qsTr("REST source required")
@@ -373,7 +391,10 @@ ColumnLayout {
                     sourceText: root.activeCid
                     syncSourceText: true
                     Layout.fillWidth: true
-                    onTextEdited: text => root.activeCid = text
+                    onTextEdited: text => {
+                        root.activeCid = text
+                        root.model.storageCidProbe = String(text || "").trim()
+                    }
                 }
 
                 FieldRow {
@@ -515,10 +536,6 @@ ColumnLayout {
             return text
         }
         return text.slice(0, Math.max(3, limit - 1)) + "..."
-    }
-
-    function storageModuleSource() {
-        return root.storageRestSource()
     }
 
     function storageRestSource() {

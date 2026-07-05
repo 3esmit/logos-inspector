@@ -127,11 +127,11 @@ QtObject {
     property string settingsSection: "general"
     property string settingsNetworkSection: "blockchain"
     property string settingsUiSection: "footer"
-    property int blockchainRefreshRate: 0
-    property int indexerRefreshRate: 0
-    property int executionRefreshRate: 0
-    property int messagingRefreshRate: 0
-    property int storageRefreshRate: 0
+    property int blockchainRefreshRate: 30
+    property int indexerRefreshRate: 30
+    property int executionRefreshRate: 30
+    property int messagingRefreshRate: 30
+    property int storageRefreshRate: 30
     property var networkConnectionStatus: ({})
     property int networkConnectionStatusRevision: 0
     property int networkConfigurationRevision: 0
@@ -163,6 +163,8 @@ QtObject {
     property var localWalletStatus: null
     property string localWalletStatusError: ""
     property var localWalletOperations: []
+    property var localWalletAccountsValue: null
+    property string localWalletAccountsError: ""
     property var bedrockWalletBalanceValue: null
     property string bedrockWalletBalanceError: ""
     property string bedrockWalletModuleError: ""
@@ -331,6 +333,8 @@ QtObject {
     function deployProgramOperationDetail(value) { return AppModelIdentity.deployProgramOperationDetail(root, value) }
 
     function syncPrivateWallet() { return AppModelIdentity.syncPrivateWallet(root) }
+
+    function queryLocalWalletAccounts(showResult) { return AppModelIdentity.queryLocalWalletAccounts(root, showResult) }
 
     function privateSyncOperationDetail(value) { return AppModelIdentity.privateSyncOperationDetail(root, value) }
 
@@ -773,6 +777,10 @@ QtObject {
     function updateDashboardCache(method, value) { return AppModelSearch.updateDashboardCache(root, method, value) }
 
     function routeSearch(query) { return AppModelSearch.routeSearch(root, query) }
+
+    function openStorageCid(cid) { return AppModelSearch.openStorageCid(root, cid) }
+
+    function isStorageCid(value) { return AppModelSearch.isStorageCid(root, value) }
 
     function numericSearchUsesLezBlock() { return AppModelSearch.numericSearchUsesLezBlock(root) }
 
