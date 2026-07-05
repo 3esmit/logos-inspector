@@ -102,6 +102,7 @@ function queryNetworkConnection(root, kind, showResult, includeSensitiveProbe) {
         return requestModuleAsync(request.module, request.method, request.args, request.label, showResult, function (response) {
             root.setNetworkConnectionPending(target, false)
             root.updateNetworkConnectionStatus(target, response)
+            root.cacheNetworkConnectionResult(target, response)
             root.recordDashboardSnapshot()
         }, function () {
             return configRevision === networkConfigurationRevision
@@ -338,6 +339,52 @@ function updateNetworkConnectionStatus(root, kind, response) {
         }
         networkConnectionStatus = next
         networkConnectionStatusRevision += 1
+    }
+}
+
+function cacheNetworkConnectionResult(root, kind, response) {
+    with (root) {
+        if (!response || response.ok !== true) {
+            return
+        }
+        const target = String(kind || "")
+        const value = response.value
+        if (target === "blockchain") {
+            dashboardNode = value || null
+            const probe = value && value.cryptarchia_info ? value.cryptarchia_info : null
+            const overview = root.copyMap(dashboardOverview || {})
+            const node = root.copyMap(overview.node || {})
+            if (probe) {
+                node.consensus = {
+                    ok: probe.ok === true,
+                    value: probe.value === undefined ? null : probe.value,
+                    error: probe.error === undefined ? null : probe.error
+                }
+            }
+            node.endpoint = nodeUrl
+            overview.node = node
+            dashboardOverview = overview
+            return
+        }
+        if (target === "execution") {
+            const overview = root.copyMap(dashboardOverview || {})
+            const sequencer = root.copyMap(overview.sequencer || {})
+            sequencer.endpoint = sequencerUrl
+            sequencer.health = { ok: true, value: "ok", error: null }
+            sequencer.head = { ok: true, value: value === undefined ? null : value, error: null }
+            overview.sequencer = sequencer
+            dashboardOverview = overview
+            return
+        }
+        if (target === "indexer") {
+            const overview = root.copyMap(dashboardOverview || {})
+            const indexer = root.copyMap(overview.indexer || {})
+            indexer.endpoint = indexerUrl
+            indexer.health = { ok: true, value: "ok", error: null }
+            indexer.head = { ok: true, value: value === undefined ? null : value, error: null }
+            overview.indexer = indexer
+            dashboardOverview = overview
+        }
     }
 }
 
@@ -608,7 +655,7 @@ function deliverySourceLabel(root) {
     with (root) {
         const source = root.normalizedMessagingSourceMode(messagingSourceMode)
         if (source === "auto") {
-            return qsTr("Auto: not detected")
+            return qsTr("Auto: Direct Waku REST")
         }
         const effective = root.effectiveMessagingSourceMode(messagingSourceMode)
         switch (effective) {
@@ -744,7 +791,7 @@ function effectiveMessagingSourceMode(root, value) {
         if (source !== "auto") {
             return source
         }
-        return "unsupported"
+        return "rest"
     }
 }
 
@@ -764,7 +811,7 @@ function storageSourceLabel(root) {
     with (root) {
         const source = root.normalizedStorageSourceMode(storageSourceMode)
         if (source === "auto") {
-            return qsTr("Auto: not detected")
+            return qsTr("Auto: Standalone REST")
         }
         const effective = root.effectiveStorageSourceMode(storageSourceMode)
         switch (effective) {
@@ -836,7 +883,7 @@ function effectiveStorageSourceMode(root, value) {
         if (source !== "auto") {
             return source
         }
-        return "unsupported"
+        return "rest"
     }
 }
 

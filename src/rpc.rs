@@ -1,8 +1,12 @@
+use std::time::Duration;
+
 use anyhow::{Context as _, Result, bail};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 
 use crate::value_to_string;
+
+const JSON_RPC_TIMEOUT: Duration = Duration::from_secs(8);
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RawRpcReport {
@@ -28,6 +32,7 @@ pub async fn raw_json_rpc(endpoint: &str, method: &str, params: Value) -> Result
     });
     let response = reqwest::Client::new()
         .post(endpoint)
+        .timeout(JSON_RPC_TIMEOUT)
         .json(&body)
         .send()
         .await

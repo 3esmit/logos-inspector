@@ -438,6 +438,8 @@ QtObject {
 
     function updateNetworkConnectionStatus(kind, response) { return AppModelNetwork.updateNetworkConnectionStatus(root, kind, response) }
 
+    function cacheNetworkConnectionResult(kind, response) { return AppModelNetwork.cacheNetworkConnectionResult(root, kind, response) }
+
     function networkConnectionSummary(kind, value) { return AppModelNetwork.networkConnectionSummary(root, kind, value) }
 
     function connectionValueOk(kind, value) { return AppModelNetwork.connectionValueOk(root, kind, value) }

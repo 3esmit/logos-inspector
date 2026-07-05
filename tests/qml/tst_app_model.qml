@@ -242,30 +242,83 @@ TestCase {
 
     function test_messaging_and_storage_auto_use_standalone_routes_without_basecamp() {
         compare(model.normalizedMessagingSourceMode(model.messagingSourceMode), "auto")
-        compare(model.effectiveMessagingSourceMode(model.messagingSourceMode), "unsupported")
-        compare(model.deliverySourceReportArgs()[0], "unsupported")
-        compare(model.deliverySourceReportArgs()[1], "")
+        compare(model.effectiveMessagingSourceMode(model.messagingSourceMode), "rest")
+        compare(model.deliverySourceReportArgs()[0], "rest")
+        compare(model.deliverySourceReportArgs()[1], model.configuredMessagingRestUrl())
         compare(model.deliverySourceReportArgs()[2], "")
-        compare(model.deliverySourceTarget(), "")
+        compare(model.deliverySourceTarget(), model.configuredMessagingRestUrl())
 
         compare(model.normalizedStorageSourceMode(model.storageSourceMode), "auto")
-        compare(model.effectiveStorageSourceMode(model.storageSourceMode), "unsupported")
-        compare(model.storageSourceReportArgs(false)[0], "unsupported")
-        compare(model.storageSourceReportArgs(false)[1], "")
-        compare(model.storageSourceTarget(), "")
+        compare(model.effectiveStorageSourceMode(model.storageSourceMode), "rest")
+        compare(model.storageSourceReportArgs(false)[0], "rest")
+        compare(model.storageSourceReportArgs(false)[1], model.configuredStorageRestUrl())
+        compare(model.storageSourceTarget(), model.configuredStorageRestUrl())
     }
 
     function test_messaging_and_storage_auto_use_standalone_routes_in_basecamp() {
-        compare(basecampModel.effectiveMessagingSourceMode(basecampModel.messagingSourceMode), "unsupported")
-        compare(basecampModel.deliverySourceReportArgs()[0], "unsupported")
-        compare(basecampModel.deliverySourceReportArgs()[1], "")
+        compare(basecampModel.effectiveMessagingSourceMode(basecampModel.messagingSourceMode), "rest")
+        compare(basecampModel.deliverySourceReportArgs()[0], "rest")
+        compare(basecampModel.deliverySourceReportArgs()[1], basecampModel.configuredMessagingRestUrl())
         compare(basecampModel.deliverySourceReportArgs()[2], "")
-        compare(basecampModel.deliverySourceTarget(), "")
+        compare(basecampModel.deliverySourceTarget(), basecampModel.configuredMessagingRestUrl())
 
-        compare(basecampModel.effectiveStorageSourceMode(basecampModel.storageSourceMode), "unsupported")
-        compare(basecampModel.storageSourceReportArgs(false)[0], "unsupported")
-        compare(basecampModel.storageSourceReportArgs(false)[1], "")
-        compare(basecampModel.storageSourceTarget(), "")
+        compare(basecampModel.effectiveStorageSourceMode(basecampModel.storageSourceMode), "rest")
+        compare(basecampModel.storageSourceReportArgs(false)[0], "rest")
+        compare(basecampModel.storageSourceReportArgs(false)[1], basecampModel.configuredStorageRestUrl())
+        compare(basecampModel.storageSourceTarget(), basecampModel.configuredStorageRestUrl())
+    }
+
+    function test_settings_query_caches_execution_head_for_footer_metrics() {
+        fakeHost.responses = {
+            head: {
+                ok: true,
+                value: 42,
+                text: "42",
+                error: ""
+            }
+        }
+
+        model.queryNetworkConnection("execution", false)
+
+        tryVerify(function () { return model.networkConnectionIsPending("execution") === false })
+        compare(model.sequencerHeadValue(), 42)
+        verify(model.dashboardOverview.sequencer.health.ok)
+        compare(model.dashboardOverview.sequencer.head.value, 42)
+    }
+
+    function test_settings_query_caches_blockchain_node_for_footer_metrics() {
+        fakeHost.responses = {
+            blockchainNode: {
+                ok: true,
+                value: {
+                    cryptarchia_info: {
+                        ok: true,
+                        value: { cryptarchia_info: { slot: 77, lib_slot: 70 } },
+                        error: null
+                    },
+                    network_info: {
+                        ok: true,
+                        value: { n_peers: 4 },
+                        error: null
+                    }
+                },
+                text: "OK",
+                error: ""
+            }
+        }
+
+        model.queryNetworkConnection("blockchain", false)
+
+        tryVerify(function () { return model.networkConnectionIsPending("blockchain") === false })
+        compare(model.cryptarchiaValue("slot"), 77)
+        compare(model.networkValue("n_peers"), 4)
+    }
+
+    function test_default_footer_storage_failure_field_is_registered_recent_key() {
+        const defaults = model.defaultFooterFieldSelections()
+
+        verify(defaults["storage.failed_transfers_recent"] === true)
+        verify(defaults["storage.failed_transfers_total"] !== true)
     }
 
     function test_explicit_rest_blank_urls_use_visible_defaults() {
@@ -547,6 +600,22 @@ TestCase {
         compare(model.currentView, "l2BlockDetail")
         compare(model.blockDetailValue.type, "sequencer_block")
         compare(model.blockDetailValue.status, "Submitted")
+    }
+
+    function test_lez_blocks_page_finishes_from_first_available_source() {
+        model.finishLezBlocksPage(0, {
+            ok: true,
+            value: [
+                { block_id: 203, header_hash: "seq-203", tx_count: 0, bedrock_status: "Submitted", transactions: [] }
+            ],
+            text: "OK",
+            error: ""
+        }, null)
+
+        compare(model.lezBlocksPageRows.length, 1)
+        compare(model.lezBlocksPageRows[0].block_id, 203)
+        compare(model.lezBlocksPageRows[0].source, "sequencer")
+        compare(model.lezBlocksPageError, "")
     }
 
     function test_lez_transactions_older_consumes_overflow_rows_before_fetching_more_blocks() {

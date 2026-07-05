@@ -681,13 +681,13 @@ impl InspectorBridge {
         let payload = args.string(source.next_index + 2, "message payload")?;
         let body = json!({
             "payload": BASE64_STANDARD.encode(payload.as_bytes()),
-            "contentTopic": topic,
         });
+        let path = format!("/relay/v1/auto/messages/{}", path_segment(topic));
         self.runtime
             .block_on(rest_empty_request(
                 Method::POST,
                 source.endpoint,
-                "/relay/v1/auto/messages",
+                &path,
                 Some(body),
             ))
             .with_context(|| format!("failed to send relay message on {topic}"))?;
@@ -1176,6 +1176,31 @@ fn rest_url(endpoint: &str, path: &str) -> String {
     format!("{endpoint}/{path}")
 }
 
+fn path_segment(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                encoded.push(char::from(byte));
+            }
+            _ => {
+                encoded.push('%');
+                encoded.push(hex_digit(byte >> 4));
+                encoded.push(hex_digit(byte & 0x0f));
+            }
+        }
+    }
+    encoded
+}
+
+fn hex_digit(value: u8) -> char {
+    match value {
+        0..=9 => char::from(b'0' + value),
+        10..=15 => char::from(b'A' + (value - 10)),
+        _ => '0',
+    }
+}
+
 fn response_excerpt_bytes(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).chars().take(400).collect()
 }
@@ -1216,6 +1241,14 @@ mod tests {
             bail!("unexpected error: {error:#}");
         }
         Ok(())
+    }
+
+    #[test]
+    fn path_segment_encodes_delivery_content_topic_slashes() {
+        assert_eq!(
+            path_segment("/logos-inspector/1/chat/proto"),
+            "%2Flogos-inspector%2F1%2Fchat%2Fproto"
+        );
     }
 
     #[test]
