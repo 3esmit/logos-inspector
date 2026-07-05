@@ -747,7 +747,7 @@ function defaultFooterFieldSelections(root) {
             "storage.module": true,
             "storage.node_reachable": true,
             "storage.peer_count": true,
-            "storage.failed_transfers_total": true,
+            "storage.failed_transfers_recent": true,
             "overall.status": true,
             "overall.main_risk": true,
             "overall.operator_action": true

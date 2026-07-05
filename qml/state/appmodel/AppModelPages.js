@@ -570,7 +570,12 @@ function refreshLezBlocksPage(root, beforeBlock) {
         let indexerResponse = null
 
         function completeIfReady() {
-            if (serial !== lezBlocksPageRequestSerial || !sequencerDone || !indexerDone) {
+            if (serial !== lezBlocksPageRequestSerial) {
+                return
+            }
+            const hasUsableRows = responseBlockArray(root, sequencerResponse) !== null
+                || responseBlockArray(root, indexerResponse) !== null
+            if (!hasUsableRows && (!sequencerDone || !indexerDone)) {
                 return
             }
             lezBlocksPageLoading = false
@@ -592,17 +597,10 @@ function refreshLezBlocksPage(root, beforeBlock) {
 
 function finishLezBlocksPage(root, before, sequencerResponse, indexerResponse) {
     with (root) {
-        if (sequencerResponse && sequencerResponse.ok) {
-            if (!Array.isArray(sequencerResponse.value) || (indexerResponse && indexerResponse.ok && !Array.isArray(indexerResponse.value))) {
-                lezBlocksPageBeforeBlock = before
-                lezBlocksPageRows = []
-                lezBlocksPageNextBeforeBlock = 0
-                lezBlocksPageError = qsTr("Response shape unknown. Raw JSON remains available.")
-                const value = indexerResponse && indexerResponse.ok ? indexerResponse.value : sequencerResponse.value
-                setResult(qsTr("L2 blocks"), BridgeHelpers.formatValue(value), false, value)
-                return
-            }
-            const blocks = root.mergedLezBlocks(sequencerResponse.value, indexerResponse && indexerResponse.ok ? indexerResponse.value : [], lezBlocksPageLimit)
+        const sequencerBlocks = responseBlockArray(root, sequencerResponse)
+        const indexerBlocks = responseBlockArray(root, indexerResponse)
+        if (sequencerBlocks !== null) {
+            const blocks = root.mergedLezBlocks(sequencerBlocks, indexerBlocks || [], lezBlocksPageLimit)
             lezBlocksPageBeforeBlock = before
             lezBlocksPageRows = blocks
             lezBlocksPageNextBeforeBlock = root.nextIndexerBlocksCursor(blocks)
@@ -611,27 +609,36 @@ function finishLezBlocksPage(root, before, sequencerResponse, indexerResponse) {
             return
         }
 
-        if (!indexerResponse || !indexerResponse.ok) {
-            lezBlocksPageError = (sequencerResponse && sequencerResponse.error) || (indexerResponse && indexerResponse.error) || qsTr("L2 blocks unavailable")
-            setResult(qsTr("L2 blocks"), lezBlocksPageError, true)
+        if (indexerBlocks !== null) {
+            const blocks = root.sortedIndexerBlocks(indexerBlocks)
+            lezBlocksPageBeforeBlock = before
+            lezBlocksPageRows = blocks
+            lezBlocksPageNextBeforeBlock = root.nextIndexerBlocksCursor(blocks)
+            lezBlocksPageError = ""
+            setResult(qsTr("L2 blocks"), BridgeHelpers.formatValue(lezBlocksPageRows), false, lezBlocksPageRows)
             return
         }
 
-        if (!Array.isArray(indexerResponse.value)) {
+        const unknownShapeResponse = (sequencerResponse && sequencerResponse.ok)
+            ? sequencerResponse
+            : ((indexerResponse && indexerResponse.ok) ? indexerResponse : null)
+        if (unknownShapeResponse !== null) {
             lezBlocksPageBeforeBlock = before
             lezBlocksPageRows = []
             lezBlocksPageNextBeforeBlock = 0
             lezBlocksPageError = qsTr("Response shape unknown. Raw JSON remains available.")
-            setResult(qsTr("L2 blocks"), BridgeHelpers.formatValue(indexerResponse.value), false, indexerResponse.value)
+            setResult(qsTr("L2 blocks"), BridgeHelpers.formatValue(unknownShapeResponse.value), false, unknownShapeResponse.value)
             return
         }
 
-        const blocks = root.sortedIndexerBlocks(indexerResponse.value)
-        lezBlocksPageBeforeBlock = before
-        lezBlocksPageRows = blocks
-        lezBlocksPageNextBeforeBlock = root.nextIndexerBlocksCursor(blocks)
-        lezBlocksPageError = ""
-        setResult(qsTr("L2 blocks"), BridgeHelpers.formatValue(lezBlocksPageRows), false, lezBlocksPageRows)
+        lezBlocksPageError = (sequencerResponse && sequencerResponse.error) || (indexerResponse && indexerResponse.error) || qsTr("L2 blocks unavailable")
+        setResult(qsTr("L2 blocks"), lezBlocksPageError, true)
+    }
+}
+
+function responseBlockArray(root, response) {
+    with (root) {
+        return response && response.ok === true && Array.isArray(response.value) ? response.value : null
     }
 }
 

@@ -921,7 +921,7 @@ ColumnLayout {
                 { key: "storage.local_storage_used", label: qsTr("local_storage_used"), detail: qsTr("Local storage usage") },
                 { key: "storage.active_uploads", label: qsTr("upload_requests_total"), detail: qsTr("Upload request counter total") },
                 { key: "storage.active_downloads", label: qsTr("download_requests_total"), detail: qsTr("Download request counter total") },
-                { key: "storage.failed_transfers_total", label: qsTr("transfer_failures_total"), detail: qsTr("Historical transfer failure counter total") },
+                { key: "storage.failed_transfers_recent", label: qsTr("failed_transfers_recent"), detail: qsTr("Recent transfer failures") },
                 { key: "storage.cid_fetch_test", label: qsTr("cid_fetch_test"), detail: qsTr("CID fetch probe result") },
                 { key: "storage.last_error", label: qsTr("last_error"), detail: qsTr("Latest storage error") }
             ] },
