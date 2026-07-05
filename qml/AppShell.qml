@@ -253,6 +253,8 @@ Item {
             return favoritesPage
         case "localWallet":
             return localWalletPage
+        case "localNodes":
+            return localNodesPage
         case "indexer":
             return indexerPage
         case "settings":
@@ -456,6 +458,14 @@ Item {
     Component {
         id: localWalletPage
         LocalWalletPage {
+            theme: theme
+            model: appModel
+        }
+    }
+
+    Component {
+        id: localNodesPage
+        LocalNodesPage {
             theme: theme
             model: appModel
         }

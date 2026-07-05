@@ -195,6 +195,11 @@ TestCase {
         model.localWalletStatus = null
         model.localWalletStatusError = ""
         model.localWalletOperations = []
+        model.localNodesReport = null
+        model.localNodesError = ""
+        model.localNodesOperations = []
+        model.localNodesRevision = 0
+        model.localDevnets = []
     }
 
     function test_basecamp_bridge_routes_inspector_calls_through_generic_call() {
@@ -242,6 +247,54 @@ TestCase {
         compare(args[0], model.nodeUrl)
         compare(args[1], 1)
         compare(args[2], 2)
+    }
+
+    function test_local_node_action_dispatches_confirmation_token() {
+        model.networkProfile = "local"
+        fakeHost.callCount = 0
+        fakeHost.lastMethod = ""
+        fakeHost.lastArgs = []
+        fakeHost.responses = ({
+            localNodesAction: {
+                ok: true,
+                value: {
+                    active_devnet: "devnet",
+                    summary: { total: 0, installed: 0, running: 0, needs_configuration: 0 },
+                    nodes: [],
+                    operations: [{ action: "start", node: "bedrock", status: "started", detail: "ok" }],
+                    tools: {}
+                },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        model.runLocalNodeAction("start", "bedrock", "", "", "Start Bedrock")
+
+        tryCompare(fakeHost, "callCount", 1)
+        compare(fakeHost.lastMethod, "localNodesAction")
+        compare(fakeHost.lastArgs[0], "local")
+        compare(fakeHost.lastArgs[1].action, "start")
+        compare(fakeHost.lastArgs[1].node, "bedrock")
+        compare(fakeHost.lastArgs[2], "confirm-local-node-action")
+        compare(model.localNodesOperations.length, 1)
+    }
+
+    function test_local_node_network_actions_follow_profile_mode() {
+        model.networkProfile = "default"
+        model.localNodesReport = ({ active_devnet: "devnet" })
+        model.localNodesRevision += 1
+
+        verify(!model.localNodeNetworkActionEnabled("new_network"))
+        verify(!model.localNodeNetworkActionEnabled("delete_network"))
+
+        model.networkProfile = "local"
+        model.localNodesReport = ({ active_devnet: "devnet" })
+        model.localNodesRevision += 1
+
+        verify(model.localNodeNetworkActionEnabled("new_network"))
+        verify(model.localNodeNetworkActionEnabled("reset_network"))
+        verify(model.localNodeNetworkActionEnabled("delete_network"))
     }
 
     function test_core_source_args_keep_rpc_shape_in_basecamp_auto() {

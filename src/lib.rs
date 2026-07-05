@@ -8,6 +8,7 @@ mod idl;
 mod idl_interaction;
 mod indexer;
 pub mod local_indexer;
+pub mod local_nodes;
 pub mod logoscore;
 pub mod modules;
 mod network;
@@ -61,6 +62,11 @@ pub use indexer::{
 #[cfg(test)]
 pub(crate) use indexer::{
     next_indexer_blocks_cursor, summarize_indexer_block, summarize_indexer_status_response,
+};
+pub use local_nodes::{
+    LocalDevnetListReport, LocalDevnetRecord, LocalNodeActionRequest, LocalNodeOperationReport,
+    LocalNodeReport, LocalNodeStatus, NodeAction, NodeKind, local_devnet_list, local_nodes_action,
+    local_nodes_status,
 };
 pub use network::{
     CUSTOM_NETWORK_PROFILE, DEFAULT_INDEXER_ENDPOINT, DEFAULT_NETWORK_PROFILE,

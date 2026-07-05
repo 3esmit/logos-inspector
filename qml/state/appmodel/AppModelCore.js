@@ -20,6 +20,9 @@ function handleNetworkConfigurationChanged(root) {
         messagingModuleReport = null
         storageActiveOperation = null
         storageActiveOperationRevision += 1
+        localNodesReport = null
+        localNodesError = ""
+        localNodesRevision += 1
         blocksLiveEnabled = false
         blocksLiveError = ""
         blocksLiveSource = ""
@@ -116,6 +119,7 @@ function navTreeItems(root) {
                 token: "SYS",
                 layer: "system",
                 children: [
+                    { key: "localNodes", view: "localNodes", label: qsTr("Local Nodes"), token: "NOD", layer: "system" },
                     { key: "settings", view: "settings", label: qsTr("Settings"), token: "SET", layer: "system" }
                 ]
             }
