@@ -28,6 +28,7 @@ hex = "0.4"
 hkdf = "0.12"
 k256 = { version = "0.13.3", features = ["ecdsa-core"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+risc0-zkvm = "3.0.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10.8"
@@ -38,6 +39,7 @@ common = { git = "https://github.com/logos-blockchain/logos-execution-zone.git",
 lee = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc6" }
 lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc6" }
 sequencer_service_rpc = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc6", features = ["client"] }
+wallet = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc6" }
 
 [lints.rust]
 future_incompatible = { level = "deny", priority = -1 }

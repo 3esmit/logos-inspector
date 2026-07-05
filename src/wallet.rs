@@ -1087,7 +1087,7 @@ fn binary_name(binary: &str) -> String {
     }
 }
 
-fn unix_time_text() -> String {
+pub(crate) fn unix_time_text() -> String {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs().to_string())

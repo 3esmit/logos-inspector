@@ -5,6 +5,7 @@ pub mod bridge;
 pub mod channels;
 mod entity_id;
 mod idl;
+mod idl_interaction;
 mod indexer;
 pub mod local_indexer;
 pub mod logoscore;
@@ -47,6 +48,10 @@ pub use idl::{
     AccountIdlDecodeReport, DecodedField, EventIdlDecodeReport, InstructionDecodeReport,
     decode_account_data_hex_with_idl, decode_event_data_hex_with_idl, decode_event_data_with_idl,
     decode_instruction_words_with_idl,
+};
+pub use idl_interaction::{
+    LocalWalletInstructionReport, LocalWalletInstructionRequest, ResolvedInstructionAccount,
+    ResolvedInstructionArg, local_wallet_instruction_preview, local_wallet_instruction_submit,
 };
 pub(crate) use indexer::summarize_indexer_transaction;
 pub use indexer::{

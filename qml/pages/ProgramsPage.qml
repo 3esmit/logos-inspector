@@ -359,6 +359,14 @@ ColumnLayout {
                     placeholderText: qsTr("Auto from JSON")
                     Layout.fillWidth: true
                 }
+
+                FieldRow {
+                    id: idlProgramBinary
+                    theme: root.theme
+                    label: qsTr("Program binary")
+                    placeholderText: qsTr("Required for private tx")
+                    Layout.fillWidth: true
+                }
             }
 
             TextAreaField {
@@ -380,7 +388,7 @@ ColumnLayout {
                     primary: true
                     enabled: idlJson.text.trim().length > 0 && root.validProgramId(programId.text)
                     Layout.fillWidth: true
-                    onClicked: root.model.registerIdl(idlName.text, programId.text, idlJson.text)
+                    onClicked: root.model.registerIdl(idlName.text, programId.text, idlJson.text, idlProgramBinary.text)
                 }
 
                 ActionButton {
