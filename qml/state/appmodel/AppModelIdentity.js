@@ -96,6 +96,7 @@ function loadSettingsState(root) {
             dashboardGraphSelections = root.mergeMap(root.defaultDashboardGraphSelections(), value.dashboard_graphs)
             dashboardGraphRevision += 1
         }
+        root.loadSocialSettings(value)
         favorites = root.normalizedFavoriteEntries(value.favorites)
         favoritesRevision += 1
         settingsStateLoaded = true
@@ -114,7 +115,8 @@ function saveSettingsState(root) {
 function settingsStatePayload(root) {
     with (root) {
         const resolvedProfile = root.inferNetworkProfileFromEndpoints(sequencerUrl, indexerUrl, nodeUrl)
-        return {
+        const social = root.socialSettingsPayload()
+        return Object.assign({
             version: 1,
             network_profile: resolvedProfile,
             sequencer_url: String(sequencerUrl || ""),
@@ -150,7 +152,7 @@ function settingsStatePayload(root) {
             footer_fields: footerFieldSelections || {},
             dashboard_graphs: dashboardGraphSelections || {},
             favorites: root.normalizedFavoriteEntries(favorites)
-        }
+        }, social)
     }
 }
 
@@ -1073,7 +1075,11 @@ function normalizedIdlEntry(root, entry, fallbackIndex) {
             programId: programId,
             programIdHex: programIdHex,
             programBinary: String(row.programBinary || row.program_binary || ""),
-            json: json
+            json: json,
+            source: String(row.source || ""),
+            sharedTopic: String(row.sharedTopic || row.shared_topic || ""),
+            sharedIdentity: row.sharedIdentity || row.shared_identity || ({}),
+            sharedAccountId: String(row.sharedAccountId || row.shared_account_id || "")
         }
     }
 }
@@ -1137,6 +1143,14 @@ function idlEntriesForProgram(root, programId) {
                 entries.push(entry)
             }
         }
+        entries.sort(function (left, right) {
+            const leftShared = String(left.source || "") === "shared"
+            const rightShared = String(right.source || "") === "shared"
+            if (leftShared === rightShared) {
+                return 0
+            }
+            return leftShared ? 1 : -1
+        })
         return entries
     }
 }
@@ -1173,7 +1187,16 @@ function accountIdlSelection(root, accountId, ownerProgramId) {
 function cachedIdlEntryForAccount(root, accountId, ownerProgramId) {
     with (root) {
         const selection = accountIdlSelection(accountId, ownerProgramId)
-        const entry = selection ? root.idlEntryForKey(selection.idlKey) : null
+        let entry = selection ? root.idlEntryForKey(selection.idlKey) : null
+        if (!entry && selection) {
+            const sharedRows = root.sharedIdlEntriesForAccount(accountId, ownerProgramId)
+            for (let i = 0; i < sharedRows.length; ++i) {
+                if (String(sharedRows[i].key || "") === String(selection.idlKey || "")) {
+                    entry = sharedRows[i]
+                    break
+                }
+            }
+        }
         if (!entry || String(entry.programIdHex || "").length === 0) {
             return null
         }
@@ -1305,7 +1328,7 @@ function accountDecodeCandidates(root, accountId, ownerProgramId) {
     with (root) {
         const candidates = []
         const cached = root.cachedIdlEntryForAccount(accountId, ownerProgramId)
-        if (cached) {
+        if (cached && String(cached.source || "") !== "shared") {
             candidates.push({
                 entry: cached,
                 accountType: root.cachedAccountType(accountId, ownerProgramId),
@@ -1321,6 +1344,26 @@ function accountDecodeCandidates(root, accountId, ownerProgramId) {
                     accountType: "",
                     cached: false,
                     ownerMatched: true
+                })
+            }
+        }
+        if (cached && String(cached.source || "") === "shared" && !root.candidateListHasEntry(candidates, cached.key)) {
+            candidates.push({
+                entry: cached,
+                accountType: root.cachedAccountType(accountId, ownerProgramId),
+                cached: true,
+                shared: true
+            })
+        }
+        const sharedEntries = root.sharedIdlEntriesForAccount(accountId, ownerProgramId)
+        for (let sharedIndex = 0; sharedIndex < sharedEntries.length; ++sharedIndex) {
+            const sharedEntry = sharedEntries[sharedIndex]
+            if (!root.candidateListHasEntry(candidates, sharedEntry.key)) {
+                candidates.push({
+                    entry: sharedEntry,
+                    accountType: String(sharedEntry.accountType || ""),
+                    cached: false,
+                    shared: true
                 })
             }
         }

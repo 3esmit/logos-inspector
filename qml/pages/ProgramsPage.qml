@@ -27,6 +27,7 @@ ColumnLayout {
 
         ListElement { value: "programIds"; label: "Known IDs" }
         ListElement { value: "idls"; label: "IDLs" }
+        ListElement { value: "sharing"; label: "Sharing" }
         ListElement { value: "binaries"; label: "Binaries" }
         ListElement { value: "events"; label: "Events" }
     }
@@ -302,6 +303,8 @@ ColumnLayout {
             return binaryForm
         case "idls":
             return idlForm
+        case "sharing":
+            return sharingForm
         case "events":
             return eventForm
         default:
@@ -540,6 +543,71 @@ ColumnLayout {
     }
 
     Component {
+        id: sharingForm
+
+        ColumnLayout {
+            spacing: 12
+
+            StatusMessage {
+                theme: root.theme
+                tone: root.model.sharedIdlPolicy === "disabled" ? "warning" : "info"
+                title: qsTr("Shared IDLs")
+                message: root.sharedPolicyText()
+                Layout.fillWidth: true
+            }
+
+            GridLayout {
+                columns: root.width < 760 ? 1 : 4
+                columnSpacing: root.theme.gapSmall
+                rowSpacing: root.theme.gapSmall
+                Layout.fillWidth: true
+
+                ActionButton {
+                    theme: root.theme
+                    text: qsTr("Suggest")
+                    selected: root.model.sharedIdlPolicy === "suggestion"
+                    Layout.fillWidth: true
+                    onClicked: root.model.setSharedIdlPolicy("suggestion")
+                }
+
+                ActionButton {
+                    theme: root.theme
+                    text: qsTr("Session")
+                    selected: root.model.sharedIdlPolicy === "sessionOnly"
+                    Layout.fillWidth: true
+                    onClicked: root.model.setSharedIdlPolicy("sessionOnly")
+                }
+
+                ActionButton {
+                    theme: root.theme
+                    text: qsTr("Auto-register")
+                    selected: root.model.sharedIdlPolicy === "autoRegister"
+                    Layout.fillWidth: true
+                    onClicked: root.model.setSharedIdlPolicy("autoRegister")
+                }
+
+                ActionButton {
+                    theme: root.theme
+                    text: qsTr("Disabled")
+                    selected: root.model.sharedIdlPolicy === "disabled"
+                    Layout.fillWidth: true
+                    onClicked: root.model.setSharedIdlPolicy("disabled")
+                }
+            }
+
+            CheckBox {
+                id: autoShare
+
+                text: qsTr("Auto-share verified local IDLs")
+                checked: root.model.sharedIdlAutoShare
+                palette.text: root.theme.text
+                onToggled: root.model.setSharedIdlAutoShare(checked)
+                Layout.fillWidth: true
+            }
+        }
+    }
+
+    Component {
         id: eventForm
 
         ColumnLayout {
@@ -584,6 +652,9 @@ ColumnLayout {
         if (root.model.programTab === "binaries") {
             return qsTr("Binaries")
         }
+        if (root.model.programTab === "sharing") {
+            return qsTr("Sharing")
+        }
         if (root.model.programTab === "events") {
             return qsTr("Events")
         }
@@ -596,6 +667,9 @@ ColumnLayout {
         }
         if (root.model.programTab === "binaries") {
             return qsTr("File inspection")
+        }
+        if (root.model.programTab === "sharing") {
+            return qsTr("Shared IDLs")
         }
         if (root.model.programTab === "events") {
             return qsTr("Event decode")
@@ -610,10 +684,26 @@ ColumnLayout {
         if (root.model.programTab === "binaries") {
             return qsTr("Inspect compiled program bytecode, then deploy it with the configured local wallet.")
         }
+        if (root.model.programTab === "sharing") {
+            return root.sharedPolicyText()
+        }
         if (root.model.programTab === "events") {
             return qsTr("Decode event payloads with a user-provided IDL. Program-specific decoding stays local to the supplied IDL.")
         }
         return qsTr("Save local IDLs, summarize their instruction/account shape, or load program IDs from the sequencer.")
+    }
+
+    function sharedPolicyText() {
+        if (root.model.sharedIdlPolicy === "disabled") {
+            return qsTr("Shared account IDLs are ignored.")
+        }
+        if (root.model.sharedIdlPolicy === "autoRegister") {
+            return qsTr("Verified shared IDLs are saved to the local registry with shared source metadata.")
+        }
+        if (root.model.sharedIdlPolicy === "sessionOnly") {
+            return qsTr("Verified shared IDLs are usable for this session without saving them.")
+        }
+        return qsTr("Verified shared IDLs are shown as suggestions; local IDLs stay preferred.")
     }
 
     function validProgramId(value) {

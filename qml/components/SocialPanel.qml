@@ -1,0 +1,386 @@
+pragma ComponentBehavior: Bound
+
+import QtQuick
+import QtQuick.Controls.Basic
+import QtQuick.Layouts
+import "../state"
+import "../theme"
+import "common"
+import "../utils/UiFormat.js" as UiFormat
+
+ColumnLayout {
+    id: root
+
+    required property Theme theme
+    required property AppModel model
+    property string topic: ""
+    property string title: qsTr("Comments")
+    property string expectedAccountId: ""
+    property string composerIdentityKey: model.selectedSocialIdentityKey
+
+    visible: root.topic.length > 0
+    spacing: root.theme.gap
+    Layout.fillWidth: true
+
+    onTopicChanged: Qt.callLater(root.reload)
+    Component.onCompleted: Qt.callLater(root.reload)
+
+    Connections {
+        target: root.model
+
+        function onSocialIdentityRevisionChanged() {
+            root.composerIdentityKey = root.model.selectedSocialIdentityKey
+        }
+    }
+
+    RowLayout {
+        spacing: root.theme.gapSmall
+        Layout.fillWidth: true
+
+        Text {
+            text: root.title
+            color: root.theme.text
+            textFormat: Text.PlainText
+            font.pixelSize: 14
+            font.weight: Font.DemiBold
+            Layout.fillWidth: true
+        }
+
+        Text {
+            text: root.statusText()
+            color: root.statusColor()
+            textFormat: Text.PlainText
+            elide: Text.ElideRight
+            font.pixelSize: root.theme.secondaryText
+            Layout.preferredWidth: 210
+        }
+    }
+
+    StatusMessage {
+        visible: root.panelState().error.length > 0
+        theme: root.theme
+        tone: "warning"
+        title: qsTr("Comments")
+        message: root.panelState().error
+        Layout.fillWidth: true
+    }
+
+    ColumnLayout {
+        visible: root.comments().length > 0
+        spacing: root.theme.gapSmall
+        Layout.fillWidth: true
+
+        Repeater {
+            model: root.comments()
+
+            Frame {
+                id: commentFrame
+
+                required property var modelData
+
+                padding: root.theme.gap
+                Layout.fillWidth: true
+
+                background: Rectangle {
+                    color: root.theme.surface
+                    radius: root.theme.radius
+                    border.width: 1
+                    border.color: root.theme.outlineMuted
+                }
+
+                contentItem: ColumnLayout {
+                    spacing: root.theme.gapSmall
+
+                    RowLayout {
+                        spacing: root.theme.gapSmall
+                        Layout.fillWidth: true
+
+                        Text {
+                            text: String(commentFrame.modelData.displayName || qsTr("Pseudonym"))
+                            color: root.theme.text
+                            textFormat: Text.PlainText
+                            elide: Text.ElideRight
+                            font.pixelSize: root.theme.secondaryText
+                            font.weight: Font.DemiBold
+                            Layout.fillWidth: true
+                        }
+
+                        Text {
+                            text: root.shortTime(commentFrame.modelData.createdAt)
+                            color: root.theme.textDim
+                            textFormat: Text.PlainText
+                            font.pixelSize: root.theme.labelText
+                            Layout.alignment: Qt.AlignVCenter
+                        }
+                    }
+
+                    Text {
+                        text: String(commentFrame.modelData.body || "")
+                        color: root.theme.textMuted
+                        textFormat: Text.PlainText
+                        wrapMode: Text.Wrap
+                        font.pixelSize: root.theme.primaryText
+                        Layout.fillWidth: true
+                    }
+                }
+            }
+        }
+    }
+
+    StatusMessage {
+        visible: root.comments().length === 0 && !root.panelState().loading && !root.panelState().error.length
+        theme: root.theme
+        tone: "info"
+        title: qsTr("No comments")
+        message: qsTr("No public comments found for this topic.")
+        Layout.fillWidth: true
+    }
+
+    RowLayout {
+        spacing: root.theme.gapSmall
+        Layout.fillWidth: true
+
+        ActionButton {
+            theme: root.theme
+            text: qsTr("Refresh")
+            enabled: !root.panelState().loading && root.model.socialStoreAvailable()
+            Layout.preferredWidth: 104
+            onClicked: root.reload()
+        }
+
+        ActionButton {
+            theme: root.theme
+            text: qsTr("Next page")
+            enabled: !root.panelState().loading && !root.panelState().exhausted && root.model.socialStoreAvailable()
+            Layout.preferredWidth: 122
+            onClicked: root.model.loadSocialComments(root.topic, false, root.model.socialCommentPageSize, root.expectedAccountId)
+        }
+
+        Text {
+            text: root.topic
+            color: root.theme.textDim
+            textFormat: Text.PlainText
+            elide: Text.ElideMiddle
+            font.family: "monospace"
+            font.pixelSize: root.theme.labelText
+            Layout.fillWidth: true
+            Layout.alignment: Qt.AlignVCenter
+        }
+    }
+
+    GridLayout {
+        columns: root.width < 720 ? 1 : 2
+        columnSpacing: root.theme.gap
+        rowSpacing: root.theme.gapSmall
+        Layout.fillWidth: true
+
+        ColumnLayout {
+            spacing: 6
+            Layout.fillWidth: true
+
+            Text {
+                text: qsTr("Identity")
+                color: root.theme.textMuted
+                textFormat: Text.PlainText
+                font.pixelSize: root.theme.secondaryText
+                font.weight: Font.Medium
+                Layout.fillWidth: true
+            }
+
+            ComboBox {
+                id: identityCombo
+
+                model: root.identityLabels()
+                currentIndex: root.identityIndex()
+                hoverEnabled: true
+                Layout.fillWidth: true
+                Layout.preferredHeight: root.theme.controlHeight
+                onActivated: index => root.selectIdentity(index)
+
+                contentItem: TextField {
+                    text: identityCombo.displayText
+                    color: root.theme.text
+                    verticalAlignment: Text.AlignVCenter
+                    leftPadding: 12
+                    rightPadding: 24
+                    readOnly: true
+                    background: null
+                    font.pixelSize: root.theme.primaryText
+                }
+
+                background: Rectangle {
+                    radius: root.theme.radius
+                    color: identityCombo.hovered || identityCombo.activeFocus ? root.theme.surfaceRaised : root.theme.field
+                    border.width: identityCombo.activeFocus ? 2 : 1
+                    border.color: identityCombo.activeFocus ? root.theme.accent : root.theme.outlineMuted
+                }
+            }
+        }
+
+        RowLayout {
+            spacing: root.theme.gapSmall
+            Layout.fillWidth: true
+            Layout.alignment: Qt.AlignBottom
+
+            ActionButton {
+                theme: root.theme
+                text: qsTr("New")
+                Layout.preferredWidth: 92
+                onClicked: {
+                    const identity = root.model.createSocialIdentity("")
+                    root.composerIdentityKey = identity.key
+                }
+            }
+
+            ActionButton {
+                theme: root.theme
+                text: root.model.socialIdentityDefaultMode === "manual" ? qsTr("Manual") : qsTr("Per topic")
+                selected: root.model.socialIdentityDefaultMode !== "manual"
+                Layout.preferredWidth: 116
+                onClicked: root.model.setSocialIdentityDefaultMode(root.model.socialIdentityDefaultMode === "manual" ? "perConversation" : "manual")
+            }
+
+            Item {
+                Layout.fillWidth: true
+            }
+        }
+    }
+
+    TextAreaField {
+        id: commentBody
+
+        theme: root.theme
+        label: qsTr("Comment")
+        rows: 3
+        placeholderText: qsTr("Write a public comment")
+        Layout.fillWidth: true
+    }
+
+    RowLayout {
+        spacing: root.theme.gapSmall
+        Layout.fillWidth: true
+
+        Text {
+            text: root.sendHint()
+            color: root.model.socialCommentSendAvailable(root.topic) ? root.theme.textDim : root.theme.warning
+            textFormat: Text.PlainText
+            elide: Text.ElideRight
+            font.pixelSize: root.theme.secondaryText
+            Layout.fillWidth: true
+            Layout.alignment: Qt.AlignVCenter
+        }
+
+        ActionButton {
+            theme: root.theme
+            text: qsTr("Post")
+            primary: true
+            enabled: root.model.socialCommentSendAvailable(root.topic) && commentBody.text.trim().length > 0
+            Layout.preferredWidth: 104
+            onClicked: postConfirm.open()
+        }
+    }
+
+    ConfirmActionPopup {
+        id: postConfirm
+
+        theme: root.theme
+        title: qsTr("Post comment")
+        message: qsTr("This sends a public Delivery message on %1.").arg(root.topic)
+        confirmText: qsTr("Post")
+        confirmEnabled: root.model.socialCommentSendAvailable(root.topic) && commentBody.text.trim().length > 0
+        onAccepted: {
+            if (root.model.postSocialComment(root.topic, commentBody.text, root.composerIdentityKey)) {
+                commentBody.text = ""
+            }
+        }
+    }
+
+    function reload() {
+        if (!root.topic.length || !root.model.socialStoreAvailable()) {
+            return
+        }
+        root.model.loadSocialComments(root.topic, true, root.model.socialCommentPageSize, root.expectedAccountId)
+    }
+
+    function panelState() {
+        const revision = root.model.socialCommentRevision
+        return root.model.socialCommentStateForTopic(root.topic)
+    }
+
+    function comments() {
+        const revision = root.model.socialCommentRevision
+        return root.model.socialComments(root.topic)
+    }
+
+    function identityRows() {
+        const revision = root.model.socialIdentityRevision
+        return root.model.socialIdentityRows()
+    }
+
+    function identityLabels() {
+        const rows = root.identityRows()
+        if (!rows.length) {
+            return [qsTr("New pseudonym")]
+        }
+        return rows.map(function (row) {
+            return String(row.displayName || row.localId || qsTr("Pseudonym"))
+        })
+    }
+
+    function identityIndex() {
+        const rows = root.identityRows()
+        for (let i = 0; i < rows.length; ++i) {
+            if (String(rows[i].key || "") === root.composerIdentityKey) {
+                return i
+            }
+        }
+        return rows.length > 0 ? 0 : 0
+    }
+
+    function selectIdentity(index) {
+        const rows = root.identityRows()
+        if (index >= 0 && index < rows.length) {
+            root.composerIdentityKey = rows[index].key
+            root.model.selectSocialIdentity(root.composerIdentityKey)
+        }
+    }
+
+    function statusText() {
+        if (root.panelState().loading) {
+            return qsTr("Loading")
+        }
+        if (!root.model.socialStoreAvailable()) {
+            return qsTr("Store unavailable")
+        }
+        return qsTr("%1 comments").arg(root.comments().length)
+    }
+
+    function statusColor() {
+        if (root.panelState().error.length > 0 || !root.model.socialStoreAvailable()) {
+            return root.theme.warning
+        }
+        return root.theme.textDim
+    }
+
+    function sendHint() {
+        if (!root.model.socialMessageSourceAvailable()) {
+            return qsTr("Delivery source unavailable")
+        }
+        if (!root.model.messagingMutatingDiagnosticsEnabled) {
+            return qsTr("Mutating diagnostics off")
+        }
+        return qsTr("Public JSON message")
+    }
+
+    function shortTime(value) {
+        const text = String(value || "")
+        if (!text.length) {
+            return ""
+        }
+        const parsed = Date.parse(text)
+        if (!Number.isFinite(parsed)) {
+            return UiFormat.shortHash(text)
+        }
+        return Qt.formatDateTime(new Date(parsed), "yyyy-MM-dd HH:mm")
+    }
+}

@@ -171,6 +171,15 @@ ColumnLayout {
         }
     }
 
+    SocialPanel {
+        visible: root.detail !== null
+        theme: root.theme
+        model: root.model
+        title: qsTr("Block comments")
+        topic: root.socialTopic()
+        Layout.fillWidth: true
+    }
+
     function normalize(value) {
         if (!value || typeof value !== "object" || Array.isArray(value) || (value.type !== "blockchain_block" && value.type !== "indexer_block" && value.type !== "sequencer_block")) {
             return null
@@ -303,6 +312,16 @@ ColumnLayout {
 
     function favoriteButtonAccessibleName() {
         return root.model.isFavoriteEntry(root.favoriteEntry) ? qsTr("Remove block from favorites") : qsTr("Add block to favorites")
+    }
+
+    function socialTopic() {
+        if (!root.detail) {
+            return ""
+        }
+        const id = root.isLezBlock()
+            ? (String(root.detail.block_id || "").length ? String(root.detail.block_id) : root.detail.hash)
+            : (root.detail.hash.length ? root.detail.hash : String(root.detail.slot || ""))
+        return root.model.socialCommentTopic(root.isLezBlock() ? "lez" : "cryptarchia", "block", id)
     }
 
 }
