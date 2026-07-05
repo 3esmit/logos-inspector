@@ -745,16 +745,38 @@ function isBedrockHexId(root, value) {
 
 function appendLocalWalletOperation(root, label, status, detail) {
     with (root) {
+        const labelText = String(label || "")
+        const statusText = String(status || "")
+        const detailText = String(detail || "")
         const rows = Array.isArray(localWalletOperations) ? localWalletOperations.slice(-49) : []
         rows.push({
-            label: String(label || ""),
-            status: String(status || ""),
-            detail: String(detail || ""),
+            label: labelText,
+            status: statusText,
+            detail: detailText,
             time: new Date().toLocaleTimeString(Qt.locale(), "hh:mm:ss")
         })
         localWalletOperations = rows
+        appendNodeOperationHistory({
+            domain: "wallet",
+            method: labelText,
+            status: walletOperationStatus(statusText),
+            label: labelText,
+            result: {
+                status: statusText,
+                detail: detailText
+            },
+            error: walletOperationStatus(statusText) === "failed" ? detailText : ""
+        }, detailText)
         saveWalletState()
     }
+}
+
+function walletOperationStatus(status) {
+    const value = String(status || "").toLowerCase()
+    if (value === "down" || value === "failed" || value === "error") {
+        return "failed"
+    }
+    return "completed"
 }
 
 function previewIdlInstruction(root, request) {

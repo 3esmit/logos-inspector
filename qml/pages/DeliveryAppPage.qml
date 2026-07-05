@@ -20,6 +20,8 @@ ColumnLayout {
     property string pendingDeliveryMethod: ""
     property string pendingDeliveryLabel: ""
     property var pendingDeliveryArgs: []
+    property var activeDeliveryOperation: null
+    property string terminalDeliveryOperationId: ""
 
     width: parent ? parent.width : 900
     spacing: root.theme.gapLarge
@@ -36,6 +38,15 @@ ColumnLayout {
 
     ListModel {
         id: operationLog
+    }
+
+    Timer {
+        id: deliveryOperationPoll
+
+        interval: 500
+        repeat: true
+        running: root.activeDeliveryOperationRunning()
+        onTriggered: root.pollDeliveryOperation(false)
     }
 
     PageHeader {
@@ -278,7 +289,7 @@ ColumnLayout {
                     theme: root.theme
                     text: qsTr("Create")
                     primary: true
-                    enabled: !root.model.busy && root.deliveryModuleSource() && nodeConfig.text.trim().length > 0
+                    enabled: !root.model.busy && !root.activeDeliveryOperationRunning() && root.deliveryModuleSource() && nodeConfig.text.trim().length > 0
                     Layout.preferredWidth: 112
                     onClicked: root.confirmDelivery("deliveryCreateNode", [nodeConfig.text.trim()], qsTr("Create node"))
                 }
@@ -286,7 +297,7 @@ ColumnLayout {
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Start")
-                    enabled: !root.model.busy && root.deliveryModuleSource()
+                    enabled: !root.model.busy && !root.activeDeliveryOperationRunning() && root.deliveryModuleSource()
                     Layout.preferredWidth: 96
                     onClicked: root.confirmDelivery("deliveryStart", [], qsTr("Start node"))
                 }
@@ -294,7 +305,7 @@ ColumnLayout {
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Stop")
-                    enabled: !root.model.busy && root.deliveryModuleSource()
+                    enabled: !root.model.busy && !root.activeDeliveryOperationRunning() && root.deliveryModuleSource()
                     Layout.preferredWidth: 96
                     onClicked: root.confirmDelivery("deliveryStop", [], qsTr("Stop node"))
                 }
@@ -663,10 +674,100 @@ ColumnLayout {
     }
 
     function runDelivery(method, args, label) {
+        if (String(method || "") !== "deliveryStoreQuery") {
+            return root.startDeliveryOperation(method, args, label)
+        }
         const response = root.model.callInspector(method, root.deliveryArgs(args), label)
         root.appendOperation(label, response)
         root.lastOperation = response.ok ? label : qsTr("Error")
         return response
+    }
+
+    function startDeliveryOperation(method, args, label) {
+        if (root.activeDeliveryOperationRunning()) {
+            const blocked = {
+                ok: false,
+                text: "",
+                error: qsTr("A delivery operation is already running.")
+            }
+            root.appendOperation(label, blocked)
+            root.lastOperation = qsTr("Busy")
+            return blocked
+        }
+        const request = {
+            domain: "delivery",
+            sourceMode: root.model.effectiveMessagingSourceMode(root.model.messagingSourceMode),
+            endpoint: root.model.configuredMessagingRestUrl(),
+            module: root.model.deliveryModule,
+            method: String(method || ""),
+            args: root.deliveryArgs(args),
+            mutatingEnabled: root.model.messagingMutatingDiagnosticsEnabled === true,
+            label: String(label || "")
+        }
+        root.lastOperation = qsTr("Starting")
+        root.model.nodeOperationStart(request, false, function (response) {
+            root.appendOperation(label, response)
+            root.lastOperation = response && response.ok ? qsTr("Started") : qsTr("Error")
+            if (response && response.ok) {
+                root.terminalDeliveryOperationId = ""
+                root.activeDeliveryOperation = response.value || null
+                deliveryOperationPoll.restart()
+                root.model.deliveryAppTab = "operations"
+            }
+        })
+        return null
+    }
+
+    function pollDeliveryOperation(showResult) {
+        const operation = root.activeDeliveryOperation || null
+        const operationId = String(operation && operation.operationId ? operation.operationId : "")
+        if (!operationId.length) {
+            deliveryOperationPoll.stop()
+            return
+        }
+        root.model.nodeOperationStatus(operationId, showResult === true, function (response) {
+            if (!response || !response.ok) {
+                const failedOperation = {
+                    operationId: operationId,
+                    domain: "delivery",
+                    method: String(operation && operation.method ? operation.method : ""),
+                    status: "failed",
+                    label: String(operation && operation.label ? operation.label : qsTr("Delivery operation")),
+                    error: String((response && response.error) || qsTr("Delivery operation status failed."))
+                }
+                root.activeDeliveryOperation = failedOperation
+                deliveryOperationPoll.stop()
+                root.appendTerminalDeliveryOperation(failedOperation)
+                return
+            }
+            root.activeDeliveryOperation = response.value || null
+            if (root.model.nodeOperationTerminal(response.value)) {
+                deliveryOperationPoll.stop()
+                root.appendTerminalDeliveryOperation(response.value)
+            }
+        })
+    }
+
+    function appendTerminalDeliveryOperation(operation) {
+        const operationId = String(operation && operation.operationId ? operation.operationId : "")
+        if (!operationId.length || root.terminalDeliveryOperationId === operationId) {
+            return
+        }
+        root.terminalDeliveryOperationId = operationId
+        const ok = String(operation.status || "") === "completed"
+        root.appendOperation(String(operation.label || qsTr("Delivery operation")), {
+            ok: ok,
+            value: operation.result || operation,
+            error: String(operation.error || "")
+        })
+        root.model.appendNodeOperationHistory(operation, root.operationSummary(operation))
+        root.lastOperation = ok ? qsTr("Complete") : qsTr("Stopped")
+    }
+
+    function activeDeliveryOperationRunning() {
+        const operation = root.activeDeliveryOperation || null
+        const status = String(operation && operation.status ? operation.status : "")
+        return status === "running" || status === "canceling"
     }
 
     function appendOperation(label, response) {
@@ -687,6 +788,9 @@ ColumnLayout {
         }
         if (value && value.result && value.result.value !== undefined) {
             return value.result.value
+        }
+        if (value && value.result !== undefined && value.result !== null) {
+            return value.result
         }
         if (value && value.value !== undefined) {
             return value.value
@@ -709,7 +813,7 @@ ColumnLayout {
     }
 
     function messageControlsEnabled(topic) {
-        return !root.model.busy && root.deliveryMessageSource() && root.model.messagingMutatingDiagnosticsEnabled && root.validContentTopic(topic)
+        return !root.model.busy && !root.activeDeliveryOperationRunning() && root.deliveryMessageSource() && root.model.messagingMutatingDiagnosticsEnabled && root.validContentTopic(topic)
     }
 
     function validContentTopic(topic) {

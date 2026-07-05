@@ -760,6 +760,170 @@ function requestModuleAsync(root, moduleName, method, args, label, showResult, c
     }
 }
 
+function nodeOperationStart(root, request, showResult, callback) {
+    with (root) {
+        const operationRequest = request && typeof request === "object" ? request : ({})
+        const label = String(operationRequest.label || operationRequest.method || qsTr("Node operation"))
+        return requestModuleAsync(inspectorModule, "nodeOperationStart", [operationRequest], label, showResult === true, function (response) {
+            if (response && response.ok) {
+                coreUpdateNodeOperation(root, response.value)
+            }
+            if (callback) {
+                callback(response)
+            }
+        })
+    }
+}
+
+function nodeOperationStatus(root, operationId, showResult, callback) {
+    with (root) {
+        const id = String(operationId || "")
+        if (!id.length) {
+            return null
+        }
+        return requestModuleAsync(inspectorModule, "nodeOperationStatus", [id], qsTr("Node operation"), showResult === true, function (response) {
+            if (response && response.ok) {
+                coreUpdateNodeOperation(root, response.value)
+            }
+            if (callback) {
+                callback(response)
+            }
+        })
+    }
+}
+
+function nodeOperationEvents(root, operationId, afterSeq, showResult, callback) {
+    with (root) {
+        const id = String(operationId || "")
+        if (!id.length) {
+            return null
+        }
+        return requestModuleAsync(inspectorModule, "nodeOperationEvents", [id, Number(afterSeq || 0)], qsTr("Node operation events"), showResult === true, function (response) {
+            if (response && response.ok && response.value) {
+                coreUpdateNodeOperation(root, response.value.operation)
+                const next = copyObject(nodeOperationEventSeq)
+                next[id] = response.value.nextSeq || 0
+                nodeOperationEventSeq = next
+            }
+            if (callback) {
+                callback(response)
+            }
+        })
+    }
+}
+
+function nodeOperationCancel(root, operationId, showResult, callback) {
+    with (root) {
+        const id = String(operationId || "")
+        if (!id.length) {
+            return null
+        }
+        return requestModuleAsync(inspectorModule, "nodeOperationCancel", [id], qsTr("Cancel operation"), showResult === true, function (response) {
+            if (response && response.ok) {
+                coreUpdateNodeOperation(root, response.value)
+            }
+            if (callback) {
+                callback(response)
+            }
+        })
+    }
+}
+
+function updateNodeOperation(root, operation) {
+    coreUpdateNodeOperation(root, operation)
+}
+
+function coreUpdateNodeOperation(root, operation) {
+    with (root) {
+        const value = operation || null
+        const operationId = String(value && value.operationId ? value.operationId : "")
+        if (!operationId.length) {
+            return
+        }
+        const next = copyObject(nodeOperations)
+        next[operationId] = value
+        nodeOperations = next
+        nodeOperationsRevision += 1
+    }
+}
+
+function nodeOperationTerminal(root, operation) {
+    const status = String(operation && operation.status ? operation.status : "")
+    return status === "completed" || status === "failed" || status === "canceled"
+}
+
+function nodeOperationResponse(root, operation) {
+    const status = String(operation && operation.status ? operation.status : "")
+    const ok = status === "completed"
+    return {
+        ok: ok,
+        value: operation && operation.result !== undefined && operation.result !== null ? operation.result : operation,
+        text: "",
+        error: ok ? "" : String(operation && operation.error ? operation.error : "")
+    }
+}
+
+function appendNodeOperationHistory(root, operation, detail) {
+    with (root) {
+        const value = operation || {}
+        const rows = Array.isArray(nodeOperationHistory) ? nodeOperationHistory.slice(-99) : []
+        rows.push({
+            time: new Date().toLocaleTimeString(Qt.locale(), "hh:mm:ss"),
+            label: String(value.label || value.method || qsTr("Node operation")),
+            status: String(value.status || ""),
+            detail: String(detail || nodeOperationDetail(root, value)),
+            domain: String(value.domain || ""),
+            method: String(value.method || ""),
+            operationId: String(value.operationId || "")
+        })
+        nodeOperationHistory = rows
+        nodeOperationsRevision += 1
+    }
+}
+
+function nodeOperationHistoryRows(root, domain) {
+    with (root) {
+        const revision = nodeOperationsRevision
+        const wanted = String(domain || "")
+        const rows = Array.isArray(nodeOperationHistory) ? nodeOperationHistory.slice(0) : []
+        const filtered = wanted.length ? rows.filter(row => String(row.domain || "") === wanted) : rows
+        return filtered.reverse()
+    }
+}
+
+function nodeOperationDetail(root, operation) {
+    const value = operation || {}
+    const result = value.result
+    if (result && typeof result === "object") {
+        if (result.cid) {
+            return String(result.cid)
+        }
+        if (result.contentTopic) {
+            return String(result.contentTopic)
+        }
+        if (result.status) {
+            return String(result.status)
+        }
+    }
+    if (value.error) {
+        return String(value.error)
+    }
+    if (value.progress !== undefined && value.progress !== null) {
+        return String(Math.floor(Number(value.progress || 0) * 100)) + "%"
+    }
+    return String(value.method || "")
+}
+
+function copyObject(value) {
+    const next = ({})
+    const source = value && typeof value === "object" && !Array.isArray(value) ? value : ({})
+    const keys = Object.keys(source)
+    for (let i = 0; i < keys.length; ++i) {
+        next[keys[i]] = source[keys[i]]
+    }
+    return next
+}
+
 function decodeAccountData(root, dataHex, idlJson, accountType) {
     with (root) {
         if (busy) {

@@ -122,6 +122,10 @@ TestCase {
         model.messagingModuleReport = null
         model.storageActiveOperation = null
         model.storageActiveOperationRevision = 0
+        model.nodeOperations = ({})
+        model.nodeOperationEventSeq = ({})
+        model.nodeOperationHistory = []
+        model.nodeOperationsRevision = 0
         model.networkConnectionStatus = ({})
         model.networkConnectionStatusRevision = 0
         model.dashboardMetricHistory = ({})
@@ -291,6 +295,10 @@ TestCase {
         compare(fakeHost.lastArgs[1].node, "bedrock")
         compare(fakeHost.lastArgs[2], "confirm-local-node-action")
         compare(model.localNodesOperations.length, 1)
+        const localNodeHistory = model.nodeOperationHistoryRows("localNodes")
+        compare(localNodeHistory.length, 1)
+        compare(localNodeHistory[0].label, "Start Bedrock")
+        compare(localNodeHistory[0].status, "completed")
     }
 
     function test_local_node_network_actions_follow_profile_mode() {
@@ -553,6 +561,66 @@ TestCase {
         model.clearStorageActiveOperation()
 
         compare(model.storageActiveOperation, null)
+    }
+
+    function test_node_operation_start_dispatches_generic_request() {
+        fakeHost.responses = {
+            nodeOperationStart: {
+                ok: true,
+                value: {
+                    operationId: "op-2",
+                    domain: "delivery",
+                    method: "deliverySend",
+                    status: "running",
+                    label: "Send message"
+                },
+                text: "OK",
+                error: ""
+            }
+        }
+        let seen = null
+
+        model.nodeOperationStart({
+            domain: "delivery",
+            method: "deliverySend",
+            args: ["rest", "http://127.0.0.1:8645", true, "/topic/1/a/proto", "hello"],
+            label: "Send message"
+        }, false, function (response) {
+            seen = response
+        })
+
+        tryVerify(function () { return seen !== null })
+        compare(fakeHost.lastMethod, "nodeOperationStart")
+        compare(fakeHost.lastArgs[0].method, "deliverySend")
+        compare(model.nodeOperations["op-2"].domain, "delivery")
+    }
+
+    function test_node_operation_history_filters_by_domain() {
+        const storageOperation = {
+            operationId: "op-storage",
+            domain: "storage",
+            method: "storageFetch",
+            status: "completed",
+            label: "Cache CID",
+            result: { cid: "z-storage" }
+        }
+        const deliveryOperation = {
+            operationId: "op-delivery",
+            domain: "delivery",
+            method: "deliverySend",
+            status: "failed",
+            label: "Send message",
+            error: "send failed"
+        }
+
+        model.appendNodeOperationHistory(storageOperation, "")
+        model.appendNodeOperationHistory(deliveryOperation, "")
+
+        const storageRows = model.nodeOperationHistoryRows("storage")
+        compare(storageRows.length, 1)
+        compare(storageRows[0].operationId, "op-storage")
+        compare(storageRows[0].detail, "z-storage")
+        compare(model.nodeOperationHistoryRows("delivery")[0].detail, "send failed")
     }
 
     function test_wallet_profile_configured_accepts_checked_env_home_source() {
@@ -1140,6 +1208,10 @@ TestCase {
         compare(model.localWalletOperations.length, 1)
         compare(model.localWalletOperations[0].label, "Deploy program")
         compare(model.localWalletOperations[0].status, "submitted")
+        const history = model.nodeOperationHistoryRows("wallet")
+        compare(history.length, 1)
+        compare(history[0].label, "Deploy program")
+        compare(history[0].status, "completed")
     }
 
     function test_create_wallet_account_uses_confirmation_and_logs_operation() {
@@ -1180,6 +1252,7 @@ TestCase {
         compare(model.walletCreateLabel, "")
         compare(model.localWalletOperations[0].label, "Create account")
         compare(model.localWalletOperations[0].status, "created")
+        compare(model.nodeOperationHistoryRows("wallet")[0].label, "Create account")
     }
 
     function test_send_wallet_transaction_uses_confirmation_and_logs_operation() {
