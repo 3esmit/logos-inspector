@@ -159,7 +159,7 @@ fn settings_state_path() -> Result<PathBuf> {
     Ok(config_dir()?.join("settings.json"))
 }
 
-fn config_dir() -> Result<PathBuf> {
+pub(crate) fn config_dir() -> Result<PathBuf> {
     if let Some(value) = env::var_os("LOGOS_INSPECTOR_CONFIG_DIR") {
         return Ok(PathBuf::from(value));
     }

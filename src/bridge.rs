@@ -16,11 +16,12 @@ use tokio::runtime::Runtime;
 use tokio_util::io::ReaderStream;
 
 use crate::{
-    AccountTransactionSummary, TransactionIdlInspectionReport, TransactionSummary, account_lookup,
-    account_lookup_with_idl, bedrock_wallet_balance, blockchain, channels,
-    decode_account_data_hex_with_idl, decode_event_data_hex_with_idl, indexer_block_by_hash,
-    indexer_blocks, indexer_health, indexer_status, indexer_transfer_recipients,
-    inspect_transaction_summary_with_idl, last_sequencer_block_id, local_wallet_accounts,
+    AccountTransactionSummary, LocalNodeActionRequest, TransactionIdlInspectionReport,
+    TransactionSummary, account_lookup, account_lookup_with_idl, bedrock_wallet_balance,
+    blockchain, channels, decode_account_data_hex_with_idl, decode_event_data_hex_with_idl,
+    indexer_block_by_hash, indexer_blocks, indexer_health, indexer_status,
+    indexer_transfer_recipients, inspect_transaction_summary_with_idl, last_sequencer_block_id,
+    local_devnet_list, local_nodes_action, local_nodes_status, local_wallet_accounts,
     local_wallet_command, local_wallet_create_account, local_wallet_deploy_program,
     local_wallet_instruction_preview, local_wallet_instruction_submit, local_wallet_profile_status,
     local_wallet_send_transaction, local_wallet_sync_private, logoscore,
@@ -479,6 +480,32 @@ impl InspectorBridge {
                     args.value(0)
                         .cloned()
                         .context("local wallet profile is required")?,
+                )?)
+            }
+            "localNodesStatus" => {
+                let args = Args::new(args)?;
+                to_value(local_nodes_status(
+                    args.optional_string(0).unwrap_or("default"),
+                )?)
+            }
+            "localDevnetList" => {
+                let args = Args::new(args)?;
+                to_value(local_devnet_list(
+                    args.optional_string(0).unwrap_or("default"),
+                )?)
+            }
+            "localNodesAction" => {
+                let args = Args::new(args)?;
+                let request = serde_json::from_value::<LocalNodeActionRequest>(
+                    args.value(1)
+                        .cloned()
+                        .context("local node action request is required")?,
+                )
+                .context("failed to parse local node action request")?;
+                to_value(local_nodes_action(
+                    args.optional_string(0).unwrap_or("default"),
+                    request,
+                    args.optional_string(2),
                 )?)
             }
             "bedrockWalletBalance" => {
@@ -2314,6 +2341,27 @@ mod tests {
         if !error
             .to_string()
             .contains("wallet command requires explicit confirmation")
+        {
+            bail!("unexpected error: {error:#}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn local_nodes_action_requires_confirmation() -> Result<()> {
+        let bridge = InspectorBridge::new()?;
+        let result = bridge.call_module(
+            INSPECTOR_MODULE,
+            "localNodesAction",
+            json!(["local", { "action": "new_network", "network_id": "devnet-test" }]),
+        );
+
+        let Err(error) = result else {
+            bail!("expected missing local node confirmation to fail");
+        };
+        if !error
+            .to_string()
+            .contains("local node action requires explicit confirmation")
         {
             bail!("unexpected error: {error:#}");
         }

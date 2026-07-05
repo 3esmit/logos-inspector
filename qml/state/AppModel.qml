@@ -10,6 +10,7 @@ import "appmodel/AppModelSearch.js" as AppModelSearch
 import "appmodel/AppModelOpeners.js" as AppModelOpeners
 import "appmodel/AppModelRegistry.js" as AppModelRegistry
 import "appmodel/AppModelFavorites.js" as AppModelFavorites
+import "appmodel/AppModelLocalNodes.js" as AppModelLocalNodes
 
 QtObject {
     id: root
@@ -183,6 +184,11 @@ QtObject {
     property var localWalletOperations: []
     property var localWalletAccountsValue: null
     property string localWalletAccountsError: ""
+    property var localNodesReport: null
+    property string localNodesError: ""
+    property var localNodesOperations: []
+    property int localNodesRevision: 0
+    property var localDevnets: []
     property var idlInstructionPreviewValue: null
     property string idlInstructionError: ""
     property var bedrockWalletBalanceValue: null
@@ -430,6 +436,28 @@ QtObject {
     function idlInstructionOperationDetail(value) { return AppModelIdentity.idlInstructionOperationDetail(root, value) }
 
     function refreshBedrockWalletModule(address) { return AppModelIdentity.refreshBedrockWalletModule(root, address) }
+
+    function refreshLocalNodes(showResult) { return AppModelLocalNodes.refreshLocalNodes(root, showResult) }
+
+    function refreshLocalDevnets() { return AppModelLocalNodes.refreshLocalDevnets(root) }
+
+    function runLocalNodeAction(action, node, networkId, workspacePath, label) { return AppModelLocalNodes.runLocalNodeAction(root, action, node, networkId, workspacePath, label) }
+
+    function appendLocalNodeOperation(label, status, detail) { return AppModelLocalNodes.appendLocalNodeOperation(root, label, status, detail) }
+
+    function localNodeActionLabel(action) { return AppModelLocalNodes.localNodeActionLabel(root, action) }
+
+    function localNodeByKind(kind) { return AppModelLocalNodes.localNodeByKind(root, kind) }
+
+    function localNodeActionEnabled(kind, action) { return AppModelLocalNodes.localNodeActionEnabled(root, kind, action) }
+
+    function localNodeNetworkActionEnabled(action) { return AppModelLocalNodes.localNodeNetworkActionEnabled(root, action) }
+
+    function localNodeModeLabel() { return AppModelLocalNodes.localNodeModeLabel(root) }
+
+    function localNodeSummaryText() { return AppModelLocalNodes.localNodeSummaryText(root) }
+
+    function localNodeToolProblem() { return AppModelLocalNodes.localNodeToolProblem(root) }
 
     function bedrockWalletModuleKnownAddressRows() { return AppModelIdentity.bedrockWalletModuleKnownAddressRows(root) }
 
