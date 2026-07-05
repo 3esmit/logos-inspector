@@ -316,7 +316,7 @@ ColumnLayout {
                     accessibleName: qsTr("Run storage source report")
                     onClicked: root.model.callInspector("storageSourceReport", [
                         root.model.effectiveStorageSourceMode(root.model.storageSourceMode),
-                        root.model.storageRestUrl,
+                        root.model.configuredStorageRestUrl(),
                         root.model.storageMetricsUrl,
                         cid.text.trim(),
                         root.model.storagePrivilegedDebugEnabled
@@ -338,7 +338,7 @@ ColumnLayout {
                     enabled: !root.model.busy && cid.text.trim().length > 0
                     Layout.fillWidth: true
                     accessibleName: qsTr("Check storage CID existence")
-                    onClicked: root.model.callInspector("storageExists", [root.model.effectiveStorageSourceMode(root.model.storageSourceMode), root.model.storageRestUrl, cid.text.trim()], qsTr("Storage CID"))
+                    onClicked: root.model.callInspector("storageExists", [root.model.effectiveStorageSourceMode(root.model.storageSourceMode), root.model.configuredStorageRestUrl(), cid.text.trim()], qsTr("Storage CID"))
                 }
             }
         }

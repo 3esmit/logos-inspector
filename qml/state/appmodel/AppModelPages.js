@@ -558,46 +558,78 @@ function setTransactionsPageLimit(root, limit) {
 function refreshLezBlocksPage(root, beforeBlock) {
     with (root) {
         const before = root.normalizedPositiveInteger(beforeBlock)
-        const sequencerResponse = requestModule(inspectorModule, "sequencerBlocks", root.executionArgs([before > 0 ? before : null, lezBlocksPageLimit]), qsTr("L2 blocks"), false, false)
-        if (sequencerResponse.ok) {
-            const indexerResponse = requestModule(inspectorModule, "indexerBlocks", root.indexerArgs([before > 0 ? before : null, lezBlocksPageLimit]), qsTr("L2 indexed blocks"), false, false)
-            if (!Array.isArray(sequencerResponse.value) || (indexerResponse.ok && !Array.isArray(indexerResponse.value))) {
+        const beforeArg = before > 0 ? before : null
+        const limit = Math.max(1, Number(lezBlocksPageLimit || 1))
+        const serial = lezBlocksPageRequestSerial + 1
+        lezBlocksPageRequestSerial = serial
+        lezBlocksPageLoading = true
+
+        let sequencerDone = false
+        let indexerDone = false
+        let sequencerResponse = null
+        let indexerResponse = null
+
+        function completeIfReady() {
+            if (serial !== lezBlocksPageRequestSerial || !sequencerDone || !indexerDone) {
+                return
+            }
+            lezBlocksPageLoading = false
+            root.finishLezBlocksPage(before, sequencerResponse, indexerResponse)
+        }
+
+        requestModuleAsync(inspectorModule, "sequencerBlocks", root.executionArgs([beforeArg, limit]), qsTr("L2 blocks"), false, function (response) {
+            sequencerDone = true
+            sequencerResponse = response
+            completeIfReady()
+        })
+        requestModuleAsync(inspectorModule, "indexerBlocks", root.indexerArgs([beforeArg, limit]), qsTr("L2 indexed blocks"), false, function (response) {
+            indexerDone = true
+            indexerResponse = response
+            completeIfReady()
+        })
+    }
+}
+
+function finishLezBlocksPage(root, before, sequencerResponse, indexerResponse) {
+    with (root) {
+        if (sequencerResponse && sequencerResponse.ok) {
+            if (!Array.isArray(sequencerResponse.value) || (indexerResponse && indexerResponse.ok && !Array.isArray(indexerResponse.value))) {
                 lezBlocksPageBeforeBlock = before
                 lezBlocksPageRows = []
                 lezBlocksPageNextBeforeBlock = 0
                 lezBlocksPageError = qsTr("Response shape unknown. Raw JSON remains available.")
-                setResult(qsTr("L2 blocks"), BridgeHelpers.formatValue(indexerResponse.ok ? indexerResponse.value : sequencerResponse.value), false, indexerResponse.ok ? indexerResponse.value : sequencerResponse.value)
+                const value = indexerResponse && indexerResponse.ok ? indexerResponse.value : sequencerResponse.value
+                setResult(qsTr("L2 blocks"), BridgeHelpers.formatValue(value), false, value)
                 return
             }
-            const blocks = mergedLezBlocks(root, sequencerResponse.value, indexerResponse.ok ? indexerResponse.value : [], lezBlocksPageLimit)
+            const blocks = root.mergedLezBlocks(sequencerResponse.value, indexerResponse && indexerResponse.ok ? indexerResponse.value : [], lezBlocksPageLimit)
             lezBlocksPageBeforeBlock = before
             lezBlocksPageRows = blocks
-            lezBlocksPageNextBeforeBlock = nextIndexerBlocksCursor(blocks)
+            lezBlocksPageNextBeforeBlock = root.nextIndexerBlocksCursor(blocks)
             lezBlocksPageError = ""
             setResult(qsTr("L2 blocks"), BridgeHelpers.formatValue(lezBlocksPageRows), false, lezBlocksPageRows)
             return
         }
 
-        const response = requestModule(inspectorModule, "indexerBlocks", root.indexerArgs([before > 0 ? before : null, lezBlocksPageLimit]), qsTr("L2 blocks"), false, false)
-        if (!response.ok) {
-            lezBlocksPageError = sequencerResponse.error || response.error
+        if (!indexerResponse || !indexerResponse.ok) {
+            lezBlocksPageError = (sequencerResponse && sequencerResponse.error) || (indexerResponse && indexerResponse.error) || qsTr("L2 blocks unavailable")
             setResult(qsTr("L2 blocks"), lezBlocksPageError, true)
             return
         }
 
-        if (!Array.isArray(response.value)) {
+        if (!Array.isArray(indexerResponse.value)) {
             lezBlocksPageBeforeBlock = before
             lezBlocksPageRows = []
             lezBlocksPageNextBeforeBlock = 0
             lezBlocksPageError = qsTr("Response shape unknown. Raw JSON remains available.")
-            setResult(qsTr("L2 blocks"), BridgeHelpers.formatValue(response.value), false, response.value)
+            setResult(qsTr("L2 blocks"), BridgeHelpers.formatValue(indexerResponse.value), false, indexerResponse.value)
             return
         }
 
-        const blocks = sortedIndexerBlocks(response.value)
+        const blocks = root.sortedIndexerBlocks(indexerResponse.value)
         lezBlocksPageBeforeBlock = before
         lezBlocksPageRows = blocks
-        lezBlocksPageNextBeforeBlock = nextIndexerBlocksCursor(blocks)
+        lezBlocksPageNextBeforeBlock = root.nextIndexerBlocksCursor(blocks)
         lezBlocksPageError = ""
         setResult(qsTr("L2 blocks"), BridgeHelpers.formatValue(lezBlocksPageRows), false, lezBlocksPageRows)
     }
@@ -605,7 +637,7 @@ function refreshLezBlocksPage(root, beforeBlock) {
 
 function olderLezBlocksPage(root) {
     with (root) {
-        if (lezBlocksPageNextBeforeBlock > 0) {
+        if (!lezBlocksPageLoading && lezBlocksPageNextBeforeBlock > 0) {
             refreshLezBlocksPage(lezBlocksPageNextBeforeBlock)
         }
     }
@@ -613,7 +645,9 @@ function olderLezBlocksPage(root) {
 
 function newerLezBlocksPage(root) {
     with (root) {
-        refreshLezBlocksPage(null)
+        if (!lezBlocksPageLoading) {
+            refreshLezBlocksPage(null)
+        }
     }
 }
 
@@ -650,9 +684,9 @@ function refreshLezTransactionsPage(root, beforeBlock) {
             return
         }
 
-        const blocks = sortedIndexerBlocks(response.value)
-        const rows = lezTransactionRowsFromBlocks(blocks)
-        const cursor = nextIndexerBlocksCursor(blocks)
+        const blocks = root.sortedIndexerBlocks(response.value)
+        const rows = root.lezTransactionRowsFromBlocks(blocks)
+        const cursor = root.nextIndexerBlocksCursor(blocks)
         lezTransactionsPageBeforeBlock = before
         lezTransactionsPageRows = rows.slice(0, lezTransactionsPageLimit)
         lezTransactionsPageOverflowRows = rows.slice(lezTransactionsPageLimit)
@@ -710,19 +744,19 @@ function mergedLezBlocks(root, sequencerBlocks, indexerBlocks, limit) {
         const rows = []
         const seen = ({})
         const indexedById = ({})
-        const indexed = sortedIndexerBlocks(indexerBlocks)
+        const indexed = root.sortedIndexerBlocks(indexerBlocks)
         for (let i = 0; i < indexed.length; ++i) {
             const block = sourceLezBlock(root, indexed[i], "indexer")
-            const id = indexerBlockId(block)
+            const id = root.indexerBlockId(block)
             if (id > 0) {
                 indexedById[String(id)] = block
             }
         }
 
-        const sequenced = sortedIndexerBlocks(sequencerBlocks)
+        const sequenced = root.sortedIndexerBlocks(sequencerBlocks)
         for (let j = 0; j < sequenced.length; ++j) {
             const block = sourceLezBlock(root, sequenced[j], "sequencer")
-            const id = indexerBlockId(block)
+            const id = root.indexerBlockId(block)
             appendLezBlock(root, rows, seen, id > 0 && indexedById[String(id)] ? indexedById[String(id)] : block)
         }
 
@@ -730,7 +764,7 @@ function mergedLezBlocks(root, sequencerBlocks, indexerBlocks, limit) {
             appendLezBlock(root, rows, seen, sourceLezBlock(root, indexed[k], "indexer"))
         }
 
-        return sortedIndexerBlocks(rows).slice(0, Math.max(1, Number(limit || rows.length || 1)))
+        return root.sortedIndexerBlocks(rows).slice(0, Math.max(1, Number(limit || rows.length || 1)))
     }
 }
 
@@ -744,8 +778,8 @@ function sourceLezBlock(root, block, source) {
 
 function appendLezBlock(root, rows, seen, block) {
     with (root) {
-        const id = indexerBlockId(block)
-        const hash = indexerBlockHash(block)
+        const id = root.indexerBlockId(block)
+        const hash = root.indexerBlockHash(block)
         const key = id > 0 ? "id:" + id : (hash.length ? "hash:" + hash : "")
         if (key.length && seen[key] === true) {
             return
@@ -793,7 +827,7 @@ function normalizedPositiveInteger(root, value) {
 function lezTransactionRowsFromBlocks(root, blocks) {
     with (root) {
         const rows = []
-        const sorted = sortedIndexerBlocks(blocks)
+        const sorted = root.sortedIndexerBlocks(blocks)
         for (let i = 0; i < sorted.length; ++i) {
             const block = sorted[i]
             const transactions = Array.isArray(block.transactions) ? block.transactions : []

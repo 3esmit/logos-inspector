@@ -5,15 +5,8 @@ use std::{
 };
 
 use anyhow::{Context as _, Result, bail};
-use logos_inspector::local_indexer::bootstrap_default_local_indexer_for_saved_settings;
-
-const ENABLE_INDEXER_AUTO_BOOTSTRAP_ENV: &str = "LOGOS_INSPECTOR_ENABLE_INDEXER_AUTO_BOOTSTRAP";
 
 pub fn run() -> Result<()> {
-    if env::var_os(ENABLE_INDEXER_AUTO_BOOTSTRAP_ENV).is_some() {
-        bootstrap_default_local_indexer_for_saved_settings()?;
-    }
-
     if let Some(program) = standalone_program() {
         let status = Command::new(&program)
             .status()

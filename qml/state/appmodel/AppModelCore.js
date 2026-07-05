@@ -10,6 +10,7 @@ function handleNetworkConfigurationChanged(root) {
         dashboardOverview = null
         dashboardNode = null
         dashboardBlocks = []
+        dashboardSequencerBlocks = []
         dashboardError = ""
         dashboardRefreshing = false
         dashboardRefreshSerial += 1
@@ -447,6 +448,9 @@ function requestModuleAsync(root, moduleName, method, args, label, showResult, c
             }
             if (response.ok) {
                 root.updateDashboardCache(method, response.value)
+                if (method === "programs") {
+                    root.updateKnownProgramIds(response.value)
+                }
                 if (showResult) {
                     root.setResult(label, response.text, false, response.value)
                 }

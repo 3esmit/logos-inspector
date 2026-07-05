@@ -99,6 +99,7 @@ TestCase {
         basecampHost.serializeResults = false
         model.currentView = "overview"
         model.dashboardNode = null
+        model.dashboardSequencerBlocks = []
         model.blockchainModuleReport = null
         model.networkConnectionStatus = ({})
         model.networkConnectionStatusRevision = 0
@@ -118,6 +119,8 @@ TestCase {
         model.lezBlocksPageBeforeBlock = 0
         model.lezBlocksPageNextBeforeBlock = 0
         model.lezBlocksPageError = ""
+        model.lezBlocksPageLoading = false
+        model.lezBlocksPageRequestSerial = 0
         model.lezTransactionsPageRows = []
         model.lezTransactionsPageBeforeBlock = 0
         model.lezTransactionsPageNextBeforeBlock = 0
@@ -239,26 +242,44 @@ TestCase {
 
     function test_messaging_and_storage_auto_use_standalone_routes_without_basecamp() {
         compare(model.normalizedMessagingSourceMode(model.messagingSourceMode), "auto")
-        compare(model.effectiveMessagingSourceMode(model.messagingSourceMode), "rest")
-        compare(model.deliverySourceReportArgs()[0], "rest")
+        compare(model.effectiveMessagingSourceMode(model.messagingSourceMode), "unsupported")
+        compare(model.deliverySourceReportArgs()[0], "unsupported")
+        compare(model.deliverySourceReportArgs()[1], "")
         compare(model.deliverySourceReportArgs()[2], "")
-        compare(model.deliverySourceTarget(), model.messagingRestUrl)
+        compare(model.deliverySourceTarget(), "")
 
         compare(model.normalizedStorageSourceMode(model.storageSourceMode), "auto")
-        compare(model.effectiveStorageSourceMode(model.storageSourceMode), "rest")
-        compare(model.storageSourceReportArgs(false)[0], "rest")
-        compare(model.storageSourceTarget(), model.storageRestUrl)
+        compare(model.effectiveStorageSourceMode(model.storageSourceMode), "unsupported")
+        compare(model.storageSourceReportArgs(false)[0], "unsupported")
+        compare(model.storageSourceReportArgs(false)[1], "")
+        compare(model.storageSourceTarget(), "")
     }
 
     function test_messaging_and_storage_auto_use_standalone_routes_in_basecamp() {
-        compare(basecampModel.effectiveMessagingSourceMode(basecampModel.messagingSourceMode), "rest")
-        compare(basecampModel.deliverySourceReportArgs()[0], "rest")
+        compare(basecampModel.effectiveMessagingSourceMode(basecampModel.messagingSourceMode), "unsupported")
+        compare(basecampModel.deliverySourceReportArgs()[0], "unsupported")
+        compare(basecampModel.deliverySourceReportArgs()[1], "")
         compare(basecampModel.deliverySourceReportArgs()[2], "")
-        compare(basecampModel.deliverySourceTarget(), basecampModel.messagingRestUrl)
+        compare(basecampModel.deliverySourceTarget(), "")
 
-        compare(basecampModel.effectiveStorageSourceMode(basecampModel.storageSourceMode), "rest")
-        compare(basecampModel.storageSourceReportArgs(false)[0], "rest")
-        compare(basecampModel.storageSourceTarget(), basecampModel.storageRestUrl)
+        compare(basecampModel.effectiveStorageSourceMode(basecampModel.storageSourceMode), "unsupported")
+        compare(basecampModel.storageSourceReportArgs(false)[0], "unsupported")
+        compare(basecampModel.storageSourceReportArgs(false)[1], "")
+        compare(basecampModel.storageSourceTarget(), "")
+    }
+
+    function test_explicit_rest_blank_urls_use_visible_defaults() {
+        model.messagingSourceMode = "rest"
+        model.messagingRestUrl = ""
+        compare(model.deliverySourceReportArgs()[0], "rest")
+        compare(model.deliverySourceReportArgs()[1], "http://127.0.0.1:8645")
+        compare(model.deliverySourceTarget(), "http://127.0.0.1:8645")
+
+        model.storageSourceMode = "rest"
+        model.storageRestUrl = ""
+        compare(model.storageSourceReportArgs(false)[0], "rest")
+        compare(model.storageSourceReportArgs(false)[1], "http://127.0.0.1:8080/api/storage/v1")
+        compare(model.storageSourceTarget(), "http://127.0.0.1:8080/api/storage/v1")
     }
 
     function test_storage_unsupported_pending_modes_stay_inert() {
@@ -513,6 +534,7 @@ TestCase {
 
         model.refreshLezBlocksPage()
 
+        tryCompare(model, "lezBlocksPageLoading", false)
         compare(model.lezBlocksPageRows.length, 3)
         compare(model.lezBlocksPageRows[0].block_id, 102)
         compare(model.lezBlocksPageRows[0].source, "sequencer")
@@ -801,6 +823,21 @@ TestCase {
         compare(model.sourceProblemTitle("indexer", "Response shape unknown. Raw JSON remains available.", "L2 blocks unavailable"), "Response shape unknown")
     }
 
+    function test_bedrock_network_summary_unwraps_probe_slot() {
+        const value = {
+            cryptarchia_info: {
+                ok: true,
+                value: {
+                    cryptarchia_info: {
+                        slot: 42
+                    }
+                }
+            }
+        }
+
+        compare(model.networkConnectionSummary("blockchain", value), "slot 42")
+    }
+
     function test_dashboard_refresh_loads_recent_blocks_for_both_chains() {
         fakeHost.responses = {
             blockchainNode: {
@@ -856,11 +893,12 @@ TestCase {
 
         model.refreshDashboard()
 
-        compare(model.blocksPageRows.length, 5)
-        compare(model.blocksPageRows[0].header.id, "l1-tip")
-        compare(model.lezBlocksPageRows.length, 5)
-        compare(model.lezBlocksPageRows[0].block_id, 104)
         tryCompare(model, "dashboardRefreshing", false)
+        compare(model.dashboardSequencerBlocks.length, 3)
+        compare(model.dashboardSequencerBlocks[0].block_id, 104)
+        compare(model.dashboardBlocks.length, 2)
+        compare(model.dashboardBlocks[0].block_id, 101)
+        compare(model.lezBlocksPageRows.length, 0)
     }
 
     function setTipMinusLib(value) {

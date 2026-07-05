@@ -512,16 +512,6 @@ function openLocalWallet(root, wallet, tab) {
             )
             return
         }
-        const profileStatus = bedrockOnly ? { ok: true, detail: "" } : checkedLocalWalletProfile()
-        if (!bedrockOnly && !profileStatus.ok) {
-            setResult(
-                qsTr("Local wallet"),
-                profileStatus.detail.length ? profileStatus.detail : qsTr("Local wallet profile is not usable."),
-                true,
-                localWalletStatus
-            )
-            return
-        }
         if (localWalletTab === "bedrockNotes" && walletPublicKeyProbe !== target) {
             walletPublicKeyProbe = target
             blockchainModuleReport = null
@@ -535,6 +525,9 @@ function openLocalWallet(root, wallet, tab) {
             false,
             walletProfile()
         )
+        if (!bedrockOnly) {
+            checkLocalWalletProfile(false)
+        }
     }
 }
 
@@ -553,8 +546,34 @@ function openProgram(root, programId) {
         }
         currentView = "programs"
         programTab = "programIds"
-        const detail = root.programContextDetail(value)
+        const normalized = root.canonicalProgramIdHex(value) || root.normalizedHexText(value)
+        const serial = programOpenSerial + 1
+        programOpenSerial = serial
+        let accountResponse = null
+        let lookupError = ""
+        const detail = root.programContextFromParts(value, normalized, root.knownProgramRow(normalized), null, "")
         setResult(qsTr("Program"), BridgeHelpers.formatValue(detail), false, detail)
+
+        function updateDetail() {
+            if (serial !== programOpenSerial) {
+                return
+            }
+            const updated = root.programContextFromParts(value, normalized, root.knownProgramRow(normalized), accountResponse, lookupError)
+            setResult(qsTr("Program"), BridgeHelpers.formatValue(updated), false, updated)
+        }
+
+        requestModuleAsync(inspectorModule, "account", root.accountLookupArgs(value), qsTr("Program account"), false, function (response) {
+            accountResponse = response
+            updateDetail()
+        })
+        if (!root.knownProgramIdRows().length) {
+            requestModuleAsync(inspectorModule, "programs", root.executionRpcArgs([]), qsTr("Known programs"), false, function (response) {
+                if (!response.ok) {
+                    lookupError = response.error || qsTr("Sequencer known-program lookup failed.")
+                }
+                updateDetail()
+            })
+        }
     }
 }
 

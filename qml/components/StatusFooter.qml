@@ -270,9 +270,9 @@ Pane {
         case "lez.sequencer_version":
             return qsTr("n/a")
         case "lez.last_lez_block_hash":
-            return root.shortHash(root.latestBlockValue("header_hash"))
+            return root.shortHash(root.latestSequencerBlockValue("header_hash"))
         case "lez.last_lez_block_time":
-            return root.timeText(root.latestBlockValue("timestamp"))
+            return root.timeText(root.latestSequencerBlockValue("timestamp"))
         case "lez.pending_tx_count":
         case "lez.mempool_tx_count":
         case "lez.rejected_tx_count_recent":
@@ -280,7 +280,7 @@ Pane {
         case "lez.pending_blocks_count":
             return root.valueOrNa(root.model.dashboardMetricValue(key))
         case "lez.publish_to_bedrock_status":
-            return root.valueOrNa(root.latestBlockValue("bedrock_status"))
+            return root.valueOrNa(root.latestSequencerBlockValue("bedrock_status"))
         case "lez.last_published_channel_update":
             return qsTr("n/a")
         case "lez.last_finalized_callback_height":
@@ -292,13 +292,13 @@ Pane {
         case "indexer.indexed_finalized_height":
             return root.valueOrNa(root.model.indexerHeadValue())
         case "indexer.indexed_finalized_hash":
-            return root.shortHash(root.latestBlockValue("header_hash"))
+            return root.shortHash(root.latestIndexerBlockValue("header_hash"))
         case "indexer.indexed_channel_message":
             return qsTr("n/a")
         case "indexer.indexer_lag_vs_sequencer_head":
             return root.valueOrNa(root.indexerLag())
         case "indexer.last_indexed_time":
-            return root.timeText(root.latestBlockValue("timestamp"))
+            return root.timeText(root.latestIndexerBlockValue("timestamp"))
         case "indexer.db_health":
             return root.indexerDisplayStatus()
         case "indexer.ingestion_status":
@@ -327,7 +327,7 @@ Pane {
         case "storage.dht_connected":
             return root.yesNo(root.model.openMetricValue("storage", ["storage_dht_connected", "dht_connected"]))
         case "storage.cid_fetch_test":
-            return qsTr("n/a")
+            return root.valueOrNa(root.model.reportProbeValue(root.model.moduleReport("storage"), "exists"))
         case "storage.last_error":
             return root.valueOrNa(root.model.moduleLastError("storage"))
         case "messaging.module":
@@ -614,7 +614,7 @@ Pane {
     }
 
     function lezBlockHeight() {
-        const blocks = root.model.dashboardBlocks || []
+        const blocks = root.model.dashboardSequencerBlocks || []
         if (blocks.length > 0) {
             const block = blocks[0] || {}
             if (block.block_id !== undefined && block.block_id !== null) {
@@ -830,7 +830,21 @@ Pane {
         return qsTr("check rpc")
     }
 
-    function latestBlockValue(key) {
+    function latestSequencerBlockValue(key) {
+        const loaded = root.model.lezBlocksPageRows || []
+        const sequencerRows = loaded.filter(function (block) {
+            return String((block || {}).source || "") === "sequencer"
+        })
+        const blocks = sequencerRows.length > 0 ? sequencerRows : (root.model.dashboardSequencerBlocks || [])
+        if (!blocks.length) {
+            return null
+        }
+        const block = blocks[0] || {}
+        const value = block[key]
+        return value === undefined || value === null ? null : value
+    }
+
+    function latestIndexerBlockValue(key) {
         const blocks = root.model.dashboardBlocks || []
         if (!blocks.length) {
             return null

@@ -18,8 +18,10 @@ ColumnLayout {
     spacing: 16
 
     Component.onCompleted: {
-        if (model.dashboardRefreshInterval() > 0) {
-            model.refreshDashboard()
+        if (model.dashboardRefreshInterval() > 0 && model.bridgeSupportsAsync()) {
+            Qt.callLater(function () {
+                model.refreshDashboard()
+            })
         }
     }
 
@@ -619,7 +621,10 @@ ColumnLayout {
 
     function l2BlocksForDashboard() {
         const loaded = root.model.lezBlocksPageRows || []
-        return loaded.length > 0 ? loaded : (model.dashboardBlocks || [])
+        if (loaded.length > 0) {
+            return loaded
+        }
+        return root.model.mergedLezBlocks(root.model.dashboardSequencerBlocks || [], model.dashboardBlocks || [], 5)
     }
 
     function l1TransactionRows() {

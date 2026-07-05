@@ -7,7 +7,8 @@ use crate::{
     BlockSummary, ProgramIdEntry, TransactionIdlInspectionReport, TransactionInspectionReport,
     TransactionSummary, TransactionTraceReport, decode_sequencer_block, inspect_transaction,
     inspect_transaction_summary_with_idl, json_rpc_result, parse_hash, raw_json_rpc,
-    summarize_transaction, trace_transaction_summary, trace_transaction_summary_with_idl,
+    summarize_block, summarize_transaction, trace_transaction_summary,
+    trace_transaction_summary_with_idl,
 };
 
 use crate::programs::program_entries;
@@ -59,23 +60,19 @@ pub async fn sequencer_blocks(
         return Ok(Vec::new());
     }
 
-    let mut block_id = match before {
+    let end_block_id = match before {
         Some(0) => return Ok(Vec::new()),
         Some(block_id) => block_id.saturating_sub(1),
         None => last_sequencer_block_id(endpoint).await?,
     };
-    let mut blocks = Vec::with_capacity(limit as usize);
-    loop {
-        let Some(block) = sequencer_block(endpoint, block_id).await? else {
-            break;
-        };
-        blocks.push(block);
-        if blocks.len() >= limit as usize || block_id == 0 {
-            break;
-        }
-        block_id -= 1;
-    }
-    Ok(blocks)
+    let start_block_id = end_block_id.saturating_sub(limit.saturating_sub(1));
+    let blocks = sequencer_client(endpoint)?
+        .get_block_range(start_block_id, end_block_id)
+        .await
+        .with_context(|| {
+            format!("failed to fetch sequencer block range {start_block_id}..={end_block_id}")
+        })?;
+    Ok(blocks.iter().rev().map(summarize_block).collect())
 }
 
 pub async fn sequencer_transaction(

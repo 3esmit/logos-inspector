@@ -534,7 +534,7 @@ ColumnLayout {
     }
 
     function storageArgs(extra) {
-        const args = [root.model.effectiveStorageSourceMode(root.model.storageSourceMode), root.model.storageRestUrl]
+        const args = [root.model.effectiveStorageSourceMode(root.model.storageSourceMode), root.model.configuredStorageRestUrl()]
         return args.concat(extra || [])
     }
 
