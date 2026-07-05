@@ -14,7 +14,8 @@ use logos_inspector::{
     decode_account_data_hex_with_idl, decode_event_data_hex_with_idl,
     decode_instruction_words_with_idl, last_sequencer_block_id,
     local_indexer::{bootstrap_default_local_indexer, is_default_local_indexer_endpoint},
-    local_wallet_accounts, local_wallet_profile_status,
+    local_wallet_accounts, local_wallet_command, local_wallet_create_account,
+    local_wallet_profile_status, local_wallet_send_transaction, local_wallet_sync_private,
     modules::blockchain_module_report,
     modules::capabilities_report,
     modules::delivery_source_report,
@@ -40,7 +41,7 @@ pub struct Args {
 #[derive(Debug, Subcommand)]
 pub enum Mode {
     Gui,
-    Cli(CliArgs),
+    Cli(Box<CliArgs>),
 }
 
 #[derive(Debug, ClapArgs)]
@@ -178,6 +179,38 @@ enum CliCommand {
 enum WalletCommand {
     Status(WalletProfileArgs),
     Accounts(WalletProfileArgs),
+    CreateAccount {
+        #[command(flatten)]
+        profile: WalletProfileArgs,
+        privacy: String,
+        #[arg(long)]
+        label: Option<String>,
+    },
+    Send {
+        #[command(flatten)]
+        profile: WalletProfileArgs,
+        #[arg(long)]
+        from: String,
+        #[arg(long)]
+        to: Option<String>,
+        #[arg(long)]
+        to_npk: Option<String>,
+        #[arg(long)]
+        to_vpk: Option<String>,
+        #[arg(long)]
+        to_keys: Option<String>,
+        #[arg(long)]
+        to_identifier: Option<String>,
+        #[arg(long)]
+        amount: String,
+    },
+    Incoming(WalletProfileArgs),
+    Command {
+        #[command(flatten)]
+        profile: WalletProfileArgs,
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     BedrockBalance {
         public_key: String,
         #[arg(long)]
@@ -470,6 +503,42 @@ pub fn run(args: CliArgs) -> Result<()> {
             }
             WalletCommand::Accounts(profile) => {
                 print_json(&local_wallet_accounts(profile.value())?)
+            }
+            WalletCommand::CreateAccount {
+                profile,
+                privacy,
+                label,
+            } => print_json(&local_wallet_create_account(
+                profile.value(),
+                &privacy,
+                label.as_deref(),
+            )?),
+            WalletCommand::Send {
+                profile,
+                from,
+                to,
+                to_npk,
+                to_vpk,
+                to_keys,
+                to_identifier,
+                amount,
+            } => print_json(&local_wallet_send_transaction(
+                profile.value(),
+                serde_json::json!({
+                    "from": from,
+                    "to": to.unwrap_or_default(),
+                    "to_npk": to_npk.unwrap_or_default(),
+                    "to_vpk": to_vpk.unwrap_or_default(),
+                    "to_keys": to_keys.unwrap_or_default(),
+                    "to_identifier": to_identifier.unwrap_or_default(),
+                    "amount": amount,
+                }),
+            )?),
+            WalletCommand::Incoming(profile) => {
+                print_json(&local_wallet_sync_private(profile.value())?)
+            }
+            WalletCommand::Command { profile, args } => {
+                print_json(&local_wallet_command(profile.value(), args)?)
             }
             WalletCommand::BedrockBalance {
                 public_key,

@@ -22,6 +22,7 @@ ColumnLayout {
         id: walletTabs
 
         ListElement { value: "profiles"; label: "Profiles" }
+        ListElement { value: "controls"; label: "Controls" }
         ListElement { value: "lezAccounts"; label: "LEZ Accounts" }
         ListElement { value: "privateSync"; label: "Private Sync" }
         ListElement { value: "bedrockNotes"; label: "Bedrock Wallet" }
@@ -258,6 +259,256 @@ ColumnLayout {
                 title: qsTr("Profile check failed")
                 message: root.model.localWalletStatusError
                 Layout.fillWidth: true
+            }
+        }
+    }
+
+    Component {
+        id: controlsTab
+
+        ColumnLayout {
+            spacing: root.theme.gap
+            Layout.fillWidth: true
+
+            Panel {
+                theme: root.theme
+                title: qsTr("Create Account")
+
+                ColumnLayout {
+                    spacing: root.theme.gapSmall
+                    Layout.fillWidth: true
+
+                    GridLayout {
+                        columns: root.width < 760 ? 1 : 4
+                        columnSpacing: root.theme.gapSmall
+                        rowSpacing: root.theme.gapSmall
+                        Layout.fillWidth: true
+
+                        ActionButton {
+                            theme: root.theme
+                            text: qsTr("Public")
+                            selected: root.model.walletCreatePrivacy === "public"
+                            Layout.preferredWidth: 104
+                            Layout.fillWidth: root.width < 760
+                            onClicked: root.model.walletCreatePrivacy = "public"
+                        }
+
+                        ActionButton {
+                            theme: root.theme
+                            text: qsTr("Private")
+                            selected: root.model.walletCreatePrivacy === "private"
+                            Layout.preferredWidth: 104
+                            Layout.fillWidth: root.width < 760
+                            onClicked: root.model.walletCreatePrivacy = "private"
+                        }
+
+                        FieldRow {
+                            theme: root.theme
+                            label: qsTr("Label")
+                            sourceText: root.model.walletCreateLabel
+                            syncSourceText: true
+                            placeholderText: qsTr("Optional label")
+                            Layout.fillWidth: true
+                            onTextEdited: text => { if (root.model.walletCreateLabel !== text) root.model.walletCreateLabel = text }
+                        }
+
+                        ActionButton {
+                            theme: root.theme
+                            text: qsTr("Create")
+                            primary: true
+                            enabled: !root.model.busy && root.model.walletProfileConfigured()
+                            Layout.preferredWidth: 112
+                            Layout.fillWidth: root.width < 760
+                            onClicked: createAccountConfirm.open()
+                        }
+                    }
+                }
+            }
+
+            Panel {
+                theme: root.theme
+                title: qsTr("Send Native")
+
+                ColumnLayout {
+                    spacing: root.theme.gapSmall
+                    Layout.fillWidth: true
+
+                    GridLayout {
+                        columns: root.width < 820 ? 1 : 3
+                        columnSpacing: root.theme.gap
+                        rowSpacing: root.theme.gapSmall
+                        Layout.fillWidth: true
+
+                        FieldRow {
+                            theme: root.theme
+                            label: qsTr("From")
+                            sourceText: root.model.walletSendFrom
+                            syncSourceText: true
+                            placeholderText: qsTr("Public/... or label")
+                            Layout.fillWidth: true
+                            onTextEdited: text => { if (root.model.walletSendFrom !== text) root.model.walletSendFrom = text }
+                        }
+
+                        FieldRow {
+                            theme: root.theme
+                            label: qsTr("To")
+                            sourceText: root.model.walletSendTo
+                            syncSourceText: true
+                            placeholderText: qsTr("Public/..., Private/..., or label")
+                            Layout.fillWidth: true
+                            onTextEdited: text => { if (root.model.walletSendTo !== text) root.model.walletSendTo = text }
+                        }
+
+                        FieldRow {
+                            theme: root.theme
+                            label: qsTr("Amount")
+                            sourceText: root.model.walletSendAmount
+                            syncSourceText: true
+                            placeholderText: qsTr("0")
+                            Layout.fillWidth: true
+                            onTextEdited: text => { if (root.model.walletSendAmount !== text) root.model.walletSendAmount = text }
+                        }
+
+                        FieldRow {
+                            theme: root.theme
+                            label: qsTr("Keys file")
+                            sourceText: root.model.walletSendToKeys
+                            syncSourceText: true
+                            placeholderText: qsTr("Optional recipient.keys")
+                            Layout.fillWidth: true
+                            onTextEdited: text => { if (root.model.walletSendToKeys !== text) root.model.walletSendToKeys = text }
+                        }
+
+                        FieldRow {
+                            theme: root.theme
+                            label: qsTr("NPK")
+                            sourceText: root.model.walletSendToNpk
+                            syncSourceText: true
+                            placeholderText: qsTr("Optional hex")
+                            Layout.fillWidth: true
+                            onTextEdited: text => { if (root.model.walletSendToNpk !== text) root.model.walletSendToNpk = text }
+                        }
+
+                        FieldRow {
+                            theme: root.theme
+                            label: qsTr("VPK")
+                            sourceText: root.model.walletSendToVpk
+                            syncSourceText: true
+                            placeholderText: qsTr("Optional hex")
+                            Layout.fillWidth: true
+                            onTextEdited: text => { if (root.model.walletSendToVpk !== text) root.model.walletSendToVpk = text }
+                        }
+
+                        FieldRow {
+                            theme: root.theme
+                            label: qsTr("Identifier")
+                            sourceText: root.model.walletSendToIdentifier
+                            syncSourceText: true
+                            placeholderText: qsTr("Optional")
+                            Layout.fillWidth: true
+                            onTextEdited: text => { if (root.model.walletSendToIdentifier !== text) root.model.walletSendToIdentifier = text }
+                        }
+                    }
+
+                    RowLayout {
+                        spacing: root.theme.gapSmall
+                        Layout.fillWidth: true
+
+                        ActionButton {
+                            theme: root.theme
+                            text: qsTr("Send")
+                            primary: true
+                            enabled: root.sendReady()
+                            Layout.preferredWidth: 112
+                            onClicked: sendTransactionConfirm.open()
+                        }
+
+                        ActionButton {
+                            theme: root.theme
+                            text: qsTr("Settings")
+                            enabled: !root.model.busy
+                            Layout.preferredWidth: 112
+                            onClicked: root.model.openSettings("wallet", "")
+                        }
+
+                        Item {
+                            Layout.fillWidth: true
+                        }
+                    }
+                }
+            }
+
+            Panel {
+                theme: root.theme
+                title: qsTr("Incoming")
+
+                RowLayout {
+                    spacing: root.theme.gapSmall
+                    Layout.fillWidth: true
+
+                    ActionButton {
+                        theme: root.theme
+                        text: qsTr("Read incoming")
+                        primary: true
+                        enabled: !root.model.busy && root.model.walletProfileConfigured()
+                        Layout.preferredWidth: 144
+                        onClicked: readIncomingConfirm.open()
+                    }
+
+                    ActionButton {
+                        theme: root.theme
+                        text: qsTr("List accounts")
+                        enabled: !root.model.busy && root.model.walletProfileConfigured()
+                        Layout.preferredWidth: 132
+                        onClicked: root.model.queryLocalWalletAccounts(true)
+                    }
+
+                    Item {
+                        Layout.fillWidth: true
+                    }
+                }
+            }
+
+            Panel {
+                theme: root.theme
+                title: qsTr("Advanced Command")
+
+                ColumnLayout {
+                    spacing: root.theme.gapSmall
+                    Layout.fillWidth: true
+
+                    TextAreaField {
+                        theme: root.theme
+                        label: qsTr("Arguments")
+                        rows: 3
+                        text: root.model.walletAdvancedCommand
+                        placeholderText: qsTr("account get --account-id Public/...")
+                        Layout.fillWidth: true
+                        onTextChanged: {
+                            if (root.model.walletAdvancedCommand !== text) {
+                                root.model.walletAdvancedCommand = text
+                            }
+                        }
+                    }
+
+                    RowLayout {
+                        spacing: root.theme.gapSmall
+                        Layout.fillWidth: true
+
+                        ActionButton {
+                            theme: root.theme
+                            text: qsTr("Run")
+                            primary: true
+                            enabled: !root.model.busy && root.model.walletProfileConfigured() && root.walletCommandArgs().length > 0
+                            Layout.preferredWidth: 96
+                            onClicked: root.openAdvancedWalletConfirm()
+                        }
+
+                        Item {
+                            Layout.fillWidth: true
+                        }
+                    }
+                }
             }
         }
     }
@@ -517,6 +768,50 @@ ColumnLayout {
         onAccepted: root.model.syncPrivateWallet()
     }
 
+    ConfirmActionPopup {
+        id: createAccountConfirm
+
+        theme: root.theme
+        title: qsTr("Create account")
+        message: qsTr("This runs wallet account new %1.").arg(root.model.walletCreatePrivacy === "private" ? qsTr("private") : qsTr("public"))
+        confirmText: qsTr("Create")
+        confirmEnabled: !root.model.busy && root.model.walletProfileConfigured()
+        onAccepted: root.model.createWalletAccount()
+    }
+
+    ConfirmActionPopup {
+        id: sendTransactionConfirm
+
+        theme: root.theme
+        title: qsTr("Send transaction")
+        message: qsTr("This runs wallet auth-transfer send from %1.").arg(root.shortText(root.model.walletSendFrom, 32))
+        confirmText: qsTr("Send")
+        confirmEnabled: root.sendReady()
+        onAccepted: root.model.sendWalletTransaction()
+    }
+
+    ConfirmActionPopup {
+        id: readIncomingConfirm
+
+        theme: root.theme
+        title: qsTr("Read incoming")
+        message: qsTr("This runs wallet account sync-private and updates local wallet state.")
+        confirmText: qsTr("Read")
+        confirmEnabled: !root.model.busy && root.model.walletProfileConfigured()
+        onAccepted: root.model.readIncomingWalletTransactions()
+    }
+
+    ConfirmActionPopup {
+        id: advancedWalletConfirm
+
+        theme: root.theme
+        title: qsTr("Run wallet command")
+        message: qsTr("This runs wallet %1.").arg(root.shortText(root.walletCommandArgs().join(" "), 54))
+        confirmText: qsTr("Run")
+        confirmEnabled: !root.model.busy && root.model.walletProfileConfigured() && root.walletCommandArgs().length > 0
+        onAccepted: root.acceptAdvancedWalletCommand()
+    }
+
     Component {
         id: operationsTab
 
@@ -556,6 +851,8 @@ ColumnLayout {
 
     function tabComponent(tab) {
         switch (String(tab || "")) {
+        case "controls":
+            return controlsTab
         case "lezAccounts":
             return lezAccountsTab
         case "privateSync":
@@ -572,6 +869,9 @@ ColumnLayout {
     function headerSources() {
         if (root.model.localWalletTab === "bedrockNotes") {
             return [qsTr("L1 Bedrock"), qsTr("Wallet balance"), root.shortText(root.model.nodeUrl, 42)]
+        }
+        if (root.model.localWalletTab === "controls") {
+            return [qsTr("Local Wallet"), qsTr("Controls"), root.model.walletHomeSourceLabel()]
         }
         if (root.model.localWalletTab === "lezAccounts") {
             return [qsTr("Local Wallet"), qsTr("LEZ Accounts"), root.model.walletHomeSourceLabel()]
@@ -680,6 +980,101 @@ ColumnLayout {
             return qsTr("Not configured")
         }
         return text.replace(/^https?:\/\//, "").replace(/\/$/, "")
+    }
+
+    function sendReady() {
+        if (root.model.busy || !root.model.walletProfileConfigured()) {
+            return false
+        }
+        const from = String(root.model.walletSendFrom || "").trim()
+        const amount = String(root.model.walletSendAmount || "").trim()
+        const to = String(root.model.walletSendTo || "").trim()
+        const keys = String(root.model.walletSendToKeys || "").trim()
+        const npk = String(root.model.walletSendToNpk || "").trim()
+        const vpk = String(root.model.walletSendToVpk || "").trim()
+        return from.length > 0 && amount.length > 0 && (to.length > 0 || keys.length > 0 || (npk.length > 0 && vpk.length > 0))
+    }
+
+    function walletCommandArgs() {
+        const parsed = root.parseWalletCommandLine(root.model.walletAdvancedCommand)
+        return parsed === null ? [] : parsed
+    }
+
+    function openAdvancedWalletConfirm() {
+        const parsed = root.parseWalletCommandLine(root.model.walletAdvancedCommand)
+        if (parsed === null) {
+            root.model.setResult(qsTr("Wallet command"), qsTr("Close quoted argument before running."), true)
+            return
+        }
+        if (!parsed.length) {
+            root.model.setResult(qsTr("Wallet command"), qsTr("Wallet command arguments are required."), true)
+            return
+        }
+        advancedWalletConfirm.open()
+    }
+
+    function acceptAdvancedWalletCommand() {
+        const parsed = root.parseWalletCommandLine(root.model.walletAdvancedCommand)
+        if (parsed !== null && parsed.length > 0) {
+            root.model.runWalletCommand(parsed)
+        }
+    }
+
+    function parseWalletCommandLine(value) {
+        const text = String(value || "")
+        const args = []
+        let current = ""
+        let quote = ""
+        for (let i = 0; i < text.length; ++i) {
+            const ch = text.charAt(i)
+            if (ch === "\\") {
+                const next = i + 1 < text.length ? text.charAt(i + 1) : ""
+                if (next.length > 0) {
+                    if (quote.length > 0 && next === quote) {
+                        current += next
+                        ++i
+                        continue
+                    }
+                    if (quote.length === 0 && (next === "\"" || next === "'" || /\s/.test(next))) {
+                        current += next
+                        ++i
+                        continue
+                    }
+                }
+                current += ch
+                continue
+            }
+            if (quote.length > 0) {
+                if (ch === quote) {
+                    quote = ""
+                } else {
+                    current += ch
+                }
+                continue
+            }
+            if (ch === "\"" || ch === "'") {
+                quote = ch
+                continue
+            }
+            if (/\s/.test(ch)) {
+                if (current.length > 0) {
+                    args.push(current)
+                    current = ""
+                }
+                continue
+            }
+            current += ch
+        }
+        if (quote.length > 0) {
+            return null
+        }
+        if (current.length > 0) {
+            args.push(current)
+        }
+        if (args.length > 0 && args[0] === "wallet") {
+            args.shift()
+        }
+        return args
     }
 
     component CopyRow: GridLayout {

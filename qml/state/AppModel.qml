@@ -167,6 +167,16 @@ QtObject {
     property string walletBinary: ""
     property string walletHome: ""
     property string walletPublicKeyProbe: ""
+    property string walletCreatePrivacy: "public"
+    property string walletCreateLabel: ""
+    property string walletSendFrom: ""
+    property string walletSendTo: ""
+    property string walletSendToKeys: ""
+    property string walletSendToNpk: ""
+    property string walletSendToVpk: ""
+    property string walletSendToIdentifier: ""
+    property string walletSendAmount: ""
+    property string walletAdvancedCommand: ""
     property string bedrockWalletBalanceTip: ""
     property var localWalletStatus: null
     property string localWalletStatusError: ""
@@ -384,6 +394,16 @@ QtObject {
     function checkLocalWalletProfile(showResult) { return AppModelIdentity.checkLocalWalletProfile(root, showResult) }
 
     function checkedLocalWalletProfile() { return AppModelIdentity.checkedLocalWalletProfile(root) }
+
+    function createWalletAccount() { return AppModelIdentity.createWalletAccount(root) }
+
+    function sendWalletTransaction() { return AppModelIdentity.sendWalletTransaction(root) }
+
+    function readIncomingWalletTransactions() { return AppModelIdentity.readIncomingWalletTransactions(root) }
+
+    function runWalletCommand(commandArgs) { return AppModelIdentity.runWalletCommand(root, commandArgs) }
+
+    function walletCommandOperationDetail(value) { return AppModelIdentity.walletCommandOperationDetail(root, value) }
 
     function deployProgramBinary(programPath) { return AppModelIdentity.deployProgramBinary(root, programPath) }
 
