@@ -56,7 +56,7 @@ Panel {
         FieldRow {
             theme: root.theme
             label: qsTr("Waku REST URL")
-            enabled: root.messagingSourceMode() === "rest" || root.messagingSourceMode() === "network-monitor"
+            enabled: root.modelRef.sourceModeUsesEndpoint("delivery", root.modelRef.messagingSourceMode, "rest")
             opacity: enabled ? 1 : 0.56
             sourceText: root.modelRef.messagingRestUrl
             syncSourceText: true
@@ -136,28 +136,14 @@ Panel {
     }
 
     function sourceIndexFor(value) {
-        const source = root.modelRef.normalizedMessagingSourceMode(value)
-        for (let i = 0; i < root.sourceOptions.count; ++i) {
-            if (root.sourceOptions.get(i).key === source) {
-                return i
-            }
-        }
-        return 0
+        return root.modelRef.sourceModeIndexFor("delivery", value, root.sourceOptions)
     }
 
     function sourceModeAt(index) {
-        if (index < 0 || index >= root.sourceOptions.count) {
-            return "auto"
-        }
-        return root.sourceOptions.get(index).key
-    }
-
-    function messagingSourceMode() {
-        return root.modelRef.effectiveMessagingSourceMode(root.modelRef.messagingSourceMode)
+        return root.modelRef.sourceModeAt(index, root.sourceOptions)
     }
 
     function messagingMetricsEnabled() {
-        const source = root.messagingSourceMode()
-        return source === "rest" || source === "metrics" || source === "network-monitor"
+        return root.modelRef.sourceModeUsesEndpoint("delivery", root.modelRef.messagingSourceMode, "metrics")
     }
 }

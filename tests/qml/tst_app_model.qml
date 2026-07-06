@@ -221,6 +221,52 @@ TestCase {
         model.localDevnets = []
     }
 
+    function installSourceModePolicy(targetModel) {
+        targetModel.sourcePolicy = ({
+            source_modes: {
+                core: [
+                    sourceMode("auto", ["auto"], "rpc", "Auto", "Auto: Direct RPC", "Use configured direct RPC endpoint", "rpc_endpoint", false, false, false, false),
+                    sourceMode("rpc", ["rpc"], "rpc", "Direct RPC", "Direct RPC", "Use configured standalone RPC endpoint", "rpc_endpoint", false, false, false, false),
+                    sourceMode("module", ["basecamp"], "module", "Basecamp module", "Basecamp module", "Use Basecamp module transport", "module", false, false, false, true)
+                ],
+                delivery: [
+                    sourceMode("auto", ["auto"], "rest", "Auto", "Auto: Direct Waku REST", "Use direct Waku REST", "rest_endpoint", true, true, false, true),
+                    sourceMode("rest", ["rest"], "rest", "Direct Waku REST", "Direct Waku REST", "Read-only health, info, version, and optional metrics", "rest_endpoint", true, true, false, true),
+                    sourceMode("module", ["basecamp module"], "module", "Delivery module", "Delivery module", "Use delivery_module through logoscore", "module", false, false, false, true),
+                    sourceMode("metrics", ["metrics"], "metrics", "Metrics only", "Metrics only", "Scrape metrics", "metrics_endpoint", false, true, false, false),
+                    sourceMode("network-monitor", ["network-monitor", "discovery crawler"], "network-monitor", "Network monitor", "Network monitor", "Inspect fleet topology", "rest_endpoint", true, true, false, false),
+                    sourceMode("unsupported", ["unsupported"], "unsupported", "Unsupported saved source", "Unsupported source", "Select a supported source", "none", false, false, false, false)
+                ],
+                storage: [
+                    sourceMode("auto", ["auto"], "rest", "Auto", "Auto: Standalone REST", "Use standalone REST", "rest_endpoint", true, true, true, true),
+                    sourceMode("rest", ["standalone rest", "rest"], "rest", "Standalone REST", "Standalone REST", "Read-only storage facts", "rest_endpoint", true, true, true, true),
+                    sourceMode("module", ["basecamp module", "module"], "module", "Storage module", "Storage module", "Use storage_module through logoscore", "module", false, false, true, false),
+                    sourceMode("metrics", ["metrics"], "metrics", "Metrics only", "Metrics only", "Scrape metrics", "metrics_endpoint", false, true, false, false),
+                    sourceMode("unsupported", ["c-library", "local-os", "unsupported"], "unsupported", "Unsupported saved source", "Unsupported source", "Select a supported source", "none", false, false, false, false)
+                ]
+            }
+        })
+        targetModel.sourcePolicyLoaded = true
+    }
+
+    function sourceMode(key, aliases, effective, label, sourceLabel, summary, target, usesRest, usesMetrics, supportsCid, supportsMutating) {
+        return {
+            key: key,
+            aliases: aliases,
+            effective: effective,
+            label: label,
+            source_label: sourceLabel,
+            summary: summary,
+            adapter: {
+                target: target,
+                uses_rest_endpoint: usesRest,
+                uses_metrics_endpoint: usesMetrics,
+                supports_cid_probe: supportsCid,
+                supports_mutating_diagnostics: supportsMutating
+            }
+        }
+    }
+
     function test_basecamp_bridge_routes_inspector_calls_through_generic_call() {
         const response = basecampBridgeClient.callModule("logos_inspector", "blockchainLiveBlocks", ["http://127.0.0.1:8080", 1, 2, 3])
 
@@ -534,6 +580,8 @@ TestCase {
     }
 
     function test_storage_unsupported_pending_modes_stay_inert() {
+        installSourceModePolicy(model)
+
         compare(model.normalizedStorageSourceMode("module"), "module")
         model.storageSourceMode = "module"
         compare(model.effectiveStorageSourceMode(model.storageSourceMode), "module")
@@ -549,6 +597,8 @@ TestCase {
     }
 
     function test_delivery_network_monitor_source_is_supported() {
+        installSourceModePolicy(model)
+
         compare(model.normalizedMessagingSourceMode("network-monitor"), "network-monitor")
         model.messagingSourceMode = "network-monitor"
 
@@ -559,52 +609,23 @@ TestCase {
         compare(model.deliverySourceTarget(), model.configuredMessagingRestUrl())
     }
 
-    function test_delivery_rest_health_rejects_missing_connection_status() {
-        const report = {
-            module: "delivery_rest",
-            probes: [
-                { label: "delivery_rest.health", ok: true, value: { status: "ok" } },
-                { label: "delivery_rest.nodeHealth", ok: true, value: "healthy" }
-            ]
-        }
+    function test_source_mode_options_labels_and_targets_come_from_policy() {
+        installSourceModePolicy(model)
 
-        verify(!model.deliveryReportHealthy(report))
-    }
+        const storageOptions = model.sourceModeOptions("storage")
+        verify(storageOptions.length >= 5)
+        compare(storageOptions[1].label, "Standalone REST")
 
-    function test_delivery_rest_health_rejects_unhealthy_node_without_connection_status() {
-        const report = {
-            module: "delivery_rest",
-            probes: [
-                { label: "delivery_rest.health", ok: true, value: { status: "ok" } },
-                { label: "delivery_rest.nodeHealth", ok: true, value: "unhealthy" }
-            ]
-        }
+        model.storageSourceMode = "module"
+        compare(model.storageSourceLabel(), "Storage module")
+        compare(model.storageSourceTarget(), model.storageModule)
+        verify(model.sourceModeSupportsCidProbe("storage", model.storageSourceMode))
+        verify(!model.sourceModeSupportsMutatingDiagnostics("storage", model.storageSourceMode))
 
-        verify(!model.deliveryReportHealthy(report))
-    }
-
-    function test_delivery_metrics_health_requires_known_metric_family() {
-        verify(model.deliveryReportHealthy({
-            module: "delivery_metrics",
-            probes: [
-                { label: "delivery_metrics.collectOpenMetricsText", ok: true, value: "libp2p_peers 3\n" }
-            ]
-        }))
-        verify(!model.deliveryReportHealthy({
-            module: "delivery_metrics",
-            probes: [
-                { label: "delivery_metrics.collectOpenMetricsText", ok: true, value: "process_cpu_seconds_total 3\n" }
-            ]
-        }))
-    }
-
-    function test_delivery_network_monitor_health_accepts_peer_snapshot() {
-        verify(model.deliveryReportHealthy({
-            module: "delivery_network_monitor",
-            probes: [
-                { label: "delivery_network_monitor.allPeersInfo", ok: true, value: [{ peerId: "peer-a" }] }
-            ]
-        }))
+        model.messagingSourceMode = "metrics"
+        compare(model.deliverySourceLabel(), "Metrics only")
+        compare(model.deliverySourceTarget(), model.messagingMetricsUrl)
+        verify(model.sourceModeUsesEndpoint("delivery", model.messagingSourceMode, "metrics"))
     }
 
     function test_source_report_health_facts_drive_connection_state_without_probes() {

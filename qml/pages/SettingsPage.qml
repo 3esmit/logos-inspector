@@ -67,81 +67,23 @@ ColumnLayout {
 
     ListModel {
         id: coreSourceOptions
-
-        ListElement {
-            key: "auto"
-            label: "Auto"
-            summary: "Use configured direct RPC endpoint"
-        }
-        ListElement {
-            key: "rpc"
-            label: "Direct RPC"
-            summary: "Use configured standalone RPC endpoint"
-        }
     }
 
     ListModel {
         id: deliverySourceOptions
-
-        ListElement {
-            key: "auto"
-            label: "Auto"
-            summary: "Use direct Waku REST"
-        }
-        ListElement {
-            key: "rest"
-            label: "Direct Waku REST"
-            summary: "Read-only health, info, version, and optional metrics"
-        }
-        ListElement {
-            key: "module"
-            label: "Delivery module"
-            summary: "Use delivery_module through logoscore for node lifecycle, subscriptions, and sends"
-        }
-        ListElement {
-            key: "metrics"
-            label: "Metrics only"
-            summary: "Scrape a Prometheus/OpenMetrics endpoint"
-        }
-        ListElement {
-            key: "network-monitor"
-            label: "Network monitor"
-            summary: "Inspect fleet topology from allpeersinfo, contenttopics, and metrics"
-        }
-        ListElement {
-            key: "unsupported"
-            label: "Unsupported saved source"
-            summary: "Select a supported source to replace this saved value"
-        }
     }
 
     ListModel {
         id: storageSourceOptions
+    }
 
-        ListElement {
-            key: "auto"
-            label: "Auto"
-            summary: "Use standalone REST"
-        }
-        ListElement {
-            key: "module"
-            label: "Storage module"
-            summary: "Use storage_module through logoscore for read-only node and content checks"
-        }
-        ListElement {
-            key: "rest"
-            label: "Standalone REST"
-            summary: "Read-only space, identity, local data, debug, and metrics"
-        }
-        ListElement {
-            key: "metrics"
-            label: "Metrics only"
-            summary: "Scrape a Prometheus/OpenMetrics endpoint"
-        }
-        ListElement {
-            key: "unsupported"
-            label: "Unsupported saved source"
-            summary: "Select a supported source to replace this saved value"
+    Component.onCompleted: settingsRoot.refreshSourceOptions()
+
+    Connections {
+        target: settingsRoot.model
+
+        function onSourcePolicyChanged() {
+            settingsRoot.refreshSourceOptions()
         }
     }
 
@@ -917,54 +859,41 @@ ColumnLayout {
     }
 
     function deliverySourceIndexFor(value) {
-        const source = String(value || "auto")
-        for (let i = 0; i < deliverySourceOptions.count; ++i) {
-            if (deliverySourceOptions.get(i).key === source) {
-                return i
-            }
-        }
-        return 0
+        return settingsRoot.model.sourceModeIndexFor("delivery", value, deliverySourceOptions)
     }
 
     function deliverySourceModeAt(index) {
-        if (index < 0 || index >= deliverySourceOptions.count) {
-            return "auto"
-        }
-        return deliverySourceOptions.get(index).key
+        return settingsRoot.model.sourceModeAt(index, deliverySourceOptions)
     }
 
     function storageSourceIndexFor(value) {
-        const source = String(value || "auto")
-        for (let i = 0; i < storageSourceOptions.count; ++i) {
-            if (storageSourceOptions.get(i).key === source) {
-                return i
-            }
-        }
-        return 0
+        return settingsRoot.model.sourceModeIndexFor("storage", value, storageSourceOptions)
     }
 
     function storageSourceModeAt(index) {
-        if (index < 0 || index >= storageSourceOptions.count) {
-            return "auto"
-        }
-        return storageSourceOptions.get(index).key
+        return settingsRoot.model.sourceModeAt(index, storageSourceOptions)
     }
 
     function coreSourceIndexFor(value) {
-        const source = settingsRoot.model.normalizedCoreSourceMode(value)
-        for (let i = 0; i < coreSourceOptions.count; ++i) {
-            if (coreSourceOptions.get(i).key === source) {
-                return i
-            }
-        }
-        return 0
+        return settingsRoot.model.sourceModeIndexFor("core", value, coreSourceOptions)
     }
 
     function coreSourceModeAt(index) {
-        if (index < 0 || index >= coreSourceOptions.count) {
-            return "auto"
+        return settingsRoot.model.sourceModeAt(index, coreSourceOptions)
+    }
+
+    function refreshSourceOptions() {
+        settingsRoot.populateSourceOptions(coreSourceOptions, "core")
+        settingsRoot.populateSourceOptions(deliverySourceOptions, "delivery")
+        settingsRoot.populateSourceOptions(storageSourceOptions, "storage")
+    }
+
+    function populateSourceOptions(targetModel, family) {
+        targetModel.clear()
+        const options = settingsRoot.model.sourceModeOptions(family)
+        for (let i = 0; i < options.length; ++i) {
+            targetModel.append(options[i])
         }
-        return coreSourceOptions.get(index).key
     }
 
     function profileIndexFor(value) {

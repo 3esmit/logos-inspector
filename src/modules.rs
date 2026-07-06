@@ -6,8 +6,9 @@ use crate::{
     ProbeReport, logoscore, response_excerpt,
     source_policy::{
         DEFAULT_DELIVERY_METRICS_ENDPOINT, DEFAULT_DELIVERY_REST_ENDPOINT,
-        DEFAULT_STORAGE_METRICS_ENDPOINT, DEFAULT_STORAGE_REST_ENDPOINT, DeliverySourceMode,
-        StorageSourceMode,
+        DEFAULT_STORAGE_METRICS_ENDPOINT, DEFAULT_STORAGE_REST_ENDPOINT, SourceCapabilityFact,
+        SourceFacts, SourceFamily, SourceHealthFacts, delivery_source_facts, effective_source_mode,
+        storage_source_facts,
     },
 };
 
@@ -47,73 +48,10 @@ impl ModuleReport {
         }
     }
 
-    fn with_source_facts(
-        mut self,
-        health: SourceHealthFacts,
-        capability_facts: Vec<SourceCapabilityFact>,
-    ) -> Self {
-        self.health = Some(health);
-        self.capability_facts = capability_facts;
+    fn with_source_facts(mut self, facts: SourceFacts) -> Self {
+        self.health = Some(facts.health);
+        self.capability_facts = facts.capability_facts;
         self
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct SourceHealthFacts {
-    pub reachable: bool,
-    pub ready: bool,
-    pub status: SourceHealthStatus,
-    pub summary: String,
-    pub detail: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SourceHealthStatus {
-    Healthy,
-    Degraded,
-    Unavailable,
-    Unsupported,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct SourceCapabilityFact {
-    pub key: String,
-    pub label: String,
-    pub available: bool,
-    pub evidence: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub value: Option<Value>,
-}
-
-impl SourceCapabilityFact {
-    fn available(
-        key: impl Into<String>,
-        label: impl Into<String>,
-        evidence: impl Into<String>,
-        value: Option<Value>,
-    ) -> Self {
-        Self {
-            key: key.into(),
-            label: label.into(),
-            available: true,
-            evidence: evidence.into(),
-            value,
-        }
-    }
-
-    fn unavailable(
-        key: impl Into<String>,
-        label: impl Into<String>,
-        evidence: impl Into<String>,
-    ) -> Self {
-        Self {
-            key: key.into(),
-            label: label.into(),
-            available: false,
-            evidence: evidence.into(),
-            value: None,
-        }
     }
 }
 
@@ -178,10 +116,8 @@ pub fn storage_report(cid: Option<&str>, privileged_debug_enabled: bool) -> Modu
         probes.push(call_probe(STORAGE_MODULE, "exists", &[cid]));
     }
     let module_info = module_info_probe(STORAGE_MODULE);
-    ModuleReport::new(STORAGE_MODULE, module_info.clone(), probes.clone()).with_source_facts(
-        storage_source_health(STORAGE_MODULE, &module_info, &probes),
-        storage_source_capability_facts(STORAGE_MODULE, &module_info, &probes),
-    )
+    ModuleReport::new(STORAGE_MODULE, module_info.clone(), probes.clone())
+        .with_source_facts(storage_source_facts(STORAGE_MODULE, &module_info, &probes))
 }
 
 pub async fn storage_source_report(
@@ -191,7 +127,7 @@ pub async fn storage_source_report(
     cid: Option<&str>,
     privileged_debug_enabled: bool,
 ) -> ModuleReport {
-    match normalized_storage_source_mode(source_mode) {
+    match effective_source_mode(SourceFamily::Storage, source_mode) {
         "module" => storage_report(cid, privileged_debug_enabled),
         "rest" => {
             storage_rest_report(
@@ -261,10 +197,8 @@ async fn storage_rest_report(
     if let Some(metrics_endpoint) = optional(metrics_endpoint) {
         probes.push(storage_metrics_probe(metrics_endpoint).await);
     }
-    ModuleReport::new("storage_rest", space_probe.clone(), probes.clone()).with_source_facts(
-        storage_source_health("storage_rest", &space_probe, &probes),
-        storage_source_capability_facts("storage_rest", &space_probe, &probes),
-    )
+    ModuleReport::new("storage_rest", space_probe.clone(), probes.clone())
+        .with_source_facts(storage_source_facts("storage_rest", &space_probe, &probes))
 }
 
 async fn storage_metrics_report(metrics_endpoint: Option<&str>) -> ModuleReport {
@@ -286,10 +220,11 @@ async fn storage_metrics_report(metrics_endpoint: Option<&str>) -> ModuleReport 
                 text,
             )];
             ModuleReport::new("storage_metrics", module_info.clone(), probes.clone())
-                .with_source_facts(
-                    storage_source_health("storage_metrics", &module_info, &probes),
-                    storage_source_capability_facts("storage_metrics", &module_info, &probes),
-                )
+                .with_source_facts(storage_source_facts(
+                    "storage_metrics",
+                    &module_info,
+                    &probes,
+                ))
         }
         Err(error) => {
             let error = error.to_string();
@@ -300,10 +235,11 @@ async fn storage_metrics_report(metrics_endpoint: Option<&str>) -> ModuleReport 
                 error,
             )];
             ModuleReport::new("storage_metrics", module_info.clone(), probes.clone())
-                .with_source_facts(
-                    storage_source_health("storage_metrics", &module_info, &probes),
-                    storage_source_capability_facts("storage_metrics", &module_info, &probes),
-                )
+                .with_source_facts(storage_source_facts(
+                    "storage_metrics",
+                    &module_info,
+                    &probes,
+                ))
         }
     }
 }
@@ -324,16 +260,8 @@ fn unsupported_storage_source_report(mode: &str) -> ModuleReport {
         format!("storage source mode `{mode}` is not implemented"),
     );
     let probes = Vec::new();
-    ModuleReport::new(module.clone(), module_info.clone(), probes.clone()).with_source_facts(
-        unsupported_source_health(&module_info),
-        storage_source_capability_facts(&module, &module_info, &probes),
-    )
-}
-
-fn normalized_storage_source_mode(source_mode: &str) -> &'static str {
-    StorageSourceMode::from_token(source_mode)
-        .effective()
-        .as_str()
+    ModuleReport::new(module.clone(), module_info.clone(), probes.clone())
+        .with_source_facts(storage_source_facts(&module, &module_info, &probes))
 }
 
 fn normalize_storage_manifests(value: Value) -> Value {
@@ -383,8 +311,7 @@ pub fn delivery_report(info_id: Option<&str>) -> ModuleReport {
     }
     let module_info = module_info_probe(DELIVERY_MODULE);
     ModuleReport::new(DELIVERY_MODULE, module_info.clone(), probes.clone()).with_source_facts(
-        delivery_source_health(DELIVERY_MODULE, &module_info, &probes),
-        delivery_source_capability_facts(DELIVERY_MODULE, &module_info, &probes),
+        delivery_source_facts(DELIVERY_MODULE, &module_info, &probes),
     )
 }
 
@@ -393,7 +320,7 @@ pub async fn delivery_source_report(
     rest_endpoint: Option<&str>,
     metrics_endpoint: Option<&str>,
 ) -> ModuleReport {
-    match normalized_delivery_source_mode(source_mode) {
+    match effective_source_mode(SourceFamily::Delivery, source_mode) {
         "module" => delivery_report(None),
         "rest" => delivery_rest_report(rest_endpoint, metrics_endpoint).await,
         "metrics" => delivery_metrics_report(metrics_endpoint).await,
@@ -497,8 +424,7 @@ async fn delivery_rest_report(
         probes.push(metrics_probe(metrics_endpoint).await);
     }
     ModuleReport::new("delivery_rest", health_probe.clone(), probes.clone()).with_source_facts(
-        delivery_source_health("delivery_rest", &health_probe, &probes),
-        delivery_source_capability_facts("delivery_rest", &health_probe, &probes),
+        delivery_source_facts("delivery_rest", &health_probe, &probes),
     )
 }
 
@@ -568,10 +494,11 @@ async fn delivery_metrics_report(metrics_endpoint: Option<&str>) -> ModuleReport
                 text,
             )];
             ModuleReport::new("delivery_metrics", module_info.clone(), probes.clone())
-                .with_source_facts(
-                    delivery_source_health("delivery_metrics", &module_info, &probes),
-                    delivery_source_capability_facts("delivery_metrics", &module_info, &probes),
-                )
+                .with_source_facts(delivery_source_facts(
+                    "delivery_metrics",
+                    &module_info,
+                    &probes,
+                ))
         }
         Err(error) => {
             let error = error.to_string();
@@ -582,10 +509,11 @@ async fn delivery_metrics_report(metrics_endpoint: Option<&str>) -> ModuleReport
                 error,
             )];
             ModuleReport::new("delivery_metrics", module_info.clone(), probes.clone())
-                .with_source_facts(
-                    delivery_source_health("delivery_metrics", &module_info, &probes),
-                    delivery_source_capability_facts("delivery_metrics", &module_info, &probes),
-                )
+                .with_source_facts(delivery_source_facts(
+                    "delivery_metrics",
+                    &module_info,
+                    &probes,
+                ))
         }
     }
 }
@@ -634,10 +562,11 @@ async fn delivery_network_monitor_report(
         all_peers_probe.clone(),
         probes.clone(),
     )
-    .with_source_facts(
-        delivery_source_health("delivery_network_monitor", &all_peers_probe, &probes),
-        delivery_source_capability_facts("delivery_network_monitor", &all_peers_probe, &probes),
-    )
+    .with_source_facts(delivery_source_facts(
+        "delivery_network_monitor",
+        &all_peers_probe,
+        &probes,
+    ))
 }
 
 fn unsupported_delivery_source_report(mode: &str) -> ModuleReport {
@@ -648,673 +577,8 @@ fn unsupported_delivery_source_report(mode: &str) -> ModuleReport {
         format!("delivery source mode `{mode}` is not implemented"),
     );
     let probes = Vec::new();
-    ModuleReport::new(module.clone(), module_info.clone(), probes.clone()).with_source_facts(
-        unsupported_source_health(&module_info),
-        delivery_source_capability_facts(&module, &module_info, &probes),
-    )
-}
-
-fn normalized_delivery_source_mode(source_mode: &str) -> &'static str {
-    DeliverySourceMode::from_token(source_mode)
-        .effective()
-        .as_str()
-}
-
-fn storage_source_health(
-    module: &str,
-    module_info: &ProbeReport,
-    probes: &[ProbeReport],
-) -> SourceHealthFacts {
-    let reachable = source_reachable(module_info, probes);
-    let ready = match module {
-        "storage_rest" => {
-            probe_ok(module_info, probes, "peerId")
-                && probe_ok(module_info, probes, "spr")
-                && probe_ok(module_info, probes, "space")
-                && probe_ok(module_info, probes, "manifests")
-        }
-        "storage_metrics" => storage_metrics_evidence_present(module_info, probes),
-        STORAGE_MODULE => ["peerId", "spr", "space", "debug", "manifests"]
-            .iter()
-            .any(|method| probe_ok(module_info, probes, method)),
-        _ => false,
-    };
-    source_health(
-        reachable,
-        ready,
-        false,
-        if ready {
-            source_ready_summary("storage source ready", module_info, probes)
-        } else if reachable {
-            "storage source degraded".to_owned()
-        } else {
-            "storage source unavailable".to_owned()
-        },
-        if ready {
-            "required storage facts observed".to_owned()
-        } else {
-            source_report_error(module_info, probes)
-                .unwrap_or_else(|| "required storage facts missing".to_owned())
-        },
-    )
-}
-
-fn delivery_source_health(
-    module: &str,
-    module_info: &ProbeReport,
-    probes: &[ProbeReport],
-) -> SourceHealthFacts {
-    let reachable = source_reachable(module_info, probes);
-    let metrics_ready = delivery_metrics_evidence_present(module_info, probes);
-    let ready = match module {
-        "delivery_metrics" => metrics_ready,
-        "delivery_network_monitor" => {
-            probe_ok(module_info, probes, "allPeersInfo")
-                || probe_ok(module_info, probes, "contentTopics")
-                || metrics_ready
-        }
-        "delivery_rest" => {
-            probe_ok(module_info, probes, "health")
-                && health_value_ok(probe_value(module_info, probes, "nodeHealth"), false)
-                && health_value_ok(probe_value(module_info, probes, "connectionStatus"), false)
-        }
-        DELIVERY_MODULE => {
-            let node_health = report_probe(module_info, probes, "nodeHealth");
-            let connection_status = report_probe(module_info, probes, "connectionStatus");
-            if node_health.is_none() && connection_status.is_none() {
-                delivery_module_runtime_healthy(module_info, probes)
-            } else {
-                health_value_ok(probe_value(module_info, probes, "nodeHealth"), false)
-                    && health_value_ok(probe_value(module_info, probes, "connectionStatus"), false)
-            }
-        }
-        _ => false,
-    };
-    source_health(
-        reachable,
-        ready,
-        false,
-        if ready {
-            source_ready_summary("delivery source ready", module_info, probes)
-        } else if reachable {
-            "delivery source degraded".to_owned()
-        } else {
-            "delivery source unavailable".to_owned()
-        },
-        if ready {
-            delivery_ready_detail(module, module_info, probes)
-        } else {
-            source_report_error(module_info, probes)
-                .unwrap_or_else(|| "required delivery facts missing".to_owned())
-        },
-    )
-}
-
-fn unsupported_source_health(module_info: &ProbeReport) -> SourceHealthFacts {
-    source_health(
-        false,
-        false,
-        true,
-        "unsupported source".to_owned(),
-        source_report_error(module_info, &[])
-            .unwrap_or_else(|| "source mode unsupported".to_owned()),
-    )
-}
-
-fn source_health(
-    reachable: bool,
-    ready: bool,
-    unsupported: bool,
-    summary: String,
-    detail: String,
-) -> SourceHealthFacts {
-    let status = if unsupported {
-        SourceHealthStatus::Unsupported
-    } else if ready {
-        SourceHealthStatus::Healthy
-    } else if reachable {
-        SourceHealthStatus::Degraded
-    } else {
-        SourceHealthStatus::Unavailable
-    };
-    SourceHealthFacts {
-        reachable,
-        ready,
-        status,
-        summary,
-        detail,
-    }
-}
-
-fn storage_source_capability_facts(
-    module: &str,
-    module_info: &ProbeReport,
-    probes: &[ProbeReport],
-) -> Vec<SourceCapabilityFact> {
-    let mut facts = vec![
-        any_probe_fact(
-            module_info,
-            probes,
-            "identity",
-            "Identity",
-            &["peerId", "spr"],
-        ),
-        any_probe_fact(module_info, probes, "space", "Repository space", &["space"]),
-        any_probe_fact(
-            module_info,
-            probes,
-            "manifest_listing",
-            "Manifest listing",
-            &["manifests"],
-        ),
-        any_probe_fact(module_info, probes, "debug", "Debug topology", &["debug"]),
-        storage_metrics_fact(module_info, probes),
-    ];
-    if let Some(probe) = report_probe(module_info, probes, "exists") {
-        facts.push(probe_fact("cid_exists", "CID existence", probe));
-    }
-    if module == "storage_rest" {
-        facts.push(SourceCapabilityFact::available(
-            "rest_api",
-            "REST API",
-            "REST probes available",
-            None,
-        ));
-    } else if module == STORAGE_MODULE {
-        facts.push(SourceCapabilityFact::available(
-            "module_api",
-            "Module API",
-            "LogosCore storage module available",
-            None,
-        ));
-    }
-    facts
-}
-
-fn delivery_source_capability_facts(
-    module: &str,
-    module_info: &ProbeReport,
-    probes: &[ProbeReport],
-) -> Vec<SourceCapabilityFact> {
-    let mut facts = vec![
-        any_probe_fact(
-            module_info,
-            probes,
-            "identity",
-            "Identity",
-            &[
-                "peerId",
-                "MyPeerId",
-                "enrUri",
-                "MyENR",
-                "listenAddresses",
-                "MyMultiaddresses",
-            ],
-        ),
-        any_probe_fact(
-            module_info,
-            probes,
-            "health",
-            "Health endpoint",
-            &["health", "nodeHealth", "connectionStatus"],
-        ),
-        delivery_metrics_fact(module_info, probes),
-        delivery_protocol_fact(
-            module_info,
-            probes,
-            "relay",
-            "Relay",
-            &[
-                "waku_relay",
-                "waku_pubsub",
-                "libp2p_pubsub_peers",
-                "waku_node_messages_total",
-            ],
-            &["relay"],
-        ),
-        delivery_protocol_fact(
-            module_info,
-            probes,
-            "store",
-            "Store",
-            &[
-                "waku_store",
-                "waku_store_peers",
-                "waku_store_messages",
-                "waku_store_queries_total",
-            ],
-            &["store"],
-        ),
-        delivery_protocol_fact(
-            module_info,
-            probes,
-            "filter",
-            "Filter",
-            &["waku_filter", "waku_filter_peers", "waku_filter_requests"],
-            &["filter"],
-        ),
-        delivery_protocol_fact(
-            module_info,
-            probes,
-            "lightpush",
-            "Lightpush",
-            &["waku_lightpush", "waku_lightpush_peers", "lightpush"],
-            &["lightpush"],
-        ),
-        any_probe_fact(
-            module_info,
-            probes,
-            "network_monitor",
-            "Network monitor",
-            &["allPeersInfo", "contentTopics"],
-        ),
-    ];
-    if module == "delivery_rest" {
-        facts.push(SourceCapabilityFact::available(
-            "rest_api",
-            "REST API",
-            "REST probes available",
-            None,
-        ));
-    } else if module == DELIVERY_MODULE {
-        facts.push(SourceCapabilityFact::available(
-            "module_api",
-            "Module API",
-            "LogosCore delivery module available",
-            None,
-        ));
-    }
-    facts
-}
-
-fn source_ready_summary(
-    fallback: &str,
-    module_info: &ProbeReport,
-    probes: &[ProbeReport],
-) -> String {
-    ["version", "moduleVersion", "Version"]
-        .iter()
-        .find_map(|method| probe_value(module_info, probes, method))
-        .map(value_summary)
-        .filter(|value| !value.is_empty() && value != "n/a")
-        .map(|value| format!("version {value}"))
-        .unwrap_or_else(|| fallback.to_owned())
-}
-
-fn delivery_ready_detail(
-    module: &str,
-    module_info: &ProbeReport,
-    probes: &[ProbeReport],
-) -> String {
-    if module == "delivery_rest" {
-        let node = probe_value(module_info, probes, "nodeHealth")
-            .map(value_summary)
-            .unwrap_or_else(|| "unknown".to_owned());
-        let connection = probe_value(module_info, probes, "connectionStatus")
-            .map(value_summary)
-            .unwrap_or_else(|| "unknown".to_owned());
-        return format!("node health {node}; connection {connection}");
-    }
-    if delivery_metrics_evidence_present(module_info, probes) {
-        return "delivery metrics observed".to_owned();
-    }
-    "required delivery facts observed".to_owned()
-}
-
-fn source_reachable(module_info: &ProbeReport, probes: &[ProbeReport]) -> bool {
-    module_info.ok || probes.iter().any(|probe| probe.ok)
-}
-
-fn source_report_error(module_info: &ProbeReport, probes: &[ProbeReport]) -> Option<String> {
-    module_info
-        .error
-        .as_ref()
-        .filter(|error| !error.is_empty())
-        .cloned()
-        .or_else(|| {
-            probes.iter().find_map(|probe| {
-                probe
-                    .error
-                    .as_ref()
-                    .filter(|error| !error.is_empty())
-                    .cloned()
-            })
-        })
-}
-
-fn any_probe_fact(
-    module_info: &ProbeReport,
-    probes: &[ProbeReport],
-    key: &str,
-    label: &str,
-    methods: &[&str],
-) -> SourceCapabilityFact {
-    let mut fallback = None;
-    for method in methods {
-        if let Some(probe) = report_probe(module_info, probes, method) {
-            if probe.ok {
-                return probe_fact(key, label, probe);
-            }
-            if fallback.is_none() {
-                fallback = Some(probe);
-            }
-        }
-    }
-    fallback.map_or_else(
-        || SourceCapabilityFact::unavailable(key, label, "not observed"),
-        |probe| probe_fact(key, label, probe),
-    )
-}
-
-fn probe_fact(key: &str, label: &str, probe: &ProbeReport) -> SourceCapabilityFact {
-    if probe.ok {
-        SourceCapabilityFact::available(
-            key,
-            label,
-            probe
-                .value
-                .as_ref()
-                .map(value_summary)
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| "observed".to_owned()),
-            probe.value.clone(),
-        )
-    } else {
-        SourceCapabilityFact::unavailable(
-            key,
-            label,
-            probe
-                .error
-                .clone()
-                .filter(|error| !error.is_empty())
-                .unwrap_or_else(|| "unavailable".to_owned()),
-        )
-    }
-}
-
-fn storage_metrics_fact(module_info: &ProbeReport, probes: &[ProbeReport]) -> SourceCapabilityFact {
-    let probe = report_probe(module_info, probes, "collectMetrics");
-    if storage_metrics_evidence_present(module_info, probes) {
-        return SourceCapabilityFact::available(
-            "metrics",
-            "Metrics",
-            "OpenMetrics text observed",
-            probe.and_then(|probe| probe.value.clone()),
-        );
-    }
-    probe.map_or_else(
-        || SourceCapabilityFact::unavailable("metrics", "Metrics", "not observed"),
-        |probe| {
-            if probe.ok {
-                SourceCapabilityFact::unavailable("metrics", "Metrics", "metrics response empty")
-            } else {
-                probe_fact("metrics", "Metrics", probe)
-            }
-        },
-    )
-}
-
-fn delivery_metrics_fact(
-    module_info: &ProbeReport,
-    probes: &[ProbeReport],
-) -> SourceCapabilityFact {
-    let probe = report_probe(module_info, probes, "collectOpenMetricsText")
-        .or_else(|| report_probe(module_info, probes, "Metrics"));
-    if delivery_metrics_evidence_present(module_info, probes) {
-        return SourceCapabilityFact::available(
-            "metrics",
-            "Metrics",
-            "known Waku metric family observed",
-            probe.and_then(|probe| probe.value.clone()),
-        );
-    }
-    probe.map_or_else(
-        || SourceCapabilityFact::unavailable("metrics", "Metrics", "not observed"),
-        |probe| {
-            if probe.ok {
-                SourceCapabilityFact::unavailable(
-                    "metrics",
-                    "Metrics",
-                    "no known Waku metric family observed",
-                )
-            } else {
-                probe_fact("metrics", "Metrics", probe)
-            }
-        },
-    )
-}
-
-fn delivery_protocol_fact(
-    module_info: &ProbeReport,
-    probes: &[ProbeReport],
-    key: &str,
-    label: &str,
-    metric_needles: &[&str],
-    protocol_needles: &[&str],
-) -> SourceCapabilityFact {
-    if metric_text_contains(module_info, probes, metric_needles) {
-        return SourceCapabilityFact::available(key, label, "metric family observed", None);
-    }
-    if protocol_health_contains(module_info, probes, protocol_needles) {
-        return SourceCapabilityFact::available(key, label, "protocol health observed", None);
-    }
-    SourceCapabilityFact::unavailable(key, label, "not observed")
-}
-
-fn storage_metrics_evidence_present(module_info: &ProbeReport, probes: &[ProbeReport]) -> bool {
-    open_metrics_text(module_info, probes, &["collectMetrics"])
-        .map(|text| text.lines().any(|line| !line.trim().is_empty()))
-        .unwrap_or(false)
-}
-
-fn delivery_metrics_evidence_present(module_info: &ProbeReport, probes: &[ProbeReport]) -> bool {
-    metric_text_contains(
-        module_info,
-        probes,
-        &[
-            "libp2p_peers",
-            "waku_peers",
-            "libp2p_pubsub_peers",
-            "waku_node_messages_total",
-            "waku_node_errors_total",
-            "waku_store_queries_total",
-            "waku_filter_peers",
-            "waku_lightpush_peers",
-        ],
-    )
-}
-
-fn metric_text_contains(
-    module_info: &ProbeReport,
-    probes: &[ProbeReport],
-    needles: &[&str],
-) -> bool {
-    open_metrics_text(
-        module_info,
-        probes,
-        &["collectOpenMetricsText", "collectMetrics", "Metrics"],
-    )
-    .map(|text| needles.iter().any(|needle| text.contains(needle)))
-    .unwrap_or(false)
-}
-
-fn protocol_health_contains(
-    module_info: &ProbeReport,
-    probes: &[ProbeReport],
-    needles: &[&str],
-) -> bool {
-    probe_value(module_info, probes, "protocolsHealth")
-        .map(|value| value.to_string().to_lowercase())
-        .map(|text| needles.iter().any(|needle| text.contains(needle)))
-        .unwrap_or(false)
-}
-
-fn delivery_module_runtime_healthy(module_info: &ProbeReport, probes: &[ProbeReport]) -> bool {
-    ["Metrics", "collectOpenMetricsText"]
-        .iter()
-        .any(|method| probe_has_runtime_value(report_probe(module_info, probes, method)))
-}
-
-fn probe_has_runtime_value(probe: Option<&ProbeReport>) -> bool {
-    let Some(probe) = probe else {
-        return false;
-    };
-    if !probe.ok {
-        return false;
-    }
-    match probe.value.as_ref() {
-        Some(Value::Array(items)) => !items.is_empty(),
-        Some(Value::Object(object)) => !object.is_empty(),
-        Some(value) => !value_summary(value).trim().is_empty(),
-        None => false,
-    }
-}
-
-fn open_metrics_text(
-    module_info: &ProbeReport,
-    probes: &[ProbeReport],
-    methods: &[&str],
-) -> Option<String> {
-    for method in methods {
-        let Some(value) = probe_value(module_info, probes, method) else {
-            continue;
-        };
-        if let Some(text) = open_metrics_text_from_value(value)
-            && !text.trim().is_empty()
-        {
-            return Some(text);
-        }
-    }
-    None
-}
-
-fn open_metrics_text_from_value(value: &Value) -> Option<String> {
-    match value {
-        Value::String(text) => Some(text.clone()),
-        Value::Object(object) => ["value", "result", "metrics", "text"]
-            .iter()
-            .find_map(|key| object.get(*key).and_then(open_metrics_text_from_value)),
-        _ => None,
-    }
-}
-
-fn probe_ok(module_info: &ProbeReport, probes: &[ProbeReport], method: &str) -> bool {
-    report_probe(module_info, probes, method)
-        .map(|probe| probe.ok)
-        .unwrap_or(false)
-}
-
-fn probe_value<'a>(
-    module_info: &'a ProbeReport,
-    probes: &'a [ProbeReport],
-    method: &str,
-) -> Option<&'a Value> {
-    report_probe(module_info, probes, method)
-        .filter(|probe| probe.ok)
-        .and_then(|probe| probe.value.as_ref())
-}
-
-fn report_probe<'a>(
-    module_info: &'a ProbeReport,
-    probes: &'a [ProbeReport],
-    method: &str,
-) -> Option<&'a ProbeReport> {
-    if probe_matches(module_info, method) {
-        return Some(module_info);
-    }
-    probes.iter().find(|probe| probe_matches(probe, method))
-}
-
-fn probe_matches(probe: &ProbeReport, method: &str) -> bool {
-    if method.is_empty() {
-        return false;
-    }
-    let label = probe.label.as_str();
-    let source = probe.source.as_str();
-    label.contains(&format!(".{method}"))
-        || label.contains(&format!("({method})"))
-        || label.ends_with(method)
-        || source.contains(&format!(" {method}"))
-        || source.contains(&format!("/{method}"))
-}
-
-fn health_value_ok(value: Option<&Value>, unknown_ok: bool) -> bool {
-    let Some(value) = value else {
-        return unknown_ok;
-    };
-    if let Some(boolean) = value.as_bool() {
-        return boolean;
-    }
-    let text = scalar_text(value)
-        .unwrap_or_else(|| value.to_string())
-        .trim()
-        .to_lowercase();
-    if text.is_empty() {
-        return unknown_ok;
-    }
-    let normalized = text
-        .chars()
-        .filter(|character| character.is_ascii_alphanumeric())
-        .map(|character| character.to_ascii_lowercase())
-        .collect::<String>();
-    if ["ready", "healthy", "ok", "connected", "true"].contains(&normalized.as_str()) {
-        return true;
-    }
-    if [
-        "initializing",
-        "synchronizing",
-        "notready",
-        "notmounted",
-        "shuttingdown",
-        "eventlooplagging",
-        "disconnected",
-        "partiallyconnected",
-        "false",
-    ]
-    .contains(&normalized.as_str())
-        || text.contains("not")
-        || text.contains("unhealthy")
-        || text.contains("error")
-        || text.contains("fail")
-        || text.contains("down")
-        || text.contains("disconnect")
-    {
-        return false;
-    }
-    unknown_ok
-}
-
-fn scalar_text(value: &Value) -> Option<String> {
-    match value {
-        Value::Null => None,
-        Value::Bool(value) => Some(value.to_string()),
-        Value::Number(value) => Some(value.to_string()),
-        Value::String(value) => Some(value.clone()),
-        Value::Object(object) => ["value", "result", "status", "health"]
-            .iter()
-            .find_map(|key| object.get(*key).and_then(scalar_text)),
-        Value::Array(_) => None,
-    }
-}
-
-fn value_summary(value: &Value) -> String {
-    match value {
-        Value::Null => "n/a".to_owned(),
-        Value::Bool(value) => value.to_string(),
-        Value::Number(value) => value.to_string(),
-        Value::String(value) => value.clone(),
-        Value::Array(items) => {
-            if items.is_empty() {
-                "empty".to_owned()
-            } else {
-                format!("{} item(s)", items.len())
-            }
-        }
-        Value::Object(object) => ["result", "value"]
-            .iter()
-            .find_map(|key| object.get(*key).map(value_summary))
-            .unwrap_or_else(|| format!("{} field(s)", object.len())),
-    }
+    ModuleReport::new(module.clone(), module_info.clone(), probes.clone())
+        .with_source_facts(delivery_source_facts(&module, &module_info, &probes))
 }
 
 async fn raw_http_value(endpoint: &str, path: &str) -> Result<Value> {
@@ -1438,24 +702,6 @@ mod tests {
     }
 
     #[test]
-    fn storage_source_normalizer_keeps_module_source() {
-        assert_eq!(normalized_storage_source_mode("module"), "module");
-        assert_eq!(normalized_storage_source_mode("basecamp module"), "module");
-    }
-
-    #[test]
-    fn delivery_source_normalizer_keeps_network_monitor_source() {
-        assert_eq!(
-            normalized_delivery_source_mode("network-monitor"),
-            "network-monitor"
-        );
-        assert_eq!(
-            normalized_delivery_source_mode("discovery crawler"),
-            "network-monitor"
-        );
-    }
-
-    #[test]
     fn delivery_rest_normalizers_expose_current_api_fields() {
         let health = normalize_delivery_health(json!({
             "nodeHealth": "Ready",
@@ -1490,100 +736,5 @@ mod tests {
             scalar_field(&info, &["enrUri"]).as_ref(),
             Some(&json!("enr:-abc"))
         );
-    }
-
-    #[test]
-    fn storage_source_health_requires_rest_core_facts() {
-        let module_info = ProbeReport::ok("storage_rest.space", "http://storage/space", json!({}));
-        let probes = vec![
-            module_info.clone(),
-            ProbeReport::ok("storage_rest.spr", "http://storage/spr", "spr-a"),
-            ProbeReport::ok("storage_rest.peerId", "http://storage/peerid", "peer-a"),
-            ProbeReport::ok("storage_rest.manifests", "http://storage/data", json!([])),
-        ];
-
-        let health = storage_source_health("storage_rest", &module_info, &probes);
-        let facts = storage_source_capability_facts("storage_rest", &module_info, &probes);
-
-        assert!(health.reachable);
-        assert!(health.ready);
-        assert_eq!(health.status, SourceHealthStatus::Healthy);
-        assert!(
-            facts
-                .iter()
-                .any(|fact| fact.key == "identity" && fact.available)
-        );
-    }
-
-    #[test]
-    fn storage_source_health_marks_rest_missing_facts_degraded() {
-        let module_info = ProbeReport::ok("storage_rest.space", "http://storage/space", json!({}));
-        let probes = vec![module_info.clone()];
-
-        let health = storage_source_health("storage_rest", &module_info, &probes);
-
-        assert!(health.reachable);
-        assert!(!health.ready);
-        assert_eq!(health.status, SourceHealthStatus::Degraded);
-    }
-
-    #[test]
-    fn delivery_source_health_requires_known_metrics_family() {
-        let module_info = ProbeReport::ok(
-            "delivery_metrics.scrape",
-            "http://metrics",
-            json!({ "bytes": 20, "lines": 1 }),
-        );
-        let generic_metrics = vec![ProbeReport::ok(
-            "delivery_metrics.collectOpenMetricsText",
-            "http://metrics",
-            "process_cpu_seconds_total 3\n",
-        )];
-        let waku_metrics = vec![ProbeReport::ok(
-            "delivery_metrics.collectOpenMetricsText",
-            "http://metrics",
-            "waku_store_queries_total 3\n",
-        )];
-
-        assert!(!delivery_source_health("delivery_metrics", &module_info, &generic_metrics).ready);
-        assert!(delivery_source_health("delivery_metrics", &module_info, &waku_metrics).ready);
-        assert!(
-            delivery_source_capability_facts("delivery_metrics", &module_info, &waku_metrics)
-                .iter()
-                .any(|fact| fact.key == "store" && fact.available)
-        );
-    }
-
-    #[test]
-    fn delivery_rest_health_requires_node_and_connection_health() {
-        let module_info = ProbeReport::ok(
-            "delivery_rest.health",
-            "http://delivery/health",
-            json!({ "status": "ok" }),
-        );
-        let missing_connection = vec![
-            module_info.clone(),
-            ProbeReport::ok(
-                "delivery_rest.nodeHealth",
-                "http://delivery/health",
-                "healthy",
-            ),
-        ];
-        let connected = vec![
-            module_info.clone(),
-            ProbeReport::ok(
-                "delivery_rest.nodeHealth",
-                "http://delivery/health",
-                "healthy",
-            ),
-            ProbeReport::ok(
-                "delivery_rest.connectionStatus",
-                "http://delivery/health",
-                "connected",
-            ),
-        ];
-
-        assert!(!delivery_source_health("delivery_rest", &module_info, &missing_connection).ready);
-        assert!(delivery_source_health("delivery_rest", &module_info, &connected).ready);
     }
 }

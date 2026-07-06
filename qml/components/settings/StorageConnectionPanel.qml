@@ -191,20 +191,11 @@ Panel {
     }
 
     function sourceIndexFor(value) {
-        const source = root.modelRef.normalizedStorageSourceMode(value)
-        for (let i = 0; i < root.sourceOptions.count; ++i) {
-            if (root.sourceOptions.get(i).key === source) {
-                return i
-            }
-        }
-        return 0
+        return root.modelRef.sourceModeIndexFor("storage", value, root.sourceOptions)
     }
 
     function sourceModeAt(index) {
-        if (index < 0 || index >= root.sourceOptions.count) {
-            return "auto"
-        }
-        return root.sourceOptions.get(index).key
+        return root.modelRef.sourceModeAt(index, root.sourceOptions)
     }
 
     function storageSourceMode() {
@@ -212,15 +203,14 @@ Panel {
     }
 
     function storageRestEnabled() {
-        return root.storageSourceMode() === "rest"
+        return root.modelRef.sourceModeUsesEndpoint("storage", root.modelRef.storageSourceMode, "rest")
     }
 
     function storageMetricsEnabled() {
-        const source = root.storageSourceMode()
-        return source === "rest" || source === "metrics"
+        return root.modelRef.sourceModeUsesEndpoint("storage", root.modelRef.storageSourceMode, "metrics")
     }
 
     function storageDataEnabled() {
-        return root.storageSourceMode() === "rest"
+        return root.modelRef.sourceModeSupportsCidProbe("storage", root.modelRef.storageSourceMode)
     }
 }

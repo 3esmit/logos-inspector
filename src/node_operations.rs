@@ -33,8 +33,8 @@ use crate::{
     sequencer_transaction_inspection, sequencer_transaction_inspection_with_idl,
     sequencer_transaction_trace, sequencer_transaction_trace_with_idl,
     source_policy::{
-        CoreEndpointMode, CoreSourceMode, DEFAULT_DELIVERY_REST_ENDPOINT,
-        DEFAULT_STORAGE_REST_ENDPOINT, DeliverySourceMode, StorageSourceMode,
+        CoreEndpointMode, CoreSourceMode, SourceFamily, default_endpoint_for_domain,
+        default_source_mode_for_domain, effective_source_mode, source_mode_is_token,
     },
     state_store::registered_idl_entries,
 };
@@ -557,12 +557,12 @@ fn normalized_node_operation_args(request: &NodeOperationRequest) -> Value {
         return request.args.clone();
     }
     let mode = if request.source_mode.is_empty() {
-        default_source_mode_for_domain(&request.domain)
+        default_source_mode_for_domain(&request.domain).to_owned()
     } else {
         request.source_mode.clone()
     };
     let endpoint = if request.endpoint.is_empty() {
-        default_endpoint_for_domain(&request.domain)
+        default_endpoint_for_domain(&request.domain).to_owned()
     } else {
         request.endpoint.clone()
     };
@@ -596,7 +596,8 @@ fn node_operation_args_have_source(request: &NodeOperationRequest, values: &[Val
         return false;
     };
     if storage_or_delivery_domain(&request.domain) {
-        return StorageSourceMode::is_source_token(first) || is_delivery_source_token(first);
+        return source_mode_is_token(SourceFamily::Storage, first)
+            || source_mode_is_token(SourceFamily::Delivery, first);
     }
     first == request.endpoint
         || first.starts_with("http://")
@@ -606,21 +607,6 @@ fn node_operation_args_have_source(request: &NodeOperationRequest, values: &[Val
 
 fn storage_or_delivery_domain(domain: &str) -> bool {
     matches!(domain, "storage" | "delivery")
-}
-
-fn default_source_mode_for_domain(domain: &str) -> String {
-    match domain {
-        "delivery" | "storage" => "rest".to_owned(),
-        _ => "rpc".to_owned(),
-    }
-}
-
-fn default_endpoint_for_domain(domain: &str) -> String {
-    match domain {
-        "delivery" => DEFAULT_DELIVERY_REST_ENDPOINT.to_owned(),
-        "storage" => DEFAULT_STORAGE_REST_ENDPOINT.to_owned(),
-        _ => String::new(),
-    }
 }
 
 fn node_operation_uses_mutating_flag(request: &NodeOperationRequest) -> bool {
@@ -734,7 +720,7 @@ fn storage_module_operation_gated(request: &NodeOperationRequest) -> bool {
             .and_then(Value::as_str)
             .unwrap_or_default()
     };
-    StorageSourceMode::from_token(mode) == StorageSourceMode::Module
+    effective_source_mode(SourceFamily::Storage, mode) == "module"
         && matches!(
             request.method.as_str(),
             "storageFetch"
@@ -1661,11 +1647,11 @@ async fn storage_rest_download_tracked(
 }
 
 fn is_delivery_source_token(value: &str) -> bool {
-    DeliverySourceMode::is_source_token(value)
+    source_mode_is_token(SourceFamily::Delivery, value)
 }
 
 fn is_delivery_module_source_token(value: &str) -> bool {
-    DeliverySourceMode::from_token(value) == DeliverySourceMode::Module
+    effective_source_mode(SourceFamily::Delivery, value) == "module"
 }
 
 struct DeliveryModuleArgs {

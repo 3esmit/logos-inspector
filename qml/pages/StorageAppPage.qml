@@ -584,19 +584,23 @@ ColumnLayout {
     }
 
     function storageRestSource() {
-        return String(root.model.effectiveStorageSourceMode(root.model.storageSourceMode) || "").toLowerCase() === "rest"
+        return root.model.sourceModeTargetKind("storage", root.model.storageSourceMode) === "rest_endpoint"
     }
 
     function storageMutatingSource() {
-        return root.storageRestSource() && root.model.storageMutatingDiagnosticsEnabled === true
+        return root.model.sourceModeSupportsMutatingDiagnostics("storage", root.model.storageSourceMode)
+            && root.model.storageMutatingDiagnosticsEnabled === true
     }
 
     function storageDataSource() {
-        return root.storageRestSource()
+        return root.model.sourceModeUsesEndpoint("storage", root.model.storageSourceMode, "rest")
     }
 
     function storageArgs(extra) {
-        const args = [root.model.effectiveStorageSourceMode(root.model.storageSourceMode), root.model.configuredStorageRestUrl()]
+        const args = [
+            root.model.effectiveStorageSourceMode(root.model.storageSourceMode),
+            root.model.sourceModeUsesEndpoint("storage", root.model.storageSourceMode, "rest") ? root.model.configuredStorageRestUrl() : ""
+        ]
         return args.concat(extra || [])
     }
 
