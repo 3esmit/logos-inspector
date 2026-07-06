@@ -7,6 +7,7 @@ mod entity_id;
 mod idl;
 mod idl_interaction;
 mod indexer;
+mod inspector_commands;
 pub mod local_indexer;
 pub mod local_nodes;
 pub mod logoscore;
