@@ -12,7 +12,7 @@ ColumnLayout {
     id: root
 
     required property Theme theme
-    required property AppModel model
+    required property LocalNodesState model
 
     property string newNetworkId: ""
     property string loadWorkspace: ""
@@ -25,8 +25,8 @@ ColumnLayout {
     spacing: 16
 
     Component.onCompleted: {
-        root.model.refreshLocalNodes(false)
-        root.model.refreshLocalDevnets()
+        root.model.refresh(false)
+        root.model.refreshDevnets()
     }
 
     PageHeader {
@@ -57,7 +57,7 @@ ColumnLayout {
             StatusChip {
                 theme: root.theme
                 label: qsTr("Mode")
-                value: root.model.localNodeModeLabel()
+                value: root.model.modeLabel()
                 tone: root.model.networkProfile === "local" ? "success" : "neutral"
                 compact: true
                 showIndicator: true
@@ -88,7 +88,7 @@ ColumnLayout {
             StatusChip {
                 theme: root.theme
                 label: qsTr("Status")
-                value: root.model.localNodeSummaryText()
+                value: root.model.summaryText()
                 tone: root.summaryTone()
                 compact: true
                 showIndicator: true
@@ -98,20 +98,20 @@ ColumnLayout {
     }
 
     StatusMessage {
-        visible: root.model.localNodesError.length > 0
+        visible: root.model.error.length > 0
         theme: root.theme
         tone: "error"
         title: qsTr("Local node status failed")
-        message: root.model.localNodesError
+        message: root.model.error
         Layout.fillWidth: true
     }
 
     StatusMessage {
-        visible: root.model.localNodesError.length === 0 && root.model.localNodeToolProblem().length > 0
+        visible: root.model.error.length === 0 && root.model.toolProblem().length > 0
         theme: root.theme
         tone: "warning"
         title: qsTr("Configuration required")
-        message: root.model.localNodeToolProblem()
+        message: root.model.toolProblem()
         Layout.fillWidth: true
     }
 
@@ -144,7 +144,7 @@ ColumnLayout {
                     theme: root.theme
                     text: qsTr("New")
                     primary: true
-                    enabled: root.model.localNodeNetworkActionEnabled("new_network")
+                    enabled: root.model.networkActionEnabled("new_network")
                     Layout.preferredWidth: 96
                     Layout.fillWidth: root.width < 840
                     onClicked: root.openNetworkConfirm("new_network")
@@ -153,7 +153,7 @@ ColumnLayout {
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Reset")
-                    enabled: root.model.localNodeNetworkActionEnabled("reset_network")
+                    enabled: root.model.networkActionEnabled("reset_network")
                     Layout.preferredWidth: 96
                     Layout.fillWidth: root.width < 840
                     onClicked: root.openNetworkConfirm("reset_network")
@@ -162,7 +162,7 @@ ColumnLayout {
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Delete")
-                    enabled: root.model.localNodeNetworkActionEnabled("delete_network")
+                    enabled: root.model.networkActionEnabled("delete_network")
                     Layout.preferredWidth: 96
                     Layout.fillWidth: root.width < 840
                     onClicked: root.openNetworkConfirm("delete_network")
@@ -189,7 +189,7 @@ ColumnLayout {
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Load")
-                    enabled: root.model.localNodeNetworkActionEnabled("load_network") && root.loadWorkspace.trim().length > 0
+                    enabled: root.model.networkActionEnabled("load_network") && root.loadWorkspace.trim().length > 0
                     Layout.preferredWidth: 96
                     Layout.fillWidth: root.width < 840
                     onClicked: root.openNetworkConfirm("load_network")
@@ -249,7 +249,7 @@ ColumnLayout {
                     ActionButton {
                         theme: root.theme
                         text: qsTr("Install")
-                        enabled: root.model.localNodeActionEnabled(actionRow.modelData.key, "install")
+                        enabled: root.model.actionEnabled(actionRow.modelData.key, "install")
                         Layout.preferredWidth: 92
                         onClicked: root.openNodeConfirm("install", actionRow.modelData.key)
                     }
@@ -258,7 +258,7 @@ ColumnLayout {
                         theme: root.theme
                         text: qsTr("Start")
                         primary: true
-                        enabled: root.model.localNodeActionEnabled(actionRow.modelData.key, "start")
+                        enabled: root.model.actionEnabled(actionRow.modelData.key, "start")
                         Layout.preferredWidth: 84
                         onClicked: root.openNodeConfirm("start", actionRow.modelData.key)
                     }
@@ -266,7 +266,7 @@ ColumnLayout {
                     ActionButton {
                         theme: root.theme
                         text: qsTr("Stop")
-                        enabled: root.model.localNodeActionEnabled(actionRow.modelData.key, "stop")
+                        enabled: root.model.actionEnabled(actionRow.modelData.key, "stop")
                         Layout.preferredWidth: 84
                         onClicked: root.openNodeConfirm("stop", actionRow.modelData.key)
                     }
@@ -274,7 +274,7 @@ ColumnLayout {
                     ActionButton {
                         theme: root.theme
                         text: qsTr("Purge")
-                        enabled: root.model.localNodeActionEnabled(actionRow.modelData.key, "purge")
+                        enabled: root.model.actionEnabled(actionRow.modelData.key, "purge")
                         Layout.preferredWidth: 84
                         onClicked: root.openNodeConfirm("purge", actionRow.modelData.key)
                     }
@@ -282,7 +282,7 @@ ColumnLayout {
                     ActionButton {
                         theme: root.theme
                         text: qsTr("Uninstall")
-                        enabled: root.model.localNodeActionEnabled(actionRow.modelData.key, "uninstall")
+                        enabled: root.model.actionEnabled(actionRow.modelData.key, "uninstall")
                         Layout.preferredWidth: 112
                         onClicked: root.openNodeConfirm("uninstall", actionRow.modelData.key)
                     }
@@ -329,23 +329,23 @@ ColumnLayout {
         theme: root.theme
         title: root.confirmTitle()
         message: root.confirmMessage()
-        confirmText: root.model.localNodeActionLabel(root.pendingAction)
+        confirmText: root.model.actionLabel(root.pendingAction)
         confirmEnabled: !root.model.busy && root.pendingAction.length > 0
         onAccepted: root.acceptPendingAction()
     }
 
     function activeNetworkId() {
-        const report = root.model.localNodesReport || null
+        const report = root.model.report || null
         return String(report && report.active_devnet ? report.active_devnet : "")
     }
 
     function workspaceLabel() {
-        const report = root.model.localNodesReport || null
+        const report = root.model.report || null
         return String(report && report.workspace_root ? report.workspace_root : "")
     }
 
     function summaryTone() {
-        const report = root.model.localNodesReport || null
+        const report = root.model.report || null
         const summary = report && report.summary ? report.summary : null
         if (!summary) {
             return "warning"
@@ -357,7 +357,7 @@ ColumnLayout {
     }
 
     function nodeTableRows() {
-        const report = root.model.localNodesReport || null
+        const report = root.model.report || null
         const nodes = report && Array.isArray(report.nodes) ? report.nodes : []
         if (!nodes.length) {
             return [{
@@ -387,7 +387,7 @@ ColumnLayout {
     }
 
     function actionRows() {
-        const report = root.model.localNodesReport || null
+        const report = root.model.report || null
         const nodes = report && Array.isArray(report.nodes) ? report.nodes : []
         return nodes.map(function (node) {
             return {
@@ -398,7 +398,7 @@ ColumnLayout {
     }
 
     function operationRows() {
-        const rows = Array.isArray(root.model.localNodesOperations) ? root.model.localNodesOperations.slice() : []
+        const rows = Array.isArray(root.model.operations) ? root.model.operations.slice() : []
         if (!rows.length) {
             return [{ time: "-", label: qsTr("No operations"), status: "-", detail: "-" }]
         }
@@ -423,7 +423,7 @@ ColumnLayout {
 
     function operationLabel(row) {
         const node = String(row.node || "")
-        const action = root.model.localNodeActionLabel(row.action)
+        const action = root.model.actionLabel(row.action)
         return node.length ? qsTr("%1 %2").arg(action).arg(root.nodeLabel(node)) : action
     }
 
@@ -431,7 +431,7 @@ ColumnLayout {
         if (!operation) {
             return "-"
         }
-        return qsTr("%1 %2").arg(root.model.localNodeActionLabel(operation.action)).arg(String(operation.status || ""))
+        return qsTr("%1 %2").arg(root.model.actionLabel(operation.action)).arg(String(operation.status || ""))
     }
 
     function openNodeConfirm(action, node) {
@@ -451,7 +451,7 @@ ColumnLayout {
     }
 
     function acceptPendingAction() {
-        root.model.runLocalNodeAction(
+        root.model.runAction(
             root.pendingAction,
             root.pendingNode,
             root.pendingNetworkId,
@@ -465,9 +465,9 @@ ColumnLayout {
             return qsTr("Confirm")
         }
         if (root.pendingNode.length) {
-            return qsTr("%1 %2").arg(root.model.localNodeActionLabel(root.pendingAction)).arg(root.nodeLabel(root.pendingNode))
+            return qsTr("%1 %2").arg(root.model.actionLabel(root.pendingAction)).arg(root.nodeLabel(root.pendingNode))
         }
-        return root.model.localNodeActionLabel(root.pendingAction)
+        return root.model.actionLabel(root.pendingAction)
     }
 
     function confirmMessage() {
@@ -485,7 +485,7 @@ ColumnLayout {
         if (action === "load_network") {
             return qsTr("This loads the managed local network manifest from %1 and makes it active.").arg(root.pendingWorkspace)
         }
-        const node = root.model.localNodeByKind(root.pendingNode) || {}
+        const node = root.model.nodeByKind(root.pendingNode) || {}
         if (action === "purge") {
             return qsTr("This stops %1 and deletes data directory %2. Config and install record remain.").arg(root.nodeLabel(root.pendingNode)).arg(String(node.data_dir || "-"))
         }
