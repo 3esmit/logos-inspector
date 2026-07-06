@@ -34,6 +34,7 @@ Item {
         root.schedulePageLoaderUpdate()
         const initialReference = root.initialReferenceFromArguments()
         Qt.callLater(function () {
+            appModel.loadSourcePolicy()
             appModel.loadSettingsState()
             root.schedulePageLoaderUpdate()
             if (appModel.currentView === "overview" && appModel.dashboardRefreshInterval() > 0 && appModel.bridgeSupportsAsync()) {

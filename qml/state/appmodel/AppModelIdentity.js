@@ -97,8 +97,7 @@ function loadSettingsState(root) {
             dashboardGraphRevision += 1
         }
         root.loadSocialSettings(value)
-        favorites = root.normalizedFavoriteEntries(value.favorites)
-        favoritesRevision += 1
+        root.favoriteStore.load(value.favorites)
         settingsStateLoaded = true
     }
 }
@@ -151,7 +150,7 @@ function settingsStatePayload(root) {
             storage_refresh_rate: root.canonicalRefreshRate(storageRefreshRate),
             footer_fields: footerFieldSelections || {},
             dashboard_graphs: dashboardGraphSelections || {},
-            favorites: root.normalizedFavoriteEntries(favorites)
+            favorites: root.favoriteStore.payload()
         }, social)
     }
 }

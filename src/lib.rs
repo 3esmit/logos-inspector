@@ -12,6 +12,7 @@ pub mod local_nodes;
 pub mod logoscore;
 pub mod modules;
 mod network;
+mod node_operations;
 mod overview;
 mod probe;
 mod programs;
@@ -19,6 +20,7 @@ mod rpc;
 mod sequencer;
 mod settings_backup;
 pub mod social;
+pub mod source_policy;
 pub mod spel;
 mod state_store;
 mod transactions;
@@ -93,6 +95,10 @@ pub use sequencer::{
     sequencer_program_ids, sequencer_transaction, sequencer_transaction_inspection,
     sequencer_transaction_inspection_with_idl, sequencer_transaction_trace,
     sequencer_transaction_trace_with_idl,
+};
+pub use source_policy::{
+    DEFAULT_DELIVERY_METRICS_ENDPOINT, DEFAULT_DELIVERY_REST_ENDPOINT,
+    DEFAULT_STORAGE_METRICS_ENDPOINT, DEFAULT_STORAGE_REST_ENDPOINT,
 };
 pub(crate) use transactions::inspect_transaction;
 #[cfg(test)]

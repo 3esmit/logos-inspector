@@ -34,6 +34,7 @@ const allowedCommands = new Set([
   "blockchain-node",
   "blockchain-blocks",
   "logoscore-status",
+  "source-policy",
   "modules",
   "blockchain-module",
   "storage",

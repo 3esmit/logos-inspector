@@ -1,11 +1,10 @@
 use anyhow::{Context as _, Result};
 use serde::Serialize;
 
-pub const TESTNET_SEQUENCER_ENDPOINT: &str = "https://testnet.lez.logos.co/";
-pub const LOCAL_SEQUENCER_ENDPOINT: &str = "http://127.0.0.1:3040/";
-pub const DEFAULT_SEQUENCER_ENDPOINT: &str = TESTNET_SEQUENCER_ENDPOINT;
-pub const DEFAULT_INDEXER_ENDPOINT: &str = "http://127.0.0.1:8779/";
-pub const DEFAULT_NODE_ENDPOINT: &str = "http://127.0.0.1:8080/";
+pub use crate::source_policy::{
+    DEFAULT_INDEXER_ENDPOINT, DEFAULT_NODE_ENDPOINT, DEFAULT_SEQUENCER_ENDPOINT,
+    LOCAL_SEQUENCER_ENDPOINT, TESTNET_SEQUENCER_ENDPOINT,
+};
 pub const DEFAULT_NETWORK_PROFILE: &str = "default";
 pub const CUSTOM_NETWORK_PROFILE: &str = "custom";
 

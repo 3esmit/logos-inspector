@@ -1,13 +1,16 @@
 const endpointStoreKey = "logosInspectorEndpoints";
 
-const defaults = {
+const fallbackDefaults = {
   sequencer: "https://testnet.lez.logos.co/",
   indexer: "http://127.0.0.1:8779/",
   node: "http://127.0.0.1:8080/"
 };
 
+let defaults = { ...fallbackDefaults };
+
 const state = {
   endpoints: loadStoredJson(endpointStoreKey, defaults),
+  sourcePolicy: null,
   activeView: "overview"
 };
 
@@ -233,6 +236,27 @@ function applyEndpointInputs() {
   $("#nodeInput").value = state.endpoints.node;
 }
 
+function endpointDefaultsFromPolicy(policy) {
+  const policyDefaults = policy?.defaults || {};
+  return {
+    sequencer: policyDefaults.sequencer_endpoint || fallbackDefaults.sequencer,
+    indexer: policyDefaults.indexer_endpoint || fallbackDefaults.indexer,
+    node: policyDefaults.node_endpoint || fallbackDefaults.node
+  };
+}
+
+async function loadSourcePolicy() {
+  try {
+    state.sourcePolicy = await cli("source-policy", []);
+    defaults = endpointDefaultsFromPolicy(state.sourcePolicy);
+    state.endpoints = loadStoredJson(endpointStoreKey, defaults);
+    applyEndpointInputs();
+  } catch {
+    state.sourcePolicy = null;
+    defaults = { ...fallbackDefaults };
+  }
+}
+
 function selectView(view) {
   state.activeView = view;
   $$(".nav-item").forEach((button) => {
@@ -425,5 +449,11 @@ async function updateCliStatus() {
 }
 
 wire();
-updateCliStatus();
-refreshOverview().catch(() => {});
+
+async function boot() {
+  await updateCliStatus();
+  await loadSourcePolicy();
+  await refreshOverview();
+}
+
+boot().catch(() => {});

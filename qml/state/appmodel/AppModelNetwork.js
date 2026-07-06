@@ -26,6 +26,124 @@ function dashboardRefreshInterval(root) {
     }
 }
 
+function loadSourcePolicy(root) {
+    with (root) {
+        const response = bridge.callModule(inspectorModule, "sourcePolicy", [])
+        if (response.ok === true && response.value && typeof response.value === "object") {
+            sourcePolicy = response.value
+            sourcePolicyLoaded = true
+            return true
+        }
+        sourcePolicy = ({})
+        sourcePolicyLoaded = false
+        return false
+    }
+}
+
+function sourcePolicyDefault(root, key, fallback) {
+    with (root) {
+        const defaults = sourcePolicy && sourcePolicy.defaults && typeof sourcePolicy.defaults === "object"
+            ? sourcePolicy.defaults
+            : null
+        const value = defaults && defaults[key] !== undefined ? String(defaults[key] || "").trim() : ""
+        return value.length > 0 ? value : String(fallback || "")
+    }
+}
+
+function sourceModePolicy(root, family, value) {
+    with (root) {
+        const token = String(value || "auto").trim().toLowerCase()
+        const modes = sourcePolicy && sourcePolicy.source_modes && Array.isArray(sourcePolicy.source_modes[family])
+            ? sourcePolicy.source_modes[family]
+            : []
+        for (let i = 0; i < modes.length; ++i) {
+            const mode = modes[i] || {}
+            if (String(mode.key || "") === token) {
+                return mode
+            }
+            const aliases = Array.isArray(mode.aliases) ? mode.aliases : []
+            for (let j = 0; j < aliases.length; ++j) {
+                if (String(aliases[j] || "").toLowerCase() === token) {
+                    return mode
+                }
+            }
+        }
+        return fallbackSourceModePolicy(family, token)
+    }
+}
+
+function fallbackSourceModePolicy(family, token) {
+    if (family === "core") {
+        switch (token) {
+        case "rpc":
+        case "direct-rpc":
+        case "direct rpc":
+        case "standalone":
+        case "standalone-rpc":
+        case "standalone rpc":
+            return { key: "rpc", effective: "rpc", label_key: "direct_rpc" }
+        default:
+            return { key: "auto", effective: "rpc", label_key: "auto_rpc" }
+        }
+    }
+    if (family === "delivery") {
+        switch (token) {
+        case "module":
+        case "basecamp":
+        case "basecamp-module":
+        case "basecamp module":
+            return { key: "module", effective: "module", label_key: "delivery_module" }
+        case "network-monitor":
+        case "network monitor":
+        case "discovery-crawler":
+        case "discovery crawler":
+        case "crawler":
+            return { key: "network-monitor", effective: "network-monitor", label_key: "network_monitor" }
+        case "rest":
+        case "direct-rest":
+        case "direct waku rest":
+        case "waku-rest":
+            return { key: "rest", effective: "rest", label_key: "delivery_rest" }
+        case "metrics":
+        case "metrics-only":
+        case "metrics only":
+            return { key: "metrics", effective: "metrics", label_key: "metrics_only" }
+        case "unsupported":
+            return { key: "unsupported", effective: "unsupported", label_key: "unsupported" }
+        default:
+            return { key: "auto", effective: "rest", label_key: "auto_delivery_rest" }
+        }
+    }
+    switch (token) {
+    case "module":
+    case "basecamp":
+    case "basecamp-module":
+    case "basecamp module":
+        return { key: "module", effective: "module", label_key: "storage_module" }
+    case "rest":
+    case "standalone":
+    case "standalone-rest":
+    case "standalone rest":
+    case "direct-rest":
+    case "direct rest":
+        return { key: "rest", effective: "rest", label_key: "storage_rest" }
+    case "metrics":
+    case "metrics-only":
+    case "metrics only":
+        return { key: "metrics", effective: "metrics", label_key: "metrics_only" }
+    case "c-library":
+    case "c library":
+    case "library":
+    case "local-os":
+    case "local os":
+    case "local diagnostics":
+    case "unsupported":
+        return { key: "unsupported", effective: "unsupported", label_key: "unsupported" }
+    default:
+        return { key: "auto", effective: "rest", label_key: "auto_storage_rest" }
+    }
+}
+
 function canonicalRefreshRate(root, seconds) {
     with (root) {
         const value = Math.max(0, Number(seconds || 0))
@@ -416,6 +534,10 @@ function networkConnectionSummary(root, kind, value) {
             return scalar !== null ? qsTr("head %1").arg(root.valueText(scalar)) : qsTr("reachable")
         }
         if (kind === "messaging") {
+            const health = root.sourceHealth(value)
+            if (health && health.summary) {
+                return health.ready === true ? String(health.summary) : String(health.detail || health.summary)
+            }
             if (!root.moduleReportReachable(value)) {
                 return root.moduleReportError(value) || qsTr("source unavailable")
             }
@@ -428,6 +550,10 @@ function networkConnectionSummary(root, kind, value) {
             return version !== null ? qsTr("version %1").arg(root.valueText(version)) : qsTr("%1 reachable").arg(root.deliverySourceLabel())
         }
         if (kind === "storage") {
+            const health = root.sourceHealth(value)
+            if (health && health.summary) {
+                return health.ready === true ? String(health.summary) : String(health.detail || health.summary)
+            }
             if (!root.moduleReportReachable(value)) {
                 return root.moduleReportError(value) || qsTr("source unavailable")
             }
@@ -455,6 +581,10 @@ function connectionValueOk(root, kind, value) {
 
 function storageReportReady(root, report) {
     with (root) {
+        const ready = root.sourceHealthReady(report)
+        if (ready !== null) {
+            return ready
+        }
         if (!root.moduleReportReachable(report)) {
             return false
         }
@@ -481,6 +611,10 @@ function moduleReportReachable(root, report) {
         if (!report || typeof report !== "object") {
             return false
         }
+        const health = root.sourceHealth(report)
+        if (health && health.reachable !== undefined) {
+            return health.reachable === true
+        }
         if (report.module_info && report.module_info.ok === true) {
             return true
         }
@@ -491,6 +625,60 @@ function moduleReportReachable(root, report) {
             }
         }
         return false
+    }
+}
+
+function sourceHealth(root, report) {
+    with (root) {
+        const health = report && report.health && typeof report.health === "object" && !Array.isArray(report.health)
+            ? report.health
+            : null
+        return health
+    }
+}
+
+function sourceHealthReady(root, report) {
+    with (root) {
+        const health = root.sourceHealth(report)
+        if (health && health.ready !== undefined) {
+            return health.ready === true
+        }
+        return null
+    }
+}
+
+function sourceCapability(root, report, key) {
+    with (root) {
+        const wanted = String(key || "")
+        const facts = report && Array.isArray(report.capability_facts) ? report.capability_facts : []
+        for (let i = 0; i < facts.length; ++i) {
+            const fact = facts[i] || {}
+            if (String(fact.key || "") === wanted) {
+                return fact
+            }
+        }
+        return null
+    }
+}
+
+function sourceCapabilityAvailable(root, report, key) {
+    with (root) {
+        const fact = root.sourceCapability(report, key)
+        return fact !== null ? fact.available === true : null
+    }
+}
+
+function sourceCapabilityEvidence(root, report, key) {
+    with (root) {
+        const fact = root.sourceCapability(report, key)
+        return fact && fact.evidence !== undefined ? String(fact.evidence) : ""
+    }
+}
+
+function sourceCapabilityValue(root, report, key) {
+    with (root) {
+        const fact = root.sourceCapability(report, key)
+        return fact && fact.value !== undefined ? fact.value : null
     }
 }
 
@@ -540,6 +728,10 @@ function reportProbe(root, report, method) {
 
 function deliveryReportHealthy(root, report) {
     with (root) {
+        const ready = root.sourceHealthReady(report)
+        if (ready !== null) {
+            return ready
+        }
         const moduleName = String(report && report.module ? report.module : "")
         if (moduleName === "delivery_metrics") {
             return deliveryMetricsEvidencePresent(root, report)
@@ -731,35 +923,21 @@ function deliverySourceTarget(root) {
 function configuredMessagingRestUrl(root) {
     with (root) {
         const value = String(messagingRestUrl || "").trim()
-        return value.length ? value : "http://127.0.0.1:8645"
+        return value.length ? value : root.sourcePolicyDefault("delivery_rest_endpoint", "http://127.0.0.1:8645")
     }
 }
 
 function normalizedCoreSourceMode(root, value) {
     with (root) {
-        const source = String(value || "auto").trim().toLowerCase()
-        switch (source) {
-        case "rpc":
-        case "direct-rpc":
-        case "direct rpc":
-        case "standalone":
-        case "standalone-rpc":
-        case "standalone rpc":
-            return "rpc"
-        case "auto":
-        default:
-            return "auto"
-        }
+        const source = root.sourceModePolicy("core", value)
+        return source.key === "module" ? "auto" : String(source.key || "auto")
     }
 }
 
 function effectiveCoreSourceMode(root, value) {
     with (root) {
-        const source = root.normalizedCoreSourceMode(value)
-        if (source !== "auto") {
-            return source
-        }
-        return "rpc"
+        const source = root.sourceModePolicy("core", root.normalizedCoreSourceMode(value))
+        return String(source.effective || "rpc")
     }
 }
 
@@ -811,46 +989,13 @@ function coreSourceLabel(root, sourceMode, rpcLabel) {
 
 function normalizedMessagingSourceMode(root, value) {
     with (root) {
-        const source = String(value || "auto").trim().toLowerCase()
-        switch (source) {
-        case "module":
-        case "basecamp":
-        case "basecamp-module":
-        case "basecamp module":
-            return "module"
-        case "network-monitor":
-        case "network monitor":
-        case "discovery-crawler":
-        case "discovery crawler":
-        case "crawler":
-            return "network-monitor"
-        case "rest":
-        case "direct-rest":
-        case "direct waku rest":
-        case "waku-rest":
-            return "rest"
-        case "metrics":
-        case "metrics-only":
-        case "metrics only":
-            return "metrics"
-        case "network-monitor":
-            return "network-monitor"
-        case "unsupported":
-            return "unsupported"
-        case "auto":
-        default:
-            return "auto"
-        }
+        return String(root.sourceModePolicy("delivery", value).key || "auto")
     }
 }
 
 function effectiveMessagingSourceMode(root, value) {
     with (root) {
-        const source = root.normalizedMessagingSourceMode(value)
-        if (source !== "auto") {
-            return source
-        }
-        return "rest"
+        return String(root.sourceModePolicy("delivery", value).effective || "rest")
     }
 }
 
@@ -909,50 +1054,19 @@ function storageSourceTarget(root) {
 function configuredStorageRestUrl(root) {
     with (root) {
         const value = String(storageRestUrl || "").trim()
-        return value.length ? value : "http://127.0.0.1:8080/api/storage/v1"
+        return value.length ? value : root.sourcePolicyDefault("storage_rest_endpoint", "http://127.0.0.1:8080/api/storage/v1")
     }
 }
 
 function normalizedStorageSourceMode(root, value) {
     with (root) {
-        const source = String(value || "auto").trim().toLowerCase()
-        switch (source) {
-        case "module":
-        case "basecamp":
-        case "basecamp-module":
-        case "basecamp module":
-            return "module"
-        case "rest":
-        case "standalone-rest":
-        case "standalone rest":
-        case "direct-rest":
-            return "rest"
-        case "metrics":
-        case "metrics-only":
-        case "metrics only":
-            return "metrics"
-        case "c-library":
-        case "c library":
-        case "library":
-        case "local-os":
-        case "local os":
-        case "local diagnostics":
-        case "unsupported":
-            return "unsupported"
-        case "auto":
-        default:
-            return "auto"
-        }
+        return String(root.sourceModePolicy("storage", value).key || "auto")
     }
 }
 
 function effectiveStorageSourceMode(root, value) {
     with (root) {
-        const source = root.normalizedStorageSourceMode(value)
-        if (source !== "auto") {
-            return source
-        }
-        return "rest"
+        return String(root.sourceModePolicy("storage", value).effective || "rest")
     }
 }
 
@@ -1078,18 +1192,37 @@ function inferNetworkProfileFromEndpoints(root, sequencer, indexer, node) {
         const seq = root.normalizeEndpoint(sequencer)
         const idx = root.normalizeEndpoint(indexer)
         const nod = root.normalizeEndpoint(node)
-        const testnetSeq = root.normalizeEndpoint("https://testnet.lez.logos.co/")
-        const localSeq = root.normalizeEndpoint("http://127.0.0.1:3040/")
-        const localIndexer = root.normalizeEndpoint("http://127.0.0.1:8779/")
-        const localNode = root.normalizeEndpoint("http://127.0.0.1:8080/")
-
-        if (seq === localSeq && idx === localIndexer && nod === localNode) {
-            return "local"
-        }
-        if (seq === testnetSeq && idx === localIndexer && nod === localNode) {
-            return "default"
+        const profiles = sourcePolicy && Array.isArray(sourcePolicy.network_profiles)
+            ? sourcePolicy.network_profiles
+            : fallbackNetworkProfiles(root)
+        for (let i = 0; i < profiles.length; ++i) {
+            const profile = profiles[i] || {}
+            if (seq === root.normalizeEndpoint(profile.sequencer_endpoint)
+                    && idx === root.normalizeEndpoint(profile.indexer_endpoint)
+                    && nod === root.normalizeEndpoint(profile.node_endpoint)) {
+                return String(profile.id || "custom")
+            }
         }
         return "custom"
+    }
+}
+
+function fallbackNetworkProfiles(root) {
+    with (root) {
+        return [
+            {
+                id: "default",
+                sequencer_endpoint: root.sourcePolicyDefault("sequencer_endpoint", "https://testnet.lez.logos.co/"),
+                indexer_endpoint: root.sourcePolicyDefault("indexer_endpoint", "http://127.0.0.1:8779/"),
+                node_endpoint: root.sourcePolicyDefault("node_endpoint", "http://127.0.0.1:8080/")
+            },
+            {
+                id: "local",
+                sequencer_endpoint: root.sourcePolicyDefault("local_sequencer_endpoint", "http://127.0.0.1:3040/"),
+                indexer_endpoint: root.sourcePolicyDefault("indexer_endpoint", "http://127.0.0.1:8779/"),
+                node_endpoint: root.sourcePolicyDefault("node_endpoint", "http://127.0.0.1:8080/")
+            }
+        ]
     }
 }
 

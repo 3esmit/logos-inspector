@@ -14,7 +14,7 @@ ColumnLayout {
     required property AppModel model
     property var value: null
     readonly property var detail: normalize(value)
-    readonly property var favoriteEntry: root.detail ? root.model.favoriteBlockEntry(root.detail) : null
+    readonly property var favoriteEntry: root.detail ? root.model.favoriteStore.blockEntry(root.detail) : null
 
     visible: detail !== null
     spacing: 14
@@ -55,11 +55,11 @@ ColumnLayout {
             ActionButton {
                 theme: root.theme
                 text: root.favoriteButtonText()
-                selected: root.model.isFavoriteEntry(root.favoriteEntry)
+                selected: root.model.favoriteStore.isFavoriteEntry(root.favoriteEntry)
                 enabled: root.favoriteEntry !== null
                 Layout.preferredWidth: 118
                 accessibleName: root.favoriteButtonAccessibleName()
-                onClicked: root.model.toggleFavorite(root.favoriteEntry)
+                onClicked: root.model.favoriteStore.toggle(root.favoriteEntry)
             }
 
             Text {
@@ -307,11 +307,11 @@ ColumnLayout {
     }
 
     function favoriteButtonText() {
-        return root.model.isFavoriteEntry(root.favoriteEntry) ? qsTr("Favorited") : qsTr("Favorite")
+        return root.model.favoriteStore.isFavoriteEntry(root.favoriteEntry) ? qsTr("Favorited") : qsTr("Favorite")
     }
 
     function favoriteButtonAccessibleName() {
-        return root.model.isFavoriteEntry(root.favoriteEntry) ? qsTr("Remove block from favorites") : qsTr("Add block to favorites")
+        return root.model.favoriteStore.isFavoriteEntry(root.favoriteEntry) ? qsTr("Remove block from favorites") : qsTr("Add block to favorites")
     }
 
     function socialTopic() {
