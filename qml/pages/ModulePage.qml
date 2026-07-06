@@ -874,9 +874,16 @@ ColumnLayout {
             return null
         }
         const wanted = String(method || "")
+        const fact = root.model.sourceProbeFact(report, wanted)
+        if (fact) {
+            return fact
+        }
         const probes = Array.isArray(report.probes) ? report.probes : []
         for (let i = 0; i < probes.length; ++i) {
             const probe = probes[i] || {}
+            if (String(probe.probe_key || probe.key || "") === wanted) {
+                return probe
+            }
             const label = String(probe.label || "")
             const source = String(probe.source || "")
             if (label.indexOf("." + wanted) >= 0 || source.indexOf(" " + wanted) >= 0) {
@@ -891,6 +898,13 @@ ColumnLayout {
             return
         }
         const labelPrefix = prefix.length ? prefix : root.moduleDisplayName(report.module)
+        const facts = Array.isArray(report.probe_facts) ? report.probe_facts : []
+        if (facts.length > 0) {
+            for (let i = 0; i < facts.length; ++i) {
+                root.pushProbe(rows, facts[i], qsTr("Probe fact"), labelPrefix)
+            }
+            return
+        }
         if (root.isProbe(report.module_info)) {
             root.pushProbe(rows, report.module_info, qsTr("Module info"), labelPrefix)
         }
@@ -910,7 +924,7 @@ ColumnLayout {
         if (!root.isProbe(probe)) {
             return
         }
-        const baseLabel = String(probe.label || fallbackLabel || "-")
+        const baseLabel = String(probe.label || probe.key || fallbackLabel || "-")
         const label = prefix && prefix.length ? qsTr("%1 / %2").arg(prefix).arg(baseLabel) : baseLabel
         rows.push({
             label: label,

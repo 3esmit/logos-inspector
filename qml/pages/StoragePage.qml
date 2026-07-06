@@ -504,18 +504,7 @@ ColumnLayout {
     }
 
     function probe(method) {
-        const found = root.model.moduleProbe("storage", method)
-        if (found) {
-            return found
-        }
-        const info = root.moduleInfoProbe()
-        const wanted = String(method || "")
-        const label = String(info && info.label ? info.label : "")
-        const source = String(info && info.source ? info.source : "")
-        if (label.indexOf("." + wanted) >= 0 || source.indexOf("/" + wanted) >= 0 || source.indexOf(" " + wanted) >= 0) {
-            return info
-        }
-        return null
+        return root.model.sourceProbeFact(root.report(), method) || root.model.moduleProbe("storage", method)
     }
 
     function probeKnown(method) {

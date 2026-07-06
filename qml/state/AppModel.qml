@@ -130,9 +130,6 @@ QtObject {
     property bool storageLocalDiagnosticsEnabled: false
     property bool storagePrivilegedDebugEnabled: false
     property bool storageMutatingDiagnosticsEnabled: false
-    property string storageCidProbe: ""
-    property var storageActiveOperation: null
-    property int storageActiveOperationRevision: 0
     property var nodeOperations: ({})
     property var nodeOperationEventSeq: ({})
     property var nodeOperationHistory: []
@@ -143,7 +140,6 @@ QtObject {
     property string settingsBackupStatus: ""
 
     property string sequencerTab: "blocks"
-    property string storageAppTab: "files"
     property string deliveryAppTab: "messages"
     property string accountTab: "lookup"
     property string programTab: "programIds"
@@ -202,6 +198,60 @@ QtObject {
     property var localWalletOperations: []
     property var localWalletAccountsValue: null
     property string localWalletAccountsError: ""
+    property StorageAppState storageApp: StorageAppState {
+        id: storageAppState
+
+        gateway: QtObject {
+            function call(method, args, label) {
+                return root.callInspector(method, args, label)
+            }
+
+            function request(method, args, label, showResult, callback) {
+                return root.requestModuleAsync(root.inspectorModule, method, args, label, showResult === true, callback)
+            }
+
+            function setResult(title, text, isError, value) {
+                return root.setResult(title, text, isError, value)
+            }
+
+            function clearResult() {
+                return root.clearResult()
+            }
+
+            function appendOperationHistory(operation, detail) {
+                return root.appendNodeOperationHistory(operation, detail)
+            }
+
+            function openSettings(section, subSection) {
+                return root.openSettings(section, subSection)
+            }
+
+            function valueText(value) {
+                return root.valueText(value)
+            }
+        }
+        busy: root.busy
+        sourceMode: root.storageSourceMode
+        effectiveSourceMode: root.effectiveStorageSourceMode(root.storageSourceMode)
+        sourceLabel: root.storageSourceLabel()
+        sourceTarget: root.storageSourceTarget()
+        sourceTargetKind: root.sourceModeTargetKind("storage", root.storageSourceMode)
+        usesRestEndpoint: root.sourceModeUsesEndpoint("storage", root.storageSourceMode, "rest")
+        supportsMutatingDiagnostics: root.sourceModeSupportsMutatingDiagnostics("storage", root.storageSourceMode)
+        restEndpoint: root.configuredStorageRestUrl()
+        moduleName: root.storageModule
+        networkPreset: root.storageNetworkPreset
+        mutatingDiagnosticsEnabled: root.storageMutatingDiagnosticsEnabled
+        currentView: root.currentView
+        resultTitle: root.resultTitle
+        resultText: root.resultText
+        resultIsError: root.resultIsError
+        resultOwner: root.resultOwner
+    }
+    property alias storageAppTab: storageAppState.currentTab
+    property alias storageCidProbe: storageAppState.cidProbe
+    property alias storageActiveOperation: storageAppState.activeOperation
+    property alias storageActiveOperationRevision: storageAppState.activeOperationRevision
     property LocalNodesState localNodes: LocalNodesState {
         id: localNodesState
 
@@ -534,13 +584,11 @@ QtObject {
     function storageDisplayPath(path) { return AppModelIdentity.storageDisplayPath(root, path) }
 
     function updateStorageActiveOperation(value) {
-        storageActiveOperation = value || null
-        storageActiveOperationRevision += 1
+        storageAppState.updateActiveOperation(value)
     }
 
     function clearStorageActiveOperation() {
-        storageActiveOperation = null
-        storageActiveOperationRevision += 1
+        storageAppState.clearActiveOperation()
     }
 
     function checkLocalWalletProfile(showResult) { return AppModelIdentity.checkLocalWalletProfile(root, showResult) }
@@ -748,6 +796,10 @@ QtObject {
     function sourceCapabilityEvidence(report, key) { return AppModelNetwork.sourceCapabilityEvidence(root, report, key) }
 
     function sourceCapabilityValue(report, key) { return AppModelNetwork.sourceCapabilityValue(root, report, key) }
+
+    function sourceProbeFact(report, key) { return AppModelNetwork.sourceProbeFact(root, report, key) }
+
+    function sourceProbeValue(report, key) { return AppModelNetwork.sourceProbeValue(root, report, key) }
 
     function reportProbeValue(report, method) { return AppModelNetwork.reportProbeValue(root, report, method) }
 

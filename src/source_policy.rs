@@ -13,9 +13,6 @@ pub const DEFAULT_DELIVERY_METRICS_ENDPOINT: &str = "http://127.0.0.1:8008/metri
 pub const DEFAULT_STORAGE_REST_ENDPOINT: &str = "http://127.0.0.1:8080/api/storage/v1";
 pub const DEFAULT_STORAGE_METRICS_ENDPOINT: &str = "http://127.0.0.1:8008/metrics";
 
-const STORAGE_MODULE: &str = "storage_module";
-const DELIVERY_MODULE: &str = "delivery_module";
-
 const RPC_ADAPTER: SourceAdapterPolicy = SourceAdapterPolicy {
     target: "rpc_endpoint",
     uses_rest_endpoint: false,
@@ -141,6 +138,99 @@ pub enum SourceFamily {
     Storage,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeliverySourceReportKind {
+    Module,
+    Rest,
+    Metrics,
+    NetworkMonitor,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StorageSourceReportKind {
+    Module,
+    Rest,
+    Metrics,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SourceProbeKey {
+    DeliveryAvailableConfigs,
+    DeliveryAvailableNodeInfoIds,
+    DeliveryCollectOpenMetricsText,
+    DeliveryConnectionStatus,
+    DeliveryContentTopics,
+    DeliveryEnrUri,
+    DeliveryHealth,
+    DeliveryInfo,
+    DeliveryListenAddresses,
+    DeliveryMetricsScrape,
+    DeliveryMyEnr,
+    DeliveryMyMultiaddresses,
+    DeliveryMyPeerId,
+    DeliveryNodeHealth,
+    DeliveryNodeInfoMetrics,
+    DeliveryNodeInfoVersion,
+    DeliveryPeerId,
+    DeliveryProtocolsHealth,
+    DeliveryAllPeersInfo,
+    DeliveryVersion,
+    StorageCollectMetrics,
+    StorageDataDir,
+    StorageDebug,
+    StorageExists,
+    StorageManifests,
+    StorageMetricsScrape,
+    StorageModuleVersion,
+    StoragePeerId,
+    StoragePrivilegedProbe,
+    StorageSpace,
+    StorageSpr,
+    StorageVersion,
+}
+
+impl SourceProbeKey {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DeliveryAvailableConfigs => "getAvailableConfigs",
+            Self::DeliveryAvailableNodeInfoIds => "getAvailableNodeInfoIDs",
+            Self::DeliveryCollectOpenMetricsText => "collectOpenMetricsText",
+            Self::DeliveryConnectionStatus => "connectionStatus",
+            Self::DeliveryContentTopics => "contentTopics",
+            Self::DeliveryEnrUri => "enrUri",
+            Self::DeliveryHealth => "health",
+            Self::DeliveryInfo => "info",
+            Self::DeliveryListenAddresses => "listenAddresses",
+            Self::DeliveryMetricsScrape => "metricsScrape",
+            Self::DeliveryMyEnr => "MyENR",
+            Self::DeliveryMyMultiaddresses => "MyMultiaddresses",
+            Self::DeliveryMyPeerId => "MyPeerId",
+            Self::DeliveryNodeHealth => "nodeHealth",
+            Self::DeliveryNodeInfoMetrics => "Metrics",
+            Self::DeliveryNodeInfoVersion => "Version",
+            Self::DeliveryPeerId => "peerId",
+            Self::DeliveryProtocolsHealth => "protocolsHealth",
+            Self::DeliveryAllPeersInfo => "allPeersInfo",
+            Self::DeliveryVersion => "version",
+            Self::StorageCollectMetrics => "collectMetrics",
+            Self::StorageDataDir => "dataDir",
+            Self::StorageDebug => "debug",
+            Self::StorageExists => "exists",
+            Self::StorageManifests => "manifests",
+            Self::StorageMetricsScrape => "metricsScrape",
+            Self::StorageModuleVersion => "moduleVersion",
+            Self::StoragePeerId => "peerId",
+            Self::StoragePrivilegedProbe => "privilegedProbe",
+            Self::StorageSpace => "space",
+            Self::StorageSpr => "spr",
+            Self::StorageVersion => "version",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SourcePolicyReport {
     pub version: u8,
@@ -193,7 +283,21 @@ pub struct SourceAdapterPolicy {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SourceFacts {
     pub health: SourceHealthFacts,
+    pub probe_facts: Vec<SourceProbeFact>,
     pub capability_facts: Vec<SourceCapabilityFact>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SourceProbeFact {
+    pub key: String,
+    pub label: String,
+    pub source: String,
+    pub ok: bool,
+    pub evidence: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -658,25 +762,29 @@ pub fn source_policy_report(network_profiles: &[NetworkProfile]) -> SourcePolicy
 
 #[must_use]
 pub fn storage_source_facts(
-    module: &str,
+    kind: StorageSourceReportKind,
     module_info: &ProbeReport,
     probes: &[ProbeReport],
 ) -> SourceFacts {
+    let probe_facts = source_probe_facts(module_info, probes);
     SourceFacts {
-        health: storage_source_health(module, module_info, probes),
-        capability_facts: storage_source_capability_facts(module, module_info, probes),
+        health: storage_source_health(kind, module_info, probes, &probe_facts),
+        capability_facts: storage_source_capability_facts(kind, &probe_facts),
+        probe_facts,
     }
 }
 
 #[must_use]
 pub fn delivery_source_facts(
-    module: &str,
+    kind: DeliverySourceReportKind,
     module_info: &ProbeReport,
     probes: &[ProbeReport],
 ) -> SourceFacts {
+    let probe_facts = source_probe_facts(module_info, probes);
     SourceFacts {
-        health: delivery_source_health(module, module_info, probes),
-        capability_facts: delivery_source_capability_facts(module, module_info, probes),
+        health: delivery_source_health(kind, module_info, probes, &probe_facts),
+        capability_facts: delivery_source_capability_facts(kind, &probe_facts),
+        probe_facts,
     }
 }
 
@@ -694,34 +802,107 @@ fn fallback_source_mode(family: SourceFamily) -> &'static SourceModePolicy {
     }
 }
 
+fn source_probe_facts(module_info: &ProbeReport, probes: &[ProbeReport]) -> Vec<SourceProbeFact> {
+    let mut facts = Vec::new();
+    push_source_probe_fact(&mut facts, module_info);
+    for probe in probes {
+        push_source_probe_fact(&mut facts, probe);
+    }
+    facts
+}
+
+fn push_source_probe_fact(facts: &mut Vec<SourceProbeFact>, probe: &ProbeReport) {
+    let Some(key) = probe
+        .probe_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+    else {
+        return;
+    };
+    let fact = SourceProbeFact {
+        key: key.to_owned(),
+        label: probe.label.clone(),
+        source: probe.source.clone(),
+        ok: probe.ok,
+        evidence: if probe.ok {
+            probe
+                .value
+                .as_ref()
+                .map(value_summary)
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "observed".to_owned())
+        } else {
+            probe
+                .error
+                .clone()
+                .filter(|error| !error.is_empty())
+                .unwrap_or_else(|| "unavailable".to_owned())
+        },
+        value: probe.value.clone(),
+        error: probe.error.clone(),
+    };
+    if let Some(existing) = facts.iter_mut().find(|existing| existing.key == fact.key) {
+        if !existing.ok && fact.ok {
+            *existing = fact;
+        }
+    } else {
+        facts.push(fact);
+    }
+}
+
+fn source_probe_fact(facts: &[SourceProbeFact], key: SourceProbeKey) -> Option<&SourceProbeFact> {
+    let key = key.as_str();
+    facts.iter().find(|fact| fact.key == key)
+}
+
+fn source_probe_ok(facts: &[SourceProbeFact], key: SourceProbeKey) -> bool {
+    source_probe_fact(facts, key)
+        .map(|fact| fact.ok)
+        .unwrap_or(false)
+}
+
+fn source_probe_value(facts: &[SourceProbeFact], key: SourceProbeKey) -> Option<&Value> {
+    source_probe_fact(facts, key)
+        .filter(|fact| fact.ok)
+        .and_then(|fact| fact.value.as_ref())
+}
+
 fn storage_source_health(
-    module: &str,
+    kind: StorageSourceReportKind,
     module_info: &ProbeReport,
     probes: &[ProbeReport],
+    facts: &[SourceProbeFact],
 ) -> SourceHealthFacts {
-    if !matches!(module, "storage_rest" | "storage_metrics" | STORAGE_MODULE) {
+    if kind == StorageSourceReportKind::Unsupported {
         return unsupported_source_health(module_info);
     }
     let reachable = source_reachable(module_info, probes);
-    let ready = match module {
-        "storage_rest" => {
-            probe_ok(module_info, probes, "peerId")
-                && probe_ok(module_info, probes, "spr")
-                && probe_ok(module_info, probes, "space")
-                && probe_ok(module_info, probes, "manifests")
+    let ready = match kind {
+        StorageSourceReportKind::Rest => {
+            source_probe_ok(facts, SourceProbeKey::StoragePeerId)
+                && source_probe_ok(facts, SourceProbeKey::StorageSpr)
+                && source_probe_ok(facts, SourceProbeKey::StorageSpace)
+                && source_probe_ok(facts, SourceProbeKey::StorageManifests)
         }
-        "storage_metrics" => storage_metrics_evidence_present(module_info, probes),
-        STORAGE_MODULE => ["peerId", "spr", "space", "debug", "manifests"]
-            .iter()
-            .any(|method| probe_ok(module_info, probes, method)),
-        _ => false,
+        StorageSourceReportKind::Metrics => storage_metrics_evidence_present(facts),
+        StorageSourceReportKind::Module => [
+            SourceProbeKey::StoragePeerId,
+            SourceProbeKey::StorageSpr,
+            SourceProbeKey::StorageSpace,
+            SourceProbeKey::StorageDebug,
+            SourceProbeKey::StorageManifests,
+        ]
+        .iter()
+        .any(|key| source_probe_ok(facts, *key)),
+        StorageSourceReportKind::Unsupported => false,
     };
     source_health(
         reachable,
         ready,
         false,
         if ready {
-            source_ready_summary("storage source ready", module_info, probes)
+            source_ready_summary("storage source ready", facts)
         } else if reachable {
             "storage source degraded".to_owned()
         } else {
@@ -737,55 +918,65 @@ fn storage_source_health(
 }
 
 fn delivery_source_health(
-    module: &str,
+    kind: DeliverySourceReportKind,
     module_info: &ProbeReport,
     probes: &[ProbeReport],
+    facts: &[SourceProbeFact],
 ) -> SourceHealthFacts {
-    if !matches!(
-        module,
-        "delivery_rest" | "delivery_metrics" | "delivery_network_monitor" | DELIVERY_MODULE
-    ) {
+    if kind == DeliverySourceReportKind::Unsupported {
         return unsupported_source_health(module_info);
     }
     let reachable = source_reachable(module_info, probes);
-    let metrics_ready = delivery_metrics_evidence_present(module_info, probes);
-    let ready = match module {
-        "delivery_metrics" => metrics_ready,
-        "delivery_network_monitor" => {
-            probe_ok(module_info, probes, "allPeersInfo")
-                || probe_ok(module_info, probes, "contentTopics")
+    let metrics_ready = delivery_metrics_evidence_present(facts);
+    let ready = match kind {
+        DeliverySourceReportKind::Metrics => metrics_ready,
+        DeliverySourceReportKind::NetworkMonitor => {
+            source_probe_ok(facts, SourceProbeKey::DeliveryAllPeersInfo)
+                || source_probe_ok(facts, SourceProbeKey::DeliveryContentTopics)
                 || metrics_ready
         }
-        "delivery_rest" => {
-            probe_ok(module_info, probes, "health")
-                && health_value_ok(probe_value(module_info, probes, "nodeHealth"), false)
-                && health_value_ok(probe_value(module_info, probes, "connectionStatus"), false)
+        DeliverySourceReportKind::Rest => {
+            source_probe_ok(facts, SourceProbeKey::DeliveryHealth)
+                && health_value_ok(
+                    source_probe_value(facts, SourceProbeKey::DeliveryNodeHealth),
+                    false,
+                )
+                && health_value_ok(
+                    source_probe_value(facts, SourceProbeKey::DeliveryConnectionStatus),
+                    false,
+                )
         }
-        DELIVERY_MODULE => {
-            let node_health = report_probe(module_info, probes, "nodeHealth");
-            let connection_status = report_probe(module_info, probes, "connectionStatus");
+        DeliverySourceReportKind::Module => {
+            let node_health = source_probe_fact(facts, SourceProbeKey::DeliveryNodeHealth);
+            let connection_status =
+                source_probe_fact(facts, SourceProbeKey::DeliveryConnectionStatus);
             if node_health.is_none() && connection_status.is_none() {
-                delivery_module_runtime_healthy(module_info, probes)
+                delivery_module_runtime_healthy(facts)
             } else {
-                health_value_ok(probe_value(module_info, probes, "nodeHealth"), false)
-                    && health_value_ok(probe_value(module_info, probes, "connectionStatus"), false)
+                health_value_ok(
+                    source_probe_value(facts, SourceProbeKey::DeliveryNodeHealth),
+                    false,
+                ) && health_value_ok(
+                    source_probe_value(facts, SourceProbeKey::DeliveryConnectionStatus),
+                    false,
+                )
             }
         }
-        _ => false,
+        DeliverySourceReportKind::Unsupported => false,
     };
     source_health(
         reachable,
         ready,
         false,
         if ready {
-            source_ready_summary("delivery source ready", module_info, probes)
+            source_ready_summary("delivery source ready", facts)
         } else if reachable {
             "delivery source degraded".to_owned()
         } else {
             "delivery source unavailable".to_owned()
         },
         if ready {
-            delivery_ready_detail(module, module_info, probes)
+            delivery_ready_detail(kind, facts)
         } else {
             source_report_error(module_info, probes)
                 .unwrap_or_else(|| "required delivery facts missing".to_owned())
@@ -830,40 +1021,47 @@ fn source_health(
 }
 
 fn storage_source_capability_facts(
-    module: &str,
-    module_info: &ProbeReport,
-    probes: &[ProbeReport],
+    kind: StorageSourceReportKind,
+    probe_facts: &[SourceProbeFact],
 ) -> Vec<SourceCapabilityFact> {
     let mut facts = vec![
         any_probe_fact(
-            module_info,
-            probes,
             "identity",
             "Identity",
-            &["peerId", "spr"],
+            probe_facts,
+            &[SourceProbeKey::StoragePeerId, SourceProbeKey::StorageSpr],
         ),
-        any_probe_fact(module_info, probes, "space", "Repository space", &["space"]),
         any_probe_fact(
-            module_info,
-            probes,
+            "space",
+            "Repository space",
+            probe_facts,
+            &[SourceProbeKey::StorageSpace],
+        ),
+        any_probe_fact(
             "manifest_listing",
             "Manifest listing",
-            &["manifests"],
+            probe_facts,
+            &[SourceProbeKey::StorageManifests],
         ),
-        any_probe_fact(module_info, probes, "debug", "Debug topology", &["debug"]),
-        storage_metrics_fact(module_info, probes),
+        any_probe_fact(
+            "debug",
+            "Debug topology",
+            probe_facts,
+            &[SourceProbeKey::StorageDebug],
+        ),
+        storage_metrics_fact(probe_facts),
     ];
-    if let Some(probe) = report_probe(module_info, probes, "exists") {
+    if let Some(probe) = source_probe_fact(probe_facts, SourceProbeKey::StorageExists) {
         facts.push(probe_fact("cid_exists", "CID existence", probe));
     }
-    if module == "storage_rest" {
+    if kind == StorageSourceReportKind::Rest {
         facts.push(SourceCapabilityFact::available(
             "rest_api",
             "REST API",
             "REST probes available",
             None,
         ));
-    } else if module == STORAGE_MODULE {
+    } else if kind == StorageSourceReportKind::Module {
         facts.push(SourceCapabilityFact::available(
             "module_api",
             "Module API",
@@ -875,36 +1073,35 @@ fn storage_source_capability_facts(
 }
 
 fn delivery_source_capability_facts(
-    module: &str,
-    module_info: &ProbeReport,
-    probes: &[ProbeReport],
+    kind: DeliverySourceReportKind,
+    probe_facts: &[SourceProbeFact],
 ) -> Vec<SourceCapabilityFact> {
     let mut facts = vec![
         any_probe_fact(
-            module_info,
-            probes,
             "identity",
             "Identity",
+            probe_facts,
             &[
-                "peerId",
-                "MyPeerId",
-                "enrUri",
-                "MyENR",
-                "listenAddresses",
-                "MyMultiaddresses",
+                SourceProbeKey::DeliveryPeerId,
+                SourceProbeKey::DeliveryMyPeerId,
+                SourceProbeKey::DeliveryEnrUri,
+                SourceProbeKey::DeliveryMyEnr,
+                SourceProbeKey::DeliveryListenAddresses,
+                SourceProbeKey::DeliveryMyMultiaddresses,
             ],
         ),
         any_probe_fact(
-            module_info,
-            probes,
             "health",
             "Health endpoint",
-            &["health", "nodeHealth", "connectionStatus"],
+            probe_facts,
+            &[
+                SourceProbeKey::DeliveryHealth,
+                SourceProbeKey::DeliveryNodeHealth,
+                SourceProbeKey::DeliveryConnectionStatus,
+            ],
         ),
-        delivery_metrics_fact(module_info, probes),
+        delivery_metrics_fact(probe_facts),
         delivery_protocol_fact(
-            module_info,
-            probes,
             "relay",
             "Relay",
             &[
@@ -914,10 +1111,9 @@ fn delivery_source_capability_facts(
                 "waku_node_messages_total",
             ],
             &["relay"],
+            probe_facts,
         ),
         delivery_protocol_fact(
-            module_info,
-            probes,
             "store",
             "Store",
             &[
@@ -927,39 +1123,40 @@ fn delivery_source_capability_facts(
                 "waku_store_queries_total",
             ],
             &["store"],
+            probe_facts,
         ),
         delivery_protocol_fact(
-            module_info,
-            probes,
             "filter",
             "Filter",
             &["waku_filter", "waku_filter_peers", "waku_filter_requests"],
             &["filter"],
+            probe_facts,
         ),
         delivery_protocol_fact(
-            module_info,
-            probes,
             "lightpush",
             "Lightpush",
             &["waku_lightpush", "waku_lightpush_peers", "lightpush"],
             &["lightpush"],
+            probe_facts,
         ),
         any_probe_fact(
-            module_info,
-            probes,
             "network_monitor",
             "Network monitor",
-            &["allPeersInfo", "contentTopics"],
+            probe_facts,
+            &[
+                SourceProbeKey::DeliveryAllPeersInfo,
+                SourceProbeKey::DeliveryContentTopics,
+            ],
         ),
     ];
-    if module == "delivery_rest" {
+    if kind == DeliverySourceReportKind::Rest {
         facts.push(SourceCapabilityFact::available(
             "rest_api",
             "REST API",
             "REST probes available",
             None,
         ));
-    } else if module == DELIVERY_MODULE {
+    } else if kind == DeliverySourceReportKind::Module {
         facts.push(SourceCapabilityFact::available(
             "module_api",
             "Module API",
@@ -970,35 +1167,32 @@ fn delivery_source_capability_facts(
     facts
 }
 
-fn source_ready_summary(
-    fallback: &str,
-    module_info: &ProbeReport,
-    probes: &[ProbeReport],
-) -> String {
-    ["version", "moduleVersion", "Version"]
-        .iter()
-        .find_map(|method| probe_value(module_info, probes, method))
-        .map(value_summary)
-        .filter(|value| !value.is_empty() && value != "n/a")
-        .map(|value| format!("version {value}"))
-        .unwrap_or_else(|| fallback.to_owned())
+fn source_ready_summary(fallback: &str, facts: &[SourceProbeFact]) -> String {
+    [
+        SourceProbeKey::StorageVersion,
+        SourceProbeKey::StorageModuleVersion,
+        SourceProbeKey::DeliveryVersion,
+        SourceProbeKey::DeliveryNodeInfoVersion,
+    ]
+    .iter()
+    .find_map(|key| source_probe_value(facts, *key))
+    .map(value_summary)
+    .filter(|value| !value.is_empty() && value != "n/a")
+    .map(|value| format!("version {value}"))
+    .unwrap_or_else(|| fallback.to_owned())
 }
 
-fn delivery_ready_detail(
-    module: &str,
-    module_info: &ProbeReport,
-    probes: &[ProbeReport],
-) -> String {
-    if module == "delivery_rest" {
-        let node = probe_value(module_info, probes, "nodeHealth")
+fn delivery_ready_detail(kind: DeliverySourceReportKind, facts: &[SourceProbeFact]) -> String {
+    if kind == DeliverySourceReportKind::Rest {
+        let node = source_probe_value(facts, SourceProbeKey::DeliveryNodeHealth)
             .map(value_summary)
             .unwrap_or_else(|| "unknown".to_owned());
-        let connection = probe_value(module_info, probes, "connectionStatus")
+        let connection = source_probe_value(facts, SourceProbeKey::DeliveryConnectionStatus)
             .map(value_summary)
             .unwrap_or_else(|| "unknown".to_owned());
         return format!("node health {node}; connection {connection}");
     }
-    if delivery_metrics_evidence_present(module_info, probes) {
+    if delivery_metrics_evidence_present(facts) {
         return "delivery metrics observed".to_owned();
     }
     "required delivery facts observed".to_owned()
@@ -1026,15 +1220,14 @@ fn source_report_error(module_info: &ProbeReport, probes: &[ProbeReport]) -> Opt
 }
 
 fn any_probe_fact(
-    module_info: &ProbeReport,
-    probes: &[ProbeReport],
     key: &str,
     label: &str,
-    methods: &[&str],
+    facts: &[SourceProbeFact],
+    probe_keys: &[SourceProbeKey],
 ) -> SourceCapabilityFact {
     let mut fallback = None;
-    for method in methods {
-        if let Some(probe) = report_probe(module_info, probes, method) {
+    for probe_key in probe_keys {
+        if let Some(probe) = source_probe_fact(facts, *probe_key) {
             if probe.ok {
                 return probe_fact(key, label, probe);
             }
@@ -1049,19 +1242,9 @@ fn any_probe_fact(
     )
 }
 
-fn probe_fact(key: &str, label: &str, probe: &ProbeReport) -> SourceCapabilityFact {
+fn probe_fact(key: &str, label: &str, probe: &SourceProbeFact) -> SourceCapabilityFact {
     if probe.ok {
-        SourceCapabilityFact::available(
-            key,
-            label,
-            probe
-                .value
-                .as_ref()
-                .map(value_summary)
-                .filter(|value| !value.is_empty())
-                .unwrap_or_else(|| "observed".to_owned()),
-            probe.value.clone(),
-        )
+        SourceCapabilityFact::available(key, label, probe.evidence.clone(), probe.value.clone())
     } else {
         SourceCapabilityFact::unavailable(
             key,
@@ -1075,9 +1258,9 @@ fn probe_fact(key: &str, label: &str, probe: &ProbeReport) -> SourceCapabilityFa
     }
 }
 
-fn storage_metrics_fact(module_info: &ProbeReport, probes: &[ProbeReport]) -> SourceCapabilityFact {
-    let probe = report_probe(module_info, probes, "collectMetrics");
-    if storage_metrics_evidence_present(module_info, probes) {
+fn storage_metrics_fact(facts: &[SourceProbeFact]) -> SourceCapabilityFact {
+    let probe = source_probe_fact(facts, SourceProbeKey::StorageCollectMetrics);
+    if storage_metrics_evidence_present(facts) {
         return SourceCapabilityFact::available(
             "metrics",
             "Metrics",
@@ -1097,13 +1280,10 @@ fn storage_metrics_fact(module_info: &ProbeReport, probes: &[ProbeReport]) -> So
     )
 }
 
-fn delivery_metrics_fact(
-    module_info: &ProbeReport,
-    probes: &[ProbeReport],
-) -> SourceCapabilityFact {
-    let probe = report_probe(module_info, probes, "collectOpenMetricsText")
-        .or_else(|| report_probe(module_info, probes, "Metrics"));
-    if delivery_metrics_evidence_present(module_info, probes) {
+fn delivery_metrics_fact(facts: &[SourceProbeFact]) -> SourceCapabilityFact {
+    let probe = source_probe_fact(facts, SourceProbeKey::DeliveryCollectOpenMetricsText)
+        .or_else(|| source_probe_fact(facts, SourceProbeKey::DeliveryNodeInfoMetrics));
+    if delivery_metrics_evidence_present(facts) {
         return SourceCapabilityFact::available(
             "metrics",
             "Metrics",
@@ -1128,32 +1308,30 @@ fn delivery_metrics_fact(
 }
 
 fn delivery_protocol_fact(
-    module_info: &ProbeReport,
-    probes: &[ProbeReport],
     key: &str,
     label: &str,
     metric_needles: &[&str],
     protocol_needles: &[&str],
+    facts: &[SourceProbeFact],
 ) -> SourceCapabilityFact {
-    if metric_text_contains(module_info, probes, metric_needles) {
+    if metric_text_contains(facts, metric_needles) {
         return SourceCapabilityFact::available(key, label, "metric family observed", None);
     }
-    if protocol_health_contains(module_info, probes, protocol_needles) {
+    if protocol_health_contains(facts, protocol_needles) {
         return SourceCapabilityFact::available(key, label, "protocol health observed", None);
     }
     SourceCapabilityFact::unavailable(key, label, "not observed")
 }
 
-fn storage_metrics_evidence_present(module_info: &ProbeReport, probes: &[ProbeReport]) -> bool {
-    open_metrics_text(module_info, probes, &["collectMetrics"])
+fn storage_metrics_evidence_present(facts: &[SourceProbeFact]) -> bool {
+    open_metrics_text(facts, &[SourceProbeKey::StorageCollectMetrics])
         .map(|text| text.lines().any(|line| !line.trim().is_empty()))
         .unwrap_or(false)
 }
 
-fn delivery_metrics_evidence_present(module_info: &ProbeReport, probes: &[ProbeReport]) -> bool {
+fn delivery_metrics_evidence_present(facts: &[SourceProbeFact]) -> bool {
     metric_text_contains(
-        module_info,
-        probes,
+        facts,
         &[
             "libp2p_peers",
             "waku_peers",
@@ -1167,38 +1345,36 @@ fn delivery_metrics_evidence_present(module_info: &ProbeReport, probes: &[ProbeR
     )
 }
 
-fn metric_text_contains(
-    module_info: &ProbeReport,
-    probes: &[ProbeReport],
-    needles: &[&str],
-) -> bool {
+fn metric_text_contains(facts: &[SourceProbeFact], needles: &[&str]) -> bool {
     open_metrics_text(
-        module_info,
-        probes,
-        &["collectOpenMetricsText", "collectMetrics", "Metrics"],
+        facts,
+        &[
+            SourceProbeKey::DeliveryCollectOpenMetricsText,
+            SourceProbeKey::StorageCollectMetrics,
+            SourceProbeKey::DeliveryNodeInfoMetrics,
+        ],
     )
     .map(|text| needles.iter().any(|needle| text.contains(needle)))
     .unwrap_or(false)
 }
 
-fn protocol_health_contains(
-    module_info: &ProbeReport,
-    probes: &[ProbeReport],
-    needles: &[&str],
-) -> bool {
-    probe_value(module_info, probes, "protocolsHealth")
+fn protocol_health_contains(facts: &[SourceProbeFact], needles: &[&str]) -> bool {
+    source_probe_value(facts, SourceProbeKey::DeliveryProtocolsHealth)
         .map(|value| value.to_string().to_lowercase())
         .map(|text| needles.iter().any(|needle| text.contains(needle)))
         .unwrap_or(false)
 }
 
-fn delivery_module_runtime_healthy(module_info: &ProbeReport, probes: &[ProbeReport]) -> bool {
-    ["Metrics", "collectOpenMetricsText"]
-        .iter()
-        .any(|method| probe_has_runtime_value(report_probe(module_info, probes, method)))
+fn delivery_module_runtime_healthy(facts: &[SourceProbeFact]) -> bool {
+    [
+        SourceProbeKey::DeliveryNodeInfoMetrics,
+        SourceProbeKey::DeliveryCollectOpenMetricsText,
+    ]
+    .iter()
+    .any(|key| probe_has_runtime_value(source_probe_fact(facts, *key)))
 }
 
-fn probe_has_runtime_value(probe: Option<&ProbeReport>) -> bool {
+fn probe_has_runtime_value(probe: Option<&SourceProbeFact>) -> bool {
     let Some(probe) = probe else {
         return false;
     };
@@ -1213,13 +1389,9 @@ fn probe_has_runtime_value(probe: Option<&ProbeReport>) -> bool {
     }
 }
 
-fn open_metrics_text(
-    module_info: &ProbeReport,
-    probes: &[ProbeReport],
-    methods: &[&str],
-) -> Option<String> {
-    for method in methods {
-        let Some(value) = probe_value(module_info, probes, method) else {
+fn open_metrics_text(facts: &[SourceProbeFact], keys: &[SourceProbeKey]) -> Option<String> {
+    for key in keys {
+        let Some(value) = source_probe_value(facts, *key) else {
             continue;
         };
         if let Some(text) = open_metrics_text_from_value(value)
@@ -1239,46 +1411,6 @@ fn open_metrics_text_from_value(value: &Value) -> Option<String> {
             .find_map(|key| object.get(*key).and_then(open_metrics_text_from_value)),
         _ => None,
     }
-}
-
-fn probe_ok(module_info: &ProbeReport, probes: &[ProbeReport], method: &str) -> bool {
-    report_probe(module_info, probes, method)
-        .map(|probe| probe.ok)
-        .unwrap_or(false)
-}
-
-fn probe_value<'a>(
-    module_info: &'a ProbeReport,
-    probes: &'a [ProbeReport],
-    method: &str,
-) -> Option<&'a Value> {
-    report_probe(module_info, probes, method)
-        .filter(|probe| probe.ok)
-        .and_then(|probe| probe.value.as_ref())
-}
-
-fn report_probe<'a>(
-    module_info: &'a ProbeReport,
-    probes: &'a [ProbeReport],
-    method: &str,
-) -> Option<&'a ProbeReport> {
-    if probe_matches(module_info, method) {
-        return Some(module_info);
-    }
-    probes.iter().find(|probe| probe_matches(probe, method))
-}
-
-fn probe_matches(probe: &ProbeReport, method: &str) -> bool {
-    if method.is_empty() {
-        return false;
-    }
-    let label = probe.label.as_str();
-    let source = probe.source.as_str();
-    label.contains(&format!(".{method}"))
-        || label.contains(&format!("({method})"))
-        || label.ends_with(method)
-        || source.contains(&format!(" {method}"))
-        || source.contains(&format!("/{method}"))
 }
 
 fn health_value_ok(value: Option<&Value>, unknown_ok: bool) -> bool {
@@ -1375,6 +1507,14 @@ mod tests {
     use serde_json::json;
 
     use crate::ProbeReport;
+
+    fn probe_ok(key: SourceProbeKey, value: impl serde::Serialize) -> ProbeReport {
+        ProbeReport::ok("renamed probe", "opaque source", value).with_probe_key(key.as_str())
+    }
+
+    fn probe_err(key: SourceProbeKey, error: &str) -> ProbeReport {
+        ProbeReport::err("renamed probe", "opaque source", error).with_probe_key(key.as_str())
+    }
 
     #[test]
     fn storage_source_modes_normalize_aliases_to_effective_modes() {
@@ -1479,19 +1619,25 @@ mod tests {
 
     #[test]
     fn storage_source_facts_require_rest_core_facts() {
-        let module_info = ProbeReport::ok("storage_rest.space", "http://storage/space", json!({}));
+        let module_info = probe_ok(SourceProbeKey::StorageSpace, json!({}));
         let probes = vec![
             module_info.clone(),
-            ProbeReport::ok("storage_rest.spr", "http://storage/spr", "spr-a"),
-            ProbeReport::ok("storage_rest.peerId", "http://storage/peerid", "peer-a"),
-            ProbeReport::ok("storage_rest.manifests", "http://storage/data", json!([])),
+            probe_ok(SourceProbeKey::StorageSpr, "spr-a"),
+            probe_ok(SourceProbeKey::StoragePeerId, "peer-a"),
+            probe_ok(SourceProbeKey::StorageManifests, json!([])),
         ];
 
-        let facts = storage_source_facts("storage_rest", &module_info, &probes);
+        let facts = storage_source_facts(StorageSourceReportKind::Rest, &module_info, &probes);
 
         assert!(facts.health.reachable);
         assert!(facts.health.ready);
         assert_eq!(facts.health.status, SourceHealthStatus::Healthy);
+        assert!(
+            facts
+                .probe_facts
+                .iter()
+                .any(|fact| fact.key == SourceProbeKey::StoragePeerId.as_str() && fact.ok)
+        );
         assert!(
             facts
                 .capability_facts
@@ -1502,10 +1648,10 @@ mod tests {
 
     #[test]
     fn storage_source_facts_mark_rest_missing_facts_degraded() {
-        let module_info = ProbeReport::ok("storage_rest.space", "http://storage/space", json!({}));
+        let module_info = probe_ok(SourceProbeKey::StorageSpace, json!({}));
         let probes = vec![module_info.clone()];
 
-        let facts = storage_source_facts("storage_rest", &module_info, &probes);
+        let facts = storage_source_facts(StorageSourceReportKind::Rest, &module_info, &probes);
 
         assert!(facts.health.reachable);
         assert!(!facts.health.ready);
@@ -1514,28 +1660,33 @@ mod tests {
 
     #[test]
     fn delivery_source_facts_require_known_metrics_family() {
-        let module_info = ProbeReport::ok(
-            "delivery_metrics.scrape",
-            "http://metrics",
+        let module_info = probe_ok(
+            SourceProbeKey::DeliveryMetricsScrape,
             json!({ "bytes": 20, "lines": 1 }),
         );
-        let generic_metrics = vec![ProbeReport::ok(
-            "delivery_metrics.collectOpenMetricsText",
-            "http://metrics",
+        let generic_metrics = vec![probe_ok(
+            SourceProbeKey::DeliveryCollectOpenMetricsText,
             "process_cpu_seconds_total 3\n",
         )];
-        let waku_metrics = vec![ProbeReport::ok(
-            "delivery_metrics.collectOpenMetricsText",
-            "http://metrics",
+        let waku_metrics = vec![probe_ok(
+            SourceProbeKey::DeliveryCollectOpenMetricsText,
             "waku_store_queries_total 3\n",
         )];
 
         assert!(
-            !delivery_source_facts("delivery_metrics", &module_info, &generic_metrics)
-                .health
-                .ready
+            !delivery_source_facts(
+                DeliverySourceReportKind::Metrics,
+                &module_info,
+                &generic_metrics
+            )
+            .health
+            .ready
         );
-        let facts = delivery_source_facts("delivery_metrics", &module_info, &waku_metrics);
+        let facts = delivery_source_facts(
+            DeliverySourceReportKind::Metrics,
+            &module_info,
+            &waku_metrics,
+        );
         assert!(facts.health.ready);
         assert!(
             facts
@@ -1547,40 +1698,28 @@ mod tests {
 
     #[test]
     fn delivery_rest_source_facts_require_node_and_connection_health() {
-        let module_info = ProbeReport::ok(
-            "delivery_rest.health",
-            "http://delivery/health",
-            json!({ "status": "ok" }),
-        );
+        let module_info = probe_ok(SourceProbeKey::DeliveryHealth, json!({ "status": "ok" }));
         let missing_connection = vec![
             module_info.clone(),
-            ProbeReport::ok(
-                "delivery_rest.nodeHealth",
-                "http://delivery/health",
-                "healthy",
-            ),
+            probe_ok(SourceProbeKey::DeliveryNodeHealth, "healthy"),
         ];
         let connected = vec![
             module_info.clone(),
-            ProbeReport::ok(
-                "delivery_rest.nodeHealth",
-                "http://delivery/health",
-                "healthy",
-            ),
-            ProbeReport::ok(
-                "delivery_rest.connectionStatus",
-                "http://delivery/health",
-                "connected",
-            ),
+            probe_ok(SourceProbeKey::DeliveryNodeHealth, "healthy"),
+            probe_ok(SourceProbeKey::DeliveryConnectionStatus, "connected"),
         ];
 
         assert!(
-            !delivery_source_facts("delivery_rest", &module_info, &missing_connection)
-                .health
-                .ready
+            !delivery_source_facts(
+                DeliverySourceReportKind::Rest,
+                &module_info,
+                &missing_connection
+            )
+            .health
+            .ready
         );
         assert!(
-            delivery_source_facts("delivery_rest", &module_info, &connected)
+            delivery_source_facts(DeliverySourceReportKind::Rest, &module_info, &connected)
                 .health
                 .ready
         );
@@ -1594,10 +1733,29 @@ mod tests {
             "storage source mode `unsupported` is not implemented",
         );
 
-        let facts = storage_source_facts("storage_unsupported", &module_info, &[]);
+        let facts = storage_source_facts(StorageSourceReportKind::Unsupported, &module_info, &[]);
 
         assert_eq!(facts.health.status, SourceHealthStatus::Unsupported);
         assert!(!facts.health.reachable);
         assert!(!facts.health.ready);
+    }
+
+    #[test]
+    fn source_probe_facts_preserve_failed_keyed_probe_without_label_matching() {
+        let module_info = probe_ok(SourceProbeKey::StorageSpace, json!({}));
+        let probes = vec![probe_err(SourceProbeKey::StoragePeerId, "peer unavailable")];
+
+        let facts = storage_source_facts(StorageSourceReportKind::Module, &module_info, &probes);
+        let peer = facts
+            .probe_facts
+            .iter()
+            .find(|fact| fact.key == SourceProbeKey::StoragePeerId.as_str());
+
+        assert_eq!(peer.map(|fact| fact.ok), Some(false));
+        assert_eq!(
+            peer.and_then(|fact| fact.error.as_deref()),
+            Some("peer unavailable")
+        );
+        assert!(facts.health.ready);
     }
 }

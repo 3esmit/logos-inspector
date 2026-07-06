@@ -6,8 +6,9 @@ use crate::{
     ProbeReport, logoscore, response_excerpt,
     source_policy::{
         DEFAULT_DELIVERY_METRICS_ENDPOINT, DEFAULT_DELIVERY_REST_ENDPOINT,
-        DEFAULT_STORAGE_METRICS_ENDPOINT, DEFAULT_STORAGE_REST_ENDPOINT, SourceCapabilityFact,
-        SourceFacts, SourceFamily, SourceHealthFacts, delivery_source_facts, effective_source_mode,
+        DEFAULT_STORAGE_METRICS_ENDPOINT, DEFAULT_STORAGE_REST_ENDPOINT, DeliverySourceReportKind,
+        SourceCapabilityFact, SourceFacts, SourceFamily, SourceHealthFacts, SourceProbeFact,
+        SourceProbeKey, StorageSourceReportKind, delivery_source_facts, effective_source_mode,
         storage_source_facts,
     },
 };
@@ -34,6 +35,8 @@ pub struct ModuleReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub health: Option<SourceHealthFacts>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub probe_facts: Vec<SourceProbeFact>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub capability_facts: Vec<SourceCapabilityFact>,
 }
 
@@ -44,12 +47,14 @@ impl ModuleReport {
             module_info,
             probes,
             health: None,
+            probe_facts: Vec::new(),
             capability_facts: Vec::new(),
         }
     }
 
     fn with_source_facts(mut self, facts: SourceFacts) -> Self {
         self.health = Some(facts.health);
+        self.probe_facts = facts.probe_facts;
         self.capability_facts = facts.capability_facts;
         self
     }
@@ -100,24 +105,60 @@ pub fn blockchain_module_report(address: Option<&str>) -> ModuleReport {
 
 pub fn storage_report(cid: Option<&str>, privileged_debug_enabled: bool) -> ModuleReport {
     let mut probes = vec![
-        call_probe(STORAGE_MODULE, "version", &[]),
-        call_probe(STORAGE_MODULE, "moduleVersion", &[]),
-        call_probe(STORAGE_MODULE, "dataDir", &[]),
-        call_probe(STORAGE_MODULE, "peerId", &[]),
-        call_probe(STORAGE_MODULE, "spr", &[]),
-        call_probe(STORAGE_MODULE, "space", &[]),
-        call_probe(STORAGE_MODULE, "manifests", &[]),
-        call_probe(STORAGE_MODULE, "collectMetrics", &[]),
+        call_source_probe(
+            STORAGE_MODULE,
+            "version",
+            &[],
+            SourceProbeKey::StorageVersion,
+        ),
+        call_source_probe(
+            STORAGE_MODULE,
+            "moduleVersion",
+            &[],
+            SourceProbeKey::StorageModuleVersion,
+        ),
+        call_source_probe(
+            STORAGE_MODULE,
+            "dataDir",
+            &[],
+            SourceProbeKey::StorageDataDir,
+        ),
+        call_source_probe(STORAGE_MODULE, "peerId", &[], SourceProbeKey::StoragePeerId),
+        call_source_probe(STORAGE_MODULE, "spr", &[], SourceProbeKey::StorageSpr),
+        call_source_probe(STORAGE_MODULE, "space", &[], SourceProbeKey::StorageSpace),
+        call_source_probe(
+            STORAGE_MODULE,
+            "manifests",
+            &[],
+            SourceProbeKey::StorageManifests,
+        ),
+        call_source_probe(
+            STORAGE_MODULE,
+            "collectMetrics",
+            &[],
+            SourceProbeKey::StorageCollectMetrics,
+        ),
     ];
     if privileged_debug_enabled {
-        probes.push(call_probe(STORAGE_MODULE, "debug", &[]));
+        probes.push(call_source_probe(
+            STORAGE_MODULE,
+            "debug",
+            &[],
+            SourceProbeKey::StorageDebug,
+        ));
     }
     if let Some(cid) = optional(cid) {
-        probes.push(call_probe(STORAGE_MODULE, "exists", &[cid]));
+        probes.push(call_source_probe(
+            STORAGE_MODULE,
+            "exists",
+            &[cid],
+            SourceProbeKey::StorageExists,
+        ));
     }
     let module_info = module_info_probe(STORAGE_MODULE);
-    ModuleReport::new(STORAGE_MODULE, module_info.clone(), probes.clone())
-        .with_source_facts(storage_source_facts(STORAGE_MODULE, &module_info, &probes))
+    ModuleReport::new(STORAGE_MODULE, module_info.clone(), probes.clone()).with_source_facts(
+        storage_source_facts(StorageSourceReportKind::Module, &module_info, &probes),
+    )
 }
 
 pub async fn storage_source_report(
@@ -163,42 +204,56 @@ async fn storage_rest_report(
     let spr = spr.map(normalize_storage_spr);
     let peer_id = peer_id.map(normalize_storage_peer_id);
     let manifests = data.map(normalize_storage_manifests);
-    let space_probe = ProbeReport::from_result("storage_rest.space", space_source.clone(), space);
+    let space_probe = ProbeReport::from_result("storage_rest.space", space_source.clone(), space)
+        .with_probe_key(SourceProbeKey::StorageSpace.as_str());
     let mut probes = vec![
         space_probe.clone(),
-        ProbeReport::from_result("storage_rest.spr", spr_source, spr),
-        ProbeReport::from_result("storage_rest.peerId", peer_id_source, peer_id),
-        ProbeReport::from_result("storage_rest.manifests", data_source, manifests),
+        ProbeReport::from_result("storage_rest.spr", spr_source, spr)
+            .with_probe_key(SourceProbeKey::StorageSpr.as_str()),
+        ProbeReport::from_result("storage_rest.peerId", peer_id_source, peer_id)
+            .with_probe_key(SourceProbeKey::StoragePeerId.as_str()),
+        ProbeReport::from_result("storage_rest.manifests", data_source, manifests)
+            .with_probe_key(SourceProbeKey::StorageManifests.as_str()),
     ];
     if privileged_debug_enabled {
         let debug_source = http_url(endpoint, "/debug/info");
-        probes.push(ProbeReport::from_result(
-            "storage_rest.debug",
-            debug_source,
-            raw_http_value(endpoint, "/debug/info").await,
-        ));
+        probes.push(
+            ProbeReport::from_result(
+                "storage_rest.debug",
+                debug_source,
+                raw_http_value(endpoint, "/debug/info").await,
+            )
+            .with_probe_key(SourceProbeKey::StorageDebug.as_str()),
+        );
     } else {
-        probes.push(ProbeReport::ok(
-            "storage_rest.privilegedProbe",
-            "disabled",
-            json!({ "skipped": true }),
-        ));
+        probes.push(
+            ProbeReport::ok(
+                "storage_rest.privilegedProbe",
+                "disabled",
+                json!({ "skipped": true }),
+            )
+            .with_probe_key(SourceProbeKey::StoragePrivilegedProbe.as_str()),
+        );
     }
     if let Some(cid) = optional(cid) {
         let path = format!("/data/{cid}/exists");
-        probes.push(ProbeReport::from_result(
-            "storage_rest.exists",
-            http_url(endpoint, &path),
-            raw_http_value(endpoint, &path)
-                .await
-                .map(|value| normalize_storage_exists(value, cid)),
-        ));
+        probes.push(
+            ProbeReport::from_result(
+                "storage_rest.exists",
+                http_url(endpoint, &path),
+                raw_http_value(endpoint, &path)
+                    .await
+                    .map(|value| normalize_storage_exists(value, cid)),
+            )
+            .with_probe_key(SourceProbeKey::StorageExists.as_str()),
+        );
     }
     if let Some(metrics_endpoint) = optional(metrics_endpoint) {
         probes.push(storage_metrics_probe(metrics_endpoint).await);
     }
-    ModuleReport::new("storage_rest", space_probe.clone(), probes.clone())
-        .with_source_facts(storage_source_facts("storage_rest", &space_probe, &probes))
+    ModuleReport::new("storage_rest", space_probe.clone(), probes.clone()).with_source_facts(
+        storage_source_facts(StorageSourceReportKind::Rest, &space_probe, &probes),
+    )
 }
 
 async fn storage_metrics_report(metrics_endpoint: Option<&str>) -> ModuleReport {
@@ -213,30 +268,30 @@ async fn storage_metrics_report(metrics_endpoint: Option<&str>) -> ModuleReport 
                     "bytes": text.len(),
                     "lines": text.lines().count(),
                 }),
-            );
-            let probes = vec![ProbeReport::ok(
-                "storage_metrics.collectMetrics",
-                endpoint,
-                text,
-            )];
+            )
+            .with_probe_key(SourceProbeKey::StorageMetricsScrape.as_str());
+            let probes = vec![
+                ProbeReport::ok("storage_metrics.collectMetrics", endpoint, text)
+                    .with_probe_key(SourceProbeKey::StorageCollectMetrics.as_str()),
+            ];
             ModuleReport::new("storage_metrics", module_info.clone(), probes.clone())
                 .with_source_facts(storage_source_facts(
-                    "storage_metrics",
+                    StorageSourceReportKind::Metrics,
                     &module_info,
                     &probes,
                 ))
         }
         Err(error) => {
             let error = error.to_string();
-            let module_info = ProbeReport::err("storage_metrics.scrape", endpoint, &error);
-            let probes = vec![ProbeReport::err(
-                "storage_metrics.collectMetrics",
-                endpoint,
-                error,
-            )];
+            let module_info = ProbeReport::err("storage_metrics.scrape", endpoint, &error)
+                .with_probe_key(SourceProbeKey::StorageMetricsScrape.as_str());
+            let probes = vec![
+                ProbeReport::err("storage_metrics.collectMetrics", endpoint, error)
+                    .with_probe_key(SourceProbeKey::StorageCollectMetrics.as_str()),
+            ];
             ModuleReport::new("storage_metrics", module_info.clone(), probes.clone())
                 .with_source_facts(storage_source_facts(
-                    "storage_metrics",
+                    StorageSourceReportKind::Metrics,
                     &module_info,
                     &probes,
                 ))
@@ -250,6 +305,7 @@ async fn storage_metrics_probe(metrics_endpoint: &str) -> ProbeReport {
         metrics_endpoint,
         raw_http_text_url(metrics_endpoint).await,
     )
+    .with_probe_key(SourceProbeKey::StorageCollectMetrics.as_str())
 }
 
 fn unsupported_storage_source_report(mode: &str) -> ModuleReport {
@@ -260,8 +316,9 @@ fn unsupported_storage_source_report(mode: &str) -> ModuleReport {
         format!("storage source mode `{mode}` is not implemented"),
     );
     let probes = Vec::new();
-    ModuleReport::new(module.clone(), module_info.clone(), probes.clone())
-        .with_source_facts(storage_source_facts(&module, &module_info, &probes))
+    ModuleReport::new(module.clone(), module_info.clone(), probes.clone()).with_source_facts(
+        storage_source_facts(StorageSourceReportKind::Unsupported, &module_info, &probes),
+    )
 }
 
 fn normalize_storage_manifests(value: Value) -> Value {
@@ -292,26 +349,55 @@ fn normalize_storage_exists(value: Value, cid: &str) -> Value {
 
 pub fn delivery_report(info_id: Option<&str>) -> ModuleReport {
     let mut probes = vec![
-        call_probe(DELIVERY_MODULE, "version", &[]),
-        call_probe(DELIVERY_MODULE, "getAvailableNodeInfoIDs", &[]),
-        call_probe(DELIVERY_MODULE, "getAvailableConfigs", &[]),
-        call_probe(DELIVERY_MODULE, "collectOpenMetricsText", &[]),
+        call_source_probe(
+            DELIVERY_MODULE,
+            "version",
+            &[],
+            SourceProbeKey::DeliveryVersion,
+        ),
+        call_source_probe(
+            DELIVERY_MODULE,
+            "getAvailableNodeInfoIDs",
+            &[],
+            SourceProbeKey::DeliveryAvailableNodeInfoIds,
+        ),
+        call_source_probe(
+            DELIVERY_MODULE,
+            "getAvailableConfigs",
+            &[],
+            SourceProbeKey::DeliveryAvailableConfigs,
+        ),
+        call_source_probe(
+            DELIVERY_MODULE,
+            "collectOpenMetricsText",
+            &[],
+            SourceProbeKey::DeliveryCollectOpenMetricsText,
+        ),
     ];
-    for info_id in [
-        "Version",
-        "Metrics",
-        "MyMultiaddresses",
-        "MyENR",
-        "MyPeerId",
+    for (info_id, key) in [
+        ("Version", SourceProbeKey::DeliveryNodeInfoVersion),
+        ("Metrics", SourceProbeKey::DeliveryNodeInfoMetrics),
+        ("MyMultiaddresses", SourceProbeKey::DeliveryMyMultiaddresses),
+        ("MyENR", SourceProbeKey::DeliveryMyEnr),
+        ("MyPeerId", SourceProbeKey::DeliveryMyPeerId),
     ] {
-        probes.push(call_probe(DELIVERY_MODULE, "getNodeInfo", &[info_id]));
+        probes.push(call_source_probe(
+            DELIVERY_MODULE,
+            "getNodeInfo",
+            &[info_id],
+            key,
+        ));
     }
     if let Some(info_id) = optional(info_id) {
-        probes.push(call_probe(DELIVERY_MODULE, "getNodeInfo", &[info_id]));
+        let probe = call_probe(DELIVERY_MODULE, "getNodeInfo", &[info_id]);
+        probes.push(match delivery_node_info_probe_key(info_id) {
+            Some(key) => probe.with_probe_key(key.as_str()),
+            None => probe,
+        });
     }
     let module_info = module_info_probe(DELIVERY_MODULE);
     ModuleReport::new(DELIVERY_MODULE, module_info.clone(), probes.clone()).with_source_facts(
-        delivery_source_facts(DELIVERY_MODULE, &module_info, &probes),
+        delivery_source_facts(DeliverySourceReportKind::Module, &module_info, &probes),
     )
 }
 
@@ -346,17 +432,20 @@ async fn delivery_rest_report(
         "delivery_rest.health",
         health_source.clone(),
         health.map(normalize_delivery_health),
-    );
+    )
+    .with_probe_key(SourceProbeKey::DeliveryHealth.as_str());
     let info_probe = ProbeReport::from_result(
         "delivery_rest.info",
         info_source.clone(),
         info.map(normalize_delivery_info),
-    );
+    )
+    .with_probe_key(SourceProbeKey::DeliveryInfo.as_str());
     let version_probe = ProbeReport::from_result(
         "delivery_rest.version",
         version_source.clone(),
         version.map(normalize_delivery_version),
-    );
+    )
+    .with_probe_key(SourceProbeKey::DeliveryVersion.as_str());
     let mut probes = vec![
         info_probe.clone(),
         version_probe.clone(),
@@ -365,6 +454,7 @@ async fn delivery_rest_report(
     if let Some(value) = health_probe.value.as_ref() {
         push_delivery_probe(
             &mut probes,
+            SourceProbeKey::DeliveryNodeHealth,
             "nodeHealth",
             &health_source,
             value,
@@ -372,6 +462,7 @@ async fn delivery_rest_report(
         );
         push_delivery_probe(
             &mut probes,
+            SourceProbeKey::DeliveryConnectionStatus,
             "connectionStatus",
             &health_source,
             value,
@@ -379,6 +470,7 @@ async fn delivery_rest_report(
         );
         push_delivery_probe(
             &mut probes,
+            SourceProbeKey::DeliveryProtocolsHealth,
             "protocolsHealth",
             &health_source,
             value,
@@ -388,6 +480,7 @@ async fn delivery_rest_report(
     if let Some(value) = info_probe.value.as_ref() {
         push_delivery_probe(
             &mut probes,
+            SourceProbeKey::DeliveryPeerId,
             "peerId",
             &info_source,
             value,
@@ -395,6 +488,7 @@ async fn delivery_rest_report(
         );
         push_delivery_probe(
             &mut probes,
+            SourceProbeKey::DeliveryListenAddresses,
             "listenAddresses",
             &info_source,
             value,
@@ -407,6 +501,7 @@ async fn delivery_rest_report(
         );
         push_delivery_probe(
             &mut probes,
+            SourceProbeKey::DeliveryEnrUri,
             "enrUri",
             &info_source,
             value,
@@ -414,6 +509,7 @@ async fn delivery_rest_report(
         );
         push_delivery_probe(
             &mut probes,
+            SourceProbeKey::DeliveryNodeInfoVersion,
             "Version",
             &info_source,
             value,
@@ -424,7 +520,7 @@ async fn delivery_rest_report(
         probes.push(metrics_probe(metrics_endpoint).await);
     }
     ModuleReport::new("delivery_rest", health_probe.clone(), probes.clone()).with_source_facts(
-        delivery_source_facts("delivery_rest", &health_probe, &probes),
+        delivery_source_facts(DeliverySourceReportKind::Rest, &health_probe, &probes),
     )
 }
 
@@ -461,17 +557,17 @@ fn normalize_delivery_version(value: Value) -> Value {
 
 fn push_delivery_probe(
     probes: &mut Vec<ProbeReport>,
+    key: SourceProbeKey,
     method: &str,
     source: &str,
     value: &Value,
     keys: &[&str],
 ) {
     if let Some(value) = scalar_field(value, keys) {
-        probes.push(ProbeReport::ok(
-            format!("delivery_rest.{method}"),
-            source,
-            value,
-        ));
+        probes.push(
+            ProbeReport::ok(format!("delivery_rest.{method}"), source, value)
+                .with_probe_key(key.as_str()),
+        );
     }
 }
 
@@ -487,30 +583,30 @@ async fn delivery_metrics_report(metrics_endpoint: Option<&str>) -> ModuleReport
                     "bytes": text.len(),
                     "lines": text.lines().count(),
                 }),
-            );
-            let probes = vec![ProbeReport::ok(
-                "delivery_metrics.collectOpenMetricsText",
-                endpoint,
-                text,
-            )];
+            )
+            .with_probe_key(SourceProbeKey::DeliveryMetricsScrape.as_str());
+            let probes = vec![
+                ProbeReport::ok("delivery_metrics.collectOpenMetricsText", endpoint, text)
+                    .with_probe_key(SourceProbeKey::DeliveryCollectOpenMetricsText.as_str()),
+            ];
             ModuleReport::new("delivery_metrics", module_info.clone(), probes.clone())
                 .with_source_facts(delivery_source_facts(
-                    "delivery_metrics",
+                    DeliverySourceReportKind::Metrics,
                     &module_info,
                     &probes,
                 ))
         }
         Err(error) => {
             let error = error.to_string();
-            let module_info = ProbeReport::err("delivery_metrics.scrape", endpoint, &error);
-            let probes = vec![ProbeReport::err(
-                "delivery_metrics.collectOpenMetricsText",
-                endpoint,
-                error,
-            )];
+            let module_info = ProbeReport::err("delivery_metrics.scrape", endpoint, &error)
+                .with_probe_key(SourceProbeKey::DeliveryMetricsScrape.as_str());
+            let probes = vec![
+                ProbeReport::err("delivery_metrics.collectOpenMetricsText", endpoint, error)
+                    .with_probe_key(SourceProbeKey::DeliveryCollectOpenMetricsText.as_str()),
+            ];
             ModuleReport::new("delivery_metrics", module_info.clone(), probes.clone())
                 .with_source_facts(delivery_source_facts(
-                    "delivery_metrics",
+                    DeliverySourceReportKind::Metrics,
                     &module_info,
                     &probes,
                 ))
@@ -524,6 +620,7 @@ async fn metrics_probe(metrics_endpoint: &str) -> ProbeReport {
         metrics_endpoint,
         raw_http_text_url(metrics_endpoint).await,
     )
+    .with_probe_key(SourceProbeKey::DeliveryCollectOpenMetricsText.as_str())
 }
 
 async fn delivery_network_monitor_report(
@@ -541,21 +638,26 @@ async fn delivery_network_monitor_report(
         "delivery_network_monitor.allPeersInfo",
         all_peers_source,
         all_peers,
-    );
+    )
+    .with_probe_key(SourceProbeKey::DeliveryAllPeersInfo.as_str());
     let mut probes = vec![
         all_peers_probe.clone(),
         ProbeReport::from_result(
             "delivery_network_monitor.contentTopics",
             content_topics_source,
             content_topics,
-        ),
+        )
+        .with_probe_key(SourceProbeKey::DeliveryContentTopics.as_str()),
     ];
     if let Some(metrics_endpoint) = optional(metrics_endpoint) {
-        probes.push(ProbeReport::from_result(
-            "delivery_network_monitor.collectOpenMetricsText",
-            metrics_endpoint,
-            raw_http_text_url(metrics_endpoint).await,
-        ));
+        probes.push(
+            ProbeReport::from_result(
+                "delivery_network_monitor.collectOpenMetricsText",
+                metrics_endpoint,
+                raw_http_text_url(metrics_endpoint).await,
+            )
+            .with_probe_key(SourceProbeKey::DeliveryCollectOpenMetricsText.as_str()),
+        );
     }
     ModuleReport::new(
         "delivery_network_monitor",
@@ -563,7 +665,7 @@ async fn delivery_network_monitor_report(
         probes.clone(),
     )
     .with_source_facts(delivery_source_facts(
-        "delivery_network_monitor",
+        DeliverySourceReportKind::NetworkMonitor,
         &all_peers_probe,
         &probes,
     ))
@@ -577,8 +679,9 @@ fn unsupported_delivery_source_report(mode: &str) -> ModuleReport {
         format!("delivery source mode `{mode}` is not implemented"),
     );
     let probes = Vec::new();
-    ModuleReport::new(module.clone(), module_info.clone(), probes.clone())
-        .with_source_facts(delivery_source_facts(&module, &module_info, &probes))
+    ModuleReport::new(module.clone(), module_info.clone(), probes.clone()).with_source_facts(
+        delivery_source_facts(DeliverySourceReportKind::Unsupported, &module_info, &probes),
+    )
 }
 
 async fn raw_http_value(endpoint: &str, path: &str) -> Result<Value> {
@@ -652,6 +755,26 @@ fn call_probe(module: &str, method: &str, args: &[&str]) -> ProbeReport {
         format!("logoscore call {module} {method}{source_args}"),
         logoscore::call(module, method, &args),
     )
+}
+
+fn call_source_probe(
+    module: &str,
+    method: &str,
+    args: &[&str],
+    key: SourceProbeKey,
+) -> ProbeReport {
+    call_probe(module, method, args).with_probe_key(key.as_str())
+}
+
+fn delivery_node_info_probe_key(info_id: &str) -> Option<SourceProbeKey> {
+    match info_id {
+        "Version" => Some(SourceProbeKey::DeliveryNodeInfoVersion),
+        "Metrics" => Some(SourceProbeKey::DeliveryNodeInfoMetrics),
+        "MyMultiaddresses" => Some(SourceProbeKey::DeliveryMyMultiaddresses),
+        "MyENR" => Some(SourceProbeKey::DeliveryMyEnr),
+        "MyPeerId" => Some(SourceProbeKey::DeliveryMyPeerId),
+        _ => None,
+    }
 }
 
 fn optional(value: Option<&str>) -> Option<&str> {

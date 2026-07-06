@@ -359,7 +359,7 @@ Item {
         id: storagePage
         StorageAppPage {
             theme: theme
-            model: appModel
+            model: appModel.storageApp
         }
     }
 
