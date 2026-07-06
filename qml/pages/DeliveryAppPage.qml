@@ -635,24 +635,28 @@ ColumnLayout {
     }
 
     function deliveryModuleSource() {
-        return String(root.model.effectiveMessagingSourceMode(root.model.messagingSourceMode) || "").toLowerCase() === "module"
+        return root.model.sourceModeTargetKind("delivery", root.model.messagingSourceMode) === "module"
     }
 
     function deliveryRestSource() {
-        return String(root.model.effectiveMessagingSourceMode(root.model.messagingSourceMode) || "").toLowerCase() === "rest"
+        return root.model.sourceModeTargetKind("delivery", root.model.messagingSourceMode) === "rest_endpoint"
+            && root.model.sourceModeSupportsMutatingDiagnostics("delivery", root.model.messagingSourceMode)
     }
 
     function deliveryMessageSource() {
-        return root.deliveryRestSource() || root.deliveryModuleSource()
+        return root.model.sourceModeSupportsMutatingDiagnostics("delivery", root.model.messagingSourceMode)
     }
 
     function deliveryDataSource() {
-        const mode = String(root.model.effectiveMessagingSourceMode(root.model.messagingSourceMode) || "").toLowerCase()
-        return mode === "rest" || mode === "metrics" || mode === "module" || mode === "network-monitor"
+        return root.model.sourceModeTargetKind("delivery", root.model.messagingSourceMode) !== "none"
     }
 
     function deliveryArgs(extra) {
-        const args = [root.model.effectiveMessagingSourceMode(root.model.messagingSourceMode), root.model.configuredMessagingRestUrl(), root.model.messagingMutatingDiagnosticsEnabled === true]
+        const args = [
+            root.model.effectiveMessagingSourceMode(root.model.messagingSourceMode),
+            root.model.sourceModeUsesEndpoint("delivery", root.model.messagingSourceMode, "rest") ? root.model.configuredMessagingRestUrl() : "",
+            root.model.messagingMutatingDiagnosticsEnabled === true
+        ]
         return args.concat(extra || [])
     }
 

@@ -30,7 +30,7 @@ use crate::{
     social::social_messages_from_store,
     source_policy::{
         CoreEndpointMode, CoreSourceMode, DEFAULT_DELIVERY_REST_ENDPOINT,
-        DEFAULT_STORAGE_REST_ENDPOINT, DeliverySourceMode, StorageSourceMode, source_policy_report,
+        DEFAULT_STORAGE_REST_ENDPOINT, SourceFamily, effective_source_mode, source_policy_report,
     },
     spel::spel_idl_report,
     state_store::{
@@ -1050,8 +1050,8 @@ fn rest_source<'a>(
 ) -> Result<RestSource<'a>> {
     let mode = args.optional_string(0).unwrap_or("rest");
     let normalized = match source_name {
-        "storage" => StorageSourceMode::from_token(mode).effective().as_str(),
-        "delivery" => DeliverySourceMode::from_token(mode).effective().as_str(),
+        "storage" => effective_source_mode(SourceFamily::Storage, mode),
+        "delivery" => effective_source_mode(SourceFamily::Delivery, mode),
         _ => "unsupported",
     };
     match normalized {
@@ -1320,10 +1320,11 @@ mod tests {
 
         let value = bridge.call_module(INSPECTOR_MODULE, "sourcePolicy", json!([]))?;
 
-        if value
-            .pointer("/defaults/storage_rest_endpoint")
-            .and_then(Value::as_str)
-            != Some(DEFAULT_STORAGE_REST_ENDPOINT)
+        if value.get("version").and_then(Value::as_u64) != Some(2)
+            || value
+                .pointer("/defaults/storage_rest_endpoint")
+                .and_then(Value::as_str)
+                != Some(DEFAULT_STORAGE_REST_ENDPOINT)
             || value
                 .pointer("/defaults/delivery_rest_endpoint")
                 .and_then(Value::as_str)
@@ -1348,11 +1349,18 @@ mod tests {
         else {
             bail!("source policy missing storage modes: {value}");
         };
-        if !storage_modes
+        let Some(module_mode) = storage_modes
             .iter()
-            .any(|mode| mode.get("key").and_then(Value::as_str) == Some("module"))
-        {
+            .find(|mode| mode.get("key").and_then(Value::as_str) == Some("module"))
+        else {
             bail!("source policy missing storage module mode: {value}");
+        };
+        if module_mode
+            .pointer("/adapter/target")
+            .and_then(Value::as_str)
+            != Some("module")
+        {
+            bail!("source policy missing storage adapter facts: {value}");
         }
         Ok(())
     }

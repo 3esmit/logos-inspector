@@ -659,6 +659,24 @@ QtObject {
 
     function sourceModePolicy(family, value) { return AppModelNetwork.sourceModePolicy(root, family, value) }
 
+    function sourceModePolicies(family) { return AppModelNetwork.sourceModePolicies(root, family) }
+
+    function sourceModeOptions(family) { return AppModelNetwork.sourceModeOptions(root, family) }
+
+    function sourceModeIndexFor(family, value, options) { return AppModelNetwork.sourceModeIndexFor(root, family, value, options) }
+
+    function sourceModeAt(index, options) { return AppModelNetwork.sourceModeAt(root, index, options) }
+
+    function sourceModeAdapter(family, value) { return AppModelNetwork.sourceModeAdapter(root, family, value) }
+
+    function sourceModeTargetKind(family, value) { return AppModelNetwork.sourceModeTargetKind(root, family, value) }
+
+    function sourceModeUsesEndpoint(family, value, endpointKind) { return AppModelNetwork.sourceModeUsesEndpoint(root, family, value, endpointKind) }
+
+    function sourceModeSupportsCidProbe(family, value) { return AppModelNetwork.sourceModeSupportsCidProbe(root, family, value) }
+
+    function sourceModeSupportsMutatingDiagnostics(family, value) { return AppModelNetwork.sourceModeSupportsMutatingDiagnostics(root, family, value) }
+
     function networkConnectionRate(kind) { return AppModelNetwork.networkConnectionRate(root, kind) }
 
     function setNetworkConnectionRate(kind, seconds) { return AppModelNetwork.setNetworkConnectionRate(root, kind, seconds) }
@@ -712,10 +730,6 @@ QtObject {
     function reportProbe(report, method) { return AppModelNetwork.reportProbe(root, report, method) }
 
     function deliveryReportHealthy(report) { return AppModelNetwork.deliveryReportHealthy(root, report) }
-
-    function deliveryModuleRuntimeHealthy(report) { return AppModelNetwork.deliveryModuleRuntimeHealthy(root, report) }
-
-    function deliveryProbeHasRuntimeValue(probe) { return AppModelNetwork.deliveryProbeHasRuntimeValue(root, probe) }
 
     function deliveryHealthValueOk(value, unknownOk) { return AppModelNetwork.deliveryHealthValueOk(root, value, unknownOk) }
 

@@ -53,9 +53,7 @@ function sourcePolicyDefault(root, key, fallback) {
 function sourceModePolicy(root, family, value) {
     with (root) {
         const token = String(value || "auto").trim().toLowerCase()
-        const modes = sourcePolicy && sourcePolicy.source_modes && Array.isArray(sourcePolicy.source_modes[family])
-            ? sourcePolicy.source_modes[family]
-            : []
+        const modes = root.sourceModePolicies(family)
         for (let i = 0; i < modes.length; ++i) {
             const mode = modes[i] || {}
             if (String(mode.key || "") === token) {
@@ -68,79 +66,157 @@ function sourceModePolicy(root, family, value) {
                 }
             }
         }
-        return fallbackSourceModePolicy(family, token)
+        const fallbackKey = family === "core" ? "auto" : "unsupported"
+        for (let k = 0; k < modes.length; ++k) {
+            const mode = modes[k] || {}
+            if (String(mode.key || "") === fallbackKey) {
+                return mode
+            }
+        }
+        return modes.length > 0 ? modes[0] : ({ key: "auto", effective: family === "core" ? "rpc" : "rest" })
     }
 }
 
-function fallbackSourceModePolicy(family, token) {
+function sourceModePolicies(root, family) {
+    with (root) {
+        const modes = sourcePolicy && sourcePolicy.source_modes && Array.isArray(sourcePolicy.source_modes[family])
+            ? sourcePolicy.source_modes[family]
+            : []
+        return modes.length > 0 ? modes : fallbackSourceModePolicies(family)
+    }
+}
+
+function fallbackSourceModePolicies(family) {
     if (family === "core") {
-        switch (token) {
-        case "rpc":
-        case "direct-rpc":
-        case "direct rpc":
-        case "standalone":
-        case "standalone-rpc":
-        case "standalone rpc":
-            return { key: "rpc", effective: "rpc", label_key: "direct_rpc" }
-        default:
-            return { key: "auto", effective: "rpc", label_key: "auto_rpc" }
-        }
+        return [
+            sourceModeRecord("auto", ["auto"], "rpc", "Auto", "Auto: Direct RPC", "Use configured direct RPC endpoint", "rpc_endpoint", false, false, false, false),
+            sourceModeRecord("rpc", ["rpc"], "rpc", "Direct RPC", "Direct RPC", "Use configured standalone RPC endpoint", "rpc_endpoint", false, false, false, false)
+        ]
     }
     if (family === "delivery") {
-        switch (token) {
-        case "module":
-        case "basecamp":
-        case "basecamp-module":
-        case "basecamp module":
-            return { key: "module", effective: "module", label_key: "delivery_module" }
-        case "network-monitor":
-        case "network monitor":
-        case "discovery-crawler":
-        case "discovery crawler":
-        case "crawler":
-            return { key: "network-monitor", effective: "network-monitor", label_key: "network_monitor" }
-        case "rest":
-        case "direct-rest":
-        case "direct waku rest":
-        case "waku-rest":
-            return { key: "rest", effective: "rest", label_key: "delivery_rest" }
-        case "metrics":
-        case "metrics-only":
-        case "metrics only":
-            return { key: "metrics", effective: "metrics", label_key: "metrics_only" }
-        case "unsupported":
-            return { key: "unsupported", effective: "unsupported", label_key: "unsupported" }
-        default:
-            return { key: "auto", effective: "rest", label_key: "auto_delivery_rest" }
+        return [
+            sourceModeRecord("auto", ["auto"], "rest", "Auto", "Auto: Direct Waku REST", "Use direct Waku REST", "rest_endpoint", true, true, false, true),
+            sourceModeRecord("rest", ["rest"], "rest", "Direct Waku REST", "Direct Waku REST", "Read-only health, info, version, and optional metrics", "rest_endpoint", true, true, false, true),
+            sourceModeRecord("unsupported", ["unsupported"], "unsupported", "Unsupported saved source", "Unsupported source", "Select a supported source to replace this saved value", "none", false, false, false, false)
+        ]
+    }
+    return [
+        sourceModeRecord("auto", ["auto"], "rest", "Auto", "Auto: Standalone REST", "Use standalone REST", "rest_endpoint", true, true, true, true),
+        sourceModeRecord("rest", ["rest"], "rest", "Standalone REST", "Standalone REST", "Read-only space, identity, local data, debug, and metrics", "rest_endpoint", true, true, true, true),
+        sourceModeRecord("unsupported", ["unsupported"], "unsupported", "Unsupported saved source", "Unsupported source", "Select a supported source to replace this saved value", "none", false, false, false, false)
+    ]
+}
+
+function sourceModeRecord(key, aliases, effective, label, sourceLabel, summary, target, usesRest, usesMetrics, supportsCid, supportsMutating) {
+    return {
+        key: key,
+        aliases: aliases,
+        effective: effective,
+        label: label,
+        source_label: sourceLabel,
+        summary: summary,
+        adapter: {
+            target: target,
+            uses_rest_endpoint: usesRest,
+            uses_metrics_endpoint: usesMetrics,
+            supports_cid_probe: supportsCid,
+            supports_mutating_diagnostics: supportsMutating
         }
     }
-    switch (token) {
-    case "module":
-    case "basecamp":
-    case "basecamp-module":
-    case "basecamp module":
-        return { key: "module", effective: "module", label_key: "storage_module" }
-    case "rest":
-    case "standalone":
-    case "standalone-rest":
-    case "standalone rest":
-    case "direct-rest":
-    case "direct rest":
-        return { key: "rest", effective: "rest", label_key: "storage_rest" }
-    case "metrics":
-    case "metrics-only":
-    case "metrics only":
-        return { key: "metrics", effective: "metrics", label_key: "metrics_only" }
-    case "c-library":
-    case "c library":
-    case "library":
-    case "local-os":
-    case "local os":
-    case "local diagnostics":
-    case "unsupported":
-        return { key: "unsupported", effective: "unsupported", label_key: "unsupported" }
-    default:
-        return { key: "auto", effective: "rest", label_key: "auto_storage_rest" }
+}
+
+function sourceModeOptions(root, family) {
+    with (root) {
+        const modes = root.sourceModePolicies(family)
+        const options = []
+        for (let i = 0; i < modes.length; ++i) {
+            const mode = modes[i] || {}
+            const key = String(mode.key || "")
+            if (!key.length || (family === "core" && key === "module")) {
+                continue
+            }
+            options.push({
+                key: key,
+                label: String(mode.label || key),
+                summary: String(mode.summary || "")
+            })
+        }
+        return options
+    }
+}
+
+function sourceModeIndexFor(root, family, value, options) {
+    with (root) {
+        const source = String(root.sourceModePolicy(family, value).key || "auto")
+        const count = sourceModeOptionCount(options)
+        for (let i = 0; i < count; ++i) {
+            const option = sourceModeOptionAt(options, i)
+            if (option && String(option.key || "") === source) {
+                return i
+            }
+        }
+        return 0
+    }
+}
+
+function sourceModeAt(root, index, options) {
+    const option = sourceModeOptionAt(options, index)
+    return option && option.key !== undefined ? String(option.key || "auto") : "auto"
+}
+
+function sourceModeOptionCount(options) {
+    if (Array.isArray(options)) {
+        return options.length
+    }
+    return options && options.count !== undefined ? Number(options.count || 0) : 0
+}
+
+function sourceModeOptionAt(options, index) {
+    if (index < 0 || index >= sourceModeOptionCount(options)) {
+        return null
+    }
+    if (Array.isArray(options)) {
+        return options[index] || null
+    }
+    return options && typeof options.get === "function" ? options.get(index) : null
+}
+
+function sourceModeAdapter(root, family, value) {
+    with (root) {
+        const adapter = root.sourceModePolicy(family, value).adapter
+        return adapter && typeof adapter === "object" ? adapter : ({})
+    }
+}
+
+function sourceModeTargetKind(root, family, value) {
+    with (root) {
+        return String(root.sourceModeAdapter(family, value).target || "none")
+    }
+}
+
+function sourceModeUsesEndpoint(root, family, value, endpointKind) {
+    with (root) {
+        const adapter = root.sourceModeAdapter(family, value)
+        switch (String(endpointKind || "")) {
+        case "rest":
+            return adapter.uses_rest_endpoint === true
+        case "metrics":
+            return adapter.uses_metrics_endpoint === true
+        default:
+            return false
+        }
+    }
+}
+
+function sourceModeSupportsCidProbe(root, family, value) {
+    with (root) {
+        return root.sourceModeAdapter(family, value).supports_cid_probe === true
+    }
+}
+
+function sourceModeSupportsMutatingDiagnostics(root, family, value) {
+    with (root) {
+        return root.sourceModeAdapter(family, value).supports_mutating_diagnostics === true
     }
 }
 
@@ -585,24 +661,7 @@ function storageReportReady(root, report) {
         if (ready !== null) {
             return ready
         }
-        if (!root.moduleReportReachable(report)) {
-            return false
-        }
-        const moduleName = String(report && report.module ? report.module : "")
-        if (moduleName === "storage_metrics") {
-            return true
-        }
-        if (moduleName === "storage_rest") {
-            return root.reportProbeOk(report, "peerId")
-                && root.reportProbeOk(report, "spr")
-                && root.reportProbeOk(report, "space")
-                && root.reportProbeOk(report, "manifests")
-        }
-        return root.reportProbeOk(report, "peerId")
-            || root.reportProbeOk(report, "spr")
-            || root.reportProbeOk(report, "space")
-            || root.reportProbeOk(report, "debug")
-            || root.reportProbeOk(report, "manifests")
+        return root.moduleReportReachable(report)
     }
 }
 
@@ -732,92 +791,7 @@ function deliveryReportHealthy(root, report) {
         if (ready !== null) {
             return ready
         }
-        const moduleName = String(report && report.module ? report.module : "")
-        if (moduleName === "delivery_metrics") {
-            return deliveryMetricsEvidencePresent(root, report)
-        }
-        if (moduleName === "delivery_network_monitor") {
-            return root.reportProbeOk(report, "allPeersInfo")
-                || root.reportProbeOk(report, "contentTopics")
-                || deliveryMetricsEvidencePresent(root, report)
-        }
-        if (moduleName === "delivery_rest" && !root.reportProbeOk(report, "health")) {
-            return false
-        }
-        const nodeProbe = root.reportProbe(report, "nodeHealth")
-        const connectionProbe = root.reportProbe(report, "connectionStatus")
-        if (moduleName === "delivery_rest" && !connectionProbe) {
-            return false
-        }
-        if (moduleName === deliveryModule && !nodeProbe && !connectionProbe) {
-            return root.deliveryModuleRuntimeHealthy(report)
-        }
-        if (!nodeProbe && !connectionProbe) {
-            return true
-        }
-        const nodeHealth = nodeProbe && nodeProbe.ok === true ? nodeProbe.value : null
-        const connectionStatus = connectionProbe && connectionProbe.ok === true ? connectionProbe.value : null
-        return root.deliveryHealthValueOk(nodeHealth, false) && root.deliveryHealthValueOk(connectionStatus, false)
-    }
-}
-
-function deliveryMetricsEvidencePresent(root, report) {
-    with (root) {
-        const probe = root.reportProbe(report, "collectOpenMetricsText")
-        if (!probe || probe.ok !== true || probe.value === undefined || probe.value === null) {
-            return false
-        }
-        const text = root.openMetricsTextFromValue(probe.value)
-        if (!text.length) {
-            return false
-        }
-        const knownNames = [
-            "libp2p_peers",
-            "waku_peers",
-            "libp2p_pubsub_peers",
-            "waku_node_messages_total",
-            "waku_node_errors_total",
-            "waku_store_queries_total",
-            "waku_filter_peers",
-            "waku_lightpush_peers"
-        ]
-        for (let i = 0; i < knownNames.length; ++i) {
-            if (text.indexOf(knownNames[i]) >= 0) {
-                return true
-            }
-        }
-        return false
-    }
-}
-
-function deliveryModuleRuntimeHealthy(root, report) {
-    with (root) {
-        const runtimeMethods = ["Metrics", "collectOpenMetricsText"]
-        for (let i = 0; i < runtimeMethods.length; ++i) {
-            if (root.deliveryProbeHasRuntimeValue(root.reportProbe(report, runtimeMethods[i]))) {
-                return true
-            }
-        }
-        return false
-    }
-}
-
-function deliveryProbeHasRuntimeValue(root, probe) {
-    with (root) {
-        if (!probe || probe.ok !== true || probe.value === undefined || probe.value === null) {
-            return false
-        }
-        if (Array.isArray(probe.value)) {
-            return probe.value.length > 0
-        }
-        if (typeof probe.value === "object") {
-            return Object.keys(probe.value).length > 0
-        }
-        const scalar = root.scalarValue(probe.value)
-        if (typeof scalar === "boolean") {
-            return scalar
-        }
-        return scalar !== null && String(scalar).trim().length > 0
+        return root.moduleReportReachable(report)
     }
 }
 
@@ -873,47 +847,28 @@ function deliverySourceReportArgs(root) {
         const source = root.effectiveMessagingSourceMode(messagingSourceMode)
         return [
             source,
-            source === "rest" || source === "network-monitor" ? root.configuredMessagingRestUrl() : "",
-            source === "rest" || source === "metrics" || source === "network-monitor" ? String(messagingMetricsUrl || "") : ""
+            root.sourceModeUsesEndpoint("delivery", messagingSourceMode, "rest") ? root.configuredMessagingRestUrl() : "",
+            root.sourceModeUsesEndpoint("delivery", messagingSourceMode, "metrics") ? String(messagingMetricsUrl || "") : ""
         ]
     }
 }
 
 function deliverySourceLabel(root) {
     with (root) {
-        const source = root.normalizedMessagingSourceMode(messagingSourceMode)
-        if (source === "auto") {
-            return qsTr("Auto: Direct Waku REST")
-        }
-        const effective = root.effectiveMessagingSourceMode(messagingSourceMode)
-        switch (effective) {
-        case "module":
-            return qsTr("Delivery module")
-        case "rest":
-            return qsTr("Direct Waku REST")
-        case "metrics":
-            return qsTr("Metrics only")
-        case "network-monitor":
-            return qsTr("Network monitor")
-        case "unsupported":
-            return qsTr("Unsupported source")
-        default:
-            return qsTr("Direct Waku REST")
-        }
+        const source = root.sourceModePolicy("delivery", messagingSourceMode)
+        return String(source.source_label || source.label || qsTr("Direct Waku REST"))
     }
 }
 
 function deliverySourceTarget(root) {
     with (root) {
-        switch (root.effectiveMessagingSourceMode(messagingSourceMode)) {
+        switch (root.sourceModeTargetKind("delivery", messagingSourceMode)) {
         case "module":
             return deliveryModule
-        case "rest":
+        case "rest_endpoint":
             return root.configuredMessagingRestUrl()
-        case "metrics":
+        case "metrics_endpoint":
             return String(messagingMetricsUrl || "")
-        case "network-monitor":
-            return root.configuredMessagingRestUrl()
         default:
             return ""
         }
@@ -1004,9 +959,9 @@ function storageSourceReportArgs(root, includeCidProbe) {
         const source = root.effectiveStorageSourceMode(storageSourceMode)
         return [
             source,
-            source === "rest" ? root.configuredStorageRestUrl() : "",
-            source === "rest" || source === "metrics" ? String(storageMetricsUrl || "") : "",
-            includeCidProbe === true ? String(storageCidProbe || "") : "",
+            root.sourceModeUsesEndpoint("storage", storageSourceMode, "rest") ? root.configuredStorageRestUrl() : "",
+            root.sourceModeUsesEndpoint("storage", storageSourceMode, "metrics") ? String(storageMetricsUrl || "") : "",
+            includeCidProbe === true && root.sourceModeSupportsCidProbe("storage", storageSourceMode) ? String(storageCidProbe || "") : "",
             storagePrivilegedDebugEnabled === true
         ]
     }
@@ -1014,37 +969,20 @@ function storageSourceReportArgs(root, includeCidProbe) {
 
 function storageSourceLabel(root) {
     with (root) {
-        const source = root.normalizedStorageSourceMode(storageSourceMode)
-        if (source === "auto") {
-            return qsTr("Auto: Standalone REST")
-        }
-        const effective = root.effectiveStorageSourceMode(storageSourceMode)
-        switch (effective) {
-        case "module":
-            return qsTr("Storage module")
-        case "rest":
-            return qsTr("Standalone REST")
-        case "metrics":
-            return qsTr("Metrics only")
-        case "unsupported":
-            return qsTr("Unsupported source")
-        default:
-            return qsTr("Standalone REST")
-        }
+        const source = root.sourceModePolicy("storage", storageSourceMode)
+        return String(source.source_label || source.label || qsTr("Standalone REST"))
     }
 }
 
 function storageSourceTarget(root) {
     with (root) {
-        switch (root.effectiveStorageSourceMode(storageSourceMode)) {
+        switch (root.sourceModeTargetKind("storage", storageSourceMode)) {
         case "module":
             return storageModule
-        case "rest":
+        case "rest_endpoint":
             return root.configuredStorageRestUrl()
-        case "metrics":
+        case "metrics_endpoint":
             return String(storageMetricsUrl || "")
-        case "unsupported":
-            return ""
         default:
             return ""
         }
