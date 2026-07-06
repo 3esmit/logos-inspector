@@ -18,14 +18,15 @@ Control {
     readonly property int minTabWidth: 56
     readonly property int baseTabWidth: 96
     readonly property int optionCount: root.options ? root.options.count : 0
+    readonly property int naturalContentWidth: root.naturalWidthTotal()
 
     Layout.fillWidth: true
-    implicitWidth: Math.min(root.naturalWidthTotal(), root.width > 0 ? root.width : 360)
+    implicitWidth: Math.min(root.naturalContentWidth, 360)
     implicitHeight: 38
     padding: 0
 
     contentItem: Item {
-        implicitWidth: root.implicitWidth
+        implicitWidth: root.naturalContentWidth
         implicitHeight: root.implicitHeight
 
         Flickable {
@@ -185,7 +186,7 @@ Control {
     }
 
     function tabWidth(label) {
-        if (root.width > 0 && root.naturalWidthTotal() > root.width) {
+        if (root.width > 0 && root.naturalContentWidth > root.width) {
             return root.compressedTabWidth()
         }
 
