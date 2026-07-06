@@ -446,7 +446,7 @@ ColumnLayout {
     }
 
     function probe(method) {
-        return root.model.moduleProbe("messaging", method)
+        return root.model.sourceProbeFact(root.report(), method) || root.model.moduleProbe("messaging", method)
     }
 
     function probeOk(method) {

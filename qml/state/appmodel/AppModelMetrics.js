@@ -40,10 +40,20 @@ function moduleReport(root, kind) {
 function moduleProbe(root, kind, method) {
     with (root) {
         const report = root.moduleReport(kind)
+        const fact = root.sourceProbeFact(report, method)
+        if (fact) {
+            return fact
+        }
         const probes = report && Array.isArray(report.probes) ? report.probes : []
         const wanted = String(method || "")
+        if (report && report.module_info && String(report.module_info.probe_key || "") === wanted) {
+            return report.module_info
+        }
         for (let i = 0; i < probes.length; ++i) {
             const probe = probes[i] || {}
+            if (String(probe.probe_key || "") === wanted) {
+                return probe
+            }
             const label = String(probe.label || "")
             const source = String(probe.source || "")
             if (label.indexOf("." + wanted) >= 0 || source.indexOf(" " + wanted) >= 0) {

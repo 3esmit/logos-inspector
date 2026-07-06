@@ -741,6 +741,27 @@ function sourceCapabilityValue(root, report, key) {
     }
 }
 
+function sourceProbeFact(root, report, key) {
+    with (root) {
+        const wanted = String(key || "")
+        const facts = report && Array.isArray(report.probe_facts) ? report.probe_facts : []
+        for (let i = 0; i < facts.length; ++i) {
+            const fact = facts[i] || {}
+            if (String(fact.key || "") === wanted) {
+                return fact
+            }
+        }
+        return null
+    }
+}
+
+function sourceProbeValue(root, report, key) {
+    with (root) {
+        const fact = root.sourceProbeFact(report, key)
+        return fact && fact.ok === true && fact.value !== undefined && fact.value !== null ? fact.value : null
+    }
+}
+
 function reportProbeValue(root, report, method) {
     with (root) {
         const probe = root.reportProbe(report, method)
@@ -764,8 +785,15 @@ function reportProbe(root, report, method) {
             return null
         }
         const wanted = String(method || "")
+        const fact = root.sourceProbeFact(report, wanted)
+        if (fact) {
+            return fact
+        }
         const moduleInfo = report.module_info || null
         if (moduleInfo) {
+            if (String(moduleInfo.probe_key || "") === wanted) {
+                return moduleInfo
+            }
             const label = String(moduleInfo.label || "")
             const source = String(moduleInfo.source || "")
             if (label.indexOf("." + wanted) >= 0 || source.indexOf(" " + wanted) >= 0) {
@@ -775,6 +803,9 @@ function reportProbe(root, report, method) {
         const probes = Array.isArray(report.probes) ? report.probes : []
         for (let i = 0; i < probes.length; ++i) {
             const probe = probes[i] || {}
+            if (String(probe.probe_key || "") === wanted) {
+                return probe
+            }
             const label = String(probe.label || "")
             const source = String(probe.source || "")
             if (label.indexOf("." + wanted) >= 0 || source.indexOf(" " + wanted) >= 0) {

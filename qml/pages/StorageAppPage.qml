@@ -6,7 +6,6 @@ import QtQml.Models
 import QtQuick.Layouts
 import "../components"
 import "../components/common"
-import "../services/BridgeHelpers.js" as BridgeHelpers
 import "../state"
 import "../theme"
 
@@ -14,15 +13,7 @@ ColumnLayout {
     id: root
 
     required property Theme theme
-    required property AppModel model
-    property var manifests: []
-    property string lastOperation: qsTr("None")
-    property string activeCid: root.model.storageCidProbe
-    property string pendingStorageMethod: ""
-    property string pendingStorageLabel: ""
-    property var pendingStorageArgs: []
-    property string terminalStorageOperationId: ""
-    property bool storageOperationStartPending: false
+    required property StorageAppState model
 
     width: parent ? parent.width : 900
     spacing: root.theme.gapLarge
@@ -36,25 +27,8 @@ ColumnLayout {
         ListElement { value: "operations"; label: "Operations" }
     }
 
-    ListModel {
-        id: operationLog
-    }
-
     Component.onCompleted: {
-        if (root.activeCid.length === 0 && root.model.storageCidProbe.length > 0) {
-            root.activeCid = root.model.storageCidProbe
-        }
-        root.refreshManifests(false)
-    }
-
-    Connections {
-        target: root.model
-
-        function onStorageCidProbeChanged() {
-            if (root.activeCid !== root.model.storageCidProbe) {
-                root.activeCid = root.model.storageCidProbe
-            }
-        }
+        root.model.refreshManifests(false)
     }
 
     Timer {
@@ -62,8 +36,8 @@ ColumnLayout {
 
         interval: 500
         repeat: true
-        running: root.activeStorageOperationRunning()
-        onTriggered: root.pollStorageOperation(false)
+        running: root.model.activeStorageOperationRunning()
+        onTriggered: root.model.pollStorageOperation(false)
     }
 
     PageHeader {
@@ -77,7 +51,7 @@ ColumnLayout {
 
     SourceStrip {
         theme: root.theme
-        sources: root.sourceBadges()
+        sources: root.model.sourceBadges()
         Layout.fillWidth: true
     }
 
@@ -90,23 +64,23 @@ ColumnLayout {
         StatusChip {
             theme: root.theme
             label: qsTr("Source")
-            value: root.model.storageSourceLabel()
-            tone: root.storageDataSource() ? "success" : "warning"
+            value: root.model.sourceLabel
+            tone: root.model.storageDataSource() ? "success" : "warning"
             Layout.fillWidth: true
         }
 
         StatusChip {
             theme: root.theme
             label: qsTr("Files")
-            value: String(root.manifests.length)
-            tone: root.manifests.length > 0 ? "success" : "neutral"
+            value: String(root.model.manifests.length)
+            tone: root.model.manifests.length > 0 ? "success" : "neutral"
             Layout.fillWidth: true
         }
 
         StatusChip {
             theme: root.theme
             label: qsTr("Network")
-            value: root.model.storageNetworkPreset
+            value: root.model.networkPreset
             tone: "neutral"
             Layout.fillWidth: true
         }
@@ -114,7 +88,7 @@ ColumnLayout {
         StatusChip {
             theme: root.theme
             label: qsTr("Last")
-            value: root.lastOperation
+            value: root.model.lastOperation
             tone: root.model.resultIsError && root.model.resultOwner === root.model.currentView ? "error" : "neutral"
             Layout.fillWidth: true
         }
@@ -122,28 +96,28 @@ ColumnLayout {
         StatusChip {
             theme: root.theme
             label: qsTr("Active")
-            value: root.activeStorageStatusText()
-            tone: root.activeStorageTone()
+            value: root.model.activeStorageStatusText()
+            tone: root.model.activeStorageTone()
             Layout.fillWidth: true
         }
     }
 
     TabSwitch {
         theme: root.theme
-        current: root.model.storageAppTab
+        current: root.model.currentTab
         options: storageTabs
         Layout.fillWidth: true
-        onSelected: value => root.model.storageAppTab = value
+        onSelected: value => root.model.currentTab = value
     }
 
     Loader {
         active: true
-        sourceComponent: root.tabComponent(root.model.storageAppTab)
+        sourceComponent: root.tabComponent(root.model.currentTab)
         Layout.fillWidth: true
     }
 
     Panel {
-        visible: root.model.pageHasOutput("storage")
+        visible: root.model.resultVisible()
         theme: root.theme
         title: root.model.resultIsError ? qsTr("Operation error") : qsTr("Operation result")
 
@@ -212,7 +186,7 @@ ColumnLayout {
                     primary: true
                     enabled: !root.model.busy
                     Layout.preferredWidth: 96
-                    onClicked: root.refreshManifests(true)
+                    onClicked: root.model.refreshManifests(true)
                 }
 
                 ActionButton {
@@ -220,11 +194,11 @@ ColumnLayout {
                     text: qsTr("Settings")
                     enabled: !root.model.busy
                     Layout.preferredWidth: 104
-                    onClicked: root.model.openSettings("network", "storage")
+                    onClicked: root.model.openStorageSettings()
                 }
 
                 Text {
-                    text: root.storageTargetText()
+                    text: root.model.sourceTarget
                     color: root.theme.textMuted
                     textFormat: Text.PlainText
                     elide: Text.ElideMiddle
@@ -238,7 +212,7 @@ ColumnLayout {
                 Layout.fillWidth: true
 
                 Repeater {
-                    model: root.manifestRows()
+                    model: root.model.manifestRows()
 
                     delegate: ManifestRow {
                         required property var modelData
@@ -246,8 +220,8 @@ ColumnLayout {
                         theme: root.theme
                         row: modelData
                         onUseCid: cid => {
-                            root.activeCid = cid
-                            root.model.storageAppTab = "cid"
+                            root.model.activeCid = cid
+                            root.model.currentTab = "cid"
                         }
                     }
                 }
@@ -274,12 +248,12 @@ ColumnLayout {
                     theme: root.theme
                     label: qsTr("CID")
                     placeholderText: qsTr("zDv...")
-                    sourceText: root.activeCid
+                    sourceText: root.model.activeCid
                     syncSourceText: true
                     Layout.fillWidth: true
                     onTextEdited: text => {
-                        root.activeCid = text
-                        root.model.storageCidProbe = String(text || "").trim()
+                        root.model.activeCid = text
+                        root.model.setCidProbe(text)
                     }
                 }
 
@@ -300,34 +274,40 @@ ColumnLayout {
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Check")
-                    enabled: !root.model.busy && cidField.text.trim().length > 0 && root.storageDataSource()
+                    enabled: !root.model.busy && cidField.text.trim().length > 0 && root.model.storageDataSource()
                     Layout.preferredWidth: 104
-                    onClicked: root.runStorage("storageExists", [cidField.text.trim()], qsTr("Storage exists"))
+                    onClicked: root.model.runStorage("storageExists", [cidField.text.trim()], qsTr("Storage exists"))
                 }
 
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Fetch")
-                    enabled: !root.model.busy && cidField.text.trim().length > 0 && root.storageDataSource()
+                    enabled: !root.model.busy && cidField.text.trim().length > 0 && root.model.storageDataSource()
                     Layout.preferredWidth: 104
-                    onClicked: root.runStorage("storageDownloadManifest", [cidField.text.trim()], qsTr("Fetch manifest"))
+                    onClicked: root.model.runStorage("storageDownloadManifest", [cidField.text.trim()], qsTr("Fetch manifest"))
                 }
 
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Cache")
-                    enabled: !root.model.busy && !root.storageOperationBusy() && cidField.text.trim().length > 0 && root.storageMutatingSource()
+                    enabled: !root.model.busy && !root.model.storageOperationBusy() && cidField.text.trim().length > 0 && root.model.storageMutatingSource()
                     Layout.preferredWidth: 104
-                    onClicked: root.confirmStorage("storageFetch", [cidField.text.trim()], qsTr("Cache CID"))
+                    onClicked: {
+                        root.model.confirmStorage("storageFetch", [cidField.text.trim()], qsTr("Cache CID"))
+                        storageConfirm.open()
+                    }
                 }
 
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Download")
                     primary: true
-                    enabled: !root.model.busy && !root.storageOperationBusy() && cidField.text.trim().length > 0 && cidDestination.text.trim().length > 0 && root.storageMutatingSource()
+                    enabled: !root.model.busy && !root.model.storageOperationBusy() && cidField.text.trim().length > 0 && cidDestination.text.trim().length > 0 && root.model.storageMutatingSource()
                     Layout.preferredWidth: 124
-                    onClicked: root.confirmStorage("storageDownloadToUrl", [cidField.text.trim(), cidDestination.text.trim(), localOnly.checked], qsTr("Download CID"))
+                    onClicked: {
+                        root.model.confirmStorage("storageDownloadToUrl", [cidField.text.trim(), cidDestination.text.trim(), localOnly.checked], qsTr("Download CID"))
+                        storageConfirm.open()
+                    }
                 }
 
                 Item {
@@ -344,7 +324,7 @@ ColumnLayout {
 
                     text: qsTr("Local only")
                     checked: false
-                    enabled: root.storageMutatingSource()
+                    enabled: root.model.storageMutatingSource()
                     palette.text: root.theme.text
                     Layout.preferredWidth: 132
                 }
@@ -362,7 +342,7 @@ ColumnLayout {
             title: qsTr("Transfer")
 
             StatusMessage {
-                visible: !root.storageRestSource()
+                visible: !root.model.storageRestSource()
                 theme: root.theme
                 tone: "warning"
                 title: qsTr("REST source required")
@@ -371,7 +351,7 @@ ColumnLayout {
             }
 
             StatusMessage {
-                visible: root.storageRestSource() && !root.model.storageMutatingDiagnosticsEnabled
+                visible: root.model.storageRestSource() && !root.model.mutatingDiagnosticsEnabled
                 theme: root.theme
                 tone: "warning"
                 title: qsTr("Mutating diagnostics off")
@@ -400,12 +380,12 @@ ColumnLayout {
                     theme: root.theme
                     label: qsTr("CID")
                     placeholderText: qsTr("zDv...")
-                    sourceText: root.activeCid
+                    sourceText: root.model.activeCid
                     syncSourceText: true
                     Layout.fillWidth: true
                     onTextEdited: text => {
-                        root.activeCid = text
-                        root.model.storageCidProbe = String(text || "").trim()
+                        root.model.activeCid = text
+                        root.model.setCidProbe(text)
                     }
                 }
 
@@ -436,25 +416,34 @@ ColumnLayout {
                     theme: root.theme
                     text: qsTr("Upload")
                     primary: true
-                    enabled: !root.model.busy && !root.storageOperationBusy() && root.storageMutatingSource() && uploadPath.text.trim().length > 0
+                    enabled: !root.model.busy && !root.model.storageOperationBusy() && root.model.storageMutatingSource() && uploadPath.text.trim().length > 0
                     Layout.preferredWidth: 112
-                    onClicked: root.confirmStorage("storageUploadUrl", [uploadPath.text.trim(), root.chunkSizeValue(transferChunkSize.text)], qsTr("Upload file"))
+                    onClicked: {
+                        root.model.confirmStorage("storageUploadUrl", [uploadPath.text.trim(), root.model.chunkSizeValue(transferChunkSize.text)], qsTr("Upload file"))
+                        storageConfirm.open()
+                    }
                 }
 
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Download")
-                    enabled: !root.model.busy && !root.storageOperationBusy() && root.storageMutatingSource() && downloadCid.text.trim().length > 0 && downloadPath.text.trim().length > 0
+                    enabled: !root.model.busy && !root.model.storageOperationBusy() && root.model.storageMutatingSource() && downloadCid.text.trim().length > 0 && downloadPath.text.trim().length > 0
                     Layout.preferredWidth: 124
-                    onClicked: root.confirmStorage("storageDownloadToUrl", [downloadCid.text.trim(), downloadPath.text.trim(), false], qsTr("Download file"))
+                    onClicked: {
+                        root.model.confirmStorage("storageDownloadToUrl", [downloadCid.text.trim(), downloadPath.text.trim(), false], qsTr("Download file"))
+                        storageConfirm.open()
+                    }
                 }
 
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Remove")
-                    enabled: !root.model.busy && !root.storageOperationBusy() && root.storageMutatingSource() && downloadCid.text.trim().length > 0
+                    enabled: !root.model.busy && !root.model.storageOperationBusy() && root.model.storageMutatingSource() && downloadCid.text.trim().length > 0
                     Layout.preferredWidth: 112
-                    onClicked: root.confirmStorage("storageRemove", [downloadCid.text.trim()], qsTr("Remove CID"))
+                    onClicked: {
+                        root.model.confirmStorage("storageRemove", [downloadCid.text.trim()], qsTr("Remove CID"))
+                        storageConfirm.open()
+                    }
                 }
 
                 Item {
@@ -463,30 +452,30 @@ ColumnLayout {
             }
 
             StatusMessage {
-                visible: root.activeStorageOperationKnown()
+                visible: root.model.activeStorageOperationKnown()
                 theme: root.theme
-                tone: root.activeStorageTone()
-                title: root.activeStorageStatusText()
-                message: root.activeStorageDetailText()
+                tone: root.model.activeStorageTone()
+                title: root.model.activeStorageStatusText()
+                message: root.model.activeStorageDetailText()
                 Layout.fillWidth: true
             }
 
             RowLayout {
-                visible: root.activeStorageOperationRunning()
+                visible: root.model.activeStorageOperationRunning()
                 spacing: root.theme.gapSmall
                 Layout.fillWidth: true
 
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Cancel")
-                    visible: root.activeStorageOperationCancelable()
-                    enabled: root.activeStorageOperationCancelable()
+                    visible: root.model.activeStorageOperationCancelable()
+                    enabled: root.model.activeStorageOperationCancelable()
                     Layout.preferredWidth: 112
-                    onClicked: root.cancelStorageOperation()
+                    onClicked: root.model.cancelStorageOperation()
                 }
 
                 Text {
-                    text: root.activeStorageProgressText()
+                    text: root.model.activeStorageProgressText()
                     color: root.theme.textMuted
                     textFormat: Text.PlainText
                     elide: Text.ElideRight
@@ -509,33 +498,19 @@ ColumnLayout {
                 Layout.fillWidth: true
 
                 Repeater {
-                    model: operationLog.count > 0 ? operationLog : emptyOperationModel
+                    model: root.model.operationRows()
 
                     delegate: OperationHistoryRow {
-                        required property string time
-                        required property string label
-                        required property string status
-                        required property string detail
+                        required property var modelData
 
                         theme: root.theme
-                        timeText: time
-                        labelText: label
-                        statusText: status
-                        detailText: detail
+                        timeText: String(modelData.time || "")
+                        labelText: String(modelData.label || "")
+                        statusText: String(modelData.status || "")
+                        detailText: String(modelData.detail || "")
                     }
                 }
             }
-        }
-    }
-
-    ListModel {
-        id: emptyOperationModel
-
-        ListElement {
-            time: "-"
-            label: "No operations"
-            status: "-"
-            detail: "-"
         }
     }
 
@@ -543,11 +518,11 @@ ColumnLayout {
         id: storageConfirm
 
         theme: root.theme
-        title: root.pendingStorageLabel
+        title: root.model.pendingLabel
         message: qsTr("This will call the configured Storage REST source and may change local node state or local files.")
-        confirmText: root.pendingStorageLabel
-        confirmEnabled: root.pendingStorageMethod.length > 0
-        onAccepted: root.runPendingStorage()
+        confirmText: root.model.pendingLabel
+        confirmEnabled: root.model.pendingMethod.length > 0
+        onAccepted: root.model.runPendingStorage()
     }
 
     function tabComponent(tab) {
@@ -561,395 +536,6 @@ ColumnLayout {
         default:
             return filesTab
         }
-    }
-
-    function sourceBadges() {
-        const sources = [qsTr("Storage"), root.model.storageSourceLabel()]
-        sources.push(root.shortText(root.storageTargetText(), 42))
-        sources.push(root.model.storageNetworkPreset)
-        return sources
-    }
-
-    function storageTargetText() {
-        return root.model.storageSourceTarget()
-    }
-
-    function shortText(value, max) {
-        const text = String(value || "")
-        const limit = Math.max(8, Number(max || 42))
-        if (text.length <= limit) {
-            return text
-        }
-        return text.slice(0, Math.max(3, limit - 1)) + "..."
-    }
-
-    function storageRestSource() {
-        return root.model.sourceModeTargetKind("storage", root.model.storageSourceMode) === "rest_endpoint"
-    }
-
-    function storageMutatingSource() {
-        return root.model.sourceModeSupportsMutatingDiagnostics("storage", root.model.storageSourceMode)
-            && root.model.storageMutatingDiagnosticsEnabled === true
-    }
-
-    function storageDataSource() {
-        return root.model.sourceModeUsesEndpoint("storage", root.model.storageSourceMode, "rest")
-    }
-
-    function storageArgs(extra) {
-        const args = [
-            root.model.effectiveStorageSourceMode(root.model.storageSourceMode),
-            root.model.sourceModeUsesEndpoint("storage", root.model.storageSourceMode, "rest") ? root.model.configuredStorageRestUrl() : ""
-        ]
-        return args.concat(extra || [])
-    }
-
-    function refreshManifests(showLog) {
-        if (root.model.busy || !root.storageDataSource()) {
-            return
-        }
-        const response = root.model.callInspector("storageManifests", root.storageArgs([]), qsTr("Storage manifests"))
-        if (showLog) {
-            root.appendOperation(qsTr("List files"), response)
-        }
-        if (response.ok) {
-            root.manifests = root.manifestArray(response.value)
-            root.lastOperation = qsTr("List")
-        } else if (showLog) {
-            root.lastOperation = qsTr("Error")
-        }
-    }
-
-    function runStorage(method, args, label) {
-        if (String(method || "") !== "storageExists") {
-            return root.startStorageOperation(method, args, label)
-        }
-        const response = root.model.callInspector(method, root.storageArgs(args), label)
-        root.appendOperation(label, response)
-        root.lastOperation = response.ok ? label : qsTr("Error")
-        return response
-    }
-
-    function confirmStorage(method, args, label) {
-        root.pendingStorageMethod = String(method || "")
-        root.pendingStorageArgs = [root.model.storageMutatingDiagnosticsEnabled === true].concat(args || [])
-        root.pendingStorageLabel = String(label || "")
-        storageConfirm.open()
-    }
-
-    function runPendingStorage() {
-        if (!root.pendingStorageMethod.length) {
-            return
-        }
-        root.startStorageOperation(root.pendingStorageMethod, root.pendingStorageArgs, root.pendingStorageLabel)
-        root.pendingStorageMethod = ""
-        root.pendingStorageArgs = []
-        root.pendingStorageLabel = ""
-    }
-
-    function startStorageOperation(method, args, label) {
-        if (root.storageOperationBusy()) {
-            const blocked = {
-                ok: false,
-                text: "",
-                error: qsTr("A storage operation is already running.")
-            }
-            root.appendOperation(label, blocked)
-            root.lastOperation = qsTr("Busy")
-            return blocked
-        }
-        const request = {
-            domain: "storage",
-            sourceMode: root.model.effectiveStorageSourceMode(root.model.storageSourceMode),
-            endpoint: root.model.configuredStorageRestUrl(),
-            module: root.model.storageModule,
-            method: String(method || ""),
-            args: root.storageArgs(args),
-            mutatingEnabled: root.model.storageMutatingDiagnosticsEnabled === true,
-            label: String(label || "")
-        }
-        root.lastOperation = qsTr("Starting")
-        root.storageOperationStartPending = true
-        root.model.nodeOperationStart(request, false, function (response) {
-            root.storageOperationStartPending = false
-            root.appendOperation(label, response)
-            root.lastOperation = response && response.ok ? qsTr("Started") : qsTr("Error")
-            if (response && response.ok) {
-                root.terminalStorageOperationId = ""
-                root.model.updateStorageActiveOperation(response.value)
-                storageOperationPoll.restart()
-                root.model.storageAppTab = "operations"
-            } else {
-                root.model.setResult(String(label || qsTr("Storage operation")), String((response && response.error) || qsTr("Storage operation failed.")), true, null)
-            }
-        })
-        return null
-    }
-
-    function pollStorageOperation(showResult) {
-        const operation = root.activeStorageOperation()
-        const operationId = String(operation && operation.operationId ? operation.operationId : "")
-        if (!operationId.length) {
-            storageOperationPoll.stop()
-            return
-        }
-        root.model.nodeOperationStatus(operationId, showResult === true, function (response) {
-            if (!response || !response.ok) {
-                const failedOperation = {
-                    operationId: operationId,
-                    domain: "storage",
-                    method: String(operation && operation.method ? operation.method : ""),
-                    status: "failed",
-                    label: String(operation && operation.label ? operation.label : qsTr("Storage operation")),
-                    error: String((response && response.error) || qsTr("Storage operation status failed."))
-                }
-                root.model.updateStorageActiveOperation(failedOperation)
-                storageOperationPoll.stop()
-                root.appendTerminalStorageOperation(failedOperation)
-                return
-            }
-            root.model.updateStorageActiveOperation(response.value)
-            if (root.activeStorageOperationTerminal(response.value)) {
-                storageOperationPoll.stop()
-                root.appendTerminalStorageOperation(response.value)
-            }
-        })
-    }
-
-    function cancelStorageOperation() {
-        const operation = root.activeStorageOperation()
-        const operationId = String(operation && operation.operationId ? operation.operationId : "")
-        if (!operationId.length) {
-            return
-        }
-        root.model.nodeOperationCancel(operationId, false, function (response) {
-            if (response && response.ok) {
-                root.model.updateStorageActiveOperation(response.value)
-                storageOperationPoll.restart()
-            }
-            root.appendOperation(qsTr("Cancel operation"), response)
-        })
-    }
-
-    function appendTerminalStorageOperation(operation) {
-        const operationId = String(operation && operation.operationId ? operation.operationId : "")
-        if (!operationId.length || root.terminalStorageOperationId === operationId) {
-            return
-        }
-        root.terminalStorageOperationId = operationId
-        const ok = String(operation.status || "") === "completed"
-        root.appendOperation(String(operation.label || qsTr("Storage operation")), {
-            ok: ok,
-            value: operation.result || operation,
-            error: String(operation.error || "")
-        })
-        root.model.appendNodeOperationHistory(operation, root.activeStorageDetailText())
-        root.setStorageOperationResult(operation)
-        root.lastOperation = ok ? qsTr("Complete") : qsTr("Stopped")
-    }
-
-    function setStorageOperationResult(operation) {
-        const label = String(operation && operation.label ? operation.label : qsTr("Storage operation"))
-        const ok = String(operation && operation.status ? operation.status : "") === "completed"
-        if (ok) {
-            const value = operation && operation.result !== undefined && operation.result !== null ? operation.result : operation
-            root.model.setResult(label, BridgeHelpers.formatValue(value), false, value)
-        } else {
-            root.model.setResult(label, String(operation && operation.error ? operation.error : qsTr("Storage operation failed.")), true, null)
-        }
-    }
-
-    function appendOperation(label, response) {
-        operationLog.insert(0, {
-            time: root.timeText(),
-            label: String(label || ""),
-            status: response && response.ok ? qsTr("ok") : qsTr("error"),
-            detail: response && response.ok ? root.operationSummary(response.value) : String((response && response.error) || "")
-        })
-        while (operationLog.count > 20) {
-            operationLog.remove(operationLog.count - 1)
-        }
-    }
-
-    function activeStorageOperation() {
-        const revision = root.model.storageActiveOperationRevision
-        return root.model.storageActiveOperation || null
-    }
-
-    function activeStorageOperationKnown() {
-        const operation = root.activeStorageOperation()
-        return operation && String(operation.operationId || "").length > 0
-    }
-
-    function activeStorageOperationRunning() {
-        const operation = root.activeStorageOperation()
-        const status = String(operation && operation.status ? operation.status : "")
-        return status === "running" || status === "canceling"
-    }
-
-    function storageOperationBusy() {
-        return root.storageOperationStartPending || root.activeStorageOperationRunning()
-    }
-
-    function activeStorageOperationCancelable() {
-        const operation = root.activeStorageOperation()
-        const status = String(operation && operation.status ? operation.status : "")
-        return (status === "running" || status === "canceling") && operation && operation.cancellable === true
-    }
-
-    function activeStorageOperationTerminal(operation) {
-        const status = String(operation && operation.status ? operation.status : "")
-        return status === "completed" || status === "failed" || status === "canceled"
-    }
-
-    function activeStorageStatusText() {
-        const operation = root.activeStorageOperation()
-        const status = String(operation && operation.status ? operation.status : "")
-        switch (status) {
-        case "running":
-            return String(operation && operation.label ? operation.label : qsTr("Running"))
-        case "canceling":
-            return qsTr("Canceling")
-        case "completed":
-            return qsTr("Complete")
-        case "failed":
-            return qsTr("Failed")
-        case "canceled":
-            return qsTr("Canceled")
-        default:
-            return qsTr("Idle")
-        }
-    }
-
-    function activeStorageTone() {
-        const operation = root.activeStorageOperation()
-        const status = String(operation && operation.status ? operation.status : "")
-        if (status === "completed") {
-            return "success"
-        }
-        if (status === "failed") {
-            return "error"
-        }
-        if (status === "running" || status === "canceling") {
-            return "warning"
-        }
-        return "neutral"
-    }
-
-    function activeStorageDetailText() {
-        const operation = root.activeStorageOperation()
-        if (!operation) {
-            return qsTr("No active operation.")
-        }
-        const detail = [
-            root.shortText(operation.cid, 28),
-            root.activeStorageProgressText(),
-            root.shortText(operation.path, 48)
-        ].filter(value => String(value || "").length > 0)
-        if (operation.error) {
-            detail.push(String(operation.error))
-        }
-        return detail.join(" / ")
-    }
-
-    function activeStorageProgressText() {
-        const operation = root.activeStorageOperation()
-        if (!operation) {
-            return ""
-        }
-        const written = Number(operation.bytesWritten || 0)
-        const total = Number(operation.contentLength || 0)
-        if (Number.isFinite(total) && total > 0) {
-            const percent = Math.min(100, Math.max(0, Math.floor((written / total) * 100)))
-            return qsTr("%1 / %2 bytes (%3%)").arg(root.model.valueText(written)).arg(root.model.valueText(total)).arg(percent)
-        }
-        return qsTr("%1 bytes").arg(root.model.valueText(written))
-    }
-
-    function operationPayload(value) {
-        if (value && value.value && value.value.result && value.value.result.value !== undefined) {
-            return value.value.result.value
-        }
-        if (value && value.result && value.result.value !== undefined) {
-            return value.result.value
-        }
-        if (value && value.result !== undefined && value.result !== null) {
-            return value.result
-        }
-        if (value && value.value !== undefined) {
-            return value.value
-        }
-        return value
-    }
-
-    function manifestArray(value) {
-        const payload = root.operationPayload(value)
-        if (Array.isArray(payload)) {
-            return payload
-        }
-        if (payload && Array.isArray(payload.content)) {
-            return payload.content
-        }
-        if (payload && Array.isArray(payload.manifests)) {
-            return payload.manifests
-        }
-        if (payload && Array.isArray(payload.value)) {
-            return payload.value
-        }
-        return []
-    }
-
-    function manifestRows() {
-        if (root.manifests.length === 0) {
-            return [{
-                cid: "",
-                name: qsTr("No local manifests"),
-                detail: qsTr(""),
-                size: "-",
-                mime: "-"
-            }]
-        }
-        return root.manifests.map(function (manifest) {
-            const row = manifest || {}
-            const metadata = row.manifest || {}
-            const cid = String(row.cid || row.CID || row.id || "")
-            const name = String(metadata.filename || row.filename || row.name || row.path || cid || qsTr("Untitled"))
-            const size = metadata.datasetSize || row.datasetSize || row.size || row.bytes || row.totalSize || "-"
-            const blockSize = metadata.blockSize || row.blockSize || row.block_size || ""
-            return {
-                cid: cid,
-                name: name,
-                detail: blockSize ? qsTr("block %1").arg(blockSize) : String(metadata.treeCid || row.treeCid || row.tree_cid || ""),
-                size: String(size),
-                mime: String(metadata.mimetype || row.mimetype || row.mimeType || row.contentType || "-")
-            }
-        })
-    }
-
-    function operationSummary(value) {
-        const payload = root.operationPayload(value)
-        if (payload === undefined || payload === null) {
-            return qsTr("No value")
-        }
-        if (typeof payload === "string") {
-            return payload
-        }
-        if (typeof payload === "boolean") {
-            return payload ? qsTr("true") : qsTr("false")
-        }
-        return BridgeHelpers.formatValue(payload).replace(/\s+/g, " ").slice(0, 180)
-    }
-
-    function chunkSizeValue(text) {
-        const parsed = Number(String(text || "").trim())
-        if (!isFinite(parsed) || parsed <= 0) {
-            return 65536
-        }
-        return Math.floor(parsed)
-    }
-
-    function timeText() {
-        return Qt.formatTime(new Date(), "HH:mm:ss")
     }
 
     component ManifestRow: Rectangle {

@@ -663,6 +663,41 @@ TestCase {
         compare(model.sourceCapabilityAvailable(report, "identity"), false)
     }
 
+    function test_source_probe_facts_drive_module_probe_lookup_without_probe_names() {
+        model.storageModuleReport = {
+            module: "storage_rest",
+            probe_facts: [
+                {
+                    key: "peerId",
+                    label: "renamed",
+                    source: "opaque",
+                    ok: true,
+                    value: "peer-from-fact",
+                    error: null
+                },
+                {
+                    key: "collectMetrics",
+                    label: "renamed metrics",
+                    source: "opaque",
+                    ok: false,
+                    value: null,
+                    error: "metrics unavailable"
+                }
+            ],
+            probes: [
+                {
+                    label: "unrelated",
+                    source: "opaque",
+                    ok: true,
+                    value: "wrong"
+                }
+            ]
+        }
+
+        compare(model.moduleProbeValue("storage", "peerId"), "peer-from-fact")
+        compare(model.moduleProbeError("storage", "collectMetrics"), "metrics unavailable")
+    }
+
     function test_delivery_throughput_metric_aliases() {
         model.messagingModuleReport = {
             module: "delivery_metrics",

@@ -28,6 +28,8 @@ impl ProbeField {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ProbeReport {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub probe_key: Option<String>,
     pub label: String,
     pub source: String,
     pub ok: bool,
@@ -41,6 +43,7 @@ impl ProbeReport {
         let source = source.into();
         match serde_json::to_value(value) {
             Ok(value) => Self {
+                probe_key: None,
                 label,
                 source,
                 ok: true,
@@ -57,6 +60,7 @@ impl ProbeReport {
         error: impl std::fmt::Display,
     ) -> Self {
         Self {
+            probe_key: None,
             label: label.into(),
             source: source.into(),
             ok: false,
@@ -80,5 +84,10 @@ impl ProbeReport {
             Ok(value) => Self::ok(label, source, value),
             Err(error) => Self::err(label, source, error),
         }
+    }
+
+    pub fn with_probe_key(mut self, probe_key: impl Into<String>) -> Self {
+        self.probe_key = Some(probe_key.into());
+        self
     }
 }
