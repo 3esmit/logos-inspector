@@ -9,7 +9,6 @@ import "appmodel/AppModelPages.js" as AppModelPages
 import "appmodel/AppModelSearch.js" as AppModelSearch
 import "appmodel/AppModelOpeners.js" as AppModelOpeners
 import "appmodel/AppModelRegistry.js" as AppModelRegistry
-import "appmodel/AppModelLocalNodes.js" as AppModelLocalNodes
 import "appmodel/AppModelSocial.js" as AppModelSocial
 
 QtObject {
@@ -203,11 +202,38 @@ QtObject {
     property var localWalletOperations: []
     property var localWalletAccountsValue: null
     property string localWalletAccountsError: ""
-    property var localNodesReport: null
-    property string localNodesError: ""
-    property var localNodesOperations: []
-    property int localNodesRevision: 0
-    property var localDevnets: []
+    property LocalNodesState localNodes: LocalNodesState {
+        id: localNodesState
+
+        gateway: QtObject {
+            function request(method, args, label, showResult, callback) {
+                return root.requestModuleAsync(root.inspectorModule, method, args, label, showResult, callback)
+            }
+
+            function setBusy(value, label) {
+                root.busy = value === true
+                const labelText = String(label || "")
+                if (root.busy && labelText.length) {
+                    root.statusText = labelText
+                }
+            }
+
+            function setResult(title, text, isError, value) {
+                return root.setResult(title, text, isError, value)
+            }
+
+            function appendOperationHistory(operation, detail) {
+                return root.appendNodeOperationHistory(operation, detail)
+            }
+        }
+        networkProfile: root.networkProfile
+        busy: root.busy
+    }
+    property alias localNodesReport: localNodesState.report
+    property alias localNodesError: localNodesState.error
+    property alias localNodesOperations: localNodesState.operations
+    property alias localNodesRevision: localNodesState.revision
+    property alias localDevnets: localNodesState.devnets
     property var idlInstructionPreviewValue: null
     property string idlInstructionError: ""
     property var bedrockWalletBalanceValue: null
@@ -555,27 +581,27 @@ QtObject {
 
     function refreshBedrockWalletModule(address) { return AppModelIdentity.refreshBedrockWalletModule(root, address) }
 
-    function refreshLocalNodes(showResult) { return AppModelLocalNodes.refreshLocalNodes(root, showResult) }
+    function refreshLocalNodes(showResult) { return localNodes.refresh(showResult) }
 
-    function refreshLocalDevnets() { return AppModelLocalNodes.refreshLocalDevnets(root) }
+    function refreshLocalDevnets() { return localNodes.refreshDevnets() }
 
-    function runLocalNodeAction(action, node, networkId, workspacePath, label) { return AppModelLocalNodes.runLocalNodeAction(root, action, node, networkId, workspacePath, label) }
+    function runLocalNodeAction(action, node, networkId, workspacePath, label) { return localNodes.runAction(action, node, networkId, workspacePath, label) }
 
-    function appendLocalNodeOperation(label, status, detail) { return AppModelLocalNodes.appendLocalNodeOperation(root, label, status, detail) }
+    function appendLocalNodeOperation(label, status, detail) { return localNodes.appendOperation(label, status, detail) }
 
-    function localNodeActionLabel(action) { return AppModelLocalNodes.localNodeActionLabel(root, action) }
+    function localNodeActionLabel(action) { return localNodes.actionLabel(action) }
 
-    function localNodeByKind(kind) { return AppModelLocalNodes.localNodeByKind(root, kind) }
+    function localNodeByKind(kind) { return localNodes.nodeByKind(kind) }
 
-    function localNodeActionEnabled(kind, action) { return AppModelLocalNodes.localNodeActionEnabled(root, kind, action) }
+    function localNodeActionEnabled(kind, action) { return localNodes.actionEnabled(kind, action) }
 
-    function localNodeNetworkActionEnabled(action) { return AppModelLocalNodes.localNodeNetworkActionEnabled(root, action) }
+    function localNodeNetworkActionEnabled(action) { return localNodes.networkActionEnabled(action) }
 
-    function localNodeModeLabel() { return AppModelLocalNodes.localNodeModeLabel(root) }
+    function localNodeModeLabel() { return localNodes.modeLabel() }
 
-    function localNodeSummaryText() { return AppModelLocalNodes.localNodeSummaryText(root) }
+    function localNodeSummaryText() { return localNodes.summaryText() }
 
-    function localNodeToolProblem() { return AppModelLocalNodes.localNodeToolProblem(root) }
+    function localNodeToolProblem() { return localNodes.toolProblem() }
 
     function bedrockWalletModuleKnownAddressRows() { return AppModelIdentity.bedrockWalletModuleKnownAddressRows(root) }
 

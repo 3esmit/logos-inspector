@@ -468,7 +468,7 @@ Item {
         id: localNodesPage
         LocalNodesPage {
             theme: theme
-            model: appModel
+            model: appModel.localNodes
         }
     }
 
