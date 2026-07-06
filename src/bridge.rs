@@ -11,9 +11,10 @@ use crate::{
     account_lookup_with_idl, bedrock_wallet_balance, blockchain, channels,
     decode_account_data_hex_with_idl, decode_event_data_hex_with_idl, indexer_block_by_hash,
     indexer_blocks, indexer_health, indexer_status, indexer_transfer_recipients,
-    inspect_transaction_summary_with_idl, last_sequencer_block_id, local_devnet_list,
-    local_nodes_status, local_wallet_accounts, local_wallet_instruction_preview,
-    local_wallet_profile_status, logoscore,
+    inspect_transaction_summary_with_idl,
+    inspector_commands::{OperationRunner, handle_operation_command},
+    last_sequencer_block_id, local_devnet_list, local_nodes_status,
+    local_wallet_instruction_preview, local_wallet_profile_status, logoscore,
     modules::{
         blockchain_module_report, delivery_report, delivery_source_report, logoscore_status_report,
         storage_report, storage_source_report,
@@ -43,7 +44,6 @@ pub const INSPECTOR_MODULE: &str = "logos_inspector";
 const BLOCKCHAIN_MODULE: &str = "blockchain_module";
 const INDEXER_MODULE: &str = "lez_indexer_module";
 const EXECUTION_MODULE: &str = "logos_execution_zone";
-const MAX_DELIVERY_STORE_PAGE_SIZE: u64 = 100;
 
 #[derive(Debug, serde::Serialize)]
 struct BridgeResponse {
@@ -56,6 +56,41 @@ struct BridgeResponse {
 pub struct InspectorBridge {
     runtime: Runtime,
     node_operations: NodeOperations,
+}
+
+struct BridgeOperationRunner<'a> {
+    runtime: &'a Runtime,
+    node_operations: &'a NodeOperations,
+}
+
+impl OperationRunner for BridgeOperationRunner<'_> {
+    fn start_from_value(&self, value: Value) -> Result<Value> {
+        self.node_operations.start_from_value(self.runtime, value)
+    }
+
+    fn status(&self, operation_id: &str) -> Result<Value> {
+        self.node_operations.status(operation_id)
+    }
+
+    fn events(&self, operation_id: &str, after_seq: u64) -> Result<Value> {
+        self.node_operations.events(operation_id, after_seq)
+    }
+
+    fn cancel(&self, operation_id: &str) -> Result<Value> {
+        self.node_operations.cancel(operation_id)
+    }
+
+    fn run_legacy(&self, domain: &str, method: &str, args: Value, label: &str) -> Result<Value> {
+        self.node_operations
+            .run_legacy(self.runtime, domain, method, args, label)
+    }
+
+    fn start_legacy(&self, domain: &str, method: &str, args: Value, label: &str) -> Result<Value> {
+        self.node_operations.start(
+            self.runtime,
+            NodeOperationRequest::legacy(domain, method, args, label),
+        )
+    }
 }
 
 impl InspectorBridge {
@@ -75,6 +110,14 @@ impl InspectorBridge {
     }
 
     fn call_inspector(&self, method: &str, args: Value) -> Result<Value> {
+        let operation_runner = BridgeOperationRunner {
+            runtime: &self.runtime,
+            node_operations: &self.node_operations,
+        };
+        if let Some(value) = handle_operation_command(&operation_runner, method, &args)? {
+            return Ok(value);
+        }
+
         match method {
             "overview" => {
                 let args = Args::new(args)?;
@@ -333,56 +376,12 @@ impl InspectorBridge {
                         .context("local wallet profile is required")?,
                 )?)
             }
-            "localWalletCreateAccount" => self.run_legacy_node_operation(
-                "wallet",
-                "localWalletCreateAccount",
-                args,
-                "Wallet account",
-            ),
-            "localWalletSendTransaction" => self.run_legacy_node_operation(
-                "wallet",
-                "localWalletSendTransaction",
-                args,
-                "Wallet send",
-            ),
             "localWalletInstructionPreview" => {
                 let args = Args::new(args)?;
                 to_value(local_wallet_instruction_preview(
                     args.value(0)
                         .cloned()
                         .context("IDL instruction request is required")?,
-                )?)
-            }
-            "localWalletInstructionSubmit" => self.run_legacy_node_operation(
-                "wallet",
-                "localWalletInstructionSubmit",
-                args,
-                "IDL instruction",
-            ),
-            "localWalletCommand" => self.run_legacy_node_operation(
-                "wallet",
-                "localWalletCommand",
-                args,
-                "Wallet command",
-            ),
-            "localWalletDeployProgram" => self.run_legacy_node_operation(
-                "wallet",
-                "localWalletDeployProgram",
-                args,
-                "Program deploy",
-            ),
-            "localWalletSyncPrivate" => self.run_legacy_node_operation(
-                "wallet",
-                "localWalletSyncPrivate",
-                args,
-                "Private sync",
-            ),
-            "localWalletAccounts" => {
-                let args = Args::new(args)?;
-                to_value(local_wallet_accounts(
-                    args.value(0)
-                        .cloned()
-                        .context("local wallet profile is required")?,
                 )?)
             }
             "localNodesStatus" => {
@@ -397,12 +396,6 @@ impl InspectorBridge {
                     args.optional_string(0).unwrap_or("default"),
                 )?)
             }
-            "localNodesAction" => self.run_legacy_node_operation(
-                "localNodes",
-                "localNodesAction",
-                args,
-                "Local node action",
-            ),
             "bedrockWalletBalance" => {
                 let args = Args::new(args)?;
                 to_value(self.runtime.block_on(bedrock_wallet_balance(
@@ -450,10 +443,6 @@ impl InspectorBridge {
                     args.optional_bool(4),
                 )))
             }
-            "nodeOperationStart" => self.node_operation_start(args),
-            "nodeOperationStatus" => self.node_operation_status(args),
-            "nodeOperationEvents" => self.node_operation_events(args),
-            "nodeOperationCancel" => self.node_operation_cancel(args),
             "deliveryReport" => {
                 let args = Args::new(args)?;
                 to_value(delivery_report(args.optional_string(0)))
@@ -466,70 +455,9 @@ impl InspectorBridge {
                     args.optional_string(2),
                 )))
             }
-            "storageManifests" => self.run_legacy_node_operation(
-                "storage",
-                "storageManifests",
-                args,
-                "Storage manifests",
-            ),
             "storageExists" => self.storage_exists(args),
-            "storageDownloadManifest" => self.run_legacy_node_operation(
-                "storage",
-                "storageDownloadManifest",
-                args,
-                "Storage manifest",
-            ),
-            "storageFetch" => {
-                self.run_legacy_node_operation("storage", "storageFetch", args, "Storage fetch")
-            }
-            "storageUploadUrl" => self.run_legacy_node_operation(
-                "storage",
-                "storageUploadUrl",
-                args,
-                "Storage upload",
-            ),
             "storageBackupSettings" => self.storage_backup_settings(args),
             "storageRestoreSettings" => self.storage_restore_settings(args),
-            "storageDownloadToUrl" => self.run_legacy_node_operation(
-                "storage",
-                "storageDownloadToUrl",
-                args,
-                "Storage download",
-            ),
-            "storageDownloadStart" => self.storage_download_start(args),
-            "storageOperationStatus" => self.storage_operation_status(args),
-            "storageOperationCancel" => self.storage_operation_cancel(args),
-            "storageRemove" => {
-                self.run_legacy_node_operation("storage", "storageRemove", args, "Storage remove")
-            }
-            "deliveryCreateNode" => self.run_legacy_node_operation(
-                "delivery",
-                "deliveryCreateNode",
-                args,
-                "Delivery create node",
-            ),
-            "deliveryStart" => {
-                self.run_legacy_node_operation("delivery", "deliveryStart", args, "Delivery start")
-            }
-            "deliveryStop" => {
-                self.run_legacy_node_operation("delivery", "deliveryStop", args, "Delivery stop")
-            }
-            "deliverySubscribe" => self.run_legacy_node_operation(
-                "delivery",
-                "deliverySubscribe",
-                args,
-                "Delivery subscribe",
-            ),
-            "deliveryUnsubscribe" => self.run_legacy_node_operation(
-                "delivery",
-                "deliveryUnsubscribe",
-                args,
-                "Delivery unsubscribe",
-            ),
-            "deliverySend" => {
-                self.run_legacy_node_operation("delivery", "deliverySend", args, "Delivery send")
-            }
-            "deliveryStoreQuery" => self.delivery_store_query(args),
             "socialMessagesFromStore" => self.social_messages_from_store(args),
             "capabilitiesReport" => {
                 bail!("capability_module does not expose Inspector capability listing")
@@ -679,46 +607,6 @@ impl InspectorBridge {
         )
     }
 
-    fn node_operation_start(&self, args: Value) -> Result<Value> {
-        let args = Args::new(args)?;
-        self.node_operations.start_from_value(
-            &self.runtime,
-            args.value(0)
-                .cloned()
-                .context("node operation request is required")?,
-        )
-    }
-
-    fn node_operation_status(&self, args: Value) -> Result<Value> {
-        let args = Args::new(args)?;
-        self.node_operations
-            .status(args.string(0, "node operation id")?)
-    }
-
-    fn node_operation_events(&self, args: Value) -> Result<Value> {
-        let args = Args::new(args)?;
-        let operation_id = args.string(0, "node operation id")?;
-        let after_seq = args.value(1).and_then(Value::as_u64).unwrap_or(0);
-        self.node_operations.events(operation_id, after_seq)
-    }
-
-    fn node_operation_cancel(&self, args: Value) -> Result<Value> {
-        let args = Args::new(args)?;
-        self.node_operations
-            .cancel(args.string(0, "node operation id")?)
-    }
-
-    fn run_legacy_node_operation(
-        &self,
-        domain: &str,
-        method: &str,
-        args: Value,
-        label: &str,
-    ) -> Result<Value> {
-        self.node_operations
-            .run_legacy(&self.runtime, domain, method, args, label)
-    }
-
     fn storage_exists(&self, args: Value) -> Result<Value> {
         let args = Args::new(args)?;
         let source = storage_rest_source(&args)?;
@@ -795,68 +683,6 @@ impl InspectorBridge {
             "wallet": summary.wallet_restored,
             "favorites": summary.favorites_count,
             "idl_count": summary.idl_count,
-        }))
-    }
-
-    fn storage_download_start(&self, args: Value) -> Result<Value> {
-        self.node_operations.start(
-            &self.runtime,
-            NodeOperationRequest::legacy(
-                "storage",
-                "storageDownloadToUrl",
-                args,
-                "Storage download",
-            ),
-        )
-    }
-
-    fn storage_operation_status(&self, args: Value) -> Result<Value> {
-        let args = Args::new(args)?;
-        self.node_operations
-            .status(args.string(0, "storage operation id")?)
-    }
-
-    fn storage_operation_cancel(&self, args: Value) -> Result<Value> {
-        let args = Args::new(args)?;
-        self.node_operation_cancel(json!([args.string(0, "storage operation id")?]))
-    }
-
-    fn delivery_store_query(&self, args: Value) -> Result<Value> {
-        let args = Args::new(args)?;
-        let source = delivery_rest_source(&args)?;
-        let peer_addr = args.optional_string(source.next_index + 1);
-        let content_topics = args.optional_string(source.next_index + 2);
-        let pubsub_topic = args.optional_string(source.next_index + 3);
-        let cursor = args.optional_string(source.next_index + 4);
-        let page_size = args
-            .value(source.next_index + 5)
-            .and_then(Value::as_u64)
-            .unwrap_or(20)
-            .clamp(1, MAX_DELIVERY_STORE_PAGE_SIZE);
-        let ascending = args.optional_bool(source.next_index + 6);
-        let include_data = args.optional_bool(source.next_index + 7);
-        let query = delivery_store_query_url(
-            source.endpoint,
-            DeliveryStoreQuery {
-                peer_addr,
-                content_topics,
-                pubsub_topic,
-                cursor,
-                page_size,
-                ascending,
-                include_data,
-            },
-        )?;
-        let value = self
-            .runtime
-            .block_on(raw_http_json_url(query.as_str()))
-            .context("failed to query Delivery Store")?;
-        Ok(json!({
-            "endpoint": source.endpoint,
-            "includeData": include_data,
-            "pageSize": page_size,
-            "query": query.as_str(),
-            "value": value,
         }))
     }
 
@@ -1625,7 +1451,7 @@ mod tests {
                 content_topics: Some("/app/1/chat/proto"),
                 pubsub_topic: None,
                 cursor: None,
-                page_size: MAX_DELIVERY_STORE_PAGE_SIZE,
+                page_size: 100,
                 ascending: true,
                 include_data: false,
             },
@@ -2093,12 +1919,7 @@ mod tests {
     #[test]
     fn legacy_wallet_operation_record_is_removed_after_wait() -> Result<()> {
         let bridge = InspectorBridge::new()?;
-        let result = bridge.run_legacy_node_operation(
-            "wallet",
-            "localWalletCreateAccount",
-            json!([]),
-            "Wallet account",
-        );
+        let result = bridge.call_module(INSPECTOR_MODULE, "localWalletCreateAccount", json!([]));
 
         let Err(error) = result else {
             bail!("expected wallet operation to fail before execution");
