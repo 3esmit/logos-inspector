@@ -489,6 +489,10 @@ ColumnLayout {
     }
 
     function identityEvidence() {
+        const factEvidence = root.sourceFactEvidence("identity", "")
+        if (factEvidence.length > 0 && factEvidence !== "not observed") {
+            return factEvidence
+        }
         const peerId = root.identityValue("peerId")
         if (peerId !== null) {
             return qsTr("peer id present")
@@ -500,23 +504,46 @@ ColumnLayout {
         return root.sourceName()
     }
 
+    function sourceFactAvailable(key) {
+        return root.model.sourceCapabilityAvailable(root.report(), key) === true
+    }
+
+    function sourceFactEvidence(key, fallback) {
+        const evidence = root.model.sourceCapabilityEvidence(root.report(), key)
+        return evidence.length > 0 ? evidence : fallback
+    }
+
+    function sourceFactObservedState(key, fallbackKnown) {
+        return root.sourceFactAvailable(key) || fallbackKnown ? qsTr("observed") : qsTr("unknown")
+    }
+
+    function sourceFactObservedTone(key, fallbackKnown) {
+        return root.sourceFactAvailable(key) || fallbackKnown ? "success" : "neutral"
+    }
+
     function healthRows() {
         const status = root.status()
         const identity = root.identityValue("peerId") || root.identityValue("enrUri") || root.identityValue("listenAddresses")
         const nodeHealth = root.probeValue("nodeHealth")
         const connectionStatus = root.probeValue("connectionStatus")
         const nodeTone = root.combinedHealthTone(nodeHealth, connectionStatus)
+        const relayKnown = root.metricKnown("messaging.pubsub_peers")
+        const storeKnown = root.metricKnown("messaging.store_peers")
+        const filterKnown = root.metricKnown("messaging.filter_peers")
+        const lightpushKnown = root.metricKnown("messaging.lightpush_peers")
+        const discovered = root.networkMonitorPeerCount()
+        const discoveryKnown = discovered !== null
         return [
             root.statusRow(qsTr("Source and lifecycle"), status.known ? (status.ok ? qsTr("reachable") : qsTr("problem")) : qsTr("unknown"), status.detail || qsTr("Not queried"), root.statusTone()),
-            root.statusRow(qsTr("Identity"), identity !== null ? qsTr("present") : qsTr("unknown"), root.valueSummary(identity), identity !== null ? "success" : "neutral"),
+            root.statusRow(qsTr("Identity"), root.sourceFactAvailable("identity") || identity !== null ? qsTr("present") : qsTr("unknown"), root.identityEvidence(), root.sourceFactAvailable("identity") || identity !== null ? "success" : "neutral"),
             root.statusRow(qsTr("Node health"), nodeHealth !== null ? root.valueSummary(nodeHealth) : qsTr("unknown"), root.valueSummary(connectionStatus), nodeTone),
             root.statusRow(qsTr("Preset, cluster, shards"), root.model.messagingNetworkPreset.length ? qsTr("configured") : qsTr("unknown"), root.model.normalizedMessagingNetworkPreset(root.model.messagingNetworkPreset) || qsTr("No preset"), root.model.messagingNetworkPreset.length ? "success" : "neutral"),
             root.statusRow(qsTr("REST and metrics access"), root.restMetricsState(), root.restMetricsEvidence(), root.restMetricsTone()),
-            root.statusRow(qsTr("Relay"), root.metricKnown("messaging.pubsub_peers") ? qsTr("observed") : qsTr("unknown"), root.metricDisplay("messaging.pubsub_peers"), root.metricKnown("messaging.pubsub_peers") ? "success" : "neutral"),
-            root.statusRow(qsTr("Store"), root.metricKnown("messaging.store_peers") ? qsTr("observed") : qsTr("unknown"), root.metricDisplay("messaging.store_peers"), root.metricKnown("messaging.store_peers") ? "success" : "neutral"),
-            root.statusRow(qsTr("Filter"), root.metricKnown("messaging.filter_peers") ? qsTr("observed") : qsTr("unknown"), root.metricDisplay("messaging.filter_peers"), root.metricKnown("messaging.filter_peers") ? "success" : "neutral"),
-            root.statusRow(qsTr("Lightpush"), root.metricKnown("messaging.lightpush_peers") ? qsTr("observed") : qsTr("unknown"), root.metricDisplay("messaging.lightpush_peers"), root.metricKnown("messaging.lightpush_peers") ? "success" : "neutral"),
-            root.statusRow(qsTr("Discovery"), root.networkMonitorPeerCount() !== null ? qsTr("observed") : qsTr("unknown"), root.networkMonitorPeerCount() !== null ? qsTr("%1 peer(s)").arg(root.networkMonitorPeerCount()) : qsTr("No network monitor peer snapshot."), root.networkMonitorPeerCount() !== null ? "success" : "neutral"),
+            root.statusRow(qsTr("Relay"), root.sourceFactObservedState("relay", relayKnown), relayKnown ? root.metricDisplay("messaging.pubsub_peers") : root.sourceFactEvidence("relay", qsTr("No relay fact.")), root.sourceFactObservedTone("relay", relayKnown)),
+            root.statusRow(qsTr("Store"), root.sourceFactObservedState("store", storeKnown), storeKnown ? root.metricDisplay("messaging.store_peers") : root.sourceFactEvidence("store", qsTr("No Store fact.")), root.sourceFactObservedTone("store", storeKnown)),
+            root.statusRow(qsTr("Filter"), root.sourceFactObservedState("filter", filterKnown), filterKnown ? root.metricDisplay("messaging.filter_peers") : root.sourceFactEvidence("filter", qsTr("No Filter fact.")), root.sourceFactObservedTone("filter", filterKnown)),
+            root.statusRow(qsTr("Lightpush"), root.sourceFactObservedState("lightpush", lightpushKnown), lightpushKnown ? root.metricDisplay("messaging.lightpush_peers") : root.sourceFactEvidence("lightpush", qsTr("No Lightpush fact.")), root.sourceFactObservedTone("lightpush", lightpushKnown)),
+            root.statusRow(qsTr("Discovery"), root.sourceFactObservedState("network_monitor", discoveryKnown), discoveryKnown ? qsTr("%1 peer(s)").arg(discovered) : root.sourceFactEvidence("network_monitor", qsTr("No network monitor peer snapshot.")), root.sourceFactObservedTone("network_monitor", discoveryKnown)),
             root.statusRow(qsTr("RLN / spam protection"), qsTr("unknown"), qsTr("No passive metric selected"), "neutral")
         ]
     }
@@ -821,28 +848,30 @@ ColumnLayout {
 
     function restMetricsState() {
         const sourceMode = root.deliverySourceMode()
+        const metricsKnown = root.sourceFactAvailable("metrics")
         if (sourceMode === "module") {
-            return root.moduleMetricsText().length > 0 ? qsTr("metrics") : qsTr("module")
+            return metricsKnown || root.moduleMetricsText().length > 0 ? qsTr("metrics") : qsTr("module")
         }
         if (sourceMode === "rest") {
-            return root.status().ok ? qsTr("reachable") : qsTr("unknown")
+            return metricsKnown ? qsTr("REST + metrics") : (root.status().ok ? qsTr("reachable") : qsTr("unknown"))
         }
         if (sourceMode === "metrics") {
             return root.status().ok ? qsTr("scraping") : qsTr("unknown")
         }
         if (sourceMode === "network-monitor") {
-            return root.status().ok ? qsTr("monitor") : qsTr("unknown")
+            return metricsKnown ? qsTr("monitor + metrics") : (root.status().ok ? qsTr("monitor") : qsTr("unknown"))
         }
         return qsTr("pending")
     }
 
     function restMetricsEvidence() {
         const sourceMode = root.deliverySourceMode()
+        const metricsEvidence = root.sourceFactEvidence("metrics", "")
         if (sourceMode === "module") {
-            return root.moduleMetricsText().length > 0 ? qsTr("OpenMetrics text available") : qsTr("Module API")
+            return metricsEvidence.length > 0 && metricsEvidence !== "not observed" ? metricsEvidence : qsTr("Module API")
         }
         if (sourceMode === "metrics") {
-            return root.shortText(root.model.messagingMetricsUrl, 48)
+            return metricsEvidence.length > 0 && metricsEvidence !== "not observed" ? metricsEvidence : root.shortText(root.model.messagingMetricsUrl, 48)
         }
         if (sourceMode === "network-monitor") {
             return qsTr("%1; metrics %2")
@@ -860,6 +889,9 @@ ColumnLayout {
     function restMetricsTone() {
         const sourceMode = root.deliverySourceMode()
         if (sourceMode === "unsupported") {
+            return "warning"
+        }
+        if (root.model.sourceCapabilityAvailable(root.report(), "metrics") === false && (sourceMode === "metrics" || sourceMode === "network-monitor")) {
             return "warning"
         }
         return root.statusTone()

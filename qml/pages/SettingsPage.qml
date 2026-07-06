@@ -978,21 +978,7 @@ ColumnLayout {
     }
 
     function inferProfile(sequencer, indexer, node) {
-        const seq = settingsRoot.normalizeEndpoint(sequencer)
-        const idx = settingsRoot.normalizeEndpoint(indexer)
-        const nod = settingsRoot.normalizeEndpoint(node)
-        const testnetSeq = settingsRoot.normalizeEndpoint("https://testnet.lez.logos.co/")
-        const localSeq = settingsRoot.normalizeEndpoint("http://127.0.0.1:3040/")
-        const localIndexer = settingsRoot.normalizeEndpoint("http://127.0.0.1:8779/")
-        const localNode = settingsRoot.normalizeEndpoint("http://127.0.0.1:8080/")
-
-        if (seq === localSeq && idx === localIndexer && nod === localNode) {
-            return "local"
-        }
-        if (seq === testnetSeq && idx === localIndexer && nod === localNode) {
-            return "default"
-        }
-        return "custom"
+        return settingsRoot.model.inferNetworkProfileFromEndpoints(sequencer, indexer, node)
     }
 
     function profileLabel(value) {

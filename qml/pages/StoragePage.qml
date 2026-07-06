@@ -571,6 +571,10 @@ ColumnLayout {
     }
 
     function identityEvidence() {
+        const factEvidence = root.sourceFactEvidence("identity", "")
+        if (factEvidence.length > 0 && factEvidence !== "not observed") {
+            return factEvidence
+        }
         const peerId = root.probeValue("peerId")
         if (peerId !== null) {
             return qsTr("peer id present")
@@ -582,7 +586,20 @@ ColumnLayout {
         return root.sourceName()
     }
 
+    function sourceFactAvailable(key) {
+        return root.model.sourceCapabilityAvailable(root.report(), key) === true
+    }
+
+    function sourceFactEvidence(key, fallback) {
+        const evidence = root.model.sourceCapabilityEvidence(root.report(), key)
+        return evidence.length > 0 ? evidence : fallback
+    }
+
     function capacitySummary() {
+        const factEvidence = root.sourceFactEvidence("space", "")
+        if (factEvidence.length > 0 && factEvidence !== "not observed") {
+            return factEvidence
+        }
         const used = root.metricDisplay("storage.local_storage_used")
         if (used !== qsTr("n/a")) {
             return used
@@ -629,13 +646,16 @@ ColumnLayout {
 
     function healthRows() {
         const status = root.status()
+        const identityKnown = root.sourceFactAvailable("identity") || root.probeKnown("peerId") || root.probeKnown("spr")
+        const debugKnown = root.sourceFactAvailable("debug") || root.probeKnown("debug")
+        const spaceKnown = root.sourceFactAvailable("space") || root.probeKnown("space") || root.metricKnown("storage.local_storage_used")
         return [
             root.statusRow(qsTr("Source and lifecycle"), status.known ? (status.ok ? qsTr("reachable") : qsTr("problem")) : qsTr("unknown"), status.detail || qsTr("Not queried"), root.statusTone()),
-            root.statusRow(qsTr("Identity"), root.probeKnown("peerId") || root.probeKnown("spr") ? qsTr("present") : qsTr("unknown"), root.identityEvidence(), root.probeKnown("peerId") || root.probeKnown("spr") ? "success" : "neutral"),
+            root.statusRow(qsTr("Identity"), identityKnown ? qsTr("present") : qsTr("unknown"), root.identityEvidence(), identityKnown ? "success" : "neutral"),
             root.statusRow(qsTr("REST and metrics access"), root.restMetricsState(), root.restMetricsEvidence(), root.restMetricsTone()),
-            root.statusRow(qsTr("DHT / discovery"), root.probeKnown("debug") ? qsTr("observed") : qsTr("unknown"), root.probeKnown("debug") ? root.valueSummary(root.probeValue("debug")) : qsTr("Debug source unavailable."), root.probeKnown("debug") ? "success" : "neutral"),
+            root.statusRow(qsTr("DHT / discovery"), debugKnown ? qsTr("observed") : qsTr("unknown"), debugKnown ? root.sourceFactEvidence("debug", root.valueSummary(root.probeValue("debug"))) : qsTr("Debug source unavailable."), debugKnown ? "success" : "neutral"),
             root.statusRow(qsTr("Connected peers"), root.metricKnown("storage.peer_count") ? qsTr("observed") : qsTr("unknown"), root.metricDisplay("storage.peer_count"), root.metricKnown("storage.peer_count") ? "success" : "neutral"),
-            root.statusRow(qsTr("Repository and host disk"), root.probeKnown("space") || root.metricKnown("storage.local_storage_used") ? qsTr("observed") : qsTr("unknown"), root.capacitySummary(), root.probeKnown("space") || root.metricKnown("storage.local_storage_used") ? "success" : "neutral"),
+            root.statusRow(qsTr("Repository and host disk"), spaceKnown ? qsTr("observed") : qsTr("unknown"), root.capacitySummary(), spaceKnown ? "success" : "neutral"),
             root.statusRow(qsTr("Recent transfer failures"), root.metricKnown("storage.failed_transfers_recent") ? root.metricDisplay("storage.failed_transfers_recent") : qsTr("unknown"), root.metricKnown("storage.failed_transfers_recent") ? qsTr("%1 s window").arg(root.model.storageRollingWindow) : qsTr("Metric not exposed by current source."), root.metricKnown("storage.failed_transfers_recent") ? (Number(root.model.dashboardMetricValue("storage.failed_transfers_recent")) > 0 ? "error" : "success") : "neutral"),
             root.statusRow(qsTr("Mix / private queries"), qsTr("not queried"), qsTr("No passive metric selected."), "neutral")
         ]
@@ -874,8 +894,9 @@ ColumnLayout {
 
     function restMetricsState() {
         const sourceMode = root.storageSourceMode()
+        const metricsKnown = root.sourceFactAvailable("metrics")
         if (sourceMode === "module") {
-            return root.probeValue("collectMetrics") !== null ? qsTr("metrics") : qsTr("module")
+            return metricsKnown || root.probeValue("collectMetrics") !== null ? qsTr("metrics") : qsTr("module")
         }
         if (sourceMode === "rest") {
             const metricsProbe = root.model.moduleProbe("storage", "collectMetrics")
@@ -885,7 +906,7 @@ ColumnLayout {
             if (root.metricsEndpointConfigured() && (!metricsProbe || metricsProbe.ok !== true)) {
                 return root.status().ok ? qsTr("REST only") : qsTr("unknown")
             }
-            return root.status().ok ? qsTr("reachable") : qsTr("unknown")
+            return metricsKnown ? qsTr("REST + metrics") : (root.status().ok ? qsTr("reachable") : qsTr("unknown"))
         }
         if (sourceMode === "metrics") {
             return root.status().ok ? qsTr("scraping") : qsTr("unknown")
@@ -895,11 +916,12 @@ ColumnLayout {
 
     function restMetricsEvidence() {
         const sourceMode = root.storageSourceMode()
+        const metricsEvidence = root.sourceFactEvidence("metrics", "")
         if (sourceMode === "module") {
-            return root.probeValue("collectMetrics") !== null ? qsTr("OpenMetrics text available") : qsTr("Module API")
+            return metricsEvidence.length > 0 && metricsEvidence !== "not observed" ? metricsEvidence : qsTr("Module API")
         }
         if (sourceMode === "metrics") {
-            return root.shortText(root.model.storageMetricsUrl, 48)
+            return metricsEvidence.length > 0 && metricsEvidence !== "not observed" ? metricsEvidence : root.shortText(root.model.storageMetricsUrl, 48)
         }
         if (sourceMode === "rest" && root.metricsEndpointConfigured()) {
             const metricsProbe = root.model.moduleProbe("storage", "collectMetrics")
@@ -925,6 +947,9 @@ ColumnLayout {
             const metricsProbe = root.model.moduleProbe("storage", "collectMetrics")
             if (root.metricsEndpointConfigured() && metricsProbe && metricsProbe.ok === false) {
                 return "error"
+            }
+            if (root.metricsEndpointConfigured() && root.model.sourceCapabilityAvailable(root.report(), "metrics") === false) {
+                return "warning"
             }
             if (root.metricsEndpointConfigured() && (!metricsProbe || metricsProbe.ok !== true)) {
                 return "warning"

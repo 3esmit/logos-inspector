@@ -77,10 +77,10 @@ ColumnLayout {
 
     TabSwitch {
         theme: root.theme
-        current: root.model.favoritesFilter
+        current: root.model.favoriteStore.filter
         options: favoriteTabs
         Layout.fillWidth: true
-        onSelected: value => root.model.favoritesFilter = value
+        onSelected: value => root.model.favoriteStore.filter = value
     }
 
     StatusMessage {
@@ -110,27 +110,27 @@ ColumnLayout {
                 return
             }
             if (column === 5) {
-                root.model.removeFavorite(rowData.key)
+                root.model.favoriteStore.remove(rowData.key)
                 return
             }
-            root.model.openFavorite(rowData.favorite)
+            root.model.favoriteStore.open(rowData.favorite)
         }
     }
 
     function visibleRows() {
-        return root.model.favoriteRows(root.model.favoritesFilter)
+        return root.model.favoriteStore.rows(root.model.favoriteStore.filter)
     }
 
     function tableRows() {
         const rows = root.visibleRows()
         return rows.map(function (entry) {
-            const key = root.model.favoriteKey(entry)
+            const key = root.model.favoriteStore.favoriteKey(entry)
             return {
                 cells: [
-                    { text: root.model.favoriteKindLabel(entry.kind), width: 116, monospace: false },
+                    { text: root.model.favoriteStore.kindLabel(entry.kind), width: 116, monospace: false },
                     { text: entry.title, width: 220, fill: true, link: true, copyText: entry.value, monospace: false },
                     { text: root.referenceText(entry), width: 220, fill: true, link: true, copyText: entry.value },
-                    { text: root.model.favoriteLayerLabel(entry.layer), width: 72, monospace: false },
+                    { text: root.model.favoriteStore.layerLabel(entry.layer), width: 72, monospace: false },
                     { text: root.savedText(entry.created_at), width: 132, monospace: false },
                     { text: qsTr("Remove"), width: 86, link: true, monospace: false, copyable: false, tone: "warning" }
                 ],
@@ -154,6 +154,6 @@ ColumnLayout {
     }
 
     function countText(filter) {
-        return UiFormat.numberText(root.model.favoriteCount(filter))
+        return UiFormat.numberText(root.model.favoriteStore.count(filter))
     }
 }

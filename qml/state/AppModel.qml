@@ -9,7 +9,6 @@ import "appmodel/AppModelPages.js" as AppModelPages
 import "appmodel/AppModelSearch.js" as AppModelSearch
 import "appmodel/AppModelOpeners.js" as AppModelOpeners
 import "appmodel/AppModelRegistry.js" as AppModelRegistry
-import "appmodel/AppModelFavorites.js" as AppModelFavorites
 import "appmodel/AppModelLocalNodes.js" as AppModelLocalNodes
 import "appmodel/AppModelSocial.js" as AppModelSocial
 
@@ -24,6 +23,8 @@ QtObject {
     readonly property string storageModule: "storage_module"
     readonly property string deliveryModule: "delivery_module"
     readonly property string capabilityModule: "capability_module"
+    property var sourcePolicy: ({})
+    property bool sourcePolicyLoaded: false
 
     property string currentView: "overview"
     property string statusText: qsTr("Ready")
@@ -227,9 +228,12 @@ QtObject {
     property int navigationRevision: 0
     property bool navigationRestoring: false
     readonly property int navigationHistoryLimit: 80
-    property var favorites: []
-    property int favoritesRevision: 0
-    property string favoritesFilter: "all"
+    property FavoritesState favoriteStore: FavoritesState {
+        onRevisionChanged: root.saveSettingsState()
+        onOpenRequested: function (openKind, value) {
+            root.openReference(openKind, value)
+        }
+    }
 
     onCurrentViewChanged: expandNavGroupForView(currentView)
     onNetworkProfileChanged: handleNetworkConfigurationChanged()
@@ -270,7 +274,6 @@ QtObject {
     onStorageRefreshRateChanged: saveSettingsState()
     onFooterFieldRevisionChanged: saveSettingsState()
     onDashboardGraphRevisionChanged: saveSettingsState()
-    onFavoritesRevisionChanged: saveSettingsState()
 
     function handleNetworkConfigurationChanged() { return AppModelCore.handleNetworkConfigurationChanged(root) }
 
@@ -650,6 +653,12 @@ QtObject {
 
     function canonicalRefreshRate(seconds) { return AppModelNetwork.canonicalRefreshRate(root, seconds) }
 
+    function loadSourcePolicy() { return AppModelNetwork.loadSourcePolicy(root) }
+
+    function sourcePolicyDefault(key, fallback) { return AppModelNetwork.sourcePolicyDefault(root, key, fallback) }
+
+    function sourceModePolicy(family, value) { return AppModelNetwork.sourceModePolicy(root, family, value) }
+
     function networkConnectionRate(kind) { return AppModelNetwork.networkConnectionRate(root, kind) }
 
     function setNetworkConnectionRate(kind, seconds) { return AppModelNetwork.setNetworkConnectionRate(root, kind, seconds) }
@@ -683,6 +692,18 @@ QtObject {
     function storageReportReady(report) { return AppModelNetwork.storageReportReady(root, report) }
 
     function moduleReportReachable(report) { return AppModelNetwork.moduleReportReachable(root, report) }
+
+    function sourceHealth(report) { return AppModelNetwork.sourceHealth(root, report) }
+
+    function sourceHealthReady(report) { return AppModelNetwork.sourceHealthReady(root, report) }
+
+    function sourceCapability(report, key) { return AppModelNetwork.sourceCapability(root, report, key) }
+
+    function sourceCapabilityAvailable(report, key) { return AppModelNetwork.sourceCapabilityAvailable(root, report, key) }
+
+    function sourceCapabilityEvidence(report, key) { return AppModelNetwork.sourceCapabilityEvidence(root, report, key) }
+
+    function sourceCapabilityValue(report, key) { return AppModelNetwork.sourceCapabilityValue(root, report, key) }
 
     function reportProbeValue(report, method) { return AppModelNetwork.reportProbeValue(root, report, method) }
 
@@ -1103,34 +1124,4 @@ QtObject {
     function applyProfile(index) { return AppModelRegistry.applyProfile(root, index) }
 
     function clearDashboardMetricHistoryForPrefix(prefix) { return AppModelMetrics.clearDashboardMetricHistoryForPrefix(root, prefix) }
-
-    function normalizedFavoriteEntries(value) { return AppModelFavorites.normalizedFavoriteEntries(root, value) }
-
-    function normalizedFavoriteEntry(value) { return AppModelFavorites.normalizedFavoriteEntry(root, value) }
-
-    function favoriteKey(entry) { return AppModelFavorites.favoriteKey(root, entry) }
-
-    function favoriteBlockEntry(value) { return AppModelFavorites.favoriteBlockEntry(root, value) }
-
-    function favoriteTransactionEntry(value) { return AppModelFavorites.favoriteTransactionEntry(root, value) }
-
-    function favoriteAccountEntry(value) { return AppModelFavorites.favoriteAccountEntry(root, value) }
-
-    function favoriteRows(filter) { return AppModelFavorites.favoriteRows(root, filter) }
-
-    function favoriteCount(filter) { return AppModelFavorites.favoriteCount(root, filter) }
-
-    function isFavoriteEntry(entry) { return AppModelFavorites.isFavoriteEntry(root, entry) }
-
-    function addFavorite(entry) { return AppModelFavorites.addFavorite(root, entry) }
-
-    function removeFavorite(entryOrKey) { return AppModelFavorites.removeFavorite(root, entryOrKey) }
-
-    function toggleFavorite(entry) { return AppModelFavorites.toggleFavorite(root, entry) }
-
-    function openFavorite(entry) { return AppModelFavorites.openFavorite(root, entry) }
-
-    function favoriteKindLabel(kind) { return AppModelFavorites.favoriteKindLabel(root, kind) }
-
-    function favoriteLayerLabel(layer) { return AppModelFavorites.favoriteLayerLabel(root, layer) }
 }

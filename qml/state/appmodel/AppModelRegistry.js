@@ -149,16 +149,16 @@ function applyProfile(root, index) {
     with (root) {
         if (index === 1) {
             networkProfile = "local"
-            sequencerUrl = "http://127.0.0.1:3040/"
-            indexerUrl = "http://127.0.0.1:8779/"
-            nodeUrl = "http://127.0.0.1:8080/"
+            sequencerUrl = root.sourcePolicyDefault("local_sequencer_endpoint", "http://127.0.0.1:3040/")
+            indexerUrl = root.sourcePolicyDefault("indexer_endpoint", "http://127.0.0.1:8779/")
+            nodeUrl = root.sourcePolicyDefault("node_endpoint", "http://127.0.0.1:8080/")
             return
         }
 
         networkProfile = "default"
-        sequencerUrl = "https://testnet.lez.logos.co/"
-        indexerUrl = "http://127.0.0.1:8779/"
-        nodeUrl = "http://127.0.0.1:8080/"
+        sequencerUrl = root.sourcePolicyDefault("sequencer_endpoint", "https://testnet.lez.logos.co/")
+        indexerUrl = root.sourcePolicyDefault("indexer_endpoint", "http://127.0.0.1:8779/")
+        nodeUrl = root.sourcePolicyDefault("node_endpoint", "http://127.0.0.1:8080/")
         messagingNetworkPreset = "logos.test"
     }
 }

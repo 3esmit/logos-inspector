@@ -112,9 +112,7 @@ TestCase {
         model.navigationForwardStack = []
         model.navigationRevision = 0
         model.navigationRestoring = false
-        model.favorites = []
-        model.favoritesRevision = 0
-        model.favoritesFilter = "all"
+        model.favoriteStore.clear()
         model.dashboardNode = null
         model.dashboardSequencerBlocks = []
         model.blockchainModuleReport = null
@@ -172,11 +170,15 @@ TestCase {
         model.executionSourceMode = "rpc"
         model.messagingSourceMode = "auto"
         model.storageSourceMode = "auto"
+        model.sourcePolicy = ({})
+        model.sourcePolicyLoaded = false
         basecampModel.blockchainSourceMode = "auto"
         basecampModel.indexerSourceMode = "auto"
         basecampModel.executionSourceMode = "rpc"
         basecampModel.messagingSourceMode = "auto"
         basecampModel.storageSourceMode = "auto"
+        basecampModel.sourcePolicy = ({})
+        basecampModel.sourcePolicyLoaded = false
         model.registeredIdls.clear()
         model.socialIdentities.clear()
         model.idlStateLoaded = false
@@ -388,6 +390,82 @@ TestCase {
         compare(basecampModel.storageSourceTarget(), basecampModel.configuredStorageRestUrl())
     }
 
+    function test_source_policy_load_supplies_defaults_and_profile_matching() {
+        fakeHost.responses = ({
+            sourcePolicy: {
+                ok: true,
+                value: {
+                    defaults: {
+                        sequencer_endpoint: "https://policy-sequencer.invalid/",
+                        local_sequencer_endpoint: "http://policy-local.invalid/",
+                        indexer_endpoint: "http://policy-indexer.invalid/",
+                        node_endpoint: "http://policy-node.invalid/",
+                        delivery_rest_endpoint: "http://policy-delivery.invalid:8645",
+                        delivery_metrics_endpoint: "http://policy-delivery.invalid:8008/metrics",
+                        storage_rest_endpoint: "http://policy-storage.invalid/api/storage/v1",
+                        storage_metrics_endpoint: "http://policy-storage.invalid:8008/metrics"
+                    },
+                    network_profiles: [
+                        {
+                            id: "default",
+                            sequencer_endpoint: "https://policy-sequencer.invalid/",
+                            indexer_endpoint: "http://policy-indexer.invalid/",
+                            node_endpoint: "http://policy-node.invalid/"
+                        },
+                        {
+                            id: "local",
+                            sequencer_endpoint: "http://policy-local.invalid/",
+                            indexer_endpoint: "http://policy-indexer.invalid/",
+                            node_endpoint: "http://policy-node.invalid/"
+                        }
+                    ],
+                    source_modes: {
+                        core: [
+                            { key: "auto", aliases: ["auto"], effective: "rpc" },
+                            { key: "rpc", aliases: ["rpc"], effective: "rpc" },
+                            { key: "module", aliases: ["basecamp"], effective: "module" }
+                        ],
+                        delivery: [
+                            { key: "auto", aliases: ["auto"], effective: "rest" },
+                            { key: "rest", aliases: ["direct waku rest"], effective: "rest" },
+                            { key: "network-monitor", aliases: ["discovery crawler"], effective: "network-monitor" }
+                        ],
+                        storage: [
+                            { key: "auto", aliases: ["auto"], effective: "rest" },
+                            { key: "rest", aliases: ["standalone rest"], effective: "rest" },
+                            { key: "module", aliases: ["basecamp module"], effective: "module" }
+                        ]
+                    }
+                },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        verify(model.loadSourcePolicy())
+        compare(fakeHost.lastMethod, "sourcePolicy")
+        verify(model.sourcePolicyLoaded)
+
+        model.messagingRestUrl = ""
+        model.storageRestUrl = ""
+        compare(model.configuredMessagingRestUrl(), "http://policy-delivery.invalid:8645")
+        compare(model.configuredStorageRestUrl(), "http://policy-storage.invalid/api/storage/v1")
+        compare(model.normalizedCoreSourceMode("basecamp"), "auto")
+        compare(model.effectiveCoreSourceMode("basecamp"), "rpc")
+        compare(model.normalizedMessagingSourceMode("direct waku rest"), "rest")
+        compare(model.normalizedStorageSourceMode("standalone rest"), "rest")
+
+        model.applyProfile(1)
+        compare(model.sequencerUrl, "http://policy-local.invalid/")
+        compare(model.indexerUrl, "http://policy-indexer.invalid/")
+        compare(model.nodeUrl, "http://policy-node.invalid/")
+        compare(model.inferNetworkProfileFromEndpoints(model.sequencerUrl, model.indexerUrl, model.nodeUrl), "local")
+
+        model.applyProfile(0)
+        compare(model.sequencerUrl, "https://policy-sequencer.invalid/")
+        compare(model.inferNetworkProfileFromEndpoints(model.sequencerUrl, model.indexerUrl, model.nodeUrl), "default")
+    }
+
     function test_settings_query_caches_execution_head_for_footer_metrics() {
         fakeHost.responses = {
             head: {
@@ -529,6 +607,51 @@ TestCase {
         }))
     }
 
+    function test_source_report_health_facts_drive_connection_state_without_probes() {
+        const report = {
+            module: "delivery_rest",
+            health: {
+                reachable: true,
+                ready: true,
+                status: "healthy",
+                summary: "delivery source ready",
+                detail: "node health Ready; connection Connected"
+            },
+            capability_facts: [
+                { key: "metrics", label: "Metrics", available: true, evidence: "known Waku metric family observed" }
+            ],
+            probes: []
+        }
+
+        verify(model.moduleReportReachable(report))
+        verify(model.deliveryReportHealthy(report))
+        compare(model.networkConnectionSummary("messaging", report), "delivery source ready")
+        verify(model.sourceCapabilityAvailable(report, "metrics"))
+        compare(model.sourceCapabilityEvidence(report, "metrics"), "known Waku metric family observed")
+    }
+
+    function test_source_report_health_facts_mark_storage_not_ready_without_probe_names() {
+        const report = {
+            module: "storage_rest",
+            health: {
+                reachable: true,
+                ready: false,
+                status: "degraded",
+                summary: "storage source degraded",
+                detail: "required storage facts missing"
+            },
+            capability_facts: [
+                { key: "identity", label: "Identity", available: false, evidence: "not observed" }
+            ],
+            probes: []
+        }
+
+        verify(model.moduleReportReachable(report))
+        verify(!model.storageReportReady(report))
+        compare(model.networkConnectionSummary("storage", report), "required storage facts missing")
+        compare(model.sourceCapabilityAvailable(report, "identity"), false)
+    }
+
     function test_delivery_throughput_metric_aliases() {
         model.messagingModuleReport = {
             module: "delivery_metrics",
@@ -661,13 +784,13 @@ TestCase {
     }
 
     function test_favorites_toggle_and_filter_rows() {
-        const blockEntry = model.favoriteBlockEntry({
+        const blockEntry = model.favoriteStore.blockEntry({
             type: "blockchain_block",
             hash: "block-hash",
             slot: 12,
             height: 12
         })
-        const txEntry = model.favoriteTransactionEntry({
+        const txEntry = model.favoriteStore.transactionEntry({
             mode: "lez",
             hash: "tx-hash",
             kind: "transfer"
@@ -680,16 +803,16 @@ TestCase {
         compare(txEntry.kind, "transaction")
         compare(txEntry.layer, "l2")
 
-        verify(model.addFavorite(blockEntry))
-        verify(model.addFavorite(txEntry))
-        compare(model.favoriteCount("all"), 2)
-        compare(model.favoriteCount("block"), 1)
-        compare(model.favoriteRows("block")[0].value, "block-hash")
-        verify(model.isFavoriteEntry(blockEntry))
+        verify(model.favoriteStore.add(blockEntry))
+        verify(model.favoriteStore.add(txEntry))
+        compare(model.favoriteStore.count("all"), 2)
+        compare(model.favoriteStore.count("block"), 1)
+        compare(model.favoriteStore.rows("block")[0].value, "block-hash")
+        verify(model.favoriteStore.isFavoriteEntry(blockEntry))
 
-        verify(model.toggleFavorite(blockEntry))
-        verify(!model.isFavoriteEntry(blockEntry))
-        compare(model.favoriteCount("all"), 1)
+        verify(model.favoriteStore.toggle(blockEntry))
+        verify(!model.favoriteStore.isFavoriteEntry(blockEntry))
+        compare(model.favoriteStore.count("all"), 1)
     }
 
     function test_favorites_persist_in_settings_state() {
@@ -715,8 +838,8 @@ TestCase {
 
         model.loadSettingsState()
 
-        compare(model.favorites.length, 1)
-        compare(model.favorites[0].value, "account-1")
+        compare(model.favoriteStore.entries.length, 1)
+        compare(model.favoriteStore.entries[0].value, "account-1")
         compare(model.settingsStatePayload().favorites.length, 1)
 
         fakeHost.callCount = 0
@@ -731,7 +854,7 @@ TestCase {
             created_at: "2026-07-05T00:01:00.000Z"
         }
 
-        verify(model.addFavorite(txEntry))
+        verify(model.favoriteStore.add(txEntry))
 
         compare(fakeHost.lastMethod, "saveSettingsState")
         compare(fakeHost.lastArgs[0].favorites.length, 2)

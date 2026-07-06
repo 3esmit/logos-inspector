@@ -22,10 +22,11 @@ use logos_inspector::{
     modules::logoscore_status_report,
     modules::modules_report,
     modules::storage_source_report,
-    overview, program_file_info, raw_rpc_report, resolve_network_endpoints, sequencer_block,
-    sequencer_health, sequencer_program_ids, sequencer_transaction,
+    network_profiles, overview, program_file_info, raw_rpc_report, resolve_network_endpoints,
+    sequencer_block, sequencer_health, sequencer_program_ids, sequencer_transaction,
     sequencer_transaction_inspection, sequencer_transaction_inspection_with_idl,
     sequencer_transaction_trace, sequencer_transaction_trace_with_idl,
+    source_policy::source_policy_report,
     spel::spel_idl_report,
 };
 use serde_json::Value;
@@ -129,6 +130,7 @@ enum CliCommand {
         endpoints: EndpointArgs,
     },
     LogoscoreStatus,
+    SourcePolicy,
     Modules,
     BlockchainModule {
         #[arg(long)]
@@ -442,6 +444,7 @@ pub fn run(args: CliArgs) -> Result<()> {
             print_json(&blocks)
         }
         CliCommand::LogoscoreStatus => print_json(&logoscore_status_report()),
+        CliCommand::SourcePolicy => print_json(&source_policy_report(network_profiles())),
         CliCommand::Modules => print_json(&modules_report()),
         CliCommand::BlockchainModule { address } => {
             print_json(&blockchain_module_report(address.as_deref()))
