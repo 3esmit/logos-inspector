@@ -1,7 +1,7 @@
 use anyhow::{Context as _, Result};
 use serde_json::Value;
 
-use crate::bridge::Args;
+use crate::{inspector_dispatch::legacy_operation_route, source_selection::Args};
 
 pub(crate) trait OperationRunner {
     fn start_from_value(&self, value: Value) -> Result<Value>;
@@ -22,126 +22,28 @@ pub(crate) fn handle_operation_command(
         "nodeOperationStatus" => node_operation_status(runner, args)?,
         "nodeOperationEvents" => node_operation_events(runner, args)?,
         "nodeOperationCancel" => node_operation_cancel(runner, args)?,
-        "storageDownloadStart" => runner.start_legacy(
-            "storage",
-            "storageDownloadToUrl",
-            args.clone(),
-            "Storage download",
-        )?,
         "storageOperationStatus" => storage_operation_status(runner, args)?,
         "storageOperationCancel" => storage_operation_cancel(runner, args)?,
-        "localWalletCreateAccount" => runner.run_legacy(
-            "wallet",
-            "localWalletCreateAccount",
-            args.clone(),
-            "Wallet account",
-        )?,
-        "localWalletSendTransaction" => runner.run_legacy(
-            "wallet",
-            "localWalletSendTransaction",
-            args.clone(),
-            "Wallet send",
-        )?,
-        "localWalletInstructionSubmit" => runner.run_legacy(
-            "wallet",
-            "localWalletInstructionSubmit",
-            args.clone(),
-            "IDL instruction",
-        )?,
-        "localWalletCommand" => runner.run_legacy(
-            "wallet",
-            "localWalletCommand",
-            args.clone(),
-            "Wallet command",
-        )?,
-        "localWalletDeployProgram" => runner.run_legacy(
-            "wallet",
-            "localWalletDeployProgram",
-            args.clone(),
-            "Program deploy",
-        )?,
-        "localWalletSyncPrivate" => runner.run_legacy(
-            "wallet",
-            "localWalletSyncPrivate",
-            args.clone(),
-            "Private sync",
-        )?,
-        "localWalletAccounts" => runner.run_legacy(
-            "wallet",
-            "localWalletAccounts",
-            args.clone(),
-            "Wallet accounts",
-        )?,
-        "localNodesAction" => runner.run_legacy(
-            "localNodes",
-            "localNodesAction",
-            args.clone(),
-            "Local node action",
-        )?,
-        "storageManifests" => runner.run_legacy(
-            "storage",
-            "storageManifests",
-            args.clone(),
-            "Storage manifests",
-        )?,
-        "storageDownloadManifest" => runner.run_legacy(
-            "storage",
-            "storageDownloadManifest",
-            args.clone(),
-            "Storage manifest",
-        )?,
-        "storageFetch" => {
-            runner.run_legacy("storage", "storageFetch", args.clone(), "Storage fetch")?
+        _ => {
+            let Some(route) = legacy_operation_route(method) else {
+                return Ok(None);
+            };
+            if route.start_async {
+                runner.start_legacy(
+                    route.domain.as_str(),
+                    route.method,
+                    args.clone(),
+                    route.label,
+                )?
+            } else {
+                runner.run_legacy(
+                    route.domain.as_str(),
+                    route.method,
+                    args.clone(),
+                    route.label,
+                )?
+            }
         }
-        "storageUploadUrl" => runner.run_legacy(
-            "storage",
-            "storageUploadUrl",
-            args.clone(),
-            "Storage upload",
-        )?,
-        "storageDownloadToUrl" => runner.run_legacy(
-            "storage",
-            "storageDownloadToUrl",
-            args.clone(),
-            "Storage download",
-        )?,
-        "storageRemove" => {
-            runner.run_legacy("storage", "storageRemove", args.clone(), "Storage remove")?
-        }
-        "deliveryCreateNode" => runner.run_legacy(
-            "delivery",
-            "deliveryCreateNode",
-            args.clone(),
-            "Delivery create node",
-        )?,
-        "deliveryStart" => {
-            runner.run_legacy("delivery", "deliveryStart", args.clone(), "Delivery start")?
-        }
-        "deliveryStop" => {
-            runner.run_legacy("delivery", "deliveryStop", args.clone(), "Delivery stop")?
-        }
-        "deliverySubscribe" => runner.run_legacy(
-            "delivery",
-            "deliverySubscribe",
-            args.clone(),
-            "Delivery subscribe",
-        )?,
-        "deliveryUnsubscribe" => runner.run_legacy(
-            "delivery",
-            "deliveryUnsubscribe",
-            args.clone(),
-            "Delivery unsubscribe",
-        )?,
-        "deliverySend" => {
-            runner.run_legacy("delivery", "deliverySend", args.clone(), "Delivery send")?
-        }
-        "deliveryStoreQuery" => runner.run_legacy(
-            "delivery",
-            "deliveryStoreQuery",
-            args.clone(),
-            "Delivery store query",
-        )?,
-        _ => return Ok(None),
     };
     Ok(Some(value))
 }

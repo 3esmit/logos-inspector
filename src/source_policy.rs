@@ -60,7 +60,7 @@ const STORAGE_MODULE_ADAPTER: SourceAdapterPolicy = SourceAdapterPolicy {
     uses_rest_endpoint: false,
     uses_metrics_endpoint: false,
     supports_cid_probe: true,
-    supports_mutating_diagnostics: false,
+    supports_mutating_diagnostics: true,
 };
 const STORAGE_REST_ADAPTER: SourceAdapterPolicy = SourceAdapterPolicy {
     target: "rest_endpoint",
@@ -396,8 +396,8 @@ const CORE_SOURCE_MODES: &[SourceModePolicy] = &[
         label_key: "basecamp_module",
         label: "Basecamp module",
         source_label: "Basecamp module",
-        summary: "Use Basecamp module transport",
-        implemented: false,
+        summary: "Use Basecamp module APIs where the installed modules expose Inspector data",
+        implemented: true,
         adapter: MODULE_ADAPTER,
     },
 ];
@@ -496,7 +496,7 @@ const STORAGE_SOURCE_MODES: &[SourceModePolicy] = &[
         label_key: "storage_module",
         label: "Storage module",
         source_label: "Storage module",
-        summary: "Use storage_module through logoscore for read-only node and content checks",
+        summary: "Use storage_module through logoscore for manifests, CID checks, uploads, downloads, and node storage operations",
         implemented: true,
         adapter: STORAGE_MODULE_ADAPTER,
     },
@@ -682,9 +682,7 @@ impl SourceFamily {
 
 #[must_use]
 pub fn normalized_core_source_mode(value: &str) -> &'static str {
-    CoreSourceMode::from_token(value)
-        .filter(|mode| *mode != CoreSourceMode::Module)
-        .map_or("auto", CoreSourceMode::normalized)
+    CoreSourceMode::from_token(value).map_or("auto", CoreSourceMode::normalized)
 }
 
 #[must_use]
@@ -1550,8 +1548,8 @@ mod tests {
     }
 
     #[test]
-    fn core_source_policy_keeps_basecamp_out_of_saved_gui_modes() {
-        assert_eq!(normalized_core_source_mode("module"), "auto");
+    fn core_source_policy_preserves_basecamp_module_mode() {
+        assert_eq!(normalized_core_source_mode("module"), "module");
         assert_eq!(
             CoreSourceMode::from_token("basecamp")
                 .map(CoreSourceMode::effective)

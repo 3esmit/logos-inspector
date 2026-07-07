@@ -1,4 +1,5 @@
 .import "../../services/BridgeHelpers.js" as BridgeHelpers
+.import "SourcePolicyProjection.js" as SourcePolicyProjection
 
 function refreshInterval(root, seconds) {
     with (root) {
@@ -41,183 +42,51 @@ function loadSourcePolicy(root) {
 }
 
 function sourcePolicyDefault(root, key, fallback) {
-    with (root) {
-        const defaults = sourcePolicy && sourcePolicy.defaults && typeof sourcePolicy.defaults === "object"
-            ? sourcePolicy.defaults
-            : null
-        const value = defaults && defaults[key] !== undefined ? String(defaults[key] || "").trim() : ""
-        return value.length > 0 ? value : String(fallback || "")
-    }
+    return SourcePolicyProjection.sourcePolicyDefault(root, key, fallback)
 }
 
 function sourceModePolicy(root, family, value) {
-    with (root) {
-        const token = String(value || "auto").trim().toLowerCase()
-        const modes = root.sourceModePolicies(family)
-        for (let i = 0; i < modes.length; ++i) {
-            const mode = modes[i] || {}
-            if (String(mode.key || "") === token) {
-                return mode
-            }
-            const aliases = Array.isArray(mode.aliases) ? mode.aliases : []
-            for (let j = 0; j < aliases.length; ++j) {
-                if (String(aliases[j] || "").toLowerCase() === token) {
-                    return mode
-                }
-            }
-        }
-        const fallbackKey = family === "core" ? "auto" : "unsupported"
-        for (let k = 0; k < modes.length; ++k) {
-            const mode = modes[k] || {}
-            if (String(mode.key || "") === fallbackKey) {
-                return mode
-            }
-        }
-        return modes.length > 0 ? modes[0] : ({ key: "auto", effective: family === "core" ? "rpc" : "rest" })
-    }
+    return SourcePolicyProjection.sourceModePolicy(root, family, value)
 }
 
 function sourceModePolicies(root, family) {
-    with (root) {
-        const modes = sourcePolicy && sourcePolicy.source_modes && Array.isArray(sourcePolicy.source_modes[family])
-            ? sourcePolicy.source_modes[family]
-            : []
-        return modes.length > 0 ? modes : fallbackSourceModePolicies(family)
-    }
-}
-
-function fallbackSourceModePolicies(family) {
-    if (family === "core") {
-        return [
-            sourceModeRecord("auto", ["auto"], "rpc", "Auto", "Auto: Direct RPC", "Use configured direct RPC endpoint", "rpc_endpoint", false, false, false, false),
-            sourceModeRecord("rpc", ["rpc"], "rpc", "Direct RPC", "Direct RPC", "Use configured standalone RPC endpoint", "rpc_endpoint", false, false, false, false)
-        ]
-    }
-    if (family === "delivery") {
-        return [
-            sourceModeRecord("auto", ["auto"], "rest", "Auto", "Auto: Direct Waku REST", "Use direct Waku REST", "rest_endpoint", true, true, false, true),
-            sourceModeRecord("rest", ["rest"], "rest", "Direct Waku REST", "Direct Waku REST", "Read-only health, info, version, and optional metrics", "rest_endpoint", true, true, false, true),
-            sourceModeRecord("unsupported", ["unsupported"], "unsupported", "Unsupported saved source", "Unsupported source", "Select a supported source to replace this saved value", "none", false, false, false, false)
-        ]
-    }
-    return [
-        sourceModeRecord("auto", ["auto"], "rest", "Auto", "Auto: Standalone REST", "Use standalone REST", "rest_endpoint", true, true, true, true),
-        sourceModeRecord("rest", ["rest"], "rest", "Standalone REST", "Standalone REST", "Read-only space, identity, local data, debug, and metrics", "rest_endpoint", true, true, true, true),
-        sourceModeRecord("unsupported", ["unsupported"], "unsupported", "Unsupported saved source", "Unsupported source", "Select a supported source to replace this saved value", "none", false, false, false, false)
-    ]
-}
-
-function sourceModeRecord(key, aliases, effective, label, sourceLabel, summary, target, usesRest, usesMetrics, supportsCid, supportsMutating) {
-    return {
-        key: key,
-        aliases: aliases,
-        effective: effective,
-        label: label,
-        source_label: sourceLabel,
-        summary: summary,
-        adapter: {
-            target: target,
-            uses_rest_endpoint: usesRest,
-            uses_metrics_endpoint: usesMetrics,
-            supports_cid_probe: supportsCid,
-            supports_mutating_diagnostics: supportsMutating
-        }
-    }
+    return SourcePolicyProjection.sourceModePolicies(root, family)
 }
 
 function sourceModeOptions(root, family) {
-    with (root) {
-        const modes = root.sourceModePolicies(family)
-        const options = []
-        for (let i = 0; i < modes.length; ++i) {
-            const mode = modes[i] || {}
-            const key = String(mode.key || "")
-            if (!key.length || (family === "core" && key === "module")) {
-                continue
-            }
-            options.push({
-                key: key,
-                label: String(mode.label || key),
-                summary: String(mode.summary || "")
-            })
-        }
-        return options
-    }
+    return SourcePolicyProjection.sourceModeOptions(root, family)
 }
 
 function sourceModeIndexFor(root, family, value, options) {
-    with (root) {
-        const source = String(root.sourceModePolicy(family, value).key || "auto")
-        const count = sourceModeOptionCount(options)
-        for (let i = 0; i < count; ++i) {
-            const option = sourceModeOptionAt(options, i)
-            if (option && String(option.key || "") === source) {
-                return i
-            }
-        }
-        return 0
-    }
+    return SourcePolicyProjection.sourceModeIndexFor(root, family, value, options)
 }
 
 function sourceModeAt(root, index, options) {
-    const option = sourceModeOptionAt(options, index)
-    return option && option.key !== undefined ? String(option.key || "auto") : "auto"
-}
-
-function sourceModeOptionCount(options) {
-    if (Array.isArray(options)) {
-        return options.length
-    }
-    return options && options.count !== undefined ? Number(options.count || 0) : 0
-}
-
-function sourceModeOptionAt(options, index) {
-    if (index < 0 || index >= sourceModeOptionCount(options)) {
-        return null
-    }
-    if (Array.isArray(options)) {
-        return options[index] || null
-    }
-    return options && typeof options.get === "function" ? options.get(index) : null
+    return SourcePolicyProjection.sourceModeAt(index, options)
 }
 
 function sourceModeAdapter(root, family, value) {
-    with (root) {
-        const adapter = root.sourceModePolicy(family, value).adapter
-        return adapter && typeof adapter === "object" ? adapter : ({})
-    }
+    return SourcePolicyProjection.sourceModeAdapter(root, family, value)
+}
+
+function resolvedSourceModeKey(root, family, value) {
+    return SourcePolicyProjection.resolvedSourceModeKey(root, family, value)
 }
 
 function sourceModeTargetKind(root, family, value) {
-    with (root) {
-        return String(root.sourceModeAdapter(family, value).target || "none")
-    }
+    return SourcePolicyProjection.sourceModeTargetKind(root, family, value)
 }
 
 function sourceModeUsesEndpoint(root, family, value, endpointKind) {
-    with (root) {
-        const adapter = root.sourceModeAdapter(family, value)
-        switch (String(endpointKind || "")) {
-        case "rest":
-            return adapter.uses_rest_endpoint === true
-        case "metrics":
-            return adapter.uses_metrics_endpoint === true
-        default:
-            return false
-        }
-    }
+    return SourcePolicyProjection.sourceModeUsesEndpoint(root, family, value, endpointKind)
 }
 
 function sourceModeSupportsCidProbe(root, family, value) {
-    with (root) {
-        return root.sourceModeAdapter(family, value).supports_cid_probe === true
-    }
+    return SourcePolicyProjection.sourceModeSupportsCidProbe(root, family, value)
 }
 
 function sourceModeSupportsMutatingDiagnostics(root, family, value) {
-    with (root) {
-        return root.sourceModeAdapter(family, value).supports_mutating_diagnostics === true
-    }
+    return SourcePolicyProjection.sourceModeSupportsMutatingDiagnostics(root, family, value)
 }
 
 function canonicalRefreshRate(root, seconds) {
@@ -433,7 +302,7 @@ function indexerArgs(root, extra) {
 
 function executionArgs(root, extra) {
     with (root) {
-        return root.executionRpcArgs(extra)
+        return coreSourceArgs(root, executionSourceMode, root.indexerModule, sequencerUrl, extra)
     }
 }
 
@@ -452,6 +321,9 @@ function executionRpcArgs(root, extra) {
 function coreSourceArgs(root, sourceMode, moduleName, endpoint, extra) {
     with (root) {
         const rest = Array.isArray(extra) ? extra : []
+        if (root.effectiveCoreSourceMode(sourceMode) === "module") {
+            return ["module", String(endpoint || "")].concat(rest)
+        }
         return [String(endpoint || "")].concat(rest)
     }
 }
@@ -465,6 +337,11 @@ function accountLookupArgs(root, account, idlJson, accountType) {
             if (accountType !== undefined && accountType !== null && String(accountType).trim().length > 0) {
                 suffix.push(String(accountType).trim())
             }
+        }
+        const executionMode = root.effectiveCoreSourceMode(executionSourceMode)
+        const indexerMode = root.effectiveCoreSourceMode(indexerSourceMode)
+        if (executionMode === "module" || indexerMode === "module") {
+            return [executionMode, String(sequencerUrl || ""), indexerMode, String(indexerUrl || "")].concat(suffix)
         }
         return [String(sequencerUrl || ""), String(indexerUrl || "")].concat(suffix)
     }
@@ -578,6 +455,14 @@ function cacheNetworkConnectionResult(root, kind, response) {
             indexer.head = { ok: true, value: value === undefined ? null : value, error: null }
             overview.indexer = indexer
             dashboardOverview = overview
+            return
+        }
+        if (target === "messaging") {
+            messagingModuleReport = value || null
+            return
+        }
+        if (target === "storage") {
+            storageModuleReport = value || null
         }
     }
 }
@@ -886,8 +771,11 @@ function deliverySourceReportArgs(root) {
 
 function deliverySourceLabel(root) {
     with (root) {
-        const source = root.sourceModePolicy("delivery", messagingSourceMode)
-        return String(source.source_label || source.label || qsTr("Direct Waku REST"))
+        const source = root.sourceModePolicy("delivery", root.resolvedSourceModeKey("delivery", messagingSourceMode))
+        const label = String(source.source_label || source.label || qsTr("Direct Waku REST"))
+        return root.normalizedMessagingSourceMode(messagingSourceMode) === "auto" && root.prefersBasecampModules()
+            ? qsTr("Auto: %1").arg(label)
+            : label
     }
 }
 
@@ -916,13 +804,13 @@ function configuredMessagingRestUrl(root) {
 function normalizedCoreSourceMode(root, value) {
     with (root) {
         const source = root.sourceModePolicy("core", value)
-        return source.key === "module" ? "auto" : String(source.key || "auto")
+        return String(source.key || "auto")
     }
 }
 
 function effectiveCoreSourceMode(root, value) {
     with (root) {
-        const source = root.sourceModePolicy("core", root.normalizedCoreSourceMode(value))
+        const source = root.sourceModePolicy("core", root.resolvedSourceModeKey("core", value))
         return String(source.effective || "rpc")
     }
 }
@@ -935,6 +823,9 @@ function blockchainSourceLabel(root) {
 
 function blockchainSourceTarget(root) {
     with (root) {
+        if (root.effectiveCoreSourceMode(blockchainSourceMode) === "module") {
+            return blockchainModule
+        }
         return String(nodeUrl || "")
     }
 }
@@ -947,25 +838,39 @@ function indexerSourceLabel(root) {
 
 function indexerSourceTarget(root) {
     with (root) {
+        if (root.effectiveCoreSourceMode(indexerSourceMode) === "module") {
+            return indexerModule
+        }
         return String(indexerUrl || "")
     }
 }
 
 function executionSourceLabel(root) {
     with (root) {
+        if (root.effectiveCoreSourceMode(executionSourceMode) === "module") {
+            return qsTr("LEZ core module")
+        }
         return qsTr("Sequencer RPC")
     }
 }
 
 function executionSourceTarget(root) {
     with (root) {
+        if (root.effectiveCoreSourceMode(executionSourceMode) === "module") {
+            return "lez_core"
+        }
         return String(sequencerUrl || "")
     }
 }
 
 function coreSourceLabel(root, sourceMode, rpcLabel) {
     with (root) {
-        const source = root.normalizedCoreSourceMode(sourceMode)
+        const source = root.resolvedSourceModeKey("core", sourceMode)
+        if (source === "module") {
+            return root.normalizedCoreSourceMode(sourceMode) === "auto"
+                ? qsTr("Auto: Basecamp module")
+                : qsTr("Basecamp module")
+        }
         if (source === "rpc") {
             return rpcLabel
         }
@@ -981,7 +886,7 @@ function normalizedMessagingSourceMode(root, value) {
 
 function effectiveMessagingSourceMode(root, value) {
     with (root) {
-        return String(root.sourceModePolicy("delivery", value).effective || "rest")
+        return String(root.sourceModePolicy("delivery", root.resolvedSourceModeKey("delivery", value)).effective || "rest")
     }
 }
 
@@ -1000,8 +905,11 @@ function storageSourceReportArgs(root, includeCidProbe) {
 
 function storageSourceLabel(root) {
     with (root) {
-        const source = root.sourceModePolicy("storage", storageSourceMode)
-        return String(source.source_label || source.label || qsTr("Standalone REST"))
+        const source = root.sourceModePolicy("storage", root.resolvedSourceModeKey("storage", storageSourceMode))
+        const label = String(source.source_label || source.label || qsTr("Standalone REST"))
+        return root.normalizedStorageSourceMode(storageSourceMode) === "auto" && root.prefersBasecampModules()
+            ? qsTr("Auto: %1").arg(label)
+            : label
     }
 }
 
@@ -1035,7 +943,7 @@ function normalizedStorageSourceMode(root, value) {
 
 function effectiveStorageSourceMode(root, value) {
     with (root) {
-        return String(root.sourceModePolicy("storage", value).effective || "rest")
+        return String(root.sourceModePolicy("storage", root.resolvedSourceModeKey("storage", value)).effective || "rest")
     }
 }
 

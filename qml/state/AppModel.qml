@@ -10,6 +10,7 @@ import "appmodel/AppModelSearch.js" as AppModelSearch
 import "appmodel/AppModelOpeners.js" as AppModelOpeners
 import "appmodel/AppModelRegistry.js" as AppModelRegistry
 import "appmodel/AppModelSocial.js" as AppModelSocial
+import "appmodel/AppModelModuleEvents.js" as AppModelModuleEvents
 
 QtObject {
     id: root
@@ -171,33 +172,55 @@ QtObject {
     property var blockchainModuleReport: null
     property var storageModuleReport: null
     property var messagingModuleReport: null
+    property var deliveryModuleEvents: []
+    property int deliveryModuleEventRevision: 0
+    property string deliveryConnectionStatus: ""
+    property string deliveryNodeStatus: ""
+    property int blockchainModuleEventRevision: 0
+    property string blockchainLastEventText: ""
 
-    property ListModel registeredIdls: ListModel {}
+    property IdlRegistryState idlRegistry: IdlRegistryState {
+        id: idlRegistryState
+
+        gateway: QtObject {
+            function canonicalProgramIdHex(value) {
+                return root.canonicalProgramIdHex(value)
+            }
+
+            function normalizedHexText(value) {
+                return root.normalizedHexText(value)
+            }
+        }
+    }
+    property alias registeredIdls: idlRegistryState.registeredIdls
     property ListModel socialIdentities: ListModel {}
-    property bool idlStateLoaded: false
-    property bool walletStateLoaded: false
+    property alias idlStateLoaded: idlRegistryState.loaded
+    property WalletState wallet: WalletState {
+        id: walletState
+    }
+    property alias walletStateLoaded: walletState.loaded
     property bool settingsStateLoaded: false
     property string settingsStateError: ""
-    property string walletProfileLabel: "Local wallet"
-    property string walletBinary: ""
-    property string walletHome: ""
-    property string walletPublicKeyProbe: ""
-    property string walletCreatePrivacy: "public"
-    property string walletCreateLabel: ""
-    property string walletSendFrom: ""
-    property string walletSendTo: ""
-    property string walletSendToKeys: ""
-    property string walletSendToNpk: ""
-    property string walletSendToVpk: ""
-    property string walletSendToIdentifier: ""
-    property string walletSendAmount: ""
-    property string walletAdvancedCommand: ""
-    property string bedrockWalletBalanceTip: ""
-    property var localWalletStatus: null
-    property string localWalletStatusError: ""
-    property var localWalletOperations: []
-    property var localWalletAccountsValue: null
-    property string localWalletAccountsError: ""
+    property alias walletProfileLabel: walletState.profileLabel
+    property alias walletBinary: walletState.binary
+    property alias walletHome: walletState.home
+    property alias walletPublicKeyProbe: walletState.publicKeyProbe
+    property alias walletCreatePrivacy: walletState.createPrivacy
+    property alias walletCreateLabel: walletState.createLabel
+    property alias walletSendFrom: walletState.sendFrom
+    property alias walletSendTo: walletState.sendTo
+    property alias walletSendToKeys: walletState.sendToKeys
+    property alias walletSendToNpk: walletState.sendToNpk
+    property alias walletSendToVpk: walletState.sendToVpk
+    property alias walletSendToIdentifier: walletState.sendToIdentifier
+    property alias walletSendAmount: walletState.sendAmount
+    property alias walletAdvancedCommand: walletState.advancedCommand
+    property alias bedrockWalletBalanceTip: walletState.bedrockBalanceTip
+    property alias localWalletStatus: walletState.status
+    property alias localWalletStatusError: walletState.statusError
+    property alias localWalletOperations: walletState.operations
+    property alias localWalletAccountsValue: walletState.accountsValue
+    property alias localWalletAccountsError: walletState.accountsError
     property StorageAppState storageApp: StorageAppState {
         id: storageAppState
 
@@ -247,6 +270,7 @@ QtObject {
         resultText: root.resultText
         resultIsError: root.resultIsError
         resultOwner: root.resultOwner
+        sourceReport: root.storageModuleReport
     }
     property alias storageAppTab: storageAppState.currentTab
     property alias storageCidProbe: storageAppState.cidProbe
@@ -453,17 +477,36 @@ QtObject {
 
     function bridgeSupportsAsync() { return bridge.hasAsyncCalls() }
 
+    function prefersBasecampModules() { return bridge.prefersBasecampModules() }
+
     function decodeAccountData(dataHex, idlJson, accountType) { return AppModelCore.decodeAccountData(root, dataHex, idlJson, accountType) }
 
     function decodeAccountDataAsync(dataHex, idlJson, accountType, callback) { return AppModelCore.decodeAccountDataAsync(root, dataHex, idlJson, accountType, callback) }
 
     function decodeTransactionSummaryAsync(summary, idlJson, callback) { return AppModelCore.decodeTransactionSummaryAsync(root, summary, idlJson, callback) }
 
-    function loadIdlState() { return AppModelIdentity.loadIdlState(root) }
+    function loadIdlState() {
+        const response = bridge.callModule(inspectorModule, "loadIdlState", [])
+        if (!response.ok || !response.value || typeof response.value !== "object") {
+            idlRegistry.loaded = true
+            return
+        }
+        idlRegistry.load(response.value)
+        accountIdlSelections = response.value.account_idl_selections && typeof response.value.account_idl_selections === "object"
+            ? response.value.account_idl_selections
+            : ({})
+        accountIdlSelectionRevision += 1
+    }
 
     function saveIdlState() { return AppModelIdentity.saveIdlState(root) }
 
-    function idlStatePayload() { return AppModelIdentity.idlStatePayload(root) }
+    function idlStatePayload() {
+        return {
+            version: 1,
+            idls: idlRegistry.entries(),
+            account_idl_selections: accountIdlSelections || {}
+        }
+    }
 
     function loadSettingsState() { return AppModelIdentity.loadSettingsState(root) }
 
@@ -551,25 +594,28 @@ QtObject {
 
     function settingsBackupAvailable() { return AppModelIdentity.settingsBackupAvailable(root) }
 
-    function loadWalletState() { return AppModelIdentity.loadWalletState(root) }
+    function loadWalletState() {
+        const response = bridge.callModule(inspectorModule, "loadWalletState", [])
+        wallet.load(response && response.ok ? response.value : null)
+    }
 
     function detectWalletProfile(saveDetected) { return AppModelIdentity.detectWalletProfile(root, saveDetected) }
 
     function saveWalletState() { return AppModelIdentity.saveWalletState(root) }
 
-    function walletStatePayload() { return AppModelIdentity.walletStatePayload(root) }
+    function walletStatePayload() { return wallet.payload(networkProfile) }
 
-    function walletProfile() { return AppModelIdentity.walletProfile(root) }
+    function walletProfile() { return wallet.profile(networkProfile) }
 
-    function walletProfileConfigured() { return AppModelIdentity.walletProfileConfigured(root) }
+    function walletProfileConfigured() { return wallet.profileConfigured() }
 
-    function walletHomeConfigured() { return AppModelIdentity.walletHomeConfigured(root) }
+    function walletHomeConfigured() { return wallet.homeConfigured() }
 
     function bedrockWalletSourceConfigured() { return AppModelIdentity.bedrockWalletSourceConfigured(root) }
 
-    function walletProfileUsable() { return AppModelIdentity.walletProfileUsable(root) }
+    function walletProfileUsable() { return wallet.profileUsable() }
 
-    function clearLocalWalletStatus() { return AppModelIdentity.clearLocalWalletStatus(root) }
+    function clearLocalWalletStatus() { return wallet.clearStatus() }
 
     function walletHomeFallbackLabel() { return AppModelIdentity.walletHomeFallbackLabel(root) }
 
@@ -590,6 +636,14 @@ QtObject {
     function clearStorageActiveOperation() {
         storageAppState.clearActiveOperation()
     }
+
+    function moduleEventSubscriptions() { return AppModelModuleEvents.moduleEventSubscriptions(root) }
+
+    function handleModuleEvent(moduleName, eventName, args) { return AppModelModuleEvents.handleModuleEvent(root, moduleName, eventName, args) }
+
+    function deliveryModuleEventRows() { return AppModelModuleEvents.deliveryModuleEventRows(root) }
+
+    function deliveryModuleEventSummary() { return AppModelModuleEvents.deliveryModuleEventSummary(root) }
 
     function checkLocalWalletProfile(showResult) { return AppModelIdentity.checkLocalWalletProfile(root, showResult) }
 
@@ -667,19 +721,19 @@ QtObject {
 
     function bedrockWalletModuleReadOnlyMethods() { return AppModelIdentity.bedrockWalletModuleReadOnlyMethods(root) }
 
-    function registeredIdlEntries() { return AppModelIdentity.registeredIdlEntries(root) }
+    function registeredIdlEntries() { return idlRegistry.entries() }
 
-    function normalizedIdlEntry(entry, fallbackIndex) { return AppModelIdentity.normalizedIdlEntry(root, entry, fallbackIndex) }
+    function normalizedIdlEntry(entry, fallbackIndex) { return idlRegistry.normalizedEntry(entry, fallbackIndex) }
 
-    function idlEntryAt(index) { return AppModelIdentity.idlEntryAt(root, index) }
+    function idlEntryAt(index) { return idlRegistry.entryAt(index) }
 
-    function idlNameFromJson(json) { return AppModelIdentity.idlNameFromJson(root, json) }
+    function idlNameFromJson(json) { return idlRegistry.nameFromJson(json) }
 
-    function idlKey(name, programId, json) { return AppModelIdentity.idlKey(root, name, programId, json) }
+    function idlKey(name, programId, json) { return idlRegistry.key(name, programId, json) }
 
-    function idlEntryForKey(key) { return AppModelIdentity.idlEntryForKey(root, key) }
+    function idlEntryForKey(key) { return idlRegistry.entryForKey(key) }
 
-    function idlEntriesForProgram(programId) { return AppModelIdentity.idlEntriesForProgram(root, programId) }
+    function idlEntriesForProgram(programId) { return idlRegistry.entriesForProgram(programId) }
 
     function cacheAccountIdlSelection(accountId, idlEntry, accountType, ownerProgramId) { return AppModelIdentity.cacheAccountIdlSelection(root, accountId, idlEntry, accountType, ownerProgramId) }
 
@@ -742,6 +796,8 @@ QtObject {
     function sourceModeAt(index, options) { return AppModelNetwork.sourceModeAt(root, index, options) }
 
     function sourceModeAdapter(family, value) { return AppModelNetwork.sourceModeAdapter(root, family, value) }
+
+    function resolvedSourceModeKey(family, value) { return AppModelNetwork.resolvedSourceModeKey(root, family, value) }
 
     function sourceModeTargetKind(family, value) { return AppModelNetwork.sourceModeTargetKind(root, family, value) }
 

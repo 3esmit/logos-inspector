@@ -45,6 +45,7 @@ Item {
             Qt.callLater(function () {
                 appModel.loadIdlState()
                 appModel.loadWalletState()
+                root.subscribeModuleEvents()
                 if (initialReference.length > 0) {
                     Qt.callLater(function () {
                         appModel.routeSearch(initialReference)
@@ -189,6 +190,14 @@ Item {
         }
     }
 
+    Connections {
+        target: bridge
+
+        function onModuleEventReceived(moduleName, eventName, args) {
+            appModel.handleModuleEvent(moduleName, eventName, args)
+        }
+    }
+
     Shortcut {
         sequence: "Alt+Left"
         enabled: appModel.canNavigateBack()
@@ -284,6 +293,14 @@ Item {
             }
         }
         return ""
+    }
+
+    function subscribeModuleEvents() {
+        const rows = appModel.moduleEventSubscriptions()
+        for (let i = 0; i < rows.length; ++i) {
+            const row = rows[i] || {}
+            bridge.subscribeModuleEvents(String(row.moduleName || ""), row.events || [])
+        }
     }
 
     Component {

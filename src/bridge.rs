@@ -8,29 +8,29 @@ use tokio_util::io::ReaderStream;
 
 use crate::{
     AccountTransactionSummary, TransactionIdlInspectionReport, TransactionSummary, account_lookup,
-    account_lookup_with_idl, bedrock_wallet_balance, blockchain, channels,
+    account_lookup_with_idl, basecamp_source, bedrock_wallet_balance, blockchain, channels,
     decode_account_data_hex_with_idl, decode_event_data_hex_with_idl, indexer_block_by_hash,
     indexer_blocks, indexer_health, indexer_status, indexer_transfer_recipients,
     inspect_transaction_summary_with_idl,
     inspector_commands::{OperationRunner, handle_operation_command},
     last_sequencer_block_id, local_devnet_list, local_nodes_status,
-    local_wallet_instruction_preview, local_wallet_profile_status, logoscore,
+    local_wallet_instruction_preview, local_wallet_profile_status, logoscore, module_sources,
     modules::{
         blockchain_module_report, delivery_report, delivery_source_report, logoscore_status_report,
-        storage_report, storage_source_report,
+        modules_report, storage_report, storage_source_report,
     },
     network_profiles,
     node_operations::{NodeOperationRequest, NodeOperations},
     normalize_program_id_hex, overview, program_file_info, raw_http_json,
-    raw_json_rpc_optional_result, raw_rpc_report, response_excerpt, sequencer_block,
-    sequencer_blocks, sequencer_program_ids, sequencer_transaction,
+    raw_json_rpc_optional_result, raw_rpc_report, response_excerpt, sequencer_account,
+    sequencer_block, sequencer_blocks, sequencer_program_ids, sequencer_transaction,
     sequencer_transaction_inspection, sequencer_transaction_inspection_with_idl,
     sequencer_transaction_trace, sequencer_transaction_trace_with_idl,
     settings_backup::{export_app_settings_backup, restore_app_settings_backup},
     social::social_messages_from_store,
-    source_policy::{
-        CoreEndpointMode, CoreSourceMode, DEFAULT_DELIVERY_REST_ENDPOINT,
-        DEFAULT_STORAGE_REST_ENDPOINT, SourceFamily, effective_source_mode, source_policy_report,
+    source_policy::{CoreEndpointMode, source_policy_report},
+    source_selection::{
+        Args, DeliveryStoreQuery, SourceEndpoint, require_mutating_diagnostics, storage_rest_source,
     },
     spel::spel_idl_report,
     state_store::{
@@ -39,11 +39,18 @@ use crate::{
     },
     wallet::detected_wallet_profile,
 };
+#[cfg(test)]
+use crate::{
+    source_policy::{DEFAULT_DELIVERY_REST_ENDPOINT, DEFAULT_STORAGE_REST_ENDPOINT},
+    source_selection::delivery_rest_source,
+};
 
 pub const INSPECTOR_MODULE: &str = "logos_inspector";
-const BLOCKCHAIN_MODULE: &str = "blockchain_module";
-const INDEXER_MODULE: &str = "lez_indexer_module";
-const EXECUTION_MODULE: &str = "logos_execution_zone";
+#[cfg(test)]
+const BLOCKCHAIN_MODULE: &str = module_sources::BLOCKCHAIN_MODULE;
+#[cfg(test)]
+const INDEXER_MODULE: &str = module_sources::INDEXER_MODULE;
+const EXECUTION_MODULE: &str = module_sources::LEZ_CORE_MODULE;
 
 #[derive(Debug, serde::Serialize)]
 struct BridgeResponse {
@@ -218,6 +225,14 @@ impl InspectorBridge {
                 let source = args.source_endpoint(0, "node endpoint")?;
                 let slot_from = args.u64(source.next_index, "slot from")?;
                 let slot_to = args.u64(source.next_index + 1, "slot to")?;
+                if source.mode == CoreEndpointMode::Module {
+                    if let Some(limit) = args.value(source.next_index + 2).and_then(Value::as_u64) {
+                        return to_value(module_sources::blockchain_recent_blocks(
+                            slot_from, slot_to, limit,
+                        )?);
+                    }
+                    return to_value(module_sources::blockchain_blocks(slot_from, slot_to)?);
+                }
                 if let Some(limit) = args.value(source.next_index + 2).and_then(Value::as_u64) {
                     to_value(self.runtime.block_on(blockchain::blockchain_recent_blocks(
                         source.endpoint,
@@ -242,6 +257,11 @@ impl InspectorBridge {
                     .value(source.next_index + 2)
                     .and_then(Value::as_u64)
                     .unwrap_or(50);
+                if source.mode == CoreEndpointMode::Module {
+                    return to_value(module_sources::blockchain_live_blocks_snapshot(
+                        slot_from, slot_to, limit,
+                    )?);
+                }
                 to_value(
                     self.runtime
                         .block_on(blockchain::blockchain_live_blocks_snapshot(
@@ -255,6 +275,11 @@ impl InspectorBridge {
             "blockchainBlock" => {
                 let args = Args::new(args)?;
                 let source = args.source_endpoint(0, "node endpoint")?;
+                if source.mode == CoreEndpointMode::Module {
+                    return to_value(module_sources::blockchain_block(
+                        args.string(source.next_index, "block id")?,
+                    )?);
+                }
                 to_value(self.runtime.block_on(blockchain::blockchain_block(
                     source.endpoint,
                     args.string(source.next_index, "block id")?,
@@ -263,6 +288,11 @@ impl InspectorBridge {
             "blockchainTransaction" => {
                 let args = Args::new(args)?;
                 let source = args.source_endpoint(0, "node endpoint")?;
+                if source.mode == CoreEndpointMode::Module {
+                    return to_value(module_sources::blockchain_transaction(
+                        args.string(source.next_index, "transaction id")?,
+                    )?);
+                }
                 to_value(self.runtime.block_on(blockchain::blockchain_transaction(
                     source.endpoint,
                     args.string(source.next_index, "transaction id")?,
@@ -290,6 +320,9 @@ impl InspectorBridge {
             "indexerHealth" => {
                 let args = Args::new(args)?;
                 let source = args.source_endpoint(0, "indexer endpoint")?;
+                if source.mode == CoreEndpointMode::Module {
+                    return to_value(module_sources::indexer_health()?);
+                }
                 let health = self.runtime.block_on(indexer_health(source.endpoint))?;
                 Ok(json!({
                     "status": "healthy",
@@ -299,11 +332,17 @@ impl InspectorBridge {
             "indexerStatus" => {
                 let args = Args::new(args)?;
                 let source = args.source_endpoint(0, "indexer endpoint")?;
+                if source.mode == CoreEndpointMode::Module {
+                    return to_value(module_sources::indexer_status()?);
+                }
                 to_value(self.runtime.block_on(indexer_status(source.endpoint))?)
             }
             "indexerFinalizedHead" => {
                 let args = Args::new(args)?;
                 let source = args.source_endpoint(0, "indexer endpoint")?;
+                if source.mode == CoreEndpointMode::Module {
+                    return to_value(module_sources::indexer_finalized_head()?);
+                }
                 to_value(self.runtime.block_on(raw_json_rpc_optional_result(
                     source.endpoint,
                     "getLastFinalizedBlockId",
@@ -319,6 +358,9 @@ impl InspectorBridge {
                     .and_then(Value::as_u64)
                     .unwrap_or(10)
                     .min(50);
+                if source.mode == CoreEndpointMode::Module {
+                    return to_value(module_sources::indexer_blocks(before, limit)?);
+                }
                 to_value(
                     self.runtime
                         .block_on(indexer_blocks(source.endpoint, before, limit))?,
@@ -327,6 +369,11 @@ impl InspectorBridge {
             "indexerBlockByHash" => {
                 let args = Args::new(args)?;
                 let source = args.source_endpoint(0, "indexer endpoint")?;
+                if source.mode == CoreEndpointMode::Module {
+                    return to_value(module_sources::indexer_block_by_hash(
+                        args.string(source.next_index, "block header hash")?,
+                    )?);
+                }
                 to_value(self.runtime.block_on(indexer_block_by_hash(
                     source.endpoint,
                     args.string(source.next_index, "block header hash")?,
@@ -341,6 +388,9 @@ impl InspectorBridge {
                     .and_then(Value::as_u64)
                     .unwrap_or(50)
                     .min(50);
+                if source.mode == CoreEndpointMode::Module {
+                    return to_value(module_sources::indexer_transfer_recipients(before, limit)?);
+                }
                 to_value(self.runtime.block_on(indexer_transfer_recipients(
                     source.endpoint,
                     before,
@@ -420,7 +470,7 @@ impl InspectorBridge {
                 let args = Args::new(args)?;
                 save_settings_state(args.value(0).context("settings state is required")?)
             }
-            "modules" => bail!("Basecamp module reports are not supported as Inspector sources"),
+            "modules" => to_value(modules_report()),
             "logoscoreStatus" => to_value(logoscore_status_report()),
             "blockchainModuleReport" => {
                 let args = Args::new(args)?;
@@ -542,16 +592,25 @@ impl InspectorBridge {
                 "{EXECUTION_MODULE} does not expose Inspector account reads; use sequencer RPC for account inspection"
             );
         }
-        if account_args.indexer_mode == CoreEndpointMode::Module {
-            bail!(
-                "{INDEXER_MODULE} account reads do not satisfy Inspector decode/history needs; use indexer RPC for account inspection"
-            );
-        }
         let sequencer = account_args.sequencer_endpoint;
         let indexer = account_args.indexer_endpoint;
         let account = account_args.account;
         let idl = args.optional_string(account_args.next_index);
-        let mut value = if let Some(idl) = idl {
+        let mut value = if account_args.indexer_mode == CoreEndpointMode::Module {
+            let mut account = self
+                .runtime
+                .block_on(sequencer_account(sequencer, account))?;
+            module_sources::attach_module_account_transactions(&mut account);
+            if let Some(idl) = idl {
+                to_value(crate::accounts::account_report_with_optional_idl_decode(
+                    account,
+                    idl,
+                    args.optional_string(account_args.next_index + 1),
+                ))?
+            } else {
+                to_value(account)?
+            }
+        } else if let Some(idl) = idl {
             to_value(self.runtime.block_on(account_lookup_with_idl(
                 sequencer,
                 indexer,
@@ -593,6 +652,9 @@ impl InspectorBridge {
     }
 
     fn blockchain_node_report(&self, source: &SourceEndpoint<'_>) -> Result<Value> {
+        if source.mode == CoreEndpointMode::Module {
+            return to_value(module_sources::blockchain_node_report());
+        }
         to_value(
             self.runtime
                 .block_on(blockchain::blockchain_node_report(source.endpoint)),
@@ -609,6 +671,14 @@ impl InspectorBridge {
 
     fn storage_exists(&self, args: Value) -> Result<Value> {
         let args = Args::new(args)?;
+        if basecamp_source::is_storage_module_source(&args) {
+            let cid = args.string(2, "CID")?;
+            return to_value(basecamp_source::call_value(
+                basecamp_source::STORAGE_MODULE,
+                "exists",
+                &[json!(cid)],
+            )?);
+        }
         let source = storage_rest_source(&args)?;
         let cid = args.string(source.next_index, "CID")?;
         to_value(self.runtime.block_on(raw_http_json(
@@ -619,6 +689,11 @@ impl InspectorBridge {
 
     fn storage_backup_settings(&self, args: Value) -> Result<Value> {
         let args = Args::new(args)?;
+        if basecamp_source::is_storage_module_source(&args) {
+            bail!(
+                "settings backup through storage_module needs storageUploadDone event correlation to return the final CID; use the Storage app upload flow or Direct REST source for synchronous settings backup"
+            );
+        }
         let source = storage_rest_source(&args)?;
         require_mutating_diagnostics(&args, source.next_index, "settings backup action")?;
         let encrypted = args.optional_bool(source.next_index + 1);
@@ -655,6 +730,11 @@ impl InspectorBridge {
 
     fn storage_restore_settings(&self, args: Value) -> Result<Value> {
         let args = Args::new(args)?;
+        if basecamp_source::is_storage_module_source(&args) {
+            bail!(
+                "settings restore through storage_module needs storageDownloadDone chunk correlation; use Direct REST source for synchronous settings restore"
+            );
+        }
         let source = storage_rest_source(&args)?;
         require_mutating_diagnostics(&args, source.next_index, "settings restore action")?;
         let cid = args.string(source.next_index + 1, "backup CID")?;
@@ -767,19 +847,6 @@ pub(crate) async fn blocking_value(
         .with_context(|| format!("{label} task failed"))?
 }
 
-pub(crate) fn logoscore_call_value(module: &str, method: &str, args: Value) -> Result<Value> {
-    let args = Args::new(args)?
-        .iter()
-        .map(|value| {
-            value
-                .as_str()
-                .map(ToOwned::to_owned)
-                .unwrap_or_else(|| value.to_string())
-        })
-        .collect::<Vec<_>>();
-    to_value(logoscore::call(module, method, &args)?)
-}
-
 pub(crate) fn decode_transaction_summary_with_idls(
     summary: &TransactionSummary,
     idl_entries: &[RegisteredIdlEntry],
@@ -859,212 +926,6 @@ fn enrich_account_report_related_transaction_decodes(
         }
     }
     Ok(())
-}
-
-pub(crate) struct Args {
-    values: Vec<Value>,
-}
-
-pub(crate) struct SourceEndpoint<'a> {
-    pub(crate) mode: CoreEndpointMode,
-    pub(crate) endpoint: &'a str,
-    pub(crate) next_index: usize,
-    pub(crate) module: &'static str,
-}
-
-pub(crate) struct AccountSources<'a> {
-    pub(crate) execution_mode: CoreEndpointMode,
-    pub(crate) sequencer_endpoint: &'a str,
-    pub(crate) indexer_mode: CoreEndpointMode,
-    pub(crate) indexer_endpoint: &'a str,
-    pub(crate) account: &'a str,
-    pub(crate) next_index: usize,
-}
-
-pub(crate) struct RestSource<'a> {
-    pub(crate) endpoint: &'a str,
-    pub(crate) next_index: usize,
-}
-
-pub(crate) struct DeliveryStoreQuery<'a> {
-    pub(crate) peer_addr: Option<&'a str>,
-    pub(crate) content_topics: Option<&'a str>,
-    pub(crate) pubsub_topic: Option<&'a str>,
-    pub(crate) cursor: Option<&'a str>,
-    pub(crate) page_size: u64,
-    pub(crate) ascending: bool,
-    pub(crate) include_data: bool,
-}
-
-impl Args {
-    pub(crate) fn new(value: Value) -> Result<Self> {
-        let values = value
-            .as_array()
-            .context("bridge args must be a JSON array")?
-            .clone();
-        Ok(Self { values })
-    }
-
-    pub(crate) fn iter(&self) -> impl Iterator<Item = &Value> {
-        self.values.iter()
-    }
-
-    pub(crate) fn value(&self, index: usize) -> Option<&Value> {
-        self.values.get(index)
-    }
-
-    pub(crate) fn string(&self, index: usize, label: &str) -> Result<&str> {
-        self.value(index)
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .with_context(|| format!("{label} is required"))
-    }
-
-    pub(crate) fn optional_string(&self, index: usize) -> Option<&str> {
-        self.value(index)
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-    }
-
-    pub(crate) fn optional_bool(&self, index: usize) -> bool {
-        match self.value(index) {
-            Some(Value::Bool(value)) => *value,
-            Some(Value::String(value)) => matches!(
-                value.trim().to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            ),
-            _ => false,
-        }
-    }
-
-    pub(crate) fn u64(&self, index: usize, label: &str) -> Result<u64> {
-        let value = self
-            .value(index)
-            .with_context(|| format!("{label} is required"))?;
-        if let Some(value) = value.as_u64() {
-            return Ok(value);
-        }
-        self.string(index, label)?
-            .parse::<u64>()
-            .with_context(|| format!("invalid {label}"))
-    }
-
-    pub(crate) fn json_or_empty_array(&self, index: usize) -> Result<Value> {
-        let Some(value) = self.value(index) else {
-            return Ok(Value::Array(vec![]));
-        };
-        match value {
-            Value::String(raw) if raw.trim().is_empty() => Ok(Value::Array(vec![])),
-            Value::String(raw) => {
-                serde_json::from_str(raw).context("failed to parse JSON argument")
-            }
-            value => Ok(value.clone()),
-        }
-    }
-
-    pub(crate) fn source_endpoint(&self, index: usize, label: &str) -> Result<SourceEndpoint<'_>> {
-        let first = self.string(index, label)?;
-        if let Some(mode) = CoreSourceMode::from_token(first) {
-            return Ok(SourceEndpoint {
-                mode: mode.effective(),
-                endpoint: self.string(index + 1, label)?,
-                next_index: index + 2,
-                module: source_module_for_label(label),
-            });
-        }
-        Ok(SourceEndpoint {
-            mode: CoreEndpointMode::Rpc,
-            endpoint: first,
-            next_index: index + 1,
-            module: source_module_for_label(label),
-        })
-    }
-
-    pub(crate) fn account_sources(&self) -> Result<AccountSources<'_>> {
-        let first = self.string(0, "sequencer endpoint")?;
-        if let Some(execution_mode) = CoreSourceMode::from_token(first) {
-            let indexer_mode = CoreSourceMode::from_token(self.string(2, "indexer source mode")?)
-                .context("indexer source mode must be `rpc` or `module`")?;
-            return Ok(AccountSources {
-                execution_mode: execution_mode.effective(),
-                sequencer_endpoint: self.string(1, "sequencer endpoint")?,
-                indexer_mode: indexer_mode.effective(),
-                indexer_endpoint: self.string(3, "indexer endpoint")?,
-                account: self.string(4, "account id")?,
-                next_index: 5,
-            });
-        }
-        Ok(AccountSources {
-            execution_mode: CoreEndpointMode::Rpc,
-            sequencer_endpoint: first,
-            indexer_mode: CoreEndpointMode::Rpc,
-            indexer_endpoint: self.string(1, "indexer endpoint")?,
-            account: self.string(2, "account id")?,
-            next_index: 3,
-        })
-    }
-}
-
-fn source_module_for_label(label: &str) -> &'static str {
-    if label.contains("indexer") {
-        INDEXER_MODULE
-    } else if label.contains("sequencer") {
-        EXECUTION_MODULE
-    } else {
-        BLOCKCHAIN_MODULE
-    }
-}
-
-pub(crate) fn storage_rest_source(args: &Args) -> Result<RestSource<'_>> {
-    rest_source(
-        args,
-        DEFAULT_STORAGE_REST_ENDPOINT,
-        "storage",
-        "Storage REST data actions",
-    )
-}
-
-pub(crate) fn delivery_rest_source(args: &Args) -> Result<RestSource<'_>> {
-    rest_source(
-        args,
-        DEFAULT_DELIVERY_REST_ENDPOINT,
-        "delivery",
-        "Delivery REST message actions",
-    )
-}
-
-pub(crate) fn require_mutating_diagnostics(args: &Args, index: usize, label: &str) -> Result<()> {
-    if args.optional_bool(index) {
-        return Ok(());
-    }
-    bail!("{label} requires mutating diagnostics to be enabled")
-}
-
-fn rest_source<'a>(
-    args: &'a Args,
-    default_endpoint: &'static str,
-    source_name: &str,
-    action_name: &str,
-) -> Result<RestSource<'a>> {
-    let mode = args.optional_string(0).unwrap_or("rest");
-    let normalized = match source_name {
-        "storage" => effective_source_mode(SourceFamily::Storage, mode),
-        "delivery" => effective_source_mode(SourceFamily::Delivery, mode),
-        _ => "unsupported",
-    };
-    match normalized {
-        "rest" => Ok(RestSource {
-            endpoint: args.optional_string(1).unwrap_or(default_endpoint),
-            next_index: 2,
-        }),
-        "module" => {
-            bail!("{action_name} require {source_name} REST source, not module")
-        }
-        "metrics" => bail!("{action_name} require {source_name} REST source, not metrics"),
-        _ => bail!("{source_name} source mode `{mode}` is not supported"),
-    }
 }
 
 pub(crate) async fn storage_rest_upload(
@@ -1907,19 +1768,27 @@ mod tests {
     }
 
     #[test]
-    fn delivery_module_send_is_gated_until_events_are_correlated() -> Result<()> {
-        let bridge = InspectorBridge::new()?;
-        let result = bridge.call_module(
-            INSPECTOR_MODULE,
-            "deliverySend",
-            json!(["module", "", true, "/waku/2/default/proto", "hello"]),
-        );
+    fn node_operation_request_normalizes_module_delivery_send_args() -> Result<()> {
+        let request = crate::node_operations::node_operation_request_from_value(json!({
+            "domain": "delivery",
+            "sourceMode": "module",
+            "endpoint": "",
+            "method": "deliverySend",
+            "args": ["/waku/2/default/proto", "hello"],
+            "mutatingEnabled": true,
+            "label": "Send message"
+        }))?;
 
-        let Err(error) = result else {
-            bail!("expected module delivery send to be gated");
-        };
-        if !error.to_string().contains("delivery module send is gated") {
-            bail!("unexpected error: {error:#}");
+        if request.args()
+            != &json!([
+                "module",
+                DEFAULT_DELIVERY_REST_ENDPOINT,
+                true,
+                "/waku/2/default/proto",
+                "hello"
+            ])
+        {
+            bail!("unexpected normalized args: {}", request.args());
         }
         Ok(())
     }

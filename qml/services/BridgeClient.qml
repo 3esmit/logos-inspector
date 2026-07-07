@@ -7,6 +7,9 @@ QtObject {
     property var host: null
     property int nextRequestId: 1
     property var pendingCalls: ({})
+    property var moduleEventSubscriptions: ({})
+
+    signal moduleEventReceived(string moduleName, string eventName, var args)
 
     function prefersBasecampModules() {
         return root.host && root.host["callModule"] && !root.host["callModuleJson"]
@@ -53,6 +56,70 @@ QtObject {
         return requestId
     }
 
+    function subscribeModuleEvents(moduleName, events) {
+        let count = 0
+        const rows = Array.isArray(events) ? events : []
+        for (let i = 0; i < rows.length; ++i) {
+            if (root.subscribeModuleEvent(moduleName, rows[i])) {
+                count += 1
+            }
+        }
+        return count
+    }
+
+    function subscribeModuleEvent(moduleName, eventName) {
+        const moduleText = String(moduleName || "")
+        const eventText = String(eventName || "")
+        if (!root.host || !moduleText.length || !eventText.length) {
+            return false
+        }
+        const key = moduleText + "::" + eventText
+        const current = root.moduleEventSubscriptions || {}
+        if (current[key] && current[key].active === true) {
+            return true
+        }
+        const callback = function () {
+            const values = []
+            for (let i = 0; i < arguments.length; ++i) {
+                values.push(arguments[i])
+            }
+            root.moduleEventReceived(moduleText, eventText, values.length === 1 ? values[0] : values)
+        }
+        let active = false
+        try {
+            if (root.host && root.host["onModuleEvent"]) {
+                root.host["onModuleEvent"](moduleText, eventText, callback)
+                active = true
+            }
+        } catch (error) {
+            active = false
+        }
+        try {
+            if (!active && root.host && root.host["module"]) {
+                const moduleObject = root.host["module"](moduleText)
+                if (moduleObject && moduleObject["on"]) {
+                    moduleObject["on"](eventText, callback)
+                    active = true
+                }
+            }
+        } catch (error) {
+            active = false
+        }
+        if (!active) {
+            return false
+        }
+        const next = {}
+        for (const name in current) {
+            next[name] = current[name]
+        }
+        next[key] = {
+            active: true,
+            callback: callback
+        }
+        root.moduleEventSubscriptions = next
+        return true
+    }
+
     function finishAsyncCall(requestId, response) {
         const pending = root.copyPendingCalls()
         const callback = pending[requestId]
@@ -79,6 +146,10 @@ QtObject {
 
         function onModuleCallFinished(requestId, responseJson) {
             root.finishAsyncCall(requestId, BridgeHelpers.parseModuleResponseJson(responseJson))
+        }
+
+        function onModuleEvent(moduleName, eventName, args) {
+            root.moduleEventReceived(String(moduleName || ""), String(eventName || ""), args)
         }
     }
 }
