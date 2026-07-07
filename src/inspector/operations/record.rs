@@ -10,6 +10,8 @@ use std::{
 use anyhow::Result;
 use serde_json::{Value, json};
 
+use super::spec::OperationExclusiveGroup;
+
 pub(super) type NodeOperationRegistry = Arc<Mutex<HashMap<String, NodeOperationRecord>>>;
 
 #[derive(Debug, Clone)]
@@ -28,6 +30,7 @@ pub(super) struct NodeOperation {
     pub(super) result: Option<Value>,
     pub(super) error: Option<String>,
     pub(super) cancellable: bool,
+    pub(super) exclusive_group: Option<OperationExclusiveGroup>,
     pub(super) started_at: u64,
     pub(super) updated_at: u64,
 }
@@ -99,10 +102,11 @@ pub(super) fn update_node_operation(
     }
 }
 
-pub(super) fn active_storage_download_operation(record: &NodeOperationRecord) -> bool {
-    record.operation.domain == "storage"
-        && record.operation.method == "storageDownloadToUrl"
-        && !record.operation.status.is_terminal()
+pub(super) fn active_operation_in_exclusive_group(
+    record: &NodeOperationRecord,
+    group: OperationExclusiveGroup,
+) -> bool {
+    record.operation.exclusive_group == Some(group) && !record.operation.status.is_terminal()
 }
 
 pub(super) fn update_node_operation_progress(
@@ -310,6 +314,7 @@ pub(super) fn test_node_operation_record(
     method: &str,
     status: NodeOperationStatus,
     cancellable: bool,
+    exclusive_group: Option<OperationExclusiveGroup>,
     cancel_requested: Arc<AtomicBool>,
 ) -> NodeOperationRecord {
     NodeOperationRecord {
@@ -328,6 +333,7 @@ pub(super) fn test_node_operation_record(
             result: None,
             error: None,
             cancellable,
+            exclusive_group,
             started_at: 1,
             updated_at: 1,
         },

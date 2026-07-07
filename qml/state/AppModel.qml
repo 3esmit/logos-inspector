@@ -5,9 +5,6 @@ import "appmodel/AppModelCore.js" as AppModelCore
 import "appmodel/AppModelIdentity.js" as AppModelIdentity
 import "appmodel/AppModelNetwork.js" as AppModelNetwork
 import "appmodel/AppModelMetrics.js" as AppModelMetrics
-import "appmodel/AppModelPages.js" as AppModelPages
-import "appmodel/AppModelSearch.js" as AppModelSearch
-import "appmodel/AppModelOpeners.js" as AppModelOpeners
 import "appmodel/AppModelRegistry.js" as AppModelRegistry
 import "appmodel/AppModelSocial.js" as AppModelSocial
 import "appmodel/AppModelModuleEvents.js" as AppModelModuleEvents
@@ -26,6 +23,8 @@ QtObject {
     readonly property string capabilityModule: "capability_module"
     property var sourcePolicy: ({})
     property bool sourcePolicyLoaded: false
+    readonly property var storageSource: storageSourceView()
+    readonly property var deliverySource: deliverySourceView()
 
     property string currentView: "overview"
     property string statusText: qsTr("Ready")
@@ -35,67 +34,101 @@ QtObject {
     property var resultValue: null
     property bool resultIsError: false
     property string resultOwner: ""
-    property var dashboardOverview: null
-    property var dashboardNode: null
-    property var dashboardL1Blocks: []
-    property var dashboardBlocks: []
-    property var dashboardSequencerBlocks: []
-    property string dashboardError: ""
-    property var blockDetailValue: null
-    property string blockDetailError: ""
-    property var transactionDetailValue: null
-    property string transactionDetailError: ""
-    property var accountDetailValue: null
-    property var transferRecipientDetailValue: null
-    property var channelDetailValue: null
-    property string channelDetailError: ""
-    property var blocksPageRows: []
-    property int blocksPageSlotFrom: 0
-    property int blocksPageSlotTo: 0
-    property int blocksPageWindow: 2000
-    property int blocksPageLimit: 20
-    property string blocksPageError: ""
-    property bool blocksLiveEnabled: false
-    property string blocksLiveError: ""
-    property string blocksLiveSource: ""
-    property int blocksLiveUnknownEvents: 0
-    property string blocksLiveCheckedAt: ""
-    property var transactionsPageRows: []
-    property int transactionsPageBeforeBlock: 0
-    property int transactionsPageNextBeforeBlock: 0
-    property int transactionsPageBlockBatch: 1000
-    property int transactionsPageLimit: 20
-    property string transactionsPageError: ""
-    property var lezBlocksPageRows: []
-    property int lezBlocksPageBeforeBlock: 0
-    property int lezBlocksPageNextBeforeBlock: 0
-    property int lezBlocksPageLimit: 20
-    property string lezBlocksPageError: ""
-    property bool lezBlocksPageLoading: false
-    property int lezBlocksPageRequestSerial: 0
-    property var lezTransactionsPageRows: []
-    property int lezTransactionsPageBeforeBlock: 0
-    property int lezTransactionsPageNextBeforeBlock: 0
-    property var lezTransactionsPageOverflowRows: []
-    property int lezTransactionsPageOverflowNextBeforeBlock: 0
-    property int lezTransactionsBlockBatch: 50
-    property int lezTransactionsPageLimit: 20
-    property string lezTransactionsPageError: ""
-    property var transferActivityRows: []
-    property int transferActivityBeforeBlock: 0
-    property int transferActivityNextBeforeBlock: 0
-    property var transferActivityOverflowRows: []
-    property int transferActivityOverflowNextBeforeBlock: 0
-    property int transferActivityBlockBatch: 50
-    property int transferActivityLimit: 20
-    property var transferActivityHistory: []
-    property string transferActivityError: ""
-    property var channelsPageRows: []
-    property int channelsPageSlotFrom: 0
-    property int channelsPageSlotTo: 0
-    property int channelsPageWindow: 4000
-    property int channelsPageLimit: 20
-    property string channelsPageError: ""
+    property ChainPageSession chainPages: ChainPageSession {
+        id: chainPageState
+
+        inspectorModule: root.inspectorModule
+        gateway: QtObject {
+            function requestModule(moduleName, method, args, label, showResult, cacheResult) {
+                return root.requestModule(moduleName, method, args, label, showResult, cacheResult)
+            }
+
+            function requestModuleAsync(moduleName, method, args, label, showResult, callback, acceptResponse) {
+                return root.requestModuleAsync(moduleName, method, args, label, showResult, callback, acceptResponse)
+            }
+
+            function setResult(title, text, isError, value, owner) {
+                return root.setResult(title, text, isError, value, owner)
+            }
+
+            function blockchainArgs(extra) { return root.blockchainArgs(extra) }
+
+            function indexerArgs(extra) { return root.indexerArgs(extra) }
+
+            function executionArgs(extra) { return root.executionArgs(extra) }
+
+            function blockchainRpcArgs(extra) { return root.blockchainRpcArgs(extra) }
+
+            function networkConnectionState(kind) { return root.networkConnectionState(kind) }
+
+            function valueToString(value) { return root.valueToString(value) }
+
+            function canonicalProgramIdHex(value) { return root.canonicalProgramIdHex(value) }
+
+            function normalizedHexText(value) { return root.normalizedHexText(value) }
+        }
+    }
+    property alias dashboardOverview: chainPageState.dashboardOverview
+    property alias dashboardNode: chainPageState.dashboardNode
+    property alias dashboardL1Blocks: chainPageState.dashboardL1Blocks
+    property alias dashboardBlocks: chainPageState.dashboardBlocks
+    property alias dashboardSequencerBlocks: chainPageState.dashboardSequencerBlocks
+    property alias dashboardError: chainPageState.dashboardError
+    property alias blockDetailValue: chainPageState.blockDetailValue
+    property alias blockDetailError: chainPageState.blockDetailError
+    property alias transactionDetailValue: chainPageState.transactionDetailValue
+    property alias transactionDetailError: chainPageState.transactionDetailError
+    property alias accountDetailValue: chainPageState.accountDetailValue
+    property alias transferRecipientDetailValue: chainPageState.transferRecipientDetailValue
+    property alias channelDetailValue: chainPageState.channelDetailValue
+    property alias channelDetailError: chainPageState.channelDetailError
+    property alias blocksPageRows: chainPageState.blocksPageRows
+    property alias blocksPageSlotFrom: chainPageState.blocksPageSlotFrom
+    property alias blocksPageSlotTo: chainPageState.blocksPageSlotTo
+    property alias blocksPageWindow: chainPageState.blocksPageWindow
+    property alias blocksPageLimit: chainPageState.blocksPageLimit
+    property alias blocksPageError: chainPageState.blocksPageError
+    property alias blocksLiveEnabled: chainPageState.blocksLiveEnabled
+    property alias blocksLiveError: chainPageState.blocksLiveError
+    property alias blocksLiveSource: chainPageState.blocksLiveSource
+    property alias blocksLiveUnknownEvents: chainPageState.blocksLiveUnknownEvents
+    property alias blocksLiveCheckedAt: chainPageState.blocksLiveCheckedAt
+    property alias transactionsPageRows: chainPageState.transactionsPageRows
+    property alias transactionsPageBeforeBlock: chainPageState.transactionsPageBeforeBlock
+    property alias transactionsPageNextBeforeBlock: chainPageState.transactionsPageNextBeforeBlock
+    property alias transactionsPageBlockBatch: chainPageState.transactionsPageBlockBatch
+    property alias transactionsPageLimit: chainPageState.transactionsPageLimit
+    property alias transactionsPageError: chainPageState.transactionsPageError
+    property alias lezBlocksPageRows: chainPageState.lezBlocksPageRows
+    property alias lezBlocksPageBeforeBlock: chainPageState.lezBlocksPageBeforeBlock
+    property alias lezBlocksPageNextBeforeBlock: chainPageState.lezBlocksPageNextBeforeBlock
+    property alias lezBlocksPageLimit: chainPageState.lezBlocksPageLimit
+    property alias lezBlocksPageError: chainPageState.lezBlocksPageError
+    property alias lezBlocksPageLoading: chainPageState.lezBlocksPageLoading
+    property alias lezBlocksPageRequestSerial: chainPageState.lezBlocksPageRequestSerial
+    property alias lezTransactionsPageRows: chainPageState.lezTransactionsPageRows
+    property alias lezTransactionsPageBeforeBlock: chainPageState.lezTransactionsPageBeforeBlock
+    property alias lezTransactionsPageNextBeforeBlock: chainPageState.lezTransactionsPageNextBeforeBlock
+    property alias lezTransactionsPageOverflowRows: chainPageState.lezTransactionsPageOverflowRows
+    property alias lezTransactionsPageOverflowNextBeforeBlock: chainPageState.lezTransactionsPageOverflowNextBeforeBlock
+    property alias lezTransactionsBlockBatch: chainPageState.lezTransactionsBlockBatch
+    property alias lezTransactionsPageLimit: chainPageState.lezTransactionsPageLimit
+    property alias lezTransactionsPageError: chainPageState.lezTransactionsPageError
+    property alias transferActivityRows: chainPageState.transferActivityRows
+    property alias transferActivityBeforeBlock: chainPageState.transferActivityBeforeBlock
+    property alias transferActivityNextBeforeBlock: chainPageState.transferActivityNextBeforeBlock
+    property alias transferActivityOverflowRows: chainPageState.transferActivityOverflowRows
+    property alias transferActivityOverflowNextBeforeBlock: chainPageState.transferActivityOverflowNextBeforeBlock
+    property alias transferActivityBlockBatch: chainPageState.transferActivityBlockBatch
+    property alias transferActivityLimit: chainPageState.transferActivityLimit
+    property alias transferActivityHistory: chainPageState.transferActivityHistory
+    property alias transferActivityError: chainPageState.transferActivityError
+    property alias channelsPageRows: chainPageState.channelsPageRows
+    property alias channelsPageSlotFrom: chainPageState.channelsPageSlotFrom
+    property alias channelsPageSlotTo: chainPageState.channelsPageSlotTo
+    property alias channelsPageWindow: chainPageState.channelsPageWindow
+    property alias channelsPageLimit: chainPageState.channelsPageLimit
+    property alias channelsPageError: chainPageState.channelsPageError
 
     property string networkProfile: "default"
     property string sequencerUrl: "https://testnet.lez.logos.co/"
@@ -310,16 +343,16 @@ QtObject {
             }
         }
         busy: root.busy
-        sourceMode: root.storageSourceMode
-        effectiveSourceMode: root.effectiveStorageSourceMode(root.storageSourceMode)
-        sourceLabel: root.storageSourceLabel()
-        sourceTarget: root.storageSourceTarget()
-        sourceTargetKind: root.sourceModeTargetKind("storage", root.storageSourceMode)
-        usesRestEndpoint: root.sourceModeUsesEndpoint("storage", root.storageSourceMode, "rest")
-        supportsMutatingDiagnostics: root.sourceModeSupportsMutatingDiagnostics("storage", root.storageSourceMode)
-        restEndpoint: root.configuredStorageRestUrl()
-        moduleName: root.storageModule
-        networkPreset: root.storageNetworkPreset
+        sourceMode: root.storageSource.mode
+        effectiveSourceMode: root.storageSource.effectiveMode
+        sourceLabel: root.storageSource.label
+        sourceTarget: root.storageSource.target
+        sourceTargetKind: root.storageSource.targetKind
+        usesRestEndpoint: root.storageSource.usesRestEndpoint
+        supportsMutatingDiagnostics: root.storageSource.supportsMutatingDiagnostics
+        restEndpoint: root.storageSource.restEndpoint
+        moduleName: root.storageSource.moduleName
+        networkPreset: root.storageSource.networkPreset
         mutatingDiagnosticsEnabled: root.storageMutatingDiagnosticsEnabled
         currentView: root.currentView
         resultTitle: root.resultTitle
@@ -353,16 +386,16 @@ QtObject {
             }
         }
         busy: root.busy
-        sourceMode: root.messagingSourceMode
-        effectiveSourceMode: root.effectiveMessagingSourceMode(root.messagingSourceMode)
-        sourceLabel: root.deliverySourceLabel()
-        sourceTarget: root.deliverySourceTarget()
-        sourceTargetKind: root.sourceModeTargetKind("delivery", root.messagingSourceMode)
-        usesRestEndpoint: root.sourceModeUsesEndpoint("delivery", root.messagingSourceMode, "rest")
-        supportsMutatingDiagnostics: root.sourceModeSupportsMutatingDiagnostics("delivery", root.messagingSourceMode)
-        restEndpoint: root.configuredMessagingRestUrl()
-        moduleName: root.deliveryModule
-        networkPreset: root.messagingNetworkPreset
+        sourceMode: root.deliverySource.mode
+        effectiveSourceMode: root.deliverySource.effectiveMode
+        sourceLabel: root.deliverySource.label
+        sourceTarget: root.deliverySource.target
+        sourceTargetKind: root.deliverySource.targetKind
+        usesRestEndpoint: root.deliverySource.usesRestEndpoint
+        supportsMutatingDiagnostics: root.deliverySource.supportsMutatingDiagnostics
+        restEndpoint: root.deliverySource.restEndpoint
+        moduleName: root.deliverySource.moduleName
+        networkPreset: root.deliverySource.networkPreset
         mutatingDiagnosticsEnabled: root.messagingMutatingDiagnosticsEnabled
     }
     property alias deliveryAppTab: deliveryAppState.currentTab
@@ -425,10 +458,14 @@ QtObject {
     property int navigationRevision: 0
     property bool navigationRestoring: false
     readonly property int navigationHistoryLimit: 80
+    property EntityNavigationSession entityNavigation: EntityNavigationSession {
+        id: entityNavigationState
+        model: root
+    }
     property FavoritesState favoriteStore: FavoritesState {
         onRevisionChanged: root.saveSettingsState()
         onOpenRequested: function (openKind, value) {
-            root.openReference(openKind, value)
+            entityNavigationState.openReference(openKind, value)
         }
     }
 
@@ -914,6 +951,16 @@ QtObject {
 
     function sourceModeSupportsMutatingDiagnostics(family, value) { return AppModelNetwork.sourceModeSupportsMutatingDiagnostics(root, family, value) }
 
+    function coreSourceView(role) { return AppModelNetwork.coreSourceView(root, role) }
+
+    function deliverySourceView() { return AppModelNetwork.deliverySourceView(root) }
+
+    function storageSourceView() { return AppModelNetwork.storageSourceView(root) }
+
+    function deliveryReportView(report) { return AppModelNetwork.deliveryReportView(root, report) }
+
+    function storageReportView(report) { return AppModelNetwork.storageReportView(root, report) }
+
     function networkConnectionRate(kind) { return AppModelNetwork.networkConnectionRate(root, kind) }
 
     function setNetworkConnectionRate(kind, seconds) { return AppModelNetwork.setNetworkConnectionRate(root, kind, seconds) }
@@ -1138,231 +1185,231 @@ QtObject {
 
     function defaultDashboardGraphSelections() { return AppModelMetrics.defaultDashboardGraphSelections(root) }
 
-    function refreshBlocksPage(anchorSlot) { return AppModelPages.refreshBlocksPage(root, anchorSlot) }
+    function refreshBlocksPage(anchorSlot) { return chainPages.refreshBlocksPage(anchorSlot) }
 
-    function startBlocksLiveMode() { return AppModelPages.startBlocksLiveMode(root) }
+    function startBlocksLiveMode() { return chainPages.startBlocksLiveMode() }
 
-    function stopBlocksLiveMode() { return AppModelPages.stopBlocksLiveMode(root) }
+    function stopBlocksLiveMode() { return chainPages.stopBlocksLiveMode() }
 
-    function refreshBlocksLivePage() { return AppModelPages.refreshBlocksLivePage(root) }
+    function refreshBlocksLivePage() { return chainPages.refreshBlocksLivePage() }
 
-    function mergeLiveBlocks(liveBlocks, existingBlocks, limit) { return AppModelPages.mergeLiveBlocks(root, liveBlocks, existingBlocks, limit) }
+    function mergeLiveBlocks(liveBlocks, existingBlocks, limit) { return chainPages.mergeLiveBlocks(liveBlocks, existingBlocks, limit) }
 
-    function blocksLiveStatusText() { return AppModelPages.blocksLiveStatusText(root) }
+    function blocksLiveStatusText() { return chainPages.blocksLiveStatusText() }
 
-    function olderBlocksPage() { return AppModelPages.olderBlocksPage(root) }
+    function olderBlocksPage() { return chainPages.olderBlocksPage() }
 
-    function newerBlocksPage() { return AppModelPages.newerBlocksPage(root) }
+    function newerBlocksPage() { return chainPages.newerBlocksPage() }
 
-    function setBlocksPageLimit(limit) { return AppModelPages.setBlocksPageLimit(root, limit) }
+    function setBlocksPageLimit(limit) { return chainPages.setBlocksPageLimit(limit) }
 
-    function sortedBlocks(blocks) { return AppModelPages.sortedBlocks(root, blocks) }
+    function sortedBlocks(blocks) { return chainPages.sortedBlocks(blocks) }
 
-    function blockSlot(block) { return AppModelPages.blockSlot(root, block) }
+    function blockSlot(block) { return chainPages.blockSlot(block) }
 
-    function blockHash(block) { return AppModelPages.blockHash(root, block) }
+    function blockHash(block) { return chainPages.blockHash(block) }
 
-    function blockParent(block) { return AppModelPages.blockParent(root, block) }
+    function blockParent(block) { return chainPages.blockParent(block) }
 
-    function blockProof(block) { return AppModelPages.blockProof(root, block) }
+    function blockProof(block) { return chainPages.blockProof(block) }
 
-    function blockRoot(block) { return AppModelPages.blockRoot(root, block) }
+    function blockRoot(block) { return chainPages.blockRoot(block) }
 
-    function blockHeight(block) { return AppModelPages.blockHeight(root, block) }
+    function blockHeight(block) { return chainPages.blockHeight(block) }
 
-    function blockVersion(block) { return AppModelPages.blockVersion(root, block) }
+    function blockVersion(block) { return chainPages.blockVersion(block) }
 
-    function blockSignature(block) { return AppModelPages.blockSignature(root, block) }
+    function blockSignature(block) { return chainPages.blockSignature(block) }
 
-    function blockStatus(block) { return AppModelPages.blockStatus(root, block) }
+    function blockStatus(block) { return chainPages.blockStatus(block) }
 
-    function blockchainInfo() { return AppModelPages.blockchainInfo(root) }
+    function blockchainInfo() { return chainPages.blockchainInfo() }
 
-    function sourceEmptyText(source, error, fallback) { return AppModelPages.sourceEmptyText(root, source, error, fallback) }
+    function sourceEmptyText(source, error, fallback) { return chainPages.sourceEmptyText(source, error, fallback) }
 
-    function sourceProblemTitle(source, error, fallback) { return AppModelPages.sourceProblemTitle(root, source, error, fallback) }
+    function sourceProblemTitle(source, error, fallback) { return chainPages.sourceProblemTitle(source, error, fallback) }
 
-    function blockTransactions(block) { return AppModelPages.blockTransactions(root, block) }
+    function blockTransactions(block) { return chainPages.blockTransactions(block) }
 
-    function blockchainBlockDetail(block) { return AppModelPages.blockchainBlockDetail(root, block) }
+    function blockchainBlockDetail(block) { return chainPages.blockchainBlockDetail(block) }
 
-    function blockchainBlockDetailById(value) { return AppModelPages.blockchainBlockDetailById(root, value) }
+    function blockchainBlockDetailById(value) { return chainPages.blockchainBlockDetailById(value) }
 
-    function normalizedHashOrValue(value) { return AppModelPages.normalizedHashOrValue(root, value) }
+    function normalizedHashOrValue(value) { return chainPages.normalizedHashOrValue(value) }
 
-    function refreshTransactionsPage(beforeBlock) { return AppModelPages.refreshTransactionsPage(root, beforeBlock) }
+    function refreshTransactionsPage(beforeBlock) { return chainPages.refreshTransactionsPage(beforeBlock) }
 
-    function olderTransactionsPage() { return AppModelPages.olderTransactionsPage(root) }
+    function olderTransactionsPage() { return chainPages.olderTransactionsPage() }
 
-    function newerTransactionsPage() { return AppModelPages.newerTransactionsPage(root) }
+    function newerTransactionsPage() { return chainPages.newerTransactionsPage() }
 
-    function setTransactionsPageLimit(limit) { return AppModelPages.setTransactionsPageLimit(root, limit) }
+    function setTransactionsPageLimit(limit) { return chainPages.setTransactionsPageLimit(limit) }
 
-    function refreshLezBlocksPage(beforeBlock) { return AppModelPages.refreshLezBlocksPage(root, beforeBlock) }
+    function refreshLezBlocksPage(beforeBlock) { return chainPages.refreshLezBlocksPage(beforeBlock) }
 
-    function finishLezBlocksPage(beforeBlock, sequencerResponse, indexerResponse) { return AppModelPages.finishLezBlocksPage(root, beforeBlock, sequencerResponse, indexerResponse) }
+    function finishLezBlocksPage(beforeBlock, sequencerResponse, indexerResponse) { return chainPages.finishLezBlocksPage(beforeBlock, sequencerResponse, indexerResponse) }
 
-    function olderLezBlocksPage() { return AppModelPages.olderLezBlocksPage(root) }
+    function olderLezBlocksPage() { return chainPages.olderLezBlocksPage() }
 
-    function newerLezBlocksPage() { return AppModelPages.newerLezBlocksPage(root) }
+    function newerLezBlocksPage() { return chainPages.newerLezBlocksPage() }
 
-    function setLezBlocksPageLimit(limit) { return AppModelPages.setLezBlocksPageLimit(root, limit) }
+    function setLezBlocksPageLimit(limit) { return chainPages.setLezBlocksPageLimit(limit) }
 
-    function refreshLezTransactionsPage(beforeBlock) { return AppModelPages.refreshLezTransactionsPage(root, beforeBlock) }
+    function refreshLezTransactionsPage(beforeBlock) { return chainPages.refreshLezTransactionsPage(beforeBlock) }
 
-    function olderLezTransactionsPage() { return AppModelPages.olderLezTransactionsPage(root) }
+    function olderLezTransactionsPage() { return chainPages.olderLezTransactionsPage() }
 
-    function newerLezTransactionsPage() { return AppModelPages.newerLezTransactionsPage(root) }
+    function newerLezTransactionsPage() { return chainPages.newerLezTransactionsPage() }
 
-    function setLezTransactionsPageLimit(limit) { return AppModelPages.setLezTransactionsPageLimit(root, limit) }
+    function setLezTransactionsPageLimit(limit) { return chainPages.setLezTransactionsPageLimit(limit) }
 
-    function sortedIndexerBlocks(blocks) { return AppModelPages.sortedIndexerBlocks(root, blocks) }
+    function sortedIndexerBlocks(blocks) { return chainPages.sortedIndexerBlocks(blocks) }
 
-    function mergedLezBlocks(sequencerBlocks, indexerBlocks, limit) { return AppModelPages.mergedLezBlocks(root, sequencerBlocks, indexerBlocks, limit) }
+    function mergedLezBlocks(sequencerBlocks, indexerBlocks, limit) { return chainPages.mergedLezBlocks(sequencerBlocks, indexerBlocks, limit) }
 
-    function indexerBlockId(block) { return AppModelPages.indexerBlockId(root, block) }
+    function indexerBlockId(block) { return chainPages.indexerBlockId(block) }
 
-    function indexerBlockHash(block) { return AppModelPages.indexerBlockHash(root, block) }
+    function indexerBlockHash(block) { return chainPages.indexerBlockHash(block) }
 
-    function nextIndexerBlocksCursor(blocks) { return AppModelPages.nextIndexerBlocksCursor(root, blocks) }
+    function nextIndexerBlocksCursor(blocks) { return chainPages.nextIndexerBlocksCursor(blocks) }
 
-    function normalizedPositiveInteger(value) { return AppModelPages.normalizedPositiveInteger(root, value) }
+    function normalizedPositiveInteger(value) { return chainPages.normalizedPositiveInteger(value) }
 
-    function lezTransactionRowsFromBlocks(blocks) { return AppModelPages.lezTransactionRowsFromBlocks(root, blocks) }
+    function lezTransactionRowsFromBlocks(blocks) { return chainPages.lezTransactionRowsFromBlocks(blocks) }
 
-    function lezTransactionHash(tx) { return AppModelPages.lezTransactionHash(root, tx) }
+    function lezTransactionHash(tx) { return chainPages.lezTransactionHash(tx) }
 
-    function transactionProgramIdHex(tx) { return AppModelPages.transactionProgramIdHex(root, tx) }
+    function transactionProgramIdHex(tx) { return chainPages.transactionProgramIdHex(tx) }
 
-    function lezTransactionOpCount(tx) { return AppModelPages.lezTransactionOpCount(root, tx) }
+    function lezTransactionOpCount(tx) { return chainPages.lezTransactionOpCount(tx) }
 
-    function transactionRowsFromBlocks(blocks) { return AppModelPages.transactionRowsFromBlocks(root, blocks) }
+    function transactionRowsFromBlocks(blocks) { return chainPages.transactionRowsFromBlocks(blocks) }
 
-    function sortedBlockchainBlocks(blocks) { return AppModelPages.sortedBlockchainBlocks(root, blocks) }
+    function sortedBlockchainBlocks(blocks) { return chainPages.sortedBlockchainBlocks(blocks) }
 
-    function transactionHash(tx) { return AppModelPages.transactionHash(root, tx) }
+    function transactionHash(tx) { return chainPages.transactionHash(tx) }
 
-    function transactionOps(tx) { return AppModelPages.transactionOps(root, tx) }
+    function transactionOps(tx) { return chainPages.transactionOps(tx) }
 
-    function operationSummary(op, tx, index) { return AppModelPages.operationSummary(root, op, tx, index) }
+    function operationSummary(op, tx, index) { return chainPages.operationSummary(op, tx, index) }
 
-    function byteHex(value) { return AppModelPages.byteHex(root, value) }
+    function byteHex(value) { return chainPages.byteHex(value) }
 
-    function operationName(opcode) { return AppModelPages.operationName(root, opcode) }
+    function operationName(opcode) { return chainPages.operationName(opcode) }
 
-    function refreshTransferActivityPage(beforeBlock, preserveHistory) { return AppModelPages.refreshTransferActivityPage(root, beforeBlock, preserveHistory) }
+    function refreshTransferActivityPage(beforeBlock, preserveHistory) { return chainPages.refreshTransferActivityPage(beforeBlock, preserveHistory) }
 
-    function nextTransferActivityPage() { return AppModelPages.nextTransferActivityPage(root) }
+    function nextTransferActivityPage() { return chainPages.nextTransferActivityPage() }
 
-    function previousTransferActivityPage() { return AppModelPages.previousTransferActivityPage(root) }
+    function previousTransferActivityPage() { return chainPages.previousTransferActivityPage() }
 
-    function setTransferActivityPageLimit(limit) { return AppModelPages.setTransferActivityPageLimit(root, limit) }
+    function setTransferActivityPageLimit(limit) { return chainPages.setTransferActivityPageLimit(limit) }
 
-    function nextTransferActivityBlock(recipients) { return AppModelPages.nextTransferActivityBlock(root, recipients) }
+    function nextTransferActivityBlock(recipients) { return chainPages.nextTransferActivityBlock(recipients) }
 
-    function transferRecipientDetail(row) { return AppModelPages.transferRecipientDetail(root, row) }
+    function transferRecipientDetail(row) { return chainPages.transferRecipientDetail(row) }
 
-    function transferRecipientDetailById(value) { return AppModelPages.transferRecipientDetailById(root, value) }
+    function transferRecipientDetailById(value) { return chainPages.transferRecipientDetailById(value) }
 
-    function refreshChannelsPage(anchorSlot) { return AppModelPages.refreshChannelsPage(root, anchorSlot) }
+    function refreshChannelsPage(anchorSlot) { return chainPages.refreshChannelsPage(anchorSlot) }
 
-    function olderChannelsPage() { return AppModelPages.olderChannelsPage(root) }
+    function olderChannelsPage() { return chainPages.olderChannelsPage() }
 
-    function newerChannelsPage() { return AppModelPages.newerChannelsPage(root) }
+    function newerChannelsPage() { return chainPages.newerChannelsPage() }
 
-    function setChannelsPageLimit(limit) { return AppModelPages.setChannelsPageLimit(root, limit) }
+    function setChannelsPageLimit(limit) { return chainPages.setChannelsPageLimit(limit) }
 
-    function channelDetail(row) { return AppModelPages.channelDetail(root, row) }
+    function channelDetail(row) { return chainPages.channelDetail(row) }
 
-    function channelDetailById(value) { return AppModelPages.channelDetailById(root, value) }
+    function channelDetailById(value) { return chainPages.channelDetailById(value) }
 
-    function refreshDashboard() { return AppModelSearch.refreshDashboard(root) }
+    function refreshDashboard() { return entityNavigation.refreshDashboard() }
 
-    function updateDashboardCache(method, value) { return AppModelSearch.updateDashboardCache(root, method, value) }
+    function updateDashboardCache(method, value) { return entityNavigation.updateDashboardCache(method, value) }
 
-    function routeSearch(query) { return AppModelSearch.routeSearch(root, query) }
+    function routeSearch(query) { return entityNavigation.routeSearch(query) }
 
-    function openStorageCid(cid) { return AppModelSearch.openStorageCid(root, cid) }
+    function openStorageCid(cid) { return entityNavigation.openStorageCid(cid) }
 
-    function isStorageCid(value) { return AppModelSearch.isStorageCid(root, value) }
+    function isStorageCid(value) { return entityNavigation.isStorageCid(value) }
 
-    function numericSearchUsesLezBlock() { return AppModelSearch.numericSearchUsesLezBlock(root) }
+    function numericSearchUsesLezBlock() { return entityNavigation.numericSearchUsesLezBlock() }
 
-    function routePrefixedSearch(query) { return AppModelSearch.routePrefixedSearch(root, query) }
+    function routePrefixedSearch(query) { return entityNavigation.routePrefixedSearch(query) }
 
-    function searchPrefix(query) { return AppModelSearch.searchPrefix(root, query) }
+    function searchPrefix(query) { return entityNavigation.searchPrefix(query) }
 
-    function isSearchPrefix(prefix) { return AppModelSearch.isSearchPrefix(root, prefix) }
+    function isSearchPrefix(prefix) { return entityNavigation.isSearchPrefix(prefix) }
 
-    function routeModuleSearchTarget(target) { return AppModelSearch.routeModuleSearchTarget(root, target) }
+    function routeModuleSearchTarget(target) { return entityNavigation.routeModuleSearchTarget(target) }
 
-    function resolveSearchHash(hash) { return AppModelSearch.resolveSearchHash(root, hash) }
+    function resolveSearchHash(hash) { return entityNavigation.resolveSearchHash(hash) }
 
-    function applyResolvedLezTarget(response, errorTitle) { return AppModelSearch.applyResolvedLezTarget(root, response, errorTitle) }
+    function applyResolvedLezTarget(response, errorTitle) { return entityNavigation.applyResolvedLezTarget(response, errorTitle) }
 
-    function resolveSearchTransaction(serial, hash, recordHistory) { return AppModelSearch.resolveSearchTransaction(root, serial, hash, recordHistory) }
+    function resolveSearchTransaction(serial, hash, recordHistory) { return entityNavigation.resolveSearchTransaction(serial, hash, recordHistory) }
 
-    function resolveSearchAccount(serial, account, recordHistory) { return AppModelSearch.resolveSearchAccount(root, serial, account, recordHistory) }
+    function resolveSearchAccount(serial, account, recordHistory) { return entityNavigation.resolveSearchAccount(serial, account, recordHistory) }
 
-    function viewKeyForQuery(query) { return AppModelSearch.viewKeyForQuery(root, query) }
+    function viewKeyForQuery(query) { return entityNavigation.viewKeyForQuery(query) }
 
-    function settingsTargetForQuery(query) { return AppModelSearch.settingsTargetForQuery(root, query) }
+    function settingsTargetForQuery(query) { return entityNavigation.settingsTargetForQuery(query) }
 
-    function openReference(kind, value, payload) { return AppModelOpeners.openReference(root, kind, value, payload) }
+    function openReference(kind, value, payload) { return entityNavigation.openReference(kind, value, payload) }
 
-    function openMantleTransaction(hash) { return AppModelOpeners.openMantleTransaction(root, hash) }
+    function openMantleTransaction(hash) { return entityNavigation.openMantleTransaction(hash) }
 
-    function openAccount(account) { return AppModelOpeners.openAccount(root, account) }
+    function openAccount(account) { return entityNavigation.openAccount(account) }
 
-    function openPrivateAccountReference(account) { return AppModelOpeners.openPrivateAccountReference(root, account) }
+    function openPrivateAccountReference(account) { return entityNavigation.openPrivateAccountReference(account) }
 
-    function openTransaction(hash) { return AppModelOpeners.openTransaction(root, hash) }
+    function openTransaction(hash) { return entityNavigation.openTransaction(hash) }
 
-    function openLezSearchTarget(target) { return AppModelOpeners.openLezSearchTarget(root, target) }
+    function openLezSearchTarget(target) { return entityNavigation.openLezSearchTarget(target) }
 
-    function openLezBlock(blockId) { return AppModelOpeners.openLezBlock(root, blockId) }
+    function openLezBlock(blockId) { return entityNavigation.openLezBlock(blockId) }
 
-    function resolveLezHash(hash) { return AppModelOpeners.resolveLezHash(root, hash) }
+    function resolveLezHash(hash) { return entityNavigation.resolveLezHash(hash) }
 
-    function openLezTransaction(hash, recordHistory) { return AppModelOpeners.openLezTransaction(root, hash, recordHistory) }
+    function openLezTransaction(hash, recordHistory) { return entityNavigation.openLezTransaction(hash, recordHistory) }
 
-    function inspectTransaction(hash, idl, recordHistory) { return AppModelOpeners.inspectTransaction(root, hash, idl, recordHistory) }
+    function inspectTransaction(hash, idl, recordHistory) { return entityNavigation.inspectTransaction(hash, idl, recordHistory) }
 
-    function openBlockchainBlock(blockOrId) { return AppModelOpeners.openBlockchainBlock(root, blockOrId) }
+    function openBlockchainBlock(blockOrId) { return entityNavigation.openBlockchainBlock(blockOrId) }
 
-    function loadBlockchainBlockById(blockId) { return AppModelOpeners.loadBlockchainBlockById(root, blockId) }
+    function loadBlockchainBlockById(blockId) { return entityNavigation.loadBlockchainBlockById(blockId) }
 
-    function loadBlockchainBlockBySlot(slot) { return AppModelOpeners.loadBlockchainBlockBySlot(root, slot) }
+    function loadBlockchainBlockBySlot(slot) { return entityNavigation.loadBlockchainBlockBySlot(slot) }
 
-    function openBlockchainTransaction(transaction, block) { return AppModelOpeners.openBlockchainTransaction(root, transaction, block) }
+    function openBlockchainTransaction(transaction, block) { return entityNavigation.openBlockchainTransaction(transaction, block) }
 
-    function transactionDetail(hash) { return AppModelOpeners.transactionDetail(root, hash) }
+    function transactionDetail(hash) { return entityNavigation.transactionDetail(hash) }
 
-    function blockchainTransactionDetail(value, fallbackHash) { return AppModelOpeners.blockchainTransactionDetail(root, value, fallbackHash) }
+    function blockchainTransactionDetail(value, fallbackHash) { return entityNavigation.blockchainTransactionDetail(value, fallbackHash) }
 
-    function openIndexerBlock(headerHash, payload) { return AppModelOpeners.openIndexerBlock(root, headerHash, payload) }
+    function openIndexerBlock(headerHash, payload) { return entityNavigation.openIndexerBlock(headerHash, payload) }
 
-    function indexerBlockDetail(value, source) { return AppModelOpeners.indexerBlockDetail(root, value, source) }
+    function indexerBlockDetail(value, source) { return entityNavigation.indexerBlockDetail(value, source) }
 
-    function openLocalWallet(wallet, tab) { return AppModelOpeners.openLocalWallet(root, wallet, tab) }
+    function openLocalWallet(wallet, tab) { return entityNavigation.openLocalWallet(wallet, tab) }
 
-    function showLocalWalletRequired(wallet) { return AppModelOpeners.showLocalWalletRequired(root, wallet) }
+    function showLocalWalletRequired(wallet) { return entityNavigation.showLocalWalletRequired(wallet) }
 
-    function openProgram(programId) { return AppModelOpeners.openProgram(root, programId) }
+    function openProgram(programId) { return entityNavigation.openProgram(programId) }
 
-    function programContextDetail(programId) { return AppModelOpeners.programContextDetail(root, programId) }
+    function programContextDetail(programId) { return entityNavigation.programContextDetail(programId) }
 
-    function programContextFromParts(input, normalized, knownRow, accountResponse, lookupError) { return AppModelOpeners.programContextFromParts(root, input, normalized, knownRow, accountResponse, lookupError) }
+    function programContextFromParts(input, normalized, knownRow, accountResponse, lookupError) { return entityNavigation.programContextFromParts(input, normalized, knownRow, accountResponse, lookupError) }
 
-    function knownProgramRow(programId) { return AppModelOpeners.knownProgramRow(root, programId) }
+    function knownProgramRow(programId) { return entityNavigation.knownProgramRow(programId) }
 
-    function programRecentTransactions(programId) { return AppModelOpeners.programRecentTransactions(root, programId) }
+    function programRecentTransactions(programId) { return entityNavigation.programRecentTransactions(programId) }
 
-    function looksLikeHexId(value) { return AppModelOpeners.looksLikeHexId(root, value) }
+    function looksLikeHexId(value) { return entityNavigation.looksLikeHexId(value) }
 
-    function openRecipient(recipient) { return AppModelOpeners.openRecipient(root, recipient) }
+    function openRecipient(recipient) { return entityNavigation.openRecipient(recipient) }
 
-    function openChannel(channel) { return AppModelOpeners.openChannel(root, channel) }
+    function openChannel(channel) { return entityNavigation.openChannel(channel) }
 
     function programIdKnown(programId) { return AppModelRegistry.programIdKnown(root, programId) }
 

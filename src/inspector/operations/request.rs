@@ -5,7 +5,9 @@ use crate::source_routing::{
     Args, SourceArgsNormalization, normalized_source_args, storage_rest_source,
 };
 
-use super::spec::{OperationDomain, OperationMethod, operation_uses_mutating_flag};
+use super::spec::{
+    OperationDomain, OperationExclusiveGroup, OperationMethod, operation_uses_mutating_flag,
+};
 
 #[derive(Debug, Clone)]
 pub(crate) struct NodeOperationRequest {
@@ -33,10 +35,6 @@ impl NodeOperationRequest {
         }
     }
 
-    pub(crate) fn domain(&self) -> &str {
-        &self.domain
-    }
-
     pub(crate) fn method(&self) -> OperationMethod {
         self.method
     }
@@ -51,6 +49,10 @@ impl NodeOperationRequest {
 
     pub(crate) fn cancellable(&self) -> bool {
         self.method.cancellable()
+    }
+
+    pub(crate) fn exclusive_group(&self) -> Option<OperationExclusiveGroup> {
+        self.method.exclusive_group()
     }
 
     #[cfg(test)]
