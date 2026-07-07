@@ -13,7 +13,7 @@ use crate::{
     idl_decode::spel_idl_report,
     indexer_block_by_hash, indexer_blocks, indexer_health, indexer_status,
     indexer_transfer_recipients, inspect_transaction_summary_with_idl,
-    inspector::commands::{OperationRunner, handle_operation_command},
+    inspector::methods::{OperationRunner, handle_operation_command},
     inspector::operations::{NodeOperationRequest, NodeOperations},
     last_sequencer_block_id, local_devnet_list, local_nodes_status,
     local_wallet_instruction_preview, local_wallet_profile_status, logoscore,

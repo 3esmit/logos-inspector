@@ -1,7 +1,8 @@
 use anyhow::{Context as _, Result};
 use serde_json::Value;
 
-use crate::{inspector::dispatch::legacy_operation_route, source_routing::Args};
+use super::catalog::legacy_operation_route;
+use crate::source_routing::Args;
 
 pub(crate) trait OperationRunner {
     fn start_from_value(&self, value: Value) -> Result<Value>;

@@ -24,7 +24,7 @@ use crate::{
     },
     indexer_block_by_hash, indexer_blocks, indexer_health, indexer_status,
     indexer_transfer_recipients,
-    inspector::dispatch::{
+    inspector::methods::{
         OperationDomain, normalized_operation_method, operation_cancellable,
         operation_uses_mutating_flag,
     },

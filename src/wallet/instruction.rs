@@ -12,9 +12,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
-use crate::{
-    LOCAL_WALLET_HOME_ENV, normalize_program_id_hex, parse_account_id, wallet::unix_time_text,
-};
+use super::{LOCAL_WALLET_HOME_ENV, unix_time_text};
+use crate::{normalize_program_id_hex, parse_account_id};
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct LocalWalletInstructionRequest {
