@@ -1,4 +1,5 @@
 use anyhow::{Context as _, Result};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::{
@@ -6,7 +7,175 @@ use super::{
     TransactionTraceReport, inspect_transaction_summary_with_idl,
     trace_transaction_summary_with_idl,
 };
-use crate::{normalize_program_id_hex, state_store::RegisteredIdlEntry};
+use crate::{
+    AccountIdlDecodeReport, decode_account_data_hex_with_idl, normalize_program_id_hex,
+    state_store::RegisteredIdlEntry,
+};
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProgramDecodeCandidate {
+    #[serde(default)]
+    pub key: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(alias = "program_id_hex")]
+    pub program_id_hex: String,
+    pub json: String,
+    #[serde(default, alias = "account_type")]
+    pub account_type: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SelectedDecodeEvidence {
+    pub key: String,
+    pub name: String,
+    pub program_id_hex: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountDecodeSelection {
+    pub evidence: SelectedDecodeEvidence,
+    pub report: AccountIdlDecodeReport,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedAccountDecodeSession {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected: Option<AccountDecodeSelection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub partial: Option<AccountDecodeSelection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransactionDecodeSelection {
+    pub evidence: SelectedDecodeEvidence,
+    pub report: TransactionIdlInspectionReport,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedTransactionDecodeSession {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected: Option<TransactionDecodeSelection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub partial: Option<TransactionDecodeSelection>,
+}
+
+impl ProgramDecodeCandidate {
+    fn from_registered_entry(entry: &RegisteredIdlEntry) -> Self {
+        Self {
+            key: entry.key.clone().unwrap_or_default(),
+            name: entry.name.clone().unwrap_or_default(),
+            program_id_hex: entry.program_id_hex.clone(),
+            json: entry.json.clone(),
+            account_type: None,
+            source: entry.source.clone(),
+        }
+    }
+
+    fn evidence(&self, account_type: Option<String>) -> SelectedDecodeEvidence {
+        SelectedDecodeEvidence {
+            key: self.key.clone(),
+            name: self.name.clone(),
+            program_id_hex: self.program_id_hex.clone(),
+            account_type,
+            source: self.source.clone(),
+        }
+    }
+}
+
+pub fn resolve_account_decode_session(
+    account_id: Option<&str>,
+    data_hex: &str,
+    candidates: &[ProgramDecodeCandidate],
+) -> ResolvedAccountDecodeSession {
+    let mut partial = None;
+    let mut first_error = None;
+    for candidate in candidates {
+        let account_type = candidate
+            .account_type
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        match decode_account_data_hex_with_idl(&candidate.json, account_type, data_hex, account_id)
+        {
+            Ok(report) => {
+                let selection = AccountDecodeSelection {
+                    evidence: candidate.evidence(Some(report.account_type.clone())),
+                    report,
+                };
+                if selection.report.consumed_bytes == selection.report.total_bytes
+                    && selection.report.remaining_bytes == 0
+                {
+                    return ResolvedAccountDecodeSession {
+                        selected: Some(selection),
+                        partial,
+                        first_error,
+                    };
+                }
+                if partial.is_none() {
+                    partial = Some(selection);
+                }
+            }
+            Err(error) => {
+                if first_error.is_none() {
+                    first_error = Some(error.to_string());
+                }
+            }
+        }
+    }
+    ResolvedAccountDecodeSession {
+        selected: None,
+        partial,
+        first_error,
+    }
+}
+
+pub fn resolve_transaction_decode_session(
+    summary: &TransactionSummary,
+    candidates: &[ProgramDecodeCandidate],
+) -> ResolvedTransactionDecodeSession {
+    let mut partial = None;
+    for candidate in candidates {
+        let Ok(report) = inspect_transaction_summary_with_idl(summary, &candidate.json) else {
+            continue;
+        };
+        let is_full = match report.decoded_instruction.as_ref() {
+            Some(decoded) => decoded.decode_error.is_none() && decoded.remaining_words.is_empty(),
+            None => continue,
+        };
+        let selection = TransactionDecodeSelection {
+            evidence: candidate.evidence(None),
+            report,
+        };
+        if is_full {
+            return ResolvedTransactionDecodeSession {
+                selected: Some(selection),
+                partial,
+            };
+        }
+        if partial.is_none() {
+            partial = Some(selection);
+        }
+    }
+    ResolvedTransactionDecodeSession {
+        selected: None,
+        partial,
+    }
+}
 
 pub(crate) struct RegisteredIdlResolver<'a> {
     entries: &'a [RegisteredIdlEntry],
@@ -21,8 +190,15 @@ impl<'a> RegisteredIdlResolver<'a> {
         &self,
         summary: &TransactionSummary,
     ) -> Option<TransactionIdlInspectionReport> {
-        self.selected_transaction_decode(summary)
-            .map(|(_, report)| report)
+        let candidates = self
+            .matching_entries(summary)
+            .map(ProgramDecodeCandidate::from_registered_entry)
+            .collect::<Vec<_>>();
+        let session = resolve_transaction_decode_session(summary, &candidates);
+        session
+            .selected
+            .or(session.partial)
+            .map(|selection| selection.report)
     }
 
     pub(crate) fn transaction_trace(

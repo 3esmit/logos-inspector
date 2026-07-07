@@ -73,27 +73,6 @@ impl OperationDomain {
             Self::Execution => "execution",
         }
     }
-
-    pub(crate) fn from_method(method: &str) -> Self {
-        if let Some(method) = OperationMethod::from_str(method) {
-            return method.domain();
-        }
-        if method.starts_with("storage") {
-            Self::Storage
-        } else if method.starts_with("delivery") {
-            Self::Delivery
-        } else if method.starts_with("localNodes") || method.starts_with("localDevnet") {
-            Self::LocalNodes
-        } else if method.starts_with("localWallet") || method.starts_with("bedrockWallet") {
-            Self::Wallet
-        } else if method.starts_with("indexer") {
-            Self::Indexer
-        } else if method.starts_with("blockchain") {
-            Self::Blockchain
-        } else {
-            Self::Execution
-        }
-    }
 }
 
 impl OperationMethod {
@@ -295,7 +274,7 @@ impl OperationMethod {
         )
     }
 
-    fn cancellable(self) -> bool {
+    pub(crate) fn cancellable(self) -> bool {
         self == Self::StorageDownloadToUrl
     }
 }
@@ -322,10 +301,6 @@ pub(crate) fn operation_uses_mutating_flag(method: &str) -> bool {
     OperationMethod::from_str(method).is_some_and(OperationMethod::uses_mutating_flag)
 }
 
-pub(crate) fn operation_cancellable(method: &str) -> bool {
-    OperationMethod::from_str(method).is_some_and(OperationMethod::cancellable)
-}
-
 pub(crate) fn normalized_operation_method(method: &str) -> String {
     let normalized = method
         .chars()
@@ -346,7 +321,7 @@ pub(crate) fn normalized_operation_method(method: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use anyhow::{Result, bail};
+    use anyhow::{Context as _, Result, bail};
 
     use super::*;
 
@@ -409,10 +384,14 @@ mod tests {
         if operation_uses_mutating_flag("indexerStatus") {
             bail!("indexerStatus should not require mutating flag");
         }
-        if !operation_cancellable("storageDownloadToUrl") {
+        let storage_download = OperationMethod::from_str("storageDownloadToUrl")
+            .context("storageDownloadToUrl should exist")?;
+        if !storage_download.cancellable() {
             bail!("storageDownloadToUrl should be cancellable");
         }
-        if operation_cancellable("storageUploadUrl") {
+        let storage_upload = OperationMethod::from_str("storageUploadUrl")
+            .context("storageUploadUrl should exist")?;
+        if storage_upload.cancellable() {
             bail!("storageUploadUrl should not be cancellable");
         }
         Ok(())

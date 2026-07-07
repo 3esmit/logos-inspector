@@ -1,35 +1,56 @@
 use anyhow::{Context as _, Result};
 use serde_json::{Value, json};
 
-use crate::{
-    inspector::methods::{OperationDomain, OperationMethod, operation_uses_mutating_flag},
-    source_routing::{Args, SourceArgsNormalization, normalized_source_args, storage_rest_source},
+use crate::source_routing::{
+    Args, SourceArgsNormalization, normalized_source_args, storage_rest_source,
 };
+
+use super::spec::{OperationDomain, OperationMethod, operation_uses_mutating_flag};
 
 #[derive(Debug, Clone)]
 pub(crate) struct NodeOperationRequest {
     pub(super) domain: String,
+    pub(super) method: OperationMethod,
     pub(super) source_mode: String,
     pub(super) endpoint: String,
     pub(super) module: String,
-    pub(super) method: String,
     pub(super) args: Value,
     pub(super) mutating_enabled: bool,
     pub(super) label: String,
 }
 
 impl NodeOperationRequest {
-    pub(crate) fn from_call(domain: &str, method: &str, args: Value, label: &str) -> Self {
+    pub(crate) fn from_call(method: OperationMethod, args: Value, label: &str) -> Self {
         Self {
-            domain: domain.to_owned(),
+            domain: method.domain().as_str().to_owned(),
+            method,
             source_mode: String::new(),
             endpoint: String::new(),
             module: String::new(),
-            method: method.to_owned(),
             args,
             mutating_enabled: false,
             label: label.to_owned(),
         }
+    }
+
+    pub(crate) fn domain(&self) -> &str {
+        &self.domain
+    }
+
+    pub(crate) fn method(&self) -> OperationMethod {
+        self.method
+    }
+
+    pub(crate) fn method_name(&self) -> &'static str {
+        self.method.as_str()
+    }
+
+    pub(crate) fn label(&self) -> &str {
+        &self.label
+    }
+
+    pub(crate) fn cancellable(&self) -> bool {
+        self.method.cancellable()
     }
 
     #[cfg(test)]
@@ -45,18 +66,21 @@ pub(crate) fn node_operation_request_from_value(value: Value) -> Result<NodeOper
     let method = object_string(object, "method")
         .filter(|value| !value.is_empty())
         .context("node operation method is required")?;
-    let domain = object_string(object, "domain").unwrap_or_else(|| node_operation_domain(&method));
+    let method = OperationMethod::from_str(&method)
+        .with_context(|| format!("unknown node operation method `{method}`"))?;
+    let domain =
+        object_string(object, "domain").unwrap_or_else(|| method.domain().as_str().to_owned());
     let args = object
         .get("args")
         .cloned()
         .unwrap_or_else(|| Value::Array(Vec::new()));
-    let label = object_string(object, "label").unwrap_or_else(|| default_operation_label(&method));
+    let label = object_string(object, "label").unwrap_or_else(|| method.label().to_owned());
     let mut request = NodeOperationRequest {
         domain,
+        method,
         source_mode: object_string(object, "sourceMode").unwrap_or_default(),
         endpoint: object_string(object, "endpoint").unwrap_or_default(),
         module: object_string(object, "module").unwrap_or_default(),
-        method,
         args,
         mutating_enabled: object
             .get("mutatingEnabled")
@@ -69,7 +93,7 @@ pub(crate) fn node_operation_request_from_value(value: Value) -> Result<NodeOper
         source_mode: &request.source_mode,
         endpoint: &request.endpoint,
         args: &request.args,
-        inserts_mutating_flag: operation_uses_mutating_flag(&request.method),
+        inserts_mutating_flag: operation_uses_mutating_flag(request.method_name()),
         mutating_enabled: request.mutating_enabled,
     });
     Ok(request)
@@ -82,14 +106,6 @@ fn object_string(object: &serde_json::Map<String, Value>, key: &str) -> Option<S
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
-}
-
-fn node_operation_domain(method: &str) -> String {
-    OperationDomain::from_method(method).as_str().to_owned()
-}
-
-fn default_operation_label(method: &str) -> String {
-    OperationMethod::from_str(method).map_or_else(String::new, |method| method.label().to_owned())
 }
 
 pub(super) fn node_operation_backend(request: &NodeOperationRequest) -> String {
@@ -124,12 +140,12 @@ pub(super) fn node_operation_context(request: &NodeOperationRequest) -> Value {
     if request.mutating_enabled {
         context.insert("mutatingEnabled".to_owned(), json!(true));
     }
-    if request.domain == "storage"
+    if request.domain == OperationDomain::Storage.as_str()
         && let Ok(args) = Args::new(request.args.clone())
         && let Ok(source) = storage_rest_source(&args)
     {
         context.insert("endpoint".to_owned(), json!(source.endpoint));
-        match request.method.as_str() {
+        match request.method_name() {
             "storageDownloadToUrl" => {
                 if let Some(cid) = args.optional_string(source.next_index + 1) {
                     context.insert("cid".to_owned(), json!(cid));

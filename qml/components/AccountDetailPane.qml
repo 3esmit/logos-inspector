@@ -1356,27 +1356,28 @@ ColumnLayout {
         if (serial !== root.relatedTransactionDecodeSerial) {
             return
         }
-        if (index >= candidates.length) {
+        const remaining = Array.isArray(candidates) ? candidates.slice(Math.max(0, Number(index || 0))) : []
+        if (remaining.length === 0) {
             if (partialDecoded) {
                 root.storeRelatedTransactionDecode(txHash, partialDecoded)
             }
             return
         }
 
-        const candidate = candidates[index]
-        root.model.decodeTransactionSummaryAsync(summary, candidate.entry.json, function (response) {
+        root.model.resolveTransactionDecodeSessionAsync(summary, root.model.programDecodeCandidatePayload(remaining), function (response) {
             if (serial !== root.relatedTransactionDecodeSerial) {
                 return
             }
-            if (response.ok && response.value && root.model.transactionDecodeFullyConsumed(response.value)) {
-                const decoded = root.model.transactionDecodedInstruction(response.value)
-                if (decoded) {
-                    root.storeRelatedTransactionDecode(txHash, decoded)
-                    return
-                }
+            const session = response && response.ok === true && response.value ? response.value : null
+            const selection = session && session.selected ? session.selected : (session && session.partial ? session.partial : null)
+            const decoded = selection && selection.report ? root.model.transactionDecodedInstruction(selection.report) : null
+            if (decoded) {
+                root.storeRelatedTransactionDecode(txHash, decoded)
+                return
             }
-            const nextPartial = partialDecoded || (response.ok && response.value ? root.model.transactionDecodedInstruction(response.value) : null)
-            root.tryRelatedTransactionDecodeCandidate(serial, txHash, summary, candidates, index + 1, nextPartial)
+            if (partialDecoded) {
+                root.storeRelatedTransactionDecode(txHash, partialDecoded)
+            }
         })
     }
 

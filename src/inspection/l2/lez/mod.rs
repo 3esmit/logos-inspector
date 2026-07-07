@@ -19,7 +19,10 @@ pub use accounts::{
 };
 pub(crate) use block::decode_sequencer_block;
 pub use block::{BlockSummary, summarize_block};
-pub(crate) use idl_resolver::RegisteredIdlResolver;
+pub(crate) use idl_resolver::{
+    ProgramDecodeCandidate, RegisteredIdlResolver, resolve_account_decode_session,
+    resolve_transaction_decode_session,
+};
 pub use indexer::{
     IndexerBlockReport, IndexerStatusReport, indexer_block_by_hash, indexer_blocks, indexer_health,
     indexer_status, indexer_transfer_recipients,

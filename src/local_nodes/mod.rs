@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 
 use crate::state_store::config_dir;
 
+mod action_engine;
 mod commands;
 mod local_indexer;
 mod model;
@@ -37,18 +38,11 @@ const CONFIRMATION_TOKEN: &str = "confirm-local-node-action";
 const DEFAULT_DEPLOYMENT: &str = "local";
 
 pub fn local_nodes_status(profile: &str) -> Result<LocalNodeReport> {
-    let state = LocalNodeStore::system()?.load()?;
-    Ok(report_for_state(profile, &state))
+    action_engine::LocalNodeActionEngine::system()?.status(profile)
 }
 
 pub fn local_devnet_list(profile: &str) -> Result<LocalDevnetListReport> {
-    let state = LocalNodeStore::system()?.load()?;
-    Ok(LocalDevnetListReport {
-        profile: normalized_profile(profile).to_owned(),
-        active_devnet: state.active_devnet.clone(),
-        workspace_root: state.managed_workspace_root.clone(),
-        devnets: state.devnets.clone(),
-    })
+    action_engine::LocalNodeActionEngine::system()?.devnets(profile)
 }
 
 pub fn local_nodes_action(
@@ -56,44 +50,7 @@ pub fn local_nodes_action(
     request: LocalNodeActionRequest,
     confirmation: Option<&str>,
 ) -> Result<LocalNodeReport> {
-    if confirmation != Some(CONFIRMATION_TOKEN) {
-        bail!("local node action requires explicit confirmation");
-    }
-
-    let store = LocalNodeStore::system()?;
-    let mut state = store.load()?;
-    let normalized_profile = normalized_profile(profile);
-    let local_mode = normalized_profile == "local";
-    if !action_allowed(
-        normalized_profile,
-        request.action,
-        request.node,
-        state.active_devnet.is_some(),
-    ) {
-        bail!(
-            "{} is not available for profile `{normalized_profile}`",
-            request.action.label()
-        );
-    }
-
-    if request.action.is_network_action() && !local_mode {
-        bail!("local network actions require the local network profile");
-    }
-
-    let operation = match request.action {
-        NodeAction::NewNetwork => new_network(&mut state, &request),
-        NodeAction::LoadNetwork => load_network(&mut state, &request),
-        NodeAction::DeleteNetwork => delete_network(&mut state, &request),
-        NodeAction::ResetNetwork => reset_network(&mut state, &request),
-        NodeAction::Install => node_install(&mut state, normalized_profile, &request),
-        NodeAction::Uninstall => node_uninstall(&mut state, normalized_profile, &request),
-        NodeAction::Start => node_start(&mut state, normalized_profile, &request),
-        NodeAction::Stop => node_stop(&mut state, normalized_profile, &request),
-        NodeAction::Purge => node_purge(&mut state, normalized_profile, &request),
-    };
-    state.push_operation(operation);
-    store.save(&state)?;
-    Ok(report_for_state(profile, &state))
+    action_engine::LocalNodeActionEngine::system()?.apply(profile, request, confirmation)
 }
 
 #[must_use]

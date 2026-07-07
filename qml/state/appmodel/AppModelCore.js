@@ -792,3 +792,29 @@ function decodeTransactionSummaryAsync(root, summary, idlJson, callback) {
         return requestModuleAsync(inspectorModule, "decodeTransactionSummary", [summary || {}, String(idlJson || "")], qsTr("Transaction decode"), false, callback)
     }
 }
+
+function resolveAccountDecodeSessionAsync(root, dataHex, accountId, candidates, callback) {
+    with (root) {
+        return requestModuleAsync(
+            inspectorModule,
+            "resolveAccountDecodeSession",
+            [String(dataHex || ""), String(accountId || ""), Array.isArray(candidates) ? candidates : []],
+            qsTr("Account decode"),
+            false,
+            callback
+        )
+    }
+}
+
+function resolveTransactionDecodeSessionAsync(root, summary, candidates, callback) {
+    with (root) {
+        return requestModuleAsync(
+            inspectorModule,
+            "resolveTransactionDecodeSession",
+            [summary || {}, Array.isArray(candidates) ? candidates : []],
+            qsTr("Transaction decode"),
+            false,
+            callback
+        )
+    }
+}

@@ -190,8 +190,38 @@ QtObject {
     property alias registeredIdls: idlRegistryState.registeredIdls
     property ListModel socialIdentities: ListModel {}
     property alias idlStateLoaded: idlRegistryState.loaded
-    property WalletState wallet: WalletState {
+    property LocalWalletAppState wallet: LocalWalletAppState {
         id: walletState
+
+        gateway: QtObject {
+            function call(method, args) {
+                return root.bridge.callModule(root.inspectorModule, method, args || [])
+            }
+
+            function request(method, args, label, showResult, callback) {
+                return root.requestModuleAsync(root.inspectorModule, method, args || [], label, showResult === true, callback)
+            }
+
+            function requestBlocking(method, args, label, showResult) {
+                return root.requestModule(root.inspectorModule, method, args || [], label, showResult === true)
+            }
+
+            function setStatus(value) {
+                root.statusText = String(value || "")
+            }
+
+            function networkProfile() {
+                return root.networkProfile
+            }
+
+            function redactedPath(path) {
+                return root.redactedPath(path)
+            }
+
+            function appendNodeOperationHistory(operation, detail) {
+                return root.appendNodeOperationHistory(operation, detail)
+            }
+        }
     }
     property alias walletStateLoaded: walletState.loaded
     property bool settingsStateLoaded: false
@@ -521,6 +551,10 @@ QtObject {
 
     function decodeTransactionSummaryAsync(summary, idlJson, callback) { return AppModelCore.decodeTransactionSummaryAsync(root, summary, idlJson, callback) }
 
+    function resolveAccountDecodeSessionAsync(dataHex, accountId, candidates, callback) { return AppModelCore.resolveAccountDecodeSessionAsync(root, dataHex, accountId, candidates, callback) }
+
+    function resolveTransactionDecodeSessionAsync(summary, candidates, callback) { return AppModelCore.resolveTransactionDecodeSessionAsync(root, summary, candidates, callback) }
+
     function loadIdlState() {
         const response = bridge.callModule(inspectorModule, "loadIdlState", [])
         if (!response.ok || !response.value || typeof response.value !== "object") {
@@ -632,12 +666,12 @@ QtObject {
 
     function loadWalletState() {
         const response = bridge.callModule(inspectorModule, "loadWalletState", [])
-        wallet.load(response && response.ok ? response.value : null)
+        wallet.loadPersisted(response && response.ok ? response.value : null)
     }
 
-    function detectWalletProfile(saveDetected) { return AppModelIdentity.detectWalletProfile(root, saveDetected) }
+    function detectWalletProfile(saveDetected) { return wallet.detectProfile(saveDetected) }
 
-    function saveWalletState() { return AppModelIdentity.saveWalletState(root) }
+    function saveWalletState() { return wallet.savePersisted(networkProfile) }
 
     function walletStatePayload() { return wallet.payload(networkProfile) }
 
@@ -653,13 +687,13 @@ QtObject {
 
     function clearLocalWalletStatus() { return wallet.clearStatus() }
 
-    function walletHomeFallbackLabel() { return AppModelIdentity.walletHomeFallbackLabel(root) }
+    function walletHomeFallbackLabel() { return wallet.homeFallbackLabel() }
 
-    function walletHomeSourceLabel() { return AppModelIdentity.walletHomeSourceLabel(root) }
+    function walletHomeSourceLabel() { return wallet.homeSourceLabel() }
 
-    function walletBinaryDisplayLabel() { return AppModelIdentity.walletBinaryDisplayLabel(root) }
+    function walletBinaryDisplayLabel() { return wallet.binaryDisplayLabel() }
 
-    function walletHomeDisplayLabel() { return AppModelIdentity.walletHomeDisplayLabel(root) }
+    function walletHomeDisplayLabel() { return wallet.homeDisplayLabel() }
 
     function redactedPath(path) { return AppModelIdentity.redactedPath(root, path) }
 
@@ -681,9 +715,9 @@ QtObject {
 
     function deliveryModuleEventSummary() { return deliveryAppState.moduleEventSummary() }
 
-    function checkLocalWalletProfile(showResult) { return AppModelIdentity.checkLocalWalletProfile(root, showResult) }
+    function checkLocalWalletProfile(showResult) { return wallet.checkProfile(showResult) }
 
-    function checkedLocalWalletProfile() { return AppModelIdentity.checkedLocalWalletProfile(root) }
+    function checkedLocalWalletProfile() { return wallet.checkedProfile() }
 
     function createWalletAccount() { return AppModelIdentity.createWalletAccount(root) }
 
@@ -709,7 +743,7 @@ QtObject {
 
     function isBedrockHexId(value) { return AppModelIdentity.isBedrockHexId(root, value) }
 
-    function appendLocalWalletOperation(label, status, detail) { return AppModelIdentity.appendLocalWalletOperation(root, label, status, detail) }
+    function appendLocalWalletOperation(label, status, detail) { return wallet.appendHistory(label, status, detail) }
 
     function previewIdlInstruction(request) { return AppModelIdentity.previewIdlInstruction(root, request) }
 
@@ -810,6 +844,10 @@ QtObject {
     function candidateListHasEntry(candidates, key) { return AppModelIdentity.candidateListHasEntry(root, candidates, key) }
 
     function tryTransactionDecodeCandidate(serial, summary, candidates, index, partialValue) { return AppModelIdentity.tryTransactionDecodeCandidate(root, serial, summary, candidates, index, partialValue) }
+
+    function programDecodeCandidatePayload(candidates) { return AppModelIdentity.programDecodeCandidatePayload(root, candidates) }
+
+    function decodeSelectionEntry(selection, candidates) { return AppModelIdentity.decodeSelectionEntry(root, selection, candidates) }
 
     function refreshInterval(seconds) { return AppModelNetwork.refreshInterval(root, seconds) }
 
