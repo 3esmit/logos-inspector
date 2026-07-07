@@ -1,70 +1,243 @@
 .import "../../services/BridgeHelpers.js" as BridgeHelpers
 
-function applyModuleEvent(root, eventName, args) {
-    const name = String(eventName || "")
-    const payload = eventPayload(args)
-    if (!payload || typeof payload !== "object") {
+function applyDispatchAck(root, operation) {
+    const payload = operationPayload(operation && operation.result)
+    if (!isModuleDispatchAck(operation, payload)) {
         return false
     }
-    const sessionId = String(payload.sessionId || payload.session_id || payload.id || "")
-    const success = payload.success !== false && !String(payload.error || "").length
-    const terminal = name === "storageUploadDone"
-        || name === "storageDownloadDone"
-        || name === "storageDownloadManifestDone"
-        || name === "storageRemoveDone"
-    const progress = name === "storageUploadProgress" || name === "storageDownloadProgress"
-    if (!terminal && !progress) {
+    const next = copyOperation(operation)
+    next.status = "running"
+    next.cancellable = false
+    next.progress = 0
+    next.error = ""
+    next.result = payload
+    next.externalSessionId = textValue(payload.sessionId || payload.session_id || payload.id || next.externalSessionId)
+    const requestId = textValue(payload.requestId || payload.request_id)
+    if (requestId.length) {
+        next.requestId = requestId
+    }
+    const cid = textValue(payload.cid || next.cid)
+    if (cid.length) {
+        next.cid = cid
+    }
+    const path = textValue(payload.path || next.path)
+    if (path.length) {
+        next.path = path
+    }
+    root.updateActiveOperation(next)
+    root.lastOperation = qsTr("Running")
+    return true
+}
+
+function applyModuleEvent(root, eventName, args) {
+    const name = String(eventName || "")
+    const event = normalizeModuleEvent(name, args)
+    if (!event.payload) {
+        return false
+    }
+    if (!event.contract) {
+        const success = event.success
         root.appendOperation(labelForEvent(name), {
             ok: success,
-            value: payload,
-            error: success ? "" : String(payload.error || qsTr("Storage module event failed."))
+            value: event.payload,
+            error: success ? "" : event.error
         })
         root.lastOperation = labelForEvent(name)
         return true
     }
-    const operation = copyOperation(root.activeOperation || {})
-    operation.operationId = String(operation.operationId || (sessionId.length ? "storage-module-" + sessionId : "storage-module-" + name))
+    const active = root.activeOperation || {}
+    if (!correlates(active, event)) {
+        return false
+    }
+
+    const operation = copyOperation(active)
+    operation.operationId = String(operation.operationId || (event.sessionId.length ? "storage-module-" + event.sessionId : "storage-module-" + name))
     operation.domain = "storage"
-    operation.backend = "module"
-    operation.method = operation.method || methodForEvent(name)
+    operation.backend = operation.backend || "module"
+    operation.method = operation.method || event.contract.method
     operation.label = operation.label || labelForEvent(name)
-    operation.externalSessionId = sessionId || operation.externalSessionId || ""
-    operation.status = terminal ? (success ? "completed" : "failed") : "running"
     operation.cancellable = false
-    if (payload.cid !== undefined && payload.cid !== null) {
-        operation.cid = String(payload.cid)
+    if (!String(operation.externalSessionId || "").length && event.sessionId.length) {
+        operation.externalSessionId = event.sessionId
     }
-    if (payload.path !== undefined && payload.path !== null) {
-        operation.path = String(payload.path)
+    if (event.cid.length) {
+        operation.cid = event.cid
     }
-    const bytes = Number(payload.bytes || payload.byteCount || payload.byte_count || 0)
-    const total = Number(payload.totalBytes || payload.total_bytes || payload.contentLength || payload.content_length || 0)
-    const prior = Number(operation.bytesWritten || 0)
-    operation.bytesWritten = progress ? prior + (Number.isFinite(bytes) ? Math.max(0, bytes) : 0) : prior
-    if (terminal && Number.isFinite(bytes) && bytes > operation.bytesWritten) {
-        operation.bytesWritten = bytes
+    if (event.path.length) {
+        operation.path = event.path
     }
-    if (Number.isFinite(total) && total > 0) {
-        operation.contentLength = total
-        operation.progress = Math.max(0, Math.min(1, Number(operation.bytesWritten || 0) / total))
-    } else if (terminal && success) {
-        operation.progress = 1
-    }
-    operation.result = terminal ? payload : (operation.result || null)
-    operation.error = success ? "" : String(payload.error || qsTr("Storage module event failed."))
+    applyEventProgress(operation, event)
+    operation.status = event.terminal ? (event.success ? "completed" : "failed") : "running"
+    operation.result = event.terminal ? event.payload : (operation.result || null)
+    operation.error = event.success ? "" : event.error
     root.updateActiveOperation(operation)
-    root.appendOperation(labelForEvent(name), {
-        ok: success,
-        value: payload,
-        error: operation.error
-    })
-    if (terminal) {
+    if (event.terminal) {
+        root.appendOperation(labelForEvent(name), {
+            ok: event.success,
+            value: event.payload,
+            error: operation.error
+        })
         root.appendTerminalStorageOperation(operation)
-        root.lastOperation = success ? qsTr("Complete") : qsTr("Stopped")
+        root.lastOperation = event.success ? qsTr("Complete") : qsTr("Stopped")
     } else {
         root.lastOperation = qsTr("Running")
     }
     return true
+}
+
+function eventContract(method) {
+    switch (String(method || "")) {
+    case "storageUploadUrl":
+        return {
+            method: "storageUploadUrl",
+            progress: "storageUploadProgress",
+            terminal: "storageUploadDone",
+            match: "session"
+        }
+    case "storageDownloadToUrl":
+        return {
+            method: "storageDownloadToUrl",
+            progress: "storageDownloadProgress",
+            terminal: "storageDownloadDone",
+            match: "sessionOrCid"
+        }
+    case "storageDownloadManifest":
+        return {
+            method: "storageDownloadManifest",
+            progress: "",
+            terminal: "storageDownloadManifestDone",
+            match: "cid"
+        }
+    case "storageRemove":
+        return {
+            method: "storageRemove",
+            progress: "",
+            terminal: "storageRemoveDone",
+            match: "cid"
+        }
+    default:
+        return null
+    }
+}
+
+function correlates(operation, event) {
+    if (!operation || !event || !event.contract) {
+        return false
+    }
+    if (String(operation.domain || "") !== "storage") {
+        return false
+    }
+    if (String(operation.backend || "").indexOf("module") < 0) {
+        return false
+    }
+    const status = String(operation.status || "")
+    if (status !== "running" && status !== "canceling") {
+        return false
+    }
+    if (String(operation.method || "") !== event.contract.method) {
+        return false
+    }
+    return matchesEventIdentity(operation, event)
+}
+
+function isModuleDispatchAck(operation, payload) {
+    if (!operation || !payload || typeof payload !== "object") {
+        return false
+    }
+    if (String(operation.domain || "") !== "storage") {
+        return false
+    }
+    if (String(operation.status || "") !== "completed") {
+        return false
+    }
+    if (String(operation.backend || "").indexOf("module") < 0) {
+        return false
+    }
+    if (!eventContract(operation.method)) {
+        return false
+    }
+    return payload.dispatched === true
+}
+
+function normalizeModuleEvent(eventName, args) {
+    const payload = eventPayload(args)
+    const contract = contractForEvent(eventName)
+    const error = textValue(payload && payload.error ? payload.error : "")
+    const success = payload && payload.success !== false && error.length === 0
+    const bytes = Number(payload && (payload.bytes || payload.byteCount || payload.byte_count || 0))
+    const total = Number(payload && (payload.totalBytes || payload.total_bytes || payload.contentLength || payload.content_length || 0))
+    return {
+        name: String(eventName || ""),
+        payload: payload,
+        contract: contract,
+        progress: contract && contract.progress === eventName,
+        terminal: contract && contract.terminal === eventName,
+        success: success,
+        error: success ? "" : (error.length ? error : qsTr("Storage module event failed.")),
+        sessionId: textValue(payload && (payload.sessionId || payload.session_id || payload.id)),
+        cid: textValue(payload && payload.cid),
+        path: textValue(payload && payload.path),
+        bytes: Number.isFinite(bytes) ? Math.max(0, bytes) : 0,
+        total: Number.isFinite(total) && total > 0 ? total : 0
+    }
+}
+
+function contractForEvent(eventName) {
+    const name = String(eventName || "")
+    const methods = [
+        "storageUploadUrl",
+        "storageDownloadToUrl",
+        "storageDownloadManifest",
+        "storageRemove"
+    ]
+    for (let i = 0; i < methods.length; ++i) {
+        const contract = eventContract(methods[i])
+        if (contract && (contract.progress === name || contract.terminal === name)) {
+            return contract
+        }
+    }
+    return null
+}
+
+function matchesEventIdentity(operation, event) {
+    const operationSession = textValue(operation.externalSessionId || operation.sessionId)
+    const operationCid = textValue(operation.cid || (operation.context && operation.context.cid))
+    switch (String(event.contract.match || "")) {
+    case "session":
+        return operationSession.length ? operationSession === event.sessionId : event.sessionId.length > 0
+    case "sessionOrCid":
+        if (operationSession.length || event.sessionId.length) {
+            return operationSession.length ? operationSession === event.sessionId : event.sessionId.length > 0
+        }
+        return operationCid.length > 0 && operationCid === event.cid
+    case "cid":
+        return operationCid.length > 0 && operationCid === event.cid
+    default:
+        return false
+    }
+}
+
+function applyEventProgress(operation, event) {
+    const prior = Number(operation.bytesWritten || 0)
+    if (event.progress) {
+        operation.bytesWritten = prior + event.bytes
+    }
+    if (event.terminal && event.bytes > Number(operation.bytesWritten || 0)) {
+        operation.bytesWritten = event.bytes
+    }
+    if (event.total > 0) {
+        operation.contentLength = event.total
+        operation.progress = Math.max(0, Math.min(1, Number(operation.bytesWritten || 0) / event.total))
+    } else if (event.terminal && event.success) {
+        operation.progress = 1
+    }
+}
+
+function textValue(value) {
+    if (value === undefined || value === null) {
+        return ""
+    }
+    return String(value)
 }
 
 function spaceSummary(root) {

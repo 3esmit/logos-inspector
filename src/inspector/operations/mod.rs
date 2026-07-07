@@ -12,7 +12,9 @@ use anyhow::{Context as _, Result, bail};
 use serde_json::{Value, json};
 use tokio::runtime::Runtime;
 
-use crate::inspector::methods::{normalized_operation_method, operation_cancellable};
+use crate::inspector::methods::{
+    OperationRunner, handle_operation_command, normalized_operation_method, operation_cancellable,
+};
 
 mod chain;
 mod delivery;
@@ -297,5 +299,83 @@ impl NodeOperations {
             .lock()
             .map_err(|_| anyhow::anyhow!("node operation registry is unavailable"))?
             .len())
+    }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct RuntimeOperationInterface {
+    operations: NodeOperations,
+}
+
+struct RuntimeOperationRunner<'a> {
+    runtime: &'a Runtime,
+    operations: &'a NodeOperations,
+}
+
+impl OperationRunner for RuntimeOperationRunner<'_> {
+    fn start_from_value(&self, value: Value) -> Result<Value> {
+        self.operations.start_from_value(self.runtime, value)
+    }
+
+    fn status(&self, operation_id: &str) -> Result<Value> {
+        self.operations.status(operation_id)
+    }
+
+    fn events(&self, operation_id: &str, after_seq: u64) -> Result<Value> {
+        self.operations.events(operation_id, after_seq)
+    }
+
+    fn cancel(&self, operation_id: &str) -> Result<Value> {
+        self.operations.cancel(operation_id)
+    }
+
+    fn run_operation(&self, domain: &str, method: &str, args: Value, label: &str) -> Result<Value> {
+        self.operations
+            .run_blocking(self.runtime, domain, method, args, label)
+    }
+
+    fn start_operation(
+        &self,
+        domain: &str,
+        method: &str,
+        args: Value,
+        label: &str,
+    ) -> Result<Value> {
+        self.operations.start(
+            self.runtime,
+            NodeOperationRequest::from_call(domain, method, args, label),
+        )
+    }
+}
+
+impl RuntimeOperationInterface {
+    pub(crate) fn try_bridge_call(
+        &self,
+        runtime: &Runtime,
+        method: &str,
+        args: &Value,
+    ) -> Result<Option<Value>> {
+        let runner = RuntimeOperationRunner {
+            runtime,
+            operations: &self.operations,
+        };
+        handle_operation_command(&runner, method, args)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn insert_test_running_operation(
+        &self,
+        operation_id: &str,
+        domain: &str,
+        method: &str,
+        cancellable: bool,
+    ) -> Arc<AtomicBool> {
+        self.operations
+            .insert_test_running_operation(operation_id, domain, method, cancellable)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> Result<usize> {
+        self.operations.len()
     }
 }

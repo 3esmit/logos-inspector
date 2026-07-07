@@ -1,5 +1,5 @@
 import QtQuick
-import "BridgeHelpers.js" as BridgeHelpers
+import "BridgeEnvelope.js" as BridgeEnvelope
 
 QtObject {
     id: root
@@ -12,21 +12,15 @@ QtObject {
     signal moduleEventReceived(string moduleName, string eventName, var args)
 
     function prefersBasecampModules() {
-        return root.host && root.host["callModule"] && !root.host["callModuleJson"]
+        return BridgeEnvelope.prefersBasecampModules(root.host)
     }
 
     function callModule(moduleName, method, args) {
-        if (!root.host) {
-            return BridgeHelpers.missingBridge()
-        }
-        if (root.host["callModuleJson"]) {
-            return BridgeHelpers.callModuleJson(root.host, moduleName, method, args || [])
-        }
-        return BridgeHelpers.callModule(root.host, moduleName, method, args || [])
+        return BridgeEnvelope.callModule(root.host, moduleName, method, args || [])
     }
 
     function hasAsyncCalls() {
-        return root.host && root.host["callModuleJsonAsync"]
+        return BridgeEnvelope.hasAsyncCalls(root.host)
     }
 
     function callModuleAsync(moduleName, method, args, callback) {
@@ -36,18 +30,10 @@ QtObject {
         pending[requestId] = callback
         root.pendingCalls = pending
 
-        if (root.host && root.host["callModuleJsonAsync"]) {
-            try {
-                root.host["callModuleJsonAsync"](requestId, moduleName, method, JSON.stringify(args || []))
-                return requestId
-            } catch (error) {
-                root.finishAsyncCall(requestId, {
-                    ok: false,
-                    text: "",
-                    error: "Logos bridge call failed: " + BridgeHelpers.errorMessage(error)
-                })
-                return requestId
-            }
+        if (BridgeEnvelope.dispatchAsync(root.host, requestId, moduleName, method, args || [], function (response) {
+                root.finishAsyncCall(requestId, response)
+            })) {
+            return requestId
         }
 
         Qt.callLater(function () {
@@ -145,7 +131,7 @@ QtObject {
         ignoreUnknownSignals: true
 
         function onModuleCallFinished(requestId, responseJson) {
-            root.finishAsyncCall(requestId, BridgeHelpers.parseModuleResponseJson(responseJson))
+            root.finishAsyncCall(requestId, BridgeEnvelope.parseResponseJson(responseJson))
         }
 
         function onModuleEvent(moduleName, eventName, args) {

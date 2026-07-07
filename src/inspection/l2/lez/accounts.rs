@@ -1,21 +1,18 @@
-use std::collections::BTreeSet;
-
 use anyhow::{Context as _, Result};
-use lee::{AccountId, PublicKey};
 use sequencer_service_rpc::RpcClient as _;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Value, json};
 
 use super::{
-    TransactionSummary,
-    indexer::summarize_indexer_transaction,
     programs::{program_id_base58, program_id_hex},
     sequencer::sequencer_client,
+    transaction_facts::{
+        AccountTransactionSummary, summarize_indexer_transaction, with_account_direction,
+    },
 };
 use crate::{
     ACCOUNT_TRANSACTION_LIMIT, AccountIdlDecodeReport, decode_account_data_hex_with_idl,
-    enum_payload, json_rpc_result, normalize_account_id_text, parse_account_id, raw_json_rpc,
-    value_list_strings, value_to_string,
+    json_rpc_result, parse_account_id, raw_json_rpc,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -33,40 +30,6 @@ pub struct AccountReport {
     pub related_transactions: Option<Vec<AccountTransactionSummary>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub related_transactions_error: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct AccountTransactionSummary {
-    pub index: usize,
-    pub hash: String,
-    pub kind: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub direction: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub program_id_hex: Option<String>,
-    pub account_ids: Vec<String>,
-    pub nonces: Vec<String>,
-    pub instruction_data: Vec<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub bytecode_len: Option<usize>,
-    pub raw: Value,
-}
-
-impl From<&AccountTransactionSummary> for TransactionSummary {
-    fn from(summary: &AccountTransactionSummary) -> Self {
-        Self {
-            hash: summary.hash.clone(),
-            kind: summary.kind.clone(),
-            program_id_hex: summary.program_id_hex.clone(),
-            account_ids: summary.account_ids.clone(),
-            nonces: summary.nonces.clone(),
-            instruction_data: summary.instruction_data.clone(),
-            bytecode_len: summary.bytecode_len,
-            raw_signature_valid: None,
-            message_prehash: None,
-            prehash_signature_valid: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -218,72 +181,7 @@ pub(crate) fn summarize_account_transaction(
     index: usize,
     account_id: &str,
 ) -> AccountTransactionSummary {
-    let mut summary = summarize_indexer_transaction(value, index);
-    summary.direction = account_transaction_direction(value, account_id);
-    summary
-}
-
-fn account_transaction_direction(value: &Value, account_id: &str) -> Option<String> {
-    let normalized_account_id = normalize_account_id_text(account_id)?;
-    let (_, payload) = enum_payload(value);
-    let empty = Value::Null;
-    let message = payload.get("message").unwrap_or(&empty);
-    let account_ids = transaction_account_ids(payload, message);
-    let signer_ids = transaction_signer_account_ids(payload);
-    if signer_ids.contains(&normalized_account_id) {
-        return Some("outgoing".to_owned());
-    }
-    if account_ids.contains(&normalized_account_id) {
-        return Some("incoming".to_owned());
-    }
-    None
-}
-
-fn transaction_account_ids(payload: &Value, message: &Value) -> BTreeSet<String> {
-    value_list_strings(message.get("account_ids"))
-        .into_iter()
-        .chain(value_list_strings(message.get("public_account_ids")))
-        .chain(compact_transaction_account_ids(payload))
-        .filter_map(|account_id| normalize_account_id_text(&account_id))
-        .collect()
-}
-
-fn compact_transaction_account_ids(value: &Value) -> Vec<String> {
-    value
-        .get("accounts")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|account| account.get("account_id"))
-        .map(value_to_string)
-        .collect()
-}
-
-fn transaction_signer_account_ids(payload: &Value) -> BTreeSet<String> {
-    let Some(signatures) = payload
-        .get("witness_set")
-        .and_then(|witness_set| witness_set.get("signatures_and_public_keys"))
-        .and_then(Value::as_array)
-    else {
-        return BTreeSet::new();
-    };
-    signatures
-        .iter()
-        .filter_map(transaction_signature_public_key)
-        .filter_map(|public_key| public_key.parse::<PublicKey>().ok())
-        .map(|public_key| AccountId::from(&public_key).to_string())
-        .collect()
-}
-
-fn transaction_signature_public_key(signature: &Value) -> Option<String> {
-    match signature {
-        Value::Array(items) => items.get(1).map(value_to_string),
-        Value::Object(object) => object
-            .get("public_key")
-            .or_else(|| object.get("publicKey"))
-            .map(value_to_string),
-        _ => None,
-    }
+    with_account_direction(summarize_indexer_transaction(value, index), account_id)
 }
 
 #[cfg(test)]

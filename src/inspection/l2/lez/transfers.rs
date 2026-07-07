@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Serialize;
 use serde_json::Value;
 
-use super::indexer::IndexerBlockReport;
+use super::{indexer::IndexerBlockReport, transaction_facts::AccountTransactionSummary};
 use crate::value_to_string;
 
 #[derive(Debug, Clone, Serialize)]
@@ -56,7 +56,7 @@ pub(crate) fn transfer_recipient_summaries_from_blocks(
     let mut output_refs = BTreeMap::new();
     for block in blocks {
         for tx in &block.transactions {
-            for output in decoded_transfer_outputs(&tx.raw) {
+            for output in transaction_transfer_outputs(tx) {
                 let aggregate = output_refs
                     .entry(output.recipient)
                     .or_insert_with(RecipientAggregate::default);
@@ -139,6 +139,23 @@ fn decoded_transfer_outputs(value: &Value) -> Vec<DecodedTransferOutput> {
     let mut outputs = Vec::new();
     collect_decoded_transfer_outputs(value, &mut outputs);
     outputs
+}
+
+fn transaction_transfer_outputs(tx: &AccountTransactionSummary) -> Vec<DecodedTransferOutput> {
+    if !tx.transfer_outputs.is_empty() {
+        return tx
+            .transfer_outputs
+            .iter()
+            .map(|output| DecodedTransferOutput {
+                recipient: output.recipient.clone(),
+                amount: output
+                    .amount
+                    .as_deref()
+                    .and_then(|amount| amount.parse::<u128>().ok()),
+            })
+            .collect();
+    }
+    decoded_transfer_outputs(&tx.raw)
 }
 
 fn collect_decoded_transfer_outputs(value: &Value, outputs: &mut Vec<DecodedTransferOutput>) {

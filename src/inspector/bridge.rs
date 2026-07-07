@@ -3,13 +3,11 @@ use serde_json::{Value, json};
 use tokio::runtime::Runtime;
 
 use crate::{
-    AccountTransactionSummary, TransactionIdlInspectionReport, TransactionSummary,
-    bedrock_wallet_balance, channel_scan, channel_state, decode_account_data_hex_with_idl,
-    decode_event_data_hex_with_idl,
+    TransactionSummary, bedrock_wallet_balance, channel_scan, channel_state,
+    decode_account_data_hex_with_idl, decode_event_data_hex_with_idl,
     idl_decode::spel_idl_report,
     inspect_transaction_summary_with_idl,
-    inspector::methods::{OperationRunner, handle_operation_command},
-    inspector::operations::{NodeOperationRequest, NodeOperations},
+    inspector::operations::RuntimeOperationInterface,
     local_devnet_list, local_nodes_status, local_wallet_instruction_preview,
     local_wallet_profile_status, logoscore,
     modules::{
@@ -28,8 +26,8 @@ use crate::{
         storage_rest_source, storage_rest_upload_bytes,
     },
     state_store::{
-        RegisteredIdlEntry, load_idl_state, load_settings_state, load_wallet_state,
-        registered_idl_entries, save_idl_state, save_settings_state, save_wallet_state,
+        load_idl_state, load_settings_state, load_wallet_state, save_idl_state,
+        save_settings_state, save_wallet_state,
     },
     wallet::detected_wallet_profile,
 };
@@ -58,55 +56,14 @@ struct BridgeResponse {
 
 pub struct InspectorBridge {
     runtime: Runtime,
-    node_operations: NodeOperations,
-}
-
-struct BridgeOperationRunner<'a> {
-    runtime: &'a Runtime,
-    node_operations: &'a NodeOperations,
-}
-
-impl OperationRunner for BridgeOperationRunner<'_> {
-    fn start_from_value(&self, value: Value) -> Result<Value> {
-        self.node_operations.start_from_value(self.runtime, value)
-    }
-
-    fn status(&self, operation_id: &str) -> Result<Value> {
-        self.node_operations.status(operation_id)
-    }
-
-    fn events(&self, operation_id: &str, after_seq: u64) -> Result<Value> {
-        self.node_operations.events(operation_id, after_seq)
-    }
-
-    fn cancel(&self, operation_id: &str) -> Result<Value> {
-        self.node_operations.cancel(operation_id)
-    }
-
-    fn run_operation(&self, domain: &str, method: &str, args: Value, label: &str) -> Result<Value> {
-        self.node_operations
-            .run_blocking(self.runtime, domain, method, args, label)
-    }
-
-    fn start_operation(
-        &self,
-        domain: &str,
-        method: &str,
-        args: Value,
-        label: &str,
-    ) -> Result<Value> {
-        self.node_operations.start(
-            self.runtime,
-            NodeOperationRequest::from_call(domain, method, args, label),
-        )
-    }
+    runtime_operations: RuntimeOperationInterface,
 }
 
 impl InspectorBridge {
     pub fn new() -> Result<Self> {
         Ok(Self {
             runtime: Runtime::new().context("failed to create tokio runtime")?,
-            node_operations: NodeOperations::default(),
+            runtime_operations: RuntimeOperationInterface::default(),
         })
     }
 
@@ -119,11 +76,10 @@ impl InspectorBridge {
     }
 
     fn call_inspector(&self, method: &str, args: Value) -> Result<Value> {
-        let operation_runner = BridgeOperationRunner {
-            runtime: &self.runtime,
-            node_operations: &self.node_operations,
-        };
-        if let Some(value) = handle_operation_command(&operation_runner, method, &args)? {
+        if let Some(value) =
+            self.runtime_operations
+                .try_bridge_call(&self.runtime, method, &args)?
+        {
             return Ok(value);
         }
 
@@ -511,87 +467,6 @@ pub(crate) async fn blocking_value(
     tokio::task::spawn_blocking(task)
         .await
         .with_context(|| format!("{label} task failed"))?
-}
-
-pub(crate) fn decode_transaction_summary_with_idls(
-    summary: &TransactionSummary,
-    idl_entries: &[RegisteredIdlEntry],
-) -> Option<TransactionIdlInspectionReport> {
-    let summary_program_id = summary
-        .program_id_hex
-        .as_deref()
-        .and_then(|value| normalize_program_id_hex(value).ok())
-        .filter(|value| !value.is_empty())?;
-    let mut partial = None;
-    for entry in idl_entries
-        .iter()
-        .filter(|entry| entry.program_id_hex == summary_program_id)
-    {
-        let Ok(report) = inspect_transaction_summary_with_idl(summary, &entry.json) else {
-            continue;
-        };
-        if let Some(decoded) = &report.decoded_instruction {
-            if decoded.decode_error.is_none() && decoded.remaining_words.is_empty() {
-                return Some(report);
-            }
-            if partial.is_none() {
-                partial = Some(report);
-            }
-        }
-    }
-    partial
-}
-
-pub(crate) fn enrich_account_related_transaction_decodes(value: &mut Value) -> Result<()> {
-    let idl_entries = registered_idl_entries()?;
-    if idl_entries.is_empty() {
-        return Ok(());
-    }
-    if let Some(account) = value.get_mut("account") {
-        enrich_account_report_related_transaction_decodes(account, &idl_entries)?;
-    } else {
-        enrich_account_report_related_transaction_decodes(value, &idl_entries)?;
-    }
-    Ok(())
-}
-
-fn enrich_account_report_related_transaction_decodes(
-    account: &mut Value,
-    idl_entries: &[RegisteredIdlEntry],
-) -> Result<()> {
-    let Some(transactions) = account
-        .get_mut("related_transactions")
-        .and_then(Value::as_array_mut)
-    else {
-        return Ok(());
-    };
-
-    for transaction in transactions {
-        if transaction.get("decoded_instruction").is_some() {
-            continue;
-        }
-        let Ok(summary) = serde_json::from_value::<AccountTransactionSummary>(transaction.clone())
-        else {
-            continue;
-        };
-        let summary = TransactionSummary::from(&summary);
-        if summary.kind != "Public" || summary.instruction_data.is_empty() {
-            continue;
-        }
-        let Some(report) = decode_transaction_summary_with_idls(&summary, idl_entries) else {
-            continue;
-        };
-        let Some(decoded) = report.decoded_instruction else {
-            continue;
-        };
-        if let Some(object) = transaction.as_object_mut() {
-            object.insert(
-                "decoded_instruction".to_owned(),
-                serde_json::to_value(decoded).context("failed to serialize transaction decode")?,
-            );
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1076,7 +951,7 @@ mod tests {
     #[test]
     fn node_operation_cancel_marks_cancelable_operation() -> Result<()> {
         let bridge = InspectorBridge::new()?;
-        let cancel_requested = bridge.node_operations.insert_test_running_operation(
+        let cancel_requested = bridge.runtime_operations.insert_test_running_operation(
             "existing",
             "storage",
             "storageDownloadToUrl",
@@ -1194,7 +1069,7 @@ mod tests {
     #[test]
     fn node_operation_start_rejects_second_storage_download() -> Result<()> {
         let bridge = InspectorBridge::new()?;
-        bridge.node_operations.insert_test_running_operation(
+        bridge.runtime_operations.insert_test_running_operation(
             "storage-download-existing",
             "storage",
             "storageDownloadToUrl",
@@ -1264,7 +1139,7 @@ mod tests {
         {
             bail!("unexpected error: {error:#}");
         }
-        let operations_len = bridge.node_operations.len()?;
+        let operations_len = bridge.runtime_operations.len()?;
         if operations_len != 0 {
             bail!("expected operation registry cleanup, found {operations_len}",);
         }

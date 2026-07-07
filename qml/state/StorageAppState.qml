@@ -194,6 +194,9 @@ QtObject {
                 appendTerminalStorageOperation(failedOperation)
                 return
             }
+            if (StorageTransfer.applyDispatchAck(root, response.value)) {
+                return
+            }
             updateActiveOperation(response.value)
             if (activeStorageOperationTerminal(response.value)) {
                 appendTerminalStorageOperation(response.value)

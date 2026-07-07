@@ -333,22 +333,78 @@ TestCase {
         compare(state.manifestRows()[0].cid, "z-module")
     }
 
-    function test_storage_module_events_update_active_operation() {
-        state.applyStorageModuleEvent("storageUploadProgress", [
-            JSON.stringify({ sessionId: "1", bytes: 8 })
-        ])
+    function test_storage_module_dispatch_ack_stays_running() {
+        state.updateActiveOperation({
+            operationId: "op-1",
+            domain: "storage",
+            backend: "module",
+            method: "storageUploadUrl",
+            status: "running",
+            label: "Upload"
+        })
+        gateway.requestResponses = ({
+            nodeOperationStatus: {
+                ok: true,
+                value: {
+                    operationId: "op-1",
+                    domain: "storage",
+                    backend: "module",
+                    method: "storageUploadUrl",
+                    status: "completed",
+                    label: "Upload",
+                    result: { dispatched: true, sessionId: "1" },
+                    error: ""
+                },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        state.pollStorageOperation(false)
 
         compare(state.activeOperation.status, "running")
         compare(state.activeOperation.externalSessionId, "1")
+        compare(state.activeOperation.cancellable, false)
+        compare(gateway.history.length, 0)
+    }
+
+    function test_storage_module_events_correlate_before_mutating_operation() {
+        state.updateActiveOperation({
+            operationId: "op-1",
+            domain: "storage",
+            backend: "module",
+            method: "storageUploadUrl",
+            status: "running",
+            label: "Upload",
+            externalSessionId: "1",
+            bytesWritten: 0,
+            contentLength: 16
+        })
+
+        verify(!state.applyStorageModuleEvent("storageUploadProgress", [
+            JSON.stringify({ sessionId: "2", bytes: 8 })
+        ]))
+        compare(state.activeOperation.bytesWritten, 0)
+
+        verify(state.applyStorageModuleEvent("storageUploadProgress", [
+            JSON.stringify({ sessionId: "1", bytes: 8, totalBytes: 16 })
+        ]))
+
+        compare(state.activeOperation.status, "running")
         compare(state.activeOperation.bytesWritten, 8)
 
-        state.applyStorageModuleEvent("storageUploadDone", [
+        verify(state.applyStorageModuleEvent("storageUploadDone", [
             JSON.stringify({ sessionId: "1", success: true, cid: "z-done", bytes: 8 })
-        ])
+        ]))
 
         compare(state.activeOperation.status, "completed")
         compare(state.activeOperation.cid, "z-done")
         compare(state.lastOperation, "Complete")
+        compare(gateway.history.length, 1)
+
+        verify(!state.applyStorageModuleEvent("storageUploadDone", [
+            JSON.stringify({ sessionId: "1", success: true, cid: "z-done", bytes: 8 })
+        ]))
         compare(gateway.history.length, 1)
     }
 
