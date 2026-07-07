@@ -37,12 +37,12 @@ const CONFIRMATION_TOKEN: &str = "confirm-local-node-action";
 const DEFAULT_DEPLOYMENT: &str = "local";
 
 pub fn local_nodes_status(profile: &str) -> Result<LocalNodeReport> {
-    let state = load_state()?;
+    let state = LocalNodeStore::system()?.load()?;
     Ok(report_for_state(profile, &state))
 }
 
 pub fn local_devnet_list(profile: &str) -> Result<LocalDevnetListReport> {
-    let state = load_state()?;
+    let state = LocalNodeStore::system()?.load()?;
     Ok(LocalDevnetListReport {
         profile: normalized_profile(profile).to_owned(),
         active_devnet: state.active_devnet.clone(),
@@ -60,13 +60,15 @@ pub fn local_nodes_action(
         bail!("local node action requires explicit confirmation");
     }
 
+    let store = LocalNodeStore::system()?;
+    let mut state = store.load()?;
     let normalized_profile = normalized_profile(profile);
     let local_mode = normalized_profile == "local";
     if !action_allowed(
         normalized_profile,
         request.action,
         request.node,
-        state_has_active()?,
+        state.active_devnet.is_some(),
     ) {
         bail!(
             "{} is not available for profile `{normalized_profile}`",
@@ -78,7 +80,6 @@ pub fn local_nodes_action(
         bail!("local network actions require the local network profile");
     }
 
-    let mut state = load_state()?;
     let operation = match request.action {
         NodeAction::NewNetwork => new_network(&mut state, &request),
         NodeAction::LoadNetwork => load_network(&mut state, &request),
@@ -91,7 +92,7 @@ pub fn local_nodes_action(
         NodeAction::Purge => node_purge(&mut state, normalized_profile, &request),
     };
     state.push_operation(operation);
-    save_state(&state)?;
+    store.save(&state)?;
     Ok(report_for_state(profile, &state))
 }
 
@@ -154,10 +155,6 @@ pub fn available_actions_for(
         actions.push(NodeAction::Purge);
     }
     actions
-}
-
-fn state_has_active() -> Result<bool> {
-    Ok(load_state()?.active_devnet.is_some())
 }
 
 fn report_for_state(profile: &str, state: &LocalNodesState) -> LocalNodeReport {
@@ -916,40 +913,59 @@ fn tool_status(command: &str) -> ToolStatus {
     }
 }
 
-fn load_state() -> Result<LocalNodesState> {
-    let config = config_dir()?;
-    let path = state_path_for_config(&config);
-    if !path.is_file() {
-        return Ok(LocalNodesState::default_for_config_dir(&config));
-    }
-    let text = fs::read_to_string(&path)
-        .with_context(|| format!("failed to read local node state from {}", path.display()))?;
-    let mut state: LocalNodesState = serde_json::from_str(&text)
-        .with_context(|| format!("failed to parse local node state from {}", path.display()))?;
-    if state.managed_workspace_root.trim().is_empty() {
-        state.managed_workspace_root = config.join("local-nodes").display().to_string();
-    }
-    if state.version == 0 {
-        state.version = 1;
-    }
-    Ok(state)
+#[derive(Debug, Clone)]
+struct LocalNodeStore {
+    config_dir: PathBuf,
 }
 
-fn save_state(state: &LocalNodesState) -> Result<()> {
-    let path = state_path()?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create config directory {}", parent.display()))?;
+impl LocalNodeStore {
+    fn system() -> Result<Self> {
+        Ok(Self {
+            config_dir: config_dir()?,
+        })
     }
-    let text =
-        serde_json::to_string_pretty(state).context("failed to serialize local node state")?;
-    fs::write(&path, text)
-        .with_context(|| format!("failed to write local node state to {}", path.display()))?;
-    Ok(())
-}
 
-fn state_path() -> Result<PathBuf> {
-    Ok(state_path_for_config(&config_dir()?))
+    #[cfg(test)]
+    fn for_config_dir(config_dir: PathBuf) -> Self {
+        Self { config_dir }
+    }
+
+    fn load(&self) -> Result<LocalNodesState> {
+        let path = self.state_path();
+        if !path.is_file() {
+            return Ok(LocalNodesState::default_for_config_dir(&self.config_dir));
+        }
+        let text = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read local node state from {}", path.display()))?;
+        let mut state: LocalNodesState = serde_json::from_str(&text)
+            .with_context(|| format!("failed to parse local node state from {}", path.display()))?;
+        if state.managed_workspace_root.trim().is_empty() {
+            state.managed_workspace_root =
+                self.config_dir.join("local-nodes").display().to_string();
+        }
+        if state.version == 0 {
+            state.version = 1;
+        }
+        Ok(state)
+    }
+
+    fn save(&self, state: &LocalNodesState) -> Result<()> {
+        let path = self.state_path();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!("failed to create config directory {}", parent.display())
+            })?;
+        }
+        let text =
+            serde_json::to_string_pretty(state).context("failed to serialize local node state")?;
+        fs::write(&path, text)
+            .with_context(|| format!("failed to write local node state to {}", path.display()))?;
+        Ok(())
+    }
+
+    fn state_path(&self) -> PathBuf {
+        state_path_for_config(&self.config_dir)
+    }
 }
 
 fn state_path_for_config(config: &Path) -> PathBuf {
@@ -977,7 +993,7 @@ fn sanitize_network_id(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env;
+    use std::{env, fs};
 
     #[test]
     fn local_profile_includes_sequencer_and_network_actions() {
@@ -1073,6 +1089,34 @@ mod tests {
         if !parsed.managed_workspace_root.ends_with("local-nodes") {
             bail!("managed workspace root was not migrated");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn local_node_store_loads_default_and_round_trips_state() -> Result<()> {
+        let config = env::temp_dir().join(format!(
+            "logos-inspector-local-nodes-store-{}",
+            now_millis()
+        ));
+        if config.exists() {
+            fs::remove_dir_all(&config)
+                .with_context(|| format!("failed to clear {}", config.display()))?;
+        }
+        let store = LocalNodeStore::for_config_dir(config.clone());
+
+        let mut state = store.load()?;
+        if state.managed_workspace_root != config.join("local-nodes").display().to_string() {
+            bail!("unexpected managed workspace root");
+        }
+        state.active_devnet = Some("devnet-a".to_owned());
+        store.save(&state)?;
+
+        let loaded = store.load()?;
+        if loaded.active_devnet.as_deref() != Some("devnet-a") {
+            bail!("local node state did not round trip");
+        }
+        fs::remove_dir_all(&config)
+            .with_context(|| format!("failed to remove {}", config.display()))?;
         Ok(())
     }
 

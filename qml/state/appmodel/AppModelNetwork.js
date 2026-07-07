@@ -290,19 +290,19 @@ function networkConnectionRequest(root, kind, includeSensitiveProbe) {
 
 function blockchainArgs(root, extra) {
     with (root) {
-        return coreSourceArgs(root, blockchainSourceMode, blockchainModule, nodeUrl, extra)
+        return coreSourceArgs(root, blockchainSourceMode, nodeUrl, extra)
     }
 }
 
 function indexerArgs(root, extra) {
     with (root) {
-        return coreSourceArgs(root, indexerSourceMode, indexerModule, indexerUrl, extra)
+        return coreSourceArgs(root, indexerSourceMode, indexerUrl, extra)
     }
 }
 
 function executionArgs(root, extra) {
     with (root) {
-        return coreSourceArgs(root, executionSourceMode, root.indexerModule, sequencerUrl, extra)
+        return coreSourceArgs(root, executionSourceMode, sequencerUrl, extra)
     }
 }
 
@@ -318,32 +318,22 @@ function executionRpcArgs(root, extra) {
     }
 }
 
-function coreSourceArgs(root, sourceMode, moduleName, endpoint, extra) {
-    with (root) {
-        const rest = Array.isArray(extra) ? extra : []
-        if (root.effectiveCoreSourceMode(sourceMode) === "module") {
-            return ["module", String(endpoint || "")].concat(rest)
-        }
-        return [String(endpoint || "")].concat(rest)
-    }
+function coreSourceArgs(root, sourceMode, endpoint, extra) {
+    return SourcePolicyProjection.coreSourceArgs(root, sourceMode, endpoint, extra)
 }
 
 function accountLookupArgs(root, account, idlJson, accountType) {
     with (root) {
-        const suffix = [String(account || "")]
-        const idl = String(idlJson || "").trim()
-        if (idl.length > 0) {
-            suffix.push(idl)
-            if (accountType !== undefined && accountType !== null && String(accountType).trim().length > 0) {
-                suffix.push(String(accountType).trim())
-            }
-        }
-        const executionMode = root.effectiveCoreSourceMode(executionSourceMode)
-        const indexerMode = root.effectiveCoreSourceMode(indexerSourceMode)
-        if (executionMode === "module" || indexerMode === "module") {
-            return [executionMode, String(sequencerUrl || ""), indexerMode, String(indexerUrl || "")].concat(suffix)
-        }
-        return [String(sequencerUrl || ""), String(indexerUrl || "")].concat(suffix)
+        return SourcePolicyProjection.accountLookupArgs(
+            root,
+            executionSourceMode,
+            sequencerUrl,
+            indexerSourceMode,
+            indexerUrl,
+            account,
+            idlJson,
+            accountType
+        )
     }
 }
 
@@ -760,37 +750,28 @@ function moduleReportError(root, report) {
 
 function deliverySourceReportArgs(root) {
     with (root) {
-        const source = root.effectiveMessagingSourceMode(messagingSourceMode)
-        return [
-            source,
-            root.sourceModeUsesEndpoint("delivery", messagingSourceMode, "rest") ? root.configuredMessagingRestUrl() : "",
-            root.sourceModeUsesEndpoint("delivery", messagingSourceMode, "metrics") ? String(messagingMetricsUrl || "") : ""
-        ]
+        return SourcePolicyProjection.deliverySourceReportArgs(
+            root,
+            messagingSourceMode,
+            root.configuredMessagingRestUrl(),
+            messagingMetricsUrl
+        )
     }
 }
 
 function deliverySourceLabel(root) {
     with (root) {
-        const source = root.sourceModePolicy("delivery", root.resolvedSourceModeKey("delivery", messagingSourceMode))
-        const label = String(source.source_label || source.label || qsTr("Direct Waku REST"))
-        return root.normalizedMessagingSourceMode(messagingSourceMode) === "auto" && root.prefersBasecampModules()
-            ? qsTr("Auto: %1").arg(label)
-            : label
+        return SourcePolicyProjection.sourceLabel(root, "delivery", messagingSourceMode, qsTr("Direct Waku REST"))
     }
 }
 
 function deliverySourceTarget(root) {
     with (root) {
-        switch (root.sourceModeTargetKind("delivery", messagingSourceMode)) {
-        case "module":
-            return deliveryModule
-        case "rest_endpoint":
-            return root.configuredMessagingRestUrl()
-        case "metrics_endpoint":
-            return String(messagingMetricsUrl || "")
-        default:
-            return ""
-        }
+        return SourcePolicyProjection.sourceTarget(root, "delivery", messagingSourceMode, {
+            module: deliveryModule,
+            rest: root.configuredMessagingRestUrl(),
+            metrics: messagingMetricsUrl
+        })
     }
 }
 
@@ -817,7 +798,7 @@ function effectiveCoreSourceMode(root, value) {
 
 function blockchainSourceLabel(root) {
     with (root) {
-        return coreSourceLabel(root, blockchainSourceMode, qsTr("Bedrock RPC"))
+        return SourcePolicyProjection.coreSourceLabel(root, blockchainSourceMode, qsTr("Bedrock RPC"))
     }
 }
 
@@ -832,7 +813,7 @@ function blockchainSourceTarget(root) {
 
 function indexerSourceLabel(root) {
     with (root) {
-        return coreSourceLabel(root, indexerSourceMode, qsTr("Indexer RPC"))
+        return SourcePolicyProjection.coreSourceLabel(root, indexerSourceMode, qsTr("Indexer RPC"))
     }
 }
 
@@ -863,21 +844,6 @@ function executionSourceTarget(root) {
     }
 }
 
-function coreSourceLabel(root, sourceMode, rpcLabel) {
-    with (root) {
-        const source = root.resolvedSourceModeKey("core", sourceMode)
-        if (source === "module") {
-            return root.normalizedCoreSourceMode(sourceMode) === "auto"
-                ? qsTr("Auto: Basecamp module")
-                : qsTr("Basecamp module")
-        }
-        if (source === "rpc") {
-            return rpcLabel
-        }
-        return qsTr("Auto: %1").arg(rpcLabel)
-    }
-}
-
 function normalizedMessagingSourceMode(root, value) {
     with (root) {
         return String(root.sourceModePolicy("delivery", value).key || "auto")
@@ -892,39 +858,31 @@ function effectiveMessagingSourceMode(root, value) {
 
 function storageSourceReportArgs(root, includeCidProbe) {
     with (root) {
-        const source = root.effectiveStorageSourceMode(storageSourceMode)
-        return [
-            source,
-            root.sourceModeUsesEndpoint("storage", storageSourceMode, "rest") ? root.configuredStorageRestUrl() : "",
-            root.sourceModeUsesEndpoint("storage", storageSourceMode, "metrics") ? String(storageMetricsUrl || "") : "",
-            includeCidProbe === true && root.sourceModeSupportsCidProbe("storage", storageSourceMode) ? String(storageCidProbe || "") : "",
-            storagePrivilegedDebugEnabled === true
-        ]
+        return SourcePolicyProjection.storageSourceReportArgs(
+            root,
+            storageSourceMode,
+            root.configuredStorageRestUrl(),
+            storageMetricsUrl,
+            storageCidProbe,
+            includeCidProbe,
+            storagePrivilegedDebugEnabled
+        )
     }
 }
 
 function storageSourceLabel(root) {
     with (root) {
-        const source = root.sourceModePolicy("storage", root.resolvedSourceModeKey("storage", storageSourceMode))
-        const label = String(source.source_label || source.label || qsTr("Standalone REST"))
-        return root.normalizedStorageSourceMode(storageSourceMode) === "auto" && root.prefersBasecampModules()
-            ? qsTr("Auto: %1").arg(label)
-            : label
+        return SourcePolicyProjection.sourceLabel(root, "storage", storageSourceMode, qsTr("Standalone REST"))
     }
 }
 
 function storageSourceTarget(root) {
     with (root) {
-        switch (root.sourceModeTargetKind("storage", storageSourceMode)) {
-        case "module":
-            return storageModule
-        case "rest_endpoint":
-            return root.configuredStorageRestUrl()
-        case "metrics_endpoint":
-            return String(storageMetricsUrl || "")
-        default:
-            return ""
-        }
+        return SourcePolicyProjection.sourceTarget(root, "storage", storageSourceMode, {
+            module: storageModule,
+            rest: root.configuredStorageRestUrl(),
+            metrics: storageMetricsUrl
+        })
     }
 }
 

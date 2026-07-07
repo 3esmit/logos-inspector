@@ -3,14 +3,12 @@ use serde_json::{Value, json};
 
 use crate::{
     account_lookup, account_lookup_with_idl, blockchain,
-    bridge::{
-        blocking_value, decode_transaction_summary_with_idls,
-        enrich_account_related_transaction_decodes, to_value,
-    },
+    bridge::{blocking_value, to_value},
     indexer_block_by_hash, indexer_blocks, indexer_health, indexer_status,
-    indexer_transfer_recipients, last_sequencer_block_id, raw_json_rpc_optional_result,
-    sequencer_account, sequencer_block, sequencer_blocks, sequencer_program_ids,
-    sequencer_transaction, sequencer_transaction_inspection,
+    indexer_transfer_recipients, last_sequencer_block_id,
+    lez::RegisteredIdlResolver,
+    raw_json_rpc_optional_result, sequencer_account, sequencer_block, sequencer_blocks,
+    sequencer_program_ids, sequencer_transaction, sequencer_transaction_inspection,
     sequencer_transaction_inspection_with_idl, sequencer_transaction_trace,
     sequencer_transaction_trace_with_idl,
     source_routing::{self, Args, CoreEndpointMode, SourceEndpoint},
@@ -184,8 +182,9 @@ pub(super) async fn execute_inspect_transaction(request: &NodeOperationRequest) 
     let Some(inspection) = inspection else {
         return Ok(Value::Null);
     };
+    let idl_entries = registered_idl_entries()?;
     if let Some(report) =
-        decode_transaction_summary_with_idls(&inspection.raw_summary, &registered_idl_entries()?)
+        RegisteredIdlResolver::new(&idl_entries).transaction_inspection(&inspection.raw_summary)
     {
         return to_value(Some(report));
     }
@@ -201,7 +200,17 @@ pub(super) async fn execute_trace_transaction(request: &NodeOperationRequest) ->
     if let Some(idl) = args.optional_string(source.next_index + 1) {
         to_value(sequencer_transaction_trace_with_idl(endpoint, hash, idl).await?)
     } else {
-        to_value(sequencer_transaction_trace(endpoint, hash).await?)
+        let trace = sequencer_transaction_trace(endpoint, hash).await?;
+        let Some(trace) = trace else {
+            return Ok(Value::Null);
+        };
+        let idl_entries = registered_idl_entries()?;
+        if let Some(report) = RegisteredIdlResolver::new(&idl_entries)
+            .transaction_trace(&trace.inspection.raw_summary)
+        {
+            return to_value(Some(report));
+        }
+        to_value(Some(trace))
     }
 }
 
@@ -258,7 +267,9 @@ pub(super) async fn execute_account_operation(request: &NodeOperationRequest) ->
             .await?,
         )?
     };
-    enrich_account_related_transaction_decodes(&mut value)?;
+    let idl_entries = registered_idl_entries()?;
+    RegisteredIdlResolver::new(&idl_entries)
+        .enrich_account_related_transaction_decodes(&mut value)?;
     Ok(value)
 }
 

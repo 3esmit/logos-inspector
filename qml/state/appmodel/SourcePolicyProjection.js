@@ -113,6 +113,84 @@ function sourceModeSupportsMutatingDiagnostics(root, family, value) {
     return sourceModeAdapter(root, family, value).supports_mutating_diagnostics === true
 }
 
+function coreSourceArgs(root, sourceMode, endpoint, extra) {
+    const rest = Array.isArray(extra) ? extra : []
+    if (String(sourceModePolicy(root, "core", resolvedSourceModeKey(root, "core", sourceMode)).effective || "rpc") === "module") {
+        return ["module", String(endpoint || "")].concat(rest)
+    }
+    return [String(endpoint || "")].concat(rest)
+}
+
+function accountLookupArgs(root, executionSourceMode, sequencerEndpoint, indexerSourceMode, indexerEndpoint, account, idlJson, accountType) {
+    const suffix = [String(account || "")]
+    const idl = String(idlJson || "").trim()
+    if (idl.length > 0) {
+        suffix.push(idl)
+        if (accountType !== undefined && accountType !== null && String(accountType).trim().length > 0) {
+            suffix.push(String(accountType).trim())
+        }
+    }
+    const executionMode = String(sourceModePolicy(root, "core", resolvedSourceModeKey(root, "core", executionSourceMode)).effective || "rpc")
+    const indexerMode = String(sourceModePolicy(root, "core", resolvedSourceModeKey(root, "core", indexerSourceMode)).effective || "rpc")
+    if (executionMode === "module" || indexerMode === "module") {
+        return [executionMode, String(sequencerEndpoint || ""), indexerMode, String(indexerEndpoint || "")].concat(suffix)
+    }
+    return [String(sequencerEndpoint || ""), String(indexerEndpoint || "")].concat(suffix)
+}
+
+function deliverySourceReportArgs(root, sourceMode, restEndpoint, metricsEndpoint) {
+    return [
+        String(sourceModePolicy(root, "delivery", resolvedSourceModeKey(root, "delivery", sourceMode)).effective || "rest"),
+        sourceModeUsesEndpoint(root, "delivery", sourceMode, "rest") ? String(restEndpoint || "") : "",
+        sourceModeUsesEndpoint(root, "delivery", sourceMode, "metrics") ? String(metricsEndpoint || "") : ""
+    ]
+}
+
+function storageSourceReportArgs(root, sourceMode, restEndpoint, metricsEndpoint, cid, includeCidProbe, privilegedDebugEnabled) {
+    return [
+        String(sourceModePolicy(root, "storage", resolvedSourceModeKey(root, "storage", sourceMode)).effective || "rest"),
+        sourceModeUsesEndpoint(root, "storage", sourceMode, "rest") ? String(restEndpoint || "") : "",
+        sourceModeUsesEndpoint(root, "storage", sourceMode, "metrics") ? String(metricsEndpoint || "") : "",
+        includeCidProbe === true && sourceModeSupportsCidProbe(root, "storage", sourceMode) ? String(cid || "") : "",
+        privilegedDebugEnabled === true
+    ]
+}
+
+function sourceTarget(root, family, sourceMode, targets) {
+    const targetValues = targets && typeof targets === "object" ? targets : ({})
+    switch (sourceModeTargetKind(root, family, sourceMode)) {
+    case "module":
+        return String(targetValues.module || "")
+    case "rest_endpoint":
+        return String(targetValues.rest || "")
+    case "metrics_endpoint":
+        return String(targetValues.metrics || "")
+    default:
+        return ""
+    }
+}
+
+function sourceLabel(root, family, sourceMode, fallbackLabel) {
+    const source = sourceModePolicy(root, family, resolvedSourceModeKey(root, family, sourceMode))
+    const label = String(source.source_label || source.label || fallbackLabel || "")
+    return String(sourceModePolicy(root, family, sourceMode).key || "auto") === "auto" && root.prefersBasecampModules()
+        ? qsTr("Auto: %1").arg(label)
+        : label
+}
+
+function coreSourceLabel(root, sourceMode, rpcLabel) {
+    const source = resolvedSourceModeKey(root, "core", sourceMode)
+    if (source === "module") {
+        return String(sourceModePolicy(root, "core", sourceMode).key || "auto") === "auto"
+            ? qsTr("Auto: Basecamp module")
+            : qsTr("Basecamp module")
+    }
+    if (source === "rpc") {
+        return rpcLabel
+    }
+    return qsTr("Auto: %1").arg(rpcLabel)
+}
+
 function sourceModeOptionCount(options) {
     if (Array.isArray(options)) {
         return options.length

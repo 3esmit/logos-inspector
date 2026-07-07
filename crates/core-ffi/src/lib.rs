@@ -172,3 +172,99 @@ fn error_response(error: impl std::fmt::Display) -> String {
     })
     .to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::Value;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn call_returns_error_for_null_handle() -> TestResult {
+        let method = CString::new("moduleVersion")?;
+        let args = CString::new("[]")?;
+
+        // SAFETY: null handle is an accepted error path for this FFI call.
+        let ptr =
+            unsafe { logos_inspector_core_call(ptr::null_mut(), method.as_ptr(), args.as_ptr()) };
+        let value = response_value(ptr)?;
+
+        if value.get("ok").and_then(Value::as_bool) != Some(false) {
+            return err("expected error response");
+        }
+        if value
+            .get("error")
+            .and_then(Value::as_str)
+            .is_none_or(|error| !error.contains("not initialized"))
+        {
+            return err("expected initialization error");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn call_rejects_null_method() -> TestResult {
+        let handle = logos_inspector_core_new();
+        if handle.is_null() {
+            return err("failed to create core handle");
+        }
+        let args = CString::new("[]")?;
+
+        // SAFETY: handle was created by this library; null method is an
+        // accepted error path for this FFI call.
+        let ptr = unsafe { logos_inspector_core_call(handle, ptr::null(), args.as_ptr()) };
+        let value = response_value(ptr)?;
+
+        // SAFETY: handle was created by this library and not yet released.
+        unsafe {
+            logos_inspector_core_free(handle);
+        }
+
+        if value.get("ok").and_then(Value::as_bool) != Some(false) {
+            return err("expected error response");
+        }
+        if value
+            .get("error")
+            .and_then(Value::as_str)
+            .is_none_or(|error| !error.contains("method is required"))
+        {
+            return err("expected method error");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn returned_strings_escape_interior_nul() -> TestResult {
+        let ptr = into_c_string("a\0b".to_owned());
+        let text = c_string_from_owned_ptr(ptr)?;
+
+        if text != "a\\u0000b" {
+            return err("expected escaped interior nul");
+        }
+        Ok(())
+    }
+
+    fn response_value(ptr: *mut c_char) -> Result<Value, Box<dyn std::error::Error>> {
+        let text = c_string_from_owned_ptr(ptr)?;
+        Ok(serde_json::from_str(&text)?)
+    }
+
+    fn c_string_from_owned_ptr(ptr: *mut c_char) -> Result<String, Box<dyn std::error::Error>> {
+        if ptr.is_null() {
+            return err("FFI returned null string");
+        }
+        // SAFETY: pointer is returned by this library and remains valid until
+        // the matching free below.
+        let text = unsafe { CStr::from_ptr(ptr) }.to_str()?.to_owned();
+        // SAFETY: pointer was returned by this library and is released once.
+        unsafe {
+            logos_inspector_core_string_free(ptr);
+        }
+        Ok(text)
+    }
+
+    fn err<T>(message: &str) -> Result<T, Box<dyn std::error::Error>> {
+        Err(std::io::Error::other(message).into())
+    }
+}
