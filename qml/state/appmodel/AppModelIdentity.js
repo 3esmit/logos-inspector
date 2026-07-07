@@ -747,35 +747,21 @@ function appendLocalWalletOperation(root, label, status, detail) {
         const labelText = String(label || "")
         const statusText = String(status || "")
         const detailText = String(detail || "")
-        const rows = Array.isArray(localWalletOperations) ? localWalletOperations.slice(-49) : []
-        rows.push({
-            label: labelText,
-            status: statusText,
-            detail: detailText,
-            time: new Date().toLocaleTimeString(Qt.locale(), "hh:mm:ss")
-        })
-        localWalletOperations = rows
+        const record = wallet.appendOperation(labelText, statusText, detailText)
+        const historyStatus = wallet.operationStatus(statusText)
         appendNodeOperationHistory({
             domain: "wallet",
             method: labelText,
-            status: walletOperationStatus(statusText),
+            status: historyStatus,
             label: labelText,
             result: {
-                status: statusText,
-                detail: detailText
+                status: record.status,
+                detail: record.detail
             },
-            error: walletOperationStatus(statusText) === "failed" ? detailText : ""
+            error: historyStatus === "failed" ? detailText : ""
         }, detailText)
         saveWalletState()
     }
-}
-
-function walletOperationStatus(status) {
-    const value = String(status || "").toLowerCase()
-    if (value === "down" || value === "failed" || value === "error") {
-        return "failed"
-    }
-    return "completed"
 }
 
 function previewIdlInstruction(root, request) {
