@@ -10,9 +10,10 @@ use logos_inspector::{
     account_lookup, account_lookup_with_idl, bedrock_wallet_balance,
     blockchain::blockchain_blocks,
     blockchain::blockchain_node_report,
-    channels::channel_scan,
-    decode_account_data_hex_with_idl, decode_event_data_hex_with_idl,
-    decode_instruction_words_with_idl, last_sequencer_block_id,
+    channel_scan, decode_account_data_hex_with_idl, decode_event_data_hex_with_idl,
+    decode_instruction_words_with_idl,
+    idl_decode::spel_idl_report,
+    last_sequencer_block_id,
     local_indexer::{bootstrap_default_local_indexer, is_default_local_indexer_endpoint},
     local_wallet_accounts, local_wallet_command, local_wallet_create_account,
     local_wallet_profile_status, local_wallet_send_transaction, local_wallet_sync_private,
@@ -26,8 +27,7 @@ use logos_inspector::{
     sequencer_block, sequencer_health, sequencer_program_ids, sequencer_transaction,
     sequencer_transaction_inspection, sequencer_transaction_inspection_with_idl,
     sequencer_transaction_trace, sequencer_transaction_trace_with_idl,
-    source_policy::source_policy_report,
-    spel::spel_idl_report,
+    source_routing::source_policy_report,
 };
 use serde_json::Value;
 

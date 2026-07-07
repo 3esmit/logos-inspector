@@ -3,15 +3,13 @@ use common::transaction::LeeTransaction;
 use sequencer_service_rpc::{RpcClient as _, SequencerClientBuilder};
 use serde_json::{Value, json};
 
-use crate::{
+use super::{
     BlockSummary, ProgramIdEntry, TransactionIdlInspectionReport, TransactionInspectionReport,
     TransactionSummary, TransactionTraceReport, decode_sequencer_block, inspect_transaction,
-    inspect_transaction_summary_with_idl, json_rpc_result, parse_hash, raw_json_rpc,
-    summarize_block, summarize_transaction, trace_transaction_summary,
-    trace_transaction_summary_with_idl,
+    inspect_transaction_summary_with_idl, programs::program_entries, summarize_block,
+    summarize_transaction, trace_transaction_summary, trace_transaction_summary_with_idl,
 };
-
-use crate::programs::program_entries;
+use crate::{json_rpc_result, parse_hash, raw_json_rpc};
 
 pub async fn sequencer_health(endpoint: &str) -> Result<()> {
     sequencer_client(endpoint)?

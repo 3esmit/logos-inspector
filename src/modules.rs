@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 
 use crate::{
     ProbeReport, logoscore, response_excerpt,
-    source_policy::{
+    source_routing::{
         DEFAULT_DELIVERY_METRICS_ENDPOINT, DEFAULT_DELIVERY_REST_ENDPOINT,
         DEFAULT_STORAGE_METRICS_ENDPOINT, DEFAULT_STORAGE_REST_ENDPOINT, DeliverySourceReportKind,
         SourceCapabilityFact, SourceFacts, SourceFamily, SourceHealthFacts, SourceProbeFact,

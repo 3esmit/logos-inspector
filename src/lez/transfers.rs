@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::indexer::IndexerBlockReport;
+use super::indexer::IndexerBlockReport;
 use crate::value_to_string;
 
 #[derive(Debug, Clone, Serialize)]
