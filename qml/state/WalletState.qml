@@ -79,14 +79,24 @@ QtObject {
             && String(status.status || "") === "ok"
     }
 
+    function operationStatus(statusText) {
+        const value = String(statusText || "").toLowerCase()
+        if (value === "down" || value === "failed" || value === "error") {
+            return "failed"
+        }
+        return "completed"
+    }
+
     function appendOperation(label, statusText, detail) {
         const rows = Array.isArray(operations) ? operations.slice(-49) : []
-        rows.push({
+        const record = {
             time: new Date().toLocaleTimeString(Qt.locale(), "hh:mm:ss"),
             label: String(label || qsTr("Local wallet")),
             status: String(statusText || "unknown"),
             detail: String(detail || "")
-        })
+        }
+        rows.push(record)
         operations = rows
+        return record
     }
 }
