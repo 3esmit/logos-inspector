@@ -11,8 +11,8 @@ name = "logos_inspector_core"
 crate-type = ["cdylib"]
 
 [dependencies]
-logos-inspector = { path = "../..", default-features = false }
-serde_json = "1"
+logos-inspector = { workspace = true }
+serde_json = { workspace = true }
 
 [lints.rust]
 future_incompatible = { level = "deny", priority = -1 }
