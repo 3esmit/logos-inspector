@@ -1,6 +1,7 @@
 .import "../../services/BridgeHelpers.js" as BridgeHelpers
 .import "SourceHealthProjection.js" as SourceHealthProjection
 .import "SourcePolicyProjection.js" as SourcePolicyProjection
+.import "SourceRoutingUi.js" as SourceRoutingUi
 
 function refreshInterval(root, seconds) {
     with (root) {
@@ -88,6 +89,26 @@ function sourceModeSupportsCidProbe(root, family, value) {
 
 function sourceModeSupportsMutatingDiagnostics(root, family, value) {
     return SourcePolicyProjection.sourceModeSupportsMutatingDiagnostics(root, family, value)
+}
+
+function coreSourceView(root, role) {
+    return SourceRoutingUi.coreSourceView(root, role)
+}
+
+function deliverySourceView(root) {
+    return SourceRoutingUi.deliverySourceView(root)
+}
+
+function storageSourceView(root) {
+    return SourceRoutingUi.storageSourceView(root)
+}
+
+function deliveryReportView(root, report) {
+    return SourceRoutingUi.deliveryReportView(root, report)
+}
+
+function storageReportView(root, report) {
+    return SourceRoutingUi.storageReportView(root, report)
 }
 
 function canonicalRefreshRate(root, seconds) {

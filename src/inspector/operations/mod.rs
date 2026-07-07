@@ -27,13 +27,13 @@ use dispatch::execute_node_operation;
 use entrypoint::{OperationRunner, handle_operation_command};
 use record::{
     NodeOperation, NodeOperationRecord, NodeOperationRegistry, NodeOperationStatus,
-    active_storage_download_operation, finish_node_operation, node_operation_event_value,
+    active_operation_in_exclusive_group, finish_node_operation, node_operation_event_value,
     node_operation_value, now_millis, push_node_operation_event_locked, update_node_operation,
 };
 pub(crate) use request::{NodeOperationRequest, node_operation_request_from_value};
 use request::{node_operation_backend, node_operation_context};
 pub(crate) use spec::OperationMethod;
-use spec::normalized_operation_method;
+use spec::{OperationExclusiveGroup, normalized_operation_method};
 
 #[cfg(test)]
 use record::test_node_operation_record;
@@ -83,6 +83,7 @@ impl NodeOperations {
             result: None,
             error: None,
             cancellable: request.cancellable(),
+            exclusive_group: request.exclusive_group(),
             started_at: now,
             updated_at: now,
         };
@@ -91,11 +92,12 @@ impl NodeOperations {
                 .registry
                 .lock()
                 .map_err(|_| anyhow::anyhow!("node operation registry is unavailable"))?;
-            if request.domain() == "storage"
-                && request.method() == OperationMethod::StorageDownloadToUrl
-                && operations.values().any(active_storage_download_operation)
+            if let Some(group) = request.exclusive_group()
+                && operations
+                    .values()
+                    .any(|record| active_operation_in_exclusive_group(record, group))
             {
-                bail!("a storage download operation is already running");
+                bail!("{}", exclusive_operation_message(group));
             }
             operations.insert(
                 operation_id.clone(),
@@ -284,6 +286,7 @@ impl NodeOperations {
             method,
             NodeOperationStatus::Running,
             cancellable,
+            OperationMethod::from_str(method).and_then(OperationMethod::exclusive_group),
             Arc::clone(&cancel_requested),
         );
         if let Ok(mut operations) = self.registry.lock() {
@@ -299,6 +302,14 @@ impl NodeOperations {
             .lock()
             .map_err(|_| anyhow::anyhow!("node operation registry is unavailable"))?
             .len())
+    }
+}
+
+fn exclusive_operation_message(group: OperationExclusiveGroup) -> &'static str {
+    match group {
+        OperationExclusiveGroup::StorageDownload => {
+            "a storage download operation is already running"
+        }
     }
 }
 

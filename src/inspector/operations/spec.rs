@@ -55,11 +55,314 @@ pub(crate) enum OperationMethod {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OperationExclusiveGroup {
+    StorageDownload,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct OperationRoute {
     pub(crate) domain: OperationDomain,
     pub(crate) method: OperationMethod,
     pub(crate) label: &'static str,
     pub(crate) start_async: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OperationCatalogEntry {
+    method: OperationMethod,
+    name: &'static str,
+    domain: OperationDomain,
+    label: &'static str,
+    uses_mutating_flag: bool,
+    cancellable: bool,
+    exclusive_group: Option<OperationExclusiveGroup>,
+}
+
+macro_rules! operation_entry {
+    ($method:ident, $name:literal, $domain:ident, $label:literal) => {
+        OperationCatalogEntry {
+            method: OperationMethod::$method,
+            name: $name,
+            domain: OperationDomain::$domain,
+            label: $label,
+            uses_mutating_flag: false,
+            cancellable: false,
+            exclusive_group: None,
+        }
+    };
+    ($method:ident, $name:literal, $domain:ident, $label:literal, mutating) => {
+        OperationCatalogEntry {
+            method: OperationMethod::$method,
+            name: $name,
+            domain: OperationDomain::$domain,
+            label: $label,
+            uses_mutating_flag: true,
+            cancellable: false,
+            exclusive_group: None,
+        }
+    };
+    ($method:ident, $name:literal, $domain:ident, $label:literal, mutating, cancellable, $exclusive_group:ident) => {
+        OperationCatalogEntry {
+            method: OperationMethod::$method,
+            name: $name,
+            domain: OperationDomain::$domain,
+            label: $label,
+            uses_mutating_flag: true,
+            cancellable: true,
+            exclusive_group: Some(OperationExclusiveGroup::$exclusive_group),
+        }
+    };
+}
+
+const STORAGE_DOWNLOAD_START_ALIAS: &str = "storageDownloadStart";
+
+const OPERATION_CATALOG: &[OperationCatalogEntry] = &[
+    operation_entry!(
+        StorageManifests,
+        "storageManifests",
+        Storage,
+        "Storage manifests"
+    ),
+    operation_entry!(
+        StorageDownloadManifest,
+        "storageDownloadManifest",
+        Storage,
+        "Storage manifest"
+    ),
+    operation_entry!(
+        StorageFetch,
+        "storageFetch",
+        Storage,
+        "Storage fetch",
+        mutating
+    ),
+    operation_entry!(
+        StorageUploadUrl,
+        "storageUploadUrl",
+        Storage,
+        "Storage upload",
+        mutating
+    ),
+    operation_entry!(
+        StorageDownloadToUrl,
+        "storageDownloadToUrl",
+        Storage,
+        "Storage download",
+        mutating,
+        cancellable,
+        StorageDownload
+    ),
+    operation_entry!(
+        StorageRemove,
+        "storageRemove",
+        Storage,
+        "Storage remove",
+        mutating
+    ),
+    operation_entry!(
+        DeliverySubscribe,
+        "deliverySubscribe",
+        Delivery,
+        "Delivery subscribe",
+        mutating
+    ),
+    operation_entry!(
+        DeliveryUnsubscribe,
+        "deliveryUnsubscribe",
+        Delivery,
+        "Delivery unsubscribe",
+        mutating
+    ),
+    operation_entry!(
+        DeliverySend,
+        "deliverySend",
+        Delivery,
+        "Delivery send",
+        mutating
+    ),
+    operation_entry!(
+        DeliveryCreateNode,
+        "deliveryCreateNode",
+        Delivery,
+        "Delivery create node",
+        mutating
+    ),
+    operation_entry!(
+        DeliveryStart,
+        "deliveryStart",
+        Delivery,
+        "Delivery start",
+        mutating
+    ),
+    operation_entry!(
+        DeliveryStop,
+        "deliveryStop",
+        Delivery,
+        "Delivery stop",
+        mutating
+    ),
+    operation_entry!(
+        DeliveryStoreQuery,
+        "deliveryStoreQuery",
+        Delivery,
+        "Delivery store query"
+    ),
+    operation_entry!(
+        LocalNodesAction,
+        "localNodesAction",
+        LocalNodes,
+        "Local node action"
+    ),
+    operation_entry!(
+        LocalWalletCreateAccount,
+        "localWalletCreateAccount",
+        Wallet,
+        "Wallet account"
+    ),
+    operation_entry!(
+        LocalWalletSendTransaction,
+        "localWalletSendTransaction",
+        Wallet,
+        "Wallet send"
+    ),
+    operation_entry!(
+        LocalWalletInstructionSubmit,
+        "localWalletInstructionSubmit",
+        Wallet,
+        "IDL instruction"
+    ),
+    operation_entry!(
+        LocalWalletCommand,
+        "localWalletCommand",
+        Wallet,
+        "Wallet command"
+    ),
+    operation_entry!(
+        LocalWalletDeployProgram,
+        "localWalletDeployProgram",
+        Wallet,
+        "Program deploy"
+    ),
+    operation_entry!(
+        LocalWalletSyncPrivate,
+        "localWalletSyncPrivate",
+        Wallet,
+        "Private sync"
+    ),
+    operation_entry!(
+        LocalWalletAccounts,
+        "localWalletAccounts",
+        Wallet,
+        "Wallet accounts"
+    ),
+    operation_entry!(
+        BlockchainNode,
+        "blockchainNode",
+        Blockchain,
+        "Blockchain node"
+    ),
+    operation_entry!(
+        BlockchainBlocks,
+        "blockchainBlocks",
+        Blockchain,
+        "Blockchain blocks"
+    ),
+    operation_entry!(
+        BlockchainLiveBlocks,
+        "blockchainLiveBlocks",
+        Blockchain,
+        "Blockchain live blocks"
+    ),
+    operation_entry!(
+        BlockchainBlock,
+        "blockchainBlock",
+        Blockchain,
+        "Blockchain block"
+    ),
+    operation_entry!(
+        BlockchainTransaction,
+        "blockchainTransaction",
+        Blockchain,
+        "Blockchain transaction"
+    ),
+    operation_entry!(Head, "head", Execution, "Execution head"),
+    operation_entry!(Programs, "programs", Execution, "Programs"),
+    operation_entry!(Block, "block", Execution, "Sequencer block"),
+    operation_entry!(
+        SequencerBlocks,
+        "sequencerBlocks",
+        Execution,
+        "Sequencer blocks"
+    ),
+    operation_entry!(Transaction, "transaction", Execution, "Transaction"),
+    operation_entry!(
+        InspectTransaction,
+        "inspectTransaction",
+        Execution,
+        "Transaction inspection"
+    ),
+    operation_entry!(
+        TraceTransaction,
+        "traceTransaction",
+        Execution,
+        "Transaction trace"
+    ),
+    operation_entry!(Account, "account", Execution, "Account inspection"),
+    operation_entry!(
+        ResolveLezTarget,
+        "resolveLezTarget",
+        Execution,
+        "LEZ lookup"
+    ),
+    operation_entry!(IndexerHealth, "indexerHealth", Indexer, "Indexer health"),
+    operation_entry!(IndexerStatus, "indexerStatus", Indexer, "Indexer status"),
+    operation_entry!(
+        IndexerFinalizedHead,
+        "indexerFinalizedHead",
+        Indexer,
+        "Indexer finalized head"
+    ),
+    operation_entry!(IndexerBlocks, "indexerBlocks", Indexer, "Indexer blocks"),
+    operation_entry!(
+        IndexerBlockByHash,
+        "indexerBlockByHash",
+        Indexer,
+        "Indexer block"
+    ),
+    operation_entry!(
+        IndexerTransferRecipients,
+        "indexerTransferRecipients",
+        Indexer,
+        "Indexer transfer recipients"
+    ),
+];
+
+impl OperationCatalogEntry {
+    fn route(self, start_async: bool) -> OperationRoute {
+        OperationRoute {
+            domain: self.domain,
+            method: self.method,
+            label: self.label,
+            start_async,
+        }
+    }
+}
+
+fn operation_catalog_entry(method: OperationMethod) -> OperationCatalogEntry {
+    for entry in OPERATION_CATALOG {
+        if entry.method == method {
+            return *entry;
+        }
+    }
+    OperationCatalogEntry {
+        method,
+        name: "operation",
+        domain: OperationDomain::Execution,
+        label: "Operation",
+        uses_mutating_flag: false,
+        cancellable: false,
+        exclusive_group: None,
+    }
 }
 
 impl OperationDomain {
@@ -78,228 +381,43 @@ impl OperationDomain {
 
 impl OperationMethod {
     pub(crate) fn from_str(method: &str) -> Option<Self> {
-        let method = match method {
-            "storageManifests" => Self::StorageManifests,
-            "storageDownloadManifest" => Self::StorageDownloadManifest,
-            "storageFetch" => Self::StorageFetch,
-            "storageUploadUrl" => Self::StorageUploadUrl,
-            "storageDownloadToUrl" => Self::StorageDownloadToUrl,
-            "storageRemove" => Self::StorageRemove,
-            "deliverySubscribe" => Self::DeliverySubscribe,
-            "deliveryUnsubscribe" => Self::DeliveryUnsubscribe,
-            "deliverySend" => Self::DeliverySend,
-            "deliveryCreateNode" => Self::DeliveryCreateNode,
-            "deliveryStart" => Self::DeliveryStart,
-            "deliveryStop" => Self::DeliveryStop,
-            "deliveryStoreQuery" => Self::DeliveryStoreQuery,
-            "localNodesAction" => Self::LocalNodesAction,
-            "localWalletCreateAccount" => Self::LocalWalletCreateAccount,
-            "localWalletSendTransaction" => Self::LocalWalletSendTransaction,
-            "localWalletInstructionSubmit" => Self::LocalWalletInstructionSubmit,
-            "localWalletCommand" => Self::LocalWalletCommand,
-            "localWalletDeployProgram" => Self::LocalWalletDeployProgram,
-            "localWalletSyncPrivate" => Self::LocalWalletSyncPrivate,
-            "localWalletAccounts" => Self::LocalWalletAccounts,
-            "blockchainNode" => Self::BlockchainNode,
-            "blockchainBlocks" => Self::BlockchainBlocks,
-            "blockchainLiveBlocks" => Self::BlockchainLiveBlocks,
-            "blockchainBlock" => Self::BlockchainBlock,
-            "blockchainTransaction" => Self::BlockchainTransaction,
-            "head" => Self::Head,
-            "programs" => Self::Programs,
-            "block" => Self::Block,
-            "sequencerBlocks" => Self::SequencerBlocks,
-            "transaction" => Self::Transaction,
-            "inspectTransaction" => Self::InspectTransaction,
-            "traceTransaction" => Self::TraceTransaction,
-            "account" => Self::Account,
-            "resolveLezTarget" => Self::ResolveLezTarget,
-            "indexerHealth" => Self::IndexerHealth,
-            "indexerStatus" => Self::IndexerStatus,
-            "indexerFinalizedHead" => Self::IndexerFinalizedHead,
-            "indexerBlocks" => Self::IndexerBlocks,
-            "indexerBlockByHash" => Self::IndexerBlockByHash,
-            "indexerTransferRecipients" => Self::IndexerTransferRecipients,
-            _ => return None,
-        };
-        Some(method)
+        OPERATION_CATALOG
+            .iter()
+            .find(|entry| entry.name == method)
+            .map(|entry| entry.method)
     }
 
     pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::StorageManifests => "storageManifests",
-            Self::StorageDownloadManifest => "storageDownloadManifest",
-            Self::StorageFetch => "storageFetch",
-            Self::StorageUploadUrl => "storageUploadUrl",
-            Self::StorageDownloadToUrl => "storageDownloadToUrl",
-            Self::StorageRemove => "storageRemove",
-            Self::DeliverySubscribe => "deliverySubscribe",
-            Self::DeliveryUnsubscribe => "deliveryUnsubscribe",
-            Self::DeliverySend => "deliverySend",
-            Self::DeliveryCreateNode => "deliveryCreateNode",
-            Self::DeliveryStart => "deliveryStart",
-            Self::DeliveryStop => "deliveryStop",
-            Self::DeliveryStoreQuery => "deliveryStoreQuery",
-            Self::LocalNodesAction => "localNodesAction",
-            Self::LocalWalletCreateAccount => "localWalletCreateAccount",
-            Self::LocalWalletSendTransaction => "localWalletSendTransaction",
-            Self::LocalWalletInstructionSubmit => "localWalletInstructionSubmit",
-            Self::LocalWalletCommand => "localWalletCommand",
-            Self::LocalWalletDeployProgram => "localWalletDeployProgram",
-            Self::LocalWalletSyncPrivate => "localWalletSyncPrivate",
-            Self::LocalWalletAccounts => "localWalletAccounts",
-            Self::BlockchainNode => "blockchainNode",
-            Self::BlockchainBlocks => "blockchainBlocks",
-            Self::BlockchainLiveBlocks => "blockchainLiveBlocks",
-            Self::BlockchainBlock => "blockchainBlock",
-            Self::BlockchainTransaction => "blockchainTransaction",
-            Self::Head => "head",
-            Self::Programs => "programs",
-            Self::Block => "block",
-            Self::SequencerBlocks => "sequencerBlocks",
-            Self::Transaction => "transaction",
-            Self::InspectTransaction => "inspectTransaction",
-            Self::TraceTransaction => "traceTransaction",
-            Self::Account => "account",
-            Self::ResolveLezTarget => "resolveLezTarget",
-            Self::IndexerHealth => "indexerHealth",
-            Self::IndexerStatus => "indexerStatus",
-            Self::IndexerFinalizedHead => "indexerFinalizedHead",
-            Self::IndexerBlocks => "indexerBlocks",
-            Self::IndexerBlockByHash => "indexerBlockByHash",
-            Self::IndexerTransferRecipients => "indexerTransferRecipients",
-        }
+        operation_catalog_entry(self).name
     }
 
     pub(crate) fn domain(self) -> OperationDomain {
-        match self {
-            Self::StorageManifests
-            | Self::StorageDownloadManifest
-            | Self::StorageFetch
-            | Self::StorageUploadUrl
-            | Self::StorageDownloadToUrl
-            | Self::StorageRemove => OperationDomain::Storage,
-            Self::DeliverySubscribe
-            | Self::DeliveryUnsubscribe
-            | Self::DeliverySend
-            | Self::DeliveryCreateNode
-            | Self::DeliveryStart
-            | Self::DeliveryStop
-            | Self::DeliveryStoreQuery => OperationDomain::Delivery,
-            Self::LocalNodesAction => OperationDomain::LocalNodes,
-            Self::LocalWalletCreateAccount
-            | Self::LocalWalletSendTransaction
-            | Self::LocalWalletInstructionSubmit
-            | Self::LocalWalletCommand
-            | Self::LocalWalletDeployProgram
-            | Self::LocalWalletSyncPrivate
-            | Self::LocalWalletAccounts => OperationDomain::Wallet,
-            Self::BlockchainNode
-            | Self::BlockchainBlocks
-            | Self::BlockchainLiveBlocks
-            | Self::BlockchainBlock
-            | Self::BlockchainTransaction => OperationDomain::Blockchain,
-            Self::IndexerHealth
-            | Self::IndexerStatus
-            | Self::IndexerFinalizedHead
-            | Self::IndexerBlocks
-            | Self::IndexerBlockByHash
-            | Self::IndexerTransferRecipients => OperationDomain::Indexer,
-            Self::Head
-            | Self::Programs
-            | Self::Block
-            | Self::SequencerBlocks
-            | Self::Transaction
-            | Self::InspectTransaction
-            | Self::TraceTransaction
-            | Self::Account
-            | Self::ResolveLezTarget => OperationDomain::Execution,
-        }
+        operation_catalog_entry(self).domain
     }
 
     pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::StorageManifests => "Storage manifests",
-            Self::StorageDownloadManifest => "Storage manifest",
-            Self::StorageFetch => "Storage fetch",
-            Self::StorageUploadUrl => "Storage upload",
-            Self::StorageDownloadToUrl => "Storage download",
-            Self::StorageRemove => "Storage remove",
-            Self::DeliverySubscribe => "Delivery subscribe",
-            Self::DeliveryUnsubscribe => "Delivery unsubscribe",
-            Self::DeliverySend => "Delivery send",
-            Self::DeliveryCreateNode => "Delivery create node",
-            Self::DeliveryStart => "Delivery start",
-            Self::DeliveryStop => "Delivery stop",
-            Self::DeliveryStoreQuery => "Delivery store query",
-            Self::LocalNodesAction => "Local node action",
-            Self::LocalWalletCreateAccount => "Wallet account",
-            Self::LocalWalletSendTransaction => "Wallet send",
-            Self::LocalWalletInstructionSubmit => "IDL instruction",
-            Self::LocalWalletCommand => "Wallet command",
-            Self::LocalWalletDeployProgram => "Program deploy",
-            Self::LocalWalletSyncPrivate => "Private sync",
-            Self::LocalWalletAccounts => "Wallet accounts",
-            Self::BlockchainNode => "Blockchain node",
-            Self::BlockchainBlocks => "Blockchain blocks",
-            Self::BlockchainLiveBlocks => "Blockchain live blocks",
-            Self::BlockchainBlock => "Blockchain block",
-            Self::BlockchainTransaction => "Blockchain transaction",
-            Self::Head => "Execution head",
-            Self::Programs => "Programs",
-            Self::Block => "Sequencer block",
-            Self::SequencerBlocks => "Sequencer blocks",
-            Self::Transaction => "Transaction",
-            Self::InspectTransaction => "Transaction inspection",
-            Self::TraceTransaction => "Transaction trace",
-            Self::Account => "Account inspection",
-            Self::ResolveLezTarget => "LEZ lookup",
-            Self::IndexerHealth => "Indexer health",
-            Self::IndexerStatus => "Indexer status",
-            Self::IndexerFinalizedHead => "Indexer finalized head",
-            Self::IndexerBlocks => "Indexer blocks",
-            Self::IndexerBlockByHash => "Indexer block",
-            Self::IndexerTransferRecipients => "Indexer transfer recipients",
-        }
+        operation_catalog_entry(self).label
     }
 
     fn uses_mutating_flag(self) -> bool {
-        matches!(
-            self,
-            Self::StorageFetch
-                | Self::StorageUploadUrl
-                | Self::StorageDownloadToUrl
-                | Self::StorageRemove
-                | Self::DeliveryCreateNode
-                | Self::DeliveryStart
-                | Self::DeliveryStop
-                | Self::DeliverySubscribe
-                | Self::DeliveryUnsubscribe
-                | Self::DeliverySend
-        )
+        operation_catalog_entry(self).uses_mutating_flag
     }
 
     pub(crate) fn cancellable(self) -> bool {
-        self == Self::StorageDownloadToUrl
+        operation_catalog_entry(self).cancellable
+    }
+
+    pub(crate) fn exclusive_group(self) -> Option<OperationExclusiveGroup> {
+        operation_catalog_entry(self).exclusive_group
     }
 }
 
 pub(crate) fn operation_route(method: &str) -> Option<OperationRoute> {
-    if method == "storageDownloadStart" {
-        return Some(OperationRoute {
-            domain: OperationDomain::Storage,
-            method: OperationMethod::StorageDownloadToUrl,
-            label: "Storage download",
-            start_async: true,
-        });
+    if method == STORAGE_DOWNLOAD_START_ALIAS {
+        return Some(operation_catalog_entry(OperationMethod::StorageDownloadToUrl).route(true));
     }
     let method = OperationMethod::from_str(method)?;
-    Some(OperationRoute {
-        domain: method.domain(),
-        method,
-        label: method.label(),
-        start_async: false,
-    })
+    Some(operation_catalog_entry(method).route(false))
 }
 
 pub(crate) fn operation_uses_mutating_flag(method: &str) -> bool {
@@ -395,10 +513,16 @@ mod tests {
         if !storage_download.cancellable() {
             bail!("storageDownloadToUrl should be cancellable");
         }
+        if storage_download.exclusive_group() != Some(OperationExclusiveGroup::StorageDownload) {
+            bail!("storageDownloadToUrl should own the storage download exclusive group");
+        }
         let storage_upload = OperationMethod::from_str("storageUploadUrl")
             .context("storageUploadUrl should exist")?;
         if storage_upload.cancellable() {
             bail!("storageUploadUrl should not be cancellable");
+        }
+        if storage_upload.exclusive_group().is_some() {
+            bail!("storageUploadUrl should not own an exclusive group");
         }
         Ok(())
     }
