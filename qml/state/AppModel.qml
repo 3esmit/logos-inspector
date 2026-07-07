@@ -141,7 +141,6 @@ QtObject {
     property string settingsBackupStatus: ""
 
     property string sequencerTab: "blocks"
-    property string deliveryAppTab: "messages"
     property string accountTab: "lookup"
     property string programTab: "programIds"
     property string indexerTab: "status"
@@ -172,10 +171,6 @@ QtObject {
     property var blockchainModuleReport: null
     property var storageModuleReport: null
     property var messagingModuleReport: null
-    property var deliveryModuleEvents: []
-    property int deliveryModuleEventRevision: 0
-    property string deliveryConnectionStatus: ""
-    property string deliveryNodeStatus: ""
     property int blockchainModuleEventRevision: 0
     property string blockchainLastEventText: ""
 
@@ -276,6 +271,47 @@ QtObject {
     property alias storageCidProbe: storageAppState.cidProbe
     property alias storageActiveOperation: storageAppState.activeOperation
     property alias storageActiveOperationRevision: storageAppState.activeOperationRevision
+    property DeliveryAppState deliveryApp: DeliveryAppState {
+        id: deliveryAppState
+
+        gateway: QtObject {
+            function call(method, args, label) {
+                return root.callInspector(method, args, label)
+            }
+
+            function startNodeOperation(request, showResult, callback) {
+                return root.nodeOperationStart(request, showResult === true, callback)
+            }
+
+            function nodeOperationStatus(operationId, showResult, callback) {
+                return root.nodeOperationStatus(operationId, showResult === true, callback)
+            }
+
+            function appendOperationHistory(operation, detail) {
+                return root.appendNodeOperationHistory(operation, detail)
+            }
+        }
+        busy: root.busy
+        sourceMode: root.messagingSourceMode
+        effectiveSourceMode: root.effectiveMessagingSourceMode(root.messagingSourceMode)
+        sourceLabel: root.deliverySourceLabel()
+        sourceTarget: root.deliverySourceTarget()
+        sourceTargetKind: root.sourceModeTargetKind("delivery", root.messagingSourceMode)
+        usesRestEndpoint: root.sourceModeUsesEndpoint("delivery", root.messagingSourceMode, "rest")
+        supportsMutatingDiagnostics: root.sourceModeSupportsMutatingDiagnostics("delivery", root.messagingSourceMode)
+        restEndpoint: root.configuredMessagingRestUrl()
+        moduleName: root.deliveryModule
+        networkPreset: root.messagingNetworkPreset
+        mutatingDiagnosticsEnabled: root.messagingMutatingDiagnosticsEnabled
+    }
+    property alias deliveryAppTab: deliveryAppState.currentTab
+    property alias deliveryActiveTopic: deliveryAppState.activeTopic
+    property alias deliveryActiveOperation: deliveryAppState.activeOperation
+    property alias deliveryActiveOperationRevision: deliveryAppState.activeOperationRevision
+    property alias deliveryModuleEvents: deliveryAppState.deliveryModuleEvents
+    property alias deliveryModuleEventRevision: deliveryAppState.deliveryModuleEventRevision
+    property alias deliveryConnectionStatus: deliveryAppState.deliveryConnectionStatus
+    property alias deliveryNodeStatus: deliveryAppState.deliveryNodeStatus
     property LocalNodesState localNodes: LocalNodesState {
         id: localNodesState
 
@@ -641,9 +677,9 @@ QtObject {
 
     function handleModuleEvent(moduleName, eventName, args) { return AppModelModuleEvents.handleModuleEvent(root, moduleName, eventName, args) }
 
-    function deliveryModuleEventRows() { return AppModelModuleEvents.deliveryModuleEventRows(root) }
+    function deliveryModuleEventRows() { return deliveryAppState.moduleEventRows() }
 
-    function deliveryModuleEventSummary() { return AppModelModuleEvents.deliveryModuleEventSummary(root) }
+    function deliveryModuleEventSummary() { return deliveryAppState.moduleEventSummary() }
 
     function checkLocalWalletProfile(showResult) { return AppModelIdentity.checkLocalWalletProfile(root, showResult) }
 
