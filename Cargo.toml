@@ -13,12 +13,23 @@ members = [".", "crates/core-ffi", "crates/standalone-gui"]
 default-members = ["."]
 resolver = "3"
 
+[workspace.dependencies]
+anyhow = "1.0.98"
+cxx = "1.0"
+cxx-qt = "0.9"
+cxx-qt-build = "0.9"
+cxx-qt-lib = "0.9"
+logos-inspector = { path = ".", default-features = false }
+serde = "1"
+serde_json = "1"
+tokio = "1"
+
 [features]
 default = ["cli"]
 cli = ["dep:clap"]
 
 [dependencies]
-anyhow = "1.0.98"
+anyhow = { workspace = true }
 base64 = "0.22"
 borsh = "1.6"
 chacha20poly1305 = "0.10"
@@ -29,10 +40,10 @@ hkdf = "0.12"
 k256 = { version = "0.13.3", features = ["ecdsa-core"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 risc0-zkvm = "3.0.5"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 sha2 = "0.10.8"
-tokio = { version = "1", features = ["fs", "io-util", "rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["fs", "io-util", "rt-multi-thread", "time"] }
 tokio-util = { version = "0.7", features = ["io"] }
 
 common = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc6" }
@@ -41,7 +52,10 @@ lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git
 sequencer_service_rpc = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc6", features = ["client"] }
 wallet = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", tag = "v0.2.0-rc6" }
 
-[lints.rust]
+[lints]
+workspace = true
+
+[workspace.lints.rust]
 future_incompatible = { level = "deny", priority = -1 }
 rust_2018_idioms = { level = "deny", priority = -1 }
 unsafe_code = "forbid"
@@ -50,11 +64,11 @@ unused_imports = "deny"
 unused_must_use = "deny"
 warnings = { level = "deny", priority = -1 }
 
-[lints.rustdoc]
+[workspace.lints.rustdoc]
 bare_urls = "deny"
 broken_intra_doc_links = "deny"
 
-[lints.clippy]
+[workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
 await_holding_lock = "deny"
 dbg_macro = "deny"
