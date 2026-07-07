@@ -7,25 +7,21 @@ use tokio::runtime::Runtime;
 use tokio_util::io::ReaderStream;
 
 use crate::{
-    AccountTransactionSummary, TransactionIdlInspectionReport, TransactionSummary, account_lookup,
-    account_lookup_with_idl, bedrock_wallet_balance, blockchain, channel_scan, channel_state,
-    decode_account_data_hex_with_idl, decode_event_data_hex_with_idl,
+    AccountTransactionSummary, TransactionIdlInspectionReport, TransactionSummary,
+    bedrock_wallet_balance, channel_scan, channel_state, decode_account_data_hex_with_idl,
+    decode_event_data_hex_with_idl,
     idl_decode::spel_idl_report,
-    indexer_block_by_hash, indexer_blocks, indexer_health, indexer_status,
-    indexer_transfer_recipients, inspect_transaction_summary_with_idl,
+    inspect_transaction_summary_with_idl,
     inspector::methods::{OperationRunner, handle_operation_command},
     inspector::operations::{NodeOperationRequest, NodeOperations},
-    last_sequencer_block_id, local_devnet_list, local_nodes_status,
-    local_wallet_instruction_preview, local_wallet_profile_status, logoscore,
+    local_devnet_list, local_nodes_status, local_wallet_instruction_preview,
+    local_wallet_profile_status, logoscore,
     modules::{
         blockchain_module_report, delivery_report, delivery_source_report, logoscore_status_report,
         modules_report, storage_report, storage_source_report,
     },
     network_profiles, normalize_program_id_hex, overview, program_file_info, raw_http_json,
-    raw_json_rpc_optional_result, raw_rpc_report, response_excerpt, sequencer_account,
-    sequencer_block, sequencer_blocks, sequencer_program_ids, sequencer_transaction,
-    sequencer_transaction_inspection, sequencer_transaction_inspection_with_idl,
-    sequencer_transaction_trace, sequencer_transaction_trace_with_idl,
+    raw_rpc_report, response_excerpt,
     settings_backup::{export_app_settings_backup, restore_app_settings_backup},
     social::social_messages_from_store,
     source_routing::{self, CoreEndpointMode, source_policy_report},
@@ -49,7 +45,6 @@ pub const INSPECTOR_MODULE: &str = "logos_inspector";
 const BLOCKCHAIN_MODULE: &str = source_routing::BLOCKCHAIN_MODULE;
 #[cfg(test)]
 const INDEXER_MODULE: &str = source_routing::INDEXER_MODULE;
-const EXECUTION_MODULE: &str = source_routing::LEZ_CORE_MODULE;
 
 #[derive(Debug, serde::Serialize)]
 struct BridgeResponse {
@@ -86,15 +81,21 @@ impl OperationRunner for BridgeOperationRunner<'_> {
         self.node_operations.cancel(operation_id)
     }
 
-    fn run_legacy(&self, domain: &str, method: &str, args: Value, label: &str) -> Result<Value> {
+    fn run_operation(&self, domain: &str, method: &str, args: Value, label: &str) -> Result<Value> {
         self.node_operations
-            .run_legacy(self.runtime, domain, method, args, label)
+            .run_blocking(self.runtime, domain, method, args, label)
     }
 
-    fn start_legacy(&self, domain: &str, method: &str, args: Value, label: &str) -> Result<Value> {
+    fn start_operation(
+        &self,
+        domain: &str,
+        method: &str,
+        args: Value,
+        label: &str,
+    ) -> Result<Value> {
         self.node_operations.start(
             self.runtime,
-            NodeOperationRequest::legacy(domain, method, args, label),
+            NodeOperationRequest::from_call(domain, method, args, label),
         )
     }
 }
@@ -134,55 +135,6 @@ impl InspectorBridge {
                 ));
                 to_value(value)
             }
-            "head" => {
-                let args = Args::new(args)?;
-                let source = args.source_endpoint(0, "sequencer endpoint")?;
-                self.execution_head(&source)
-            }
-            "programs" => {
-                let args = Args::new(args)?;
-                let source = args.source_endpoint(0, "sequencer endpoint")?;
-                self.require_rpc_source(&source, "programs")?;
-                to_value(
-                    self.runtime
-                        .block_on(sequencer_program_ids(source.endpoint))?,
-                )
-            }
-            "block" => {
-                let args = Args::new(args)?;
-                let source = args.source_endpoint(0, "sequencer endpoint")?;
-                self.require_rpc_source(&source, "block")?;
-                to_value(self.runtime.block_on(sequencer_block(
-                    source.endpoint,
-                    args.u64(source.next_index, "block id")?,
-                ))?)
-            }
-            "sequencerBlocks" => {
-                let args = Args::new(args)?;
-                let source = args.source_endpoint(0, "sequencer endpoint")?;
-                self.require_rpc_source(&source, "sequencerBlocks")?;
-                let before = args.value(source.next_index).and_then(Value::as_u64);
-                let limit = args
-                    .value(source.next_index + 1)
-                    .and_then(Value::as_u64)
-                    .unwrap_or(10)
-                    .min(50);
-                to_value(
-                    self.runtime
-                        .block_on(sequencer_blocks(source.endpoint, before, limit))?,
-                )
-            }
-            "transaction" => {
-                let args = Args::new(args)?;
-                let source = args.source_endpoint(0, "sequencer endpoint")?;
-                self.require_rpc_source(&source, "transaction")?;
-                to_value(self.runtime.block_on(sequencer_transaction(
-                    source.endpoint,
-                    args.string(source.next_index, "transaction hash")?,
-                ))?)
-            }
-            "inspectTransaction" => self.inspect_transaction(args),
-            "traceTransaction" => self.trace_transaction(args),
             "decodeTransactionSummary" => {
                 let args = Args::new(args)?;
                 let summary: TransactionSummary = serde_json::from_value(
@@ -196,7 +148,6 @@ impl InspectorBridge {
                     args.string(1, "IDL JSON")?,
                 )?)
             }
-            "account" => self.account(args),
             "decodeAccount" => {
                 let args = Args::new(args)?;
                 to_value(decode_account_data_hex_with_idl(
@@ -213,89 +164,6 @@ impl InspectorBridge {
                     args.optional_string(2),
                     args.string(0, "event data hex")?,
                 )?)
-            }
-            "blockchainNode" => {
-                let args = Args::new(args)?;
-                let source = args.source_endpoint(0, "node endpoint")?;
-                self.blockchain_node_report(&source)
-            }
-            "blockchainBlocks" => {
-                let args = Args::new(args)?;
-                let source = args.source_endpoint(0, "node endpoint")?;
-                let slot_from = args.u64(source.next_index, "slot from")?;
-                let slot_to = args.u64(source.next_index + 1, "slot to")?;
-                if source.mode == CoreEndpointMode::Module {
-                    if let Some(limit) = args.value(source.next_index + 2).and_then(Value::as_u64) {
-                        return to_value(source_routing::blockchain_recent_blocks(
-                            slot_from, slot_to, limit,
-                        )?);
-                    }
-                    return to_value(source_routing::blockchain_blocks(slot_from, slot_to)?);
-                }
-                if let Some(limit) = args.value(source.next_index + 2).and_then(Value::as_u64) {
-                    to_value(self.runtime.block_on(blockchain::blockchain_recent_blocks(
-                        source.endpoint,
-                        slot_from,
-                        slot_to,
-                        limit,
-                    ))?)
-                } else {
-                    to_value(self.runtime.block_on(blockchain::blockchain_blocks(
-                        source.endpoint,
-                        slot_from,
-                        slot_to,
-                    ))?)
-                }
-            }
-            "blockchainLiveBlocks" => {
-                let args = Args::new(args)?;
-                let source = args.source_endpoint(0, "node endpoint")?;
-                let slot_from = args.u64(source.next_index, "slot from")?;
-                let slot_to = args.u64(source.next_index + 1, "slot to")?;
-                let limit = args
-                    .value(source.next_index + 2)
-                    .and_then(Value::as_u64)
-                    .unwrap_or(50);
-                if source.mode == CoreEndpointMode::Module {
-                    return to_value(source_routing::blockchain_live_blocks_snapshot(
-                        slot_from, slot_to, limit,
-                    )?);
-                }
-                to_value(
-                    self.runtime
-                        .block_on(blockchain::blockchain_live_blocks_snapshot(
-                            source.endpoint,
-                            slot_from,
-                            slot_to,
-                            limit,
-                        ))?,
-                )
-            }
-            "blockchainBlock" => {
-                let args = Args::new(args)?;
-                let source = args.source_endpoint(0, "node endpoint")?;
-                if source.mode == CoreEndpointMode::Module {
-                    return to_value(source_routing::blockchain_block(
-                        args.string(source.next_index, "block id")?,
-                    )?);
-                }
-                to_value(self.runtime.block_on(blockchain::blockchain_block(
-                    source.endpoint,
-                    args.string(source.next_index, "block id")?,
-                ))?)
-            }
-            "blockchainTransaction" => {
-                let args = Args::new(args)?;
-                let source = args.source_endpoint(0, "node endpoint")?;
-                if source.mode == CoreEndpointMode::Module {
-                    return to_value(source_routing::blockchain_transaction(
-                        args.string(source.next_index, "transaction id")?,
-                    )?);
-                }
-                to_value(self.runtime.block_on(blockchain::blockchain_transaction(
-                    source.endpoint,
-                    args.string(source.next_index, "transaction id")?,
-                ))?)
             }
             "channelScan" => {
                 let args = Args::new(args)?;
@@ -314,86 +182,6 @@ impl InspectorBridge {
                 to_value(self.runtime.block_on(channel_state(
                     source.endpoint,
                     args.string(source.next_index, "channel id")?,
-                ))?)
-            }
-            "indexerHealth" => {
-                let args = Args::new(args)?;
-                let source = args.source_endpoint(0, "indexer endpoint")?;
-                if source.mode == CoreEndpointMode::Module {
-                    return to_value(source_routing::indexer_health()?);
-                }
-                let health = self.runtime.block_on(indexer_health(source.endpoint))?;
-                Ok(json!({
-                    "status": "healthy",
-                    "health": health,
-                }))
-            }
-            "indexerStatus" => {
-                let args = Args::new(args)?;
-                let source = args.source_endpoint(0, "indexer endpoint")?;
-                if source.mode == CoreEndpointMode::Module {
-                    return to_value(source_routing::indexer_status()?);
-                }
-                to_value(self.runtime.block_on(indexer_status(source.endpoint))?)
-            }
-            "indexerFinalizedHead" => {
-                let args = Args::new(args)?;
-                let source = args.source_endpoint(0, "indexer endpoint")?;
-                if source.mode == CoreEndpointMode::Module {
-                    return to_value(source_routing::indexer_finalized_head()?);
-                }
-                to_value(self.runtime.block_on(raw_json_rpc_optional_result(
-                    source.endpoint,
-                    "getLastFinalizedBlockId",
-                    Value::Array(vec![]),
-                ))?)
-            }
-            "indexerBlocks" => {
-                let args = Args::new(args)?;
-                let source = args.source_endpoint(0, "indexer endpoint")?;
-                let before = args.value(source.next_index).and_then(Value::as_u64);
-                let limit = args
-                    .value(source.next_index + 1)
-                    .and_then(Value::as_u64)
-                    .unwrap_or(10)
-                    .min(50);
-                if source.mode == CoreEndpointMode::Module {
-                    return to_value(source_routing::indexer_blocks(before, limit)?);
-                }
-                to_value(
-                    self.runtime
-                        .block_on(indexer_blocks(source.endpoint, before, limit))?,
-                )
-            }
-            "indexerBlockByHash" => {
-                let args = Args::new(args)?;
-                let source = args.source_endpoint(0, "indexer endpoint")?;
-                if source.mode == CoreEndpointMode::Module {
-                    return to_value(source_routing::indexer_block_by_hash(
-                        args.string(source.next_index, "block header hash")?,
-                    )?);
-                }
-                to_value(self.runtime.block_on(indexer_block_by_hash(
-                    source.endpoint,
-                    args.string(source.next_index, "block header hash")?,
-                ))?)
-            }
-            "indexerTransferRecipients" => {
-                let args = Args::new(args)?;
-                let source = args.source_endpoint(0, "indexer endpoint")?;
-                let before = args.value(source.next_index).and_then(Value::as_u64);
-                let limit = args
-                    .value(source.next_index + 1)
-                    .and_then(Value::as_u64)
-                    .unwrap_or(50)
-                    .min(50);
-                if source.mode == CoreEndpointMode::Module {
-                    return to_value(source_routing::indexer_transfer_recipients(before, limit)?);
-                }
-                to_value(self.runtime.block_on(indexer_transfer_recipients(
-                    source.endpoint,
-                    before,
-                    limit,
                 ))?)
             }
             "rawRpc" => {
@@ -522,113 +310,6 @@ impl InspectorBridge {
         }
     }
 
-    fn inspect_transaction(&self, args: Value) -> Result<Value> {
-        let args = Args::new(args)?;
-        let source = args.source_endpoint(0, "sequencer endpoint")?;
-        self.require_rpc_source(&source, "inspectTransaction")?;
-        let endpoint = source.endpoint;
-        let hash = args.string(source.next_index, "transaction hash")?;
-        let idl = args.optional_string(source.next_index + 1);
-        if let Some(idl) = idl {
-            to_value(
-                self.runtime
-                    .block_on(sequencer_transaction_inspection_with_idl(
-                        endpoint, hash, idl,
-                    ))?,
-            )
-        } else {
-            self.inspect_transaction_with_registered_idls(endpoint, hash)
-        }
-    }
-
-    fn inspect_transaction_with_registered_idls(
-        &self,
-        endpoint: &str,
-        hash: &str,
-    ) -> Result<Value> {
-        let inspection = self
-            .runtime
-            .block_on(sequencer_transaction_inspection(endpoint, hash))?;
-        let Some(inspection) = inspection else {
-            return Ok(Value::Null);
-        };
-
-        if let Some(report) = decode_transaction_summary_with_idls(
-            &inspection.raw_summary,
-            &registered_idl_entries()?,
-        ) {
-            return to_value(Some(report));
-        }
-
-        to_value(Some(inspection))
-    }
-
-    fn trace_transaction(&self, args: Value) -> Result<Value> {
-        let args = Args::new(args)?;
-        let source = args.source_endpoint(0, "sequencer endpoint")?;
-        self.require_rpc_source(&source, "traceTransaction")?;
-        let endpoint = source.endpoint;
-        let hash = args.string(source.next_index, "transaction hash")?;
-        let idl = args.optional_string(source.next_index + 1);
-        if let Some(idl) = idl {
-            to_value(
-                self.runtime
-                    .block_on(sequencer_transaction_trace_with_idl(endpoint, hash, idl))?,
-            )
-        } else {
-            to_value(
-                self.runtime
-                    .block_on(sequencer_transaction_trace(endpoint, hash))?,
-            )
-        }
-    }
-
-    fn account(&self, args: Value) -> Result<Value> {
-        let args = Args::new(args)?;
-        let account_args = args.account_sources()?;
-        if account_args.execution_mode == CoreEndpointMode::Module {
-            bail!(
-                "{EXECUTION_MODULE} does not expose Inspector account reads; use sequencer RPC for account inspection"
-            );
-        }
-        let sequencer = account_args.sequencer_endpoint;
-        let indexer = account_args.indexer_endpoint;
-        let account = account_args.account;
-        let idl = args.optional_string(account_args.next_index);
-        let mut value = if account_args.indexer_mode == CoreEndpointMode::Module {
-            let mut account = self
-                .runtime
-                .block_on(sequencer_account(sequencer, account))?;
-            source_routing::attach_module_account_transactions(&mut account);
-            if let Some(idl) = idl {
-                to_value(
-                    crate::lez::accounts::account_report_with_optional_idl_decode(
-                        account,
-                        idl,
-                        args.optional_string(account_args.next_index + 1),
-                    ),
-                )?
-            } else {
-                to_value(account)?
-            }
-        } else if let Some(idl) = idl {
-            to_value(self.runtime.block_on(account_lookup_with_idl(
-                sequencer,
-                indexer,
-                account,
-                idl,
-                args.optional_string(account_args.next_index + 1),
-            ))?)?
-        } else {
-            to_value(
-                self.runtime
-                    .block_on(account_lookup(sequencer, indexer, account))?,
-            )?
-        };
-        enrich_account_related_transaction_decodes(&mut value)?;
-        Ok(value)
-    }
-
     fn call_logoscore_module(&self, module: &str, method: &str, args: Value) -> Result<Value> {
         let args = Args::new(args)?
             .iter()
@@ -649,24 +330,6 @@ impl InspectorBridge {
         bail!(
             "`{method}` is not exposed by the selected Basecamp module source `{}`; use RPC source for this call",
             source.module
-        )
-    }
-
-    fn blockchain_node_report(&self, source: &SourceEndpoint<'_>) -> Result<Value> {
-        if source.mode == CoreEndpointMode::Module {
-            return to_value(source_routing::blockchain_node_report());
-        }
-        to_value(
-            self.runtime
-                .block_on(blockchain::blockchain_node_report(source.endpoint)),
-        )
-    }
-
-    fn execution_head(&self, source: &SourceEndpoint<'_>) -> Result<Value> {
-        self.require_rpc_source(source, "head")?;
-        to_value(
-            self.runtime
-                .block_on(last_sequencer_block_id(source.endpoint))?,
         )
     }
 
@@ -1795,7 +1458,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_wallet_operation_record_is_removed_after_wait() -> Result<()> {
+    fn wallet_operation_record_is_removed_after_wait() -> Result<()> {
         let bridge = InspectorBridge::new()?;
         let result = bridge.call_module(INSPECTOR_MODULE, "localWalletCreateAccount", json!([]));
 
@@ -1810,7 +1473,7 @@ mod tests {
         }
         let operations_len = bridge.node_operations.len()?;
         if operations_len != 0 {
-            bail!("expected legacy operation registry cleanup, found {operations_len}",);
+            bail!("expected operation registry cleanup, found {operations_len}",);
         }
         Ok(())
     }
