@@ -1,7 +1,6 @@
 use std::{
     env,
     path::{Path, PathBuf},
-    process::{Command, Output},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -9,14 +8,15 @@ use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::{
-    ProgramFileInfo,
-    command_runner::{CommandRunPolicy, output_text, run_command},
-    program_file_info, raw_http_json,
-};
+use crate::{ProgramFileInfo, program_file_info, raw_http_json};
 
+mod cli;
 mod instruction;
 
+use cli::{
+    local_wallet_accounts_output, local_wallet_args_output, local_wallet_binary_version,
+    local_wallet_deploy_program_output, local_wallet_output_text, local_wallet_sync_private_output,
+};
 pub use instruction::{
     LocalWalletInstructionReport, LocalWalletInstructionRequest, ResolvedInstructionAccount,
     ResolvedInstructionArg, local_wallet_instruction_preview, local_wallet_instruction_submit,
@@ -711,136 +711,6 @@ fn extract_wallet_tx_hash(text: &str) -> Option<String> {
         }
     }
     None
-}
-
-fn local_wallet_binary_version(binary: &str, wallet_home: &str) -> Result<String> {
-    let mut command = Command::new(binary);
-    configure_local_wallet_command(&mut command, wallet_home);
-    command.arg("--version");
-    let mut redactions = Vec::new();
-    if local_wallet_binary_is_path_like(binary) {
-        redactions.push(binary);
-    }
-    if !wallet_home.trim().is_empty() {
-        redactions.push(wallet_home);
-    }
-    let output = run_local_wallet_command(
-        command,
-        "wallet --version",
-        LOCAL_WALLET_VERSION_TIMEOUT,
-        &redactions,
-    )?;
-    let text = if output.stdout.is_empty() {
-        local_wallet_output_text(&output.stderr, &redactions)
-    } else {
-        local_wallet_output_text(&output.stdout, &redactions)
-    };
-    let version = text
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .unwrap_or_default()
-        .chars()
-        .take(160)
-        .collect::<String>();
-    Ok(version)
-}
-
-fn local_wallet_deploy_program_output(
-    binary: &str,
-    wallet_home: &str,
-    program_path: &Path,
-    redactions: &[&str],
-) -> Result<Output> {
-    let mut command = Command::new(binary);
-    configure_local_wallet_command(&mut command, wallet_home);
-    command.arg("deploy-program").arg(program_path);
-    run_local_wallet_command(
-        command,
-        "wallet deploy-program",
-        LOCAL_WALLET_DEPLOY_TIMEOUT,
-        redactions,
-    )
-}
-
-fn local_wallet_sync_private_output(
-    binary: &str,
-    wallet_home: &str,
-    redactions: &[&str],
-) -> Result<Output> {
-    let mut command = Command::new(binary);
-    configure_local_wallet_command(&mut command, wallet_home);
-    command.arg("account").arg("sync-private");
-    run_local_wallet_command(
-        command,
-        "wallet account sync-private",
-        LOCAL_WALLET_SYNC_TIMEOUT,
-        redactions,
-    )
-}
-
-fn local_wallet_args_output(
-    binary: &str,
-    wallet_home: &str,
-    args: &[String],
-    label: &str,
-    timeout: Duration,
-    redactions: &[&str],
-) -> Result<Output> {
-    let mut command = Command::new(binary);
-    configure_local_wallet_command(&mut command, wallet_home);
-    command.args(args);
-    run_local_wallet_command(command, label, timeout, redactions)
-}
-
-fn local_wallet_accounts_output(
-    binary: &str,
-    wallet_home: &str,
-    redactions: &[&str],
-) -> Result<Output> {
-    let mut command = Command::new(binary);
-    configure_local_wallet_command(&mut command, wallet_home);
-    command.arg("account").arg("list").arg("--long");
-    run_local_wallet_command(
-        command,
-        "wallet account list --long",
-        LOCAL_WALLET_LIST_TIMEOUT,
-        redactions,
-    )
-}
-
-fn configure_local_wallet_command(command: &mut Command, wallet_home: &str) {
-    command.env_clear();
-    for name in LOCAL_WALLET_ENV_ALLOWLIST {
-        if let Some(value) = env::var_os(name) {
-            command.env(name, value);
-        }
-    }
-    if !wallet_home.trim().is_empty() {
-        command.env(LOCAL_WALLET_HOME_ENV, wallet_home);
-    }
-}
-
-fn run_local_wallet_command(
-    command: Command,
-    label: &str,
-    timeout: Duration,
-    redactions: &[&str],
-) -> Result<Output> {
-    run_command(
-        command,
-        CommandRunPolicy {
-            label,
-            timeout,
-            poll_interval: LOCAL_WALLET_POLL_INTERVAL,
-            redactions,
-            output_limit: LOCAL_WALLET_OUTPUT_LIMIT,
-        },
-    )
-}
-
-fn local_wallet_output_text(output: &[u8], redactions: &[&str]) -> String {
-    output_text(output, redactions, LOCAL_WALLET_OUTPUT_LIMIT)
 }
 
 fn parse_local_wallet_accounts_output(text: &str) -> Vec<LocalWalletAccountRow> {
