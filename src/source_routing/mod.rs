@@ -28,6 +28,6 @@ pub use policy::{
     storage_source_facts,
 };
 pub(crate) use selection::{
-    Args, DeliveryStoreQuery, SourceEndpoint, delivery_rest_source, require_mutating_diagnostics,
-    storage_rest_source,
+    Args, DeliveryStoreQuery, SourceArgsNormalization, SourceEndpoint, delivery_rest_source,
+    normalized_source_args, require_mutating_diagnostics, storage_rest_source,
 };

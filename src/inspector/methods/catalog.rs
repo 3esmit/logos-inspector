@@ -94,10 +94,6 @@ impl OperationDomain {
             Self::Execution
         }
     }
-
-    pub(crate) fn is_storage_or_delivery(self) -> bool {
-        matches!(self, Self::Storage | Self::Delivery)
-    }
 }
 
 impl OperationMethod {

@@ -3,10 +3,7 @@ use serde_json::{Value, json};
 
 use crate::{
     inspector::methods::{OperationDomain, OperationMethod, operation_uses_mutating_flag},
-    source_routing::{
-        Args, CoreSourceMode, SourceFamily, default_endpoint_for_domain,
-        default_source_mode_for_domain, source_mode_is_token, storage_rest_source,
-    },
+    source_routing::{Args, SourceArgsNormalization, normalized_source_args, storage_rest_source},
 };
 
 #[derive(Debug, Clone)]
@@ -67,7 +64,14 @@ pub(crate) fn node_operation_request_from_value(value: Value) -> Result<NodeOper
             .unwrap_or(false),
         label,
     };
-    request.args = normalized_node_operation_args(&request);
+    request.args = normalized_source_args(SourceArgsNormalization {
+        domain: &request.domain,
+        source_mode: &request.source_mode,
+        endpoint: &request.endpoint,
+        args: &request.args,
+        inserts_mutating_flag: operation_uses_mutating_flag(&request.method),
+        mutating_enabled: request.mutating_enabled,
+    });
     Ok(request)
 }
 
@@ -166,67 +170,4 @@ pub(super) fn node_operation_context(request: &NodeOperationRequest) -> Value {
         }
     }
     Value::Object(context)
-}
-
-fn normalized_node_operation_args(request: &NodeOperationRequest) -> Value {
-    if request.source_mode.is_empty() && request.endpoint.is_empty() {
-        return request.args.clone();
-    }
-    let Some(values) = request.args.as_array() else {
-        return request.args.clone();
-    };
-    if node_operation_args_have_source(request, values) {
-        return request.args.clone();
-    }
-    let mode = if request.source_mode.is_empty() {
-        default_source_mode_for_domain(&request.domain).to_owned()
-    } else {
-        request.source_mode.clone()
-    };
-    let endpoint = if request.endpoint.is_empty() {
-        default_endpoint_for_domain(&request.domain).to_owned()
-    } else {
-        request.endpoint.clone()
-    };
-    let mut normalized = vec![json!(mode), json!(endpoint)];
-    if operation_uses_mutating_flag(&request.method) {
-        normalized.push(json!(request.mutating_enabled));
-    }
-    let payload_start = if storage_or_delivery_domain(&request.domain)
-        && values
-            .first()
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .is_some_and(|first| {
-                first == endpoint || first.starts_with("http://") || first.starts_with("https://")
-            }) {
-        1
-    } else {
-        0
-    };
-    normalized.extend(values.iter().skip(payload_start).cloned());
-    Value::Array(normalized)
-}
-
-fn node_operation_args_have_source(request: &NodeOperationRequest, values: &[Value]) -> bool {
-    let Some(first) = values
-        .first()
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        return false;
-    };
-    if storage_or_delivery_domain(&request.domain) {
-        return source_mode_is_token(SourceFamily::Storage, first)
-            || source_mode_is_token(SourceFamily::Delivery, first);
-    }
-    first == request.endpoint
-        || first.starts_with("http://")
-        || first.starts_with("https://")
-        || CoreSourceMode::from_token(first).is_some()
-}
-
-fn storage_or_delivery_domain(domain: &str) -> bool {
-    OperationDomain::from_method(domain).is_storage_or_delivery()
 }
