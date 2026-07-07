@@ -1,7 +1,8 @@
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
-use super::{Args, SourceFamily, effective_source_mode, module, source_mode_is_token};
+use super::core_module;
+use crate::source_routing::{Args, SourceFamily, effective_source_mode, source_mode_is_token};
 
 pub(crate) const DELIVERY_MODULE: &str = "delivery_module";
 pub(crate) const STORAGE_MODULE: &str = "storage_module";
@@ -79,7 +80,7 @@ pub(crate) fn is_storage_module_source(args: &Args) -> bool {
 
 pub(crate) fn call_value(module: &str, method: &str, values: &[Value]) -> Result<Value> {
     let args = values.iter().map(module_arg_text).collect::<Vec<_>>();
-    module::call_value(module, method, &args)
+    core_module::call_value(module, method, &args)
 }
 
 pub(crate) fn dispatch_result(

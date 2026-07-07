@@ -1,15 +1,14 @@
-mod basecamp;
-mod module;
+mod adapters;
 mod policy;
 mod selection;
 
-pub(crate) use basecamp::{
+#[cfg(test)]
+pub(crate) use adapters::{BLOCKCHAIN_MODULE, INDEXER_MODULE};
+pub(crate) use adapters::{
     DELIVERY_MODULE, STORAGE_MODULE, call_value, delivery_lifecycle_args, delivery_message_args,
     dispatch_result, is_storage_module_source, storage_args,
 };
-#[cfg(test)]
-pub(crate) use module::{BLOCKCHAIN_MODULE, INDEXER_MODULE};
-pub(crate) use module::{
+pub(crate) use adapters::{
     LEZ_CORE_MODULE, attach_module_account_transactions, blockchain_block, blockchain_blocks,
     blockchain_live_blocks_snapshot, blockchain_node_report, blockchain_recent_blocks,
     blockchain_transaction, indexer_block_by_hash, indexer_blocks, indexer_finalized_head,

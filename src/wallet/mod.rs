@@ -15,6 +15,13 @@ use crate::{
     program_file_info, raw_http_json,
 };
 
+mod instruction;
+
+pub use instruction::{
+    LocalWalletInstructionReport, LocalWalletInstructionRequest, ResolvedInstructionAccount,
+    ResolvedInstructionArg, local_wallet_instruction_preview, local_wallet_instruction_submit,
+};
+
 pub const LOCAL_WALLET_HOME_ENV: &str = "LEE_WALLET_HOME_DIR";
 const LOCAL_WALLET_DEPLOY_TIMEOUT: Duration = Duration::from_secs(120);
 const LOCAL_WALLET_MUTATION_TIMEOUT: Duration = Duration::from_secs(300);

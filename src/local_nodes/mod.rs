@@ -1,8 +1,7 @@
 use std::{
-    env, fs,
-    path::{Component, Path, PathBuf},
+    fs,
+    path::{Path, PathBuf},
     process::Command,
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context as _, Result, bail};
@@ -10,6 +9,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::{command_runner::spawn_detached, logoscore, state_store::config_dir};
+
+mod paths;
+mod process;
+mod time;
+
+use paths::{path_is_inside, remove_dir_inside};
+use process::{find_command, process_is_alive, stop_process};
+use time::now_millis;
 
 const STATE_FILE: &str = "local_nodes.json";
 const MANIFEST_FILE: &str = "local-network.json";
@@ -487,17 +494,6 @@ pub fn command_spec_for(
             Some(spawn_spec("sequencer_service", vec![config]))
         }
         _ => None,
-    }
-}
-
-#[must_use]
-pub fn path_is_inside(parent: &Path, child: &Path) -> bool {
-    match (
-        normalized_absolute_path(parent),
-        normalized_absolute_path(child),
-    ) {
-        (Ok(parent), Ok(child)) => child != parent && child.starts_with(parent),
-        _ => false,
     }
 }
 
@@ -1333,18 +1329,6 @@ fn tool_status(command: &str) -> ToolStatus {
     }
 }
 
-fn find_command(command: &str) -> Option<String> {
-    if command.contains(std::path::MAIN_SEPARATOR) {
-        let path = Path::new(command);
-        return path.is_file().then(|| path.display().to_string());
-    }
-    let path_var = env::var_os("PATH")?;
-    env::split_paths(&path_var)
-        .map(|path| path.join(command))
-        .find(|path| path.is_file())
-        .map(|path| path.display().to_string())
-}
-
 fn load_state() -> Result<LocalNodesState> {
     let config = config_dir()?;
     let path = state_path_for_config(&config);
@@ -1403,77 +1387,10 @@ fn sanitize_network_id(value: &str) -> String {
         .collect()
 }
 
-fn remove_dir_inside(root: &Path, target: &Path) -> Result<()> {
-    if !path_is_inside(root, target) {
-        bail!(
-            "refusing to remove {} because it is outside managed workspace {}",
-            target.display(),
-            root.display()
-        );
-    }
-    if target.exists() {
-        fs::remove_dir_all(target)
-            .with_context(|| format!("failed to remove {}", target.display()))?;
-    }
-    Ok(())
-}
-
-fn normalized_absolute_path(path: &Path) -> Result<PathBuf> {
-    let mut normalized = if path.is_absolute() {
-        PathBuf::new()
-    } else {
-        env::current_dir().context("failed to read current directory")?
-    };
-    for component in path.components() {
-        match component {
-            Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
-            Component::RootDir => normalized.push(component.as_os_str()),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if !normalized.pop() {
-                    bail!("path {} escapes filesystem root", path.display());
-                }
-            }
-            Component::Normal(value) => normalized.push(value),
-        }
-    }
-    Ok(normalized)
-}
-
-fn process_is_alive(pid: u32) -> bool {
-    Command::new("kill")
-        .arg("-0")
-        .arg(pid.to_string())
-        .status()
-        .is_ok_and(|status| status.success())
-}
-
-fn stop_process(pid: u32) -> Result<()> {
-    #[cfg(unix)]
-    let target = format!("-{pid}");
-    #[cfg(not(unix))]
-    let target = pid.to_string();
-    let status = Command::new("kill")
-        .arg("-TERM")
-        .arg(target)
-        .status()
-        .with_context(|| format!("failed to stop process {pid}"))?;
-    if !status.success() {
-        bail!("process {pid} stop exited with {status}");
-    }
-    Ok(())
-}
-
-fn now_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
-        .unwrap_or(0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
 
     #[test]
     fn local_profile_includes_sequencer_and_network_actions() {
