@@ -1,7 +1,11 @@
 #include "logos_inspector_impl.h"
 
 namespace {
-constexpr const char* kModuleVersion = "0.2.0-rc6";
+#ifndef LOGOS_INSPECTOR_MODULE_VERSION
+#define LOGOS_INSPECTOR_MODULE_VERSION "unknown"
+#endif
+
+constexpr const char* kModuleVersion = LOGOS_INSPECTOR_MODULE_VERSION;
 
 std::string jsonError(const std::string& error)
 {

@@ -9,6 +9,7 @@ endif()
 
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/metadata.json" METADATA_JSON)
 string(JSON MODULE_NAME GET "${METADATA_JSON}" name)
+string(JSON MODULE_VERSION GET "${METADATA_JSON}" version)
 
 logos_module(
     NAME ${MODULE_NAME}
@@ -17,4 +18,9 @@ logos_module(
         src/logos_inspector_impl.cpp
     EXTERNAL_LIBS
         logos_inspector_core
+)
+
+target_compile_definitions(${MODULE_NAME}_module_plugin
+    PRIVATE
+        LOGOS_INSPECTOR_MODULE_VERSION="${MODULE_VERSION}"
 )

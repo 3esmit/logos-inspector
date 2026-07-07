@@ -1,6 +1,5 @@
 pub(crate) mod accounts;
 pub(crate) mod block;
-pub(crate) mod channels;
 pub(crate) mod indexer;
 pub(crate) mod programs;
 pub(crate) mod sequencer;
@@ -19,10 +18,6 @@ pub use accounts::{
 };
 pub(crate) use block::decode_sequencer_block;
 pub use block::{BlockSummary, summarize_block};
-pub use channels::{
-    ChannelOperationMatch, ChannelScanReport, ChannelSummary, channel_scan, channel_state,
-    extract_channel_operations, summarize_channel_operations,
-};
 #[cfg(test)]
 pub(crate) use indexer::summarize_indexer_transaction;
 pub use indexer::{

@@ -1,9 +1,7 @@
-use anyhow::{Context as _, Result, bail};
 use serde::Serialize;
-use serde_json::Value;
 
 use crate::{
-    ProbeReport, logoscore, response_excerpt,
+    ProbeReport, logoscore,
     source_routing::{
         SourceCapabilityFact, SourceFacts, SourceHealthFacts, SourceProbeFact, SourceProbeKey,
     },
@@ -39,7 +37,7 @@ pub struct ModuleReport {
 }
 
 impl ModuleReport {
-    pub(super) fn new(
+    pub(crate) fn new(
         module: impl Into<String>,
         module_info: ProbeReport,
         probes: Vec<ProbeReport>,
@@ -54,7 +52,7 @@ impl ModuleReport {
         }
     }
 
-    pub(super) fn with_source_facts(mut self, facts: SourceFacts) -> Self {
+    pub(crate) fn with_source_facts(mut self, facts: SourceFacts) -> Self {
         self.health = Some(facts.health);
         self.probe_facts = facts.probe_facts;
         self.capability_facts = facts.capability_facts;
@@ -107,44 +105,6 @@ pub fn capabilities_report() -> ModuleReport {
     )
 }
 
-pub(super) async fn raw_http_value(endpoint: &str, path: &str) -> Result<Value> {
-    let text = raw_http_text_url(&http_url(endpoint, path)).await?;
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return Ok(Value::Null);
-    }
-    match serde_json::from_str(trimmed) {
-        Ok(value) => Ok(value),
-        Err(_) => Ok(Value::String(trimmed.to_owned())),
-    }
-}
-
-pub(super) async fn raw_http_text_url(url: &str) -> Result<String> {
-    let response = reqwest::Client::new()
-        .get(url)
-        .send()
-        .await
-        .with_context(|| format!("failed to call {url}"))?;
-    let status = response.status();
-    let text = response
-        .text()
-        .await
-        .context("failed to read http response body")?;
-    if !status.is_success() {
-        bail!(
-            "http call `{url}` failed with status {status}: {}",
-            response_excerpt(&text)
-        );
-    }
-    Ok(text)
-}
-
-pub(super) fn http_url(endpoint: &str, path: &str) -> String {
-    let endpoint = endpoint.trim_end_matches('/');
-    let path = path.trim_start_matches('/');
-    format!("{endpoint}/{path}")
-}
-
 pub(super) fn module_info_probe(module: &str) -> ProbeReport {
     ProbeReport::from_result(
         format!("{module} info"),
@@ -183,23 +143,4 @@ pub(super) fn call_source_probe(
 
 pub(super) fn optional(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
-}
-
-pub(super) fn scalar_field(value: &Value, keys: &[&str]) -> Option<Value> {
-    match value {
-        Value::Object(object) => {
-            for key in keys {
-                if let Some(value) = object.get(*key) {
-                    return match value {
-                        Value::Object(_) => {
-                            scalar_field(value, keys).or_else(|| Some(value.clone()))
-                        }
-                        _ => Some(value.clone()),
-                    };
-                }
-            }
-            None
-        }
-        _ => None,
-    }
 }

@@ -19,15 +19,13 @@ use logos_inspector::{
     local_wallet_profile_status, local_wallet_send_transaction, local_wallet_sync_private,
     modules::blockchain_module_report,
     modules::capabilities_report,
-    modules::delivery_source_report,
     modules::logoscore_status_report,
     modules::modules_report,
-    modules::storage_source_report,
     network_profiles, overview, program_file_info, raw_rpc_report, resolve_network_endpoints,
     sequencer_block, sequencer_health, sequencer_program_ids, sequencer_transaction,
     sequencer_transaction_inspection, sequencer_transaction_inspection_with_idl,
     sequencer_transaction_trace, sequencer_transaction_trace_with_idl,
-    source_routing::source_policy_report,
+    source_routing::{delivery_source_report, source_policy_report, storage_source_report},
 };
 use serde_json::Value;
 

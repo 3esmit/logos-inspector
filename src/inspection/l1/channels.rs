@@ -4,7 +4,7 @@ use anyhow::{Result, bail};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::blockchain::blockchain_blocks;
+use super::bedrock::blockchain_blocks;
 use crate::raw_http_json;
 
 #[derive(Debug, Clone, Serialize)]

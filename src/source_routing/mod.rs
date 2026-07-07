@@ -1,5 +1,6 @@
 mod adapters;
 mod policy;
+mod reports;
 mod selection;
 
 #[cfg(test)]
@@ -14,6 +15,10 @@ pub(crate) use adapters::{
     blockchain_transaction, indexer_block_by_hash, indexer_blocks, indexer_finalized_head,
     indexer_health, indexer_status, indexer_transfer_recipients,
 };
+pub(crate) use adapters::{
+    delivery_store_query_url, raw_http_json_url, rest_empty_request, rest_json_request, rest_url,
+    storage_rest_download_bytes, storage_rest_upload, storage_rest_upload_bytes,
+};
 pub use policy::{
     CoreEndpointMode, CoreSourceMode, DEFAULT_DELIVERY_METRICS_ENDPOINT,
     DEFAULT_DELIVERY_REST_ENDPOINT, DEFAULT_INDEXER_ENDPOINT, DEFAULT_NODE_ENDPOINT,
@@ -27,6 +32,7 @@ pub use policy::{
     normalized_source_mode, source_mode_is_token, source_mode_policy, source_policy_report,
     storage_source_facts,
 };
+pub use reports::{delivery_source_report, storage_source_report};
 pub(crate) use selection::{
     Args, DeliveryStoreQuery, SourceArgsNormalization, SourceEndpoint, delivery_rest_source,
     normalized_source_args, require_mutating_diagnostics, storage_rest_source,

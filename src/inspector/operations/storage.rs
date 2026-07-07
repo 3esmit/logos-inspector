@@ -6,11 +6,12 @@ use serde_json::{Value, json};
 use tokio::io::AsyncWriteExt as _;
 
 use crate::{
-    bridge::{
-        blocking_value, rest_empty_request, rest_json_request, storage_rest_upload, to_value,
-    },
+    bridge::{blocking_value, to_value},
     raw_http_json,
-    source_routing::{self, Args, require_mutating_diagnostics, storage_rest_source},
+    source_routing::{
+        self, Args, require_mutating_diagnostics, rest_empty_request, rest_json_request, rest_url,
+        storage_rest_source, storage_rest_upload,
+    },
 };
 
 use super::record::update_node_operation_progress;
@@ -328,12 +329,6 @@ pub(super) async fn storage_rest_download_tracked(
         "source": if local_only { "local" } else { "network" },
         "endpoint": endpoint,
     }))
-}
-
-fn rest_url(endpoint: &str, path: &str) -> String {
-    let endpoint = endpoint.trim_end_matches('/');
-    let path = path.trim_start_matches('/');
-    format!("{endpoint}/{path}")
 }
 
 fn response_excerpt_bytes(bytes: &[u8]) -> String {
