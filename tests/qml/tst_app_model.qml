@@ -118,6 +118,12 @@ TestCase {
         model.blockchainModuleReport = null
         model.storageModuleReport = null
         model.messagingModuleReport = null
+        model.deliveryModuleEvents = []
+        model.deliveryModuleEventRevision = 0
+        model.deliveryConnectionStatus = ""
+        model.deliveryNodeStatus = ""
+        model.blockchainModuleEventRevision = 0
+        model.blockchainLastEventText = ""
         model.storageActiveOperation = null
         model.storageActiveOperationRevision = 0
         model.nodeOperations = ({})
@@ -240,7 +246,7 @@ TestCase {
                 storage: [
                     sourceMode("auto", ["auto"], "rest", "Auto", "Auto: Standalone REST", "Use standalone REST", "rest_endpoint", true, true, true, true),
                     sourceMode("rest", ["standalone rest", "rest"], "rest", "Standalone REST", "Standalone REST", "Read-only storage facts", "rest_endpoint", true, true, true, true),
-                    sourceMode("module", ["basecamp module", "module"], "module", "Storage module", "Storage module", "Use storage_module through logoscore", "module", false, false, true, false),
+                    sourceMode("module", ["basecamp module", "module"], "module", "Storage module", "Storage module", "Use storage_module through logoscore", "module", false, false, true, true),
                     sourceMode("metrics", ["metrics"], "metrics", "Metrics only", "Metrics only", "Scrape metrics", "metrics_endpoint", false, true, false, false),
                     sourceMode("unsupported", ["c-library", "local-os", "unsupported"], "unsupported", "Unsupported saved source", "Unsupported source", "Select a supported source", "none", false, false, false, false)
                 ]
@@ -356,18 +362,19 @@ TestCase {
         compare(localNodeHistory[0].status, "completed")
     }
 
-    function test_core_source_args_keep_rpc_shape_in_basecamp_auto() {
-        compare(basecampModel.effectiveCoreSourceMode(basecampModel.indexerSourceMode), "rpc")
+    function test_core_source_args_use_module_shape_in_basecamp_auto() {
+        compare(basecampModel.effectiveCoreSourceMode(basecampModel.indexerSourceMode), "module")
 
         const args = basecampModel.indexerArgs(["hash-1"])
 
-        compare(args.length, 2)
-        compare(args[0], basecampModel.indexerUrl)
-        compare(args[1], "hash-1")
+        compare(args.length, 3)
+        compare(args[0], "module")
+        compare(args[1], basecampModel.indexerUrl)
+        compare(args[2], "hash-1")
     }
 
-    function test_rpc_only_helpers_keep_rpc_shape_in_basecamp_auto() {
-        compare(basecampModel.effectiveCoreSourceMode(basecampModel.blockchainSourceMode), "rpc")
+    function test_rpc_only_helpers_keep_rpc_shape_in_basecamp() {
+        compare(basecampModel.effectiveCoreSourceMode(basecampModel.blockchainSourceMode), "module")
 
         const channelArgs = basecampModel.blockchainRpcArgs([10, 20])
         compare(channelArgs.length, 3)
@@ -385,15 +392,17 @@ TestCase {
         compare(executionArgs[1], "tx-1")
     }
 
-    function test_account_lookup_args_stay_rpc_for_account_decode_contract() {
+    function test_account_lookup_args_use_module_indexer_for_history() {
         basecampModel.indexerSourceMode = "module"
 
         const args = basecampModel.accountLookupArgs("account-1")
 
-        compare(args.length, 3)
-        compare(args[0], basecampModel.sequencerUrl)
-        compare(args[1], basecampModel.indexerUrl)
-        compare(args[2], "account-1")
+        compare(args.length, 5)
+        compare(args[0], "rpc")
+        compare(args[1], basecampModel.sequencerUrl)
+        compare(args[2], "module")
+        compare(args[3], basecampModel.indexerUrl)
+        compare(args[4], "account-1")
     }
 
     function test_messaging_and_storage_auto_use_standalone_routes_without_basecamp() {
@@ -412,18 +421,18 @@ TestCase {
         compare(model.storageSourceTarget(), model.configuredStorageRestUrl())
     }
 
-    function test_messaging_and_storage_auto_use_standalone_routes_in_basecamp() {
-        compare(basecampModel.effectiveMessagingSourceMode(basecampModel.messagingSourceMode), "rest")
-        compare(basecampModel.deliverySourceReportArgs()[0], "rest")
-        compare(basecampModel.deliverySourceReportArgs()[1], basecampModel.configuredMessagingRestUrl())
-        compare(basecampModel.deliverySourceReportArgs()[2], basecampModel.messagingMetricsUrl)
-        compare(basecampModel.deliverySourceTarget(), basecampModel.configuredMessagingRestUrl())
+    function test_messaging_and_storage_auto_use_module_routes_in_basecamp() {
+        compare(basecampModel.effectiveMessagingSourceMode(basecampModel.messagingSourceMode), "module")
+        compare(basecampModel.deliverySourceReportArgs()[0], "module")
+        compare(basecampModel.deliverySourceReportArgs()[1], "")
+        compare(basecampModel.deliverySourceReportArgs()[2], "")
+        compare(basecampModel.deliverySourceTarget(), basecampModel.deliveryModule)
 
-        compare(basecampModel.effectiveStorageSourceMode(basecampModel.storageSourceMode), "rest")
-        compare(basecampModel.storageSourceReportArgs(false)[0], "rest")
-        compare(basecampModel.storageSourceReportArgs(false)[1], basecampModel.configuredStorageRestUrl())
-        compare(basecampModel.storageSourceReportArgs(false)[2], basecampModel.storageMetricsUrl)
-        compare(basecampModel.storageSourceTarget(), basecampModel.configuredStorageRestUrl())
+        compare(basecampModel.effectiveStorageSourceMode(basecampModel.storageSourceMode), "module")
+        compare(basecampModel.storageSourceReportArgs(false)[0], "module")
+        compare(basecampModel.storageSourceReportArgs(false)[1], "")
+        compare(basecampModel.storageSourceReportArgs(false)[2], "")
+        compare(basecampModel.storageSourceTarget(), basecampModel.storageModule)
     }
 
     function test_source_policy_load_supplies_defaults_and_profile_matching() {
@@ -486,8 +495,8 @@ TestCase {
         model.storageRestUrl = ""
         compare(model.configuredMessagingRestUrl(), "http://policy-delivery.invalid:8645")
         compare(model.configuredStorageRestUrl(), "http://policy-storage.invalid/api/storage/v1")
-        compare(model.normalizedCoreSourceMode("basecamp"), "auto")
-        compare(model.effectiveCoreSourceMode("basecamp"), "rpc")
+        compare(model.normalizedCoreSourceMode("basecamp"), "module")
+        compare(model.effectiveCoreSourceMode("basecamp"), "module")
         compare(model.normalizedMessagingSourceMode("direct waku rest"), "rest")
         compare(model.normalizedStorageSourceMode("standalone rest"), "rest")
 
@@ -610,7 +619,7 @@ TestCase {
         compare(model.storageSourceLabel(), "Storage module")
         compare(model.storageSourceTarget(), model.storageModule)
         verify(model.sourceModeSupportsCidProbe("storage", model.storageSourceMode))
-        verify(!model.sourceModeSupportsMutatingDiagnostics("storage", model.storageSourceMode))
+        verify(model.sourceModeSupportsMutatingDiagnostics("storage", model.storageSourceMode))
 
         model.messagingSourceMode = "metrics"
         compare(model.deliverySourceLabel(), "Metrics only")
@@ -1626,6 +1635,47 @@ TestCase {
         compare(model.blocksLiveUnknownEvents, 1)
         compare(model.resultOwner, "blocks")
         compare(model.resultValue.unknown_events.length, 1)
+    }
+
+    function test_blockchain_module_new_block_event_updates_live_rows() {
+        model.blocksPageRows = [
+            { header: { slot: 30, id: "slot-30" }, transactions: [] }
+        ]
+        model.blocksPageSlotFrom = 30
+        model.blocksPageSlotTo = 30
+
+        model.handleModuleEvent(model.blockchainModule, "newBlock", [
+            JSON.stringify({ header: { slot: 31, id: "slot-31-event" }, transactions: [] })
+        ])
+
+        compare(model.blocksPageRows.length, 2)
+        compare(model.blocksPageRows[0].header.id, "slot-31-event")
+        compare(model.blocksLiveSource, "module_event")
+        compare(model.blocksPageSlotTo, 31)
+        verify(model.blockchainModuleEventRevision > 0)
+    }
+
+    function test_delivery_module_message_event_merges_social_comment() {
+        const topic = "/lez/account/account-1/comments"
+        const payload = {
+            kind: "comment",
+            version: 1,
+            identity: { display_name: "Peer" },
+            body: "hello",
+            created_at: "2026-07-07T00:00:00Z",
+            conversation_id: topic
+        }
+
+        model.handleModuleEvent(model.deliveryModule, "messageReceived", [
+            "hash-1",
+            topic,
+            JSON.stringify(payload),
+            "1000"
+        ])
+
+        compare(model.deliveryModuleEventRows()[0].label, "messageReceived")
+        compare(model.socialComments(topic).length, 1)
+        compare(model.socialComments(topic)[0].body, "hello")
     }
 
     function test_stop_blocks_live_mode_keeps_paged_rows() {

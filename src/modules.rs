@@ -80,21 +80,15 @@ pub fn modules_report() -> LogosModulesReport {
 
 pub fn blockchain_module_report(address: Option<&str>) -> ModuleReport {
     let mut probes = vec![
-        call_probe(BLOCKCHAIN_MODULE, "get_peer_id", &[]),
         call_probe(BLOCKCHAIN_MODULE, "get_cryptarchia_info", &[]),
-        call_probe(BLOCKCHAIN_MODULE, "get_blockchain_state", &[]),
         call_probe(BLOCKCHAIN_MODULE, "wallet_get_known_addresses", &[]),
     ];
     if let Some(address) = optional(address) {
-        probes.extend([
-            call_probe(BLOCKCHAIN_MODULE, "wallet_get_balance", &[address]),
-            call_probe(BLOCKCHAIN_MODULE, "wallet_get_notes", &[address]),
-            call_probe(
-                BLOCKCHAIN_MODULE,
-                "wallet_get_claimable_vouchers",
-                &[address],
-            ),
-        ]);
+        probes.push(call_probe(
+            BLOCKCHAIN_MODULE,
+            "wallet_get_balance",
+            &[address],
+        ));
     }
     ModuleReport::new(
         BLOCKCHAIN_MODULE,

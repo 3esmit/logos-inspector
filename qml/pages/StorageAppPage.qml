@@ -45,7 +45,7 @@ ColumnLayout {
         breadcrumb: qsTr("Home / Network / Storage")
         title: qsTr("Storage")
         layerLabel: qsTr("Network")
-        subtitle: qsTr("Inspect local manifests and CID presence through the configured Storage REST source.")
+        subtitle: qsTr("Inspect manifests, CID presence, and transfers through the configured Storage source.")
         Layout.fillWidth: true
     }
 
@@ -82,6 +82,14 @@ ColumnLayout {
             label: qsTr("Network")
             value: root.model.networkPreset
             tone: "neutral"
+            Layout.fillWidth: true
+        }
+
+        StatusChip {
+            theme: root.theme
+            label: qsTr("Space")
+            value: root.model.storageSpaceSummary()
+            tone: root.model.storageSpaceTone()
             Layout.fillWidth: true
         }
 
@@ -342,16 +350,16 @@ ColumnLayout {
             title: qsTr("Transfer")
 
             StatusMessage {
-                visible: !root.model.storageRestSource()
+                visible: !root.model.storageDataSource()
                 theme: root.theme
                 tone: "warning"
-                title: qsTr("REST source required")
-                message: qsTr("Upload, download, fetch, and remove use the configured Storage REST source.")
+                title: qsTr("Storage source required")
+                message: qsTr("Upload, download, fetch, and remove use the configured Storage source.")
                 Layout.fillWidth: true
             }
 
             StatusMessage {
-                visible: root.model.storageRestSource() && !root.model.mutatingDiagnosticsEnabled
+                visible: root.model.storageDataSource() && !root.model.mutatingDiagnosticsEnabled
                 theme: root.theme
                 tone: "warning"
                 title: qsTr("Mutating diagnostics off")
@@ -519,7 +527,7 @@ ColumnLayout {
 
         theme: root.theme
         title: root.model.pendingLabel
-        message: qsTr("This will call the configured Storage REST source and may change local node state or local files.")
+        message: qsTr("This will call the configured Storage source and may change local node state or local files.")
         confirmText: root.model.pendingLabel
         confirmEnabled: root.model.pendingMethod.length > 0
         onAccepted: root.model.runPendingStorage()

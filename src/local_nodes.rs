@@ -1,7 +1,7 @@
 use std::{
     env, fs,
     path::{Component, Path, PathBuf},
-    process::{Command, Stdio},
+    process::Command,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -9,7 +9,7 @@ use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::{logoscore, state_store::config_dir};
+use crate::{command_runner::spawn_detached, logoscore, state_store::config_dir};
 
 const STATE_FILE: &str = "local_nodes.json";
 const MANIFEST_FILE: &str = "local-network.json";
@@ -1258,20 +1258,9 @@ fn execute_command_spec(spec: &LocalNodeCommandSpec) -> Result<Value> {
             for arg in &spec.args {
                 command.arg(arg);
             }
-            command
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null());
-            #[cfg(unix)]
-            {
-                use std::os::unix::process::CommandExt as _;
-                command.process_group(0);
-            }
-            let child = command
-                .spawn()
-                .with_context(|| format!("failed to start {}", spec.display))?;
+            let pid = spawn_detached(command, &spec.display)?;
             Ok(json!({
-                "pid": child.id(),
+                "pid": pid,
                 "command": spec.display,
             }))
         }

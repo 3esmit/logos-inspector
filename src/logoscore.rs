@@ -1,14 +1,13 @@
-use std::{
-    env,
-    io::ErrorKind,
-    process::{Command, Stdio},
-    thread,
-    time::{Duration, Instant},
-};
+use std::{env, process::Command, time::Duration};
 
 use anyhow::{Context as _, Result, bail};
 use serde::Serialize;
 use serde_json::Value;
+
+use crate::command_runner::{CommandRunPolicy, output_text, run_command};
+
+const LOGOSCORE_POLL_INTERVAL: Duration = Duration::from_millis(25);
+const LOGOSCORE_OUTPUT_LIMIT: usize = 4096;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct LogosCoreOutput {
@@ -92,59 +91,20 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
-    let mut command = command_for_runner(runner, args);
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command
-        .spawn()
-        .with_context(|| format!("failed to run {}", runner.label))?;
+    let command = command_for_runner(runner, args);
     let timeout = command_timeout();
-    let started = Instant::now();
-    loop {
-        if child
-            .try_wait()
-            .with_context(|| format!("failed to poll {}", runner.label))?
-            .is_some()
-        {
-            break;
-        }
-        if started.elapsed() >= timeout {
-            match child.kill() {
-                Ok(()) => {}
-                Err(error) if error.kind() == ErrorKind::InvalidInput => {}
-                Err(error) => {
-                    return Err(error)
-                        .with_context(|| format!("failed to kill timed-out {}", runner.label));
-                }
-            }
-            let output = child
-                .wait_with_output()
-                .with_context(|| format!("failed to collect timed-out {}", runner.label))?;
-            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-            let message = if stderr.is_empty() { &stdout } else { &stderr };
-            bail!(
-                "{} timed out after {} ms: {}",
-                runner.label,
-                timeout.as_millis(),
-                message
-            );
-        }
-        thread::sleep(Duration::from_millis(25));
-    }
-    let output = child
-        .wait_with_output()
-        .with_context(|| format!("failed to collect {}", runner.label))?;
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-    if !output.status.success() {
-        let message = if stderr.is_empty() { &stdout } else { &stderr };
-        bail!(
-            "{} exited with {}: {}",
-            runner.label,
-            output.status,
-            message
-        );
-    }
+    let output = run_command(
+        command,
+        CommandRunPolicy {
+            label: &runner.label,
+            timeout,
+            poll_interval: LOGOSCORE_POLL_INTERVAL,
+            redactions: &[],
+            output_limit: LOGOSCORE_OUTPUT_LIMIT,
+        },
+    )?;
+    let stdout = output_text(&output.stdout, &[], LOGOSCORE_OUTPUT_LIMIT);
+    let stderr = output_text(&output.stderr, &[], LOGOSCORE_OUTPUT_LIMIT);
     let value = serde_json::from_str(&stdout).with_context(|| {
         format!(
             "{} returned non-json output: {}",

@@ -54,7 +54,7 @@ ColumnLayout {
         breadcrumb: qsTr("Home / Network / Delivery")
         title: qsTr("Delivery")
         layerLabel: qsTr("Network")
-        subtitle: qsTr("Inspect Delivery health, node info, version, and metrics through the configured REST source.")
+        subtitle: qsTr("Inspect Delivery health, node state, subscriptions, sends, and module events through the configured source.")
         Layout.fillWidth: true
     }
 
@@ -91,6 +91,14 @@ ColumnLayout {
             label: qsTr("Network")
             value: root.model.messagingNetworkPreset
             tone: "neutral"
+            Layout.fillWidth: true
+        }
+
+        StatusChip {
+            theme: root.theme
+            label: qsTr("Events")
+            value: root.model.deliveryModuleEventSummary()
+            tone: root.model.deliveryConnectionStatus.length > 0 ? "success" : "neutral"
             Layout.fillWidth: true
         }
 
@@ -569,6 +577,15 @@ ColumnLayout {
                 spacing: root.theme.gapSmall
                 Layout.fillWidth: true
 
+                Text {
+                    text: qsTr("Operations")
+                    color: root.theme.textMuted
+                    textFormat: Text.PlainText
+                    font.pixelSize: root.theme.secondaryText
+                    font.weight: Font.Medium
+                    Layout.fillWidth: true
+                }
+
                 Repeater {
                     model: operationLog.count > 0 ? operationLog : emptyOperationModel
 
@@ -583,6 +600,29 @@ ColumnLayout {
                         labelText: label
                         statusText: status
                         detailText: detail
+                    }
+                }
+
+                Text {
+                    text: qsTr("Module events")
+                    color: root.theme.textMuted
+                    textFormat: Text.PlainText
+                    font.pixelSize: root.theme.secondaryText
+                    font.weight: Font.Medium
+                    Layout.fillWidth: true
+                }
+
+                Repeater {
+                    model: root.model.deliveryModuleEventRows()
+
+                    delegate: OperationHistoryRow {
+                        required property var modelData
+
+                        theme: root.theme
+                        timeText: String(modelData.time || "")
+                        labelText: String(modelData.label || "")
+                        statusText: String(modelData.status || "")
+                        detailText: String(modelData.detail || "")
                     }
                 }
             }

@@ -155,7 +155,7 @@ pub async fn account_lookup_with_idl(
     ))
 }
 
-fn account_report_with_optional_idl_decode(
+pub(crate) fn account_report_with_optional_idl_decode(
     account: AccountReport,
     idl_json: &str,
     account_type: Option<&str>,

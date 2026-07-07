@@ -141,6 +141,7 @@ TestCase {
         state.resultText = ""
         state.resultIsError = false
         state.resultOwner = ""
+        state.sourceReport = null
         state.manifests = []
         state.lastOperation = "None"
         state.pendingMethod = ""
@@ -307,5 +308,65 @@ TestCase {
         state.openStorageSettings()
         compare(gateway.openedSection, "network")
         compare(gateway.openedSubSection, "storage")
+    }
+
+    function test_module_source_can_refresh_manifests() {
+        state.effectiveSourceMode = "module"
+        state.sourceTargetKind = "module"
+        state.usesRestEndpoint = false
+        gateway.callResponses = ({
+            storageManifests: {
+                ok: true,
+                value: [
+                    { cid: "z-module", filename: "module.bin", datasetSize: 7 }
+                ],
+                text: "OK",
+                error: ""
+            }
+        })
+
+        state.refreshManifests(true)
+
+        compare(gateway.lastMethod, "storageManifests")
+        compare(gateway.lastArgs[0], "module")
+        compare(gateway.lastArgs[1], "")
+        compare(state.manifestRows()[0].cid, "z-module")
+    }
+
+    function test_storage_module_events_update_active_operation() {
+        state.applyStorageModuleEvent("storageUploadProgress", [
+            JSON.stringify({ sessionId: "1", bytes: 8 })
+        ])
+
+        compare(state.activeOperation.status, "running")
+        compare(state.activeOperation.externalSessionId, "1")
+        compare(state.activeOperation.bytesWritten, 8)
+
+        state.applyStorageModuleEvent("storageUploadDone", [
+            JSON.stringify({ sessionId: "1", success: true, cid: "z-done", bytes: 8 })
+        ])
+
+        compare(state.activeOperation.status, "completed")
+        compare(state.activeOperation.cid, "z-done")
+        compare(state.lastOperation, "Complete")
+        compare(gateway.history.length, 1)
+    }
+
+    function test_storage_space_summary_uses_source_report_probe() {
+        state.sourceReport = {
+            probe_facts: [
+                {
+                    key: "space",
+                    ok: true,
+                    value: {
+                        quotaUsedBytes: 75,
+                        quotaMaxBytes: 100
+                    }
+                }
+            ]
+        }
+
+        compare(state.storageSpaceSummary(), "75% used")
+        compare(state.storageSpaceTone(), "warning")
     }
 }

@@ -1,17 +1,19 @@
 use std::{
     env,
-    io::ErrorKind,
     path::{Path, PathBuf},
-    process::{Command, Output, Stdio},
-    thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    process::{Command, Output},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::{ProgramFileInfo, program_file_info, raw_http_json};
+use crate::{
+    ProgramFileInfo,
+    command_runner::{CommandRunPolicy, output_text, run_command},
+    program_file_info, raw_http_json,
+};
 
 pub const LOCAL_WALLET_HOME_ENV: &str = "LEE_WALLET_HOME_DIR";
 const LOCAL_WALLET_DEPLOY_TIMEOUT: Duration = Duration::from_secs(120);
@@ -813,76 +815,25 @@ fn configure_local_wallet_command(command: &mut Command, wallet_home: &str) {
 }
 
 fn run_local_wallet_command(
-    mut command: Command,
+    command: Command,
     label: &str,
     timeout: Duration,
     redactions: &[&str],
 ) -> Result<Output> {
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command
-        .spawn()
-        .with_context(|| format!("failed to run {label}"))?;
-    let started = Instant::now();
-    loop {
-        if child
-            .try_wait()
-            .with_context(|| format!("failed to poll {label}"))?
-            .is_some()
-        {
-            break;
-        }
-        if started.elapsed() >= timeout {
-            match child.kill() {
-                Ok(()) => {}
-                Err(error) if error.kind() == ErrorKind::InvalidInput => {}
-                Err(error) => {
-                    return Err(error).with_context(|| format!("failed to kill timed-out {label}"));
-                }
-            }
-            let output = child
-                .wait_with_output()
-                .with_context(|| format!("failed to collect timed-out {label}"))?;
-            let message = local_wallet_process_message(&output, redactions);
-            bail!(
-                "{label} timed out after {} ms: {message}",
-                timeout.as_millis()
-            );
-        }
-        thread::sleep(LOCAL_WALLET_POLL_INTERVAL);
-    }
-    let output = child
-        .wait_with_output()
-        .with_context(|| format!("failed to collect {label}"))?;
-    if !output.status.success() {
-        let message = local_wallet_process_message(&output, redactions);
-        bail!("{label} exited with {}: {message}", output.status);
-    }
-    Ok(output)
-}
-
-fn local_wallet_process_message(output: &Output, redactions: &[&str]) -> String {
-    let message = if output.stderr.is_empty() {
-        local_wallet_output_text(&output.stdout, redactions)
-    } else {
-        local_wallet_output_text(&output.stderr, redactions)
-    };
-    if message.is_empty() {
-        "no output".to_owned()
-    } else {
-        message
-    }
+    run_command(
+        command,
+        CommandRunPolicy {
+            label,
+            timeout,
+            poll_interval: LOCAL_WALLET_POLL_INTERVAL,
+            redactions,
+            output_limit: LOCAL_WALLET_OUTPUT_LIMIT,
+        },
+    )
 }
 
 fn local_wallet_output_text(output: &[u8], redactions: &[&str]) -> String {
-    let text = String::from_utf8_lossy(output).trim().to_owned();
-    let mut redacted = text;
-    for value in redactions {
-        let value = value.trim();
-        if !value.is_empty() {
-            redacted = redacted.replace(value, "...");
-        }
-    }
-    redacted.chars().take(LOCAL_WALLET_OUTPUT_LIMIT).collect()
+    output_text(output, redactions, LOCAL_WALLET_OUTPUT_LIMIT)
 }
 
 fn parse_local_wallet_accounts_output(text: &str) -> Vec<LocalWalletAccountRow> {

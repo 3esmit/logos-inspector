@@ -198,6 +198,7 @@
             RAPIDSNARK_LIB_DIR = "${rapidsnark}";
             RISC0_SKIP_BUILD = "1";
           };
+          nativeBuildInputs = [ pkgs.python3 ];
           preBuild = ''
             rm -rf /build/cargo-vendor-dir/artifacts
             ln -s ${lezSource}/artifacts /build/cargo-vendor-dir/artifacts
@@ -257,6 +258,7 @@
           ];
           cargoTestFlags = [ "--package" "logos-inspector-standalone-gui" ];
           nativeBuildInputs = [
+            pkgs.python3
             pkgs.cmake
             pkgs.pkg-config
             pkgs.qt6.qmake
@@ -327,7 +329,7 @@ EOF
             ${lib.optionalString pkgs.stdenv.isLinux ''
               if [ -x "$out/bin/logos-inspector-standalone-gui" ]; then
                 ${pkgs.patchelf}/bin/patchelf \
-                  --set-rpath "${lib.makeLibraryPath (qtInputs ++ [ pkgs.stdenv.cc.cc.lib ])}" \
+                  --set-rpath "${lib.makeLibraryPath (qtInputs ++ [ pkgs.stdenv.cc.cc.lib pkgs.python3 ])}" \
                   "$out/bin/logos-inspector-standalone-gui"
               fi
             ''}

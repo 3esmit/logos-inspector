@@ -1,5 +1,6 @@
 import QtQml
 import "../services/BridgeHelpers.js" as BridgeHelpers
+import "appmodel/StorageTransfer.js" as StorageTransfer
 
 QtObject {
     id: root
@@ -26,6 +27,7 @@ QtObject {
     property string resultText: ""
     property bool resultIsError: false
     property string resultOwner: ""
+    property var sourceReport: null
 
     property var manifests: []
     property string lastOperation: qsTr("None")
@@ -71,7 +73,7 @@ QtObject {
     }
 
     function storageDataSource() {
-        return usesRestEndpoint
+        return usesRestEndpoint || effectiveSourceMode === "module"
     }
 
     function storageArgs(extra) {
@@ -344,6 +346,22 @@ QtObject {
         return detail.join(" / ")
     }
 
+    function applyStorageModuleEvent(eventName, args) {
+        return StorageTransfer.applyModuleEvent(root, eventName, args)
+    }
+
+    function storageSpaceSummary() {
+        return StorageTransfer.spaceSummary(root)
+    }
+
+    function storageSpaceTone() {
+        return StorageTransfer.spaceTone(root)
+    }
+
+    function storageSpaceValue() {
+        return StorageTransfer.spaceValue(root)
+    }
+
     function activeStorageProgressText() {
         const operation = activeStorageOperation()
         if (!operation) {
@@ -359,19 +377,7 @@ QtObject {
     }
 
     function operationPayload(value) {
-        if (value && value.value && value.value.result && value.value.result.value !== undefined) {
-            return value.value.result.value
-        }
-        if (value && value.result && value.result.value !== undefined) {
-            return value.result.value
-        }
-        if (value && value.result !== undefined && value.result !== null) {
-            return value.result
-        }
-        if (value && value.value !== undefined) {
-            return value.value
-        }
-        return value
+        return StorageTransfer.operationPayload(value)
     }
 
     function manifestArray(value) {
