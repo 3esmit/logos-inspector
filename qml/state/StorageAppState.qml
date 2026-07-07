@@ -35,12 +35,28 @@ QtObject {
     property string pendingMethod: ""
     property string pendingLabel: ""
     property var pendingArgs: []
-    property string terminalOperationId: ""
-    property bool operationStartPending: false
-    property var activeOperation: null
-    property int activeOperationRevision: 0
-    property var operationLog: []
-    property int operationLogRevision: 0
+    property alias terminalOperationId: storageOperations.terminalOperationId
+    property alias operationStartPending: storageOperations.startPending
+    property alias activeOperation: storageOperations.activeOperation
+    property alias activeOperationRevision: storageOperations.activeOperationRevision
+    property alias operationLog: storageOperations.operationLog
+    property alias operationLogRevision: storageOperations.operationLogRevision
+
+    property NodeOperationClient operationClient: NodeOperationClient {
+        id: storageOperations
+
+        gateway: root.gateway
+        domain: "storage"
+        defaultLabel: qsTr("Storage operation")
+        busyError: qsTr("A storage operation is already running.")
+        terminalDetailProvider: function (operation) {
+            return root.activeStorageDetailText()
+        }
+
+        onTerminalOperation: function (operation) {
+            root.completeTerminalStorageOperation(operation)
+        }
+    }
 
     onCidProbeChanged: {
         if (activeCid !== cidProbe) {
@@ -137,16 +153,6 @@ QtObject {
     }
 
     function startStorageOperation(method, args, label) {
-        if (storageOperationBusy()) {
-            const blocked = {
-                ok: false,
-                text: "",
-                error: qsTr("A storage operation is already running.")
-            }
-            appendOperation(label, blocked)
-            lastOperation = qsTr("Busy")
-            return blocked
-        }
         const request = {
             domain: "storage",
             sourceMode: effectiveSourceMode,
@@ -158,79 +164,40 @@ QtObject {
             label: String(label || "")
         }
         lastOperation = qsTr("Starting")
-        operationStartPending = true
-        gateway.request("nodeOperationStart", [request], String(label || qsTr("Storage operation")), false, function (response) {
-            operationStartPending = false
-            appendOperation(label, response)
+        const started = storageOperations.start(request, label, function (response) {
             lastOperation = response && response.ok ? qsTr("Started") : qsTr("Error")
             if (response && response.ok) {
-                terminalOperationId = ""
-                updateActiveOperation(response.value)
                 currentTab = "operations"
             } else {
                 gateway.setResult(String(label || qsTr("Storage operation")), String((response && response.error) || qsTr("Storage operation failed.")), true, null)
             }
         })
+        if (started && started.ok === false) {
+            lastOperation = String(started.error || "") === storageOperations.busyError ? qsTr("Busy") : qsTr("Error")
+            return started
+        }
         return null
     }
 
     function pollStorageOperation(showResult) {
-        const operation = activeStorageOperation()
-        const operationId = String(operation && operation.operationId ? operation.operationId : "")
-        if (!operationId.length) {
-            return null
-        }
-        return gateway.request("nodeOperationStatus", [operationId], qsTr("Node operation"), showResult === true, function (response) {
-            if (!response || !response.ok) {
-                const failedOperation = {
-                    operationId: operationId,
-                    domain: "storage",
-                    method: String(operation && operation.method ? operation.method : ""),
-                    status: "failed",
-                    label: String(operation && operation.label ? operation.label : qsTr("Storage operation")),
-                    error: String((response && response.error) || qsTr("Storage operation status failed."))
-                }
-                updateActiveOperation(failedOperation)
-                appendTerminalStorageOperation(failedOperation)
-                return
+        return storageOperations.poll(showResult === true, function (response) {
+            if (response && response.ok && StorageTransfer.applyDispatchAck(root, response.value)) {
+                return true
             }
-            if (StorageTransfer.applyDispatchAck(root, response.value)) {
-                return
-            }
-            updateActiveOperation(response.value)
-            if (activeStorageOperationTerminal(response.value)) {
-                appendTerminalStorageOperation(response.value)
-            }
+            return false
         })
     }
 
     function cancelStorageOperation() {
-        const operation = activeStorageOperation()
-        const operationId = String(operation && operation.operationId ? operation.operationId : "")
-        if (!operationId.length) {
-            return null
-        }
-        return gateway.request("nodeOperationCancel", [operationId], qsTr("Cancel operation"), false, function (response) {
-            if (response && response.ok) {
-                updateActiveOperation(response.value)
-            }
-            appendOperation(qsTr("Cancel operation"), response)
-        })
+        return storageOperations.cancel()
     }
 
     function appendTerminalStorageOperation(operation) {
-        const operationId = String(operation && operation.operationId ? operation.operationId : "")
-        if (!operationId.length || terminalOperationId === operationId) {
-            return
-        }
-        terminalOperationId = operationId
+        storageOperations.appendTerminalOperation(operation, activeStorageDetailText())
+    }
+
+    function completeTerminalStorageOperation(operation) {
         const ok = String(operation.status || "") === "completed"
-        appendOperation(String(operation.label || qsTr("Storage operation")), {
-            ok: ok,
-            value: operation.result || operation,
-            error: String(operation.error || "")
-        })
-        gateway.appendOperationHistory(operation, activeStorageDetailText())
         setStorageOperationResult(operation)
         lastOperation = ok ? qsTr("Complete") : qsTr("Stopped")
     }
@@ -247,90 +214,47 @@ QtObject {
     }
 
     function appendOperation(label, response) {
-        const rows = Array.isArray(operationLog) ? operationLog.slice(0) : []
-        rows.unshift({
-            time: timeText(),
-            label: String(label || ""),
-            status: response && response.ok ? qsTr("ok") : qsTr("error"),
-            detail: response && response.ok ? operationSummary(response.value) : String((response && response.error) || "")
-        })
-        operationLog = rows.slice(0, 20)
-        operationLogRevision += 1
+        storageOperations.appendOperation(label, response)
     }
 
     function updateActiveOperation(value) {
-        activeOperation = value || null
-        activeOperationRevision += 1
+        storageOperations.updateActiveOperation(value)
     }
 
     function clearActiveOperation() {
-        activeOperation = null
-        activeOperationRevision += 1
+        storageOperations.clearActiveOperation()
     }
 
     function activeStorageOperation() {
-        const revision = activeOperationRevision
-        return activeOperation || null
+        return storageOperations.active()
     }
 
     function activeStorageOperationKnown() {
-        const operation = activeStorageOperation()
-        return operation && String(operation.operationId || "").length > 0
+        return storageOperations.known()
     }
 
     function activeStorageOperationRunning() {
-        const operation = activeStorageOperation()
-        const status = String(operation && operation.status ? operation.status : "")
-        return status === "running" || status === "canceling"
+        return storageOperations.running()
     }
 
     function storageOperationBusy() {
-        return operationStartPending || activeStorageOperationRunning()
+        return storageOperations.busy()
     }
 
     function activeStorageOperationCancelable() {
-        const operation = activeStorageOperation()
-        const status = String(operation && operation.status ? operation.status : "")
-        return (status === "running" || status === "canceling") && operation && operation.cancellable === true
+        return storageOperations.cancelable()
     }
 
     function activeStorageOperationTerminal(operation) {
-        const status = String(operation && operation.status ? operation.status : "")
-        return status === "completed" || status === "failed" || status === "canceled"
+        return storageOperations.terminal(operation)
     }
 
     function activeStorageStatusText() {
-        const operation = activeStorageOperation()
-        const status = String(operation && operation.status ? operation.status : "")
-        switch (status) {
-        case "running":
-            return String(operation && operation.label ? operation.label : qsTr("Running"))
-        case "canceling":
-            return qsTr("Canceling")
-        case "completed":
-            return qsTr("Complete")
-        case "failed":
-            return qsTr("Failed")
-        case "canceled":
-            return qsTr("Canceled")
-        default:
-            return qsTr("Idle")
-        }
+        return storageOperations.statusText()
     }
 
     function activeStorageTone() {
-        const operation = activeStorageOperation()
-        const status = String(operation && operation.status ? operation.status : "")
-        if (status === "completed") {
-            return "success"
-        }
-        if (status === "failed") {
-            return "error"
-        }
-        if (status === "running" || status === "canceling") {
-            return "warning"
-        }
-        return "neutral"
+        return storageOperations.tone()
     }
 
     function activeStorageDetailText() {
@@ -380,7 +304,7 @@ QtObject {
     }
 
     function operationPayload(value) {
-        return StorageTransfer.operationPayload(value)
+        return storageOperations.operationPayload(value)
     }
 
     function manifestArray(value) {
@@ -428,30 +352,11 @@ QtObject {
     }
 
     function operationRows() {
-        const revision = operationLogRevision
-        if (operationLog.length > 0) {
-            return operationLog
-        }
-        return [{
-            time: "-",
-            label: qsTr("No operations"),
-            status: "-",
-            detail: "-"
-        }]
+        return storageOperations.rows()
     }
 
     function operationSummary(value) {
-        const payload = operationPayload(value)
-        if (payload === undefined || payload === null) {
-            return qsTr("No value")
-        }
-        if (typeof payload === "string") {
-            return payload
-        }
-        if (typeof payload === "boolean") {
-            return payload ? qsTr("true") : qsTr("false")
-        }
-        return BridgeHelpers.formatValue(payload).replace(/\s+/g, " ").slice(0, 180)
+        return storageOperations.operationSummary(value)
     }
 
     function chunkSizeValue(text) {

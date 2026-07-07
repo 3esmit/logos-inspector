@@ -2,7 +2,7 @@ use anyhow::{Context as _, Result, bail};
 use serde_json::{Value, json};
 use tokio::runtime::Runtime;
 
-use super::runtime_methods;
+use super::dispatch_catalog::{DispatchContext, dispatch};
 #[cfg(test)]
 use crate::source_routing::{
     self, CoreEndpointMode, DEFAULT_DELIVERY_REST_ENDPOINT, DEFAULT_STORAGE_REST_ENDPOINT,
@@ -46,29 +46,18 @@ impl InspectorBridge {
     }
 
     fn call_inspector(&self, method: &str, args: Value) -> Result<Value> {
-        if let Some(value) =
-            self.runtime_operations
-                .try_bridge_call(&self.runtime, method, &args)?
-        {
+        let call_core_module = |module: &str, method: &str, args: Value| {
+            self.call_logoscore_module(module, method, args)
+        };
+        let context = DispatchContext {
+            runtime: &self.runtime,
+            operations: &self.runtime_operations,
+            call_core_module: &call_core_module,
+        };
+        if let Some(value) = dispatch(&context, method, args)? {
             return Ok(value);
         }
-        if let Some(value) = runtime_methods::try_handle(&self.runtime, method, args.clone())? {
-            return Ok(value);
-        }
-
-        match method {
-            "capabilitiesReport" => {
-                bail!("capability_module does not expose Inspector capability listing")
-            }
-            "callModule" => {
-                let args = Args::new(args)?;
-                let module = args.string(0, "module name")?;
-                let method = args.string(1, "method name")?;
-                let call_args = args.value(2).cloned().unwrap_or_else(|| json!([]));
-                self.call_logoscore_module(module, method, call_args)
-            }
-            _ => bail!("unknown inspector method `{method}`"),
-        }
+        bail!("unknown inspector method `{method}`")
     }
 
     fn call_logoscore_module(&self, module: &str, method: &str, args: Value) -> Result<Value> {

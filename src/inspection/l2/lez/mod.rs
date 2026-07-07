@@ -2,6 +2,7 @@ pub(crate) mod accounts;
 pub(crate) mod block;
 pub(crate) mod idl_resolver;
 pub(crate) mod indexer;
+pub(crate) mod program_decode_session;
 pub(crate) mod programs;
 pub(crate) mod sequencer;
 pub(crate) mod session;
