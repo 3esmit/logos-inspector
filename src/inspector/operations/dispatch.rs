@@ -7,6 +7,7 @@ use serde_json::Value;
 use super::{
     NodeOperationRegistry, NodeOperationRequest, chain, delivery, local_nodes, storage, wallet,
 };
+use crate::inspector::methods::OperationMethod;
 
 pub(super) async fn execute_node_operation(
     request: NodeOperationRequest,
@@ -14,58 +15,88 @@ pub(super) async fn execute_node_operation(
     operation_id: &str,
     cancel_requested: &AtomicBool,
 ) -> Result<Value> {
-    match request.method.as_str() {
-        "storageManifests" => storage::execute_storage_manifests(&request).await,
-        "storageDownloadManifest" => storage::execute_storage_download_manifest(&request).await,
-        "storageFetch" => storage::execute_storage_fetch(&request).await,
-        "storageUploadUrl" => storage::execute_storage_upload(&request).await,
-        "storageDownloadToUrl" => {
+    let Some(method) = OperationMethod::from_str(&request.method) else {
+        bail!("unknown node operation method `{}`", request.method);
+    };
+    match method {
+        OperationMethod::StorageManifests => storage::execute_storage_manifests(&request).await,
+        OperationMethod::StorageDownloadManifest => {
+            storage::execute_storage_download_manifest(&request).await
+        }
+        OperationMethod::StorageFetch => storage::execute_storage_fetch(&request).await,
+        OperationMethod::StorageUploadUrl => storage::execute_storage_upload(&request).await,
+        OperationMethod::StorageDownloadToUrl => {
             storage::execute_storage_download(&request, registry, operation_id, cancel_requested)
                 .await
         }
-        "storageRemove" => storage::execute_storage_remove(&request).await,
-        "deliverySubscribe" => {
+        OperationMethod::StorageRemove => storage::execute_storage_remove(&request).await,
+        OperationMethod::DeliverySubscribe => {
             delivery::execute_delivery_subscription(&request, Method::POST, "subscribe").await
         }
-        "deliveryUnsubscribe" => {
+        OperationMethod::DeliveryUnsubscribe => {
             delivery::execute_delivery_subscription(&request, Method::DELETE, "unsubscribe").await
         }
-        "deliverySend" => delivery::execute_delivery_send(&request).await,
-        "deliveryCreateNode" => {
+        OperationMethod::DeliverySend => delivery::execute_delivery_send(&request).await,
+        OperationMethod::DeliveryCreateNode => {
             delivery::execute_delivery_module_action(&request, "createNode").await
         }
-        "deliveryStart" => delivery::execute_delivery_module_action(&request, "start").await,
-        "deliveryStop" => delivery::execute_delivery_module_action(&request, "stop").await,
-        "deliveryStoreQuery" => delivery::execute_delivery_store_query(&request).await,
-        "localNodesAction" => local_nodes::execute_local_nodes_action(&request).await,
-        "localWalletCreateAccount" => wallet::execute_wallet_create_account(&request).await,
-        "localWalletSendTransaction" => wallet::execute_wallet_send_transaction(&request).await,
-        "localWalletInstructionSubmit" => wallet::execute_wallet_instruction_submit(&request).await,
-        "localWalletCommand" => wallet::execute_wallet_command(&request).await,
-        "localWalletDeployProgram" => wallet::execute_wallet_deploy_program(&request).await,
-        "localWalletSyncPrivate" => wallet::execute_wallet_sync_private(&request).await,
-        "localWalletAccounts" => wallet::execute_wallet_accounts(&request).await,
-        "blockchainNode" => chain::execute_blockchain_node(&request).await,
-        "blockchainBlocks" => chain::execute_blockchain_blocks(&request).await,
-        "blockchainLiveBlocks" => chain::execute_blockchain_live_blocks(&request).await,
-        "blockchainBlock" => chain::execute_blockchain_block(&request).await,
-        "blockchainTransaction" => chain::execute_blockchain_transaction(&request).await,
-        "head" => chain::execute_execution_head(&request).await,
-        "programs" => chain::execute_programs(&request).await,
-        "block" => chain::execute_sequencer_block(&request).await,
-        "sequencerBlocks" => chain::execute_sequencer_blocks(&request).await,
-        "transaction" => chain::execute_sequencer_transaction(&request).await,
-        "inspectTransaction" => chain::execute_inspect_transaction(&request).await,
-        "traceTransaction" => chain::execute_trace_transaction(&request).await,
-        "account" => chain::execute_account_operation(&request).await,
-        "indexerHealth" => chain::execute_indexer_health_operation(&request).await,
-        "indexerStatus" => chain::execute_indexer_status_operation(&request).await,
-        "indexerFinalizedHead" => chain::execute_indexer_finalized_head(&request).await,
-        "indexerBlocks" => chain::execute_indexer_blocks_operation(&request).await,
-        "indexerBlockByHash" => chain::execute_indexer_block_by_hash_operation(&request).await,
-        "indexerTransferRecipients" => {
+        OperationMethod::DeliveryStart => {
+            delivery::execute_delivery_module_action(&request, "start").await
+        }
+        OperationMethod::DeliveryStop => {
+            delivery::execute_delivery_module_action(&request, "stop").await
+        }
+        OperationMethod::DeliveryStoreQuery => {
+            delivery::execute_delivery_store_query(&request).await
+        }
+        OperationMethod::LocalNodesAction => {
+            local_nodes::execute_local_nodes_action(&request).await
+        }
+        OperationMethod::LocalWalletCreateAccount => {
+            wallet::execute_wallet_create_account(&request).await
+        }
+        OperationMethod::LocalWalletSendTransaction => {
+            wallet::execute_wallet_send_transaction(&request).await
+        }
+        OperationMethod::LocalWalletInstructionSubmit => {
+            wallet::execute_wallet_instruction_submit(&request).await
+        }
+        OperationMethod::LocalWalletCommand => wallet::execute_wallet_command(&request).await,
+        OperationMethod::LocalWalletDeployProgram => {
+            wallet::execute_wallet_deploy_program(&request).await
+        }
+        OperationMethod::LocalWalletSyncPrivate => {
+            wallet::execute_wallet_sync_private(&request).await
+        }
+        OperationMethod::LocalWalletAccounts => wallet::execute_wallet_accounts(&request).await,
+        OperationMethod::BlockchainNode => chain::execute_blockchain_node(&request).await,
+        OperationMethod::BlockchainBlocks => chain::execute_blockchain_blocks(&request).await,
+        OperationMethod::BlockchainLiveBlocks => {
+            chain::execute_blockchain_live_blocks(&request).await
+        }
+        OperationMethod::BlockchainBlock => chain::execute_blockchain_block(&request).await,
+        OperationMethod::BlockchainTransaction => {
+            chain::execute_blockchain_transaction(&request).await
+        }
+        OperationMethod::Head => chain::execute_execution_head(&request).await,
+        OperationMethod::Programs => chain::execute_programs(&request).await,
+        OperationMethod::Block => chain::execute_sequencer_block(&request).await,
+        OperationMethod::SequencerBlocks => chain::execute_sequencer_blocks(&request).await,
+        OperationMethod::Transaction => chain::execute_sequencer_transaction(&request).await,
+        OperationMethod::InspectTransaction => chain::execute_inspect_transaction(&request).await,
+        OperationMethod::TraceTransaction => chain::execute_trace_transaction(&request).await,
+        OperationMethod::Account => chain::execute_account_operation(&request).await,
+        OperationMethod::IndexerHealth => chain::execute_indexer_health_operation(&request).await,
+        OperationMethod::IndexerStatus => chain::execute_indexer_status_operation(&request).await,
+        OperationMethod::IndexerFinalizedHead => {
+            chain::execute_indexer_finalized_head(&request).await
+        }
+        OperationMethod::IndexerBlocks => chain::execute_indexer_blocks_operation(&request).await,
+        OperationMethod::IndexerBlockByHash => {
+            chain::execute_indexer_block_by_hash_operation(&request).await
+        }
+        OperationMethod::IndexerTransferRecipients => {
             chain::execute_indexer_transfer_recipients_operation(&request).await
         }
-        _ => bail!("unknown node operation method `{}`", request.method),
     }
 }

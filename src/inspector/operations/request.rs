@@ -2,7 +2,7 @@ use anyhow::{Context as _, Result};
 use serde_json::{Value, json};
 
 use crate::{
-    inspector::methods::{OperationDomain, operation_uses_mutating_flag},
+    inspector::methods::{OperationDomain, OperationMethod, operation_uses_mutating_flag},
     source_routing::{
         Args, CoreSourceMode, SourceFamily, default_endpoint_for_domain,
         default_source_mode_for_domain, source_mode_is_token, storage_rest_source,
@@ -22,7 +22,7 @@ pub(crate) struct NodeOperationRequest {
 }
 
 impl NodeOperationRequest {
-    pub(crate) fn legacy(domain: &str, method: &str, args: Value, label: &str) -> Self {
+    pub(crate) fn from_call(domain: &str, method: &str, args: Value, label: &str) -> Self {
         Self {
             domain: domain.to_owned(),
             source_mode: String::new(),
@@ -53,6 +53,7 @@ pub(crate) fn node_operation_request_from_value(value: Value) -> Result<NodeOper
         .get("args")
         .cloned()
         .unwrap_or_else(|| Value::Array(Vec::new()));
+    let label = object_string(object, "label").unwrap_or_else(|| default_operation_label(&method));
     let mut request = NodeOperationRequest {
         domain,
         source_mode: object_string(object, "sourceMode").unwrap_or_default(),
@@ -64,7 +65,7 @@ pub(crate) fn node_operation_request_from_value(value: Value) -> Result<NodeOper
             .get("mutatingEnabled")
             .and_then(Value::as_bool)
             .unwrap_or(false),
-        label: object_string(object, "label").unwrap_or_default(),
+        label,
     };
     request.args = normalized_node_operation_args(&request);
     Ok(request)
@@ -81,6 +82,10 @@ fn object_string(object: &serde_json::Map<String, Value>, key: &str) -> Option<S
 
 fn node_operation_domain(method: &str) -> String {
     OperationDomain::from_method(method).as_str().to_owned()
+}
+
+fn default_operation_label(method: &str) -> String {
+    OperationMethod::from_str(method).map_or_else(String::new, |method| method.label().to_owned())
 }
 
 pub(super) fn node_operation_backend(request: &NodeOperationRequest) -> String {

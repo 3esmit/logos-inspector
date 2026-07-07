@@ -187,7 +187,7 @@ impl NodeOperations {
         self.value(operation_id)
     }
 
-    pub(crate) fn run_legacy(
+    pub(crate) fn run_blocking(
         &self,
         runtime: &Runtime,
         domain: &str,
@@ -197,7 +197,7 @@ impl NodeOperations {
     ) -> Result<Value> {
         let operation = self.start(
             runtime,
-            NodeOperationRequest::legacy(domain, method, args, label),
+            NodeOperationRequest::from_call(domain, method, args, label),
         )?;
         let operation_id = operation
             .get("operationId")

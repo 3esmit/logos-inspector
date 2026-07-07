@@ -1,7 +1,7 @@
 use anyhow::{Context as _, Result};
 use serde_json::Value;
 
-use super::catalog::legacy_operation_route;
+use super::catalog::operation_route;
 use crate::source_routing::Args;
 
 pub(crate) trait OperationRunner {
@@ -9,8 +9,14 @@ pub(crate) trait OperationRunner {
     fn status(&self, operation_id: &str) -> Result<Value>;
     fn events(&self, operation_id: &str, after_seq: u64) -> Result<Value>;
     fn cancel(&self, operation_id: &str) -> Result<Value>;
-    fn run_legacy(&self, domain: &str, method: &str, args: Value, label: &str) -> Result<Value>;
-    fn start_legacy(&self, domain: &str, method: &str, args: Value, label: &str) -> Result<Value>;
+    fn run_operation(&self, domain: &str, method: &str, args: Value, label: &str) -> Result<Value>;
+    fn start_operation(
+        &self,
+        domain: &str,
+        method: &str,
+        args: Value,
+        label: &str,
+    ) -> Result<Value>;
 }
 
 pub(crate) fn handle_operation_command(
@@ -26,23 +32,14 @@ pub(crate) fn handle_operation_command(
         "storageOperationStatus" => storage_operation_status(runner, args)?,
         "storageOperationCancel" => storage_operation_cancel(runner, args)?,
         _ => {
-            let Some(route) = legacy_operation_route(method) else {
+            let Some(route) = operation_route(method) else {
                 return Ok(None);
             };
+            let method = route.method.as_str();
             if route.start_async {
-                runner.start_legacy(
-                    route.domain.as_str(),
-                    route.method,
-                    args.clone(),
-                    route.label,
-                )?
+                runner.start_operation(route.domain.as_str(), method, args.clone(), route.label)?
             } else {
-                runner.run_legacy(
-                    route.domain.as_str(),
-                    route.method,
-                    args.clone(),
-                    route.label,
-                )?
+                runner.run_operation(route.domain.as_str(), method, args.clone(), route.label)?
             }
         }
     };
@@ -100,13 +97,13 @@ mod tests {
         Status(String),
         Events(String, u64),
         Cancel(String),
-        RunLegacy {
+        RunOperation {
             domain: String,
             method: String,
             args: Value,
             label: String,
         },
-        StartLegacy {
+        StartOperation {
             domain: String,
             method: String,
             args: Value,
@@ -154,30 +151,30 @@ mod tests {
             Ok(json!({ "operationId": operation_id, "status": "canceling" }))
         }
 
-        fn run_legacy(
+        fn run_operation(
             &self,
             domain: &str,
             method: &str,
             args: Value,
             label: &str,
         ) -> Result<Value> {
-            self.calls.borrow_mut().push(RunnerCall::RunLegacy {
+            self.calls.borrow_mut().push(RunnerCall::RunOperation {
                 domain: domain.to_owned(),
                 method: method.to_owned(),
                 args,
                 label: label.to_owned(),
             });
-            Ok(json!({ "legacy": method }))
+            Ok(json!({ "operation": method }))
         }
 
-        fn start_legacy(
+        fn start_operation(
             &self,
             domain: &str,
             method: &str,
             args: Value,
             label: &str,
         ) -> Result<Value> {
-            self.calls.borrow_mut().push(RunnerCall::StartLegacy {
+            self.calls.borrow_mut().push(RunnerCall::StartOperation {
                 domain: domain.to_owned(),
                 method: method.to_owned(),
                 args,
@@ -214,7 +211,7 @@ mod tests {
     }
 
     #[test]
-    fn handle_operation_command_routes_storage_download_legacy_call() -> Result<()> {
+    fn handle_operation_command_routes_storage_download_call() -> Result<()> {
         let runner = FakeRunner::default();
         let args = json!([
             "rest",
@@ -225,11 +222,11 @@ mod tests {
 
         let value = handle_operation_command(&runner, "storageDownloadToUrl", &args)?;
 
-        if value != Some(json!({ "legacy": "storageDownloadToUrl" })) {
+        if value != Some(json!({ "operation": "storageDownloadToUrl" })) {
             bail!("unexpected response: {value:?}");
         }
         if runner.calls()
-            != vec![RunnerCall::RunLegacy {
+            != vec![RunnerCall::RunOperation {
                 domain: "storage".to_owned(),
                 method: "storageDownloadToUrl".to_owned(),
                 args,
@@ -257,17 +254,17 @@ mod tests {
     }
 
     #[test]
-    fn handle_operation_command_routes_wallet_accounts_through_legacy_runner() -> Result<()> {
+    fn handle_operation_command_routes_wallet_accounts_through_runner() -> Result<()> {
         let runner = FakeRunner::default();
         let args = json!([{ "network_profile": "local" }]);
 
         let value = handle_operation_command(&runner, "localWalletAccounts", &args)?;
 
-        if value != Some(json!({ "legacy": "localWalletAccounts" })) {
+        if value != Some(json!({ "operation": "localWalletAccounts" })) {
             bail!("unexpected response: {value:?}");
         }
         if runner.calls()
-            != vec![RunnerCall::RunLegacy {
+            != vec![RunnerCall::RunOperation {
                 domain: "wallet".to_owned(),
                 method: "localWalletAccounts".to_owned(),
                 args,
