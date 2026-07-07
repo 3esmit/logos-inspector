@@ -1,13 +1,13 @@
 use std::sync::atomic::AtomicBool;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use reqwest::Method;
 use serde_json::Value;
 
 use super::{
-    NodeOperationRegistry, NodeOperationRequest, chain, delivery, local_nodes, storage, wallet,
+    NodeOperationRegistry, NodeOperationRequest, OperationMethod, chain, delivery, local_nodes,
+    storage, wallet,
 };
-use crate::inspector::methods::OperationMethod;
 
 pub(super) async fn execute_node_operation(
     request: NodeOperationRequest,
@@ -15,10 +15,7 @@ pub(super) async fn execute_node_operation(
     operation_id: &str,
     cancel_requested: &AtomicBool,
 ) -> Result<Value> {
-    let Some(method) = OperationMethod::from_str(&request.method) else {
-        bail!("unknown node operation method `{}`", request.method);
-    };
-    match method {
+    match request.method() {
         OperationMethod::StorageManifests => storage::execute_storage_manifests(&request).await,
         OperationMethod::StorageDownloadManifest => {
             storage::execute_storage_download_manifest(&request).await

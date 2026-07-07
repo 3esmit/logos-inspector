@@ -1326,7 +1326,30 @@ function autoDecodeAccountData(root, dataHex, accountId, ownerProgramId, callbac
             return serial
         }
 
-        root.tryAccountDecodeCandidate(serial, String(dataHex || ""), candidates, 0, "", callback)
+        const payload = root.programDecodeCandidatePayload(candidates)
+        root.resolveAccountDecodeSessionAsync(String(dataHex || ""), accountId, payload, function (response) {
+            if (serial !== accountAutoDecodeSerial) {
+                return
+            }
+            const session = response && response.ok === true && response.value ? response.value : null
+            const selected = session && session.selected ? session.selected : null
+            if (selected && selected.report) {
+                callback({
+                    ok: true,
+                    error: "",
+                    value: selected.report,
+                    entry: root.decodeSelectionEntry(selected, candidates),
+                    accountType: selected.report.account_type || (selected.evidence ? selected.evidence.accountType : "")
+                })
+                return
+            }
+            callback({
+                ok: false,
+                error: session && session.firstError ? String(session.firstError) : String(response && response.error ? response.error : ""),
+                value: null,
+                entry: null
+            })
+        })
         return serial
     }
 }
@@ -1383,28 +1406,33 @@ function tryAccountDecodeCandidate(root, serial, dataHex, candidates, index, fir
         if (serial !== accountAutoDecodeSerial) {
             return
         }
-        if (index >= candidates.length) {
+        const remaining = Array.isArray(candidates) ? candidates.slice(Math.max(0, Number(index || 0))) : []
+        if (remaining.length === 0) {
             callback({ ok: false, error: firstError, value: null, entry: null })
             return
         }
-
-        const candidate = candidates[index]
-        decodeAccountDataAsync(dataHex, candidate.entry.json, candidate.accountType, function (response) {
+        root.resolveAccountDecodeSessionAsync(String(dataHex || ""), "", root.programDecodeCandidatePayload(remaining), function (response) {
             if (serial !== accountAutoDecodeSerial) {
                 return
             }
-            const error = firstError.length ? firstError : String(response.error || "")
-            if (response.ok && response.value && root.accountDecodeFullyConsumed(response.value)) {
+            const session = response && response.ok === true && response.value ? response.value : null
+            const selected = session && session.selected ? session.selected : null
+            if (selected && selected.report) {
                 callback({
                     ok: true,
                     error: "",
-                    value: response.value,
-                    entry: candidate.entry,
-                    accountType: response.value.account_type || candidate.accountType
+                    value: selected.report,
+                    entry: root.decodeSelectionEntry(selected, remaining),
+                    accountType: selected.report.account_type || (selected.evidence ? selected.evidence.accountType : "")
                 })
                 return
             }
-            root.tryAccountDecodeCandidate(serial, dataHex, candidates, index + 1, error, callback)
+            callback({
+                ok: false,
+                error: String(firstError || "") || (session && session.firstError ? String(session.firstError) : String(response && response.error ? response.error : "")),
+                value: null,
+                entry: null
+            })
         })
     }
 }
@@ -1423,7 +1451,18 @@ function autoDecodeTransactionDetail(root, detail) {
             return
         }
 
-        root.tryTransactionDecodeCandidate(serial, summary, candidates, 0, null)
+        root.resolveTransactionDecodeSessionAsync(summary, root.programDecodeCandidatePayload(candidates), function (response) {
+            if (serial !== transactionAutoDecodeSerial) {
+                return
+            }
+            const session = response && response.ok === true && response.value ? response.value : null
+            const selection = session && session.selected ? session.selected : (session && session.partial ? session.partial : null)
+            if (selection && selection.report) {
+                transactionDetailValue = selection.report
+                lezTransactionsPageError = ""
+                setResult(qsTr("Transaction"), BridgeHelpers.formatValue(selection.report), false, selection.report, "l2TransactionDetail")
+            }
+        })
     }
 }
 
@@ -1472,7 +1511,8 @@ function tryTransactionDecodeCandidate(root, serial, summary, candidates, index,
         if (serial !== transactionAutoDecodeSerial) {
             return
         }
-        if (index >= candidates.length) {
+        const remaining = Array.isArray(candidates) ? candidates.slice(Math.max(0, Number(index || 0))) : []
+        if (remaining.length === 0) {
             if (partialValue) {
                 transactionDetailValue = partialValue
                 lezTransactionsPageError = ""
@@ -1481,19 +1521,67 @@ function tryTransactionDecodeCandidate(root, serial, summary, candidates, index,
             return
         }
 
-        const candidate = candidates[index]
-        decodeTransactionSummaryAsync(summary, candidate.entry.json, function (response) {
+        root.resolveTransactionDecodeSessionAsync(summary, root.programDecodeCandidatePayload(remaining), function (response) {
             if (serial !== transactionAutoDecodeSerial) {
                 return
             }
-            if (response.ok && response.value && root.transactionDecodeFullyConsumed(response.value)) {
-                transactionDetailValue = response.value
+            const session = response && response.ok === true && response.value ? response.value : null
+            const selection = session && session.selected ? session.selected : (session && session.partial ? session.partial : null)
+            if (selection && selection.report) {
+                transactionDetailValue = selection.report
                 lezTransactionsPageError = ""
-                setResult(qsTr("Transaction"), response.text, false, response.value, "l2TransactionDetail")
+                setResult(qsTr("Transaction"), BridgeHelpers.formatValue(selection.report), false, selection.report, "l2TransactionDetail")
                 return
             }
-            const nextPartial = partialValue || (response.ok && response.value && root.transactionDecodedInstruction(response.value) ? response.value : null)
-            root.tryTransactionDecodeCandidate(serial, summary, candidates, index + 1, nextPartial)
+            if (partialValue) {
+                transactionDetailValue = partialValue
+                lezTransactionsPageError = ""
+                setResult(qsTr("Transaction"), BridgeHelpers.formatValue(partialValue), false, partialValue, "l2TransactionDetail")
+            }
         })
+    }
+}
+
+function programDecodeCandidatePayload(root, candidates) {
+    with (root) {
+        const rows = []
+        const list = Array.isArray(candidates) ? candidates : []
+        for (let i = 0; i < list.length; ++i) {
+            const candidate = list[i] || {}
+            const entry = candidate.entry || candidate
+            const json = String(entry.json || "")
+            if (!json.length) {
+                continue
+            }
+            rows.push({
+                key: String(entry.key || ""),
+                name: String(entry.name || ""),
+                programIdHex: String(entry.programIdHex || entry.program_id_hex || ""),
+                json: json,
+                accountType: String(candidate.accountType || entry.accountType || entry.account_type || ""),
+                source: String(entry.source || "")
+            })
+        }
+        return rows
+    }
+}
+
+function decodeSelectionEntry(root, selection, candidates) {
+    with (root) {
+        const evidence = selection && selection.evidence ? selection.evidence : ({})
+        const key = String(evidence.key || "")
+        const list = Array.isArray(candidates) ? candidates : []
+        for (let i = 0; i < list.length; ++i) {
+            const entry = list[i] && list[i].entry ? list[i].entry : list[i]
+            if (entry && key.length > 0 && String(entry.key || "") === key) {
+                return entry
+            }
+        }
+        return {
+            key: key,
+            name: String(evidence.name || ""),
+            programIdHex: String(evidence.programIdHex || evidence.program_id_hex || ""),
+            source: String(evidence.source || "")
+        }
     }
 }

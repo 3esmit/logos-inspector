@@ -1,4 +1,5 @@
 .import "../../services/BridgeHelpers.js" as BridgeHelpers
+.import "SourceHealthProjection.js" as SourceHealthProjection
 .import "SourcePolicyProjection.js" as SourcePolicyProjection
 
 function refreshInterval(root, seconds) {
@@ -458,294 +459,75 @@ function cacheNetworkConnectionResult(root, kind, response) {
 }
 
 function networkConnectionSummary(root, kind, value) {
-    with (root) {
-        if (kind === "blockchain") {
-            const probe = value && value.cryptarchia_info ? value.cryptarchia_info : null
-            const payload = probe && probe.value ? probe.value : probe
-            const info = payload && payload.cryptarchia_info ? payload.cryptarchia_info : payload
-            return info && info.slot !== undefined ? qsTr("slot %1").arg(info.slot) : qsTr("node reachable")
-        }
-        if (kind === "indexer") {
-            if (value && typeof value === "object") {
-                const status = value.status && typeof value.status === "object" ? value.status : value
-                const state = String(status.state || "")
-                const indexedBlockId = status.indexedBlockId !== undefined ? status.indexedBlockId : null
-                if (state.length && indexedBlockId !== null) {
-                    return qsTr("%1, head %2").arg(state).arg(root.valueText(indexedBlockId))
-                }
-                if (state.length) {
-                    return state
-                }
-            }
-            const scalar = root.scalarValue(value)
-            return scalar !== null ? qsTr("head %1").arg(root.valueText(scalar)) : qsTr("reachable")
-        }
-        if (kind === "execution") {
-            const scalar = root.scalarValue(value)
-            return scalar !== null ? qsTr("head %1").arg(root.valueText(scalar)) : qsTr("reachable")
-        }
-        if (kind === "messaging") {
-            const health = root.sourceHealth(value)
-            if (health && health.summary) {
-                return health.ready === true ? String(health.summary) : String(health.detail || health.summary)
-            }
-            if (!root.moduleReportReachable(value)) {
-                return root.moduleReportError(value) || qsTr("source unavailable")
-            }
-            if (!root.deliveryReportHealthy(value)) {
-                const nodeHealth = root.reportProbeValue(value, "nodeHealth")
-                const connectionStatus = root.reportProbeValue(value, "connectionStatus")
-                return qsTr("health %1 / %2").arg(root.valueText(nodeHealth)).arg(root.valueText(connectionStatus))
-            }
-            const version = root.moduleProbeValue("messaging", "version")
-            return version !== null ? qsTr("version %1").arg(root.valueText(version)) : qsTr("%1 reachable").arg(root.deliverySourceLabel())
-        }
-        if (kind === "storage") {
-            const health = root.sourceHealth(value)
-            if (health && health.summary) {
-                return health.ready === true ? String(health.summary) : String(health.detail || health.summary)
-            }
-            if (!root.moduleReportReachable(value)) {
-                return root.moduleReportError(value) || qsTr("source unavailable")
-            }
-            if (String(value && value.module ? value.module : "") === "storage_metrics") {
-                return qsTr("metrics available")
-            }
-            const version = root.moduleProbeValue("storage", "version") || root.moduleProbeValue("storage", "moduleVersion")
-            return version !== null ? qsTr("version %1").arg(root.valueText(version)) : qsTr("%1 reachable").arg(root.storageSourceLabel())
-        }
-        return qsTr("reachable")
-    }
+    return SourceHealthProjection.networkConnectionSummary(root, kind, value)
 }
 
 function connectionValueOk(root, kind, value) {
-    with (root) {
-        if (kind === "messaging") {
-            return root.moduleReportReachable(value) && root.deliveryReportHealthy(value)
-        }
-        if (kind === "storage") {
-            return root.storageReportReady(value)
-        }
-        return true
-    }
+    return SourceHealthProjection.connectionValueOk(root, kind, value)
 }
 
 function storageReportReady(root, report) {
-    with (root) {
-        const ready = root.sourceHealthReady(report)
-        if (ready !== null) {
-            return ready
-        }
-        return root.moduleReportReachable(report)
-    }
+    return SourceHealthProjection.storageReportReady(root, report)
 }
 
 function moduleReportReachable(root, report) {
-    with (root) {
-        if (!report || typeof report !== "object") {
-            return false
-        }
-        const health = root.sourceHealth(report)
-        if (health && health.reachable !== undefined) {
-            return health.reachable === true
-        }
-        if (report.module_info && report.module_info.ok === true) {
-            return true
-        }
-        const probes = Array.isArray(report.probes) ? report.probes : []
-        for (let i = 0; i < probes.length; ++i) {
-            if (probes[i] && probes[i].ok === true) {
-                return true
-            }
-        }
-        return false
-    }
+    return SourceHealthProjection.moduleReportReachable(root, report)
 }
 
 function sourceHealth(root, report) {
-    with (root) {
-        const health = report && report.health && typeof report.health === "object" && !Array.isArray(report.health)
-            ? report.health
-            : null
-        return health
-    }
+    return SourceHealthProjection.sourceHealth(report)
 }
 
 function sourceHealthReady(root, report) {
-    with (root) {
-        const health = root.sourceHealth(report)
-        if (health && health.ready !== undefined) {
-            return health.ready === true
-        }
-        return null
-    }
+    return SourceHealthProjection.sourceHealthReady(report)
 }
 
 function sourceCapability(root, report, key) {
-    with (root) {
-        const wanted = String(key || "")
-        const facts = report && Array.isArray(report.capability_facts) ? report.capability_facts : []
-        for (let i = 0; i < facts.length; ++i) {
-            const fact = facts[i] || {}
-            if (String(fact.key || "") === wanted) {
-                return fact
-            }
-        }
-        return null
-    }
+    return SourceHealthProjection.sourceCapability(report, key)
 }
 
 function sourceCapabilityAvailable(root, report, key) {
-    with (root) {
-        const fact = root.sourceCapability(report, key)
-        return fact !== null ? fact.available === true : null
-    }
+    return SourceHealthProjection.sourceCapabilityAvailable(report, key)
 }
 
 function sourceCapabilityEvidence(root, report, key) {
-    with (root) {
-        const fact = root.sourceCapability(report, key)
-        return fact && fact.evidence !== undefined ? String(fact.evidence) : ""
-    }
+    return SourceHealthProjection.sourceCapabilityEvidence(report, key)
 }
 
 function sourceCapabilityValue(root, report, key) {
-    with (root) {
-        const fact = root.sourceCapability(report, key)
-        return fact && fact.value !== undefined ? fact.value : null
-    }
+    return SourceHealthProjection.sourceCapabilityValue(report, key)
 }
 
 function sourceProbeFact(root, report, key) {
-    with (root) {
-        const wanted = String(key || "")
-        const facts = report && Array.isArray(report.probe_facts) ? report.probe_facts : []
-        for (let i = 0; i < facts.length; ++i) {
-            const fact = facts[i] || {}
-            if (String(fact.key || "") === wanted) {
-                return fact
-            }
-        }
-        return null
-    }
+    return SourceHealthProjection.sourceProbeFact(report, key)
 }
 
 function sourceProbeValue(root, report, key) {
-    with (root) {
-        const fact = root.sourceProbeFact(report, key)
-        return fact && fact.ok === true && fact.value !== undefined && fact.value !== null ? fact.value : null
-    }
+    return SourceHealthProjection.sourceProbeValue(report, key)
 }
 
 function reportProbeValue(root, report, method) {
-    with (root) {
-        const probe = root.reportProbe(report, method)
-        if (!probe || probe.ok !== true || probe.value === undefined || probe.value === null) {
-            return null
-        }
-        return probe.value
-    }
+    return SourceHealthProjection.reportProbeValue(report, method)
 }
 
 function reportProbeOk(root, report, method) {
-    with (root) {
-        const probe = root.reportProbe(report, method)
-        return probe !== null && probe.ok === true
-    }
+    return SourceHealthProjection.reportProbeOk(report, method)
 }
 
 function reportProbe(root, report, method) {
-    with (root) {
-        if (!report || typeof report !== "object") {
-            return null
-        }
-        const wanted = String(method || "")
-        const fact = root.sourceProbeFact(report, wanted)
-        if (fact) {
-            return fact
-        }
-        const moduleInfo = report.module_info || null
-        if (moduleInfo) {
-            if (String(moduleInfo.probe_key || "") === wanted) {
-                return moduleInfo
-            }
-            const label = String(moduleInfo.label || "")
-            const source = String(moduleInfo.source || "")
-            if (label.indexOf("." + wanted) >= 0 || source.indexOf(" " + wanted) >= 0) {
-                return moduleInfo
-            }
-        }
-        const probes = Array.isArray(report.probes) ? report.probes : []
-        for (let i = 0; i < probes.length; ++i) {
-            const probe = probes[i] || {}
-            if (String(probe.probe_key || "") === wanted) {
-                return probe
-            }
-            const label = String(probe.label || "")
-            const source = String(probe.source || "")
-            if (label.indexOf("." + wanted) >= 0 || source.indexOf(" " + wanted) >= 0) {
-                return probe
-            }
-        }
-        return null
-    }
+    return SourceHealthProjection.reportProbe(report, method)
 }
 
 function deliveryReportHealthy(root, report) {
-    with (root) {
-        const ready = root.sourceHealthReady(report)
-        if (ready !== null) {
-            return ready
-        }
-        return root.moduleReportReachable(report)
-    }
+    return SourceHealthProjection.deliveryReportHealthy(root, report)
 }
 
 function deliveryHealthValueOk(root, value, unknownOk) {
-    with (root) {
-        if (value === undefined || value === null) {
-            return unknownOk === true
-        }
-        const scalar = root.scalarValue(value)
-        if (typeof scalar === "boolean") {
-            return scalar
-        }
-        const text = String(scalar === null ? value : scalar).trim().toLowerCase()
-        if (!text.length) {
-            return unknownOk === true
-        }
-        const normalized = text.replace(/[^a-z0-9]+/g, "")
-        if (normalized === "ready" || normalized === "healthy" || normalized === "ok"
-                || normalized === "connected" || normalized === "true") {
-            return true
-        }
-        if (normalized === "initializing" || normalized === "synchronizing" || normalized === "notready"
-                || normalized === "notmounted" || normalized === "shuttingdown" || normalized === "eventlooplagging"
-                || normalized === "disconnected" || normalized === "partiallyconnected" || normalized === "false"
-                || text.indexOf("not") >= 0 || text.indexOf("unhealthy") >= 0 || text.indexOf("error") >= 0
-                || text.indexOf("fail") >= 0 || text.indexOf("down") >= 0 || text.indexOf("disconnect") >= 0) {
-            return false
-        }
-        return unknownOk === true
-    }
+    return SourceHealthProjection.deliveryHealthValueOk(root, value, unknownOk)
 }
 
 function moduleReportError(root, report) {
-    with (root) {
-        if (!report || typeof report !== "object") {
-            return ""
-        }
-        if (report.module_info && report.module_info.ok === false && report.module_info.error) {
-            return String(report.module_info.error)
-        }
-        const probes = Array.isArray(report.probes) ? report.probes : []
-        for (let i = 0; i < probes.length; ++i) {
-            if (probes[i] && probes[i].ok === false && probes[i].error) {
-                return String(probes[i].error)
-            }
-        }
-        return ""
-    }
+    return SourceHealthProjection.moduleReportError(report)
 }
 
 function deliverySourceReportArgs(root) {

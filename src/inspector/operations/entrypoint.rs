@@ -1,7 +1,7 @@
 use anyhow::{Context as _, Result};
 use serde_json::Value;
 
-use super::catalog::operation_route;
+use super::spec::{OperationMethod, operation_route};
 use crate::source_routing::Args;
 
 pub(crate) trait OperationRunner {
@@ -9,14 +9,8 @@ pub(crate) trait OperationRunner {
     fn status(&self, operation_id: &str) -> Result<Value>;
     fn events(&self, operation_id: &str, after_seq: u64) -> Result<Value>;
     fn cancel(&self, operation_id: &str) -> Result<Value>;
-    fn run_operation(&self, domain: &str, method: &str, args: Value, label: &str) -> Result<Value>;
-    fn start_operation(
-        &self,
-        domain: &str,
-        method: &str,
-        args: Value,
-        label: &str,
-    ) -> Result<Value>;
+    fn run_operation(&self, method: OperationMethod, args: Value, label: &str) -> Result<Value>;
+    fn start_operation(&self, method: OperationMethod, args: Value, label: &str) -> Result<Value>;
 }
 
 pub(crate) fn handle_operation_command(
@@ -35,11 +29,10 @@ pub(crate) fn handle_operation_command(
             let Some(route) = operation_route(method) else {
                 return Ok(None);
             };
-            let method = route.method.as_str();
             if route.start_async {
-                runner.start_operation(route.domain.as_str(), method, args.clone(), route.label)?
+                runner.start_operation(route.method, args.clone(), route.label)?
             } else {
-                runner.run_operation(route.domain.as_str(), method, args.clone(), route.label)?
+                runner.run_operation(route.method, args.clone(), route.label)?
             }
         }
     };
@@ -153,34 +146,32 @@ mod tests {
 
         fn run_operation(
             &self,
-            domain: &str,
-            method: &str,
+            method: OperationMethod,
             args: Value,
             label: &str,
         ) -> Result<Value> {
             self.calls.borrow_mut().push(RunnerCall::RunOperation {
-                domain: domain.to_owned(),
-                method: method.to_owned(),
+                domain: method.domain().as_str().to_owned(),
+                method: method.as_str().to_owned(),
                 args,
                 label: label.to_owned(),
             });
-            Ok(json!({ "operation": method }))
+            Ok(json!({ "operation": method.as_str() }))
         }
 
         fn start_operation(
             &self,
-            domain: &str,
-            method: &str,
+            method: OperationMethod,
             args: Value,
             label: &str,
         ) -> Result<Value> {
             self.calls.borrow_mut().push(RunnerCall::StartOperation {
-                domain: domain.to_owned(),
-                method: method.to_owned(),
+                domain: method.domain().as_str().to_owned(),
+                method: method.as_str().to_owned(),
                 args,
                 label: label.to_owned(),
             });
-            Ok(json!({ "operationId": method }))
+            Ok(json!({ "operationId": method.as_str() }))
         }
     }
 

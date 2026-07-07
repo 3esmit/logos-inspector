@@ -12,20 +12,19 @@ use anyhow::{Context as _, Result, bail};
 use serde_json::{Value, json};
 use tokio::runtime::Runtime;
 
-use crate::inspector::methods::{
-    OperationRunner, handle_operation_command, normalized_operation_method, operation_cancellable,
-};
-
 mod chain;
 mod delivery;
 mod dispatch;
+mod entrypoint;
 mod local_nodes;
 mod record;
 mod request;
+mod spec;
 mod storage;
 mod wallet;
 
 use dispatch::execute_node_operation;
+use entrypoint::{OperationRunner, handle_operation_command};
 use record::{
     NodeOperation, NodeOperationRecord, NodeOperationRegistry, NodeOperationStatus,
     active_storage_download_operation, finish_node_operation, node_operation_event_value,
@@ -33,6 +32,8 @@ use record::{
 };
 pub(crate) use request::{NodeOperationRequest, node_operation_request_from_value};
 use request::{node_operation_backend, node_operation_context};
+pub(crate) use spec::OperationMethod;
+use spec::normalized_operation_method;
 
 #[cfg(test)]
 use record::test_node_operation_record;
@@ -62,7 +63,7 @@ impl NodeOperations {
         let operation_id = format!(
             "{}-{}-{}",
             request.domain,
-            normalized_operation_method(&request.method),
+            normalized_operation_method(request.method_name()),
             self.next_operation_id.fetch_add(1, Ordering::Relaxed)
         );
         let now = now_millis();
@@ -71,9 +72,9 @@ impl NodeOperations {
             operation_id: operation_id.clone(),
             domain: request.domain.clone(),
             backend: node_operation_backend(&request),
-            method: request.method.clone(),
+            method: request.method_name().to_owned(),
             status: NodeOperationStatus::Running,
-            label: request.label.clone(),
+            label: request.label().to_owned(),
             context: node_operation_context(&request),
             external_session_id: None,
             progress: None,
@@ -81,7 +82,7 @@ impl NodeOperations {
             content_length: None,
             result: None,
             error: None,
-            cancellable: operation_cancellable(&request.method),
+            cancellable: request.cancellable(),
             started_at: now,
             updated_at: now,
         };
@@ -90,8 +91,8 @@ impl NodeOperations {
                 .registry
                 .lock()
                 .map_err(|_| anyhow::anyhow!("node operation registry is unavailable"))?;
-            if request.domain == "storage"
-                && request.method == "storageDownloadToUrl"
+            if request.domain() == "storage"
+                && request.method() == OperationMethod::StorageDownloadToUrl
                 && operations.values().any(active_storage_download_operation)
             {
                 bail!("a storage download operation is already running");
@@ -192,14 +193,13 @@ impl NodeOperations {
     pub(crate) fn run_blocking(
         &self,
         runtime: &Runtime,
-        domain: &str,
-        method: &str,
+        method: OperationMethod,
         args: Value,
         label: &str,
     ) -> Result<Value> {
         let operation = self.start(
             runtime,
-            NodeOperationRequest::from_call(domain, method, args, label),
+            NodeOperationRequest::from_call(method, args, label),
         )?;
         let operation_id = operation
             .get("operationId")
@@ -329,21 +329,15 @@ impl OperationRunner for RuntimeOperationRunner<'_> {
         self.operations.cancel(operation_id)
     }
 
-    fn run_operation(&self, domain: &str, method: &str, args: Value, label: &str) -> Result<Value> {
+    fn run_operation(&self, method: OperationMethod, args: Value, label: &str) -> Result<Value> {
         self.operations
-            .run_blocking(self.runtime, domain, method, args, label)
+            .run_blocking(self.runtime, method, args, label)
     }
 
-    fn start_operation(
-        &self,
-        domain: &str,
-        method: &str,
-        args: Value,
-        label: &str,
-    ) -> Result<Value> {
+    fn start_operation(&self, method: OperationMethod, args: Value, label: &str) -> Result<Value> {
         self.operations.start(
             self.runtime,
-            NodeOperationRequest::from_call(domain, method, args, label),
+            NodeOperationRequest::from_call(method, args, label),
         )
     }
 }
