@@ -1,4 +1,5 @@
 .import "../../services/BridgeHelpers.js" as BridgeHelpers
+.import "ModuleEventEnvelope.js" as ModuleEventEnvelope
 
 function applyDispatchAck(root, operation) {
     const payload = operationPayload(operation && operation.result)
@@ -315,22 +316,7 @@ function operationPayload(value) {
 }
 
 function eventPayload(args) {
-    const values = Array.isArray(args) ? args : (args === undefined || args === null ? [] : [args])
-    const raw = values.length > 0 ? values[0] : args
-    if (raw && typeof raw === "object") {
-        return raw
-    }
-    const text = String(raw || "").trim()
-    if (!text.length) {
-        return null
-    }
-    const parsed = BridgeHelpers.parseJson(text)
-    if (parsed.ok && parsed.value && typeof parsed.value === "object") {
-        return parsed.value
-    }
-    return {
-        value: text
-    }
+    return ModuleEventEnvelope.storagePayload(args)
 }
 
 function methodForEvent(eventName) {

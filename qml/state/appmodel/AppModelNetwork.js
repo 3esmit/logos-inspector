@@ -1,5 +1,6 @@
 .import "../../services/BridgeHelpers.js" as BridgeHelpers
 .import "SourceHealthProjection.js" as SourceHealthProjection
+.import "SourcePolicyCatalog.js" as SourcePolicyCatalog
 .import "SourcePolicyProjection.js" as SourcePolicyProjection
 .import "SourceRoutingUi.js" as SourceRoutingUi
 
@@ -37,7 +38,7 @@ function loadSourcePolicy(root) {
             sourcePolicyLoaded = true
             return true
         }
-        sourcePolicy = ({})
+        sourcePolicy = SourcePolicyCatalog.fallbackPolicy()
         sourcePolicyLoaded = false
         return false
     }

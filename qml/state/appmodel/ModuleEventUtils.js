@@ -1,45 +1,20 @@
 .import "../../services/BridgeHelpers.js" as BridgeHelpers
+.import "ModuleEventEnvelope.js" as ModuleEventEnvelope
 
 function eventValues(args) {
-    if (Array.isArray(args)) {
-        return args
-    }
-    if (args === undefined || args === null) {
-        return []
-    }
-    return [args]
+    return ModuleEventEnvelope.values(args)
 }
 
 function firstEventValue(args) {
-    const values = eventValues(args)
-    return values.length > 0 ? values[0] : args
+    return ModuleEventEnvelope.first(args)
 }
 
 function eventObject(args) {
-    const value = firstEventValue(args)
-    const parsed = parsedPayload(value)
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : ({})
+    return ModuleEventEnvelope.object(args)
 }
 
 function parsedPayload(value) {
-    if (value === undefined || value === null) {
-        return null
-    }
-    if (typeof value === "object") {
-        return value
-    }
-    const text = String(value || "").trim()
-    if (!text.length) {
-        return ""
-    }
-    if ((text.charAt(0) === "{" && text.charAt(text.length - 1) === "}")
-            || (text.charAt(0) === "[" && text.charAt(text.length - 1) === "]")) {
-        const parsed = BridgeHelpers.parseJson(text)
-        if (parsed.ok) {
-            return parsed.value
-        }
-    }
-    return text
+    return ModuleEventEnvelope.payload(value)
 }
 
 function fieldText(object, keys) {

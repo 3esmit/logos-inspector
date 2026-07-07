@@ -421,6 +421,30 @@ TestCase {
         compare(model.storageSourceTarget(), model.configuredStorageRestUrl())
     }
 
+    function test_source_policy_catalog_fallback_supports_pending_modes_without_bridge_policy() {
+        model.sourcePolicy = ({})
+        model.sourcePolicyLoaded = false
+
+        compare(model.normalizedMessagingSourceMode("metrics"), "metrics")
+        compare(model.normalizedMessagingSourceMode("network-monitor"), "network-monitor")
+        compare(model.normalizedStorageSourceMode("metrics"), "metrics")
+
+        model.messagingSourceMode = "network-monitor"
+        compare(model.effectiveMessagingSourceMode(model.messagingSourceMode), "network-monitor")
+        compare(model.deliverySourceReportArgs()[0], "network-monitor")
+        compare(model.deliverySourceTarget(), model.configuredMessagingRestUrl())
+
+        model.storageSourceMode = "metrics"
+        compare(model.effectiveStorageSourceMode(model.storageSourceMode), "metrics")
+        compare(model.storageSourceReportArgs(false)[0], "metrics")
+        compare(model.storageSourceTarget(), model.storageMetricsUrl)
+
+        const deliveryOptions = model.sourceModeOptions("delivery")
+        const deliveryKeys = deliveryOptions.map(option => option.key)
+        verify(deliveryKeys.indexOf("metrics") >= 0)
+        verify(deliveryKeys.indexOf("network-monitor") >= 0)
+    }
+
     function test_messaging_and_storage_auto_use_module_routes_in_basecamp() {
         compare(basecampModel.effectiveMessagingSourceMode(basecampModel.messagingSourceMode), "module")
         compare(basecampModel.deliverySourceReportArgs()[0], "module")

@@ -9,6 +9,8 @@ QtObject {
     property var pendingCalls: ({})
     property var moduleEventSubscriptions: ({})
 
+    onHostChanged: moduleEventSubscriptions = ({})
+
     signal moduleEventReceived(string moduleName, string eventName, var args)
 
     function prefersBasecampModules() {

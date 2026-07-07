@@ -1,10 +1,12 @@
+.import "SourcePolicyCatalog.js" as SourcePolicyCatalog
+
 function sourcePolicyDefault(root, key, fallback) {
     const policy = root.sourcePolicy || {}
     const defaults = policy.defaults && typeof policy.defaults === "object"
         ? policy.defaults
         : null
     const value = defaults && defaults[key] !== undefined ? String(defaults[key] || "").trim() : ""
-    return value.length > 0 ? value : String(fallback || "")
+    return value.length > 0 ? value : SourcePolicyCatalog.defaultValue(key, fallback)
 }
 
 function sourceModePolicy(root, family, value) {
@@ -36,7 +38,7 @@ function sourceModePolicies(root, family) {
     const policy = root.sourcePolicy || {}
     const sourceModes = policy.source_modes || {}
     const modes = Array.isArray(sourceModes[family]) ? sourceModes[family] : []
-    return modes.length > 0 ? modes : fallbackSourceModePolicies(family)
+    return modes.length > 0 ? modes : SourcePolicyCatalog.sourceModes(family)
 }
 
 function sourceModeOptions(root, family) {
@@ -210,46 +212,4 @@ function sourceModeOptionAt(options, index) {
         return options[index] || null
     }
     return options && typeof options.get === "function" ? options.get(index) : null
-}
-
-function fallbackSourceModePolicies(family) {
-    if (family === "core") {
-        return [
-            sourceModeRecord("auto", ["auto"], "rpc", "Auto", "Auto: Direct RPC", "Use configured direct RPC endpoint", "rpc_endpoint", false, false, false, false),
-            sourceModeRecord("rpc", ["rpc"], "rpc", "Direct RPC", "Direct RPC", "Use configured standalone RPC endpoint", "rpc_endpoint", false, false, false, false),
-            sourceModeRecord("module", ["module", "basecamp", "basecamp-module", "basecamp module"], "module", "Basecamp module", "Basecamp module", "Use Basecamp module APIs where available", "module", false, false, false, true)
-        ]
-    }
-    if (family === "delivery") {
-        return [
-            sourceModeRecord("auto", ["auto"], "rest", "Auto", "Auto: Direct Waku REST", "Use direct Waku REST", "rest_endpoint", true, true, false, true),
-            sourceModeRecord("module", ["module", "basecamp", "basecamp-module", "basecamp module"], "module", "Delivery module", "Delivery module", "Use delivery_module through module APIs", "module", false, false, false, true),
-            sourceModeRecord("rest", ["rest"], "rest", "Direct Waku REST", "Direct Waku REST", "Read-only health, info, version, and optional metrics", "rest_endpoint", true, true, false, true),
-            sourceModeRecord("unsupported", ["unsupported"], "unsupported", "Unsupported saved source", "Unsupported source", "Select a supported source to replace this saved value", "none", false, false, false, false)
-        ]
-    }
-    return [
-        sourceModeRecord("auto", ["auto"], "rest", "Auto", "Auto: Standalone REST", "Use standalone REST", "rest_endpoint", true, true, true, true),
-        sourceModeRecord("module", ["module", "basecamp", "basecamp-module", "basecamp module"], "module", "Storage module", "Storage module", "Use storage_module through module APIs", "module", false, false, true, true),
-        sourceModeRecord("rest", ["rest"], "rest", "Standalone REST", "Standalone REST", "Read-only space, identity, local data, debug, and metrics", "rest_endpoint", true, true, true, true),
-        sourceModeRecord("unsupported", ["unsupported"], "unsupported", "Unsupported saved source", "Unsupported source", "Select a supported source to replace this saved value", "none", false, false, false, false)
-    ]
-}
-
-function sourceModeRecord(key, aliases, effective, label, sourceLabel, summary, target, usesRest, usesMetrics, supportsCid, supportsMutating) {
-    return {
-        key: key,
-        aliases: aliases,
-        effective: effective,
-        label: label,
-        source_label: sourceLabel,
-        summary: summary,
-        adapter: {
-            target: target,
-            uses_rest_endpoint: usesRest,
-            uses_metrics_endpoint: usesMetrics,
-            supports_cid_probe: supportsCid,
-            supports_mutating_diagnostics: supportsMutating
-        }
-    }
 }

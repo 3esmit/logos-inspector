@@ -420,6 +420,14 @@ pub(crate) fn operation_route(method: &str) -> Option<OperationRoute> {
     Some(operation_catalog_entry(method).route(false))
 }
 
+#[cfg(test)]
+pub(crate) fn operation_method_names() -> impl Iterator<Item = &'static str> {
+    OPERATION_CATALOG
+        .iter()
+        .map(|entry| entry.name)
+        .chain(std::iter::once(STORAGE_DOWNLOAD_START_ALIAS))
+}
+
 pub(crate) fn operation_uses_mutating_flag(method: &str) -> bool {
     OperationMethod::from_str(method).is_some_and(OperationMethod::uses_mutating_flag)
 }
