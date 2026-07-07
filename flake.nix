@@ -46,6 +46,8 @@
       };
 
       rapidsnarkVersion = "0.0.8";
+      lezRevision = "e37876a64028a335eb693198a1ed6a0e875ec5b4";
+      lezSourceHash = "sha256-ltLcysXUdVUXAe25Tl8x7e7ZsTzj1sHlyS3glp97TAo=";
 
       rapidsnarkHashes = {
         x86_64-linux = "sha256-88+TkECQYCKBN0WbYLRB+qi6TEhbjVfrpCqlSgm0DR8=";
@@ -84,6 +86,12 @@
           '';
         };
 
+      mkLezSource = pkgs:
+        pkgs.fetchzip {
+          url = "https://github.com/logos-blockchain/logos-execution-zone/archive/${lezRevision}.tar.gz";
+          hash = lezSourceHash;
+        };
+
       mkCircuitsArtifact = pkgs:
         let
           target = circuitsTargets.${pkgs.stdenv.hostPlatform.system};
@@ -92,6 +100,28 @@
           url = "https://github.com/logos-blockchain/logos-blockchain-circuits/releases/download/v${circuitsVersion}/logos-blockchain-circuits-v${circuitsVersion}-${target.os}-${target.arch}.tar.gz";
           hash = target.hash;
         };
+
+      mkCircuitBuildContext = pkgs: { includeLogosBlockchainCircuits ? false }:
+        let
+          circuitsArtifact = mkCircuitsArtifact pkgs;
+          rapidsnark = mkRapidsnark pkgs;
+          lezSource = mkLezSource pkgs;
+        in
+        {
+          inherit circuitsArtifact rapidsnark lezSource;
+          env = {
+            LBC_ROOT_DIR = "${circuitsArtifact}";
+            RAPIDSNARK_LIB_DIR = "${rapidsnark}";
+            RISC0_SKIP_BUILD = "1";
+          } // lib.optionalAttrs includeLogosBlockchainCircuits {
+            LOGOS_BLOCKCHAIN_CIRCUITS = "${circuitsArtifact}";
+          };
+        };
+
+      linkLezArtifacts = lezSource: ''
+        rm -rf /build/cargo-vendor-dir/artifacts
+        ln -s ${lezSource}/artifacts /build/cargo-vendor-dir/artifacts
+      '';
 
       forSystems = systems: f:
         lib.genAttrs systems
@@ -173,12 +203,9 @@
 
       mkCoreFfiPackage = pkgs:
         let
-          circuitsArtifact = mkCircuitsArtifact pkgs;
-          lezSource = pkgs.fetchzip {
-            url = "https://github.com/logos-blockchain/logos-execution-zone/archive/e37876a64028a335eb693198a1ed6a0e875ec5b4.tar.gz";
-            hash = "sha256-ltLcysXUdVUXAe25Tl8x7e7ZsTzj1sHlyS3glp97TAo=";
+          circuitBuild = mkCircuitBuildContext pkgs {
+            includeLogosBlockchainCircuits = true;
           };
-          rapidsnark = mkRapidsnark pkgs;
         in
         pkgs.rustPlatform.buildRustPackage {
           pname = "logos-inspector-core-ffi";
@@ -192,17 +219,9 @@
             "--package"
             "logos-inspector-core-ffi"
           ];
-          env = {
-            LBC_ROOT_DIR = "${circuitsArtifact}";
-            LOGOS_BLOCKCHAIN_CIRCUITS = "${circuitsArtifact}";
-            RAPIDSNARK_LIB_DIR = "${rapidsnark}";
-            RISC0_SKIP_BUILD = "1";
-          };
+          env = circuitBuild.env;
           nativeBuildInputs = [ pkgs.python3 ];
-          preBuild = ''
-            rm -rf /build/cargo-vendor-dir/artifacts
-            ln -s ${lezSource}/artifacts /build/cargo-vendor-dir/artifacts
-          '';
+          preBuild = linkLezArtifacts circuitBuild.lezSource;
           postInstall = ''
             mkdir -p "$out/include"
             cp ${./core/lib/logos_inspector_core.h} "$out/include/"
@@ -227,12 +246,7 @@
 
       mkStandaloneBinary = pkgs: { buildType, staticRapidsnarkFeature }:
         let
-          circuitsArtifact = mkCircuitsArtifact pkgs;
-          lezSource = pkgs.fetchzip {
-            url = "https://github.com/logos-blockchain/logos-execution-zone/archive/e37876a64028a335eb693198a1ed6a0e875ec5b4.tar.gz";
-            hash = "sha256-ltLcysXUdVUXAe25Tl8x7e7ZsTzj1sHlyS3glp97TAo=";
-          };
-          rapidsnark = mkRapidsnark pkgs;
+          circuitBuild = mkCircuitBuildContext pkgs { };
           qtInputs = with pkgs.qt6; [
             qtbase
             qtdeclarative
@@ -265,16 +279,12 @@
             pkgs.qt6.wrapQtAppsHook
           ];
           buildInputs = qtInputs;
-          env = {
-            LBC_ROOT_DIR = "${circuitsArtifact}";
-            RAPIDSNARK_LIB_DIR = "${rapidsnark}";
+          env = circuitBuild.env // {
             QT_VERSION_MAJOR = "6";
-            RISC0_SKIP_BUILD = "1";
           };
           doCheck = false;
           preBuild = ''
-            rm -rf /build/cargo-vendor-dir/artifacts
-            ln -s ${lezSource}/artifacts /build/cargo-vendor-dir/artifacts
+            ${linkLezArtifacts circuitBuild.lezSource}
 
             qtBuildRoot="$TMPDIR/qt-unified"
             mkdir -p "$qtBuildRoot/bin" "$qtBuildRoot/include" "$qtBuildRoot/lib" "$qtBuildRoot/libexec" "$qtBuildRoot/plugins"
