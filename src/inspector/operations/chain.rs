@@ -6,7 +6,7 @@ use crate::{
     bridge::{blocking_value, to_value},
     indexer_block_by_hash, indexer_blocks, indexer_health, indexer_status,
     indexer_transfer_recipients, last_sequencer_block_id,
-    lez::RegisteredIdlResolver,
+    lez::{LezInspectionSession, RegisteredIdlResolver},
     raw_json_rpc_optional_result, sequencer_account, sequencer_block, sequencer_blocks,
     sequencer_program_ids, sequencer_transaction, sequencer_transaction_inspection,
     sequencer_transaction_inspection_with_idl, sequencer_transaction_trace,
@@ -271,6 +271,14 @@ pub(super) async fn execute_account_operation(request: &NodeOperationRequest) ->
     RegisteredIdlResolver::new(&idl_entries)
         .enrich_account_related_transaction_decodes(&mut value)?;
     Ok(value)
+}
+
+pub(super) async fn execute_resolve_lez_target(request: &NodeOperationRequest) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    let sources = args.account_sources()?;
+    let target = sources.account;
+    let session = LezInspectionSession::new(sources);
+    to_value(session.resolve_target(target).await?)
 }
 
 pub(super) async fn execute_indexer_health_operation(

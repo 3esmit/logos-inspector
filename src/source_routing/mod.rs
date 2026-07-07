@@ -34,6 +34,7 @@ pub use policy::{
 };
 pub use reports::{delivery_source_report, storage_source_report};
 pub(crate) use selection::{
-    Args, DeliveryStoreQuery, SourceArgsNormalization, SourceEndpoint, delivery_rest_source,
-    normalized_source_args, require_mutating_diagnostics, storage_rest_source,
+    AccountSources, Args, DeliveryStoreQuery, SourceArgsNormalization, SourceEndpoint,
+    delivery_rest_source, normalized_source_args, require_mutating_diagnostics,
+    storage_rest_source,
 };

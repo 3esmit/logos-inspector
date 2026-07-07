@@ -338,6 +338,19 @@ function accountLookupArgs(root, account, idlJson, accountType) {
     }
 }
 
+function lezLookupArgs(root, target) {
+    with (root) {
+        return SourcePolicyProjection.lezLookupArgs(
+            root,
+            executionSourceMode,
+            sequencerUrl,
+            indexerSourceMode,
+            indexerUrl,
+            target
+        )
+    }
+}
+
 function updateNetworkConnectionStatusForMethod(root, method, response) {
     with (root) {
         const kind = root.networkConnectionKindForMethod(method)

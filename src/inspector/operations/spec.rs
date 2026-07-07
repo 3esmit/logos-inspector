@@ -45,6 +45,7 @@ pub(crate) enum OperationMethod {
     InspectTransaction,
     TraceTransaction,
     Account,
+    ResolveLezTarget,
     IndexerHealth,
     IndexerStatus,
     IndexerFinalizedHead,
@@ -112,6 +113,7 @@ impl OperationMethod {
             "inspectTransaction" => Self::InspectTransaction,
             "traceTransaction" => Self::TraceTransaction,
             "account" => Self::Account,
+            "resolveLezTarget" => Self::ResolveLezTarget,
             "indexerHealth" => Self::IndexerHealth,
             "indexerStatus" => Self::IndexerStatus,
             "indexerFinalizedHead" => Self::IndexerFinalizedHead,
@@ -159,6 +161,7 @@ impl OperationMethod {
             Self::InspectTransaction => "inspectTransaction",
             Self::TraceTransaction => "traceTransaction",
             Self::Account => "account",
+            Self::ResolveLezTarget => "resolveLezTarget",
             Self::IndexerHealth => "indexerHealth",
             Self::IndexerStatus => "indexerStatus",
             Self::IndexerFinalizedHead => "indexerFinalizedHead",
@@ -209,7 +212,8 @@ impl OperationMethod {
             | Self::Transaction
             | Self::InspectTransaction
             | Self::TraceTransaction
-            | Self::Account => OperationDomain::Execution,
+            | Self::Account
+            | Self::ResolveLezTarget => OperationDomain::Execution,
         }
     }
 
@@ -249,6 +253,7 @@ impl OperationMethod {
             Self::InspectTransaction => "Transaction inspection",
             Self::TraceTransaction => "Transaction trace",
             Self::Account => "Account inspection",
+            Self::ResolveLezTarget => "LEZ lookup",
             Self::IndexerHealth => "Indexer health",
             Self::IndexerStatus => "Indexer status",
             Self::IndexerFinalizedHead => "Indexer finalized head",
@@ -346,6 +351,7 @@ mod tests {
                 OperationDomain::Execution,
                 "Transaction inspection",
             ),
+            ("resolveLezTarget", OperationDomain::Execution, "LEZ lookup"),
         ];
 
         for (name, domain, label) in cases {

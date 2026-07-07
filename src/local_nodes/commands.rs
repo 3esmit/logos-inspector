@@ -12,7 +12,7 @@ const STORAGE_MODULE: &str = "storage_module";
 const DELIVERY_MODULE: &str = "delivery_module";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LocalNodeCommandSpec {
+pub(super) struct LocalNodeCommandSpec {
     pub program: String,
     pub args: Vec<String>,
     pub display: String,
@@ -30,7 +30,7 @@ enum CommandBackend {
 }
 
 #[must_use]
-pub fn command_spec_for(
+pub(super) fn command_spec_for(
     kind: NodeKind,
     action: NodeAction,
     config_path: &str,

@@ -4,6 +4,7 @@ pub(crate) mod idl_resolver;
 pub(crate) mod indexer;
 pub(crate) mod programs;
 pub(crate) mod sequencer;
+pub(crate) mod session;
 pub(crate) mod transaction_facts;
 pub(crate) mod transactions;
 pub(crate) mod transfers;
@@ -40,6 +41,7 @@ pub use sequencer::{
     sequencer_transaction_inspection_with_idl, sequencer_transaction_trace,
     sequencer_transaction_trace_with_idl,
 };
+pub(crate) use session::LezInspectionSession;
 #[cfg(test)]
 pub(crate) use transaction_facts::summarize_indexer_transaction;
 pub use transaction_facts::{AccountTransactionSummary, TransactionTransferOutputSummary};

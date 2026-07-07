@@ -138,6 +138,10 @@ function accountLookupArgs(root, executionSourceMode, sequencerEndpoint, indexer
     return [String(sequencerEndpoint || ""), String(indexerEndpoint || "")].concat(suffix)
 }
 
+function lezLookupArgs(root, executionSourceMode, sequencerEndpoint, indexerSourceMode, indexerEndpoint, target) {
+    return accountLookupArgs(root, executionSourceMode, sequencerEndpoint, indexerSourceMode, indexerEndpoint, target, "", "")
+}
+
 function deliverySourceReportArgs(root, sourceMode, restEndpoint, metricsEndpoint) {
     return [
         String(sourceModePolicy(root, "delivery", resolvedSourceModeKey(root, "delivery", sourceMode)).effective || "rest"),

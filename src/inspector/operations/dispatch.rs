@@ -83,6 +83,7 @@ pub(super) async fn execute_node_operation(
         OperationMethod::InspectTransaction => chain::execute_inspect_transaction(&request).await,
         OperationMethod::TraceTransaction => chain::execute_trace_transaction(&request).await,
         OperationMethod::Account => chain::execute_account_operation(&request).await,
+        OperationMethod::ResolveLezTarget => chain::execute_resolve_lez_target(&request).await,
         OperationMethod::IndexerHealth => chain::execute_indexer_health_operation(&request).await,
         OperationMethod::IndexerStatus => chain::execute_indexer_status_operation(&request).await,
         OperationMethod::IndexerFinalizedHead => {
