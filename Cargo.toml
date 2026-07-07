@@ -1,17 +1,24 @@
 [package]
 name = "logos-inspector"
-version = "0.2.0-rc6"
-edition = "2024"
-rust-version = "1.94"
-license = "MIT"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 repository = "https://github.com/logos-blockchain/logos-inspector"
 description = "Native CLI and GUI inspector for Logos networks"
-publish = false
+publish.workspace = true
 
 [workspace]
 members = [".", "crates/core-ffi", "crates/standalone-gui"]
 default-members = ["."]
 resolver = "3"
+
+[workspace.package]
+version = "0.2.0-rc6"
+edition = "2024"
+rust-version = "1.94"
+license = "MIT"
+publish = false
 
 [workspace.dependencies]
 anyhow = "1.0.98"

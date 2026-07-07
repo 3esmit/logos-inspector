@@ -9,6 +9,8 @@
   outputs = inputs@{ logos-module-builder, nixpkgs, ... }:
     let
       lib = nixpkgs.lib;
+      cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
+      packageVersion = cargoToml.workspace.package.version;
 
       qmlSystems = [
         "x86_64-linux"
@@ -209,7 +211,7 @@
         in
         pkgs.rustPlatform.buildRustPackage {
           pname = "logos-inspector-core-ffi";
-          version = "0.2.0-rc6";
+          version = packageVersion;
           src = standaloneRustSource;
           cargoLock = {
             lockFile = ./Cargo.lock;
@@ -224,7 +226,7 @@
           preBuild = linkLezArtifacts circuitBuild.lezSource;
           postInstall = ''
             mkdir -p "$out/include"
-            cp ${./core/lib/logos_inspector_core.h} "$out/include/"
+            cp ${./crates/core-ffi/include/logos_inspector_core.h} "$out/include/logos_inspector_core.h"
           '';
           doCheck = false;
         };
@@ -257,7 +259,7 @@
         in
         pkgs.rustPlatform.buildRustPackage {
           pname = "logos-inspector-standalone-gui-bin";
-          version = "0.2.0-rc6";
+          version = packageVersion;
           src = standaloneRustSource;
           inherit buildType;
           cargoLock = {
@@ -354,7 +356,7 @@ EOF
       mkStandalonePackage = pkgs: binary:
         pkgs.stdenvNoCC.mkDerivation {
           pname = "logos-inspector-standalone-gui";
-          version = "0.2.0-rc6";
+          version = packageVersion;
           dontUnpack = true;
           nativeBuildInputs = [ pkgs.makeWrapper ];
           installPhase = ''

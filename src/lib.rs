@@ -21,6 +21,10 @@ pub mod source_routing;
 mod state_store;
 mod wallet;
 
+pub use blockchain::{
+    ChannelOperationMatch, ChannelScanReport, ChannelSummary, channel_scan, channel_state,
+    extract_channel_operations, summarize_channel_operations,
+};
 pub use entity_id::normalize_program_id_hex;
 pub(crate) use entity_id::{normalize_account_id_text, parse_account_id, parse_hash};
 pub use idl_decode::{
@@ -41,10 +45,8 @@ pub use lez::{
     sequencer_transaction_trace_with_idl, summarize_block,
 };
 pub use lez::{
-    ChannelOperationMatch, ChannelScanReport, ChannelSummary, IndexerBlockReport,
-    IndexerStatusReport, channel_scan, channel_state, extract_channel_operations,
-    indexer_block_by_hash, indexer_blocks, indexer_health, indexer_status,
-    indexer_transfer_recipients, summarize_channel_operations,
+    IndexerBlockReport, IndexerStatusReport, indexer_block_by_hash, indexer_blocks, indexer_health,
+    indexer_status, indexer_transfer_recipients,
 };
 pub use lez::{
     ProgramFileInfo, ProgramIdEntry, program_file_info, program_id_base58, program_id_hex,

@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 use crate::state_store::config_dir;
 
 mod commands;
+mod local_indexer;
 mod model;
 mod paths;
 mod process;
@@ -16,6 +17,10 @@ mod time;
 
 pub use commands::{LocalNodeCommandSpec, command_spec_for};
 use commands::{execute_command_spec, operation_detail_from_value};
+pub use local_indexer::{
+    bootstrap_default_local_indexer, bootstrap_default_local_indexer_for_saved_settings,
+    is_default_local_indexer_endpoint,
+};
 use model::LocalNodesState;
 pub use model::{
     LocalDevnetListReport, LocalDevnetRecord, LocalNodeActionRequest, LocalNodeConfigRecord,
