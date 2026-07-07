@@ -27,15 +27,10 @@ function networkConnectionSummary(root, kind, value) {
     if (kind === "messaging") {
         const health = sourceHealth(value)
         if (health && health.summary) {
-            return health.ready === true ? String(health.summary) : String(health.detail || health.summary)
+            return String(health.ready === true ? health.summary : (health.detail || health.summary))
         }
         if (!moduleReportReachable(root, value)) {
             return moduleReportError(value) || qsTr("source unavailable")
-        }
-        if (!deliveryReportHealthy(root, value)) {
-            const nodeHealth = reportProbeValue(value, "nodeHealth")
-            const connectionStatus = reportProbeValue(value, "connectionStatus")
-            return qsTr("health %1 / %2").arg(root.valueText(nodeHealth)).arg(root.valueText(connectionStatus))
         }
         const version = root.moduleProbeValue("messaging", "version")
         return version !== null ? qsTr("version %1").arg(root.valueText(version)) : qsTr("%1 reachable").arg(root.deliverySourceLabel())
@@ -43,7 +38,7 @@ function networkConnectionSummary(root, kind, value) {
     if (kind === "storage") {
         const health = sourceHealth(value)
         if (health && health.summary) {
-            return health.ready === true ? String(health.summary) : String(health.detail || health.summary)
+            return String(health.ready === true ? health.summary : (health.detail || health.summary))
         }
         if (!moduleReportReachable(root, value)) {
             return moduleReportError(value) || qsTr("source unavailable")
@@ -59,7 +54,8 @@ function networkConnectionSummary(root, kind, value) {
 
 function connectionValueOk(root, kind, value) {
     if (kind === "messaging") {
-        return moduleReportReachable(root, value) && deliveryReportHealthy(root, value)
+        const ready = sourceHealthReady(value)
+        return ready !== null ? ready : moduleReportReachable(root, value)
     }
     if (kind === "storage") {
         return storageReportReady(root, value)

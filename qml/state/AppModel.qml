@@ -11,6 +11,7 @@ import "appmodel/AppModelOpeners.js" as AppModelOpeners
 import "appmodel/AppModelRegistry.js" as AppModelRegistry
 import "appmodel/AppModelSocial.js" as AppModelSocial
 import "appmodel/AppModelModuleEvents.js" as AppModelModuleEvents
+import "appmodel/ProgramDecodeSession.js" as ProgramDecodeSession
 
 QtObject {
     id: root
@@ -210,12 +211,42 @@ QtObject {
                 root.statusText = String(value || "")
             }
 
+            function busy() {
+                return root.busy
+            }
+
+            function setBusy(value) {
+                root.busy = value === true
+            }
+
+            function setResult(title, text, isError, value) {
+                root.setResult(title, text, isError, value)
+            }
+
+            function openLocalWallet(wallet, tab) {
+                return root.openLocalWallet(wallet, tab)
+            }
+
             function networkProfile() {
                 return root.networkProfile
             }
 
+            function nodeUrl() {
+                return String(root.nodeUrl || "")
+            }
+
             function redactedPath(path) {
                 return root.redactedPath(path)
+            }
+
+            function setBedrockWalletBalance(value, error) {
+                root.bedrockWalletBalanceValue = value
+                root.bedrockWalletBalanceError = String(error || "")
+            }
+
+            function setIdlInstructionState(value, error) {
+                root.idlInstructionPreviewValue = value
+                root.idlInstructionError = String(error || "")
             }
 
             function appendNodeOperationHistory(operation, detail) {
@@ -519,6 +550,8 @@ QtObject {
 
     function accountLookupArgs(account, idlJson, accountType) { return AppModelNetwork.accountLookupArgs(root, account, idlJson, accountType) }
 
+    function lezLookupArgs(target) { return AppModelNetwork.lezLookupArgs(root, target) }
+
     function requestModule(moduleName, method, args, label, showResult, cacheResult) { return AppModelCore.requestModule(root, moduleName, method, args, label, showResult, cacheResult) }
 
     function requestModuleAsync(moduleName, method, args, label, showResult, callback, acceptResponse) { return AppModelCore.requestModuleAsync(root, moduleName, method, args, label, showResult, callback, acceptResponse) }
@@ -719,37 +752,37 @@ QtObject {
 
     function checkedLocalWalletProfile() { return wallet.checkedProfile() }
 
-    function createWalletAccount() { return AppModelIdentity.createWalletAccount(root) }
+    function createWalletAccount() { return wallet.createAccount() }
 
-    function sendWalletTransaction() { return AppModelIdentity.sendWalletTransaction(root) }
+    function sendWalletTransaction() { return wallet.sendTransaction() }
 
-    function readIncomingWalletTransactions() { return AppModelIdentity.readIncomingWalletTransactions(root) }
+    function readIncomingWalletTransactions() { return wallet.readIncomingTransactions() }
 
-    function runWalletCommand(commandArgs) { return AppModelIdentity.runWalletCommand(root, commandArgs) }
+    function runWalletCommand(commandArgs) { return wallet.runCommand(commandArgs) }
 
-    function walletCommandOperationDetail(value) { return AppModelIdentity.walletCommandOperationDetail(root, value) }
+    function walletCommandOperationDetail(value) { return wallet.commandOperationDetail(value) }
 
-    function deployProgramBinary(programPath) { return AppModelIdentity.deployProgramBinary(root, programPath) }
+    function deployProgramBinary(programPath) { return wallet.deployProgram(programPath) }
 
-    function deployProgramOperationDetail(value) { return AppModelIdentity.deployProgramOperationDetail(root, value) }
+    function deployProgramOperationDetail(value) { return wallet.deployProgramOperationDetail(value) }
 
-    function syncPrivateWallet() { return AppModelIdentity.syncPrivateWallet(root) }
+    function syncPrivateWallet() { return wallet.syncPrivate() }
 
-    function queryLocalWalletAccounts(showResult) { return AppModelIdentity.queryLocalWalletAccounts(root, showResult) }
+    function queryLocalWalletAccounts(showResult) { return wallet.queryAccounts(showResult) }
 
-    function privateSyncOperationDetail(value) { return AppModelIdentity.privateSyncOperationDetail(root, value) }
+    function privateSyncOperationDetail(value) { return wallet.privateSyncOperationDetail(value) }
 
-    function queryBedrockWalletBalance() { return AppModelIdentity.queryBedrockWalletBalance(root) }
+    function queryBedrockWalletBalance() { return wallet.queryBedrockBalance() }
 
-    function isBedrockHexId(value) { return AppModelIdentity.isBedrockHexId(root, value) }
+    function isBedrockHexId(value) { return wallet.isBedrockHexId(value) }
 
     function appendLocalWalletOperation(label, status, detail) { return wallet.appendHistory(label, status, detail) }
 
-    function previewIdlInstruction(request) { return AppModelIdentity.previewIdlInstruction(root, request) }
+    function previewIdlInstruction(request) { return wallet.previewInstruction(request) }
 
-    function sendIdlInstruction(request) { return AppModelIdentity.sendIdlInstruction(root, request) }
+    function sendIdlInstruction(request) { return wallet.sendInstruction(request) }
 
-    function idlInstructionOperationDetail(value) { return AppModelIdentity.idlInstructionOperationDetail(root, value) }
+    function idlInstructionOperationDetail(value) { return wallet.idlInstructionOperationDetail(value) }
 
     function refreshBedrockWalletModule(address) { return AppModelIdentity.refreshBedrockWalletModule(root, address) }
 
@@ -831,23 +864,23 @@ QtObject {
 
     function canonicalProgramIdHex(value) { return AppModelIdentity.canonicalProgramIdHex(root, value) }
 
-    function autoDecodeAccountData(dataHex, accountId, ownerProgramId, callback) { return AppModelIdentity.autoDecodeAccountData(root, dataHex, accountId, ownerProgramId, callback) }
+    function autoDecodeAccountData(dataHex, accountId, ownerProgramId, callback) { return ProgramDecodeSession.autoDecodeAccountData(root, dataHex, accountId, ownerProgramId, callback) }
 
-    function accountDecodeCandidates(accountId, ownerProgramId) { return AppModelIdentity.accountDecodeCandidates(root, accountId, ownerProgramId) }
+    function accountDecodeCandidates(accountId, ownerProgramId) { return ProgramDecodeSession.accountDecodeCandidates(root, accountId, ownerProgramId) }
 
-    function tryAccountDecodeCandidate(serial, dataHex, candidates, index, firstError, callback) { return AppModelIdentity.tryAccountDecodeCandidate(root, serial, dataHex, candidates, index, firstError, callback) }
+    function tryAccountDecodeCandidate(serial, dataHex, candidates, index, firstError, callback) { return ProgramDecodeSession.tryAccountDecodeCandidate(root, serial, dataHex, candidates, index, firstError, callback) }
 
-    function autoDecodeTransactionDetail(detail) { return AppModelIdentity.autoDecodeTransactionDetail(root, detail) }
+    function autoDecodeTransactionDetail(detail) { return ProgramDecodeSession.autoDecodeTransactionDetail(root, detail) }
 
-    function transactionDecodeCandidates(summary) { return AppModelIdentity.transactionDecodeCandidates(root, summary) }
+    function transactionDecodeCandidates(summary) { return ProgramDecodeSession.transactionDecodeCandidates(root, summary) }
 
-    function candidateListHasEntry(candidates, key) { return AppModelIdentity.candidateListHasEntry(root, candidates, key) }
+    function candidateListHasEntry(candidates, key) { return ProgramDecodeSession.candidateListHasEntry(root, candidates, key) }
 
-    function tryTransactionDecodeCandidate(serial, summary, candidates, index, partialValue) { return AppModelIdentity.tryTransactionDecodeCandidate(root, serial, summary, candidates, index, partialValue) }
+    function tryTransactionDecodeCandidate(serial, summary, candidates, index, partialValue) { return ProgramDecodeSession.tryTransactionDecodeCandidate(root, serial, summary, candidates, index, partialValue) }
 
-    function programDecodeCandidatePayload(candidates) { return AppModelIdentity.programDecodeCandidatePayload(root, candidates) }
+    function programDecodeCandidatePayload(candidates) { return ProgramDecodeSession.programDecodeCandidatePayload(root, candidates) }
 
-    function decodeSelectionEntry(selection, candidates) { return AppModelIdentity.decodeSelectionEntry(root, selection, candidates) }
+    function decodeSelectionEntry(selection, candidates) { return ProgramDecodeSession.decodeSelectionEntry(root, selection, candidates) }
 
     function refreshInterval(seconds) { return AppModelNetwork.refreshInterval(root, seconds) }
 
@@ -1264,6 +1297,8 @@ QtObject {
     function routeModuleSearchTarget(target) { return AppModelSearch.routeModuleSearchTarget(root, target) }
 
     function resolveSearchHash(hash) { return AppModelSearch.resolveSearchHash(root, hash) }
+
+    function applyResolvedLezTarget(response, errorTitle) { return AppModelSearch.applyResolvedLezTarget(root, response, errorTitle) }
 
     function resolveSearchTransaction(serial, hash, recordHistory) { return AppModelSearch.resolveSearchTransaction(root, serial, hash, recordHistory) }
 

@@ -16,8 +16,7 @@ mod paths;
 mod process;
 mod time;
 
-pub use commands::{LocalNodeCommandSpec, command_spec_for};
-use commands::{execute_command_spec, operation_detail_from_value};
+use commands::{command_spec_for, execute_command_spec, operation_detail_from_value};
 pub use local_indexer::{
     bootstrap_default_local_indexer, bootstrap_default_local_indexer_for_saved_settings,
     is_default_local_indexer_endpoint,
@@ -54,7 +53,7 @@ pub fn local_nodes_action(
 }
 
 #[must_use]
-pub fn node_set_for_profile(profile: &str) -> Vec<NodeKind> {
+fn node_set_for_profile(profile: &str) -> Vec<NodeKind> {
     if normalized_profile(profile) == "local" {
         vec![
             NodeKind::Bedrock,
@@ -74,7 +73,7 @@ pub fn node_set_for_profile(profile: &str) -> Vec<NodeKind> {
 }
 
 #[must_use]
-pub fn available_actions_for(
+fn available_actions_for(
     profile: &str,
     node: Option<NodeKind>,
     has_active_devnet: bool,

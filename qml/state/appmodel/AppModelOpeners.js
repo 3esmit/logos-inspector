@@ -207,18 +207,17 @@ function resolveLezHash(root, hash) {
         blockDetailValue = null
         blockDetailError = ""
         statusText = qsTr("L2 lookup")
-        requestModuleAsync(inspectorModule, "indexerBlockByHash", root.indexerArgs([value]), qsTr("LEZ block lookup"), false, function (response) {
+        requestModuleAsync(inspectorModule, "resolveLezTarget", root.lezLookupArgs(value), qsTr("LEZ lookup"), false, function (response) {
             if (serial !== searchResolveSerial) {
                 return
             }
-            if (response.ok && response.value !== null && response.value !== undefined) {
-                const detail = root.indexerBlockDetail(response.value)
-                blockDetailValue = detail
+            if (root.applyResolvedLezTarget(response, qsTr("L2 lookup"))) {
                 blockDetailError = ""
-                setResult(qsTr("LEZ block"), BridgeHelpers.formatValue(detail), false, detail, "l2BlockDetail")
-                return
+            } else {
+                blockDetailValue = null
+                blockDetailError = response.error || qsTr("No block, transaction, or account found.")
+                setResult(qsTr("L2 lookup"), blockDetailError, true, null, "l2BlockDetail")
             }
-            root.openLezTransaction(value, false)
         })
     }
 }
