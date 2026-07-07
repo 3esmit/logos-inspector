@@ -1,12 +1,9 @@
 use anyhow::{Context as _, Result, bail};
 use serde_json::Value;
 
-use crate::{
-    module_sources,
-    source_policy::{
-        CoreEndpointMode, CoreSourceMode, DEFAULT_DELIVERY_REST_ENDPOINT,
-        DEFAULT_STORAGE_REST_ENDPOINT, SourceFamily, effective_source_mode,
-    },
+use super::{
+    CoreEndpointMode, CoreSourceMode, DEFAULT_DELIVERY_REST_ENDPOINT,
+    DEFAULT_STORAGE_REST_ENDPOINT, SourceFamily, effective_source_mode, module,
 };
 
 pub(crate) struct Args {
@@ -182,11 +179,11 @@ pub(crate) fn require_mutating_diagnostics(args: &Args, index: usize, label: &st
 
 fn source_module_for_label(label: &str) -> &'static str {
     if label.contains("indexer") {
-        module_sources::INDEXER_MODULE
+        module::INDEXER_MODULE
     } else if label.contains("sequencer") {
-        module_sources::LEZ_CORE_MODULE
+        module::LEZ_CORE_MODULE
     } else {
-        module_sources::BLOCKCHAIN_MODULE
+        module::BLOCKCHAIN_MODULE
     }
 }
 

@@ -3,9 +3,11 @@ use serde_json::{Value, json};
 
 use crate::{
     ACCOUNT_TRANSACTION_LIMIT, AccountReport, AccountTransactionSummary, IndexerBlockReport,
-    IndexerStatusReport, ProbeReport, TransferActivityPage, blockchain::BlockchainLiveBlocksReport,
-    blockchain::BlockchainNodeReport, indexer, logoscore, response_excerpt,
-    transfers::transfer_recipient_summaries_from_blocks,
+    IndexerStatusReport, ProbeReport, TransferActivityPage,
+    blockchain::BlockchainLiveBlocksReport,
+    blockchain::BlockchainNodeReport,
+    lez::{accounts, indexer, transfers::transfer_recipient_summaries_from_blocks},
+    logoscore, response_excerpt,
 };
 
 pub(crate) const BLOCKCHAIN_MODULE: &str = "blockchain_module";
@@ -149,7 +151,7 @@ pub(crate) fn account_transactions_by_account(
         .iter()
         .enumerate()
         .map(|(index, transaction)| {
-            crate::accounts::summarize_account_transaction(transaction, offset + index, account_id)
+            accounts::summarize_account_transaction(transaction, offset + index, account_id)
         })
         .collect())
 }

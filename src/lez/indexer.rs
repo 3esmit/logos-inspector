@@ -3,10 +3,13 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::transfers::{TransferActivityPage, transfer_recipient_summaries_from_blocks};
+use super::{
+    accounts::AccountTransactionSummary,
+    transfers::{TransferActivityPage, transfer_recipient_summaries_from_blocks},
+};
 use crate::{
-    AccountTransactionSummary, enum_payload, json_rpc_result, normalize_program_id_hex,
-    raw_json_rpc, raw_json_rpc_optional_result, value_list_strings, value_to_string,
+    enum_payload, json_rpc_result, normalize_program_id_hex, raw_json_rpc,
+    raw_json_rpc_optional_result, value_list_strings, value_to_string,
 };
 
 #[derive(Debug, Clone, Serialize)]

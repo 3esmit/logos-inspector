@@ -1,4 +1,7 @@
 use super::*;
+use crate::{
+    TransactionSummary, inspect_transaction_summary_with_idl, trace_transaction_summary_with_idl,
+};
 
 #[test]
 fn decode_event_data_hex_with_idl_decodes_single_event_without_name() {

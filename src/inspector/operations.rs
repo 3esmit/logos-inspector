@@ -16,7 +16,7 @@ use tokio::io::AsyncWriteExt as _;
 use tokio::runtime::Runtime;
 
 use crate::{
-    LocalNodeActionRequest, account_lookup, account_lookup_with_idl, basecamp_source, blockchain,
+    LocalNodeActionRequest, account_lookup, account_lookup_with_idl, blockchain,
     bridge::{
         blocking_value, decode_transaction_summary_with_idls, delivery_store_query_url,
         enrich_account_related_transaction_decodes, raw_http_json_url, rest_empty_request,
@@ -24,29 +24,29 @@ use crate::{
     },
     indexer_block_by_hash, indexer_blocks, indexer_health, indexer_status,
     indexer_transfer_recipients,
-    inspector_dispatch::{
+    inspector::dispatch::{
         OperationDomain, normalized_operation_method, operation_cancellable,
         operation_uses_mutating_flag,
     },
     last_sequencer_block_id, local_nodes_action, local_wallet_accounts, local_wallet_command,
     local_wallet_create_account, local_wallet_deploy_program, local_wallet_instruction_submit,
-    local_wallet_send_transaction, local_wallet_sync_private, module_sources, raw_http_json,
+    local_wallet_send_transaction, local_wallet_sync_private, raw_http_json,
     raw_json_rpc_optional_result, sequencer_account, sequencer_block, sequencer_blocks,
     sequencer_program_ids, sequencer_transaction, sequencer_transaction_inspection,
     sequencer_transaction_inspection_with_idl, sequencer_transaction_trace,
     sequencer_transaction_trace_with_idl,
-    source_policy::{
-        CoreEndpointMode, CoreSourceMode, SourceFamily, default_endpoint_for_domain,
+    source_routing::{
+        self, CoreEndpointMode, CoreSourceMode, SourceFamily, default_endpoint_for_domain,
         default_source_mode_for_domain, source_mode_is_token,
     },
-    source_selection::{
+    source_routing::{
         Args, DeliveryStoreQuery, SourceEndpoint, delivery_rest_source,
         require_mutating_diagnostics, storage_rest_source,
     },
     state_store::registered_idl_entries,
 };
 
-const EXECUTION_MODULE: &str = module_sources::LEZ_CORE_MODULE;
+const EXECUTION_MODULE: &str = source_routing::LEZ_CORE_MODULE;
 const MAX_DELIVERY_STORE_PAGE_SIZE: u64 = 100;
 
 type NodeOperationRegistry = Arc<Mutex<HashMap<String, NodeOperationRecord>>>;
@@ -661,10 +661,10 @@ async fn execute_node_operation(
 
 async fn execute_storage_manifests(request: &NodeOperationRequest) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
-    if let Some(module_args) = basecamp_source::storage_args(&args, false, "storage manifests")? {
+    if let Some(module_args) = source_routing::storage_args(&args, false, "storage manifests")? {
         return blocking_value("storage module manifests", move || {
-            basecamp_source::call_value(
-                basecamp_source::STORAGE_MODULE,
+            source_routing::call_value(
+                source_routing::STORAGE_MODULE,
                 "manifests",
                 &module_args.values,
             )
@@ -678,7 +678,7 @@ async fn execute_storage_manifests(request: &NodeOperationRequest) -> Result<Val
 async fn execute_storage_download_manifest(request: &NodeOperationRequest) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
     if let Some(module_args) =
-        basecamp_source::storage_args(&args, false, "storage manifest download")?
+        source_routing::storage_args(&args, false, "storage manifest download")?
     {
         let cid = module_args
             .values
@@ -687,13 +687,13 @@ async fn execute_storage_download_manifest(request: &NodeOperationRequest) -> Re
             .unwrap_or_default()
             .to_owned();
         return blocking_value("storage module manifest download", move || {
-            let value = basecamp_source::call_value(
-                basecamp_source::STORAGE_MODULE,
+            let value = source_routing::call_value(
+                source_routing::STORAGE_MODULE,
                 "downloadManifest",
                 &module_args.values,
             )?;
-            Ok(basecamp_source::dispatch_result(
-                basecamp_source::STORAGE_MODULE,
+            Ok(source_routing::dispatch_result(
+                source_routing::STORAGE_MODULE,
                 "downloadManifest",
                 value,
                 &[("cid", cid)],
@@ -713,7 +713,7 @@ async fn execute_storage_download_manifest(request: &NodeOperationRequest) -> Re
 
 async fn execute_storage_fetch(request: &NodeOperationRequest) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
-    if let Some(module_args) = basecamp_source::storage_args(&args, true, "storage network action")?
+    if let Some(module_args) = source_routing::storage_args(&args, true, "storage network action")?
     {
         let cid = module_args
             .values
@@ -722,13 +722,13 @@ async fn execute_storage_fetch(request: &NodeOperationRequest) -> Result<Value> 
             .unwrap_or_default()
             .to_owned();
         return blocking_value("storage module fetch", move || {
-            let value = basecamp_source::call_value(
-                basecamp_source::STORAGE_MODULE,
+            let value = source_routing::call_value(
+                source_routing::STORAGE_MODULE,
                 "fetch",
                 &module_args.values,
             )?;
-            Ok(basecamp_source::dispatch_result(
-                basecamp_source::STORAGE_MODULE,
+            Ok(source_routing::dispatch_result(
+                source_routing::STORAGE_MODULE,
                 "fetch",
                 value,
                 &[("cid", cid)],
@@ -751,8 +751,7 @@ async fn execute_storage_fetch(request: &NodeOperationRequest) -> Result<Value> 
 
 async fn execute_storage_upload(request: &NodeOperationRequest) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
-    if let Some(module_args) = basecamp_source::storage_args(&args, true, "storage upload action")?
-    {
+    if let Some(module_args) = source_routing::storage_args(&args, true, "storage upload action")? {
         let mut values = module_args.values;
         if values.len() < 2 {
             values.push(json!(65_536));
@@ -764,9 +763,9 @@ async fn execute_storage_upload(request: &NodeOperationRequest) -> Result<Value>
             .to_owned();
         return blocking_value("storage module upload", move || {
             let value =
-                basecamp_source::call_value(basecamp_source::STORAGE_MODULE, "uploadUrl", &values)?;
-            Ok(basecamp_source::dispatch_result(
-                basecamp_source::STORAGE_MODULE,
+                source_routing::call_value(source_routing::STORAGE_MODULE, "uploadUrl", &values)?;
+            Ok(source_routing::dispatch_result(
+                source_routing::STORAGE_MODULE,
                 "uploadUrl",
                 value,
                 &[("path", path)],
@@ -796,8 +795,7 @@ async fn execute_storage_download(
     cancel_requested: &AtomicBool,
 ) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
-    if let Some(module_args) =
-        basecamp_source::storage_args(&args, true, "storage download action")?
+    if let Some(module_args) = source_routing::storage_args(&args, true, "storage download action")?
     {
         let mut values = module_args.values;
         if values.len() < 3 {
@@ -817,13 +815,13 @@ async fn execute_storage_download(
             .unwrap_or_default()
             .to_owned();
         return blocking_value("storage module download", move || {
-            let value = basecamp_source::call_value(
-                basecamp_source::STORAGE_MODULE,
+            let value = source_routing::call_value(
+                source_routing::STORAGE_MODULE,
                 "downloadToUrl",
                 &values,
             )?;
-            Ok(basecamp_source::dispatch_result(
-                basecamp_source::STORAGE_MODULE,
+            Ok(source_routing::dispatch_result(
+                source_routing::STORAGE_MODULE,
                 "downloadToUrl",
                 value,
                 &[("cid", cid), ("path", path)],
@@ -851,8 +849,7 @@ async fn execute_storage_download(
 
 async fn execute_storage_remove(request: &NodeOperationRequest) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
-    if let Some(module_args) = basecamp_source::storage_args(&args, true, "storage remove action")?
-    {
+    if let Some(module_args) = source_routing::storage_args(&args, true, "storage remove action")? {
         let cid = module_args
             .values
             .first()
@@ -860,13 +857,13 @@ async fn execute_storage_remove(request: &NodeOperationRequest) -> Result<Value>
             .unwrap_or_default()
             .to_owned();
         return blocking_value("storage module remove", move || {
-            let value = basecamp_source::call_value(
-                basecamp_source::STORAGE_MODULE,
+            let value = source_routing::call_value(
+                source_routing::STORAGE_MODULE,
                 "remove",
                 &module_args.values,
             )?;
-            Ok(basecamp_source::dispatch_result(
-                basecamp_source::STORAGE_MODULE,
+            Ok(source_routing::dispatch_result(
+                source_routing::STORAGE_MODULE,
                 "remove",
                 value,
                 &[("cid", cid)],
@@ -899,11 +896,11 @@ async fn execute_delivery_subscription(
 ) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
     if let Some(module_args) =
-        basecamp_source::delivery_message_args(&args, "delivery message action")?
+        source_routing::delivery_message_args(&args, "delivery message action")?
     {
         return blocking_value("delivery module message action", move || {
-            basecamp_source::call_value(
-                basecamp_source::DELIVERY_MODULE,
+            source_routing::call_value(
+                source_routing::DELIVERY_MODULE,
                 module_method,
                 &module_args.values,
             )
@@ -931,7 +928,7 @@ async fn execute_delivery_subscription(
 async fn execute_delivery_send(request: &NodeOperationRequest) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
     if let Some(module_args) =
-        basecamp_source::delivery_message_args(&args, "delivery message action")?
+        source_routing::delivery_message_args(&args, "delivery message action")?
     {
         let topic = module_args
             .values
@@ -946,13 +943,13 @@ async fn execute_delivery_send(request: &NodeOperationRequest) -> Result<Value> 
             .map(str::len)
             .unwrap_or(0);
         return blocking_value("delivery module send", move || {
-            let value = basecamp_source::call_value(
-                basecamp_source::DELIVERY_MODULE,
+            let value = source_routing::call_value(
+                source_routing::DELIVERY_MODULE,
                 "send",
                 &module_args.values,
             )?;
-            Ok(basecamp_source::dispatch_result(
-                basecamp_source::DELIVERY_MODULE,
+            Ok(source_routing::dispatch_result(
+                source_routing::DELIVERY_MODULE,
                 "send",
                 value,
                 &[("contentTopic", topic), ("bytes", payload_len.to_string())],
@@ -990,9 +987,9 @@ async fn execute_delivery_module_action(
 ) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
     let call_args =
-        basecamp_source::delivery_lifecycle_args(&args, "delivery node lifecycle action")?;
+        source_routing::delivery_lifecycle_args(&args, "delivery node lifecycle action")?;
     blocking_value("delivery module node action", move || {
-        basecamp_source::call_value(basecamp_source::DELIVERY_MODULE, method, &call_args)
+        source_routing::call_value(source_routing::DELIVERY_MODULE, method, &call_args)
     })
     .await
 }
@@ -1182,7 +1179,7 @@ async fn execute_blockchain_node(request: &NodeOperationRequest) -> Result<Value
     let source = args.source_endpoint(0, "node endpoint")?;
     if source.mode == CoreEndpointMode::Module {
         return blocking_value("blockchain module node", move || {
-            to_value(module_sources::blockchain_node_report())
+            to_value(source_routing::blockchain_node_report())
         })
         .await;
     }
@@ -1198,11 +1195,11 @@ async fn execute_blockchain_blocks(request: &NodeOperationRequest) -> Result<Val
         let limit = args.value(source.next_index + 2).and_then(Value::as_u64);
         return blocking_value("blockchain module blocks", move || {
             if let Some(limit) = limit {
-                to_value(module_sources::blockchain_recent_blocks(
+                to_value(source_routing::blockchain_recent_blocks(
                     slot_from, slot_to, limit,
                 )?)
             } else {
-                to_value(module_sources::blockchain_blocks(slot_from, slot_to)?)
+                to_value(source_routing::blockchain_blocks(slot_from, slot_to)?)
             }
         })
         .await;
@@ -1228,7 +1225,7 @@ async fn execute_blockchain_live_blocks(request: &NodeOperationRequest) -> Resul
         .unwrap_or(50);
     if source.mode == CoreEndpointMode::Module {
         return blocking_value("blockchain module live blocks", move || {
-            to_value(module_sources::blockchain_live_blocks_snapshot(
+            to_value(source_routing::blockchain_live_blocks_snapshot(
                 slot_from, slot_to, limit,
             )?)
         })
@@ -1246,7 +1243,7 @@ async fn execute_blockchain_block(request: &NodeOperationRequest) -> Result<Valu
     if source.mode == CoreEndpointMode::Module {
         let block_id = args.string(source.next_index, "block id")?.to_owned();
         return blocking_value("blockchain module block", move || {
-            to_value(module_sources::blockchain_block(&block_id)?)
+            to_value(source_routing::blockchain_block(&block_id)?)
         })
         .await;
     }
@@ -1262,7 +1259,7 @@ async fn execute_blockchain_transaction(request: &NodeOperationRequest) -> Resul
     if source.mode == CoreEndpointMode::Module {
         let transaction_id = args.string(source.next_index, "transaction id")?.to_owned();
         return blocking_value("blockchain module transaction", move || {
-            to_value(module_sources::blockchain_transaction(&transaction_id)?)
+            to_value(source_routing::blockchain_transaction(&transaction_id)?)
         })
         .await;
     }
@@ -1375,13 +1372,15 @@ async fn execute_account_operation(request: &NodeOperationRequest) -> Result<Val
         let mut account =
             sequencer_account(account_args.sequencer_endpoint, account_args.account).await?;
         blocking_value("indexer module account transactions", move || {
-            module_sources::attach_module_account_transactions(&mut account);
+            source_routing::attach_module_account_transactions(&mut account);
             if let Some(idl) = idl.as_deref() {
-                to_value(crate::accounts::account_report_with_optional_idl_decode(
-                    account,
-                    idl,
-                    account_type.as_deref(),
-                ))
+                to_value(
+                    crate::lez::accounts::account_report_with_optional_idl_decode(
+                        account,
+                        idl,
+                        account_type.as_deref(),
+                    ),
+                )
             } else {
                 to_value(account)
             }
@@ -1417,7 +1416,7 @@ async fn execute_indexer_health_operation(request: &NodeOperationRequest) -> Res
     let source = args.source_endpoint(0, "indexer endpoint")?;
     if source.mode == CoreEndpointMode::Module {
         return blocking_value("indexer module health", move || {
-            to_value(module_sources::indexer_health()?)
+            to_value(source_routing::indexer_health()?)
         })
         .await;
     }
@@ -1433,7 +1432,7 @@ async fn execute_indexer_status_operation(request: &NodeOperationRequest) -> Res
     let source = args.source_endpoint(0, "indexer endpoint")?;
     if source.mode == CoreEndpointMode::Module {
         return blocking_value("indexer module status", move || {
-            to_value(module_sources::indexer_status()?)
+            to_value(source_routing::indexer_status()?)
         })
         .await;
     }
@@ -1445,7 +1444,7 @@ async fn execute_indexer_finalized_head(request: &NodeOperationRequest) -> Resul
     let source = args.source_endpoint(0, "indexer endpoint")?;
     if source.mode == CoreEndpointMode::Module {
         return blocking_value("indexer module finalized head", move || {
-            to_value(module_sources::indexer_finalized_head()?)
+            to_value(source_routing::indexer_finalized_head()?)
         })
         .await;
     }
@@ -1470,7 +1469,7 @@ async fn execute_indexer_blocks_operation(request: &NodeOperationRequest) -> Res
         .min(50);
     if source.mode == CoreEndpointMode::Module {
         return blocking_value("indexer module blocks", move || {
-            to_value(module_sources::indexer_blocks(before, limit)?)
+            to_value(source_routing::indexer_blocks(before, limit)?)
         })
         .await;
     }
@@ -1485,7 +1484,7 @@ async fn execute_indexer_block_by_hash_operation(request: &NodeOperationRequest)
             .string(source.next_index, "block header hash")?
             .to_owned();
         return blocking_value("indexer module block by hash", move || {
-            to_value(module_sources::indexer_block_by_hash(&header_hash)?)
+            to_value(source_routing::indexer_block_by_hash(&header_hash)?)
         })
         .await;
     }
@@ -1511,7 +1510,7 @@ async fn execute_indexer_transfer_recipients_operation(
         .min(50);
     if source.mode == CoreEndpointMode::Module {
         return blocking_value("indexer module transfer recipients", move || {
-            to_value(module_sources::indexer_transfer_recipients(before, limit)?)
+            to_value(source_routing::indexer_transfer_recipients(before, limit)?)
         })
         .await;
     }

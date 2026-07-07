@@ -5,10 +5,8 @@ use lee::{PublicKey, program::Program, public_transaction::Message as PublicMess
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use crate::{
-    InstructionDecodeReport, decode_instruction_words_with_idl, program_id_base58_from_hex,
-    program_id_hex,
-};
+use super::programs::{program_id_base58_from_hex, program_id_hex};
+use crate::{InstructionDecodeReport, decode_instruction_words_with_idl};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TransactionSummary {

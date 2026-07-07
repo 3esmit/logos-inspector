@@ -1,7 +1,7 @@
 use anyhow::{Context as _, Result};
 use serde::Serialize;
 
-pub use crate::source_policy::{
+pub use crate::source_routing::{
     DEFAULT_INDEXER_ENDPOINT, DEFAULT_NODE_ENDPOINT, DEFAULT_SEQUENCER_ENDPOINT,
     LOCAL_SEQUENCER_ENDPOINT, TESTNET_SEQUENCER_ENDPOINT,
 };
