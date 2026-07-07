@@ -3,6 +3,7 @@ pub mod bridge;
 mod command_runner;
 mod entity_id;
 pub mod idl_decode;
+pub mod inspection;
 mod inspector;
 mod json_value;
 pub mod lez;

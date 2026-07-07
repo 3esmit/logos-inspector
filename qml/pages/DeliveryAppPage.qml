@@ -6,7 +6,6 @@ import QtQml.Models
 import QtQuick.Layouts
 import "../components"
 import "../components/common"
-import "../services/BridgeHelpers.js" as BridgeHelpers
 import "../state"
 import "../theme"
 
@@ -15,13 +14,7 @@ ColumnLayout {
 
     required property Theme theme
     required property AppModel model
-    property string lastOperation: qsTr("None")
-    property string activeTopic: "/logos-inspector/1/chat/proto"
-    property string pendingDeliveryMethod: ""
-    property string pendingDeliveryLabel: ""
-    property var pendingDeliveryArgs: []
-    property var activeDeliveryOperation: null
-    property string terminalDeliveryOperationId: ""
+    readonly property var deliveryState: root.model.deliveryApp
 
     width: parent ? parent.width : 900
     spacing: root.theme.gapLarge
@@ -36,17 +29,13 @@ ColumnLayout {
         ListElement { value: "operations"; label: "Operations" }
     }
 
-    ListModel {
-        id: operationLog
-    }
-
     Timer {
         id: deliveryOperationPoll
 
         interval: 500
         repeat: true
-        running: root.activeDeliveryOperationRunning()
-        onTriggered: root.pollDeliveryOperation(false)
+        running: root.deliveryState.activeDeliveryOperationRunning()
+        onTriggered: root.deliveryState.pollDeliveryOperation(false)
     }
 
     PageHeader {
@@ -81,8 +70,8 @@ ColumnLayout {
         StatusChip {
             theme: root.theme
             label: qsTr("Topic")
-            value: root.topicShortText(root.activeTopic)
-            tone: root.validContentTopic(root.activeTopic) ? "success" : "warning"
+            value: root.topicShortText(root.deliveryState.activeTopic)
+            tone: root.validContentTopic(root.deliveryState.activeTopic) ? "success" : "warning"
             Layout.fillWidth: true
         }
 
@@ -105,7 +94,7 @@ ColumnLayout {
         StatusChip {
             theme: root.theme
             label: qsTr("Last")
-            value: root.lastOperation
+            value: root.deliveryState.lastOperation
             tone: root.model.resultIsError && root.model.resultOwner === root.model.currentView ? "error" : "neutral"
             Layout.fillWidth: true
         }
@@ -209,10 +198,10 @@ ColumnLayout {
                 theme: root.theme
                 label: qsTr("Content topic")
                 placeholderText: qsTr("/myapp/1/chat/proto")
-                sourceText: root.activeTopic
+                sourceText: root.deliveryState.activeTopic
                 syncSourceText: true
                 Layout.fillWidth: true
-                onTextEdited: text => root.activeTopic = text
+                onTextEdited: text => root.deliveryState.activeTopic = text
             }
 
             TextAreaField {
@@ -265,10 +254,10 @@ ColumnLayout {
         id: deliveryConfirm
 
         theme: root.theme
-        title: root.pendingDeliveryLabel
+        title: root.deliveryState.pendingLabel
         message: qsTr("This will call the configured Delivery source and may change node relay state.")
-        confirmText: root.pendingDeliveryLabel
-        confirmEnabled: root.pendingDeliveryMethod.length > 0
+        confirmText: root.deliveryState.pendingLabel
+        confirmEnabled: root.deliveryState.pendingMethod.length > 0
         onAccepted: root.runPendingDelivery()
     }
 
@@ -494,10 +483,10 @@ ColumnLayout {
                     theme: root.theme
                     label: qsTr("Content topics")
                     placeholderText: qsTr("/myapp/1/chat/proto")
-                    sourceText: root.activeTopic
+                    sourceText: root.deliveryState.activeTopic
                     syncSourceText: true
                     Layout.fillWidth: true
-                    onTextEdited: text => root.activeTopic = text
+                    onTextEdited: text => root.deliveryState.activeTopic = text
                 }
 
                 FieldRow {
@@ -587,19 +576,16 @@ ColumnLayout {
                 }
 
                 Repeater {
-                    model: operationLog.count > 0 ? operationLog : emptyOperationModel
+                    model: root.deliveryState.operationRows()
 
                     delegate: OperationHistoryRow {
-                        required property string time
-                        required property string label
-                        required property string status
-                        required property string detail
+                        required property var modelData
 
                         theme: root.theme
-                        timeText: time
-                        labelText: label
-                        statusText: status
-                        detailText: detail
+                        timeText: String(modelData.time || "")
+                        labelText: String(modelData.label || "")
+                        statusText: String(modelData.status || "")
+                        detailText: String(modelData.detail || "")
                     }
                 }
 
@@ -629,17 +615,6 @@ ColumnLayout {
         }
     }
 
-    ListModel {
-        id: emptyOperationModel
-
-        ListElement {
-            time: "-"
-            label: "No operations"
-            status: "-"
-            detail: "-"
-        }
-    }
-
     function tabComponent(tab) {
         switch (String(tab || "")) {
         case "identity":
@@ -656,10 +631,7 @@ ColumnLayout {
     }
 
     function sourceBadges() {
-        const sources = [qsTr("Delivery"), root.model.deliverySourceLabel()]
-        sources.push(root.model.deliverySourceTarget())
-        sources.push(root.model.messagingNetworkPreset)
-        return sources
+        return root.deliveryState.sourceBadges()
     }
 
     function identityRows() {
@@ -675,225 +647,56 @@ ColumnLayout {
     }
 
     function deliveryModuleSource() {
-        return root.model.sourceModeTargetKind("delivery", root.model.messagingSourceMode) === "module"
+        return root.deliveryState.deliveryModuleSource()
     }
 
     function deliveryRestSource() {
-        return root.model.sourceModeTargetKind("delivery", root.model.messagingSourceMode) === "rest_endpoint"
-            && root.model.sourceModeSupportsMutatingDiagnostics("delivery", root.model.messagingSourceMode)
+        return root.deliveryState.deliveryRestSource()
     }
 
     function deliveryMessageSource() {
-        return root.model.sourceModeSupportsMutatingDiagnostics("delivery", root.model.messagingSourceMode)
+        return root.deliveryState.deliveryMessageSource()
     }
 
     function deliveryDataSource() {
-        return root.model.sourceModeTargetKind("delivery", root.model.messagingSourceMode) !== "none"
-    }
-
-    function deliveryArgs(extra) {
-        const args = [
-            root.model.effectiveMessagingSourceMode(root.model.messagingSourceMode),
-            root.model.sourceModeUsesEndpoint("delivery", root.model.messagingSourceMode, "rest") ? root.model.configuredMessagingRestUrl() : "",
-            root.model.messagingMutatingDiagnosticsEnabled === true
-        ]
-        return args.concat(extra || [])
+        return root.deliveryState.deliveryDataSource()
     }
 
     function confirmDelivery(method, args, label) {
-        root.pendingDeliveryMethod = String(method || "")
-        root.pendingDeliveryArgs = args || []
-        root.pendingDeliveryLabel = String(label || "")
+        root.deliveryState.confirmDelivery(method, args, label)
         deliveryConfirm.open()
     }
 
     function runPendingDelivery() {
-        if (!root.pendingDeliveryMethod.length) {
-            return
-        }
-        root.runDelivery(root.pendingDeliveryMethod, root.pendingDeliveryArgs, root.pendingDeliveryLabel)
-        root.pendingDeliveryMethod = ""
-        root.pendingDeliveryArgs = []
-        root.pendingDeliveryLabel = ""
+        return root.deliveryState.runPendingDelivery()
     }
 
     function runDelivery(method, args, label) {
-        if (String(method || "") !== "deliveryStoreQuery") {
-            return root.startDeliveryOperation(method, args, label)
-        }
-        const response = root.model.callInspector(method, root.deliveryArgs(args), label)
-        root.appendOperation(label, response)
-        root.lastOperation = response.ok ? label : qsTr("Error")
-        return response
-    }
-
-    function startDeliveryOperation(method, args, label) {
-        if (root.activeDeliveryOperationRunning()) {
-            const blocked = {
-                ok: false,
-                text: "",
-                error: qsTr("A delivery operation is already running.")
-            }
-            root.appendOperation(label, blocked)
-            root.lastOperation = qsTr("Busy")
-            return blocked
-        }
-        const request = {
-            domain: "delivery",
-            sourceMode: root.model.effectiveMessagingSourceMode(root.model.messagingSourceMode),
-            endpoint: root.model.configuredMessagingRestUrl(),
-            module: root.model.deliveryModule,
-            method: String(method || ""),
-            args: root.deliveryArgs(args),
-            mutatingEnabled: root.model.messagingMutatingDiagnosticsEnabled === true,
-            label: String(label || "")
-        }
-        root.lastOperation = qsTr("Starting")
-        root.model.nodeOperationStart(request, false, function (response) {
-            root.appendOperation(label, response)
-            root.lastOperation = response && response.ok ? qsTr("Started") : qsTr("Error")
-            if (response && response.ok) {
-                root.terminalDeliveryOperationId = ""
-                root.activeDeliveryOperation = response.value || null
-                deliveryOperationPoll.restart()
-                root.model.deliveryAppTab = "operations"
-            }
-        })
-        return null
-    }
-
-    function pollDeliveryOperation(showResult) {
-        const operation = root.activeDeliveryOperation || null
-        const operationId = String(operation && operation.operationId ? operation.operationId : "")
-        if (!operationId.length) {
-            deliveryOperationPoll.stop()
-            return
-        }
-        root.model.nodeOperationStatus(operationId, showResult === true, function (response) {
-            if (!response || !response.ok) {
-                const failedOperation = {
-                    operationId: operationId,
-                    domain: "delivery",
-                    method: String(operation && operation.method ? operation.method : ""),
-                    status: "failed",
-                    label: String(operation && operation.label ? operation.label : qsTr("Delivery operation")),
-                    error: String((response && response.error) || qsTr("Delivery operation status failed."))
-                }
-                root.activeDeliveryOperation = failedOperation
-                deliveryOperationPoll.stop()
-                root.appendTerminalDeliveryOperation(failedOperation)
-                return
-            }
-            root.activeDeliveryOperation = response.value || null
-            if (root.model.nodeOperationTerminal(response.value)) {
-                deliveryOperationPoll.stop()
-                root.appendTerminalDeliveryOperation(response.value)
-            }
-        })
-    }
-
-    function appendTerminalDeliveryOperation(operation) {
-        const operationId = String(operation && operation.operationId ? operation.operationId : "")
-        if (!operationId.length || root.terminalDeliveryOperationId === operationId) {
-            return
-        }
-        root.terminalDeliveryOperationId = operationId
-        const ok = String(operation.status || "") === "completed"
-        root.appendOperation(String(operation.label || qsTr("Delivery operation")), {
-            ok: ok,
-            value: operation.result || operation,
-            error: String(operation.error || "")
-        })
-        root.model.appendNodeOperationHistory(operation, root.operationSummary(operation))
-        root.lastOperation = ok ? qsTr("Complete") : qsTr("Stopped")
+        return root.deliveryState.runDelivery(method, args, label)
     }
 
     function activeDeliveryOperationRunning() {
-        const operation = root.activeDeliveryOperation || null
-        const status = String(operation && operation.status ? operation.status : "")
-        return status === "running" || status === "canceling"
-    }
-
-    function appendOperation(label, response) {
-        operationLog.insert(0, {
-            time: root.timeText(),
-            label: String(label || ""),
-            status: response && response.ok ? qsTr("ok") : qsTr("error"),
-            detail: response && response.ok ? root.operationSummary(response.value) : String((response && response.error) || "")
-        })
-        while (operationLog.count > 20) {
-            operationLog.remove(operationLog.count - 1)
-        }
-    }
-
-    function operationPayload(value) {
-        if (value && value.value && value.value.result && value.value.result.value !== undefined) {
-            return value.value.result.value
-        }
-        if (value && value.result && value.result.value !== undefined) {
-            return value.result.value
-        }
-        if (value && value.result !== undefined && value.result !== null) {
-            return value.result
-        }
-        if (value && value.value !== undefined) {
-            return value.value
-        }
-        return value
-    }
-
-    function operationSummary(value) {
-        const payload = root.operationPayload(value)
-        if (payload === undefined || payload === null) {
-            return qsTr("No value")
-        }
-        if (typeof payload === "string") {
-            return payload
-        }
-        if (typeof payload === "boolean") {
-            return payload ? qsTr("true") : qsTr("false")
-        }
-        return BridgeHelpers.formatValue(payload).replace(/\s+/g, " ").slice(0, 180)
+        return root.deliveryState.activeDeliveryOperationRunning()
     }
 
     function messageControlsEnabled(topic) {
-        return !root.model.busy && !root.activeDeliveryOperationRunning() && root.deliveryMessageSource() && root.model.messagingMutatingDiagnosticsEnabled && root.validContentTopic(topic)
+        return root.deliveryState.messageControlsEnabled(topic)
     }
 
     function validContentTopic(topic) {
-        const value = String(topic || "").trim()
-        return /^\/[^/]+\/[^/]+\/[^/]+\/[^/]+$/.test(value)
+        return root.deliveryState.validContentTopic(topic)
     }
 
     function topicShortText(topic) {
-        const value = String(topic || "").trim()
-        if (!value.length) {
-            return qsTr("Required")
-        }
-        if (value.length <= 28) {
-            return value
-        }
-        return value.slice(0, 12) + "..." + value.slice(value.length - 12)
+        return root.deliveryState.topicShortText(topic)
     }
 
     function storePageSizeValue(value) {
-        const parsed = Number(String(value || "").trim())
-        if (!Number.isFinite(parsed)) {
-            return 20
-        }
-        return Math.max(1, Math.min(100, Math.floor(parsed)))
+        return root.deliveryState.storePageSizeValue(value)
     }
 
     function defaultNodeConfig() {
-        return BridgeHelpers.formatValue({
-            logLevel: "INFO",
-            mode: "Core",
-            preset: root.model.messagingNetworkPreset || "logos.test"
-        })
-    }
-
-    function timeText() {
-        return Qt.formatTime(new Date(), "HH:mm:ss")
+        return root.deliveryState.defaultNodeConfig()
     }
 
 }
