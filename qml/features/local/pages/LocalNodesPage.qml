@@ -59,7 +59,7 @@ ColumnLayout {
                 theme: root.theme
                 label: qsTr("Mode")
                 value: root.model.modeLabel()
-                tone: root.model.networkProfile === "local" ? "success" : "neutral"
+                tone: root.model.localMode() ? "success" : "neutral"
                 compact: true
                 showIndicator: true
                 Layout.fillWidth: true
@@ -117,7 +117,7 @@ ColumnLayout {
     }
 
     Panel {
-        visible: root.model.networkProfile === "local"
+        visible: root.model.localMode()
         theme: root.theme
         title: qsTr("Local Network")
 

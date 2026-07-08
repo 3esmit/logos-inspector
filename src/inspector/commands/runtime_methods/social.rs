@@ -12,25 +12,16 @@ use crate::{
 };
 
 use super::super::value::to_value;
-use super::{RuntimeMethod, RuntimeMethodEntry};
+use super::RuntimeMethodEntry;
 
 pub(super) const METHOD_CATALOG: &[RuntimeMethodEntry] = &[
-    RuntimeMethodEntry::new(
-        RuntimeMethod::SocialMessagesFromStore,
-        "socialMessagesFromStore",
-    ),
-    RuntimeMethodEntry::new(
-        RuntimeMethod::SocialCommentPageFromStore,
-        "socialCommentPageFromStore",
-    ),
-    RuntimeMethodEntry::new(
-        RuntimeMethod::SocialCommentRowFromEvent,
-        "socialCommentRowFromEvent",
-    ),
-    RuntimeMethodEntry::new(RuntimeMethod::SocialTopicValid, "socialTopicValid"),
-    RuntimeMethodEntry::new(
-        RuntimeMethod::AcceptedSharedIdlEntriesFromStore,
+    RuntimeMethodEntry::sync("socialMessagesFromStore", social_messages_from_store),
+    RuntimeMethodEntry::sync("socialCommentPageFromStore", social_comment_page_from_store),
+    RuntimeMethodEntry::sync("socialCommentRowFromEvent", social_comment_row_from_event),
+    RuntimeMethodEntry::sync("socialTopicValid", social_topic_valid),
+    RuntimeMethodEntry::sync(
         "acceptedSharedIdlEntriesFromStore",
+        accepted_shared_idl_entries_from_store,
     ),
 ];
 

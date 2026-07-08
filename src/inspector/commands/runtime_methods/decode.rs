@@ -15,27 +15,24 @@ use crate::{
 };
 
 use super::super::value::to_value;
-use super::{RuntimeMethod, RuntimeMethodEntry};
+use super::RuntimeMethodEntry;
 
 pub(super) const METHOD_CATALOG: &[RuntimeMethodEntry] = &[
-    RuntimeMethodEntry::new(
-        RuntimeMethod::DecodeTransactionSummary,
-        "decodeTransactionSummary",
-    ),
-    RuntimeMethodEntry::new(RuntimeMethod::DecodeAccount, "decodeAccount"),
-    RuntimeMethodEntry::new(
-        RuntimeMethod::ResolveAccountDecodeSession,
+    RuntimeMethodEntry::sync("decodeTransactionSummary", decode_transaction_summary),
+    RuntimeMethodEntry::sync("decodeAccount", decode_account),
+    RuntimeMethodEntry::sync(
         "resolveAccountDecodeSession",
+        resolve_account_decode_session,
     ),
-    RuntimeMethodEntry::new(
-        RuntimeMethod::ResolveTransactionDecodeSession,
+    RuntimeMethodEntry::sync(
         "resolveTransactionDecodeSession",
+        resolve_transaction_decode_session,
     ),
-    RuntimeMethodEntry::new(RuntimeMethod::DecodeInstruction, "decodeInstruction"),
-    RuntimeMethodEntry::new(RuntimeMethod::DecodeEvent, "decodeEvent"),
-    RuntimeMethodEntry::new(RuntimeMethod::SpelIdl, "spelIdl"),
-    RuntimeMethodEntry::new(RuntimeMethod::ProgramFile, "programFile"),
-    RuntimeMethodEntry::new(RuntimeMethod::NormalizeProgramId, "normalizeProgramId"),
+    RuntimeMethodEntry::sync("decodeInstruction", decode_instruction),
+    RuntimeMethodEntry::sync("decodeEvent", decode_event),
+    RuntimeMethodEntry::sync("spelIdl", spel_idl),
+    RuntimeMethodEntry::sync("programFile", program_file),
+    RuntimeMethodEntry::sync("normalizeProgramId", normalize_program_id),
 ];
 
 pub(super) fn decode_transaction_summary(args: Value) -> Result<Value> {

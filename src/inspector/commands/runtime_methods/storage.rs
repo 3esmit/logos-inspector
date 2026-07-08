@@ -12,18 +12,12 @@ use crate::{
 };
 
 use super::super::value::to_value;
-use super::{RuntimeMethod, RuntimeMethodEntry};
+use super::RuntimeMethodEntry;
 
 pub(super) const METHOD_CATALOG: &[RuntimeMethodEntry] = &[
-    RuntimeMethodEntry::new(RuntimeMethod::StorageExists, "storageExists"),
-    RuntimeMethodEntry::new(
-        RuntimeMethod::StorageBackupSettings,
-        "storageBackupSettings",
-    ),
-    RuntimeMethodEntry::new(
-        RuntimeMethod::StorageRestoreSettings,
-        "storageRestoreSettings",
-    ),
+    RuntimeMethodEntry::with_runtime("storageExists", storage_exists),
+    RuntimeMethodEntry::with_runtime("storageBackupSettings", storage_backup_settings),
+    RuntimeMethodEntry::with_runtime("storageRestoreSettings", storage_restore_settings),
 ];
 
 pub(super) fn storage_exists(runtime: &Runtime, args: Value) -> Result<Value> {

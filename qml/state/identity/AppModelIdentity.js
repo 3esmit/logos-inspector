@@ -769,37 +769,6 @@ function accountIdlSelection(root, accountId, ownerProgramId) {
     }
 }
 
-function cachedIdlEntryForAccount(root, accountId, ownerProgramId) {
-    with (root) {
-        const selection = accountIdlSelection(accountId, ownerProgramId)
-        let entry = selection ? root.idlEntryForKey(selection.idlKey) : null
-        if (!entry && selection) {
-            const sharedRows = root.sharedIdlEntriesForAccount(accountId, ownerProgramId)
-            for (let i = 0; i < sharedRows.length; ++i) {
-                if (String(sharedRows[i].key || "") === String(selection.idlKey || "")) {
-                    entry = sharedRows[i]
-                    break
-                }
-            }
-        }
-        if (!entry || String(entry.programIdHex || "").length === 0) {
-            return null
-        }
-        const owner = root.accountOwnerCacheKey(ownerProgramId)
-        if (owner.length > 0 && String(entry.programIdHex || "") !== owner) {
-            return null
-        }
-        return entry
-    }
-}
-
-function cachedAccountType(root, accountId, ownerProgramId) {
-    with (root) {
-        const selection = accountIdlSelection(accountId, ownerProgramId)
-        return selection ? String(selection.accountType || "") : ""
-    }
-}
-
 function accountCacheKey(root, accountId, ownerProgramId) {
     with (root) {
         const account = String(accountId || "").trim()
@@ -819,58 +788,6 @@ function accountNetworkCacheScope(root) {
 function accountOwnerCacheKey(root, ownerProgramId) {
     with (root) {
         return root.canonicalProgramIdHex(ownerProgramId) || root.normalizedHexText(ownerProgramId)
-    }
-}
-
-function accountDecodeFullyConsumed(root, value) {
-    with (root) {
-        if (!value) {
-            return false
-        }
-        const consumed = Number(value.consumed_bytes)
-        const total = Number(value.total_bytes)
-        const remaining = Number(value.remaining_bytes || 0)
-        return Number.isFinite(consumed) && Number.isFinite(total) && consumed === total && remaining === 0
-    }
-}
-
-function transactionDecodeFullyConsumed(root, value) {
-    with (root) {
-        const decoded = root.transactionDecodedInstruction(value)
-        return decoded !== null && !decoded.decode_error && Array.isArray(decoded.remaining_words) && decoded.remaining_words.length === 0
-    }
-}
-
-function transactionDecodedInstruction(root, value) {
-    with (root) {
-        if (!value || typeof value !== "object") {
-            return null
-        }
-        if (value.decoded_instruction) {
-            return value.decoded_instruction
-        }
-        if (value.decoded) {
-            return value.decoded
-        }
-        return null
-    }
-}
-
-function transactionSummaryFromDetail(root, value) {
-    with (root) {
-        if (!value || typeof value !== "object") {
-            return null
-        }
-        if (value.raw_summary) {
-            return value.raw_summary
-        }
-        if (value.inspection && value.inspection.raw_summary) {
-            return value.inspection.raw_summary
-        }
-        if (value.summary) {
-            return value.summary
-        }
-        return null
     }
 }
 

@@ -18,7 +18,7 @@ ColumnLayout {
 
     Component.onCompleted: {
         if (!model.blocksPageRows.length) {
-            model.refreshBlocksPage();
+            model.chainPages.refreshBlocksPage();
         }
     }
 
@@ -39,11 +39,11 @@ ColumnLayout {
             { text: qsTr("Status"), width: 72 }
         ]
         rows: root.blockRows()
-        onRefreshRequested: root.model.blocksLiveEnabled ? root.model.refreshBlocksLivePage() : root.model.refreshBlocksPage()
-        onNewerRequested: root.model.newerBlocksPage()
-        onOlderRequested: root.model.olderBlocksPage()
+        onRefreshRequested: root.model.blocksLiveEnabled ? root.model.chainPages.refreshBlocksLivePage() : root.model.chainPages.refreshBlocksPage()
+        onNewerRequested: root.model.chainPages.newerBlocksPage()
+        onOlderRequested: root.model.chainPages.olderBlocksPage()
         onLoadCountSelected: function (count) {
-            root.model.setBlocksPageLimit(count)
+            root.model.chainPages.setBlocksPageLimit(count)
         }
         onCellActivated: function (row, column, cell, rowData) {
             if (rowData.rawBlock !== null && (column === 0 || column === 2)) {
@@ -56,7 +56,7 @@ ColumnLayout {
             Layout.fillWidth: true
 
             Text {
-                text: root.model.blocksLiveStatusText()
+                text: root.model.chainPages.blocksLiveStatusText()
                 color: root.model.blocksLiveEnabled ? root.theme.success : root.theme.textMuted
                 textFormat: Text.PlainText
                 font.pixelSize: root.theme.dataText
@@ -70,7 +70,7 @@ ColumnLayout {
                 primary: !root.model.blocksLiveEnabled
                 enabled: !root.model.busy
                 Layout.preferredWidth: root.model.blocksLiveEnabled ? 126 : 82
-                onClicked: root.model.blocksLiveEnabled ? root.model.refreshBlocksLivePage() : root.model.startBlocksLiveMode()
+                onClicked: root.model.blocksLiveEnabled ? root.model.chainPages.refreshBlocksLivePage() : root.model.chainPages.startBlocksLiveMode()
             }
 
             ActionButton {
@@ -79,7 +79,7 @@ ColumnLayout {
                 text: qsTr("Stop")
                 enabled: !root.model.busy
                 Layout.preferredWidth: 82
-                onClicked: root.model.stopBlocksLiveMode()
+                onClicked: root.model.chainPages.stopBlocksLiveMode()
             }
         }
 
@@ -106,7 +106,7 @@ ColumnLayout {
         visible: root.model.blocksPageError.length > 0
         theme: root.theme
         tone: "warning"
-        title: root.model.sourceProblemTitle("blockchain", root.model.blocksPageError, qsTr("Blocks unavailable"))
+        title: root.model.chainPages.sourceProblemTitle("blockchain", root.model.blocksPageError, qsTr("Blocks unavailable"))
         message: root.model.blocksPageError
         Layout.fillWidth: true
     }
@@ -119,7 +119,7 @@ ColumnLayout {
                 cells: [
                     { text: "-", width: 96 },
                     { text: "-", width: 72 },
-                    { text: root.model.sourceEmptyText("blockchain", root.model.blocksPageError, qsTr("No blocks in loaded range")), width: 140, fill: true, monospace: false },
+                    { text: root.model.chainPages.sourceEmptyText("blockchain", root.model.blocksPageError, qsTr("No blocks in loaded range")), width: 140, fill: true, monospace: false },
                     { text: "-", width: 72 },
                     { text: "-", width: 140, fill: true },
                     { text: "-", width: 72 }
@@ -134,8 +134,8 @@ ColumnLayout {
             const header = block.header || {};
             const proof = header.proof_of_leadership || {};
             const transactions = block.transactions || [];
-            const hash = root.model.blockHash(block);
-            const status = root.model.blockStatus(block);
+            const hash = root.model.chainPages.blockHash(block);
+            const status = root.model.chainPages.blockStatus(block);
             return {
                 slotRaw: String(header.slot || ""),
                 cells: [
@@ -155,7 +155,7 @@ ColumnLayout {
     }
 
     function blockchainInfo() {
-        return root.model.blockchainInfo();
+        return root.model.chainPages.blockchainInfo();
     }
 
     function chainSlot(field) {

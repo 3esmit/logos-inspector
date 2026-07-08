@@ -187,20 +187,45 @@ QtObject {
     }
 
     function networkActionEnabled(action) {
-        if (networkProfile !== "local" || busy) {
+        if (busy) {
             return false
         }
-        const reportValue = report || {}
-        const hasActive = String(reportValue.active_devnet || "").length > 0
         const key = String(action || "")
-        if (key === "new_network" || key === "load_network") {
-            return true
+        const actions = networkActions()
+        return actions.indexOf(key) >= 0
+    }
+
+    function networkActions() {
+        const reportValue = report || null
+        if (reportValue && Array.isArray(reportValue.available_network_actions)) {
+            return reportValue.available_network_actions
         }
-        return hasActive && (key === "reset_network" || key === "delete_network")
+        if (!localMode()) {
+            return []
+        }
+        const actions = ["new_network", "load_network"]
+        if (reportValue && String(reportValue.active_devnet || "").length > 0) {
+            actions.push("reset_network")
+            actions.push("delete_network")
+        }
+        return actions
+    }
+
+    function localMode() {
+        const reportValue = report || null
+        const mode = reportValue ? String(reportValue.mode || "") : ""
+        if (mode.length) {
+            return mode === "localnet"
+        }
+        const profile = reportValue ? String(reportValue.profile || "") : ""
+        if (profile.length) {
+            return profile === "local"
+        }
+        return networkProfile === "local"
     }
 
     function modeLabel() {
-        return networkProfile === "local" ? qsTr("Localnet") : qsTr("Public/Testnet")
+        return localMode() ? qsTr("Localnet") : qsTr("Public/Testnet")
     }
 
     function summaryText() {
@@ -212,16 +237,12 @@ QtObject {
     }
 
     function toolProblem() {
-        const tools = report && report.tools ? report.tools : null
-        if (!tools) {
-            return ""
-        }
-        const logoscore = tools.logoscore && tools.logoscore.available === true
-        const sequencer = nodeByKind("sequencer")
-        if (!logoscore) {
+        const reportValue = report || null
+        const problem = reportValue ? String(reportValue.primary_problem || "") : ""
+        if (problem === "missing_logoscore") {
             return qsTr("logoscore not found. Module-backed node actions will report needs_configuration.")
         }
-        if (networkProfile === "local" && sequencer && String(sequencer.install_state || "") === "needs_configuration") {
+        if (problem === "missing_sequencer_binary") {
             return qsTr("sequencer_service not found. Local sequencer start requires a configured binary.")
         }
         return ""

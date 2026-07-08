@@ -40,11 +40,11 @@ function autoDecodeAccountData(root, dataHex, accountId, ownerProgramId, callbac
 function accountDecodeCandidates(root, accountId, ownerProgramId) {
     with (root) {
         const candidates = []
-        const cached = root.cachedIdlEntryForAccount(accountId, ownerProgramId)
+        const cached = cachedIdlEntryForAccount(root, accountId, ownerProgramId)
         if (cached && String(cached.source || "") !== "shared") {
             candidates.push({
                 entry: cached,
-                accountType: root.cachedAccountType(accountId, ownerProgramId),
+                accountType: cachedAccountType(root, accountId, ownerProgramId),
                 cached: true
             })
         }
@@ -63,7 +63,7 @@ function accountDecodeCandidates(root, accountId, ownerProgramId) {
         if (cached && String(cached.source || "") === "shared" && !candidateListHasEntry(root, candidates, cached.key)) {
             candidates.push({
                 entry: cached,
-                accountType: root.cachedAccountType(accountId, ownerProgramId),
+                accountType: cachedAccountType(root, accountId, ownerProgramId),
                 cached: true,
                 shared: true
             })
@@ -82,6 +82,47 @@ function accountDecodeCandidates(root, accountId, ownerProgramId) {
         }
         return uniqueCandidates(candidates)
     }
+}
+
+function cachedIdlEntryForAccount(root, accountId, ownerProgramId) {
+    with (root) {
+        const selection = root.accountIdlSelection(accountId, ownerProgramId)
+        let entry = selection ? root.idlEntryForKey(selection.idlKey) : null
+        if (!entry && selection) {
+            const sharedRows = root.sharedIdlEntriesForAccount(accountId, ownerProgramId)
+            for (let i = 0; i < sharedRows.length; ++i) {
+                if (String(sharedRows[i].key || "") === String(selection.idlKey || "")) {
+                    entry = sharedRows[i]
+                    break
+                }
+            }
+        }
+        if (!entry || String(entry.programIdHex || "").length === 0) {
+            return null
+        }
+        const owner = root.accountOwnerCacheKey(ownerProgramId)
+        if (owner.length > 0 && String(entry.programIdHex || "") !== owner) {
+            return null
+        }
+        return entry
+    }
+}
+
+function cachedAccountType(root, accountId, ownerProgramId) {
+    with (root) {
+        const selection = root.accountIdlSelection(accountId, ownerProgramId)
+        return selection ? String(selection.accountType || "") : ""
+    }
+}
+
+function accountDecodeFullyConsumed(root, value) {
+    if (!value) {
+        return false
+    }
+    const consumed = Number(value.consumed_bytes)
+    const total = Number(value.total_bytes)
+    const remaining = Number(value.remaining_bytes || 0)
+    return Number.isFinite(consumed) && Number.isFinite(total) && consumed === total && remaining === 0
 }
 
 function tryAccountDecodeCandidate(root, serial, dataHex, candidates, index, firstError, callback) {
@@ -122,7 +163,7 @@ function tryAccountDecodeCandidate(root, serial, dataHex, candidates, index, fir
 
 function autoDecodeTransactionDetail(root, detail) {
     with (root) {
-        const summary = root.transactionSummaryFromDetail(detail)
+        const summary = transactionSummaryFromDetail(root, detail)
         if (!summary || String(summary.kind || "") !== "Public" || !Array.isArray(summary.instruction_data) || summary.instruction_data.length === 0) {
             return
         }
@@ -138,12 +179,11 @@ function autoDecodeTransactionDetail(root, detail) {
             if (serial !== transactionAutoDecodeSerial) {
                 return
             }
-            const session = response && response.ok === true && response.value ? response.value : null
-            const selection = session && session.selected ? session.selected : (session && session.partial ? session.partial : null)
-            if (selection && selection.report) {
-                transactionDetailValue = selection.report
+            const report = transactionDecodeSessionReport(root, response)
+            if (report) {
+                transactionDetailValue = report
                 lezTransactionsPageError = ""
-                setResult(qsTr("Transaction"), BridgeHelpers.formatValue(selection.report), false, selection.report, "l2TransactionDetail")
+                setResult(qsTr("Transaction"), BridgeHelpers.formatValue(report), false, report, "l2TransactionDetail")
             }
         })
     }
@@ -154,7 +194,7 @@ function transactionDecodeCandidates(root, summary) {
         const candidates = []
         const accountIds = Array.isArray(summary.account_ids) ? summary.account_ids : []
         for (let i = 0; i < accountIds.length; ++i) {
-            const cached = root.cachedIdlEntryForAccount(accountIds[i], summary.program_id_hex)
+            const cached = cachedIdlEntryForAccount(root, accountIds[i], summary.program_id_hex)
             if (cached && !candidateListHasEntry(root, candidates, cached.key)) {
                 candidates.push({
                     entry: cached,
@@ -175,6 +215,51 @@ function transactionDecodeCandidates(root, summary) {
 
         return uniqueCandidates(candidates)
     }
+}
+
+function transactionDecodeFullyConsumed(root, value) {
+    const decoded = transactionDecodedInstruction(root, value)
+    return decoded !== null && !decoded.decode_error && Array.isArray(decoded.remaining_words) && decoded.remaining_words.length === 0
+}
+
+function transactionDecodedInstruction(root, value) {
+    if (!value || typeof value !== "object") {
+        return null
+    }
+    if (value.decoded_instruction) {
+        return value.decoded_instruction
+    }
+    if (value.decoded) {
+        return value.decoded
+    }
+    return null
+}
+
+function transactionSummaryFromDetail(root, value) {
+    if (!value || typeof value !== "object") {
+        return null
+    }
+    if (value.raw_summary) {
+        return value.raw_summary
+    }
+    if (value.inspection && value.inspection.raw_summary) {
+        return value.inspection.raw_summary
+    }
+    if (value.summary) {
+        return value.summary
+    }
+    return null
+}
+
+function transactionDecodeSessionReport(root, response) {
+    const session = response && response.ok === true && response.value ? response.value : null
+    const selection = session && session.selected ? session.selected : (session && session.partial ? session.partial : null)
+    return selection && selection.report ? selection.report : null
+}
+
+function transactionDecodeSessionInstruction(root, response) {
+    const report = transactionDecodeSessionReport(root, response)
+    return report ? transactionDecodedInstruction(root, report) : null
 }
 
 function uniqueCandidates(candidates) {
@@ -228,12 +313,11 @@ function tryTransactionDecodeCandidate(root, serial, summary, candidates, index,
             if (serial !== transactionAutoDecodeSerial) {
                 return
             }
-            const session = response && response.ok === true && response.value ? response.value : null
-            const selection = session && session.selected ? session.selected : (session && session.partial ? session.partial : null)
-            if (selection && selection.report) {
-                transactionDetailValue = selection.report
+            const report = transactionDecodeSessionReport(root, response)
+            if (report) {
+                transactionDetailValue = report
                 lezTransactionsPageError = ""
-                setResult(qsTr("Transaction"), BridgeHelpers.formatValue(selection.report), false, selection.report, "l2TransactionDetail")
+                setResult(qsTr("Transaction"), BridgeHelpers.formatValue(report), false, report, "l2TransactionDetail")
                 return
             }
             if (partialValue) {

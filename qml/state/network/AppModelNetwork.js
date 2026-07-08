@@ -1,7 +1,5 @@
 .import "../../services/BridgeHelpers.js" as BridgeHelpers
 .import "SourceHealthProjection.js" as SourceHealthProjection
-.import "SourcePolicyCatalog.js" as SourcePolicyCatalog
-.import "SourcePolicyProjection.js" as SourcePolicyProjection
 .import "SourceRoutingUi.js" as SourceRoutingUi
 
 function refreshInterval(root, seconds) {
@@ -28,68 +26,6 @@ function dashboardRefreshInterval(root) {
         }
         return selected > 0 ? root.refreshInterval(selected) : 0
     }
-}
-
-function loadSourcePolicy(root) {
-    with (root) {
-        const response = bridge.callModule(inspectorModule, "sourcePolicy", [])
-        if (response.ok === true && response.value && typeof response.value === "object") {
-            sourcePolicy = response.value
-            sourcePolicyLoaded = true
-            return true
-        }
-        sourcePolicy = SourcePolicyCatalog.fallbackPolicy()
-        sourcePolicyLoaded = false
-        return false
-    }
-}
-
-function sourcePolicyDefault(root, key, fallback) {
-    return SourcePolicyProjection.sourcePolicyDefault(root, key, fallback)
-}
-
-function sourceModePolicy(root, family, value) {
-    return SourcePolicyProjection.sourceModePolicy(root, family, value)
-}
-
-function sourceModePolicies(root, family) {
-    return SourcePolicyProjection.sourceModePolicies(root, family)
-}
-
-function sourceModeOptions(root, family) {
-    return SourcePolicyProjection.sourceModeOptions(root, family)
-}
-
-function sourceModeIndexFor(root, family, value, options) {
-    return SourcePolicyProjection.sourceModeIndexFor(root, family, value, options)
-}
-
-function sourceModeAt(root, index, options) {
-    return SourcePolicyProjection.sourceModeAt(index, options)
-}
-
-function sourceModeAdapter(root, family, value) {
-    return SourcePolicyProjection.sourceModeAdapter(root, family, value)
-}
-
-function resolvedSourceModeKey(root, family, value) {
-    return SourcePolicyProjection.resolvedSourceModeKey(root, family, value)
-}
-
-function sourceModeTargetKind(root, family, value) {
-    return SourcePolicyProjection.sourceModeTargetKind(root, family, value)
-}
-
-function sourceModeUsesEndpoint(root, family, value, endpointKind) {
-    return SourcePolicyProjection.sourceModeUsesEndpoint(root, family, value, endpointKind)
-}
-
-function sourceModeSupportsCidProbe(root, family, value) {
-    return SourcePolicyProjection.sourceModeSupportsCidProbe(root, family, value)
-}
-
-function sourceModeSupportsMutatingDiagnostics(root, family, value) {
-    return SourcePolicyProjection.sourceModeSupportsMutatingDiagnostics(root, family, value)
 }
 
 function coreSourceView(root, role) {
@@ -311,24 +247,6 @@ function networkConnectionRequest(root, kind, includeSensitiveProbe) {
     }
 }
 
-function blockchainArgs(root, extra) {
-    with (root) {
-        return coreSourceArgs(root, blockchainSourceMode, nodeUrl, extra)
-    }
-}
-
-function indexerArgs(root, extra) {
-    with (root) {
-        return coreSourceArgs(root, indexerSourceMode, indexerUrl, extra)
-    }
-}
-
-function executionArgs(root, extra) {
-    with (root) {
-        return coreSourceArgs(root, executionSourceMode, sequencerUrl, extra)
-    }
-}
-
 function blockchainRpcArgs(root, extra) {
     with (root) {
         return [String(nodeUrl || "")].concat(Array.isArray(extra) ? extra : [])
@@ -338,38 +256,6 @@ function blockchainRpcArgs(root, extra) {
 function executionRpcArgs(root, extra) {
     with (root) {
         return [String(sequencerUrl || "")].concat(Array.isArray(extra) ? extra : [])
-    }
-}
-
-function coreSourceArgs(root, sourceMode, endpoint, extra) {
-    return SourcePolicyProjection.coreSourceArgs(root, sourceMode, endpoint, extra)
-}
-
-function accountLookupArgs(root, account, idlJson, accountType) {
-    with (root) {
-        return SourcePolicyProjection.accountLookupArgs(
-            root,
-            executionSourceMode,
-            sequencerUrl,
-            indexerSourceMode,
-            indexerUrl,
-            account,
-            idlJson,
-            accountType
-        )
-    }
-}
-
-function lezLookupArgs(root, target) {
-    with (root) {
-        return SourcePolicyProjection.lezLookupArgs(
-            root,
-            executionSourceMode,
-            sequencerUrl,
-            indexerSourceMode,
-            indexerUrl,
-            target
-        )
     }
 }
 
@@ -563,163 +449,6 @@ function deliveryHealthValueOk(root, value, unknownOk) {
 
 function moduleReportError(root, report) {
     return SourceHealthProjection.moduleReportError(report)
-}
-
-function deliverySourceReportArgs(root) {
-    with (root) {
-        return SourcePolicyProjection.deliverySourceReportArgs(
-            root,
-            messagingSourceMode,
-            root.configuredMessagingRestUrl(),
-            messagingMetricsUrl
-        )
-    }
-}
-
-function deliverySourceLabel(root) {
-    with (root) {
-        return SourcePolicyProjection.sourceLabel(root, "delivery", messagingSourceMode, qsTr("Direct Waku REST"))
-    }
-}
-
-function deliverySourceTarget(root) {
-    with (root) {
-        return SourcePolicyProjection.sourceTarget(root, "delivery", messagingSourceMode, {
-            module: deliveryModule,
-            rest: root.configuredMessagingRestUrl(),
-            metrics: messagingMetricsUrl
-        })
-    }
-}
-
-function configuredMessagingRestUrl(root) {
-    with (root) {
-        const value = String(messagingRestUrl || "").trim()
-        return value.length ? value : root.sourcePolicyDefault("delivery_rest_endpoint", "http://127.0.0.1:8645")
-    }
-}
-
-function normalizedCoreSourceMode(root, value) {
-    with (root) {
-        const source = root.sourceModePolicy("core", value)
-        return String(source.key || "auto")
-    }
-}
-
-function effectiveCoreSourceMode(root, value) {
-    with (root) {
-        const source = root.sourceModePolicy("core", root.resolvedSourceModeKey("core", value))
-        return String(source.effective || "rpc")
-    }
-}
-
-function blockchainSourceLabel(root) {
-    with (root) {
-        return SourcePolicyProjection.coreSourceLabel(root, blockchainSourceMode, qsTr("Bedrock RPC"))
-    }
-}
-
-function blockchainSourceTarget(root) {
-    with (root) {
-        if (root.effectiveCoreSourceMode(blockchainSourceMode) === "module") {
-            return blockchainModule
-        }
-        return String(nodeUrl || "")
-    }
-}
-
-function indexerSourceLabel(root) {
-    with (root) {
-        return SourcePolicyProjection.coreSourceLabel(root, indexerSourceMode, qsTr("Indexer RPC"))
-    }
-}
-
-function indexerSourceTarget(root) {
-    with (root) {
-        if (root.effectiveCoreSourceMode(indexerSourceMode) === "module") {
-            return indexerModule
-        }
-        return String(indexerUrl || "")
-    }
-}
-
-function executionSourceLabel(root) {
-    with (root) {
-        if (root.effectiveCoreSourceMode(executionSourceMode) === "module") {
-            return qsTr("LEZ core module")
-        }
-        return qsTr("Sequencer RPC")
-    }
-}
-
-function executionSourceTarget(root) {
-    with (root) {
-        if (root.effectiveCoreSourceMode(executionSourceMode) === "module") {
-            return "lez_core"
-        }
-        return String(sequencerUrl || "")
-    }
-}
-
-function normalizedMessagingSourceMode(root, value) {
-    with (root) {
-        return String(root.sourceModePolicy("delivery", value).key || "auto")
-    }
-}
-
-function effectiveMessagingSourceMode(root, value) {
-    with (root) {
-        return String(root.sourceModePolicy("delivery", root.resolvedSourceModeKey("delivery", value)).effective || "rest")
-    }
-}
-
-function storageSourceReportArgs(root, includeCidProbe) {
-    with (root) {
-        return SourcePolicyProjection.storageSourceReportArgs(
-            root,
-            storageSourceMode,
-            root.configuredStorageRestUrl(),
-            storageMetricsUrl,
-            storageCidProbe,
-            includeCidProbe,
-            storagePrivilegedDebugEnabled
-        )
-    }
-}
-
-function storageSourceLabel(root) {
-    with (root) {
-        return SourcePolicyProjection.sourceLabel(root, "storage", storageSourceMode, qsTr("Standalone REST"))
-    }
-}
-
-function storageSourceTarget(root) {
-    with (root) {
-        return SourcePolicyProjection.sourceTarget(root, "storage", storageSourceMode, {
-            module: storageModule,
-            rest: root.configuredStorageRestUrl(),
-            metrics: storageMetricsUrl
-        })
-    }
-}
-
-function configuredStorageRestUrl(root) {
-    with (root) {
-        const value = String(storageRestUrl || "").trim()
-        return value.length ? value : root.sourcePolicyDefault("storage_rest_endpoint", "http://127.0.0.1:8080/api/storage/v1")
-    }
-}
-
-function normalizedStorageSourceMode(root, value) {
-    with (root) {
-        return String(root.sourceModePolicy("storage", value).key || "auto")
-    }
-}
-
-function effectiveStorageSourceMode(root, value) {
-    with (root) {
-        return String(root.sourceModePolicy("storage", root.resolvedSourceModeKey("storage", value)).effective || "rest")
-    }
 }
 
 function networkConnectionState(root, kind) {

@@ -18,7 +18,7 @@ ColumnLayout {
 
     Component.onCompleted: {
         if (!model.transactionsPageRows.length) {
-            model.refreshTransactionsPage();
+            model.chainPages.refreshTransactionsPage();
         }
     }
 
@@ -37,11 +37,11 @@ ColumnLayout {
             { text: qsTr("Ops"), width: 64 }
         ]
         rows: root.transactionRows()
-        onRefreshRequested: root.model.refreshTransactionsPage()
-        onNewerRequested: root.model.newerTransactionsPage()
-        onOlderRequested: root.model.olderTransactionsPage()
+        onRefreshRequested: root.model.chainPages.refreshTransactionsPage()
+        onNewerRequested: root.model.chainPages.newerTransactionsPage()
+        onOlderRequested: root.model.chainPages.olderTransactionsPage()
         onLoadCountSelected: function (count) {
-            root.model.setTransactionsPageLimit(count)
+            root.model.chainPages.setTransactionsPageLimit(count)
         }
         onCellActivated: function (row, column, cell, rowData) {
             if (column === 1 && rowData.txHash.length > 0) {
@@ -56,7 +56,7 @@ ColumnLayout {
         visible: root.model.transactionsPageError.length > 0
         theme: root.theme
         tone: "warning"
-        title: root.model.sourceProblemTitle("blockchain", root.model.transactionsPageError, qsTr("Transactions unavailable"))
+        title: root.model.chainPages.sourceProblemTitle("blockchain", root.model.transactionsPageError, qsTr("Transactions unavailable"))
         message: root.model.transactionsPageError
         Layout.fillWidth: true
     }
@@ -67,7 +67,7 @@ ColumnLayout {
             return [{
                 cells: [
                     { text: "-", width: 96 },
-                    { text: root.model.sourceEmptyText("blockchain", root.model.transactionsPageError, qsTr("No transactions in loaded range")), width: 180, fill: true, monospace: false },
+                    { text: root.model.chainPages.sourceEmptyText("blockchain", root.model.transactionsPageError, qsTr("No transactions in loaded range")), width: 180, fill: true, monospace: false },
                     { text: "-", width: 180, fill: true },
                     { text: "-", width: 64 }
                 ],
@@ -108,7 +108,7 @@ ColumnLayout {
     }
 
     function chainSlot(field) {
-        const info = root.model.blockchainInfo()
+        const info = root.model.chainPages.blockchainInfo()
         if (!info || info[field] === undefined || info[field] === null) {
             return 0
         }

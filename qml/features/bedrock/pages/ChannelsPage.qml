@@ -18,7 +18,7 @@ ColumnLayout {
 
     Component.onCompleted: {
         if (!model.channelsPageRows.length) {
-            model.refreshChannelsPage();
+            model.chainPages.refreshChannelsPage();
         }
     }
 
@@ -38,11 +38,11 @@ ColumnLayout {
             { text: qsTr("Keys"), width: 86 }
         ]
         rows: root.channelRows()
-        onRefreshRequested: root.model.refreshChannelsPage()
-        onNewerRequested: root.model.newerChannelsPage()
-        onOlderRequested: root.model.olderChannelsPage()
+        onRefreshRequested: root.model.chainPages.refreshChannelsPage()
+        onNewerRequested: root.model.chainPages.newerChannelsPage()
+        onOlderRequested: root.model.chainPages.olderChannelsPage()
         onLoadCountSelected: function (count) {
-            root.model.setChannelsPageLimit(count)
+            root.model.chainPages.setChannelsPageLimit(count)
         }
         onCellActivated: function (row, column, cell, rowData) {
             if (column === 0 && rowData.channelRaw.length > 0) {
@@ -55,7 +55,7 @@ ColumnLayout {
         visible: root.model.channelsPageError.length > 0
         theme: root.theme
         tone: "warning"
-        title: root.model.sourceProblemTitle("blockchain", root.model.channelsPageError, qsTr("Channels unavailable"))
+        title: root.model.chainPages.sourceProblemTitle("blockchain", root.model.channelsPageError, qsTr("Channels unavailable"))
         message: root.model.channelsPageError
         Layout.fillWidth: true
     }
@@ -90,7 +90,7 @@ ColumnLayout {
             return [{
                 channelRaw: "",
                 cells: [
-                    { text: root.model.sourceEmptyText("blockchain", root.model.channelsPageError, qsTr("No channels in loaded range")), width: 210, fill: true, monospace: false },
+                    { text: root.model.chainPages.sourceEmptyText("blockchain", root.model.channelsPageError, qsTr("No channels in loaded range")), width: 210, fill: true, monospace: false },
                     { text: "-", width: 120 },
                     { text: "-", width: 86 },
                     { text: "-", width: 86 },
@@ -141,7 +141,7 @@ ColumnLayout {
     }
 
     function chainSlot(field) {
-        const info = root.model.blockchainInfo()
+        const info = root.model.chainPages.blockchainInfo()
         if (!info || info[field] === undefined || info[field] === null) {
             return 0
         }

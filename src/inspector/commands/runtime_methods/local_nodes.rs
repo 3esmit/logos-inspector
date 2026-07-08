@@ -7,11 +7,11 @@ use crate::{
 };
 
 use super::super::value::to_value;
-use super::{RuntimeMethod, RuntimeMethodEntry};
+use super::RuntimeMethodEntry;
 
 pub(super) const METHOD_CATALOG: &[RuntimeMethodEntry] = &[
-    RuntimeMethodEntry::new(RuntimeMethod::LocalNodesStatus, "localNodesStatus"),
-    RuntimeMethodEntry::new(RuntimeMethod::LocalDevnetList, "localDevnetList"),
+    RuntimeMethodEntry::sync("localNodesStatus", local_nodes_status),
+    RuntimeMethodEntry::sync("localDevnetList", local_devnet_list),
 ];
 
 pub(super) fn local_nodes_status(args: Value) -> Result<Value> {
