@@ -6,7 +6,7 @@ use crate::{
     source_routing::Args,
 };
 
-use super::super::bridge::to_value;
+use super::super::value::to_value;
 
 pub(super) fn local_nodes_status(args: Value) -> Result<Value> {
     let args = Args::new(args)?;

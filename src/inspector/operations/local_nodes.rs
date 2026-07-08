@@ -1,13 +1,9 @@
 use anyhow::{Context as _, Result};
 use serde_json::Value;
 
-use crate::{
-    LocalNodeActionRequest,
-    bridge::{blocking_value, to_value},
-    local_nodes_action,
-    source_routing::Args,
-};
+use crate::{LocalNodeActionRequest, local_nodes_action, source_routing::Args};
 
+use super::super::value::{blocking_value, to_value};
 use super::NodeOperationRequest;
 
 pub(super) async fn execute_local_nodes_action(request: &NodeOperationRequest) -> Result<Value> {

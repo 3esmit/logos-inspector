@@ -3,14 +3,12 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use reqwest::Method;
 use serde_json::{Value, json};
 
-use crate::{
-    bridge::blocking_value,
-    source_routing::{
-        self, Args, DeliveryStoreQuery, delivery_rest_source, delivery_store_query_url,
-        raw_http_json_url, require_mutating_diagnostics, rest_empty_request,
-    },
+use crate::source_routing::{
+    self, Args, DeliveryStoreQuery, delivery_rest_source, delivery_store_query_url,
+    raw_http_json_url, require_mutating_diagnostics, rest_empty_request,
 };
 
+use super::super::value::blocking_value;
 use super::NodeOperationRequest;
 
 const MAX_DELIVERY_STORE_PAGE_SIZE: u64 = 100;

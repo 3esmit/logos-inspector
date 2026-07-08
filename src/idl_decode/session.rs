@@ -1,27 +1,113 @@
 use std::collections::HashSet;
 
-use crate::{decode_account_data_hex_with_idl, inspect_transaction_summary_with_idl};
+use serde::{Deserialize, Serialize};
 
-use super::{
-    TransactionSummary,
-    idl_resolver::{
-        AccountDecodeSelection, ProgramDecodeCandidate, ResolvedAccountDecodeSession,
-        ResolvedTransactionDecodeSession, TransactionDecodeSelection,
-    },
+use super::{AccountIdlDecodeReport, decode_account_data_hex_with_idl};
+use crate::inspection::l2::lez::{
+    TransactionIdlInspectionReport, TransactionSummary, inspect_transaction_summary_with_idl,
 };
 
-pub(crate) struct ProgramDecodeSession {
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProgramDecodeCandidate {
+    #[serde(default)]
+    pub key: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(alias = "program_id_hex")]
+    pub program_id_hex: String,
+    pub json: String,
+    #[serde(default, alias = "account_type")]
+    pub account_type: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SelectedDecodeEvidence {
+    pub key: String,
+    pub name: String,
+    pub program_id_hex: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountDecodeSelection {
+    pub evidence: SelectedDecodeEvidence,
+    pub report: AccountIdlDecodeReport,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedAccountDecodeSession {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected: Option<AccountDecodeSelection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub partial: Option<AccountDecodeSelection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransactionDecodeSelection {
+    pub evidence: SelectedDecodeEvidence,
+    pub report: TransactionIdlInspectionReport,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedTransactionDecodeSession {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected: Option<TransactionDecodeSelection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub partial: Option<TransactionDecodeSelection>,
+}
+
+impl ProgramDecodeCandidate {
+    fn evidence(&self, account_type: Option<String>) -> SelectedDecodeEvidence {
+        SelectedDecodeEvidence {
+            key: self.key.clone(),
+            name: self.name.clone(),
+            program_id_hex: self.program_id_hex.clone(),
+            account_type,
+            source: self.source.clone(),
+        }
+    }
+}
+
+pub fn resolve_account_decode_session(
+    account_id: Option<&str>,
+    data_hex: &str,
+    candidates: &[ProgramDecodeCandidate],
+) -> ResolvedAccountDecodeSession {
+    ProgramDecodeSession::new(candidates).resolve_account(account_id, data_hex)
+}
+
+pub fn resolve_transaction_decode_session(
+    summary: &TransactionSummary,
+    candidates: &[ProgramDecodeCandidate],
+) -> ResolvedTransactionDecodeSession {
+    ProgramDecodeSession::new(candidates).resolve_transaction(summary)
+}
+
+struct ProgramDecodeSession {
     candidates: Vec<ProgramDecodeCandidate>,
 }
 
 impl ProgramDecodeSession {
-    pub(crate) fn new(candidates: &[ProgramDecodeCandidate]) -> Self {
+    fn new(candidates: &[ProgramDecodeCandidate]) -> Self {
         Self {
             candidates: unique_candidates(candidates),
         }
     }
 
-    pub(crate) fn resolve_account(
+    fn resolve_account(
         &self,
         account_id: Option<&str>,
         data_hex: &str,
@@ -72,7 +158,7 @@ impl ProgramDecodeSession {
         }
     }
 
-    pub(crate) fn resolve_transaction(
+    fn resolve_transaction(
         &self,
         summary: &TransactionSummary,
     ) -> ResolvedTransactionDecodeSession {

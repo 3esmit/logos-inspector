@@ -2,10 +2,8 @@ use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
 use crate::{
-    account_lookup, account_lookup_with_idl, blockchain,
-    bridge::{blocking_value, to_value},
-    indexer_block_by_hash, indexer_blocks, indexer_health, indexer_status,
-    indexer_transfer_recipients, last_sequencer_block_id,
+    account_lookup, account_lookup_with_idl, blockchain, indexer_block_by_hash, indexer_blocks,
+    indexer_health, indexer_status, indexer_transfer_recipients, last_sequencer_block_id,
     lez::{LezInspectionSession, RegisteredIdlResolver},
     raw_json_rpc_optional_result, sequencer_account, sequencer_block, sequencer_blocks,
     sequencer_program_ids, sequencer_transaction, sequencer_transaction_inspection,
@@ -15,6 +13,7 @@ use crate::{
     state_store::registered_idl_entries,
 };
 
+use super::super::value::{blocking_value, to_value};
 use super::NodeOperationRequest;
 
 const EXECUTION_MODULE: &str = source_routing::LEZ_CORE_MODULE;

@@ -15,7 +15,7 @@ use crate::{
     },
 };
 
-use super::super::bridge::to_value;
+use super::super::value::to_value;
 
 pub(super) fn source_policy() -> Result<Value> {
     to_value(source_policy_report(network_profiles()))
