@@ -22,13 +22,6 @@ ColumnLayout {
         }
     }
 
-    Timer {
-        interval: root.model.refreshInterval(root.model.blockchainRefreshRate)
-        running: root.model.blocksLiveEnabled && root.model.currentView === "blocks"
-        repeat: true
-        onTriggered: root.model.refreshBlocksLivePage()
-    }
-
     PagedInspectionTable {
         theme: root.theme
         loadCount: root.model.blocksPageLimit

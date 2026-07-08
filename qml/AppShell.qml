@@ -45,6 +45,11 @@ Item {
         model: appModel
     }
 
+    ListenerScheduler {
+        id: listenerScheduler
+        model: appModel
+    }
+
     Component.onCompleted: {
         root.schedulePageLoaderUpdate()
         const initialReference = root.initialReferenceFromArguments()
@@ -68,48 +73,6 @@ Item {
                 }
             })
         })
-    }
-
-    Timer {
-        interval: appModel.refreshInterval(appModel.blockchainRefreshRate)
-        repeat: true
-        running: appModel.blockchainRefreshRate > 0
-        onTriggered: appModel.queryNetworkConnection("blockchain", false)
-    }
-
-    Timer {
-        interval: appModel.refreshInterval(appModel.indexerRefreshRate)
-        repeat: true
-        running: appModel.indexerRefreshRate > 0
-        onTriggered: appModel.queryNetworkConnection("indexer", false)
-    }
-
-    Timer {
-        interval: appModel.refreshInterval(appModel.executionRefreshRate)
-        repeat: true
-        running: appModel.executionRefreshRate > 0
-        onTriggered: appModel.queryNetworkConnection("execution", false)
-    }
-
-    Timer {
-        interval: appModel.refreshInterval(appModel.messagingRefreshRate)
-        repeat: true
-        running: appModel.messagingRefreshRate > 0
-        onTriggered: appModel.queryNetworkConnection("messaging", false)
-    }
-
-    Timer {
-        interval: appModel.refreshInterval(appModel.storageRefreshRate)
-        repeat: true
-        running: appModel.storageRefreshRate > 0
-        onTriggered: appModel.queryNetworkConnection("storage", false)
-    }
-
-    Timer {
-        interval: appModel.dashboardRefreshInterval()
-        repeat: true
-        running: appModel.currentView === "overview" && appModel.dashboardRefreshInterval() > 0
-        onTriggered: appModel.refreshDashboard()
     }
 
     Rectangle {

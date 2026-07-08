@@ -143,6 +143,43 @@ TestCase {
         verify(!state.operationStartPending)
     }
 
+    function test_start_dispatch_ack_becomes_running_module_operation() {
+        gateway.requestResponses = ({
+            nodeOperationStart: {
+                ok: true,
+                value: {
+                    operationId: "storage-upload-ack",
+                    domain: "storage",
+                    backend: "module",
+                    method: "storageUploadUrl",
+                    status: "completed",
+                    label: "Upload file",
+                    result: {
+                        dispatched: true,
+                        sessionId: "session-1",
+                        requestId: "request-1",
+                        path: "/tmp/file.bin"
+                    },
+                    error: ""
+                },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        state.startStorageOperation("storageUploadUrl", ["/tmp/file.bin", 65536], "Upload file")
+
+        compare(gateway.requestCount, 1)
+        compare(state.activeOperation.operationId, "storage-upload-ack")
+        compare(state.activeOperation.status, "running")
+        compare(state.activeOperation.externalSessionId, "session-1")
+        compare(state.activeOperation.requestId, "request-1")
+        compare(state.activeOperation.path, "/tmp/file.bin")
+        compare(state.lastOperation, "Running")
+        compare(state.currentTab, "operations")
+        compare(gateway.history.length, 0)
+    }
+
     function test_terminal_operation_sets_result_and_history_once() {
         state.updateActiveOperation({
             operationId: "storage-download-1",
@@ -275,6 +312,43 @@ TestCase {
         compare(state.activeOperation.externalSessionId, "1")
         compare(state.activeOperation.cancellable, false)
         compare(gateway.history.length, 0)
+    }
+
+    function test_storage_module_stale_dispatch_ack_does_not_reopen_terminal_operation() {
+        state.updateActiveOperation({
+            operationId: "op-1",
+            domain: "storage",
+            backend: "module",
+            method: "storageUploadUrl",
+            status: "completed",
+            label: "Upload",
+            cid: "z-done",
+            result: { cid: "z-done" }
+        })
+        state.terminalOperationId = "op-1"
+        gateway.requestResponses = ({
+            nodeOperationStatus: {
+                ok: true,
+                value: {
+                    operationId: "op-1",
+                    domain: "storage",
+                    backend: "module",
+                    method: "storageUploadUrl",
+                    status: "completed",
+                    label: "Upload",
+                    result: { dispatched: true, sessionId: "1" },
+                    error: ""
+                },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        state.pollStorageOperation(false)
+
+        compare(state.activeOperation.status, "completed")
+        compare(state.activeOperation.cid, "z-done")
+        compare(state.terminalOperationId, "op-1")
     }
 
     function test_storage_module_events_correlate_before_mutating_operation() {

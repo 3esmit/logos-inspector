@@ -87,18 +87,89 @@ function refreshBlocksLivePage(root) {
             return
         }
 
-        const report = response.value || {}
-        const liveBlocks = Array.isArray(report.blocks) ? report.blocks : []
+        applyLiveBlockReport(root, normalizedLiveBlockReport(response.value || {}, "blocks_range"), {
+            slotFrom: slotFrom,
+            slotTo: slotTo,
+            updateResult: true,
+            resultTitle: qsTr("Live blocks")
+        })
+    }
+}
+
+function normalizedLiveBlockReport(value, fallbackSource) {
+    const report = value && typeof value === "object" && !Array.isArray(value) ? value : ({})
+    if (Array.isArray(report.blocks)) {
+        return {
+            endpoint: String(report.endpoint || ""),
+            source: String(report.source || fallbackSource || ""),
+            blocks: report.blocks,
+            unknown_events: Array.isArray(report.unknown_events) ? report.unknown_events : []
+        }
+    }
+    const block = liveBlockFromPayload(value)
+    return {
+        endpoint: String(report.endpoint || ""),
+        source: String(report.source || fallbackSource || ""),
+        blocks: block ? [block] : [],
+        unknown_events: []
+    }
+}
+
+function liveBlockFromPayload(value) {
+    const payload = livePayload(value)
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+        return null
+    }
+    if (payload.header) {
+        return payload
+    }
+    if (payload.block !== undefined) {
+        return liveBlockFromPayload(payload.block)
+    }
+    if (payload.newBlock !== undefined) {
+        return liveBlockFromPayload(payload.newBlock)
+    }
+    if (payload.new_block !== undefined) {
+        return liveBlockFromPayload(payload.new_block)
+    }
+    return null
+}
+
+function livePayload(value) {
+    if (value === undefined || value === null) {
+        return null
+    }
+    if (typeof value === "object") {
+        return value
+    }
+    const text = String(value || "").trim()
+    if (!text.length) {
+        return null
+    }
+    const parsed = BridgeHelpers.parseJson(text)
+    return parsed.ok ? parsed.value : null
+}
+
+function applyLiveBlockReport(root, report, options) {
+    with (root) {
+        const opts = options || {}
+        const liveReport = normalizedLiveBlockReport(report || {}, String(opts.source || ""))
+        const liveBlocks = Array.isArray(liveReport.blocks) ? liveReport.blocks : []
         const merged = root.mergeLiveBlocks(liveBlocks, blocksPageRows, blocksPageLimit)
+        const slotTo = Number(opts.slotTo !== undefined ? opts.slotTo : blocksPageSlotTo)
         blocksPageRows = merged
-        blocksPageSlotTo = Math.max(slotTo, maxBlockSlot(root, merged))
-        blocksPageSlotFrom = merged.length ? minBlockSlot(root, merged) : slotFrom
-        blocksLiveSource = String(report.source || "")
-        blocksLiveUnknownEvents = Array.isArray(report.unknown_events) ? report.unknown_events.length : 0
-        blocksLiveCheckedAt = new Date().toLocaleTimeString(Qt.locale(), "hh:mm:ss")
+        blocksPageSlotTo = Math.max(Number(blocksPageSlotTo || 0), slotTo, maxBlockSlot(root, merged))
+        blocksPageSlotFrom = merged.length ? minBlockSlot(root, merged) : Number(opts.slotFrom !== undefined ? opts.slotFrom : blocksPageSlotFrom)
+        blocksLiveSource = String(liveReport.source || "")
+        blocksLiveUnknownEvents = Array.isArray(liveReport.unknown_events) ? liveReport.unknown_events.length : 0
+        blocksLiveCheckedAt = String(opts.checkedAt || new Date().toLocaleTimeString(Qt.locale(), "hh:mm:ss"))
         blocksLiveError = ""
         blocksPageError = ""
-        setResult(qsTr("Live blocks"), BridgeHelpers.formatValue(report), false, report)
+        if (opts.updateResult === true) {
+            const title = String(opts.resultTitle || qsTr("Live blocks"))
+            setResult(title, BridgeHelpers.formatValue(liveReport), false, liveReport)
+        }
+        return liveReport
     }
 }
 

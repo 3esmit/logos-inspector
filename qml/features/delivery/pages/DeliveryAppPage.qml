@@ -29,15 +29,6 @@ ColumnLayout {
         ListElement { value: "operations"; label: "Operations" }
     }
 
-    Timer {
-        id: deliveryOperationPoll
-
-        interval: 500
-        repeat: true
-        running: root.deliveryState.activeDeliveryOperationRunning()
-        onTriggered: root.deliveryState.pollDeliveryOperation(false)
-    }
-
     PageHeader {
         theme: root.theme
         breadcrumb: qsTr("Home / Network / Delivery")

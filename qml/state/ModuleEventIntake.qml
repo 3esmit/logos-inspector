@@ -1,5 +1,7 @@
 import QtQml
-import "modules/AppModelModuleEvents.js" as AppModelModuleEvents
+import "modules/BlockchainModuleEvents.js" as BlockchainModuleEvents
+import "modules/DeliveryModuleEvents.js" as DeliveryModuleEvents
+import "modules/StorageModuleEvents.js" as StorageModuleEvents
 
 QtObject {
     id: root
@@ -11,7 +13,7 @@ QtObject {
         if (!bridge || !model) {
             return 0
         }
-        const rows = AppModelModuleEvents.moduleEventSubscriptions(model)
+        const rows = root.subscriptionCatalog()
         let count = 0
         for (let i = 0; i < rows.length; ++i) {
             const row = rows[i] || {}
@@ -24,7 +26,58 @@ QtObject {
         if (!model) {
             return false
         }
-        return AppModelModuleEvents.handleModuleEvent(model, moduleName, eventName, args)
+        const moduleText = String(moduleName || "")
+        const eventText = String(eventName || "")
+        if (moduleText === model.deliveryModule) {
+            return DeliveryModuleEvents.handle(model, eventText, args)
+        }
+        if (moduleText === model.storageModule) {
+            return StorageModuleEvents.handle(model, eventText, args)
+        }
+        if (moduleText === model.blockchainModule && eventText === "newBlock") {
+            return BlockchainModuleEvents.handleNewBlock(model, args)
+        }
+        return false
+    }
+
+    function subscriptionCatalog() {
+        if (!model) {
+            return []
+        }
+        return [
+            {
+                moduleName: model.deliveryModule,
+                events: [
+                    "messageSent",
+                    "messageError",
+                    "messagePropagated",
+                    "messageReceived",
+                    "connectionStateChanged",
+                    "nodeStarted",
+                    "nodeStopped"
+                ]
+            },
+            {
+                moduleName: model.storageModule,
+                events: [
+                    "storageStart",
+                    "storageStop",
+                    "storageConnect",
+                    "storageUploadProgress",
+                    "storageUploadDone",
+                    "storageDownloadProgress",
+                    "storageDownloadDone",
+                    "storageDownloadManifestDone",
+                    "storageRemoveDone"
+                ]
+            },
+            {
+                moduleName: model.blockchainModule,
+                events: [
+                    "newBlock"
+                ]
+            }
+        ]
     }
 
     property Connections bridgeEvents: Connections {
