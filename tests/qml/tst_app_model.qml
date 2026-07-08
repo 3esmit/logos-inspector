@@ -61,6 +61,13 @@ TestCase {
         bridge: bridgeClient
     }
 
+    ModuleEventIntake {
+        id: moduleEventIntake
+
+        bridge: bridgeClient
+        model: model
+    }
+
     AppModel {
         id: basecampModel
 
@@ -1642,7 +1649,7 @@ TestCase {
         model.blocksPageSlotFrom = 30
         model.blocksPageSlotTo = 30
 
-        model.handleModuleEvent(model.blockchainModule, "newBlock", [
+        moduleEventIntake.ingest(model.blockchainModule, "newBlock", [
             JSON.stringify({ header: { slot: 31, id: "slot-31-event" }, transactions: [] })
         ])
 
@@ -1664,7 +1671,7 @@ TestCase {
             conversation_id: topic
         }
 
-        model.handleModuleEvent(model.deliveryModule, "messageReceived", [
+        moduleEventIntake.ingest(model.deliveryModule, "messageReceived", [
             "hash-1",
             topic,
             JSON.stringify(payload),

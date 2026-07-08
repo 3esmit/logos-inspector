@@ -31,15 +31,6 @@ ColumnLayout {
         root.model.refreshManifests(false)
     }
 
-    Timer {
-        id: storageOperationPoll
-
-        interval: 500
-        repeat: true
-        running: root.model.activeStorageOperationRunning()
-        onTriggered: root.model.pollStorageOperation(false)
-    }
-
     PageHeader {
         theme: root.theme
         breadcrumb: qsTr("Home / Network / Storage")

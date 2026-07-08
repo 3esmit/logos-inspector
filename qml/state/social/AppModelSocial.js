@@ -153,6 +153,37 @@ function setSocialCommentState(root, topic, state) {
     root.socialCommentRevision += 1
 }
 
+function applyIncomingComment(root, event) {
+    const incoming = event || {}
+    const payload = incoming.payload || {}
+    if (String(payload.kind || "") !== "comment") {
+        return false
+    }
+    const topic = String(incoming.topic || payload.conversation_id || "")
+    if (!topic.length) {
+        return false
+    }
+    const current = root.socialCommentStateForTopic(topic)
+    const row = {
+        key: "event|" + String(incoming.messageHash || "") + "|" + String(payload.created_at || ""),
+        cursor: "",
+        topic: topic,
+        identity: payload.identity || {},
+        displayName: socialIdentityDisplayName(payload.identity),
+        body: String(payload.body || ""),
+        createdAt: String(payload.created_at || ""),
+        conversationId: String(payload.conversation_id || topic)
+    }
+    root.setSocialCommentState(topic, {
+        rows: root.mergeSocialCommentRows(current.rows || [], [row]),
+        cursor: String(current.cursor || ""),
+        loading: false,
+        error: "",
+        exhausted: current.exhausted === true
+    })
+    return true
+}
+
 function socialCommentRowsFromMessages(root, messages) {
     const rows = []
     const values = Array.isArray(messages) ? messages : []

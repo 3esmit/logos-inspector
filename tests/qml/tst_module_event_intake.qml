@@ -66,12 +66,20 @@ TestCase {
         model.deliveryNodeStatus = ""
         model.socialCommentState = ({})
         model.socialCommentRevision = 0
+        model.blocksPageRows = []
+        model.blocksPageSlotFrom = 0
+        model.blocksPageSlotTo = 0
+        model.blocksLiveSource = ""
+        model.blocksLiveUnknownEvents = 0
+        model.blocksLiveCheckedAt = ""
+        model.blocksLiveError = ""
     }
 
     function test_install_subscribes_module_event_catalog() {
         const count = intake.install()
 
         compare(count, 17)
+        compare(intake.subscriptionCatalog().length, 3)
         compare(fakeHost.subscriptions.length, 17)
         compare(fakeHost.subscriptions[0].moduleName, model.deliveryModule)
         compare(fakeHost.subscriptions[0].eventName, "messageSent")
@@ -109,5 +117,49 @@ TestCase {
         compare(model.deliveryModuleEventRows()[0].label, "messageReceived")
         compare(model.socialComments(topic).length, 1)
         compare(model.socialComments(topic)[0].body, "hello")
+    }
+
+    function test_ingest_blockchain_event_updates_live_rows() {
+        model.blocksPageRows = [
+            { header: { slot: 30, id: "slot-30" }, transactions: [] }
+        ]
+        model.blocksPageSlotFrom = 30
+        model.blocksPageSlotTo = 30
+
+        verify(intake.ingest(model.blockchainModule, "newBlock", [
+            JSON.stringify({ header: { slot: 31, id: "slot-31-event" }, transactions: [] })
+        ]))
+
+        compare(model.blocksPageRows.length, 2)
+        compare(model.blocksPageRows[0].header.id, "slot-31-event")
+        compare(model.blocksLiveSource, "module_event")
+        compare(model.blocksPageSlotTo, 31)
+        verify(model.blockchainModuleEventRevision > 0)
+    }
+
+    function test_ingest_blockchain_wrapped_event_dedupes_live_rows() {
+        model.blocksPageRows = [
+            { header: { slot: 30, id: "slot-30" }, transactions: [] }
+        ]
+        model.blocksPageSlotFrom = 30
+        model.blocksPageSlotTo = 30
+
+        const wrapped = JSON.stringify({
+            newBlock: {
+                block: {
+                    header: { slot: 31, id: "slot-31-wrapper" },
+                    transactions: []
+                }
+            }
+        })
+
+        verify(intake.ingest(model.blockchainModule, "newBlock", [wrapped]))
+        verify(intake.ingest(model.blockchainModule, "newBlock", [wrapped]))
+
+        compare(model.blocksPageRows.length, 2)
+        compare(model.blocksPageRows[0].header.id, "slot-31-wrapper")
+        compare(model.blocksPageRows[1].header.id, "slot-30")
+        compare(model.blocksLiveSource, "module_event")
+        compare(model.blocksPageSlotTo, 31)
     }
 }

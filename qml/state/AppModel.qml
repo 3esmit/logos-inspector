@@ -7,7 +7,6 @@ import "network/AppModelNetwork.js" as AppModelNetwork
 import "metrics/AppModelMetrics.js" as AppModelMetrics
 import "programs/AppModelRegistry.js" as AppModelRegistry
 import "social/AppModelSocial.js" as AppModelSocial
-import "modules/AppModelModuleEvents.js" as AppModelModuleEvents
 import "programs/ProgramDecodeSession.js" as ProgramDecodeSession
 
 QtObject {
@@ -666,6 +665,8 @@ QtObject {
 
     function setSocialCommentState(topic, state) { return AppModelSocial.setSocialCommentState(root, topic, state) }
 
+    function applyIncomingSocialComment(event) { return AppModelSocial.applyIncomingComment(root, event) }
+
     function socialCommentRowsFromMessages(messages) { return AppModelSocial.socialCommentRowsFromMessages(root, messages) }
 
     function mergeSocialCommentRows(existingRows, incomingRows) { return AppModelSocial.mergeSocialCommentRows(root, existingRows, incomingRows) }
@@ -776,10 +777,6 @@ QtObject {
     function clearStorageActiveOperation() {
         storageAppState.clearActiveOperation()
     }
-
-    function moduleEventSubscriptions() { return AppModelModuleEvents.moduleEventSubscriptions(root) }
-
-    function handleModuleEvent(moduleName, eventName, args) { return AppModelModuleEvents.handleModuleEvent(root, moduleName, eventName, args) }
 
     function deliveryModuleEventRows() { return deliveryAppState.moduleEventRows() }
 

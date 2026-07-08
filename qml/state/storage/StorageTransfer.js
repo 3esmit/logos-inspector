@@ -1,11 +1,47 @@
 .import "../../services/BridgeHelpers.js" as BridgeHelpers
 .import "../modules/ModuleEventEnvelope.js" as ModuleEventEnvelope
 
-function applyDispatchAck(root, operation) {
+function applyStatusUpdate(root, operation) {
     const payload = operationPayload(operation && operation.result)
     if (!isModuleDispatchAck(operation, payload)) {
         return false
     }
+    if (terminalizedOperation(root, operation)) {
+        return true
+    }
+    const active = root.activeOperation || {}
+    if (textValue(active.operationId).length && !sameOperationId(active, operation)) {
+        return false
+    }
+    const next = mergeDispatchAck(storageModuleOperation(active, operation), payload)
+    root.updateActiveOperation(next)
+    root.lastOperation = qsTr("Running")
+    return true
+}
+
+function storageModuleOperation(active, operation) {
+    const next = copyOperation(operation)
+    const prior = active || {}
+    const carry = [
+        "label",
+        "cid",
+        "path",
+        "contentLength",
+        "bytesWritten",
+        "externalSessionId",
+        "requestId"
+    ]
+    for (let i = 0; i < carry.length; ++i) {
+        const key = carry[i]
+        if ((next[key] === undefined || next[key] === null || String(next[key] || "").length === 0) && prior[key] !== undefined) {
+            next[key] = prior[key]
+        }
+    }
+    next.backend = next.backend || prior.backend || "module"
+    return next
+}
+
+function mergeDispatchAck(operation, payload) {
     const next = copyOperation(operation)
     next.status = "running"
     next.cancellable = false
@@ -25,9 +61,18 @@ function applyDispatchAck(root, operation) {
     if (path.length) {
         next.path = path
     }
-    root.updateActiveOperation(next)
-    root.lastOperation = qsTr("Running")
-    return true
+    return next
+}
+
+function sameOperationId(left, right) {
+    const leftId = textValue(left && left.operationId)
+    const rightId = textValue(right && right.operationId)
+    return leftId.length > 0 && rightId.length > 0 && leftId === rightId
+}
+
+function terminalizedOperation(root, operation) {
+    const operationId = textValue(operation && operation.operationId)
+    return operationId.length > 0 && operationId === textValue(root.terminalOperationId)
 }
 
 function applyModuleEvent(root, eventName, args) {

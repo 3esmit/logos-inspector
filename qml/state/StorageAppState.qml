@@ -149,10 +149,13 @@ QtObject {
     function startStorageOperation(method, args, label) {
         lastOperation = qsTr("Starting")
         const started = storageOperations.startOperation(method, args, label, function (response) {
-            lastOperation = response && response.ok ? qsTr("Started") : qsTr("Error")
             if (response && response.ok) {
+                if (!StorageTransfer.applyStatusUpdate(root, response.value)) {
+                    lastOperation = qsTr("Started")
+                }
                 currentTab = "operations"
             } else {
+                lastOperation = qsTr("Error")
                 gateway.setResult(String(label || qsTr("Storage operation")), String((response && response.error) || qsTr("Storage operation failed.")), true, null)
             }
         })
@@ -165,7 +168,7 @@ QtObject {
 
     function pollStorageOperation(showResult) {
         return storageOperations.pollOperation(showResult === true, function (response) {
-            if (response && response.ok && StorageTransfer.applyDispatchAck(root, response.value)) {
+            if (response && response.ok && StorageTransfer.applyStatusUpdate(root, response.value)) {
                 return true
             }
             return false
