@@ -14,18 +14,7 @@ use crate::{
 
 use super::super::bridge::to_value;
 
-pub(super) fn try_handle(runtime: &Runtime, method: &str, args: Value) -> Result<Option<Value>> {
-    let value = match method {
-        "storageExists" => storage_exists(runtime, args)?,
-        "storageBackupSettings" => storage_backup_settings(runtime, args)?,
-        "storageRestoreSettings" => storage_restore_settings(runtime, args)?,
-        "socialMessagesFromStore" => social_messages_from_store(args)?,
-        _ => return Ok(None),
-    };
-    Ok(Some(value))
-}
-
-fn storage_exists(runtime: &Runtime, args: Value) -> Result<Value> {
+pub(super) fn storage_exists(runtime: &Runtime, args: Value) -> Result<Value> {
     let args = Args::new(args)?;
     if source_routing::is_storage_module_source(&args) {
         let cid = args.string(2, "CID")?;
@@ -43,7 +32,7 @@ fn storage_exists(runtime: &Runtime, args: Value) -> Result<Value> {
     ))?)
 }
 
-fn storage_backup_settings(runtime: &Runtime, args: Value) -> Result<Value> {
+pub(super) fn storage_backup_settings(runtime: &Runtime, args: Value) -> Result<Value> {
     let args = Args::new(args)?;
     if source_routing::is_storage_module_source(&args) {
         bail!(
@@ -83,7 +72,7 @@ fn storage_backup_settings(runtime: &Runtime, args: Value) -> Result<Value> {
     }))
 }
 
-fn storage_restore_settings(runtime: &Runtime, args: Value) -> Result<Value> {
+pub(super) fn storage_restore_settings(runtime: &Runtime, args: Value) -> Result<Value> {
     let args = Args::new(args)?;
     if source_routing::is_storage_module_source(&args) {
         bail!(
@@ -120,7 +109,7 @@ fn storage_restore_settings(runtime: &Runtime, args: Value) -> Result<Value> {
     }))
 }
 
-fn social_messages_from_store(args: Value) -> Result<Value> {
+pub(super) fn social_messages_from_store(args: Value) -> Result<Value> {
     let args = Args::new(args)?;
     let topic = args.string(0, "social topic")?;
     let value = args

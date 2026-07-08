@@ -4,11 +4,12 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::Result;
 use serde_json::{Value, json};
+
+use crate::time::now_millis;
 
 use super::spec::OperationExclusiveGroup;
 
@@ -80,14 +81,6 @@ impl NodeOperationStatus {
     pub(super) fn is_terminal(self) -> bool {
         matches!(self, Self::Completed | Self::Failed | Self::Canceled)
     }
-}
-
-pub(super) fn now_millis() -> u64 {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or(0);
-    u64::try_from(millis).unwrap_or(u64::MAX)
 }
 
 pub(super) fn update_node_operation(

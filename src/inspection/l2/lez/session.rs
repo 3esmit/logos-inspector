@@ -125,13 +125,11 @@ impl<'a> LezInspectionSession<'a> {
                 sequencer_account(self.sources.sequencer_endpoint, account).await?;
             source_routing::attach_module_account_transactions(&mut account_report);
             if let Some(idl) = explicit_idl {
-                json!(
-                    crate::lez::accounts::account_report_with_optional_idl_decode(
-                        account_report,
-                        idl,
-                        account_type,
-                    )
-                )
+                json!(crate::lez::account_report_with_optional_idl_decode(
+                    account_report,
+                    idl,
+                    account_type,
+                ))
             } else {
                 json!(account_report)
             }

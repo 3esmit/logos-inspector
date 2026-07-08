@@ -1,19 +1,19 @@
-pub(crate) mod accounts;
-pub(crate) mod block;
-pub(crate) mod idl_resolver;
-pub(crate) mod indexer;
-pub(crate) mod program_decode_session;
-pub(crate) mod programs;
-pub(crate) mod sequencer;
-pub(crate) mod session;
-pub(crate) mod transaction_facts;
-pub(crate) mod transactions;
-pub(crate) mod transfers;
+mod accounts;
+mod block;
+mod idl_resolver;
+mod indexer;
+mod program_decode_session;
+mod programs;
+mod sequencer;
+mod session;
+mod transaction_facts;
+mod transactions;
+mod transfers;
 
 #[cfg(test)]
 mod tests;
 
-#[cfg(test)]
+pub(crate) use accounts::account_report_with_optional_idl_decode;
 pub(crate) use accounts::summarize_account_transaction;
 pub use accounts::{
     AccountReport, SequencerAccountIdlReport, account_lookup, account_lookup_with_idl,
@@ -29,7 +29,6 @@ pub use indexer::{
     IndexerBlockReport, IndexerStatusReport, indexer_block_by_hash, indexer_blocks, indexer_health,
     indexer_status, indexer_transfer_recipients,
 };
-#[cfg(test)]
 pub(crate) use indexer::{
     next_indexer_blocks_cursor, summarize_indexer_block, summarize_indexer_status_response,
 };
@@ -55,6 +54,5 @@ pub use transactions::{
     TransactionTraceStep, inspect_transaction_summary, inspect_transaction_summary_with_idl,
     summarize_transaction, trace_transaction_summary, trace_transaction_summary_with_idl,
 };
-#[cfg(test)]
 pub(crate) use transfers::transfer_recipient_summaries_from_blocks;
 pub use transfers::{RecipientTransferSummary, TransferActivityPage, TransferRecipientSummary};

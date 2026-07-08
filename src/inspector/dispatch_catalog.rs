@@ -97,8 +97,9 @@ mod tests {
     #[test]
     fn catalog_owns_runtime_names() -> Result<()> {
         for method in runtime_methods::RUNTIME_METHODS {
-            if lookup(method) != Some(InspectorCommand::Runtime) {
-                bail!("runtime method `{method}` missing from dispatch catalog");
+            let name = method.as_str();
+            if lookup(name) != Some(InspectorCommand::Runtime) {
+                bail!("runtime method `{name}` missing from dispatch catalog");
             }
         }
         Ok(())
@@ -109,7 +110,11 @@ mod tests {
         let mut names = HashSet::new();
         for method in operation_method_names()
             .chain(OPERATION_CONTROL_METHODS.iter().copied())
-            .chain(runtime_methods::RUNTIME_METHODS.iter().copied())
+            .chain(
+                runtime_methods::RUNTIME_METHODS
+                    .iter()
+                    .map(|method| method.as_str()),
+            )
             .chain(["capabilitiesReport", "callModule"])
         {
             if !names.insert(method) {
