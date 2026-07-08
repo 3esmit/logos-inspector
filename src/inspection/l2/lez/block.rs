@@ -55,3 +55,31 @@ fn summarize_block_parts(
         decode_warning,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TESTNET_LEGACY_BLOCK_1234: &str = "0gQAAAAAAADgBr/57T2VP8TvanoE/U28V0Cdzfe66q1YCY203VHHaPZH+D0d+RhX4Qtz8m7atlbEG6J5XguGFqEPUWLQ8+1kb3u3+Z4BAADGt772EW9LB3inITN2BUfOdP8fHmTlcvpFP45NvGI01KYmibPzb/BkLygy6fTsHB4Oc4XoVVMp+k7Rp8xdjpgGAQAAAADiMVjm57Su7ujTA26v18dZ5R2KCU2Ce5JXELoh3v+PRgMAAAAvTEVaL0Nsb2NrUHJvZ3JhbUFjY291bnQvMDAwMDAwMS9MRVovQ2xvY2tQcm9ncmFtQWNjb3VudC8wMDAwMDEwL0xFWi9DbG9ja1Byb2dyYW1BY2NvdW50LzAwMDAwNTAAAAAAAgAAAG97t/meAQAAAAAAAAI=";
+
+    #[test]
+    fn decode_sequencer_block_fixture_without_warning() {
+        let summary = decode_sequencer_block(TESTNET_LEGACY_BLOCK_1234);
+
+        assert!(summary.is_ok(), "{summary:?}");
+        let Ok(summary) = summary else {
+            return;
+        };
+        assert_eq!(summary.block_id, 1234);
+        assert_eq!(summary.tx_count, 1);
+        assert_eq!(summary.transactions.len(), 1);
+        assert_eq!(summary.header_hash.len(), 64);
+        assert_eq!(summary.parent_hash.len(), 64);
+        assert_eq!(
+            summary.transactions.first().map(|tx| tx.kind.as_str()),
+            Some("Public")
+        );
+        assert_eq!(summary.bedrock_status, "Finalized");
+        assert!(summary.decode_warning.is_none());
+    }
+}

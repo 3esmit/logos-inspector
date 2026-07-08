@@ -4,7 +4,8 @@ use std::{
 };
 
 use logos_inspector::bridge::{
-    InspectorBridge, call_inspector_response_json, call_module_response_json,
+    InspectorBridge, bridge_error_response_json, call_inspector_response_json,
+    call_module_response_json,
 };
 
 pub struct LogosInspectorCore {
@@ -56,7 +57,7 @@ pub unsafe extern "C" fn logos_inspector_core_call(
         Ok((core, method, args_json)) => {
             call_inspector_response_json(&core.bridge, &method, &args_json)
         }
-        Err(error) => error_response(error),
+        Err(error) => bridge_error_response_json(error),
     };
     into_c_string(response)
 }
@@ -80,7 +81,7 @@ pub unsafe extern "C" fn logos_inspector_core_call_module(
         Ok((core, module, method, args_json)) => {
             call_module_response_json(&core.bridge, &module, &method, &args_json)
         }
-        Err(error) => error_response(error),
+        Err(error) => bridge_error_response_json(error),
     };
     into_c_string(response)
 }
@@ -156,21 +157,13 @@ fn into_c_string(value: String) -> *mut c_char {
     let sanitized = value.replace('\0', "\\u0000");
     match CString::new(sanitized) {
         Ok(value) => value.into_raw(),
-        Err(_) => match CString::new(error_response("failed to encode bridge response")) {
+        Err(_) => match CString::new(bridge_error_response_json(
+            "failed to encode bridge response",
+        )) {
             Ok(value) => value.into_raw(),
             Err(_) => ptr::null_mut(),
         },
     }
-}
-
-fn error_response(error: impl std::fmt::Display) -> String {
-    serde_json::json!({
-        "ok": false,
-        "value": null,
-        "text": "",
-        "error": error.to_string(),
-    })
-    .to_string()
 }
 
 #[cfg(test)]
@@ -193,6 +186,7 @@ mod tests {
         if value.get("ok").and_then(Value::as_bool) != Some(false) {
             return err("expected error response");
         }
+        expect_error_envelope_shape(&value)?;
         if value
             .get("error")
             .and_then(Value::as_str)
@@ -224,6 +218,7 @@ mod tests {
         if value.get("ok").and_then(Value::as_bool) != Some(false) {
             return err("expected error response");
         }
+        expect_error_envelope_shape(&value)?;
         if value
             .get("error")
             .and_then(Value::as_str)
@@ -241,6 +236,16 @@ mod tests {
 
         if text != "a\\u0000b" {
             return err("expected escaped interior nul");
+        }
+        Ok(())
+    }
+
+    fn expect_error_envelope_shape(value: &Value) -> TestResult {
+        if !value.get("value").is_some_and(Value::is_null) {
+            return err("expected null envelope value");
+        }
+        if value.get("text").and_then(Value::as_str) != Some("") {
+            return err("expected empty envelope text");
         }
         Ok(())
     }

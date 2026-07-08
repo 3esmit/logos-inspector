@@ -3,7 +3,7 @@ use std::{pin::Pin, sync::OnceLock};
 use cxx_qt::Threading;
 use cxx_qt_lib::QString;
 use logos_inspector::bridge::{
-    INSPECTOR_MODULE, InspectorBridge,
+    INSPECTOR_MODULE, InspectorBridge, bridge_error_response_json,
     call_module_response_json as bridge_call_module_response_json,
 };
 
@@ -94,13 +94,7 @@ impl qobject::LogosBridge {
 fn call_module_response_json(module: &str, method: &str, args_json: &str) -> String {
     match bridge() {
         Ok(bridge) => bridge_call_module_response_json(bridge, module, method, args_json),
-        Err(error) => serde_json::json!({
-            "ok": false,
-            "value": null,
-            "text": "",
-            "error": format!("{error:#}"),
-        })
-        .to_string(),
+        Err(error) => bridge_error_response_json(format!("{error:#}")),
     }
 }
 

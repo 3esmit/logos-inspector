@@ -1,3 +1,4 @@
+mod bridge_envelope;
 mod command_runner;
 mod entity_id;
 pub mod idl_decode;
@@ -18,6 +19,7 @@ pub mod inspection {
 mod inspector {
     pub mod bridge;
 
+    mod command_catalog;
     mod dispatch_catalog;
     pub(crate) mod operations;
     mod runtime_methods;
@@ -41,6 +43,7 @@ pub mod blockchain {
 }
 
 pub mod bridge {
+    pub use crate::bridge_envelope::bridge_error_response_json;
     pub use crate::inspector::bridge::*;
 }
 

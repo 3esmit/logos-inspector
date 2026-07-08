@@ -26,6 +26,9 @@ mod storage;
 mod wallet;
 
 use dispatch::execute_node_operation;
+#[cfg(test)]
+pub(crate) use entrypoint::operation_bridge_command_names;
+pub(crate) use entrypoint::{OperationBridgeCommand, operation_bridge_command};
 use entrypoint::{OperationRunner, handle_operation_command};
 use record::{
     NodeOperation, NodeOperationRecord, NodeOperationRegistry, NodeOperationStatus,
@@ -34,10 +37,8 @@ use record::{
 };
 pub(crate) use request::{NodeOperationRequest, node_operation_request_from_value};
 use request::{node_operation_backend, node_operation_context};
-#[cfg(test)]
-pub(crate) use spec::operation_method_names;
 use spec::{OperationExclusiveGroup, normalized_operation_method};
-pub(crate) use spec::{OperationMethod, operation_route};
+pub(crate) use spec::{OperationExecutor, OperationMethod};
 
 #[cfg(test)]
 use record::test_node_operation_record;
@@ -358,17 +359,17 @@ impl OperationRunner for RuntimeOperationRunner<'_> {
 }
 
 impl RuntimeOperationInterface {
-    pub(crate) fn try_bridge_call(
+    pub(crate) fn bridge_call(
         &self,
         runtime: &Runtime,
-        method: &str,
+        command: OperationBridgeCommand,
         args: &Value,
-    ) -> Result<Option<Value>> {
+    ) -> Result<Value> {
         let runner = RuntimeOperationRunner {
             runtime,
             operations: &self.operations,
         };
-        handle_operation_command(&runner, method, args)
+        handle_operation_command(&runner, command, args)
     }
 
     #[cfg(test)]

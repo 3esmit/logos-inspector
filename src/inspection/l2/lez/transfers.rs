@@ -2,10 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
-use super::{
-    indexer::IndexerBlockReport,
-    transaction_facts::{AccountTransactionSummary, summarize_transfer_outputs},
-};
+use super::indexer::{AccountTransactionSummary, IndexerBlockReport, summarize_transfer_outputs};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct TransferRecipientSummary {
@@ -178,5 +175,147 @@ fn max_slot(left: Option<u64>, right: Option<u64>) -> Option<u64> {
         (Some(left), Some(right)) => Some(left.max(right)),
         (Some(value), None) | (None, Some(value)) => Some(value),
         (None, None) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::indexer::summarize_indexer_transaction;
+    use super::*;
+
+    #[test]
+    fn transfer_recipient_summaries_prefer_generic_transfer_outputs() {
+        let raw = serde_json::json!({
+            "Public": {
+                "hash": "tx-a",
+                "message": {
+                    "account_ids": ["account-111111111111"],
+                    "outputs": [
+                        { "recipient": "aa".repeat(32), "amount": 7 },
+                        { "recipient": "aa".repeat(32), "amount": "5" }
+                    ]
+                }
+            }
+        });
+        let block = IndexerBlockReport {
+            block_id: Some(9),
+            header_hash: Some("block-a".to_owned()),
+            parent_hash: None,
+            timestamp: None,
+            bedrock_status: None,
+            tx_count: 1,
+            transactions: vec![summarize_indexer_transaction(&raw, 0)],
+            raw: serde_json::json!({}),
+        };
+
+        let recipients = transfer_recipient_summaries_from_blocks(&[block]);
+
+        assert_eq!(recipients.len(), 1);
+        assert_eq!(
+            recipients
+                .first()
+                .map(|recipient| recipient.recipient.as_str()),
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        assert_eq!(
+            recipients
+                .first()
+                .and_then(|recipient| recipient.received.as_deref()),
+            Some("12")
+        );
+        assert_eq!(recipients.first().map(|recipient| recipient.txs), Some(1));
+        assert_eq!(
+            recipients.first().map(|recipient| recipient.outputs),
+            Some(2)
+        );
+        assert_eq!(
+            recipients.first().map(|recipient| recipient.references),
+            Some(0)
+        );
+        assert_eq!(
+            recipients.first().and_then(|recipient| recipient.last_slot),
+            Some(9)
+        );
+        assert_eq!(
+            recipients
+                .first()
+                .map(|recipient| recipient.transfers.len()),
+            Some(2)
+        );
+        assert_eq!(
+            recipients
+                .first()
+                .and_then(|recipient| recipient.transfers.first())
+                .map(|transfer| transfer.tx_hash.as_str()),
+            Some("tx-a")
+        );
+        assert_eq!(
+            recipients
+                .first()
+                .and_then(|recipient| recipient.transfers.first())
+                .and_then(|transfer| transfer.block_hash.as_deref()),
+            Some("block-a")
+        );
+        assert_eq!(
+            recipients
+                .first()
+                .map(|recipient| recipient.source.as_str()),
+            Some("transfer_outputs")
+        );
+    }
+
+    #[test]
+    fn transfer_recipient_summaries_report_account_refs_not_outputs() {
+        let raw = serde_json::json!({
+            "Public": {
+                "hash": "tx-a",
+                "message": {
+                    "account_ids": ["account-111111111111", "account-222222222222"]
+                }
+            }
+        });
+        let block = IndexerBlockReport {
+            block_id: Some(8),
+            header_hash: None,
+            parent_hash: None,
+            timestamp: None,
+            bedrock_status: None,
+            tx_count: 1,
+            transactions: vec![summarize_indexer_transaction(&raw, 0)],
+            raw: serde_json::json!({}),
+        };
+
+        let recipients = transfer_recipient_summaries_from_blocks(&[block]);
+
+        assert_eq!(recipients.len(), 2);
+        assert!(
+            recipients
+                .iter()
+                .all(|recipient| recipient.received.is_none())
+        );
+        assert!(recipients.iter().all(|recipient| recipient.txs == 1));
+        assert!(recipients.iter().all(|recipient| recipient.outputs == 0));
+        assert!(recipients.iter().all(|recipient| recipient.references == 1));
+        assert!(
+            recipients
+                .iter()
+                .all(|recipient| recipient.transfers.len() == 1)
+        );
+        assert!(recipients.iter().all(|recipient| {
+            recipient
+                .transfers
+                .first()
+                .is_some_and(|transfer| transfer.tx_hash == "tx-a")
+        }));
+        assert!(
+            recipients
+                .iter()
+                .all(|recipient| recipient.last_slot == Some(8))
+        );
+        assert!(
+            recipients
+                .iter()
+                .all(|recipient| recipient.source == "account_refs")
+        );
     }
 }

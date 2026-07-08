@@ -1,7 +1,7 @@
 use anyhow::{Context as _, Result};
 use serde_json::Value;
 
-use super::spec::{OperationMethod, operation_route};
+use super::spec::{OperationMethod, OperationRoute, operation_route};
 use crate::source_routing::Args;
 
 pub(crate) trait OperationRunner {
@@ -13,22 +13,73 @@ pub(crate) trait OperationRunner {
     fn start_operation(&self, method: OperationMethod, args: Value, label: &str) -> Result<Value>;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OperationBridgeCommand {
+    NodeOperationStart,
+    NodeOperationStatus,
+    NodeOperationEvents,
+    NodeOperationCancel,
+    StorageOperationStatus,
+    StorageOperationCancel,
+    Route(OperationRoute),
+}
+
+const OPERATION_CONTROL_METHODS: &[(&str, OperationBridgeCommand)] = &[
+    (
+        "nodeOperationStart",
+        OperationBridgeCommand::NodeOperationStart,
+    ),
+    (
+        "nodeOperationStatus",
+        OperationBridgeCommand::NodeOperationStatus,
+    ),
+    (
+        "nodeOperationEvents",
+        OperationBridgeCommand::NodeOperationEvents,
+    ),
+    (
+        "nodeOperationCancel",
+        OperationBridgeCommand::NodeOperationCancel,
+    ),
+    (
+        "storageOperationStatus",
+        OperationBridgeCommand::StorageOperationStatus,
+    ),
+    (
+        "storageOperationCancel",
+        OperationBridgeCommand::StorageOperationCancel,
+    ),
+];
+
+pub(crate) fn operation_bridge_command(method: &str) -> Option<OperationBridgeCommand> {
+    OPERATION_CONTROL_METHODS
+        .iter()
+        .find(|(name, _)| *name == method)
+        .map(|(_, command)| *command)
+        .or_else(|| operation_route(method).map(OperationBridgeCommand::Route))
+}
+
+#[cfg(test)]
+pub(crate) fn operation_bridge_command_names() -> impl Iterator<Item = &'static str> {
+    OPERATION_CONTROL_METHODS
+        .iter()
+        .map(|(name, _)| *name)
+        .chain(super::spec::operation_method_names())
+}
+
 pub(crate) fn handle_operation_command(
     runner: &impl OperationRunner,
-    method: &str,
+    command: OperationBridgeCommand,
     args: &Value,
-) -> Result<Option<Value>> {
-    let value = match method {
-        "nodeOperationStart" => node_operation_start(runner, args)?,
-        "nodeOperationStatus" => node_operation_status(runner, args)?,
-        "nodeOperationEvents" => node_operation_events(runner, args)?,
-        "nodeOperationCancel" => node_operation_cancel(runner, args)?,
-        "storageOperationStatus" => storage_operation_status(runner, args)?,
-        "storageOperationCancel" => storage_operation_cancel(runner, args)?,
-        _ => {
-            let Some(route) = operation_route(method) else {
-                return Ok(None);
-            };
+) -> Result<Value> {
+    let value = match command {
+        OperationBridgeCommand::NodeOperationStart => node_operation_start(runner, args)?,
+        OperationBridgeCommand::NodeOperationStatus => node_operation_status(runner, args)?,
+        OperationBridgeCommand::NodeOperationEvents => node_operation_events(runner, args)?,
+        OperationBridgeCommand::NodeOperationCancel => node_operation_cancel(runner, args)?,
+        OperationBridgeCommand::StorageOperationStatus => storage_operation_status(runner, args)?,
+        OperationBridgeCommand::StorageOperationCancel => storage_operation_cancel(runner, args)?,
+        OperationBridgeCommand::Route(route) => {
             if route.start_async {
                 runner.start_operation(route.method, args.clone(), route.label)?
             } else {
@@ -36,7 +87,7 @@ pub(crate) fn handle_operation_command(
             }
         }
     };
-    Ok(Some(value))
+    Ok(value)
 }
 
 fn node_operation_start(runner: &impl OperationRunner, args: &Value) -> Result<Value> {
@@ -79,7 +130,7 @@ fn storage_operation_cancel(runner: &impl OperationRunner, args: &Value) -> Resu
 mod tests {
     use std::cell::RefCell;
 
-    use anyhow::{Result, bail};
+    use anyhow::{Context as _, Result, bail};
     use serde_json::json;
 
     use super::*;
@@ -184,9 +235,11 @@ mod tests {
             "args": ["rest", "http://127.0.0.1:8645", true, "/topic", "hello"]
         });
 
-        let value = handle_operation_command(&runner, "nodeOperationStart", &json!([request]))?;
+        let command = operation_bridge_command("nodeOperationStart")
+            .context("node operation start command")?;
+        let value = handle_operation_command(&runner, command, &json!([request]))?;
 
-        if value != Some(json!({ "operationId": "started" })) {
+        if value != json!({ "operationId": "started" }) {
             bail!("unexpected response: {value:?}");
         }
         if runner.calls()
@@ -211,9 +264,11 @@ mod tests {
             "cid-a"
         ]);
 
-        let value = handle_operation_command(&runner, "storageDownloadToUrl", &args)?;
+        let command =
+            operation_bridge_command("storageDownloadToUrl").context("storage download command")?;
+        let value = handle_operation_command(&runner, command, &args)?;
 
-        if value != Some(json!({ "operation": "storageDownloadToUrl" })) {
+        if value != json!({ "operation": "storageDownloadToUrl" }) {
             bail!("unexpected response: {value:?}");
         }
         if runner.calls()
@@ -233,9 +288,11 @@ mod tests {
     fn handle_operation_command_routes_storage_cancel_alias() -> Result<()> {
         let runner = FakeRunner::default();
 
-        let value = handle_operation_command(&runner, "storageOperationCancel", &json!(["op-1"]))?;
+        let command =
+            operation_bridge_command("storageOperationCancel").context("storage cancel command")?;
+        let value = handle_operation_command(&runner, command, &json!(["op-1"]))?;
 
-        if value != Some(json!({ "operationId": "op-1", "status": "canceling" })) {
+        if value != json!({ "operationId": "op-1", "status": "canceling" }) {
             bail!("unexpected response: {value:?}");
         }
         if runner.calls() != vec![RunnerCall::Cancel("op-1".to_owned())] {
@@ -249,9 +306,11 @@ mod tests {
         let runner = FakeRunner::default();
         let args = json!([{ "network_profile": "local" }]);
 
-        let value = handle_operation_command(&runner, "localWalletAccounts", &args)?;
+        let command =
+            operation_bridge_command("localWalletAccounts").context("wallet accounts command")?;
+        let value = handle_operation_command(&runner, command, &args)?;
 
-        if value != Some(json!({ "operation": "localWalletAccounts" })) {
+        if value != json!({ "operation": "localWalletAccounts" }) {
             bail!("unexpected response: {value:?}");
         }
         if runner.calls()
@@ -271,7 +330,7 @@ mod tests {
     fn handle_operation_command_returns_none_for_non_operation_method() -> Result<()> {
         let runner = FakeRunner::default();
 
-        let value = handle_operation_command(&runner, "storageExists", &json!(["rest", "cid"]))?;
+        let value = operation_bridge_command("storageExists");
 
         if value.is_some() {
             bail!("expected non-operation method to be ignored");

@@ -4,11 +4,9 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use super::{
+    indexer::{AccountTransactionSummary, summarize_indexer_transaction, with_account_direction},
     programs::{program_id_base58, program_id_hex},
     sequencer::sequencer_client,
-    transaction_facts::{
-        AccountTransactionSummary, summarize_indexer_transaction, with_account_direction,
-    },
 };
 use crate::{
     ACCOUNT_TRANSACTION_LIMIT, AccountIdlDecodeReport, decode_account_data_hex_with_idl,
@@ -186,6 +184,9 @@ pub(crate) fn summarize_account_transaction(
 
 #[cfg(test)]
 mod tests {
+    use anyhow::{Context as _, Result, bail};
+    use lee::{AccountId, PublicKey};
+
     use super::*;
 
     #[test]
@@ -226,6 +227,110 @@ mod tests {
                 .decode_error
                 .as_deref()
                 .is_some_and(|error| error.contains("failed to decode as `TooLong`"))
+        );
+    }
+
+    #[test]
+    fn summarize_account_transaction_marks_signer_outgoing() -> Result<()> {
+        let key = lee::PrivateKey::try_new([1_u8; 32]).context("valid private key")?;
+        let public_key = PublicKey::new_from_private_key(&key);
+        let account_id = AccountId::from(&public_key).to_string();
+        let raw = serde_json::json!({
+            "Public": {
+                "hash": "abcd",
+                "message": {
+                    "account_ids": [account_id.clone()],
+                    "nonces": [1]
+                },
+                "witness_set": {
+                    "signatures_and_public_keys": [[
+                        "00".repeat(64),
+                        public_key.to_string()
+                    ]]
+                }
+            }
+        });
+
+        let summary = summarize_account_transaction(&raw, 0, &account_id);
+
+        if summary.direction.as_deref() != Some("outgoing") {
+            bail!("expected outgoing direction, got {:?}", summary.direction);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn summarize_account_transaction_marks_touched_non_signer_incoming() -> Result<()> {
+        let key = lee::PrivateKey::try_new([1_u8; 32]).context("valid private key")?;
+        let public_key = PublicKey::new_from_private_key(&key);
+        let account_id = AccountId::new([7_u8; 32]).to_string();
+        let raw = serde_json::json!({
+            "Public": {
+                "hash": "abcd",
+                "message": {
+                    "account_ids": [account_id.clone()]
+                },
+                "witness_set": {
+                    "signatures_and_public_keys": [[
+                        "00".repeat(64),
+                        public_key.to_string()
+                    ]]
+                }
+            }
+        });
+
+        let summary = summarize_account_transaction(&raw, 0, &account_id);
+
+        if summary.direction.as_deref() != Some("incoming") {
+            bail!("expected incoming direction, got {:?}", summary.direction);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn summarize_account_transaction_marks_compact_account_incoming() -> Result<()> {
+        let account_id = AccountId::new([7_u8; 32]).to_string();
+        let raw = serde_json::json!({
+            "type": "Public",
+            "hash": "abcd",
+            "accounts": [
+                { "account_id": account_id.clone(), "nonce": "4" }
+            ]
+        });
+
+        let summary = summarize_account_transaction(&raw, 0, &account_id);
+
+        if summary.direction.as_deref() != Some("incoming") {
+            bail!("expected incoming direction, got {:?}", summary.direction);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn account_report_serializes_loaded_empty_related_transactions() {
+        let report = AccountReport {
+            account_id: "acct-a".to_owned(),
+            account_id_base58: "acct-a".to_owned(),
+            account_id_hex: "00".to_owned(),
+            account: serde_json::json!({}),
+            balance: "0".to_owned(),
+            nonce: "0".to_owned(),
+            owner_base58: "owner".to_owned(),
+            owner_hex: "00".to_owned(),
+            data_hex: String::new(),
+            related_transactions: Some(Vec::new()),
+            related_transactions_error: None,
+        };
+
+        let value = serde_json::to_value(report);
+
+        assert!(value.is_ok(), "{value:?}");
+        let Ok(value) = value else {
+            return;
+        };
+        assert_eq!(
+            value.get("related_transactions"),
+            Some(&serde_json::json!([]))
         );
     }
 }

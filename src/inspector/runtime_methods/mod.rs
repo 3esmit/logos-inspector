@@ -139,14 +139,7 @@ impl RuntimeMethod {
     }
 }
 
-pub(crate) fn is_runtime_method(method: &str) -> bool {
-    RuntimeMethod::from_str(method).is_some()
-}
-
-pub(super) fn try_handle(runtime: &Runtime, method: &str, args: Value) -> Result<Option<Value>> {
-    let Some(method) = RuntimeMethod::from_str(method) else {
-        return Ok(None);
-    };
+pub(super) fn handle(runtime: &Runtime, method: RuntimeMethod, args: Value) -> Result<Value> {
     let value = match method {
         RuntimeMethod::DecodeTransactionSummary => decode::decode_transaction_summary(args)?,
         RuntimeMethod::DecodeAccount => decode::decode_account(args)?,
@@ -191,5 +184,5 @@ pub(super) fn try_handle(runtime: &Runtime, method: &str, args: Value) -> Result
         RuntimeMethod::StorageRestoreSettings => storage::storage_restore_settings(runtime, args)?,
         RuntimeMethod::SocialMessagesFromStore => storage::social_messages_from_store(args)?,
     };
-    Ok(Some(value))
+    Ok(value)
 }

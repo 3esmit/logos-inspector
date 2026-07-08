@@ -5,19 +5,22 @@ use crate::source_routing::{
     Args, SourceArgsNormalization, normalized_source_args, storage_rest_source,
 };
 
-use super::spec::{
-    OperationDomain, OperationExclusiveGroup, OperationMethod, operation_uses_mutating_flag,
-};
+use super::spec::{OperationDomain, OperationExclusiveGroup, OperationExecutor, OperationMethod};
+
+#[derive(Debug, Clone, Default)]
+pub(super) struct OperationSourceSelection {
+    source_mode: String,
+    endpoint: String,
+    module: String,
+    mutating_enabled: bool,
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct NodeOperationRequest {
     pub(super) domain: String,
     pub(super) method: OperationMethod,
-    pub(super) source_mode: String,
-    pub(super) endpoint: String,
-    pub(super) module: String,
+    pub(super) source: OperationSourceSelection,
     pub(super) args: Value,
-    pub(super) mutating_enabled: bool,
     pub(super) label: String,
 }
 
@@ -26,21 +29,18 @@ impl NodeOperationRequest {
         Self {
             domain: method.domain().as_str().to_owned(),
             method,
-            source_mode: String::new(),
-            endpoint: String::new(),
-            module: String::new(),
+            source: OperationSourceSelection::default(),
             args,
-            mutating_enabled: false,
             label: label.to_owned(),
         }
     }
 
-    pub(crate) fn method(&self) -> OperationMethod {
-        self.method
-    }
-
     pub(crate) fn method_name(&self) -> &'static str {
         self.method.as_str()
+    }
+
+    pub(crate) fn executor(&self) -> OperationExecutor {
+        self.method.executor()
     }
 
     pub(crate) fn label(&self) -> &str {
@@ -77,27 +77,17 @@ pub(crate) fn node_operation_request_from_value(value: Value) -> Result<NodeOper
         .cloned()
         .unwrap_or_else(|| Value::Array(Vec::new()));
     let label = object_string(object, "label").unwrap_or_else(|| method.label().to_owned());
+    let source = OperationSourceSelection::from_object(object);
     let mut request = NodeOperationRequest {
         domain,
         method,
-        source_mode: object_string(object, "sourceMode").unwrap_or_default(),
-        endpoint: object_string(object, "endpoint").unwrap_or_default(),
-        module: object_string(object, "module").unwrap_or_default(),
+        source,
         args,
-        mutating_enabled: object
-            .get("mutatingEnabled")
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
         label,
     };
-    request.args = normalized_source_args(SourceArgsNormalization {
-        domain: &request.domain,
-        source_mode: &request.source_mode,
-        endpoint: &request.endpoint,
-        args: &request.args,
-        inserts_mutating_flag: operation_uses_mutating_flag(request.method_name()),
-        mutating_enabled: request.mutating_enabled,
-    });
+    request.args = request
+        .source
+        .normalized_args(&request.domain, request.method, &request.args);
     Ok(request)
 }
 
@@ -110,38 +100,69 @@ fn object_string(object: &serde_json::Map<String, Value>, key: &str) -> Option<S
         .map(ToOwned::to_owned)
 }
 
+impl OperationSourceSelection {
+    fn from_object(object: &serde_json::Map<String, Value>) -> Self {
+        Self {
+            source_mode: object_string(object, "sourceMode").unwrap_or_default(),
+            endpoint: object_string(object, "endpoint").unwrap_or_default(),
+            module: object_string(object, "module").unwrap_or_default(),
+            mutating_enabled: object
+                .get("mutatingEnabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        }
+    }
+
+    fn normalized_args(&self, domain: &str, method: OperationMethod, args: &Value) -> Value {
+        normalized_source_args(SourceArgsNormalization {
+            domain,
+            source_mode: &self.source_mode,
+            endpoint: &self.endpoint,
+            args,
+            inserts_mutating_flag: method.uses_mutating_flag(),
+            mutating_enabled: self.mutating_enabled,
+        })
+    }
+
+    fn backend_from_args(&self, args: &Value) -> String {
+        if !self.source_mode.is_empty() {
+            return self.source_mode.clone();
+        }
+        if !self.module.is_empty() {
+            return self.module.clone();
+        }
+        if !self.endpoint.is_empty() {
+            return self.endpoint.clone();
+        }
+        args.as_array()
+            .and_then(|values| values.first())
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("direct")
+            .to_owned()
+    }
+
+    fn add_context_fields(&self, context: &mut serde_json::Map<String, Value>) {
+        if !self.endpoint.is_empty() {
+            context.insert("endpoint".to_owned(), json!(self.endpoint));
+        }
+        if !self.source_mode.is_empty() {
+            context.insert("source".to_owned(), json!(self.source_mode));
+        }
+        if self.mutating_enabled {
+            context.insert("mutatingEnabled".to_owned(), json!(true));
+        }
+    }
+}
+
 pub(super) fn node_operation_backend(request: &NodeOperationRequest) -> String {
-    if !request.source_mode.is_empty() {
-        return request.source_mode.clone();
-    }
-    if !request.module.is_empty() {
-        return request.module.clone();
-    }
-    if !request.endpoint.is_empty() {
-        return request.endpoint.clone();
-    }
-    request
-        .args
-        .as_array()
-        .and_then(|values| values.first())
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("direct")
-        .to_owned()
+    request.source.backend_from_args(&request.args)
 }
 
 pub(super) fn node_operation_context(request: &NodeOperationRequest) -> Value {
     let mut context = serde_json::Map::new();
-    if !request.endpoint.is_empty() {
-        context.insert("endpoint".to_owned(), json!(request.endpoint));
-    }
-    if !request.source_mode.is_empty() {
-        context.insert("source".to_owned(), json!(request.source_mode));
-    }
-    if request.mutating_enabled {
-        context.insert("mutatingEnabled".to_owned(), json!(true));
-    }
+    request.source.add_context_fields(&mut context);
     if request.domain == OperationDomain::Storage.as_str()
         && let Ok(args) = Args::new(request.args.clone())
         && let Ok(source) = storage_rest_source(&args)

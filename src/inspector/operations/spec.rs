@@ -60,6 +60,51 @@ pub(crate) enum OperationExclusiveGroup {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OperationExecutor {
+    StorageManifests,
+    StorageDownloadManifest,
+    StorageFetch,
+    StorageUploadUrl,
+    StorageDownloadToUrl,
+    StorageRemove,
+    DeliverySubscribe,
+    DeliveryUnsubscribe,
+    DeliverySend,
+    DeliveryCreateNode,
+    DeliveryStart,
+    DeliveryStop,
+    DeliveryStoreQuery,
+    LocalNodesAction,
+    LocalWalletCreateAccount,
+    LocalWalletSendTransaction,
+    LocalWalletInstructionSubmit,
+    LocalWalletCommand,
+    LocalWalletDeployProgram,
+    LocalWalletSyncPrivate,
+    LocalWalletAccounts,
+    BlockchainNode,
+    BlockchainBlocks,
+    BlockchainLiveBlocks,
+    BlockchainBlock,
+    BlockchainTransaction,
+    Head,
+    Programs,
+    Block,
+    SequencerBlocks,
+    Transaction,
+    InspectTransaction,
+    TraceTransaction,
+    Account,
+    ResolveLezTarget,
+    IndexerHealth,
+    IndexerStatus,
+    IndexerFinalizedHead,
+    IndexerBlocks,
+    IndexerBlockByHash,
+    IndexerTransferRecipients,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct OperationRoute {
     pub(crate) domain: OperationDomain,
     pub(crate) method: OperationMethod,
@@ -71,6 +116,7 @@ pub(crate) struct OperationRoute {
 struct OperationCatalogEntry {
     method: OperationMethod,
     name: &'static str,
+    executor: OperationExecutor,
     domain: OperationDomain,
     label: &'static str,
     uses_mutating_flag: bool,
@@ -83,6 +129,7 @@ macro_rules! operation_entry {
         OperationCatalogEntry {
             method: OperationMethod::$method,
             name: $name,
+            executor: OperationExecutor::$method,
             domain: OperationDomain::$domain,
             label: $label,
             uses_mutating_flag: false,
@@ -94,6 +141,7 @@ macro_rules! operation_entry {
         OperationCatalogEntry {
             method: OperationMethod::$method,
             name: $name,
+            executor: OperationExecutor::$method,
             domain: OperationDomain::$domain,
             label: $label,
             uses_mutating_flag: true,
@@ -105,6 +153,7 @@ macro_rules! operation_entry {
         OperationCatalogEntry {
             method: OperationMethod::$method,
             name: $name,
+            executor: OperationExecutor::$method,
             domain: OperationDomain::$domain,
             label: $label,
             uses_mutating_flag: true,
@@ -357,6 +406,7 @@ fn operation_catalog_entry(method: OperationMethod) -> OperationCatalogEntry {
     OperationCatalogEntry {
         method,
         name: "operation",
+        executor: OperationExecutor::Head,
         domain: OperationDomain::Execution,
         label: "Operation",
         uses_mutating_flag: false,
@@ -399,7 +449,11 @@ impl OperationMethod {
         operation_catalog_entry(self).label
     }
 
-    fn uses_mutating_flag(self) -> bool {
+    pub(crate) fn executor(self) -> OperationExecutor {
+        operation_catalog_entry(self).executor
+    }
+
+    pub(crate) fn uses_mutating_flag(self) -> bool {
         operation_catalog_entry(self).uses_mutating_flag
     }
 
@@ -426,10 +480,6 @@ pub(crate) fn operation_method_names() -> impl Iterator<Item = &'static str> {
         .iter()
         .map(|entry| entry.name)
         .chain(std::iter::once(STORAGE_DOWNLOAD_START_ALIAS))
-}
-
-pub(crate) fn operation_uses_mutating_flag(method: &str) -> bool {
-    OperationMethod::from_str(method).is_some_and(OperationMethod::uses_mutating_flag)
 }
 
 pub(crate) fn normalized_operation_method(method: &str) -> String {
@@ -510,10 +560,14 @@ mod tests {
 
     #[test]
     fn operation_flags_are_owned_by_method_catalog() -> Result<()> {
-        if !operation_uses_mutating_flag("deliverySend") {
+        let delivery_send =
+            OperationMethod::from_str("deliverySend").context("deliverySend should exist")?;
+        if !delivery_send.uses_mutating_flag() {
             bail!("deliverySend should require mutating flag");
         }
-        if operation_uses_mutating_flag("indexerStatus") {
+        let indexer_status =
+            OperationMethod::from_str("indexerStatus").context("indexerStatus should exist")?;
+        if indexer_status.uses_mutating_flag() {
             bail!("indexerStatus should not require mutating flag");
         }
         let storage_download = OperationMethod::from_str("storageDownloadToUrl")
@@ -531,6 +585,26 @@ mod tests {
         }
         if storage_upload.exclusive_group().is_some() {
             bail!("storageUploadUrl should not own an exclusive group");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn operation_executors_are_owned_by_method_catalog() -> Result<()> {
+        let delivery_subscribe = OperationMethod::from_str("deliverySubscribe")
+            .context("deliverySubscribe should exist")?;
+        if delivery_subscribe.executor() != OperationExecutor::DeliverySubscribe {
+            bail!("deliverySubscribe has unexpected executor");
+        }
+        let blockchain_blocks = OperationMethod::from_str("blockchainBlocks")
+            .context("blockchainBlocks should exist")?;
+        if blockchain_blocks.executor() != OperationExecutor::BlockchainBlocks {
+            bail!("blockchainBlocks has unexpected executor");
+        }
+        let storage_download = OperationMethod::from_str("storageDownloadToUrl")
+            .context("storageDownloadToUrl should exist")?;
+        if storage_download.executor() != OperationExecutor::StorageDownloadToUrl {
+            bail!("storageDownloadToUrl has unexpected executor");
         }
         Ok(())
     }
