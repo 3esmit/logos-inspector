@@ -38,17 +38,6 @@ function loadSocialComments(root, topic, reset, pageSize, expectedAccountId) {
         if (!key.length) {
             return false
         }
-        if (!root.socialStoreAvailable()) {
-            setSocialCommentState(key, {
-                rows: reset ? [] : root.socialComments(key),
-                cursor: "",
-                loading: false,
-                error: qsTr("Delivery Store requires Direct Waku REST source."),
-                exhausted: true
-            })
-            return false
-        }
-
         const current = root.socialCommentStateForTopic(key)
         const cursor = reset === true ? "" : String(current.cursor || "")
         setSocialCommentState(key, {
@@ -59,21 +48,14 @@ function loadSocialComments(root, topic, reset, pageSize, expectedAccountId) {
             exhausted: false
         })
 
-        const response = root.requestModule(
-            inspectorModule,
-            "deliveryStoreQuery",
-            root.socialDeliveryArgs(["", key, "", cursor, root.socialPageSize(pageSize), true, true]),
-            qsTr("Comments"),
-            false,
-            false
-        )
+        const response = querySocialStore(root, key, cursor, pageSize, qsTr("Comments"))
         if (!response.ok) {
             setSocialCommentState(key, {
                 rows: reset === true ? [] : root.socialComments(key),
                 cursor: cursor,
                 loading: false,
                 error: response.error || qsTr("Comment query failed."),
-                exhausted: false
+                exhausted: response.storeUnavailable === true
             })
             return false
         }
@@ -153,6 +135,34 @@ function applyIncomingComment(root, event) {
         exhausted: current.exhausted === true
     })
     return true
+}
+
+function applyIncomingDeliveryMessage(root, message) {
+    const incoming = message || {}
+    const payload = socialMessagePayload(incoming.payload)
+    if (!payload || typeof payload !== "object" || String(payload.kind || "") !== "comment") {
+        return false
+    }
+    return applyIncomingComment(root, {
+        topic: String(incoming.topic || payload.conversation_id || ""),
+        messageHash: String(incoming.messageHash || incoming.message_hash || incoming.hash || ""),
+        payload: payload
+    })
+}
+
+function socialMessagePayload(value) {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+        return value
+    }
+    const text = String(value || "").trim()
+    if (!text.length) {
+        return null
+    }
+    try {
+        return JSON.parse(text)
+    } catch (error) {
+        return null
+    }
 }
 
 function socialCommentRowFromIncomingEvent(root, incoming) {
@@ -344,6 +354,24 @@ function socialMessageSourceAvailable(root) {
 
 function socialStoreAvailable(root) {
     return String(root.effectiveMessagingSourceMode(root.messagingSourceMode) || "").toLowerCase() === "rest"
+}
+
+function querySocialStore(root, topic, cursor, pageSize, label) {
+    if (!root.socialStoreAvailable()) {
+        return {
+            ok: false,
+            error: qsTr("Delivery Store requires Direct Waku REST source."),
+            storeUnavailable: true
+        }
+    }
+    return root.requestModule(
+        root.inspectorModule,
+        "deliveryStoreQuery",
+        root.socialDeliveryArgs(["", String(topic || ""), "", String(cursor || ""), root.socialPageSize(pageSize), true, true]),
+        String(label || qsTr("Delivery Store")),
+        false,
+        false
+    )
 }
 
 function socialCommentSendAvailable(root, topic) {
@@ -559,17 +587,10 @@ function refreshSharedIdlsForAccount(root, accountId, dataHex, ownerProgramId) {
         const account = String(accountId || "").trim()
         const data = String(dataHex || "").trim()
         const topic = root.socialLezAccountIdlTopic(account)
-        if (policy === "disabled" || !topic.length || !data.length || !root.socialStoreAvailable()) {
+        if (policy === "disabled" || !topic.length || !data.length) {
             return false
         }
-        const response = root.requestModule(
-            inspectorModule,
-            "deliveryStoreQuery",
-            root.socialDeliveryArgs(["", topic, "", "", root.socialPageSize(20), true, true]),
-            qsTr("Shared IDLs"),
-            false,
-            false
-        )
+        const response = querySocialStore(root, topic, "", 20, qsTr("Shared IDLs"))
         if (!response.ok) {
             return false
         }

@@ -163,7 +163,7 @@ QtObject {
         const effect = {
             changed: true,
             refreshMessagingConnection: false,
-            incomingComment: null
+            deliveryMessage: null
         }
         if (name === "connectionStateChanged") {
             deliveryConnectionStatus = record.statusValue
@@ -172,7 +172,7 @@ QtObject {
             deliveryNodeStatus = record.statusValue
             effect.refreshMessagingConnection = true
         } else if (name === "messageReceived") {
-            effect.incomingComment = incomingCommentEffect(record)
+            effect.deliveryMessage = deliveryMessageEffect(record)
         }
         return effect
     }
@@ -239,18 +239,11 @@ QtObject {
         return ModuleEventUtils.compactParts([requestId, ModuleEventUtils.shortText(hash, 20), ModuleEventUtils.shortText(topic, 44)]).join(" / ")
     }
 
-    function incomingCommentEffect(record) {
-        const payload = ModuleEventUtils.parsedPayload(record.payload)
-        if (!payload || typeof payload !== "object" || String(payload.kind || "") !== "comment") {
-            return null
-        }
-        const topic = String(record.contentTopic || payload.conversation_id || "")
-        if (!topic.length) {
-            return null
-        }
+    function deliveryMessageEffect(record) {
+        const topic = String(record.contentTopic || "")
         return {
             topic: topic,
-            payload: payload,
+            payload: record.payload,
             messageHash: String(record.messageHash || "")
         }
     }

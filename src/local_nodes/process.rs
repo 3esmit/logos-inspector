@@ -1,4 +1,8 @@
-use std::{env, path::Path, process::Command};
+use std::{
+    env,
+    path::Path,
+    process::{Command, Stdio},
+};
 
 use anyhow::{Context as _, Result, bail};
 
@@ -36,4 +40,20 @@ pub(super) fn stop_process(pid: u32) -> Result<()> {
         bail!("process {pid} stop exited with {status}");
     }
     Ok(())
+}
+
+pub(super) fn spawn_detached(mut command: Command, label: &str) -> Result<u32> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        command.process_group(0);
+    }
+    let child = command
+        .spawn()
+        .with_context(|| format!("failed to start {label}"))?;
+    Ok(child.id())
 }

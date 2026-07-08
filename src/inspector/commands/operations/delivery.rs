@@ -1,4 +1,4 @@
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use reqwest::Method;
 use serde_json::{Value, json};
@@ -57,6 +57,25 @@ pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
         "Delivery store query",
     ),
 ];
+
+pub(super) async fn execute(request: &RuntimeOperationRequest) -> Result<Value> {
+    match request.method() {
+        OperationMethod::DeliverySubscribe => {
+            execute_delivery_subscription(request, Method::POST, "subscribe").await
+        }
+        OperationMethod::DeliveryUnsubscribe => {
+            execute_delivery_subscription(request, Method::DELETE, "unsubscribe").await
+        }
+        OperationMethod::DeliverySend => execute_delivery_send(request).await,
+        OperationMethod::DeliveryCreateNode => {
+            execute_delivery_module_action(request, "createNode").await
+        }
+        OperationMethod::DeliveryStart => execute_delivery_module_action(request, "start").await,
+        OperationMethod::DeliveryStop => execute_delivery_module_action(request, "stop").await,
+        OperationMethod::DeliveryStoreQuery => execute_delivery_store_query(request).await,
+        _ => bail!("`{}` is not a Delivery operation", request.method_name()),
+    }
+}
 
 pub(super) async fn execute_delivery_subscription(
     request: &RuntimeOperationRequest,

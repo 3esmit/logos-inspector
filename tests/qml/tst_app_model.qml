@@ -2,8 +2,8 @@ import QtQuick
 import QtTest
 import "../../qml/services"
 import "../../qml/state"
-import "../../qml/state/network/SourcePolicyCatalog.js" as SourcePolicyCatalog
-import "../../qml/state/network/SourceDiagnosticsProjection.js" as SourceDiagnostics
+import "../../qml/state/source_routing/SourcePolicyCatalog.js" as SourcePolicyCatalog
+import "../../qml/state/source_routing/SourceDiagnosticsProjection.js" as SourceDiagnostics
 import "../../qml/state/status/StatusFactsProjection.js" as StatusFactsProjection
 import "fixtures"
 
@@ -189,6 +189,8 @@ TestCase {
         model.sharedIdlRevision = 0
         model.accountIdlSelections = ({})
         model.accountIdlSelectionRevision = 0
+        model.idlInstructionPreviewValue = null
+        model.idlInstructionError = ""
         model.walletPublicKeyProbe = ""
         model.bedrockWalletModuleError = ""
         model.walletBinary = ""
@@ -1540,7 +1542,7 @@ TestCase {
         compare(fakeHost.lastMethod, "saveIdlState")
     }
 
-    function test_deploy_program_binary_uses_wallet_confirmation_and_logs_operation() {
+    function test_deploy_program_binary_uses_wallet_confirmation_and_logs_execution_operation() {
         model.walletStateLoaded = true
         model.walletBinary = "/usr/bin/lee-wallet"
         model.walletHome = "/tmp/wallet-home"
@@ -1573,12 +1575,82 @@ TestCase {
         compare(deployCalls[0].args[0].wallet_home, "/tmp/wallet-home")
         compare(deployCalls[0].args[1], "/tmp/program.bin")
         compare(deployCalls[0].args[2], "confirm-deploy-program")
-        compare(model.localWalletOperations.length, 1)
-        compare(model.localWalletOperations[0].label, "Deploy program")
-        compare(model.localWalletOperations[0].status, "submitted")
-        const history = model.runtimeOperationHistoryRows("wallet")
+        compare(model.localWalletOperations.length, 0)
+        const history = model.runtimeOperationHistoryRows("execution")
         compare(history.length, 1)
-        compare(history[0].label, "Deploy program")
+        compare(history[0].label, "Program deploy")
+        compare(history[0].status, "completed")
+    }
+
+    function test_preview_idl_instruction_uses_execution_adapter() {
+        fakeHost.responses = {
+            localWalletInstructionPreview: {
+                ok: true,
+                value: {
+                    mode: "preview",
+                    instruction: "transfer",
+                    instruction_words: ["0x01", "0x02"]
+                },
+                text: "OK",
+                error: ""
+            }
+        }
+
+        model.previewIdlInstruction({ instruction: "transfer" })
+
+        tryVerify(function () {
+            return fakeHost.calls.some(function (call) {
+                return call.method === "localWalletInstructionPreview"
+            })
+        })
+        const previewCalls = fakeHost.calls.filter(function (call) {
+            return call.method === "localWalletInstructionPreview"
+        })
+        compare(previewCalls.length, 1)
+        compare(previewCalls[0].args[0].instruction, "transfer")
+        compare(model.idlInstructionPreviewValue.mode, "preview")
+        compare(model.idlInstructionError, "")
+        compare(model.localWalletOperations.length, 0)
+    }
+
+    function test_send_idl_instruction_uses_execution_confirmation_and_logs_operation() {
+        model.walletStateLoaded = true
+        model.walletBinary = "/usr/bin/lee-wallet"
+        model.walletHome = "/tmp/wallet-home"
+        fakeHost.responses = {
+            localWalletInstructionSubmit: {
+                ok: true,
+                value: {
+                    mode: "tx",
+                    instruction: "transfer",
+                    tx_hash: "0xabcdef123456"
+                },
+                text: "OK",
+                error: ""
+            }
+        }
+
+        model.sendIdlInstruction({ instruction: "transfer" })
+
+        tryVerify(function () {
+            return fakeHost.calls.some(function (call) {
+                return call.method === "localWalletInstructionSubmit"
+            })
+        })
+        const instructionCalls = fakeHost.calls.filter(function (call) {
+            return call.method === "localWalletInstructionSubmit"
+        })
+        compare(instructionCalls.length, 1)
+        compare(instructionCalls[0].args[0].wallet_binary, "/usr/bin/lee-wallet")
+        compare(instructionCalls[0].args[0].wallet_home, "/tmp/wallet-home")
+        compare(instructionCalls[0].args[1].instruction, "transfer")
+        compare(instructionCalls[0].args[2], "confirm-idl-instruction")
+        compare(model.localWalletOperations.length, 0)
+        compare(model.idlInstructionPreviewValue.mode, "tx")
+        compare(model.idlInstructionError, "")
+        const history = model.runtimeOperationHistoryRows("execution")
+        compare(history.length, 1)
+        compare(history[0].label, "IDL instruction")
         compare(history[0].status, "completed")
     }
 

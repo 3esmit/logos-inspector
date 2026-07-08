@@ -1,7 +1,7 @@
 import QtQuick
-import "../network/SourcePolicyCatalog.js" as SourcePolicyCatalog
-import "../network/SourcePolicyProjection.js" as SourcePolicyProjection
-import "../network/SourceRoutingUi.js" as SourceRoutingUi
+import "../source_routing/SourcePolicyCatalog.js" as SourcePolicyCatalog
+import "../source_routing/SourcePolicyProjection.js" as SourcePolicyProjection
+import "../source_routing/SourceRoutingUi.js" as SourceRoutingUi
 
 QtObject {
     id: root

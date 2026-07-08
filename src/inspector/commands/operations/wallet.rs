@@ -1,15 +1,16 @@
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use serde_json::Value;
 
 use crate::{
     local_wallet_accounts, local_wallet_command, local_wallet_create_account,
-    local_wallet_deploy_program, local_wallet_instruction_submit, local_wallet_send_transaction,
-    local_wallet_sync_private, source_routing::Args, support::confirmation::ConfirmationPolicy,
+    local_wallet_send_transaction, local_wallet_sync_private, source_routing::Args,
+    support::confirmation::ConfirmationPolicy,
 };
 
 use super::super::value::{blocking_value, to_value};
 use super::RuntimeOperationRequest;
 use super::spec::{OperationDefinition, OperationDomain, OperationMethod};
+use super::wallet_args::{confirmed_wallet_args, wallet_profile_arg};
 
 pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
     OperationDefinition::new(
@@ -25,22 +26,10 @@ pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
         "Wallet send",
     ),
     OperationDefinition::new(
-        OperationMethod::LocalWalletInstructionSubmit,
-        "localWalletInstructionSubmit",
-        OperationDomain::Wallet,
-        "IDL instruction",
-    ),
-    OperationDefinition::new(
         OperationMethod::LocalWalletCommand,
         "localWalletCommand",
         OperationDomain::Wallet,
         "Wallet command",
-    ),
-    OperationDefinition::new(
-        OperationMethod::LocalWalletDeployProgram,
-        "localWalletDeployProgram",
-        OperationDomain::Wallet,
-        "Program deploy",
     ),
     OperationDefinition::new(
         OperationMethod::LocalWalletSyncPrivate,
@@ -55,6 +44,22 @@ pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
         "Wallet accounts",
     ),
 ];
+
+pub(super) async fn execute(request: &RuntimeOperationRequest) -> Result<Value> {
+    match request.method() {
+        OperationMethod::LocalWalletCreateAccount => execute_wallet_create_account(request).await,
+        OperationMethod::LocalWalletSendTransaction => {
+            execute_wallet_send_transaction(request).await
+        }
+        OperationMethod::LocalWalletCommand => execute_wallet_command(request).await,
+        OperationMethod::LocalWalletSyncPrivate => execute_wallet_sync_private(request).await,
+        OperationMethod::LocalWalletAccounts => execute_wallet_accounts(request).await,
+        _ => bail!(
+            "`{}` is not a Wallet Operations operation",
+            request.method_name()
+        ),
+    }
+}
 
 pub(super) async fn execute_wallet_create_account(
     request: &RuntimeOperationRequest,
@@ -88,21 +93,6 @@ pub(super) async fn execute_wallet_send_transaction(
     .await
 }
 
-pub(super) async fn execute_wallet_instruction_submit(
-    request: &RuntimeOperationRequest,
-) -> Result<Value> {
-    let args = confirmed_wallet_args(request, 2, ConfirmationPolicy::WalletInstructionSubmit)?;
-    to_value(
-        local_wallet_instruction_submit(
-            wallet_profile_arg(&args)?,
-            args.value(1)
-                .cloned()
-                .context("IDL instruction request is required")?,
-        )
-        .await?,
-    )
-}
-
 pub(super) async fn execute_wallet_command(request: &RuntimeOperationRequest) -> Result<Value> {
     let args = confirmed_wallet_args(request, 2, ConfirmationPolicy::WalletCommand)?;
     let command_args = serde_json::from_value::<Vec<String>>(
@@ -114,18 +104,6 @@ pub(super) async fn execute_wallet_command(request: &RuntimeOperationRequest) ->
     let profile = wallet_profile_arg(&args)?;
     blocking_value("wallet command", move || {
         to_value(local_wallet_command(profile, command_args)?)
-    })
-    .await
-}
-
-pub(super) async fn execute_wallet_deploy_program(
-    request: &RuntimeOperationRequest,
-) -> Result<Value> {
-    let args = confirmed_wallet_args(request, 2, ConfirmationPolicy::WalletDeployProgram)?;
-    let profile = wallet_profile_arg(&args)?;
-    let program_path = args.string(1, "program path")?.to_owned();
-    blocking_value("program deployment", move || {
-        to_value(local_wallet_deploy_program(profile, &program_path)?)
     })
     .await
 }
@@ -148,20 +126,4 @@ pub(super) async fn execute_wallet_accounts(request: &RuntimeOperationRequest) -
         to_value(local_wallet_accounts(profile)?)
     })
     .await
-}
-
-fn confirmed_wallet_args(
-    request: &RuntimeOperationRequest,
-    confirmation_index: usize,
-    policy: ConfirmationPolicy,
-) -> Result<Args> {
-    let args = Args::new(request.args.clone())?;
-    policy.require(args.optional_string(confirmation_index))?;
-    Ok(args)
-}
-
-fn wallet_profile_arg(args: &Args) -> Result<Value> {
-    args.value(0)
-        .cloned()
-        .context("local wallet profile is required")
 }

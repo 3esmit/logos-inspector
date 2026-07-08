@@ -177,28 +177,6 @@ WalletState {
         })
     }
 
-    function deployProgram(programPath) {
-        const path = String(programPath || "").trim()
-        if (busyGuard(qsTr("Program deploy"))) {
-            return null
-        }
-        if (!path.length) {
-            gateway.setResult(qsTr("Program deploy"), qsTr("Program binary path is required."), true, null)
-            return null
-        }
-        if (!profileGuard(qsTr("Program deploy"), qsTr("Configure wallet binary and wallet home before deploying a program."), "profiles")) {
-            return null
-        }
-
-        return runRequest(qsTr("Program deploy"), "localWalletDeployProgram", [profile(gateway.networkProfile()), path, ConfirmationPolicy.token("wallet-deploy-program")], true, function (response) {
-            if (response.ok) {
-                appendHistory(qsTr("Deploy program"), "submitted", operationDetail(response.value, "deployProgram"))
-            } else {
-                appendHistory(qsTr("Deploy program"), "down", response.error || qsTr("Program deployment failed."))
-            }
-        })
-    }
-
     function syncPrivate() {
         if (busyGuard(qsTr("Private sync"))) {
             return null
@@ -239,46 +217,6 @@ WalletState {
         })
     }
 
-    function previewInstruction(request) {
-        if (busyGuard(qsTr("IDL instruction"))) {
-            return null
-        }
-
-        return runRequest(qsTr("IDL instruction"), "localWalletInstructionPreview", [request || {}], false, function (response) {
-            if (response.ok) {
-                gateway.setIdlInstructionState(response.value || null, "")
-            } else {
-                gateway.setIdlInstructionState(null, response.error || qsTr("Instruction preview failed."))
-            }
-        }, function () {
-            gateway.setIdlInstructionState(null, "")
-        })
-    }
-
-    function sendInstruction(request) {
-        if (busyGuard(qsTr("IDL instruction"))) {
-            return null
-        }
-        if (!homeConfigured()) {
-            gateway.openLocalWallet("", "profiles")
-            gateway.setResult(qsTr("IDL instruction"), qsTr("Configure wallet home before sending an IDL instruction."), true, null)
-            return null
-        }
-
-        return runRequest(qsTr("IDL instruction"), "localWalletInstructionSubmit", [profile(gateway.networkProfile()), request || {}, ConfirmationPolicy.token("wallet-instruction-submit")], true, function (response) {
-            if (response.ok) {
-                gateway.setIdlInstructionState(response.value || null, "")
-                appendHistory(qsTr("IDL instruction"), "submitted", operationDetail(response.value, "idlInstruction"))
-            } else {
-                const error = response.error || qsTr("Instruction send failed.")
-                gateway.setIdlInstructionState(null, error)
-                appendHistory(qsTr("IDL instruction"), "down", error)
-            }
-        }, function () {
-            gateway.setIdlInstructionState(null, "")
-        })
-    }
-
     function queryBedrockBalance() {
         const publicKey = String(publicKeyProbe || "").trim()
         if (!publicKey.length) {
@@ -315,12 +253,8 @@ WalletState {
             return detail
         }
         switch (String(fallback || "")) {
-        case "deployProgram":
-            return deployProgramOperationDetail(report)
         case "privateSync":
             return privateSyncOperationDetail(report)
-        case "idlInstruction":
-            return idlInstructionOperationDetail(report)
         case "accounts":
             return accountsOperationDetail(report)
         default:
@@ -351,40 +285,11 @@ WalletState {
         return String(report.status || qsTr("completed"))
     }
 
-    function deployProgramOperationDetail(value) {
-        const report = value || {}
-        const program = String(report.program_id_base58 || report.program_id_hex || "")
-        const tx = String(report.deployment_tx_hash || "")
-        if (program.length > 0 && tx.length > 0) {
-            return qsTr("%1, tx %2").arg(UiFormat.shortHash(program)).arg(UiFormat.shortHash(tx))
-        }
-        if (tx.length > 0) {
-            return qsTr("tx %1").arg(UiFormat.shortHash(tx))
-        }
-        return qsTr("submitted")
-    }
-
     function privateSyncOperationDetail(value) {
         const report = value || {}
         const status = String(report.status || "submitted")
         const home = String(report.wallet_home_source || "")
         return home.length ? qsTr("%1, home %2").arg(status).arg(home) : status
-    }
-
-    function idlInstructionOperationDetail(value) {
-        const report = value || {}
-        const tx = String(report.tx_hash || report.txHash || "")
-        if (tx.length > 0) {
-            return qsTr("%1 %2, tx %3")
-                .arg(String(report.mode || "tx"))
-                .arg(String(report.instruction || "instruction"))
-                .arg(UiFormat.shortHash(tx))
-        }
-        const words = Array.isArray(report.instruction_words) ? report.instruction_words.length : 0
-        return qsTr("%1 %2, %3 word(s)")
-            .arg(String(report.mode || "preview"))
-            .arg(String(report.instruction || "instruction"))
-            .arg(words)
     }
 
     function isBedrockHexId(value) {

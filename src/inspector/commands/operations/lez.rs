@@ -1,50 +1,23 @@
-use anyhow::{Result, bail};
+use anyhow::{Context as _, Result, bail};
 use serde_json::{Value, json};
 
 use crate::{
-    blockchain, indexer_block_by_hash, indexer_blocks, indexer_health, indexer_status,
+    indexer_block_by_hash, indexer_blocks, indexer_health, indexer_status,
     indexer_transfer_recipients, last_sequencer_block_id,
     lez::LezTargetResolver,
-    raw_json_rpc_optional_result, sequencer_block, sequencer_blocks, sequencer_health,
-    sequencer_program_ids, sequencer_transaction,
+    local_wallet_deploy_program, local_wallet_instruction_submit, raw_json_rpc_optional_result,
+    sequencer_block, sequencer_blocks, sequencer_health, sequencer_program_ids,
+    sequencer_transaction,
     source_routing::{self, Args, CoreEndpointMode, SourceEndpoint},
+    support::confirmation::ConfirmationPolicy,
 };
 
 use super::super::value::{blocking_value, to_value};
 use super::RuntimeOperationRequest;
 use super::spec::{OperationDefinition, OperationDomain, OperationMethod};
+use super::wallet_args::{confirmed_wallet_args, wallet_profile_arg};
 
 pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
-    OperationDefinition::new(
-        OperationMethod::BlockchainNode,
-        "blockchainNode",
-        OperationDomain::Blockchain,
-        "Blockchain node",
-    ),
-    OperationDefinition::new(
-        OperationMethod::BlockchainBlocks,
-        "blockchainBlocks",
-        OperationDomain::Blockchain,
-        "Blockchain blocks",
-    ),
-    OperationDefinition::new(
-        OperationMethod::BlockchainLiveBlocks,
-        "blockchainLiveBlocks",
-        OperationDomain::Blockchain,
-        "Blockchain live blocks",
-    ),
-    OperationDefinition::new(
-        OperationMethod::BlockchainBlock,
-        "blockchainBlock",
-        OperationDomain::Blockchain,
-        "Blockchain block",
-    ),
-    OperationDefinition::new(
-        OperationMethod::BlockchainTransaction,
-        "blockchainTransaction",
-        OperationDomain::Blockchain,
-        "Blockchain transaction",
-    ),
     OperationDefinition::new(
         OperationMethod::Health,
         "health",
@@ -106,6 +79,18 @@ pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
         "LEZ lookup",
     ),
     OperationDefinition::new(
+        OperationMethod::LocalWalletDeployProgram,
+        "localWalletDeployProgram",
+        OperationDomain::Execution,
+        "Program deploy",
+    ),
+    OperationDefinition::new(
+        OperationMethod::LocalWalletInstructionSubmit,
+        "localWalletInstructionSubmit",
+        OperationDomain::Execution,
+        "IDL instruction",
+    ),
+    OperationDefinition::new(
         OperationMethod::IndexerHealth,
         "indexerHealth",
         OperationDomain::Indexer,
@@ -143,106 +128,37 @@ pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
     ),
 ];
 
-pub(super) async fn execute_blockchain_node(request: &RuntimeOperationRequest) -> Result<Value> {
-    let args = Args::new(request.args.clone())?;
-    let source = args.source_endpoint(0, "node endpoint")?;
-    if source.mode == CoreEndpointMode::Module {
-        return blocking_value("blockchain module node", move || {
-            to_value(source_routing::blockchain_node_report())
-        })
-        .await;
+pub(super) async fn execute(request: &RuntimeOperationRequest) -> Result<Value> {
+    match request.method() {
+        OperationMethod::Health => execute_execution_health(request).await,
+        OperationMethod::Head => execute_execution_head(request).await,
+        OperationMethod::Programs => execute_programs(request).await,
+        OperationMethod::Block => execute_sequencer_block(request).await,
+        OperationMethod::SequencerBlocks => execute_sequencer_blocks(request).await,
+        OperationMethod::Transaction => execute_sequencer_transaction(request).await,
+        OperationMethod::InspectTransaction => execute_inspect_transaction(request).await,
+        OperationMethod::TraceTransaction => execute_trace_transaction(request).await,
+        OperationMethod::Account => execute_account_operation(request).await,
+        OperationMethod::ResolveLezTarget => execute_resolve_lez_target(request).await,
+        OperationMethod::LocalWalletDeployProgram => execute_program_deployment(request).await,
+        OperationMethod::LocalWalletInstructionSubmit => {
+            execute_instruction_submission(request).await
+        }
+        OperationMethod::IndexerHealth => execute_indexer_health_operation(request).await,
+        OperationMethod::IndexerStatus => execute_indexer_status_operation(request).await,
+        OperationMethod::IndexerFinalizedHead => execute_indexer_finalized_head(request).await,
+        OperationMethod::IndexerBlocks => execute_indexer_blocks_operation(request).await,
+        OperationMethod::IndexerBlockByHash => {
+            execute_indexer_block_by_hash_operation(request).await
+        }
+        OperationMethod::IndexerTransferRecipients => {
+            execute_indexer_transfer_recipients_operation(request).await
+        }
+        _ => bail!(
+            "`{}` is not a LEZ or indexer operation",
+            request.method_name()
+        ),
     }
-    to_value(blockchain::blockchain_node_report(source.endpoint).await)
-}
-
-pub(super) async fn execute_blockchain_blocks(request: &RuntimeOperationRequest) -> Result<Value> {
-    let args = Args::new(request.args.clone())?;
-    let source = args.source_endpoint(0, "node endpoint")?;
-    let slot_from = args.u64(source.next_index, "slot from")?;
-    let slot_to = args.u64(source.next_index + 1, "slot to")?;
-    if source.mode == CoreEndpointMode::Module {
-        let limit = args.value(source.next_index + 2).and_then(Value::as_u64);
-        return blocking_value("blockchain module blocks", move || {
-            if let Some(limit) = limit {
-                to_value(source_routing::blockchain_recent_blocks(
-                    slot_from, slot_to, limit,
-                )?)
-            } else {
-                to_value(source_routing::blockchain_blocks(slot_from, slot_to)?)
-            }
-        })
-        .await;
-    }
-    if let Some(limit) = args.value(source.next_index + 2).and_then(Value::as_u64) {
-        to_value(
-            blockchain::blockchain_recent_blocks(source.endpoint, slot_from, slot_to, limit)
-                .await?,
-        )
-    } else {
-        to_value(blockchain::blockchain_blocks(source.endpoint, slot_from, slot_to).await?)
-    }
-}
-
-pub(super) async fn execute_blockchain_live_blocks(
-    request: &RuntimeOperationRequest,
-) -> Result<Value> {
-    let args = Args::new(request.args.clone())?;
-    let source = args.source_endpoint(0, "node endpoint")?;
-    let slot_from = args.u64(source.next_index, "slot from")?;
-    let slot_to = args.u64(source.next_index + 1, "slot to")?;
-    let limit = args
-        .value(source.next_index + 2)
-        .and_then(Value::as_u64)
-        .unwrap_or(50);
-    if source.mode == CoreEndpointMode::Module {
-        return blocking_value("blockchain module live blocks", move || {
-            to_value(source_routing::blockchain_live_blocks_snapshot(
-                slot_from, slot_to, limit,
-            )?)
-        })
-        .await;
-    }
-    to_value(
-        blockchain::blockchain_live_blocks_snapshot(source.endpoint, slot_from, slot_to, limit)
-            .await?,
-    )
-}
-
-pub(super) async fn execute_blockchain_block(request: &RuntimeOperationRequest) -> Result<Value> {
-    let args = Args::new(request.args.clone())?;
-    let source = args.source_endpoint(0, "node endpoint")?;
-    if source.mode == CoreEndpointMode::Module {
-        let block_id = args.string(source.next_index, "block id")?.to_owned();
-        return blocking_value("blockchain module block", move || {
-            to_value(source_routing::blockchain_block(&block_id)?)
-        })
-        .await;
-    }
-    to_value(
-        blockchain::blockchain_block(source.endpoint, args.string(source.next_index, "block id")?)
-            .await?,
-    )
-}
-
-pub(super) async fn execute_blockchain_transaction(
-    request: &RuntimeOperationRequest,
-) -> Result<Value> {
-    let args = Args::new(request.args.clone())?;
-    let source = args.source_endpoint(0, "node endpoint")?;
-    if source.mode == CoreEndpointMode::Module {
-        let transaction_id = args.string(source.next_index, "transaction id")?.to_owned();
-        return blocking_value("blockchain module transaction", move || {
-            to_value(source_routing::blockchain_transaction(&transaction_id)?)
-        })
-        .await;
-    }
-    to_value(
-        blockchain::blockchain_transaction(
-            source.endpoint,
-            args.string(source.next_index, "transaction id")?,
-        )
-        .await?,
-    )
 }
 
 pub(super) async fn execute_execution_health(request: &RuntimeOperationRequest) -> Result<Value> {
@@ -340,6 +256,31 @@ pub(super) async fn execute_resolve_lez_target(request: &RuntimeOperationRequest
     let target = sources.account;
     let session = LezTargetResolver::from_account_sources(sources);
     to_value(session.resolve_target(target).await?)
+}
+
+pub(super) async fn execute_program_deployment(request: &RuntimeOperationRequest) -> Result<Value> {
+    let args = confirmed_wallet_args(request, 2, ConfirmationPolicy::WalletDeployProgram)?;
+    let profile = wallet_profile_arg(&args)?;
+    let program_path = args.string(1, "program path")?.to_owned();
+    blocking_value("program deployment", move || {
+        to_value(local_wallet_deploy_program(profile, &program_path)?)
+    })
+    .await
+}
+
+pub(super) async fn execute_instruction_submission(
+    request: &RuntimeOperationRequest,
+) -> Result<Value> {
+    let args = confirmed_wallet_args(request, 2, ConfirmationPolicy::WalletInstructionSubmit)?;
+    to_value(
+        local_wallet_instruction_submit(
+            wallet_profile_arg(&args)?,
+            args.value(1)
+                .cloned()
+                .context("IDL instruction request is required")?,
+        )
+        .await?,
+    )
 }
 
 pub(super) async fn execute_indexer_health_operation(

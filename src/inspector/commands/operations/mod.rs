@@ -17,16 +17,18 @@ use crate::support::time::now_millis;
 
 use super::value::blocking_value;
 
-mod chain;
+mod blockchain;
 mod delivery;
 mod dispatch;
 mod entrypoint;
+mod lez;
 mod local_nodes;
 mod record;
 mod request;
 mod spec;
 mod storage;
 mod wallet;
+mod wallet_args;
 
 use dispatch::execute_runtime_operation;
 #[cfg(test)]
@@ -41,7 +43,7 @@ use record::{
 };
 pub(crate) use request::{RuntimeOperationRequest, runtime_operation_request_from_value};
 use request::{runtime_operation_backend, runtime_operation_context};
-pub(crate) use spec::OperationMethod;
+pub(crate) use spec::{OperationDomain, OperationMethod};
 use spec::{OperationExclusiveGroup, normalized_operation_method};
 
 #[cfg(test)]

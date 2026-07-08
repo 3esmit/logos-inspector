@@ -5,7 +5,9 @@ import "domains" as Domains
 import "identity/AppModelIdentity.js" as AppModelIdentity
 import "network/AppModelNetwork.js" as AppModelNetwork
 import "metrics/AppModelMetrics.js" as AppModelMetrics
+import "ConfirmationPolicy.js" as ConfirmationPolicy
 import "programs/AppModelRegistry.js" as AppModelRegistry
+import "programs/ProgramOperationDetails.js" as ProgramOperationDetails
 import "social/AppModelSocial.js" as AppModelSocial
 import "programs/ProgramDecodeSession.js" as ProgramDecodeSession
 
@@ -746,6 +748,8 @@ QtObject {
 
     function applyIncomingSocialComment(event) { return AppModelSocial.applyIncomingComment(root, event) }
 
+    function applyIncomingSocialMessage(message) { return AppModelSocial.applyIncomingDeliveryMessage(root, message) }
+
     function socialCommentRowsFromMessages(messages) { return AppModelSocial.socialCommentRowsFromMessages(root, messages) }
 
     function mergeSocialCommentRows(existingRows, incomingRows) { return AppModelSocial.mergeSocialCommentRows(root, existingRows, incomingRows) }
@@ -873,9 +877,40 @@ QtObject {
 
     function walletCommandOperationDetail(value) { return wallet.commandOperationDetail(value) }
 
-    function deployProgramBinary(programPath) { return wallet.deployProgram(programPath) }
+    function deployProgramBinary(programPath) {
+        const path = String(programPath || "").trim()
+        if (busy) {
+            setResult(qsTr("Program deploy"), qsTr("Another inspection is already running."), true, null)
+            return null
+        }
+        if (!path.length) {
+            setResult(qsTr("Program deploy"), qsTr("Program binary path is required."), true, null)
+            return null
+        }
+        if (!wallet.profileConfigured()) {
+            openLocalWallet("", "profiles")
+            setResult(qsTr("Program deploy"), qsTr("Configure wallet binary and wallet home before deploying a program."), true, null)
+            return null
+        }
 
-    function deployProgramOperationDetail(value) { return wallet.deployProgramOperationDetail(value) }
+        busy = true
+        return requestModuleAsync(inspectorModule, "localWalletDeployProgram", [wallet.profile(networkProfile), path, ConfirmationPolicy.token("wallet-deploy-program")], qsTr("Program deploy"), true, function (response) {
+            busy = false
+            const detail = response.ok
+                ? deployProgramOperationDetail(response.value)
+                : String(response.error || qsTr("Program deployment failed."))
+            appendOperationHistory({
+                domain: "execution",
+                method: qsTr("Program deploy"),
+                status: response.ok ? "completed" : "failed",
+                label: qsTr("Program deploy"),
+                result: response.ok ? response.value || {} : null,
+                error: response.ok ? "" : detail
+            }, detail)
+        })
+    }
+
+    function deployProgramOperationDetail(value) { return ProgramOperationDetails.deployProgramOperationDetail(value) }
 
     function syncPrivateWallet() { return wallet.syncPrivate() }
 
@@ -889,11 +924,65 @@ QtObject {
 
     function appendLocalWalletOperation(label, status, detail) { return wallet.appendHistory(label, status, detail) }
 
-    function previewIdlInstruction(request) { return wallet.previewInstruction(request) }
+    function previewIdlInstruction(request) {
+        if (busy) {
+            setResult(qsTr("IDL instruction"), qsTr("Another inspection is already running."), true, null)
+            return null
+        }
+        idlInstructionPreviewValue = null
+        idlInstructionError = ""
+        busy = true
+        statusText = qsTr("IDL instruction")
+        return requestModuleAsync(inspectorModule, "localWalletInstructionPreview", [request || {}], qsTr("IDL instruction"), false, function (response) {
+            busy = false
+            if (response.ok) {
+                idlInstructionPreviewValue = response.value || null
+                idlInstructionError = ""
+            } else {
+                idlInstructionPreviewValue = null
+                idlInstructionError = response.error || qsTr("Instruction preview failed.")
+            }
+        })
+    }
 
-    function sendIdlInstruction(request) { return wallet.sendInstruction(request) }
+    function sendIdlInstruction(request) {
+        if (busy) {
+            setResult(qsTr("IDL instruction"), qsTr("Another inspection is already running."), true, null)
+            return null
+        }
+        if (!wallet.homeConfigured()) {
+            openLocalWallet("", "profiles")
+            setResult(qsTr("IDL instruction"), qsTr("Configure wallet home before sending an IDL instruction."), true, null)
+            return null
+        }
 
-    function idlInstructionOperationDetail(value) { return wallet.idlInstructionOperationDetail(value) }
+        idlInstructionPreviewValue = null
+        idlInstructionError = ""
+        busy = true
+        return requestModuleAsync(inspectorModule, "localWalletInstructionSubmit", [wallet.profile(networkProfile), request || {}, ConfirmationPolicy.token("wallet-instruction-submit")], qsTr("IDL instruction"), true, function (response) {
+            busy = false
+            const detail = response.ok
+                ? idlInstructionOperationDetail(response.value)
+                : String(response.error || qsTr("Instruction send failed."))
+            if (response.ok) {
+                idlInstructionPreviewValue = response.value || null
+                idlInstructionError = ""
+            } else {
+                idlInstructionPreviewValue = null
+                idlInstructionError = detail
+            }
+            appendOperationHistory({
+                domain: "execution",
+                method: qsTr("IDL instruction"),
+                status: response.ok ? "completed" : "failed",
+                label: qsTr("IDL instruction"),
+                result: response.ok ? response.value || {} : null,
+                error: response.ok ? "" : detail
+            }, detail)
+        })
+    }
+
+    function idlInstructionOperationDetail(value) { return ProgramOperationDetails.idlInstructionOperationDetail(value) }
 
     function refreshBedrockWalletModule(address) { return AppModelIdentity.refreshBedrockWalletModule(root, address) }
 

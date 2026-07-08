@@ -1,5 +1,5 @@
 import QtQml
-import "network/SourceDiagnosticsProjection.js" as SourceDiagnostics
+import "source_routing/SourceDiagnosticsProjection.js" as SourceDiagnostics
 
 QtObject {
     id: root

@@ -3,8 +3,8 @@ use std::process::Command;
 use anyhow::Result;
 use serde_json::{Value, json};
 
-use super::{NodeAction, NodeKind};
-use crate::{modules::logos_core, support::command_runner::spawn_detached};
+use super::{NodeAction, NodeKind, process::spawn_detached};
+use crate::modules::logos_core;
 
 const BLOCKCHAIN_MODULE: &str = "blockchain_module";
 const INDEXER_MODULE: &str = "lez_indexer_module";
