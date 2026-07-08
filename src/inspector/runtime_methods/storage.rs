@@ -12,7 +12,7 @@ use crate::{
     },
 };
 
-use super::super::bridge::to_value;
+use super::super::value::to_value;
 
 pub(super) fn storage_exists(runtime: &Runtime, args: Value) -> Result<Value> {
     let args = Args::new(args)?;

@@ -19,9 +19,9 @@ mod adapters {
         rest_url, storage_rest_download_bytes, storage_rest_upload, storage_rest_upload_bytes,
     };
 }
+mod inspection;
 mod policy;
 mod probe_report;
-mod reports;
 mod selection;
 
 #[cfg(test)]
@@ -40,6 +40,7 @@ pub(crate) use adapters::{
     delivery_store_query_url, raw_http_json_url, rest_empty_request, rest_json_request, rest_url,
     storage_rest_download_bytes, storage_rest_upload, storage_rest_upload_bytes,
 };
+pub use inspection::{delivery_source_report, storage_source_report};
 pub use policy::{
     CoreEndpointMode, CoreSourceMode, DEFAULT_DELIVERY_METRICS_ENDPOINT,
     DEFAULT_DELIVERY_REST_ENDPOINT, DEFAULT_INDEXER_ENDPOINT, DEFAULT_NODE_ENDPOINT,
@@ -56,7 +57,6 @@ pub use policy::{
 pub(crate) use probe_report::{
     SourceReportBuilder, keyed_probe_err, keyed_probe_ok, keyed_probe_result,
 };
-pub use reports::{delivery_source_report, storage_source_report};
 pub(crate) use selection::{
     AccountSources, Args, DeliveryStoreQuery, SourceArgsNormalization, SourceEndpoint,
     delivery_rest_source, normalized_source_args, require_mutating_diagnostics,

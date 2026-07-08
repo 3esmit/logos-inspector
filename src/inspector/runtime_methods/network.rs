@@ -8,7 +8,7 @@ use crate::{
     source_routing::{Args, CoreEndpointMode, SourceEndpoint},
 };
 
-use super::super::bridge::to_value;
+use super::super::value::to_value;
 
 pub(super) fn overview(runtime: &Runtime, args: Value) -> Result<Value> {
     let args = Args::new(args)?;

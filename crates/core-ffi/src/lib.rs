@@ -3,10 +3,7 @@ use std::{
     ptr,
 };
 
-use logos_inspector::bridge::{
-    InspectorBridge, bridge_error_response_json, call_inspector_response_json,
-    call_module_response_json,
-};
+use logos_inspector::bridge::InspectorBridge;
 
 pub struct LogosInspectorCore {
     bridge: InspectorBridge,
@@ -54,10 +51,8 @@ pub unsafe extern "C" fn logos_inspector_core_call(
     args_json: *const c_char,
 ) -> *mut c_char {
     let response = match call_inputs(handle, method, args_json) {
-        Ok((core, method, args_json)) => {
-            call_inspector_response_json(&core.bridge, &method, &args_json)
-        }
-        Err(error) => bridge_error_response_json(error),
+        Ok((core, method, args_json)) => core.bridge.call_inspector_json(&method, &args_json),
+        Err(error) => InspectorBridge::error_json(error),
     };
     into_c_string(response)
 }
@@ -79,9 +74,9 @@ pub unsafe extern "C" fn logos_inspector_core_call_module(
 ) -> *mut c_char {
     let response = match call_module_inputs(handle, module, method, args_json) {
         Ok((core, module, method, args_json)) => {
-            call_module_response_json(&core.bridge, &module, &method, &args_json)
+            core.bridge.call_module_json(&module, &method, &args_json)
         }
-        Err(error) => bridge_error_response_json(error),
+        Err(error) => InspectorBridge::error_json(error),
     };
     into_c_string(response)
 }
@@ -157,7 +152,7 @@ fn into_c_string(value: String) -> *mut c_char {
     let sanitized = value.replace('\0', "\\u0000");
     match CString::new(sanitized) {
         Ok(value) => value.into_raw(),
-        Err(_) => match CString::new(bridge_error_response_json(
+        Err(_) => match CString::new(InspectorBridge::error_json(
             "failed to encode bridge response",
         )) {
             Ok(value) => value.into_raw(),

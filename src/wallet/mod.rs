@@ -10,16 +10,15 @@ use serde_json::{Value, json};
 
 use crate::{ProgramFileInfo, program_file_info, raw_http_json};
 
-mod cli;
 mod instruction;
+mod runner;
 
-use cli::{
-    local_wallet_accounts_output, local_wallet_args_output, local_wallet_binary_version,
-    local_wallet_deploy_program_output, local_wallet_output_text, local_wallet_sync_private_output,
-};
 pub use instruction::{
     LocalWalletInstructionReport, LocalWalletInstructionRequest, ResolvedInstructionAccount,
     ResolvedInstructionArg, local_wallet_instruction_preview, local_wallet_instruction_submit,
+};
+use runner::{
+    CliLocalWalletRunner, LocalWalletInvocation, LocalWalletRunner, local_wallet_output_text,
 };
 
 pub const LOCAL_WALLET_HOME_ENV: &str = "LEE_WALLET_HOME_DIR";
@@ -222,16 +221,24 @@ pub fn local_wallet_deploy_program(
     profile: Value,
     program_path: impl AsRef<Path>,
 ) -> Result<LocalWalletDeployReport> {
+    local_wallet_deploy_program_with_runner(&CliLocalWalletRunner, profile, program_path)
+}
+
+fn local_wallet_deploy_program_with_runner<R: LocalWalletRunner>(
+    runner: &R,
+    profile: Value,
+    program_path: impl AsRef<Path>,
+) -> Result<LocalWalletDeployReport> {
     let wallet = resolve_local_wallet_profile(profile, "deploy program binary", false)?;
     let path = program_path.as_ref();
     let program =
         program_file_info(path).context("failed to inspect program binary before deployment")?;
     let mut redactions = wallet.redactions();
     redactions.push(program.path.as_str());
-    let output = local_wallet_deploy_program_output(
+    let output = runner.run(
         &wallet.wallet_binary,
         &wallet.wallet_home,
-        path,
+        LocalWalletInvocation::DeployProgram { program_path: path },
         &redactions,
     )?;
 
@@ -241,7 +248,7 @@ pub fn local_wallet_deploy_program(
         command: "wallet deploy-program <program binary>".to_owned(),
         wallet_home_source: wallet.wallet_home_source.clone(),
         submitted_at: unix_time_text(),
-        exit_status: output.status.to_string(),
+        exit_status: output.exit_status,
         stdout: local_wallet_output_text(&output.stdout, &redactions),
         stderr: local_wallet_output_text(&output.stderr, &redactions),
         program,
@@ -249,10 +256,21 @@ pub fn local_wallet_deploy_program(
 }
 
 pub fn local_wallet_sync_private(profile: Value) -> Result<LocalWalletSyncPrivateReport> {
+    local_wallet_sync_private_with_runner(&CliLocalWalletRunner, profile)
+}
+
+fn local_wallet_sync_private_with_runner<R: LocalWalletRunner>(
+    runner: &R,
+    profile: Value,
+) -> Result<LocalWalletSyncPrivateReport> {
     let wallet = resolve_local_wallet_profile(profile, "sync private wallet state", false)?;
     let redactions = wallet.redactions();
-    let output =
-        local_wallet_sync_private_output(&wallet.wallet_binary, &wallet.wallet_home, &redactions)?;
+    let output = runner.run(
+        &wallet.wallet_binary,
+        &wallet.wallet_home,
+        LocalWalletInvocation::SyncPrivate,
+        &redactions,
+    )?;
 
     Ok(LocalWalletSyncPrivateReport {
         source: "local_wallet_cli".to_owned(),
@@ -260,17 +278,28 @@ pub fn local_wallet_sync_private(profile: Value) -> Result<LocalWalletSyncPrivat
         command: "wallet account sync-private".to_owned(),
         wallet_home_source: wallet.wallet_home_source.clone(),
         submitted_at: unix_time_text(),
-        exit_status: output.status.to_string(),
+        exit_status: output.exit_status,
         stdout: local_wallet_output_text(&output.stdout, &redactions),
         stderr: local_wallet_output_text(&output.stderr, &redactions),
     })
 }
 
 pub fn local_wallet_accounts(profile: Value) -> Result<LocalWalletAccountsReport> {
+    local_wallet_accounts_with_runner(&CliLocalWalletRunner, profile)
+}
+
+fn local_wallet_accounts_with_runner<R: LocalWalletRunner>(
+    runner: &R,
+    profile: Value,
+) -> Result<LocalWalletAccountsReport> {
     let wallet = resolve_local_wallet_profile(profile, "list wallet accounts", true)?;
     let redactions = wallet.redactions();
-    let output =
-        local_wallet_accounts_output(&wallet.wallet_binary, &wallet.wallet_home, &redactions)?;
+    let output = runner.run(
+        &wallet.wallet_binary,
+        &wallet.wallet_home,
+        LocalWalletInvocation::Accounts,
+        &redactions,
+    )?;
     if output.stdout.len() > LOCAL_WALLET_OUTPUT_LIMIT {
         bail!(
             "wallet account list output exceeded {} bytes; refusing to parse partial account data",
@@ -298,6 +327,15 @@ pub fn local_wallet_create_account(
     privacy: &str,
     label: Option<&str>,
 ) -> Result<LocalWalletCommandReport> {
+    local_wallet_create_account_with_runner(&CliLocalWalletRunner, profile, privacy, label)
+}
+
+fn local_wallet_create_account_with_runner<R: LocalWalletRunner>(
+    runner: &R,
+    profile: Value,
+    privacy: &str,
+    label: Option<&str>,
+) -> Result<LocalWalletCommandReport> {
     let privacy = normalized_wallet_account_privacy(privacy)?;
     let label = label.map(str::trim).filter(|value| !value.is_empty());
     let wallet = resolve_local_wallet_profile(profile, "create wallet account", false)?;
@@ -307,12 +345,13 @@ pub fn local_wallet_create_account(
         args.push(label.to_owned());
     }
     let redactions = wallet.redactions();
-    let output = local_wallet_args_output(
+    let output = runner.run(
         &wallet.wallet_binary,
         &wallet.wallet_home,
-        &args,
-        "wallet account new",
-        LOCAL_WALLET_MUTATION_TIMEOUT,
+        LocalWalletInvocation::Args {
+            args: &args,
+            label: "wallet account new",
+        },
         &redactions,
     )?;
     let stdout = local_wallet_output_text(&output.stdout, &redactions);
@@ -325,7 +364,7 @@ pub fn local_wallet_create_account(
         command: format!("wallet account new {privacy}"),
         wallet_home_source: wallet.wallet_home_source.clone(),
         submitted_at: unix_time_text(),
-        exit_status: output.status.to_string(),
+        exit_status: output.exit_status,
         privacy: Some(privacy.to_owned()),
         account_id,
         from: None,
@@ -338,6 +377,14 @@ pub fn local_wallet_create_account(
 }
 
 pub fn local_wallet_send_transaction(
+    profile: Value,
+    request: Value,
+) -> Result<LocalWalletCommandReport> {
+    local_wallet_send_transaction_with_runner(&CliLocalWalletRunner, profile, request)
+}
+
+fn local_wallet_send_transaction_with_runner<R: LocalWalletRunner>(
+    runner: &R,
     profile: Value,
     request: Value,
 ) -> Result<LocalWalletCommandReport> {
@@ -389,12 +436,13 @@ pub fn local_wallet_send_transaction(
     if local_wallet_binary_is_path_like(to_keys) {
         redactions.push(to_keys);
     }
-    let output = local_wallet_args_output(
+    let output = runner.run(
         &wallet.wallet_binary,
         &wallet.wallet_home,
-        &args,
-        "wallet auth-transfer send",
-        LOCAL_WALLET_MUTATION_TIMEOUT,
+        LocalWalletInvocation::Args {
+            args: &args,
+            label: "wallet auth-transfer send",
+        },
         &redactions,
     )?;
     let stdout = local_wallet_output_text(&output.stdout, &redactions);
@@ -407,7 +455,7 @@ pub fn local_wallet_send_transaction(
         command: "wallet auth-transfer send".to_owned(),
         wallet_home_source: wallet.wallet_home_source.clone(),
         submitted_at: unix_time_text(),
-        exit_status: output.status.to_string(),
+        exit_status: output.exit_status,
         privacy: None,
         account_id: None,
         from: Some(from.to_owned()),
@@ -420,15 +468,24 @@ pub fn local_wallet_send_transaction(
 }
 
 pub fn local_wallet_command(profile: Value, args: Vec<String>) -> Result<LocalWalletCommandReport> {
+    local_wallet_command_with_runner(&CliLocalWalletRunner, profile, args)
+}
+
+fn local_wallet_command_with_runner<R: LocalWalletRunner>(
+    runner: &R,
+    profile: Value,
+    args: Vec<String>,
+) -> Result<LocalWalletCommandReport> {
     let args = normalized_wallet_command_args(args)?;
     let wallet = resolve_local_wallet_profile(profile, "run wallet command", false)?;
     let redactions = wallet.redactions();
-    let output = local_wallet_args_output(
+    let output = runner.run(
         &wallet.wallet_binary,
         &wallet.wallet_home,
-        &args,
-        "wallet command",
-        LOCAL_WALLET_MUTATION_TIMEOUT,
+        LocalWalletInvocation::Args {
+            args: &args,
+            label: "wallet command",
+        },
         &redactions,
     )?;
     let stdout = local_wallet_output_text(&output.stdout, &redactions);
@@ -440,7 +497,7 @@ pub fn local_wallet_command(profile: Value, args: Vec<String>) -> Result<LocalWa
         command: wallet_command_label(&args),
         wallet_home_source: wallet.wallet_home_source.clone(),
         submitted_at: unix_time_text(),
-        exit_status: output.status.to_string(),
+        exit_status: output.exit_status,
         privacy: None,
         account_id: extract_wallet_account_id(&format!("{stdout}\n{stderr}")),
         from: None,
@@ -494,6 +551,14 @@ pub(crate) fn detected_wallet_profile() -> Value {
 }
 
 fn local_wallet_profile_status_with_env(
+    profile: Value,
+    nssa_env_home: String,
+) -> Result<LocalWalletProfileStatus> {
+    local_wallet_profile_status_with_runner(&CliLocalWalletRunner, profile, nssa_env_home)
+}
+
+fn local_wallet_profile_status_with_runner<R: LocalWalletRunner>(
+    runner: &R,
     profile: Value,
     nssa_env_home: String,
 ) -> Result<LocalWalletProfileStatus> {
@@ -558,7 +623,7 @@ fn local_wallet_profile_status_with_env(
         details.push("wallet binary is not reachable".to_owned());
         status = local_wallet_worst_status(status, "down");
     } else if status != "down" {
-        match local_wallet_binary_version(wallet_binary, &wallet_home) {
+        match runner.version(wallet_binary, &wallet_home) {
             Ok(value) => {
                 details.push("wallet binary responded".to_owned());
                 version = (!value.is_empty()).then_some(value);
@@ -924,11 +989,57 @@ pub(crate) fn unix_time_text() -> String {
 
 #[cfg(test)]
 mod tests {
+    use anyhow::{Result, bail};
+    use serde_json::json;
+
+    use super::runner::LocalWalletOutput;
     use super::*;
+
+    #[derive(Debug)]
+    struct FakeRunner {
+        output: LocalWalletOutput,
+    }
+
+    impl LocalWalletRunner for FakeRunner {
+        fn run(
+            &self,
+            binary: &str,
+            wallet_home: &str,
+            invocation: LocalWalletInvocation<'_>,
+            _redactions: &[&str],
+        ) -> Result<LocalWalletOutput> {
+            if binary != "wallet" {
+                bail!("unexpected wallet binary: {binary}");
+            }
+            if wallet_home != "." {
+                bail!("unexpected wallet home: {wallet_home}");
+            }
+            match invocation {
+                LocalWalletInvocation::Args { args, label } => {
+                    if label != "wallet account new" {
+                        bail!("unexpected label: {label}");
+                    }
+                    if args
+                        != [
+                            "account".to_owned(),
+                            "new".to_owned(),
+                            "private".to_owned(),
+                            "--label".to_owned(),
+                            "main".to_owned(),
+                        ]
+                    {
+                        bail!("unexpected args: {args:?}");
+                    }
+                }
+                _ => bail!("unexpected wallet invocation"),
+            }
+            Ok(self.output.clone())
+        }
+    }
 
     #[test]
     fn local_wallet_profile_status_reports_missing_binary_without_path_leak() {
-        let status = local_wallet_profile_status(serde_json::json!({
+        let status = local_wallet_profile_status(json!({
             "wallet_binary": "/definitely/not/a/logos/wallet",
             "wallet_home": ".",
             "network_profile": "local"
@@ -948,7 +1059,7 @@ mod tests {
     #[test]
     fn local_wallet_profile_status_keeps_blank_wallet_home_unconfigured() {
         let status = local_wallet_profile_status_with_env(
-            serde_json::json!({
+            json!({
                 "wallet_binary": "/definitely/not/a/logos/wallet",
                 "wallet_home": "",
                 "network_profile": "local"
@@ -971,7 +1082,7 @@ mod tests {
     #[test]
     fn local_wallet_profile_status_accepts_lee_wallet_home_env() {
         let status = local_wallet_profile_status_with_env(
-            serde_json::json!({
+            json!({
                 "wallet_binary": "",
                 "wallet_home": "",
                 "network_profile": "local"
@@ -1023,7 +1134,7 @@ Private/3oCG8gqdKLMegw4rRfyaMQvuPHpcASt7xwttsmnZLSkw
     #[test]
     fn local_wallet_deploy_program_requires_wallet_binary() {
         let error_text = match local_wallet_deploy_program(
-            serde_json::json!({
+            json!({
                 "wallet_binary": "",
                 "wallet_home": ".",
                 "network_profile": "local"
@@ -1038,6 +1149,42 @@ Private/3oCG8gqdKLMegw4rRfyaMQvuPHpcASt7xwttsmnZLSkw
             error_text.contains("wallet binary is required"),
             "{error_text}"
         );
+    }
+
+    #[test]
+    fn local_wallet_create_account_uses_runner_boundary() -> Result<()> {
+        let runner = FakeRunner {
+            output: LocalWalletOutput {
+                exit_status: "exit status: 0".to_owned(),
+                stdout: b"Generated new account with account_id Private/abc123".to_vec(),
+                stderr: Vec::new(),
+            },
+        };
+
+        let report = local_wallet_create_account_with_runner(
+            &runner,
+            json!({
+                "wallet_binary": "wallet",
+                "wallet_home": ".",
+                "network_profile": "local"
+            }),
+            "private",
+            Some("main"),
+        )?;
+
+        if report.status != "created" {
+            bail!("unexpected status: {}", report.status);
+        }
+        if report.command != "wallet account new private" {
+            bail!("unexpected command: {}", report.command);
+        }
+        if report.account_id.as_deref() != Some("Private/abc123") {
+            bail!("unexpected account id: {:?}", report.account_id);
+        }
+        if report.exit_status != "exit status: 0" {
+            bail!("unexpected exit status: {}", report.exit_status);
+        }
+        Ok(())
     }
 
     #[test]

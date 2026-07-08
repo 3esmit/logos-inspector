@@ -9,7 +9,7 @@ use crate::{
     wallet::detected_wallet_profile,
 };
 
-use super::super::bridge::to_value;
+use super::super::value::to_value;
 
 pub(super) fn local_wallet_profile_status(args: Value) -> Result<Value> {
     let args = Args::new(args)?;

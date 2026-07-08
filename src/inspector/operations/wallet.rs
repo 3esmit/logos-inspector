@@ -2,13 +2,12 @@ use anyhow::{Context as _, Result, bail};
 use serde_json::Value;
 
 use crate::{
-    bridge::{blocking_value, to_value},
     local_wallet_accounts, local_wallet_command, local_wallet_create_account,
     local_wallet_deploy_program, local_wallet_instruction_submit, local_wallet_send_transaction,
-    local_wallet_sync_private,
-    source_routing::Args,
+    local_wallet_sync_private, source_routing::Args,
 };
 
+use super::super::value::{blocking_value, to_value};
 use super::NodeOperationRequest;
 
 pub(super) async fn execute_wallet_create_account(request: &NodeOperationRequest) -> Result<Value> {

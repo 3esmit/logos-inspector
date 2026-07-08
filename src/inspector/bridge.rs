@@ -4,8 +4,9 @@ use serde_json::Value;
 use serde_json::json;
 use tokio::runtime::Runtime;
 
-use super::dispatch_catalog::{DispatchContext, dispatch};
-use crate::bridge_envelope::bridge_response_json;
+use super::command_surface::{DispatchContext, dispatch_inspector_command};
+use super::value::to_value;
+use crate::bridge_envelope::{bridge_error_response_json, bridge_response_json};
 #[cfg(test)]
 use crate::source_routing::{
     self, CoreEndpointMode, DEFAULT_DELIVERY_REST_ENDPOINT, DEFAULT_STORAGE_REST_ENDPOINT,
@@ -13,7 +14,7 @@ use crate::source_routing::{
 };
 use crate::{inspector::operations::RuntimeOperationInterface, logoscore, source_routing::Args};
 
-pub const INSPECTOR_MODULE: &str = "logos_inspector";
+const INSPECTOR_MODULE: &str = "logos_inspector";
 #[cfg(test)]
 const BLOCKCHAIN_MODULE: &str = source_routing::BLOCKCHAIN_MODULE;
 #[cfg(test)]
@@ -32,15 +33,30 @@ impl InspectorBridge {
         })
     }
 
-    pub fn call_module(&self, module: &str, method: &str, args: Value) -> Result<Value> {
+    pub fn call_module_json(&self, module: &str, method: &str, args_json: &str) -> String {
+        let result = serde_json::from_str(args_json)
+            .context("failed to parse bridge args")
+            .and_then(|args| self.call_module_value(module, method, args));
+        bridge_response_json(result)
+    }
+
+    pub fn call_inspector_json(&self, method: &str, args_json: &str) -> String {
+        self.call_module_json(INSPECTOR_MODULE, method, args_json)
+    }
+
+    pub fn error_json(error: impl Into<String>) -> String {
+        bridge_error_response_json(error)
+    }
+
+    fn call_module_value(&self, module: &str, method: &str, args: Value) -> Result<Value> {
         if module == INSPECTOR_MODULE {
-            self.call_inspector(method, args)
+            self.call_inspector_value(method, args)
         } else {
             self.call_logoscore_module(module, method, args)
         }
     }
 
-    fn call_inspector(&self, method: &str, args: Value) -> Result<Value> {
+    fn call_inspector_value(&self, method: &str, args: Value) -> Result<Value> {
         let call_core_module = |module: &str, method: &str, args: Value| {
             self.call_logoscore_module(module, method, args)
         };
@@ -49,7 +65,7 @@ impl InspectorBridge {
             operations: &self.runtime_operations,
             call_core_module: &call_core_module,
         };
-        if let Some(value) = dispatch(&context, method, args)? {
+        if let Some(value) = dispatch_inspector_command(&context, method, args)? {
             return Ok(value);
         }
         bail!("unknown inspector method `{method}`")
@@ -69,39 +85,6 @@ impl InspectorBridge {
     }
 }
 
-pub fn call_module_response_json(
-    bridge: &InspectorBridge,
-    module: &str,
-    method: &str,
-    args_json: &str,
-) -> String {
-    let result = serde_json::from_str(args_json)
-        .context("failed to parse bridge args")
-        .and_then(|args| bridge.call_module(module, method, args));
-    bridge_response_json(result)
-}
-
-pub fn call_inspector_response_json(
-    bridge: &InspectorBridge,
-    method: &str,
-    args_json: &str,
-) -> String {
-    call_module_response_json(bridge, INSPECTOR_MODULE, method, args_json)
-}
-
-pub(crate) fn to_value(value: impl serde::Serialize) -> Result<Value> {
-    serde_json::to_value(value).context("failed to serialize bridge response")
-}
-
-pub(crate) async fn blocking_value(
-    label: &'static str,
-    task: impl FnOnce() -> Result<Value> + Send + 'static,
-) -> Result<Value> {
-    tokio::task::spawn_blocking(task)
-        .await
-        .with_context(|| format!("{label} task failed"))?
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,7 +92,7 @@ mod tests {
     #[test]
     fn call_module_response_json_wraps_parse_errors() -> Result<()> {
         let bridge = InspectorBridge::new()?;
-        let response = call_module_response_json(&bridge, INSPECTOR_MODULE, "sourcePolicy", "{");
+        let response = bridge.call_module_json(INSPECTOR_MODULE, "sourcePolicy", "{");
         let response: Value = serde_json::from_str(&response)?;
 
         if response.get("ok").and_then(Value::as_bool) != Some(false)
@@ -129,7 +112,7 @@ mod tests {
     fn indexer_status_bridge_requires_endpoint_argument() -> Result<()> {
         let bridge = InspectorBridge::new()?;
 
-        let result = bridge.call_module(INSPECTOR_MODULE, "indexerStatus", json!([]));
+        let result = bridge.call_module_value(INSPECTOR_MODULE, "indexerStatus", json!([]));
 
         let Err(error) = result else {
             bail!("expected missing indexer endpoint to fail");
@@ -144,7 +127,7 @@ mod tests {
     fn blockchain_live_blocks_bridge_requires_slot_arguments() -> Result<()> {
         let bridge = InspectorBridge::new()?;
 
-        let result = bridge.call_module(
+        let result = bridge.call_module_value(
             INSPECTOR_MODULE,
             "blockchainLiveBlocks",
             json!(["http://127.0.0.1:8080"]),
@@ -163,7 +146,7 @@ mod tests {
     fn source_policy_bridge_exposes_defaults_profiles_and_modes() -> Result<()> {
         let bridge = InspectorBridge::new()?;
 
-        let value = bridge.call_module(INSPECTOR_MODULE, "sourcePolicy", json!([]))?;
+        let value = bridge.call_module_value(INSPECTOR_MODULE, "sourcePolicy", json!([]))?;
 
         if value.get("version").and_then(Value::as_u64) != Some(2)
             || value
@@ -352,7 +335,7 @@ mod tests {
     #[test]
     fn delivery_mutations_require_mutating_diagnostics_flag() -> Result<()> {
         let bridge = InspectorBridge::new()?;
-        let result = bridge.call_module(
+        let result = bridge.call_module_value(
             INSPECTOR_MODULE,
             "deliverySend",
             json!([
@@ -379,7 +362,7 @@ mod tests {
     #[test]
     fn storage_mutations_require_mutating_diagnostics_flag() -> Result<()> {
         let bridge = InspectorBridge::new()?;
-        let result = bridge.call_module(
+        let result = bridge.call_module_value(
             INSPECTOR_MODULE,
             "storageFetch",
             json!([
@@ -405,7 +388,7 @@ mod tests {
     #[test]
     fn local_wallet_deploy_program_requires_confirmation() -> Result<()> {
         let bridge = InspectorBridge::new()?;
-        let result = bridge.call_module(
+        let result = bridge.call_module_value(
             INSPECTOR_MODULE,
             "localWalletDeployProgram",
             json!([
@@ -433,7 +416,7 @@ mod tests {
     #[test]
     fn local_wallet_deploy_program_reaches_wallet_validation_after_confirmation() -> Result<()> {
         let bridge = InspectorBridge::new()?;
-        let result = bridge.call_module(
+        let result = bridge.call_module_value(
             INSPECTOR_MODULE,
             "localWalletDeployProgram",
             json!([
@@ -462,7 +445,7 @@ mod tests {
     #[test]
     fn local_wallet_create_account_requires_confirmation() -> Result<()> {
         let bridge = InspectorBridge::new()?;
-        let result = bridge.call_module(
+        let result = bridge.call_module_value(
             INSPECTOR_MODULE,
             "localWalletCreateAccount",
             json!([
@@ -491,7 +474,7 @@ mod tests {
     #[test]
     fn local_wallet_send_transaction_requires_confirmation() -> Result<()> {
         let bridge = InspectorBridge::new()?;
-        let result = bridge.call_module(
+        let result = bridge.call_module_value(
             INSPECTOR_MODULE,
             "localWalletSendTransaction",
             json!([
@@ -523,7 +506,7 @@ mod tests {
     #[test]
     fn local_wallet_instruction_submit_requires_confirmation() -> Result<()> {
         let bridge = InspectorBridge::new()?;
-        let result = bridge.call_module(
+        let result = bridge.call_module_value(
             INSPECTOR_MODULE,
             "localWalletInstructionSubmit",
             json!([
@@ -554,7 +537,7 @@ mod tests {
     #[test]
     fn local_wallet_command_requires_confirmation() -> Result<()> {
         let bridge = InspectorBridge::new()?;
-        let result = bridge.call_module(
+        let result = bridge.call_module_value(
             INSPECTOR_MODULE,
             "localWalletCommand",
             json!([
@@ -582,7 +565,7 @@ mod tests {
     #[test]
     fn local_nodes_action_requires_confirmation() -> Result<()> {
         let bridge = InspectorBridge::new()?;
-        let result = bridge.call_module(
+        let result = bridge.call_module_value(
             INSPECTOR_MODULE,
             "localNodesAction",
             json!(["local", { "action": "new_network", "network_id": "devnet-test" }]),
@@ -610,8 +593,11 @@ mod tests {
             true,
         );
 
-        let value =
-            bridge.call_module(INSPECTOR_MODULE, "nodeOperationCancel", json!(["existing"]))?;
+        let value = bridge.call_module_value(
+            INSPECTOR_MODULE,
+            "nodeOperationCancel",
+            json!(["existing"]),
+        )?;
 
         if value.get("status").and_then(Value::as_str) != Some("canceling") {
             bail!("expected canceling status: {value}");
@@ -625,7 +611,7 @@ mod tests {
     #[test]
     fn node_operation_start_accepts_storage_download_request() -> Result<()> {
         let bridge = InspectorBridge::new()?;
-        let value = bridge.call_module(
+        let value = bridge.call_module_value(
             INSPECTOR_MODULE,
             "nodeOperationStart",
             json!([{
@@ -728,7 +714,7 @@ mod tests {
             true,
         );
 
-        let result = bridge.call_module(
+        let result = bridge.call_module_value(
             INSPECTOR_MODULE,
             "nodeOperationStart",
             json!([{
@@ -780,7 +766,8 @@ mod tests {
     #[test]
     fn wallet_operation_record_is_removed_after_wait() -> Result<()> {
         let bridge = InspectorBridge::new()?;
-        let result = bridge.call_module(INSPECTOR_MODULE, "localWalletCreateAccount", json!([]));
+        let result =
+            bridge.call_module_value(INSPECTOR_MODULE, "localWalletCreateAccount", json!([]));
 
         let Err(error) = result else {
             bail!("expected wallet operation to fail before execution");

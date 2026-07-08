@@ -2,7 +2,6 @@ mod accounts;
 mod block;
 mod idl_resolver;
 mod indexer;
-mod program_decode_session;
 mod programs;
 mod sequencer;
 mod session;
@@ -17,10 +16,7 @@ pub use accounts::{
 };
 pub(crate) use block::decode_sequencer_block;
 pub use block::{BlockSummary, summarize_block};
-pub(crate) use idl_resolver::{
-    ProgramDecodeCandidate, RegisteredIdlResolver, resolve_account_decode_session,
-    resolve_transaction_decode_session,
-};
+pub(crate) use idl_resolver::RegisteredIdlResolver;
 pub use indexer::{
     AccountTransactionSummary, IndexerBlockReport, IndexerStatusReport,
     TransactionTransferOutputSummary, indexer_block_by_hash, indexer_blocks, indexer_health,

@@ -2,10 +2,7 @@ use std::{pin::Pin, sync::OnceLock};
 
 use cxx_qt::Threading;
 use cxx_qt_lib::QString;
-use logos_inspector::bridge::{
-    INSPECTOR_MODULE, InspectorBridge, bridge_error_response_json,
-    call_module_response_json as bridge_call_module_response_json,
-};
+use logos_inspector::bridge::InspectorBridge;
 
 #[derive(Default)]
 pub struct LogosBridgeRust;
@@ -93,8 +90,8 @@ impl qobject::LogosBridge {
 
 fn call_module_response_json(module: &str, method: &str, args_json: &str) -> String {
     match bridge() {
-        Ok(bridge) => bridge_call_module_response_json(bridge, module, method, args_json),
-        Err(error) => bridge_error_response_json(format!("{error:#}")),
+        Ok(bridge) => bridge.call_module_json(module, method, args_json),
+        Err(error) => InspectorBridge::error_json(format!("{error:#}")),
     }
 }
 
@@ -108,5 +105,5 @@ fn bridge() -> anyhow::Result<&'static InspectorBridge> {
     let _ = BRIDGE.set(bridge);
     BRIDGE
         .get()
-        .ok_or_else(|| anyhow::anyhow!("failed to initialize {INSPECTOR_MODULE} bridge"))
+        .ok_or_else(|| anyhow::anyhow!("failed to initialize logos_inspector bridge"))
 }

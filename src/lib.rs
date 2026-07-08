@@ -20,23 +20,23 @@ pub mod inspection {
 mod inspector {
     pub mod bridge;
 
-    mod command_catalog;
-    mod dispatch_catalog;
+    mod command_surface;
     pub(crate) mod operations;
     mod runtime_methods;
+    pub(crate) mod value;
 }
 mod json_value;
 pub mod local_nodes;
 pub mod logoscore;
 pub mod modules;
-mod network;
-mod probe;
+pub mod network;
+pub mod probe;
 mod settings_backup;
 pub mod social;
 pub mod source_routing;
 mod state_store;
 mod time;
-mod wallet;
+pub mod wallet;
 
 pub mod blockchain {
     pub use crate::inspection::l1::bedrock::*;
@@ -44,8 +44,11 @@ pub mod blockchain {
 }
 
 pub mod bridge {
-    pub use crate::bridge_envelope::bridge_error_response_json;
-    pub use crate::inspector::bridge::*;
+    pub use crate::inspector::bridge::InspectorBridge;
+}
+
+pub mod decode {
+    pub use crate::idl_decode::*;
 }
 
 pub mod lez {
@@ -59,14 +62,15 @@ pub mod local_indexer {
     };
 }
 
-mod overview {
+pub mod overview {
     pub use crate::inspection::overview::*;
 }
 
-mod rpc {
+pub mod rpc {
     pub use crate::inspection::rpc::*;
 }
 
+// Compatibility shims. First-party code should prefer the domain modules above.
 pub use blockchain::{
     ChannelOperationMatch, ChannelScanReport, ChannelSummary, channel_scan, channel_state,
     extract_channel_operations, summarize_channel_operations,

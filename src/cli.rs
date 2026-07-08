@@ -7,25 +7,30 @@ use std::{
 use anyhow::{Context as _, Result};
 use clap::{Args as ClapArgs, Parser, Subcommand};
 use logos_inspector::{
-    account_lookup, account_lookup_with_idl, bedrock_wallet_balance,
-    blockchain::blockchain_blocks,
-    blockchain::blockchain_node_report,
-    channel_scan, decode_account_data_hex_with_idl, decode_event_data_hex_with_idl,
-    decode_instruction_words_with_idl,
-    idl_decode::spel_idl_report,
-    last_sequencer_block_id,
-    local_indexer::{bootstrap_default_local_indexer, is_default_local_indexer_endpoint},
-    local_wallet_accounts, local_wallet_command, local_wallet_create_account,
-    local_wallet_profile_status, local_wallet_send_transaction, local_wallet_sync_private,
-    modules::blockchain_module_report,
-    modules::capabilities_report,
-    modules::logoscore_status_report,
-    modules::modules_report,
-    network_profiles, overview, program_file_info, raw_rpc_report, resolve_network_endpoints,
-    sequencer_block, sequencer_health, sequencer_program_ids, sequencer_transaction,
-    sequencer_transaction_inspection, sequencer_transaction_inspection_with_idl,
-    sequencer_transaction_trace, sequencer_transaction_trace_with_idl,
+    blockchain::{blockchain_blocks, blockchain_node_report, channel_scan},
+    decode::{
+        decode_account_data_hex_with_idl, decode_event_data_hex_with_idl,
+        decode_instruction_words_with_idl, spel_idl_report,
+    },
+    lez::{
+        account_lookup, account_lookup_with_idl, last_sequencer_block_id, program_file_info,
+        sequencer_block, sequencer_health, sequencer_program_ids, sequencer_transaction,
+        sequencer_transaction_inspection, sequencer_transaction_inspection_with_idl,
+        sequencer_transaction_trace, sequencer_transaction_trace_with_idl,
+    },
+    local_nodes::{bootstrap_default_local_indexer, is_default_local_indexer_endpoint},
+    modules::{
+        blockchain_module_report, capabilities_report, logoscore_status_report, modules_report,
+    },
+    network::{network_profiles, resolve_network_endpoints},
+    overview::overview,
+    rpc::raw_rpc_report,
     source_routing::{delivery_source_report, source_policy_report, storage_source_report},
+    wallet::{
+        bedrock_wallet_balance, local_wallet_accounts, local_wallet_command,
+        local_wallet_create_account, local_wallet_profile_status, local_wallet_send_transaction,
+        local_wallet_sync_private,
+    },
 };
 use serde_json::Value;
 

@@ -3,18 +3,17 @@ use serde_json::Value;
 
 use crate::{
     TransactionSummary, decode_account_data_hex_with_idl, decode_event_data_hex_with_idl,
-    idl_decode::spel_idl_report,
-    inspect_transaction_summary_with_idl,
-    inspection::l2::lez::{
+    idl_decode::{
         ProgramDecodeCandidate,
         resolve_account_decode_session as resolve_account_decode_session_report,
         resolve_transaction_decode_session as resolve_transaction_decode_session_report,
+        spel_idl_report,
     },
-    normalize_program_id_hex, program_file_info,
+    inspect_transaction_summary_with_idl, normalize_program_id_hex, program_file_info,
     source_routing::Args,
 };
 
-use super::super::bridge::to_value;
+use super::super::value::to_value;
 
 pub(super) fn decode_transaction_summary(args: Value) -> Result<Value> {
     let args = Args::new(args)?;

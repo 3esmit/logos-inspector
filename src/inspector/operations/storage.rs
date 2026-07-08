@@ -6,7 +6,6 @@ use serde_json::{Value, json};
 use tokio::io::AsyncWriteExt as _;
 
 use crate::{
-    bridge::{blocking_value, to_value},
     expect_success_response, raw_http_json,
     source_routing::{
         self, Args, require_mutating_diagnostics, rest_empty_request, rest_json_request, rest_url,
@@ -14,6 +13,7 @@ use crate::{
     },
 };
 
+use super::super::value::{blocking_value, to_value};
 use super::record::update_node_operation_progress;
 use super::{NodeOperationRegistry, NodeOperationRequest};
 
