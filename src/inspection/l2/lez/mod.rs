@@ -6,12 +6,8 @@ mod program_decode_session;
 mod programs;
 mod sequencer;
 mod session;
-mod transaction_facts;
 mod transactions;
 mod transfers;
-
-#[cfg(test)]
-mod tests;
 
 pub(crate) use accounts::account_report_with_optional_idl_decode;
 pub(crate) use accounts::summarize_account_transaction;
@@ -26,7 +22,8 @@ pub(crate) use idl_resolver::{
     resolve_transaction_decode_session,
 };
 pub use indexer::{
-    IndexerBlockReport, IndexerStatusReport, indexer_block_by_hash, indexer_blocks, indexer_health,
+    AccountTransactionSummary, IndexerBlockReport, IndexerStatusReport,
+    TransactionTransferOutputSummary, indexer_block_by_hash, indexer_blocks, indexer_health,
     indexer_status, indexer_transfer_recipients,
 };
 pub(crate) use indexer::{
@@ -42,12 +39,7 @@ pub use sequencer::{
     sequencer_transaction_trace_with_idl,
 };
 pub(crate) use session::LezInspectionSession;
-#[cfg(test)]
-pub(crate) use transaction_facts::summarize_indexer_transaction;
-pub use transaction_facts::{AccountTransactionSummary, TransactionTransferOutputSummary};
 pub(crate) use transactions::inspect_transaction;
-#[cfg(test)]
-pub(crate) use transactions::instruction_word_row;
 pub use transactions::{
     TransactionIdlInspectionReport, TransactionInspectionReport, TransactionInspectionRow,
     TransactionInspectionSection, TransactionSummary, TransactionTraceRefs, TransactionTraceReport,

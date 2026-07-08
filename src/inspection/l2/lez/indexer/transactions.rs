@@ -5,7 +5,7 @@ use lee::{AccountId, PublicKey};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::TransactionSummary;
+use super::super::transactions::TransactionSummary;
 use crate::{
     enum_payload, normalize_account_id_text, normalize_program_id_hex, value_list_strings,
     value_to_string,
@@ -332,5 +332,143 @@ mod tests {
             bail!("unexpected second amount: {:?}", second.amount);
         }
         Ok(())
+    }
+
+    #[test]
+    fn summarize_indexer_transaction_maps_public_payload() {
+        let raw = serde_json::json!({
+            "Public": {
+                "hash": "abcd",
+                "message": {
+                    "program_id": "program-1",
+                    "account_ids": ["acct-a", "acct-b"],
+                    "nonces": [1, "2"],
+                    "instruction_data": [3, "4"]
+                }
+            }
+        });
+
+        let summary = summarize_indexer_transaction(&raw, 7);
+
+        assert_eq!(summary.index, 7);
+        assert_eq!(summary.hash, "abcd");
+        assert_eq!(summary.kind, "Public");
+        assert_eq!(summary.program_id_hex.as_deref(), Some("program-1"));
+        assert_eq!(summary.account_ids, vec!["acct-a", "acct-b"]);
+        assert_eq!(summary.nonces, vec!["1", "2"]);
+        assert_eq!(summary.instruction_data, vec![3, 4]);
+        assert_eq!(summary.raw, raw);
+    }
+
+    #[test]
+    fn summarize_indexer_transaction_maps_compact_public_payload() {
+        let program_id = [1_u32; 8];
+        let program_id_base58 = crate::inspection::l2::lez::programs::program_id_base58(program_id);
+        let program_id_hex = crate::inspection::l2::lez::programs::program_id_hex(program_id);
+        let raw = serde_json::json!({
+            "type": "Public",
+            "hash": "tx-public",
+            "program_id": program_id_base58,
+            "accounts": [
+                { "account_id": "acct-a", "nonce": 1 },
+                { "account_id": "acct-b", "nonce": "2" }
+            ],
+            "instruction_data": [3, "4"],
+            "signature_count": 2
+        });
+
+        let summary = summarize_indexer_transaction(&raw, 2);
+
+        assert_eq!(summary.index, 2);
+        assert_eq!(summary.hash, "tx-public");
+        assert_eq!(summary.kind, "Public");
+        assert_eq!(
+            summary.program_id_hex.as_deref(),
+            Some(program_id_hex.as_str())
+        );
+        assert_eq!(summary.account_ids, vec!["acct-a", "acct-b"]);
+        assert_eq!(summary.nonces, vec!["1", "2"]);
+        assert_eq!(summary.instruction_data, vec![3, 4]);
+        assert_eq!(summary.raw, raw);
+    }
+
+    #[test]
+    fn summarize_indexer_transaction_maps_compact_privacy_payload() {
+        let raw = serde_json::json!({
+            "type": "PrivacyPreserving",
+            "hash": "tx-private",
+            "accounts": [
+                { "account_id": "acct-a", "nonce": "9" }
+            ],
+            "new_commitments_count": 3,
+            "nullifiers_count": 1,
+            "encrypted_states_count": 2,
+            "validity_window_start": "10",
+            "validity_window_end": "20",
+            "signature_count": 1,
+            "proof_size": 4096
+        });
+
+        let summary = summarize_indexer_transaction(&raw, 0);
+
+        assert_eq!(summary.hash, "tx-private");
+        assert_eq!(summary.kind, "PrivacyPreserving");
+        assert_eq!(summary.account_ids, vec!["acct-a"]);
+        assert_eq!(summary.nonces, vec!["9"]);
+        assert!(summary.instruction_data.is_empty());
+        assert_eq!(
+            summary
+                .raw
+                .get("proof_size")
+                .and_then(serde_json::Value::as_u64),
+            Some(4096)
+        );
+    }
+
+    #[test]
+    fn summarize_indexer_transaction_maps_compact_program_deployment_payload() {
+        let raw = serde_json::json!({
+            "type": "ProgramDeployment",
+            "hash": "tx-deploy",
+            "bytecode_size": "1234"
+        });
+
+        let summary = summarize_indexer_transaction(&raw, 0);
+
+        assert_eq!(summary.hash, "tx-deploy");
+        assert_eq!(summary.kind, "ProgramDeployment");
+        assert_eq!(summary.bytecode_len, Some(1234));
+    }
+
+    #[test]
+    fn summarize_indexer_transaction_preserves_privacy_public_account_ids() {
+        let raw = serde_json::json!({
+            "PrivacyPreserving": {
+                "hash": "tx-a",
+                "message": {
+                    "public_account_ids": ["account-111111111111"]
+                }
+            }
+        });
+
+        let summary = summarize_indexer_transaction(&raw, 0);
+
+        assert_eq!(summary.account_ids, vec!["account-111111111111"]);
+    }
+
+    #[test]
+    fn summarize_indexer_transaction_counts_decoded_bytecode_bytes() {
+        let raw = serde_json::json!({
+            "ProgramDeployment": {
+                "hash": "tx-a",
+                "message": {
+                    "bytecode": "AQIDBA=="
+                }
+            }
+        });
+
+        let summary = summarize_indexer_transaction(&raw, 0);
+
+        assert_eq!(summary.bytecode_len, Some(4));
     }
 }

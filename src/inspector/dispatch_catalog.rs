@@ -3,7 +3,8 @@ use serde_json::{Value, json};
 use tokio::runtime::Runtime;
 
 use super::{
-    operations::{RuntimeOperationInterface, operation_route},
+    command_catalog::{InspectorCommand, inspector_command},
+    operations::RuntimeOperationInterface,
     runtime_methods,
 };
 use crate::source_routing::Args;
@@ -14,38 +15,22 @@ pub(crate) struct DispatchContext<'a> {
     pub(crate) call_core_module: &'a dyn Fn(&str, &str, Value) -> Result<Value>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum InspectorCommand {
-    Operation,
-    Runtime,
-    CapabilitiesReport,
-    CallModule,
-}
-
-const OPERATION_CONTROL_METHODS: &[&str] = &[
-    "nodeOperationStart",
-    "nodeOperationStatus",
-    "nodeOperationEvents",
-    "nodeOperationCancel",
-    "storageOperationStatus",
-    "storageOperationCancel",
-];
-
 pub(crate) fn dispatch(
     context: &DispatchContext<'_>,
     method: &str,
     args: Value,
 ) -> Result<Option<Value>> {
-    let Some(command) = lookup(method) else {
+    let Some(command) = inspector_command(method) else {
         return Ok(None);
     };
     match command {
-        InspectorCommand::Operation => {
-            context
-                .operations
-                .try_bridge_call(context.runtime, method, &args)
+        InspectorCommand::Operation(command) => context
+            .operations
+            .bridge_call(context.runtime, command, &args)
+            .map(Some),
+        InspectorCommand::Runtime(method) => {
+            runtime_methods::handle(context.runtime, method, args).map(Some)
         }
-        InspectorCommand::Runtime => runtime_methods::try_handle(context.runtime, method, args),
         InspectorCommand::CapabilitiesReport => {
             bail!("capability_module does not expose Inspector capability listing")
         }
@@ -59,70 +44,14 @@ pub(crate) fn dispatch(
     }
 }
 
-fn lookup(method: &str) -> Option<InspectorCommand> {
-    if OPERATION_CONTROL_METHODS.contains(&method) || operation_route(method).is_some() {
-        return Some(InspectorCommand::Operation);
-    }
-    if runtime_methods::is_runtime_method(method) {
-        return Some(InspectorCommand::Runtime);
-    }
-    match method {
-        "capabilitiesReport" => Some(InspectorCommand::CapabilitiesReport),
-        "callModule" => Some(InspectorCommand::CallModule),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
-
     use anyhow::{Context as _, Result};
     use serde_json::json;
     use tokio::runtime::Runtime;
 
     use super::*;
-    use crate::inspector::operations::{RuntimeOperationInterface, operation_method_names};
-
-    #[test]
-    fn catalog_owns_operation_names() -> Result<()> {
-        for method in operation_method_names().chain(OPERATION_CONTROL_METHODS.iter().copied()) {
-            if lookup(method) != Some(InspectorCommand::Operation) {
-                bail!("operation method `{method}` missing from dispatch catalog");
-            }
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn catalog_owns_runtime_names() -> Result<()> {
-        for method in runtime_methods::RUNTIME_METHODS {
-            let name = method.as_str();
-            if lookup(name) != Some(InspectorCommand::Runtime) {
-                bail!("runtime method `{name}` missing from dispatch catalog");
-            }
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn catalog_names_are_unique() -> Result<()> {
-        let mut names = HashSet::new();
-        for method in operation_method_names()
-            .chain(OPERATION_CONTROL_METHODS.iter().copied())
-            .chain(
-                runtime_methods::RUNTIME_METHODS
-                    .iter()
-                    .map(|method| method.as_str()),
-            )
-            .chain(["capabilitiesReport", "callModule"])
-        {
-            if !names.insert(method) {
-                bail!("duplicate inspector method `{method}`");
-            }
-        }
-        Ok(())
-    }
+    use crate::inspector::operations::RuntimeOperationInterface;
 
     #[test]
     fn dispatch_handles_call_module_special() -> Result<()> {

@@ -730,17 +730,7 @@ fn inspection_validity_row(label: &str, valid: bool) -> TransactionInspectionRow
     }
 }
 
-#[cfg(test)]
-pub(crate) fn instruction_word_row(index: usize, word: u32) -> TransactionInspectionRow {
-    transaction_instruction_word_row(index, word)
-}
-
-#[cfg(not(test))]
 fn instruction_word_row(index: usize, word: u32) -> TransactionInspectionRow {
-    transaction_instruction_word_row(index, word)
-}
-
-fn transaction_instruction_word_row(index: usize, word: u32) -> TransactionInspectionRow {
     TransactionInspectionRow {
         label: "instruction_word".to_owned(),
         index: Some(index),
@@ -789,4 +779,238 @@ fn prehash_signature_is_valid(
     verifying_key
         .verify_prehash(message_hash, &signature)
         .is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn public_summary() -> TransactionSummary {
+        TransactionSummary {
+            hash: "abcd1234".to_owned(),
+            kind: "Public".to_owned(),
+            program_id_hex: Some(
+                "0100000002000000030000000400000005000000060000000700000008000000".to_owned(),
+            ),
+            account_ids: vec!["acct-a".to_owned(), "acct-b".to_owned()],
+            nonces: vec!["9".to_owned()],
+            instruction_data: vec![7, 255],
+            bytecode_len: None,
+            raw_signature_valid: Some(true),
+            message_prehash: Some("feedbeef".to_owned()),
+            prehash_signature_valid: Some(false),
+        }
+    }
+
+    #[test]
+    fn instruction_word_row_includes_index_decimal_and_hex() {
+        let row = instruction_word_row(2, 255);
+
+        assert_eq!(row.label, "instruction_word");
+        assert_eq!(row.index, Some(2));
+        assert_eq!(row.value, "255");
+        assert_eq!(row.decimal.as_deref(), Some("255"));
+        assert_eq!(row.hex.as_deref(), Some("0x000000ff"));
+        assert_eq!(row.base58, None);
+    }
+
+    #[test]
+    fn inspect_transaction_summary_builds_human_sections() {
+        let summary = TransactionSummary {
+            account_ids: vec!["acct-a".to_owned(), "acct-b".to_owned()],
+            nonces: vec!["9".to_owned(), "10".to_owned()],
+            bytecode_len: Some(42),
+            ..public_summary()
+        };
+
+        let report = inspect_transaction_summary(&summary);
+        assert_eq!(report.hash, summary.hash);
+        assert_eq!(report.kind, summary.kind);
+        assert_eq!(report.sections.len(), 6);
+
+        let program_section = report
+            .sections
+            .iter()
+            .find(|section| section.title == "Program");
+        assert!(program_section.is_some(), "missing Program section");
+        let Some(program_section) = program_section else {
+            return;
+        };
+        let program_row = program_section
+            .rows
+            .iter()
+            .find(|row| row.label == "program_id");
+        assert!(program_row.is_some(), "missing program_id row");
+        let Some(program_row) = program_row else {
+            return;
+        };
+        assert_eq!(
+            program_row.hex.as_deref(),
+            summary.program_id_hex.as_deref()
+        );
+        assert!(program_row.base58.is_some());
+
+        let instruction_section = report
+            .sections
+            .iter()
+            .find(|section| section.title == "Instruction words");
+        assert!(
+            instruction_section.is_some(),
+            "missing Instruction words section"
+        );
+        let Some(instruction_section) = instruction_section else {
+            return;
+        };
+        let instruction_row = instruction_section.rows.get(1);
+        assert!(instruction_row.is_some(), "missing instruction row 1");
+        let Some(instruction_row) = instruction_row else {
+            return;
+        };
+        assert_eq!(instruction_row.index, Some(1));
+        assert_eq!(instruction_row.decimal.as_deref(), Some("255"));
+        assert_eq!(instruction_row.hex.as_deref(), Some("0x000000ff"));
+
+        let validation_section = report
+            .sections
+            .iter()
+            .find(|section| section.title == "Validation");
+        assert!(validation_section.is_some(), "missing Validation section");
+        let Some(validation_section) = validation_section else {
+            return;
+        };
+        let raw_signature_row = validation_section.rows.first();
+        assert!(
+            raw_signature_row.is_some(),
+            "missing raw signature validation row"
+        );
+        let Some(raw_signature_row) = raw_signature_row else {
+            return;
+        };
+        let prehash_signature_row = validation_section.rows.get(2);
+        assert!(
+            prehash_signature_row.is_some(),
+            "missing prehash signature validation row"
+        );
+        let Some(prehash_signature_row) = prehash_signature_row else {
+            return;
+        };
+        assert_eq!(raw_signature_row.value, "valid");
+        assert_eq!(prehash_signature_row.value, "invalid");
+    }
+
+    #[test]
+    fn trace_transaction_summary_builds_public_validation_timeline() {
+        let summary = public_summary();
+
+        let report = trace_transaction_summary(&summary);
+
+        assert_eq!(report.hash, summary.hash);
+        assert_eq!(report.kind, summary.kind);
+        assert_eq!(report.source, "sequencer transaction summary");
+        assert!(
+            report
+                .limitations
+                .iter()
+                .any(|item| item.contains("no runtime execution trace")),
+            "{report:?}"
+        );
+
+        let raw_validation = report
+            .steps
+            .iter()
+            .find(|step| step.label == "raw witness validation");
+        assert!(raw_validation.is_some(), "missing raw validation step");
+        let Some(raw_validation) = raw_validation else {
+            return;
+        };
+        assert_eq!(raw_validation.phase, "validation");
+        assert_eq!(raw_validation.status.as_deref(), Some("valid"));
+
+        let public_program = report
+            .steps
+            .iter()
+            .find(|step| step.label == "public program invocation");
+        assert!(public_program.is_some(), "missing public program step");
+        let Some(public_program) = public_program else {
+            return;
+        };
+        assert_eq!(
+            public_program
+                .refs
+                .as_ref()
+                .and_then(|refs| refs.program_id_hex.as_deref()),
+            summary.program_id_hex.as_deref()
+        );
+
+        let account_step = report
+            .steps
+            .iter()
+            .find(|step| step.label == "account reference");
+        assert!(account_step.is_some(), "missing account reference step");
+        let Some(account_step) = account_step else {
+            return;
+        };
+        assert_eq!(
+            account_step
+                .refs
+                .as_ref()
+                .and_then(|refs| refs.account_id.as_deref()),
+            Some("acct-a")
+        );
+
+        let invalid_prehash = report
+            .steps
+            .iter()
+            .find(|step| step.label == "prehash witness validation");
+        assert!(invalid_prehash.is_some(), "missing prehash validation step");
+        let Some(invalid_prehash) = invalid_prehash else {
+            return;
+        };
+        assert_eq!(invalid_prehash.status.as_deref(), Some("invalid"));
+        assert_eq!(invalid_prehash.severity.as_deref(), Some("warning"));
+    }
+
+    #[test]
+    fn trace_transaction_summary_builds_program_deployment_step() {
+        let summary = TransactionSummary {
+            hash: "deploy1234".to_owned(),
+            kind: "ProgramDeployment".to_owned(),
+            program_id_hex: Some(
+                "0100000002000000030000000400000005000000060000000700000008000000".to_owned(),
+            ),
+            account_ids: vec![],
+            nonces: vec![],
+            instruction_data: vec![],
+            bytecode_len: Some(42),
+            raw_signature_valid: None,
+            message_prehash: None,
+            prehash_signature_valid: None,
+        };
+
+        let report = trace_transaction_summary(&summary);
+
+        let deployment = report
+            .steps
+            .iter()
+            .find(|step| step.label == "program deployment payload");
+        assert!(deployment.is_some(), "missing deployment step");
+        let Some(deployment) = deployment else {
+            return;
+        };
+        assert_eq!(deployment.phase, "program");
+        assert!(
+            deployment
+                .details
+                .iter()
+                .any(|detail| detail.contains("bytecode length 42 bytes")),
+            "{deployment:?}"
+        );
+        assert_eq!(
+            deployment
+                .refs
+                .as_ref()
+                .and_then(|refs| refs.program_id_hex.as_deref()),
+            summary.program_id_hex.as_deref()
+        );
+    }
 }

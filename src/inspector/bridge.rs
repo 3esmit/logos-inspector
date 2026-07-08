@@ -1,8 +1,11 @@
 use anyhow::{Context as _, Result, bail};
-use serde_json::{Value, json};
+use serde_json::Value;
+#[cfg(test)]
+use serde_json::json;
 use tokio::runtime::Runtime;
 
 use super::dispatch_catalog::{DispatchContext, dispatch};
+use crate::bridge_envelope::bridge_response_json;
 #[cfg(test)]
 use crate::source_routing::{
     self, CoreEndpointMode, DEFAULT_DELIVERY_REST_ENDPOINT, DEFAULT_STORAGE_REST_ENDPOINT,
@@ -15,14 +18,6 @@ pub const INSPECTOR_MODULE: &str = "logos_inspector";
 const BLOCKCHAIN_MODULE: &str = source_routing::BLOCKCHAIN_MODULE;
 #[cfg(test)]
 const INDEXER_MODULE: &str = source_routing::INDEXER_MODULE;
-
-#[derive(Debug, serde::Serialize)]
-struct BridgeResponse {
-    ok: bool,
-    value: Value,
-    text: String,
-    error: String,
-}
 
 pub struct InspectorBridge {
     runtime: Runtime,
@@ -94,43 +89,6 @@ pub fn call_inspector_response_json(
     call_module_response_json(bridge, INSPECTOR_MODULE, method, args_json)
 }
 
-fn bridge_response_json(result: Result<Value>) -> String {
-    let response = match result {
-        Ok(value) => BridgeResponse {
-            ok: true,
-            text: format_bridge_value(&value),
-            value,
-            error: String::new(),
-        },
-        Err(error) => BridgeResponse {
-            ok: false,
-            value: Value::Null,
-            text: String::new(),
-            error: format!("{error:#}"),
-        },
-    };
-
-    match serde_json::to_string(&response) {
-        Ok(value) => value,
-        Err(error) => {
-            let fallback = json!({
-                "ok": false,
-                "value": null,
-                "text": "",
-                "error": format!("failed to serialize bridge response: {error}"),
-            });
-            fallback.to_string()
-        }
-    }
-}
-
-fn format_bridge_value(value: &Value) -> String {
-    match value {
-        Value::String(value) => value.clone(),
-        value => serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string()),
-    }
-}
-
 pub(crate) fn to_value(value: impl serde::Serialize) -> Result<Value> {
     serde_json::to_value(value).context("failed to serialize bridge response")
 }
@@ -147,6 +105,25 @@ pub(crate) async fn blocking_value(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn call_module_response_json_wraps_parse_errors() -> Result<()> {
+        let bridge = InspectorBridge::new()?;
+        let response = call_module_response_json(&bridge, INSPECTOR_MODULE, "sourcePolicy", "{");
+        let response: Value = serde_json::from_str(&response)?;
+
+        if response.get("ok").and_then(Value::as_bool) != Some(false)
+            || !response.get("value").is_some_and(Value::is_null)
+            || response.get("text").and_then(Value::as_str) != Some("")
+            || response
+                .get("error")
+                .and_then(Value::as_str)
+                .is_none_or(|error| !error.contains("failed to parse bridge args"))
+        {
+            bail!("unexpected bridge parse error response: {response}");
+        }
+        Ok(())
+    }
 
     #[test]
     fn indexer_status_bridge_requires_endpoint_argument() -> Result<()> {
