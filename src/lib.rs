@@ -65,7 +65,7 @@ pub mod local_indexer {
 // Compatibility shims. First-party code should prefer the domain modules above.
 pub use blockchain::{
     ChannelOperationMatch, ChannelScanReport, ChannelSummary, channel_scan, channel_state,
-    extract_channel_operations, summarize_channel_operations,
+    extract_channel_operations, logos_node_cryptarchia_info, summarize_channel_operations,
 };
 pub use decode::{
     AccountIdlDecodeReport, DecodedField, EventIdlDecodeReport, InstructionDecodeReport,
@@ -114,8 +114,8 @@ pub use overview::{
 pub use probe::{ProbeField, ProbeReport};
 pub(crate) use rpc::json_rpc_result;
 pub use rpc::{
-    RawRpcReport, logos_node_cryptarchia_info, raw_http_json, raw_json_rpc,
-    raw_json_rpc_optional_result, raw_json_rpc_result, raw_rpc_report,
+    RawRpcReport, raw_http_json, raw_json_rpc, raw_json_rpc_optional_result, raw_json_rpc_result,
+    raw_rpc_report,
 };
 pub use source_routing::{
     DEFAULT_DELIVERY_METRICS_ENDPOINT, DEFAULT_DELIVERY_REST_ENDPOINT,

@@ -2,9 +2,10 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::{
+    blockchain::logos_node_cryptarchia_info,
     lez::{indexer_health, last_sequencer_block_id, sequencer_health, sequencer_program_ids},
     probe::ProbeField,
-    rpc::{logos_node_cryptarchia_info, raw_json_rpc_optional_result},
+    rpc::raw_json_rpc_optional_result,
 };
 
 #[derive(Debug, Clone, Serialize)]

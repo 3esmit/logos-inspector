@@ -6,6 +6,7 @@ mod decode;
 mod local_nodes;
 mod module_reports;
 mod network;
+mod social;
 mod state;
 mod storage;
 mod wallet;
@@ -190,7 +191,7 @@ pub(crate) fn handle(runtime: &Runtime, method: RuntimeMethod, args: Value) -> R
         RuntimeMethod::StorageExists => storage::storage_exists(runtime, args)?,
         RuntimeMethod::StorageBackupSettings => storage::storage_backup_settings(runtime, args)?,
         RuntimeMethod::StorageRestoreSettings => storage::storage_restore_settings(runtime, args)?,
-        RuntimeMethod::SocialMessagesFromStore => storage::social_messages_from_store(args)?,
+        RuntimeMethod::SocialMessagesFromStore => social::social_messages_from_store(args)?,
     };
     Ok(value)
 }
