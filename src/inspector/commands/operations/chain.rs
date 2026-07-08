@@ -12,130 +12,130 @@ use crate::{
 
 use super::super::value::{blocking_value, to_value};
 use super::RuntimeOperationRequest;
-use super::spec::{OperationCatalogEntry, OperationDomain, OperationMethod};
+use super::spec::{OperationDefinition, OperationDomain, OperationMethod};
 
-pub(super) const OPERATION_CATALOG: &[OperationCatalogEntry] = &[
-    OperationCatalogEntry::new(
+pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
+    OperationDefinition::new(
         OperationMethod::BlockchainNode,
         "blockchainNode",
         OperationDomain::Blockchain,
         "Blockchain node",
     ),
-    OperationCatalogEntry::new(
+    OperationDefinition::new(
         OperationMethod::BlockchainBlocks,
         "blockchainBlocks",
         OperationDomain::Blockchain,
         "Blockchain blocks",
     ),
-    OperationCatalogEntry::new(
+    OperationDefinition::new(
         OperationMethod::BlockchainLiveBlocks,
         "blockchainLiveBlocks",
         OperationDomain::Blockchain,
         "Blockchain live blocks",
     ),
-    OperationCatalogEntry::new(
+    OperationDefinition::new(
         OperationMethod::BlockchainBlock,
         "blockchainBlock",
         OperationDomain::Blockchain,
         "Blockchain block",
     ),
-    OperationCatalogEntry::new(
+    OperationDefinition::new(
         OperationMethod::BlockchainTransaction,
         "blockchainTransaction",
         OperationDomain::Blockchain,
         "Blockchain transaction",
     ),
-    OperationCatalogEntry::new(
+    OperationDefinition::new(
         OperationMethod::Health,
         "health",
         OperationDomain::Execution,
         "Execution health",
     ),
-    OperationCatalogEntry::new(
+    OperationDefinition::new(
         OperationMethod::Head,
         "head",
         OperationDomain::Execution,
         "Execution head",
     ),
-    OperationCatalogEntry::new(
+    OperationDefinition::new(
         OperationMethod::Programs,
         "programs",
         OperationDomain::Execution,
         "Programs",
     ),
-    OperationCatalogEntry::new(
+    OperationDefinition::new(
         OperationMethod::Block,
         "block",
         OperationDomain::Execution,
         "Sequencer block",
     ),
-    OperationCatalogEntry::new(
+    OperationDefinition::new(
         OperationMethod::SequencerBlocks,
         "sequencerBlocks",
         OperationDomain::Execution,
         "Sequencer blocks",
     ),
-    OperationCatalogEntry::new(
+    OperationDefinition::new(
         OperationMethod::Transaction,
         "transaction",
         OperationDomain::Execution,
         "Transaction",
     ),
-    OperationCatalogEntry::new(
+    OperationDefinition::new(
         OperationMethod::InspectTransaction,
         "inspectTransaction",
         OperationDomain::Execution,
         "Transaction inspection",
     ),
-    OperationCatalogEntry::new(
+    OperationDefinition::new(
         OperationMethod::TraceTransaction,
         "traceTransaction",
         OperationDomain::Execution,
         "Transaction trace",
     ),
-    OperationCatalogEntry::new(
+    OperationDefinition::new(
         OperationMethod::Account,
         "account",
         OperationDomain::Execution,
         "Account inspection",
     ),
-    OperationCatalogEntry::new(
+    OperationDefinition::new(
         OperationMethod::ResolveLezTarget,
         "resolveLezTarget",
         OperationDomain::Execution,
         "LEZ lookup",
     ),
-    OperationCatalogEntry::new(
+    OperationDefinition::new(
         OperationMethod::IndexerHealth,
         "indexerHealth",
         OperationDomain::Indexer,
         "Indexer health",
     ),
-    OperationCatalogEntry::new(
+    OperationDefinition::new(
         OperationMethod::IndexerStatus,
         "indexerStatus",
         OperationDomain::Indexer,
         "Indexer status",
     ),
-    OperationCatalogEntry::new(
+    OperationDefinition::new(
         OperationMethod::IndexerFinalizedHead,
         "indexerFinalizedHead",
         OperationDomain::Indexer,
         "Indexer finalized head",
     ),
-    OperationCatalogEntry::new(
+    OperationDefinition::new(
         OperationMethod::IndexerBlocks,
         "indexerBlocks",
         OperationDomain::Indexer,
         "Indexer blocks",
     ),
-    OperationCatalogEntry::new(
+    OperationDefinition::new(
         OperationMethod::IndexerBlockByHash,
         "indexerBlockByHash",
         OperationDomain::Indexer,
         "Indexer block",
     ),
-    OperationCatalogEntry::new(
+    OperationDefinition::new(
         OperationMethod::IndexerTransferRecipients,
         "indexerTransferRecipients",
         OperationDomain::Indexer,

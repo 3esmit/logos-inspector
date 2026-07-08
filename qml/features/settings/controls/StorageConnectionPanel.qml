@@ -142,26 +142,30 @@ SourceSettingsPanel {
     }
 
     function sourceIndexFor(value) {
-        return root.modelRef.sourceModeIndexFor("storage", value, root.sourceOptions)
+        return root.modelRef.sourceRouting.sourceModeIndexFor("storage", value, root.sourceOptions)
     }
 
     function sourceModeAt(index) {
-        return root.modelRef.sourceModeAt(index, root.sourceOptions)
+        return root.modelRef.sourceRouting.sourceModeAt(index, root.sourceOptions)
+    }
+
+    function storageSource() {
+        return root.modelRef.sourceRouting.storageSourceView()
     }
 
     function storageSourceMode() {
-        return root.modelRef.effectiveStorageSourceMode(root.modelRef.storageSourceMode)
+        return root.storageSource().effectiveMode
     }
 
     function storageRestEnabled() {
-        return root.modelRef.sourceModeUsesEndpoint("storage", root.modelRef.storageSourceMode, "rest")
+        return root.storageSource().usesRestEndpoint
     }
 
     function storageMetricsEnabled() {
-        return root.modelRef.sourceModeUsesEndpoint("storage", root.modelRef.storageSourceMode, "metrics")
+        return root.storageSource().usesMetricsEndpoint
     }
 
     function storageDataEnabled() {
-        return root.modelRef.sourceModeSupportsCidProbe("storage", root.modelRef.storageSourceMode)
+        return root.storageSource().supportsCidProbe
     }
 }

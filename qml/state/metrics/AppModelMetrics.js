@@ -1,5 +1,7 @@
 .import "../../services/BridgeHelpers.js" as BridgeHelpers
 
+.import "../status/StatusFactsProjection.js" as StatusFactsProjection
+
 function valueText(root, value) {
     with (root) {
         const scalar = root.scalarValue(value)
@@ -660,47 +662,7 @@ function dashboardMetricText(root, key) {
 
 function recordDashboardSnapshot(root) {
     with (root) {
-        const keys = [
-            "bedrock.peer_count",
-            "bedrock.tip_minus_lib",
-            "bedrock.finality_lag_seconds",
-            "lez.pending_tx_count",
-            "lez.mempool_tx_count",
-            "lez.rejected_tx_count_recent",
-            "lez.blocks_produced_recent",
-            "lez.pending_blocks_count",
-            "indexer.indexer_lag_vs_sequencer_head",
-            "storage.peer_count",
-            "storage.shared_files_count",
-            "storage.manifest_count",
-            "storage.local_storage_used",
-            "storage.active_uploads",
-            "storage.active_downloads",
-            "storage.failed_transfers_recent",
-            "storage.failed_transfers_total",
-            "messaging.peer_count",
-            "messaging.active_subscriptions",
-            "messaging.content_topics",
-            "messaging.outbound_queue",
-            "messaging.message_sent_events_recent",
-            "messaging.message_propagated_events_recent",
-            "messaging.message_received_events_recent",
-            "messaging.message_error_events_recent",
-            "messaging.network_ingress_recent",
-            "messaging.network_egress_recent",
-            "messaging.relay_ingress_recent",
-            "messaging.relay_egress_recent",
-            "messaging.service_ingress_recent",
-            "messaging.service_egress_recent",
-            "messaging.store_query_requests_recent",
-            "messaging.filter_requests_recent",
-            "messaging.lightpush_requests_recent",
-            "messaging.peer_exchange_requests_recent",
-            "messaging.store_messages",
-            "messaging.store_errors_recent",
-            "messaging.publish_latency_ms",
-            "messaging.receive_latency_ms"
-        ]
+        const keys = StatusFactsProjection.dashboardGraphKeys()
         const next = copyMap(dashboardMetricHistory)
         const nextSeen = copyMap(dashboardMetricLastSeen)
         const now = Date.now()

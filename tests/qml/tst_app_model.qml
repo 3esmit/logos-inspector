@@ -4,6 +4,7 @@ import "../../qml/services"
 import "../../qml/state"
 import "../../qml/state/network/SourcePolicyCatalog.js" as SourcePolicyCatalog
 import "../../qml/state/network/SourceDiagnosticsProjection.js" as SourceDiagnostics
+import "../../qml/state/status/StatusFactsProjection.js" as StatusFactsProjection
 import "fixtures"
 
 TestCase {
@@ -375,6 +376,29 @@ TestCase {
         compare(model.storageSourceTarget(), model.configuredStorageRestUrl())
     }
 
+    function test_source_routing_state_owns_runtime_source_views() {
+        const delivery = model.sourceRouting.deliverySourceView()
+        compare(delivery.mode, "auto")
+        compare(delivery.effectiveMode, "rest")
+        compare(delivery.label, "Auto: Direct Waku REST")
+        compare(delivery.target, model.configuredMessagingRestUrl())
+        compare(delivery.reportArgs()[0], "rest")
+        compare(delivery.reportArgs()[1], model.configuredMessagingRestUrl())
+
+        const storage = model.sourceRouting.storageSourceView()
+        compare(storage.mode, "auto")
+        compare(storage.effectiveMode, "rest")
+        compare(storage.target, model.configuredStorageRestUrl())
+        compare(storage.reportArgs(false)[0], "rest")
+        compare(storage.reportArgs(false)[1], model.configuredStorageRestUrl())
+
+        const execution = model.sourceRouting.coreSourceView("execution")
+        compare(execution.role, "execution")
+        compare(execution.effectiveMode, "rpc")
+        compare(execution.target, model.sequencerUrl)
+        compare(execution.args(["head"])[0], model.sequencerUrl)
+    }
+
     function test_source_policy_catalog_fallback_supports_pending_modes_without_bridge_policy() {
         model.sourcePolicy = ({})
         model.sourcePolicyLoaded = false
@@ -543,6 +567,18 @@ TestCase {
 
         verify(defaults["storage.failed_transfers_recent"] === true)
         verify(defaults["storage.failed_transfers_total"] !== true)
+    }
+
+    function test_status_facts_dashboard_projection_owns_graph_keys_and_labels() {
+        const keys = StatusFactsProjection.dashboardGraphKeys()
+
+        verify(keys.indexOf("storage.failed_transfers_recent") >= 0)
+        verify(keys.indexOf("storage.failed_transfers_total") >= 0)
+        verify(keys.indexOf("messaging.network_ingress_recent") >= 0)
+        compare(StatusFactsProjection.dashboardMetricLabel("storage.failed_transfers_total"), "transfer failures total")
+        compare(StatusFactsProjection.dashboardMetricGroup("messaging.network_ingress_recent"), "Messaging / Delivery")
+        compare(StatusFactsProjection.dashboardMetricTone("storage.failed_transfers_recent", 2), "error")
+        compare(StatusFactsProjection.dashboardMetricTone("storage.failed_transfers_total", 2), "neutral")
     }
 
     function test_explicit_rest_blank_urls_use_visible_defaults() {

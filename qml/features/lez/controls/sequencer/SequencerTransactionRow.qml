@@ -17,9 +17,9 @@ DataTableRow {
             return
         }
         if (column === 1) {
-            root.modelRef.openReference("transaction", root.hash)
+            root.modelRef.entityNavigation.openReference("transaction", root.hash)
         } else if (column === 3) {
-            root.modelRef.openReference("program", root.program)
+            root.modelRef.entityNavigation.openReference("program", root.program)
         }
     }
 

@@ -5,9 +5,9 @@ use crate::{LocalNodeActionRequest, local_nodes_action, source_routing::Args};
 
 use super::super::value::{blocking_value, to_value};
 use super::RuntimeOperationRequest;
-use super::spec::{OperationCatalogEntry, OperationDomain, OperationMethod};
+use super::spec::{OperationDefinition, OperationDomain, OperationMethod};
 
-pub(super) const OPERATION_CATALOG: &[OperationCatalogEntry] = &[OperationCatalogEntry::new(
+pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[OperationDefinition::new(
     OperationMethod::LocalNodesAction,
     "localNodesAction",
     OperationDomain::LocalNodes,

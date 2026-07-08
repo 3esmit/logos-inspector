@@ -29,22 +29,37 @@ function dashboardRefreshInterval(root) {
 }
 
 function coreSourceView(root, role) {
+    if (root.sourceRouting && typeof root.sourceRouting.coreSourceView === "function") {
+        return root.sourceRouting.coreSourceView(role)
+    }
     return SourceRoutingUi.coreSourceView(root, role)
 }
 
 function deliverySourceView(root) {
+    if (root.sourceRouting && typeof root.sourceRouting.deliverySourceView === "function") {
+        return root.sourceRouting.deliverySourceView()
+    }
     return SourceRoutingUi.deliverySourceView(root)
 }
 
 function storageSourceView(root) {
+    if (root.sourceRouting && typeof root.sourceRouting.storageSourceView === "function") {
+        return root.sourceRouting.storageSourceView()
+    }
     return SourceRoutingUi.storageSourceView(root)
 }
 
 function deliveryReportView(root, report) {
+    if (root.sourceRouting && typeof root.sourceRouting.deliveryReportView === "function") {
+        return root.sourceRouting.deliveryReportView(report)
+    }
     return SourceRoutingUi.deliveryReportView(root, report)
 }
 
 function storageReportView(root, report) {
+    if (root.sourceRouting && typeof root.sourceRouting.storageReportView === "function") {
+        return root.sourceRouting.storageReportView(report)
+    }
     return SourceRoutingUi.storageReportView(root, report)
 }
 

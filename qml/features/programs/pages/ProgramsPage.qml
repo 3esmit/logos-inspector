@@ -257,7 +257,7 @@ ColumnLayout {
             theme: root.theme
             title: qsTr("Program file")
             rows: root.programFileRows()
-            onLinkActivated: (kind, value) => root.model.openReference(kind, value)
+            onLinkActivated: (kind, value) => root.model.entityNavigation.openReference(kind, value)
         }
 
         ProgramContextSummary {
@@ -512,7 +512,7 @@ ColumnLayout {
                     text: qsTr("Wallet")
                     enabled: !root.model.busy
                     Layout.preferredWidth: 104
-                    onClicked: root.model.openLocalWallet("", "profiles")
+                    onClicked: root.model.entityNavigation.openLocalWallet("", "profiles")
                 }
 
                 Item {

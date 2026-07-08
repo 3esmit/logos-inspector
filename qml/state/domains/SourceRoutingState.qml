@@ -1,6 +1,7 @@
 import QtQuick
 import "../network/SourcePolicyCatalog.js" as SourcePolicyCatalog
 import "../network/SourcePolicyProjection.js" as SourcePolicyProjection
+import "../network/SourceRoutingUi.js" as SourceRoutingUi
 
 QtObject {
     id: root
@@ -9,6 +10,28 @@ QtObject {
 
     property var sourcePolicy: ({})
     property bool sourcePolicyLoaded: false
+    property string blockchainModule: ""
+    property string indexerModule: ""
+    property string deliveryModule: ""
+    property string storageModule: ""
+    property string blockchainSourceMode: "auto"
+    property string indexerSourceMode: "auto"
+    property string executionSourceMode: "rpc"
+    property string messagingSourceMode: "auto"
+    property string storageSourceMode: "auto"
+    property string nodeUrl: ""
+    property string indexerUrl: ""
+    property string sequencerUrl: ""
+    property string messagingRestUrl: ""
+    property string messagingMetricsUrl: ""
+    property string messagingNetworkPreset: ""
+    property bool messagingMutatingDiagnosticsEnabled: false
+    property string storageRestUrl: ""
+    property string storageMetricsUrl: ""
+    property string storageNetworkPreset: ""
+    property string storageCidProbe: ""
+    property bool storagePrivilegedDebugEnabled: false
+    property bool storageMutatingDiagnosticsEnabled: false
 
     function loadSourcePolicy() {
         const response = gateway.callInspector("sourcePolicy", [])
@@ -78,6 +101,18 @@ QtObject {
         return SourcePolicyProjection.coreSourceArgs(root, sourceMode, endpoint, extra)
     }
 
+    function blockchainArgs(extra) {
+        return coreSourceArgs(blockchainSourceMode, nodeUrl, extra)
+    }
+
+    function indexerArgs(extra) {
+        return coreSourceArgs(indexerSourceMode, indexerUrl, extra)
+    }
+
+    function executionArgs(extra) {
+        return coreSourceArgs(executionSourceMode, sequencerUrl, extra)
+    }
+
     function accountLookupArgs(executionSourceMode, sequencerEndpoint, indexerSourceMode, indexerEndpoint, account, idlJson, accountType) {
         return SourcePolicyProjection.accountLookupArgs(
             root,
@@ -91,6 +126,10 @@ QtObject {
         )
     }
 
+    function accountArgs(account, idlJson, accountType) {
+        return accountLookupArgs(executionSourceMode, sequencerUrl, indexerSourceMode, indexerUrl, account, idlJson, accountType)
+    }
+
     function lezLookupArgs(executionSourceMode, sequencerEndpoint, indexerSourceMode, indexerEndpoint, target) {
         return SourcePolicyProjection.lezLookupArgs(
             root,
@@ -102,11 +141,21 @@ QtObject {
         )
     }
 
+    function lezArgs(target) {
+        return lezLookupArgs(executionSourceMode, sequencerUrl, indexerSourceMode, indexerUrl, target)
+    }
+
     function deliverySourceReportArgs(sourceMode, restEndpoint, metricsEndpoint) {
+        if (arguments.length === 0) {
+            return SourceRoutingUi.deliverySourceView(root).reportArgs()
+        }
         return SourcePolicyProjection.deliverySourceReportArgs(root, sourceMode, restEndpoint, metricsEndpoint)
     }
 
     function storageSourceReportArgs(sourceMode, restEndpoint, metricsEndpoint, cid, includeCidProbe, privilegedDebugEnabled) {
+        if (arguments.length <= 1) {
+            return SourceRoutingUi.storageSourceView(root).reportArgs(sourceMode === true)
+        }
         return SourcePolicyProjection.storageSourceReportArgs(
             root,
             sourceMode,
@@ -131,12 +180,12 @@ QtObject {
     }
 
     function configuredMessagingRestUrl(value) {
-        const endpoint = String(value || "").trim()
+        const endpoint = String(value === undefined ? messagingRestUrl : (value || "")).trim()
         return endpoint.length ? endpoint : sourcePolicyDefault("delivery_rest_endpoint", "http://127.0.0.1:8645")
     }
 
     function configuredStorageRestUrl(value) {
-        const endpoint = String(value || "").trim()
+        const endpoint = String(value === undefined ? storageRestUrl : (value || "")).trim()
         return endpoint.length ? endpoint : sourcePolicyDefault("storage_rest_endpoint", "http://127.0.0.1:8080/api/storage/v1")
     }
 
@@ -168,5 +217,73 @@ QtObject {
     function effectiveStorageSourceMode(value) {
         const source = sourceModePolicy("storage", resolvedSourceModeKey("storage", value))
         return String(source.effective || "rest")
+    }
+
+    function blockchainSourceLabel() {
+        return coreSourceLabel(blockchainSourceMode, qsTr("Bedrock RPC"))
+    }
+
+    function blockchainSourceTarget() {
+        return effectiveCoreSourceMode(blockchainSourceMode) === "module" ? blockchainModule : String(nodeUrl || "")
+    }
+
+    function indexerSourceLabel() {
+        return coreSourceLabel(indexerSourceMode, qsTr("Indexer RPC"))
+    }
+
+    function indexerSourceTarget() {
+        return effectiveCoreSourceMode(indexerSourceMode) === "module" ? indexerModule : String(indexerUrl || "")
+    }
+
+    function executionSourceLabel() {
+        return effectiveCoreSourceMode(executionSourceMode) === "module" ? qsTr("LEZ core module") : qsTr("Sequencer RPC")
+    }
+
+    function executionSourceTarget() {
+        return effectiveCoreSourceMode(executionSourceMode) === "module" ? "lez_core" : String(sequencerUrl || "")
+    }
+
+    function deliverySourceLabel() {
+        return sourceLabel("delivery", messagingSourceMode, qsTr("Direct Waku REST"))
+    }
+
+    function deliverySourceTarget() {
+        return sourceTarget("delivery", messagingSourceMode, {
+            module: deliveryModule,
+            rest: configuredMessagingRestUrl(),
+            metrics: messagingMetricsUrl
+        })
+    }
+
+    function storageSourceLabel() {
+        return sourceLabel("storage", storageSourceMode, qsTr("Standalone REST"))
+    }
+
+    function storageSourceTarget() {
+        return sourceTarget("storage", storageSourceMode, {
+            module: storageModule,
+            rest: configuredStorageRestUrl(),
+            metrics: storageMetricsUrl
+        })
+    }
+
+    function coreSourceView(role) {
+        return SourceRoutingUi.coreSourceView(root, role)
+    }
+
+    function deliverySourceView() {
+        return SourceRoutingUi.deliverySourceView(root)
+    }
+
+    function storageSourceView() {
+        return SourceRoutingUi.storageSourceView(root)
+    }
+
+    function deliveryReportView(report) {
+        return SourceRoutingUi.deliveryReportView(root, report)
+    }
+
+    function storageReportView(report) {
+        return SourceRoutingUi.storageReportView(root, report)
     }
 }

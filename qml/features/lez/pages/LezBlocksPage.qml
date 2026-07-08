@@ -45,7 +45,7 @@ ColumnLayout {
         }
         onCellActivated: function (row, column, cell, rowData) {
             if ((column === 0 || column === 1) && rowData.blockHash.length > 0) {
-                root.model.openReference("indexerBlock", rowData.blockHash, rowData.rawBlock)
+                root.model.entityNavigation.openReference("indexerBlock", rowData.blockHash, rowData.rawBlock)
             }
         }
     }

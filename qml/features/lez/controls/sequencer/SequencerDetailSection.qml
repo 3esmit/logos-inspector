@@ -25,7 +25,7 @@ ColumnLayout {
         surfaceColor: root.theme.surface
         onLinkActivated: function (kind, value) {
             if (root.modelRef !== null) {
-                root.modelRef.openReference(kind, value)
+                root.modelRef.entityNavigation.openReference(kind, value)
             }
         }
     }

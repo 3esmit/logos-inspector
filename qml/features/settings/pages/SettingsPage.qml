@@ -898,7 +898,7 @@ ColumnLayout {
 
     function populateSourceOptions(targetModel, family) {
         targetModel.clear()
-        const options = settingsRoot.model.sourceModeOptions(family)
+        const options = settingsRoot.model.sourceRouting.sourceModeOptions(family)
         for (let i = 0; i < options.length; ++i) {
             targetModel.append(options[i])
         }

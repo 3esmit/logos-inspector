@@ -8,49 +8,49 @@ use crate::source_routing::{
     raw_http_json_url, require_mutating_diagnostics, rest_empty_request,
 };
 
-use super::spec::{OperationCatalogEntry, OperationDomain, OperationMethod};
+use super::spec::{OperationDefinition, OperationDomain, OperationMethod};
 use super::{RuntimeOperationRequest, blocking_module_call, blocking_module_dispatch};
 
 const MAX_DELIVERY_STORE_PAGE_SIZE: u64 = 100;
 
-pub(super) const OPERATION_CATALOG: &[OperationCatalogEntry] = &[
-    OperationCatalogEntry::mutating(
+pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
+    OperationDefinition::mutating(
         OperationMethod::DeliverySubscribe,
         "deliverySubscribe",
         OperationDomain::Delivery,
         "Delivery subscribe",
     ),
-    OperationCatalogEntry::mutating(
+    OperationDefinition::mutating(
         OperationMethod::DeliveryUnsubscribe,
         "deliveryUnsubscribe",
         OperationDomain::Delivery,
         "Delivery unsubscribe",
     ),
-    OperationCatalogEntry::mutating(
+    OperationDefinition::mutating(
         OperationMethod::DeliverySend,
         "deliverySend",
         OperationDomain::Delivery,
         "Delivery send",
     ),
-    OperationCatalogEntry::mutating(
+    OperationDefinition::mutating(
         OperationMethod::DeliveryCreateNode,
         "deliveryCreateNode",
         OperationDomain::Delivery,
         "Delivery create node",
     ),
-    OperationCatalogEntry::mutating(
+    OperationDefinition::mutating(
         OperationMethod::DeliveryStart,
         "deliveryStart",
         OperationDomain::Delivery,
         "Delivery start",
     ),
-    OperationCatalogEntry::mutating(
+    OperationDefinition::mutating(
         OperationMethod::DeliveryStop,
         "deliveryStop",
         OperationDomain::Delivery,
         "Delivery stop",
     ),
-    OperationCatalogEntry::new(
+    OperationDefinition::new(
         OperationMethod::DeliveryStoreQuery,
         "deliveryStoreQuery",
         OperationDomain::Delivery,

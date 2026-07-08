@@ -31,7 +31,7 @@ SourceSettingsPanel {
         FieldRow {
             theme: root.theme
             label: qsTr("Waku REST URL")
-            enabled: root.modelRef.sourceModeUsesEndpoint("delivery", root.modelRef.messagingSourceMode, "rest")
+            enabled: root.deliverySource().usesRestEndpoint
             opacity: enabled ? 1 : 0.56
             sourceText: root.modelRef.messagingRestUrl
             syncSourceText: true
@@ -87,14 +87,18 @@ SourceSettingsPanel {
     }
 
     function sourceIndexFor(value) {
-        return root.modelRef.sourceModeIndexFor("delivery", value, root.sourceOptions)
+        return root.modelRef.sourceRouting.sourceModeIndexFor("delivery", value, root.sourceOptions)
     }
 
     function sourceModeAt(index) {
-        return root.modelRef.sourceModeAt(index, root.sourceOptions)
+        return root.modelRef.sourceRouting.sourceModeAt(index, root.sourceOptions)
+    }
+
+    function deliverySource() {
+        return root.modelRef.sourceRouting.deliverySourceView()
     }
 
     function messagingMetricsEnabled() {
-        return root.modelRef.sourceModeUsesEndpoint("delivery", root.modelRef.messagingSourceMode, "metrics")
+        return root.deliverySource().usesMetricsEndpoint
     }
 }

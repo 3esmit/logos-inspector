@@ -45,7 +45,7 @@ ColumnLayout {
             textColor: root.theme.textMuted
             textPixelSize: 12
             Layout.fillWidth: true
-            onActivated: root.model.openReference(root.isLezBlock() ? "indexerBlock" : "block", root.detail.hash)
+            onActivated: root.model.entityNavigation.openReference(root.isLezBlock() ? "indexerBlock" : "block", root.detail.hash)
         }
 
         RowLayout {
@@ -122,7 +122,7 @@ ColumnLayout {
         labelWidth: 128
         surfaceColor: root.theme.surface
         onLinkActivated: function (kind, value) {
-            root.model.openReference(kind, value)
+            root.model.entityNavigation.openReference(kind, value)
         }
     }
 
@@ -163,9 +163,9 @@ ColumnLayout {
                     return
                 }
                 if (root.isLezBlock()) {
-                    root.model.openTransaction(rowData.transaction.hash)
+                    root.model.entityNavigation.openTransaction(rowData.transaction.hash)
                 } else {
-                    root.model.openBlockchainTransaction(rowData.transaction, root.detail)
+                    root.model.entityNavigation.openBlockchainTransaction(rowData.transaction, root.detail)
                 }
             }
         }

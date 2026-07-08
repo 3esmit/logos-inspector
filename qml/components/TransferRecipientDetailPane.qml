@@ -42,7 +42,7 @@ ColumnLayout {
                 theme: root.theme
                 text: qsTr("Open account state")
                 Layout.preferredWidth: 156
-                onClicked: root.model.openAccount(root.detail.address)
+                onClicked: root.model.entityNavigation.openAccount(root.detail.address)
             }
         }
 
@@ -127,7 +127,7 @@ ColumnLayout {
             labelWidth: 132
             surfaceColor: root.theme.surface
             onLinkActivated: function (kind, value) {
-                root.model.openReference(kind, value)
+                root.model.entityNavigation.openReference(kind, value)
             }
         }
 
@@ -139,7 +139,7 @@ ColumnLayout {
             labelWidth: 132
             surfaceColor: root.theme.surface
             onLinkActivated: function (kind, value) {
-                root.model.openReference(kind, value)
+                root.model.entityNavigation.openReference(kind, value)
             }
         }
 
@@ -164,9 +164,9 @@ ColumnLayout {
             rows: root.transferRows()
             onCellActivated: function (row, column, cell, rowData) {
                 if (column === 0 && rowData.txHash.length > 0) {
-                    root.model.openTransaction(rowData.txHash)
+                    root.model.entityNavigation.openTransaction(rowData.txHash)
                 } else if (column === 2 && rowData.blockHash.length > 0) {
-                    root.model.openIndexerBlock(rowData.blockHash)
+                    root.model.entityNavigation.openIndexerBlock(rowData.blockHash)
                 }
             }
         }
@@ -178,7 +178,7 @@ ColumnLayout {
             labelWidth: 132
             surfaceColor: root.theme.surface
             onLinkActivated: function (kind, value) {
-                root.model.openReference(kind, value)
+                root.model.entityNavigation.openReference(kind, value)
             }
         }
     }

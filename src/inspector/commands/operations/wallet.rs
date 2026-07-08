@@ -9,46 +9,46 @@ use crate::{
 
 use super::super::value::{blocking_value, to_value};
 use super::RuntimeOperationRequest;
-use super::spec::{OperationCatalogEntry, OperationDomain, OperationMethod};
+use super::spec::{OperationDefinition, OperationDomain, OperationMethod};
 
-pub(super) const OPERATION_CATALOG: &[OperationCatalogEntry] = &[
-    OperationCatalogEntry::new(
+pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
+    OperationDefinition::new(
         OperationMethod::LocalWalletCreateAccount,
         "localWalletCreateAccount",
         OperationDomain::Wallet,
         "Wallet account",
     ),
-    OperationCatalogEntry::new(
+    OperationDefinition::new(
         OperationMethod::LocalWalletSendTransaction,
         "localWalletSendTransaction",
         OperationDomain::Wallet,
         "Wallet send",
     ),
-    OperationCatalogEntry::new(
+    OperationDefinition::new(
         OperationMethod::LocalWalletInstructionSubmit,
         "localWalletInstructionSubmit",
         OperationDomain::Wallet,
         "IDL instruction",
     ),
-    OperationCatalogEntry::new(
+    OperationDefinition::new(
         OperationMethod::LocalWalletCommand,
         "localWalletCommand",
         OperationDomain::Wallet,
         "Wallet command",
     ),
-    OperationCatalogEntry::new(
+    OperationDefinition::new(
         OperationMethod::LocalWalletDeployProgram,
         "localWalletDeployProgram",
         OperationDomain::Wallet,
         "Program deploy",
     ),
-    OperationCatalogEntry::new(
+    OperationDefinition::new(
         OperationMethod::LocalWalletSyncPrivate,
         "localWalletSyncPrivate",
         OperationDomain::Wallet,
         "Private sync",
     ),
-    OperationCatalogEntry::new(
+    OperationDefinition::new(
         OperationMethod::LocalWalletAccounts,
         "localWalletAccounts",
         OperationDomain::Wallet,

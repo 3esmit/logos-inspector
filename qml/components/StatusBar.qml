@@ -197,7 +197,7 @@ Pane {
             return
         }
         lookupField.clear()
-        root.model.routeSearch(value)
+        root.model.entityNavigation.routeSearch(value)
         Qt.callLater(function () {
             lookupField.clear()
         })

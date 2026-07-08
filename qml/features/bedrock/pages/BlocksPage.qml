@@ -47,7 +47,7 @@ ColumnLayout {
         }
         onCellActivated: function (row, column, cell, rowData) {
             if (rowData.rawBlock !== null && (column === 0 || column === 2)) {
-                root.model.openReference("block", rowData.slotRaw, rowData.rawBlock)
+                root.model.entityNavigation.openReference("block", rowData.slotRaw, rowData.rawBlock)
             }
         }
 

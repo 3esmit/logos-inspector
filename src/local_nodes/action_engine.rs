@@ -25,18 +25,20 @@ const DEFAULT_DEPLOYMENT: &str = "local";
 #[derive(Debug, Clone)]
 pub(super) struct LocalNodeActionEngine {
     store: LocalNodeStore,
+    projector: LocalNodeReportProjector,
 }
 
 impl LocalNodeActionEngine {
     pub(super) fn system() -> Result<Self> {
         Ok(Self {
             store: LocalNodeStore::system()?,
+            projector: LocalNodeReportProjector::system(),
         })
     }
 
     pub(super) fn status(&self, profile: &str) -> Result<LocalNodeReport> {
         let state = self.store.load()?;
-        Ok(report_for_state(profile, &state))
+        Ok(self.projector.report(profile, &state))
     }
 
     pub(super) fn devnets(&self, profile: &str) -> Result<LocalDevnetListReport> {
@@ -64,7 +66,7 @@ impl LocalNodeActionEngine {
         let operation = dispatch_action(&mut state, normalized_profile, &request);
         state.push_operation(operation);
         self.store.save(&state)?;
-        Ok(report_for_state(profile, &state))
+        Ok(self.projector.report(profile, &state))
     }
 
     fn validate_request(
@@ -172,86 +174,127 @@ pub(super) fn available_actions_for(
     actions
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct LocalNodeReportProjector;
+
+#[cfg(test)]
 pub(super) fn report_for_state(profile: &str, state: &LocalNodesState) -> LocalNodeReport {
-    let profile = normalized_profile(profile);
-    let active = state.active_devnet();
-    let tools = tool_statuses();
-    let nodes = node_set_for_profile(profile)
-        .into_iter()
-        .map(|kind| node_status(profile, state, active, &tools, kind))
-        .collect::<Vec<_>>();
-    let installed = nodes
-        .iter()
-        .filter(|node| node.install_state == "installed")
-        .count();
-    let running = nodes
-        .iter()
-        .filter(|node| node.run_state == "running")
-        .count();
-    let needs_configuration = nodes
-        .iter()
-        .filter(|node| node.install_state == "needs_configuration")
-        .count();
-    LocalNodeReport {
-        profile: profile.to_owned(),
-        mode: presentation::mode_for_profile(profile).to_owned(),
-        available_network_actions: available_actions_for(profile, None, active.is_some()),
-        primary_problem: presentation::primary_problem(profile, &tools, &nodes),
-        active_devnet: state.active_devnet.clone(),
-        workspace_root: state.managed_workspace_root.clone(),
-        summary: LocalNodeSummary {
-            total: nodes.len(),
-            installed,
-            running,
-            needs_configuration,
-        },
-        nodes,
-        operations: state.operations.clone(),
-        tools,
-    }
+    LocalNodeReportProjector::system().report(profile, state)
 }
 
-fn node_status(
-    profile: &str,
-    state: &LocalNodesState,
-    active: Option<&LocalDevnetRecord>,
-    tools: &LocalNodeTools,
-    kind: NodeKind,
-) -> LocalNodeStatus {
-    let config = active.and_then(|devnet| node_config(devnet, kind));
-    let process_id = config.and_then(|node| node.process_id);
-    let process_running = process_id.is_some_and(process_is_alive);
-    let installed =
-        config.is_some_and(|node| node.installed) || tool_backing_available(tools, kind);
-    let install_state = if installed {
-        "installed"
-    } else {
-        "needs_configuration"
-    };
-    let run_state = if process_running {
-        "running"
-    } else if process_id.is_some() {
-        "stale_pid"
-    } else {
-        "stopped"
-    };
-    let last_action = last_operation_for(state, kind);
-    LocalNodeStatus {
-        kind,
-        key: kind.as_str().to_owned(),
-        label: kind.label().to_owned(),
-        install_state: install_state.to_owned(),
-        run_state: run_state.to_owned(),
-        endpoint: config
-            .and_then(|node| node.endpoint.clone())
-            .or_else(|| kind.endpoint(kind.default_port())),
-        data_dir: config.map(|node| node.data_dir.clone()),
-        config_path: config.map(|node| node.config_path.clone()),
-        package_path: config.and_then(|node| node.package_path.clone()),
-        process_id,
-        last_action,
-        available_actions: available_actions_for(profile, Some(kind), active.is_some()),
-        detail: node_status_detail(kind, install_state, run_state, tools),
+impl LocalNodeReportProjector {
+    fn system() -> Self {
+        Self
+    }
+
+    fn report(self, profile: &str, state: &LocalNodesState) -> LocalNodeReport {
+        let profile = normalized_profile(profile);
+        let active = state.active_devnet();
+        let tools = self.tool_statuses();
+        let nodes = node_set_for_profile(profile)
+            .into_iter()
+            .map(|kind| self.node_status(profile, state, active, &tools, kind))
+            .collect::<Vec<_>>();
+        let installed = nodes
+            .iter()
+            .filter(|node| node.install_state == "installed")
+            .count();
+        let running = nodes
+            .iter()
+            .filter(|node| node.run_state == "running")
+            .count();
+        let needs_configuration = nodes
+            .iter()
+            .filter(|node| node.install_state == "needs_configuration")
+            .count();
+        LocalNodeReport {
+            profile: profile.to_owned(),
+            mode: presentation::mode_for_profile(profile).to_owned(),
+            available_network_actions: available_actions_for(profile, None, active.is_some()),
+            primary_problem: presentation::primary_problem(profile, &tools, &nodes),
+            active_devnet: state.active_devnet.clone(),
+            workspace_root: state.managed_workspace_root.clone(),
+            summary: LocalNodeSummary {
+                total: nodes.len(),
+                installed,
+                running,
+                needs_configuration,
+            },
+            nodes,
+            operations: state.operations.clone(),
+            tools,
+        }
+    }
+
+    fn node_status(
+        self,
+        profile: &str,
+        state: &LocalNodesState,
+        active: Option<&LocalDevnetRecord>,
+        tools: &LocalNodeTools,
+        kind: NodeKind,
+    ) -> LocalNodeStatus {
+        let config = active.and_then(|devnet| node_config(devnet, kind));
+        let process_id = config.and_then(|node| node.process_id);
+        let process_running = process_id.is_some_and(|pid| self.process_is_alive(pid));
+        let installed =
+            config.is_some_and(|node| node.installed) || self.tool_backing_available(tools, kind);
+        let install_state = if installed {
+            "installed"
+        } else {
+            "needs_configuration"
+        };
+        let run_state = if process_running {
+            "running"
+        } else if process_id.is_some() {
+            "stale_pid"
+        } else {
+            "stopped"
+        };
+        let last_action = last_operation_for(state, kind);
+        LocalNodeStatus {
+            kind,
+            key: kind.as_str().to_owned(),
+            label: kind.label().to_owned(),
+            install_state: install_state.to_owned(),
+            run_state: run_state.to_owned(),
+            endpoint: config
+                .and_then(|node| node.endpoint.clone())
+                .or_else(|| kind.endpoint(kind.default_port())),
+            data_dir: config.map(|node| node.data_dir.clone()),
+            config_path: config.map(|node| node.config_path.clone()),
+            package_path: config.and_then(|node| node.package_path.clone()),
+            process_id,
+            last_action,
+            available_actions: available_actions_for(profile, Some(kind), active.is_some()),
+            detail: node_status_detail(kind, install_state, run_state, tools),
+        }
+    }
+
+    fn process_is_alive(self, pid: u32) -> bool {
+        process_is_alive(pid)
+    }
+
+    fn tool_backing_available(self, tools: &LocalNodeTools, kind: NodeKind) -> bool {
+        match kind {
+            NodeKind::Sequencer => find_command("sequencer_service").is_some(),
+            _ => tools.logoscore.available,
+        }
+    }
+
+    fn tool_statuses(self) -> LocalNodeTools {
+        LocalNodeTools {
+            logoscore: self.tool_status("logoscore"),
+            lgpm: self.tool_status("lgpm"),
+        }
+    }
+
+    fn tool_status(self, command: &str) -> ToolStatus {
+        ToolStatus {
+            available: find_command(command).is_some(),
+            command: command.to_owned(),
+            path: find_command(command),
+        }
     }
 }
 
@@ -904,26 +947,8 @@ fn stop_owned_process(node: &mut LocalNodeConfigRecord) {
     node.process_id = None;
 }
 
-fn tool_backing_available(tools: &LocalNodeTools, kind: NodeKind) -> bool {
-    match kind {
-        NodeKind::Sequencer => find_command("sequencer_service").is_some(),
-        _ => tools.logoscore.available,
-    }
-}
-
 fn tool_statuses() -> LocalNodeTools {
-    LocalNodeTools {
-        logoscore: tool_status("logoscore"),
-        lgpm: tool_status("lgpm"),
-    }
-}
-
-fn tool_status(command: &str) -> ToolStatus {
-    ToolStatus {
-        available: find_command(command).is_some(),
-        command: command.to_owned(),
-        path: find_command(command),
-    }
+    LocalNodeReportProjector::system().tool_statuses()
 }
 
 #[derive(Debug, Clone)]

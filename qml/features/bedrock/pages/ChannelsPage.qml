@@ -46,7 +46,7 @@ ColumnLayout {
         }
         onCellActivated: function (row, column, cell, rowData) {
             if (column === 0 && rowData.channelRaw.length > 0) {
-                root.model.openChannel(rowData.raw)
+                root.model.entityNavigation.openChannel(rowData.raw)
             }
         }
     }

@@ -114,7 +114,7 @@ ColumnLayout {
                     Layout.fillWidth: index > 0
                     onActivated: {
                         if (programRow.modelRef !== null) {
-                            programRow.modelRef.openReference("program", programRow.program)
+                            programRow.modelRef.entityNavigation.openReference("program", programRow.program)
                         }
                     }
                 }

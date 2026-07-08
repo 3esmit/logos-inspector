@@ -341,6 +341,99 @@ pub struct SourceAdapterPolicy {
     pub supports_mutating_diagnostics: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SourcePolicyCatalog;
+
+impl SourcePolicyCatalog {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+
+    #[must_use]
+    pub fn mode_policy(self, family: SourceFamily, value: &str) -> &'static SourceModePolicy {
+        self.mode_policy_for_token(family, value)
+            .unwrap_or_else(|| self.fallback_mode_policy(family))
+    }
+
+    #[must_use]
+    pub fn normalized_source_mode(self, family: SourceFamily, value: &str) -> &'static str {
+        self.mode_policy(family, value).key
+    }
+
+    #[must_use]
+    pub fn effective_source_mode(self, family: SourceFamily, value: &str) -> &'static str {
+        self.mode_policy(family, value).effective
+    }
+
+    #[must_use]
+    pub fn source_mode_is_token(self, family: SourceFamily, value: &str) -> bool {
+        family
+            .modes()
+            .iter()
+            .any(|mode| source_mode_matches(mode, value))
+    }
+
+    #[must_use]
+    pub fn default_source_mode_for_domain(self, domain: &str) -> &'static str {
+        match SourceFamily::from_domain(domain) {
+            Some(SourceFamily::Delivery | SourceFamily::Storage) => "rest",
+            _ => "rpc",
+        }
+    }
+
+    #[must_use]
+    pub fn default_endpoint_for_domain(self, domain: &str) -> &'static str {
+        match SourceFamily::from_domain(domain) {
+            Some(SourceFamily::Delivery) => DEFAULT_DELIVERY_REST_ENDPOINT,
+            Some(SourceFamily::Storage) => DEFAULT_STORAGE_REST_ENDPOINT,
+            _ => "",
+        }
+    }
+
+    #[must_use]
+    pub fn report(self) -> SourcePolicyReport {
+        SourcePolicyReport {
+            version: 2,
+            defaults: SourcePolicyDefaults {
+                sequencer_endpoint: DEFAULT_SEQUENCER_ENDPOINT,
+                local_sequencer_endpoint: LOCAL_SEQUENCER_ENDPOINT,
+                indexer_endpoint: DEFAULT_INDEXER_ENDPOINT,
+                node_endpoint: DEFAULT_NODE_ENDPOINT,
+                delivery_rest_endpoint: DEFAULT_DELIVERY_REST_ENDPOINT,
+                delivery_metrics_endpoint: DEFAULT_DELIVERY_METRICS_ENDPOINT,
+                storage_rest_endpoint: DEFAULT_STORAGE_REST_ENDPOINT,
+                storage_metrics_endpoint: DEFAULT_STORAGE_METRICS_ENDPOINT,
+            },
+            network_profiles: network_profiles().to_vec(),
+            source_modes: SourceModeFamilies {
+                core: CORE_SOURCE_MODES,
+                delivery: DELIVERY_SOURCE_MODES,
+                storage: STORAGE_SOURCE_MODES,
+            },
+        }
+    }
+
+    fn mode_policy_for_token(
+        self,
+        family: SourceFamily,
+        value: &str,
+    ) -> Option<&'static SourceModePolicy> {
+        family
+            .modes()
+            .iter()
+            .find(|mode| source_mode_matches(mode, value))
+    }
+
+    fn fallback_mode_policy(self, family: SourceFamily) -> &'static SourceModePolicy {
+        family
+            .modes()
+            .iter()
+            .find(|mode| mode.key == fallback_source_mode_key(family))
+            .unwrap_or_else(|| fallback_source_mode(family))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SourceFacts {
     pub health: SourceHealthFacts,
@@ -613,7 +706,7 @@ const STORAGE_SOURCE_MODES: &[SourceModePolicy] = &[
 
 impl CoreSourceMode {
     pub fn from_token(value: &str) -> Option<Self> {
-        let policy = source_mode_policy_for_token(SourceFamily::Core, value)?;
+        let policy = SourcePolicyCatalog::new().mode_policy_for_token(SourceFamily::Core, value)?;
         match policy.key {
             "auto" => Some(Self::Auto),
             "rpc" => Some(Self::Rpc),
@@ -649,7 +742,8 @@ impl CoreEndpointMode {
 
 impl DeliverySourceMode {
     pub fn from_token(value: &str) -> Self {
-        source_mode_policy_for_token(SourceFamily::Delivery, value)
+        SourcePolicyCatalog::new()
+            .mode_policy_for_token(SourceFamily::Delivery, value)
             .map(|policy| match policy.key {
                 "auto" => Self::Auto,
                 "module" => Self::Module,
@@ -680,15 +774,14 @@ impl DeliverySourceMode {
     }
 
     pub fn is_source_token(value: &str) -> bool {
-        DELIVERY_SOURCE_MODES
-            .iter()
-            .any(|mode| source_mode_matches(mode, value))
+        SourcePolicyCatalog::new().source_mode_is_token(SourceFamily::Delivery, value)
     }
 }
 
 impl StorageSourceMode {
     pub fn from_token(value: &str) -> Self {
-        source_mode_policy_for_token(SourceFamily::Storage, value)
+        SourcePolicyCatalog::new()
+            .mode_policy_for_token(SourceFamily::Storage, value)
             .map(|policy| match policy.key {
                 "auto" => Self::Auto,
                 "module" => Self::Module,
@@ -717,9 +810,7 @@ impl StorageSourceMode {
     }
 
     pub fn is_source_token(value: &str) -> bool {
-        STORAGE_SOURCE_MODES
-            .iter()
-            .any(|mode| source_mode_matches(mode, value))
+        SourcePolicyCatalog::new().source_mode_is_token(SourceFamily::Storage, value)
     }
 }
 
@@ -750,71 +841,37 @@ pub fn normalized_core_source_mode(value: &str) -> &'static str {
 
 #[must_use]
 pub fn source_mode_policy(family: SourceFamily, value: &str) -> &'static SourceModePolicy {
-    source_mode_policy_for_token(family, value).unwrap_or_else(|| {
-        family
-            .modes()
-            .iter()
-            .find(|mode| mode.key == fallback_source_mode_key(family))
-            .unwrap_or_else(|| fallback_source_mode(family))
-    })
+    SourcePolicyCatalog::new().mode_policy(family, value)
 }
 
 #[must_use]
 pub fn normalized_source_mode(family: SourceFamily, value: &str) -> &'static str {
-    source_mode_policy(family, value).key
+    SourcePolicyCatalog::new().normalized_source_mode(family, value)
 }
 
 #[must_use]
 pub fn effective_source_mode(family: SourceFamily, value: &str) -> &'static str {
-    source_mode_policy(family, value).effective
+    SourcePolicyCatalog::new().effective_source_mode(family, value)
 }
 
 #[must_use]
 pub fn source_mode_is_token(family: SourceFamily, value: &str) -> bool {
-    family
-        .modes()
-        .iter()
-        .any(|mode| source_mode_matches(mode, value))
+    SourcePolicyCatalog::new().source_mode_is_token(family, value)
 }
 
 #[must_use]
 pub fn default_source_mode_for_domain(domain: &str) -> &'static str {
-    match SourceFamily::from_domain(domain) {
-        Some(SourceFamily::Delivery | SourceFamily::Storage) => "rest",
-        _ => "rpc",
-    }
+    SourcePolicyCatalog::new().default_source_mode_for_domain(domain)
 }
 
 #[must_use]
 pub fn default_endpoint_for_domain(domain: &str) -> &'static str {
-    match SourceFamily::from_domain(domain) {
-        Some(SourceFamily::Delivery) => DEFAULT_DELIVERY_REST_ENDPOINT,
-        Some(SourceFamily::Storage) => DEFAULT_STORAGE_REST_ENDPOINT,
-        _ => "",
-    }
+    SourcePolicyCatalog::new().default_endpoint_for_domain(domain)
 }
 
 #[must_use]
 pub fn source_policy_report() -> SourcePolicyReport {
-    SourcePolicyReport {
-        version: 2,
-        defaults: SourcePolicyDefaults {
-            sequencer_endpoint: DEFAULT_SEQUENCER_ENDPOINT,
-            local_sequencer_endpoint: LOCAL_SEQUENCER_ENDPOINT,
-            indexer_endpoint: DEFAULT_INDEXER_ENDPOINT,
-            node_endpoint: DEFAULT_NODE_ENDPOINT,
-            delivery_rest_endpoint: DEFAULT_DELIVERY_REST_ENDPOINT,
-            delivery_metrics_endpoint: DEFAULT_DELIVERY_METRICS_ENDPOINT,
-            storage_rest_endpoint: DEFAULT_STORAGE_REST_ENDPOINT,
-            storage_metrics_endpoint: DEFAULT_STORAGE_METRICS_ENDPOINT,
-        },
-        network_profiles: network_profiles().to_vec(),
-        source_modes: SourceModeFamilies {
-            core: CORE_SOURCE_MODES,
-            delivery: DELIVERY_SOURCE_MODES,
-            storage: STORAGE_SOURCE_MODES,
-        },
-    }
+    SourcePolicyCatalog::new().report()
 }
 
 #[must_use]
@@ -857,16 +914,6 @@ fn fallback_source_mode(family: SourceFamily) -> &'static SourceModePolicy {
         SourceFamily::Core => &FALLBACK_CORE_SOURCE_MODE,
         SourceFamily::Delivery | SourceFamily::Storage => &FALLBACK_UNSUPPORTED_SOURCE_MODE,
     }
-}
-
-fn source_mode_policy_for_token(
-    family: SourceFamily,
-    value: &str,
-) -> Option<&'static SourceModePolicy> {
-    family
-        .modes()
-        .iter()
-        .find(|mode| source_mode_matches(mode, value))
 }
 
 fn source_probe_facts(module_info: &ProbeReport, probes: &[ProbeReport]) -> Vec<SourceProbeFact> {
@@ -1632,6 +1679,41 @@ mod tests {
                 .map(CoreSourceMode::effective)
                 .map(CoreEndpointMode::as_str),
             Some("module")
+        );
+    }
+
+    #[test]
+    fn source_policy_catalog_owns_mode_defaults_and_report_shape() {
+        let catalog = SourcePolicyCatalog::new();
+
+        assert_eq!(
+            catalog
+                .mode_policy(SourceFamily::Delivery, "delivery network monitor")
+                .key,
+            "network-monitor"
+        );
+        assert_eq!(
+            catalog.normalized_source_mode(SourceFamily::Storage, "local diagnostics"),
+            "unsupported"
+        );
+        assert_eq!(
+            catalog.effective_source_mode(SourceFamily::Core, "basecamp"),
+            "module"
+        );
+        assert_eq!(catalog.default_source_mode_for_domain("storage"), "rest");
+        assert_eq!(
+            catalog.default_endpoint_for_domain("delivery"),
+            DEFAULT_DELIVERY_REST_ENDPOINT
+        );
+
+        let report = catalog.report();
+        assert_eq!(report.version, 2);
+        assert!(
+            report
+                .source_modes
+                .delivery
+                .iter()
+                .any(|mode| mode.key == "network-monitor")
         );
     }
 
