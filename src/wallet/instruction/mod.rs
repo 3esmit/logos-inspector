@@ -39,6 +39,8 @@ pub struct LocalWalletInstructionReport {
     pub instruction: String,
     pub program_id_hex: String,
     pub command: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub operation_detail: String,
     pub program_binary_required: bool,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub program_binary: String,

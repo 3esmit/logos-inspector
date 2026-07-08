@@ -55,7 +55,7 @@ ColumnLayout {
         }
         onCellActivated: function (row, column, cell, rowData) {
             if (column === 0 && rowData.recipientRaw.length > 0) {
-                root.model.openRecipient(rowData.recipientRaw)
+                root.model.entityNavigation.openRecipient(rowData.recipientRaw)
             }
         }
     }

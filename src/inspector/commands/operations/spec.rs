@@ -71,7 +71,7 @@ pub(crate) struct OperationRoute {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct OperationCatalogEntry {
+pub(super) struct OperationDefinition {
     method: OperationMethod,
     name: &'static str,
     domain: OperationDomain,
@@ -81,7 +81,7 @@ pub(super) struct OperationCatalogEntry {
     exclusive_group: Option<OperationExclusiveGroup>,
 }
 
-impl OperationCatalogEntry {
+impl OperationDefinition {
     pub(super) const fn new(
         method: OperationMethod,
         name: &'static str,
@@ -146,25 +146,27 @@ impl OperationCatalogEntry {
 
 const STORAGE_DOWNLOAD_START_ALIAS: &str = "storageDownloadStart";
 
-const OPERATION_CATALOGS: &[&[OperationCatalogEntry]] = &[
-    storage::OPERATION_CATALOG,
-    delivery::OPERATION_CATALOG,
-    local_nodes::OPERATION_CATALOG,
-    wallet::OPERATION_CATALOG,
-    chain::OPERATION_CATALOG,
+const OPERATION_DEFINITION_SETS: &[&[OperationDefinition]] = &[
+    storage::OPERATION_DEFINITIONS,
+    delivery::OPERATION_DEFINITIONS,
+    local_nodes::OPERATION_DEFINITIONS,
+    wallet::OPERATION_DEFINITIONS,
+    chain::OPERATION_DEFINITIONS,
 ];
 
-fn operation_catalog_entries() -> impl Iterator<Item = &'static OperationCatalogEntry> {
-    OPERATION_CATALOGS.iter().flat_map(|catalog| catalog.iter())
+fn operation_definitions() -> impl Iterator<Item = &'static OperationDefinition> {
+    OPERATION_DEFINITION_SETS
+        .iter()
+        .flat_map(|catalog| catalog.iter())
 }
 
-fn operation_catalog_entry(method: OperationMethod) -> OperationCatalogEntry {
-    for entry in operation_catalog_entries() {
+fn operation_definition(method: OperationMethod) -> OperationDefinition {
+    for entry in operation_definitions() {
         if entry.method == method {
             return *entry;
         }
     }
-    OperationCatalogEntry::new(method, "operation", OperationDomain::Execution, "Operation")
+    OperationDefinition::new(method, "operation", OperationDomain::Execution, "Operation")
 }
 
 impl OperationDomain {
@@ -183,47 +185,47 @@ impl OperationDomain {
 
 impl OperationMethod {
     pub(crate) fn from_str(method: &str) -> Option<Self> {
-        operation_catalog_entries()
+        operation_definitions()
             .find(|entry| entry.name == method)
             .map(|entry| entry.method)
     }
 
     pub(crate) fn as_str(self) -> &'static str {
-        operation_catalog_entry(self).name
+        operation_definition(self).name
     }
 
     pub(crate) fn domain(self) -> OperationDomain {
-        operation_catalog_entry(self).domain
+        operation_definition(self).domain
     }
 
     pub(crate) fn label(self) -> &'static str {
-        operation_catalog_entry(self).label
+        operation_definition(self).label
     }
 
     pub(crate) fn uses_mutating_flag(self) -> bool {
-        operation_catalog_entry(self).uses_mutating_flag
+        operation_definition(self).uses_mutating_flag
     }
 
     pub(crate) fn cancellable(self) -> bool {
-        operation_catalog_entry(self).cancellable
+        operation_definition(self).cancellable
     }
 
     pub(crate) fn exclusive_group(self) -> Option<OperationExclusiveGroup> {
-        operation_catalog_entry(self).exclusive_group
+        operation_definition(self).exclusive_group
     }
 }
 
 pub(crate) fn operation_route(method: &str) -> Option<OperationRoute> {
     if method == STORAGE_DOWNLOAD_START_ALIAS {
-        return Some(operation_catalog_entry(OperationMethod::StorageDownloadToUrl).route(true));
+        return Some(operation_definition(OperationMethod::StorageDownloadToUrl).route(true));
     }
     let method = OperationMethod::from_str(method)?;
-    Some(operation_catalog_entry(method).route(false))
+    Some(operation_definition(method).route(false))
 }
 
 #[cfg(test)]
 pub(crate) fn operation_method_names() -> impl Iterator<Item = &'static str> {
-    operation_catalog_entries()
+    operation_definitions()
         .map(|entry| entry.name)
         .chain(std::iter::once(STORAGE_DOWNLOAD_START_ALIAS))
 }
@@ -305,7 +307,7 @@ mod tests {
     }
 
     #[test]
-    fn operation_flags_are_owned_by_method_catalog() -> Result<()> {
+    fn operation_flags_are_owned_by_method_definition() -> Result<()> {
         let delivery_send =
             OperationMethod::from_str("deliverySend").context("deliverySend should exist")?;
         if !delivery_send.uses_mutating_flag() {
@@ -336,12 +338,15 @@ mod tests {
     }
 
     #[test]
-    fn operation_catalogs_are_domain_owned() -> Result<()> {
+    fn operation_definitions_are_domain_owned() -> Result<()> {
         let cases = [
-            (storage::OPERATION_CATALOG, OperationDomain::Storage),
-            (delivery::OPERATION_CATALOG, OperationDomain::Delivery),
-            (local_nodes::OPERATION_CATALOG, OperationDomain::LocalNodes),
-            (wallet::OPERATION_CATALOG, OperationDomain::Wallet),
+            (storage::OPERATION_DEFINITIONS, OperationDomain::Storage),
+            (delivery::OPERATION_DEFINITIONS, OperationDomain::Delivery),
+            (
+                local_nodes::OPERATION_DEFINITIONS,
+                OperationDomain::LocalNodes,
+            ),
+            (wallet::OPERATION_DEFINITIONS, OperationDomain::Wallet),
         ];
         for (catalog, domain) in cases {
             for entry in catalog {
@@ -350,6 +355,37 @@ mod tests {
                 }
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn operation_definitions_have_unique_names_and_round_trip() -> Result<()> {
+        let mut names = std::collections::BTreeSet::new();
+
+        for definition in operation_definitions() {
+            if !names.insert(definition.name) {
+                bail!("duplicate operation definition name `{}`", definition.name);
+            }
+            if OperationMethod::from_str(definition.name) != Some(definition.method) {
+                bail!(
+                    "operation definition `{}` does not round trip",
+                    definition.name
+                );
+            }
+            if definition.method.as_str() != definition.name {
+                bail!(
+                    "operation method {:?} reports `{}` instead of `{}`",
+                    definition.method,
+                    definition.method.as_str(),
+                    definition.name
+                );
+            }
+        }
+
+        if names.contains(STORAGE_DOWNLOAD_START_ALIAS) {
+            bail!("storage download alias collides with a direct operation name");
+        }
+
         Ok(())
     }
 }

@@ -580,7 +580,7 @@ ColumnLayout {
                         rows: root.walletAccountRows()
                         onCellActivated: function (row, column, cell, rowData) {
                             if (rowData.typedId.length > 0) {
-                                root.model.openAccount(rowData.typedId)
+                                root.model.entityNavigation.openAccount(rowData.typedId)
                             }
                         }
                     }

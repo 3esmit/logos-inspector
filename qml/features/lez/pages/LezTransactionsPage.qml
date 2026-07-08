@@ -45,9 +45,9 @@ ColumnLayout {
         }
         onCellActivated: function (row, column, cell, rowData) {
             if (column === 0 && rowData.blockHash.length > 0) {
-                root.model.openReference("indexerBlock", rowData.blockHash)
+                root.model.entityNavigation.openReference("indexerBlock", rowData.blockHash)
             } else if (column === 1 && rowData.txHash.length > 0) {
-                root.model.openReference("transaction", rowData.txHash)
+                root.model.entityNavigation.openReference("transaction", rowData.txHash)
             }
         }
     }

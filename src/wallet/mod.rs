@@ -56,6 +56,8 @@ pub struct LocalWalletDeployReport {
     pub source: String,
     pub status: String,
     pub command: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub operation_detail: String,
     pub wallet_home_source: String,
     pub submitted_at: String,
     pub exit_status: String,
@@ -72,6 +74,8 @@ pub struct LocalWalletSyncPrivateReport {
     pub source: String,
     pub status: String,
     pub command: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub operation_detail: String,
     pub wallet_home_source: String,
     pub submitted_at: String,
     pub exit_status: String,
@@ -86,6 +90,8 @@ pub struct LocalWalletCommandReport {
     pub source: String,
     pub status: String,
     pub command: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub operation_detail: String,
     pub wallet_home_source: String,
     pub submitted_at: String,
     pub exit_status: String,
@@ -112,6 +118,8 @@ pub struct LocalWalletAccountsReport {
     pub source: String,
     pub status: String,
     pub command: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub operation_detail: String,
     pub wallet_home_source: String,
     pub checked_at: String,
     pub accounts: Vec<LocalWalletAccountRow>,
@@ -246,6 +254,7 @@ fn local_wallet_deploy_program_with_runner<R: LocalWalletRunner>(
         source: "local_wallet_cli".to_owned(),
         status: "submitted".to_owned(),
         command: "wallet deploy-program <program binary>".to_owned(),
+        operation_detail: "submitted".to_owned(),
         wallet_home_source: wallet.wallet_home_source.clone(),
         submitted_at: unix_time_text(),
         exit_status: output.exit_status,
@@ -276,6 +285,7 @@ fn local_wallet_sync_private_with_runner<R: LocalWalletRunner>(
         source: "local_wallet_cli".to_owned(),
         status: "submitted".to_owned(),
         command: "wallet account sync-private".to_owned(),
+        operation_detail: local_wallet_status_detail("submitted", &wallet.wallet_home_source),
         wallet_home_source: wallet.wallet_home_source.clone(),
         submitted_at: unix_time_text(),
         exit_status: output.exit_status,
@@ -314,6 +324,7 @@ fn local_wallet_accounts_with_runner<R: LocalWalletRunner>(
         source: "local_wallet_cli".to_owned(),
         status: "loaded".to_owned(),
         command: "wallet account list --long".to_owned(),
+        operation_detail: format!("{} accounts", accounts.len()),
         wallet_home_source: wallet.wallet_home_source.clone(),
         checked_at: unix_time_text(),
         accounts,
@@ -362,6 +373,12 @@ fn local_wallet_create_account_with_runner<R: LocalWalletRunner>(
         source: "local_wallet_cli".to_owned(),
         status: "created".to_owned(),
         command: format!("wallet account new {privacy}"),
+        operation_detail: local_wallet_command_detail(
+            "created",
+            "wallet account new",
+            account_id.as_deref(),
+            None,
+        ),
         wallet_home_source: wallet.wallet_home_source.clone(),
         submitted_at: unix_time_text(),
         exit_status: output.exit_status,
@@ -453,6 +470,12 @@ fn local_wallet_send_transaction_with_runner<R: LocalWalletRunner>(
         source: "local_wallet_cli".to_owned(),
         status: "submitted".to_owned(),
         command: "wallet auth-transfer send".to_owned(),
+        operation_detail: local_wallet_command_detail(
+            "submitted",
+            "wallet auth-transfer send",
+            None,
+            tx_hash.as_deref(),
+        ),
         wallet_home_source: wallet.wallet_home_source.clone(),
         submitted_at: unix_time_text(),
         exit_status: output.exit_status,
@@ -495,6 +518,12 @@ fn local_wallet_command_with_runner<R: LocalWalletRunner>(
         source: "local_wallet_cli".to_owned(),
         status: "completed".to_owned(),
         command: wallet_command_label(&args),
+        operation_detail: local_wallet_command_detail(
+            "completed",
+            &wallet_command_label(&args),
+            extract_wallet_account_id(&format!("{stdout}\n{stderr}")).as_deref(),
+            extract_wallet_tx_hash(&format!("{stdout}\n{stderr}")).as_deref(),
+        ),
         wallet_home_source: wallet.wallet_home_source.clone(),
         submitted_at: unix_time_text(),
         exit_status: output.exit_status,
@@ -507,6 +536,40 @@ fn local_wallet_command_with_runner<R: LocalWalletRunner>(
         stdout,
         stderr,
     })
+}
+
+fn local_wallet_status_detail(status: &str, wallet_home_source: &str) -> String {
+    if wallet_home_source.is_empty() {
+        status.to_owned()
+    } else {
+        format!("{status}, home {wallet_home_source}")
+    }
+}
+
+fn local_wallet_command_detail(
+    status: &str,
+    command: &str,
+    account_id: Option<&str>,
+    tx_hash: Option<&str>,
+) -> String {
+    if let Some(tx_hash) = tx_hash.filter(|value| !value.is_empty()) {
+        return format!("tx {}", short_wallet_value(tx_hash));
+    }
+    if let Some(account_id) = account_id.filter(|value| !value.is_empty()) {
+        return short_wallet_value(account_id);
+    }
+    if !command.is_empty() {
+        return command.to_owned();
+    }
+    status.to_owned()
+}
+
+fn short_wallet_value(value: &str) -> String {
+    let value = value.trim();
+    if value.len() <= 18 {
+        return value.to_owned();
+    }
+    format!("{}...{}", &value[..10], &value[value.len() - 6..])
 }
 
 pub async fn bedrock_wallet_balance(

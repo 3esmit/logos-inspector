@@ -45,9 +45,9 @@ ColumnLayout {
         }
         onCellActivated: function (row, column, cell, rowData) {
             if (column === 1 && rowData.txHash.length > 0) {
-                root.model.openMantleTransaction(rowData.txHash)
+                root.model.entityNavigation.openMantleTransaction(rowData.txHash)
             } else if (column === 2 && rowData.blockHash.length > 0) {
-                root.model.openBlockchainBlock(rowData.blockHash)
+                root.model.entityNavigation.openBlockchainBlock(rowData.blockHash)
             }
         }
     }

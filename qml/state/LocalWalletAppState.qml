@@ -96,7 +96,7 @@ WalletState {
 
         return runRequest(qsTr("Wallet account"), "localWalletCreateAccount", [profile(gateway.networkProfile()), privacy, label, ConfirmationPolicy.token("wallet-create-account")], true, function (response) {
             if (response.ok) {
-                appendHistory(qsTr("Create account"), "created", commandOperationDetail(response.value))
+                appendHistory(qsTr("Create account"), "created", operationDetail(response.value, "command"))
                 createLabel = ""
             } else {
                 appendHistory(qsTr("Create account"), "down", response.error || qsTr("Account creation failed."))
@@ -131,7 +131,7 @@ WalletState {
 
         return runRequest(qsTr("Wallet send"), "localWalletSendTransaction", [profile(gateway.networkProfile()), request, ConfirmationPolicy.token("wallet-send-transaction")], true, function (response) {
             if (response.ok) {
-                appendHistory(qsTr("Send transaction"), "submitted", commandOperationDetail(response.value))
+                appendHistory(qsTr("Send transaction"), "submitted", operationDetail(response.value, "command"))
             } else {
                 appendHistory(qsTr("Send transaction"), "down", response.error || qsTr("Wallet send failed."))
             }
@@ -148,7 +148,7 @@ WalletState {
 
         return runRequest(qsTr("Read incoming"), "localWalletSyncPrivate", [profile(gateway.networkProfile()), ConfirmationPolicy.token("wallet-sync-private")], true, function (response) {
             if (response.ok) {
-                appendHistory(qsTr("Read incoming"), "submitted", privateSyncOperationDetail(response.value))
+                appendHistory(qsTr("Read incoming"), "submitted", operationDetail(response.value, "privateSync"))
             } else {
                 appendHistory(qsTr("Read incoming"), "down", response.error || qsTr("Incoming transaction read failed."))
             }
@@ -170,7 +170,7 @@ WalletState {
 
         return runRequest(qsTr("Wallet command"), "localWalletCommand", [profile(gateway.networkProfile()), args, ConfirmationPolicy.token("wallet-command")], true, function (response) {
             if (response.ok) {
-                appendHistory(qsTr("Wallet command"), "completed", commandOperationDetail(response.value))
+                appendHistory(qsTr("Wallet command"), "completed", operationDetail(response.value, "command"))
             } else {
                 appendHistory(qsTr("Wallet command"), "down", response.error || qsTr("Wallet command failed."))
             }
@@ -192,7 +192,7 @@ WalletState {
 
         return runRequest(qsTr("Program deploy"), "localWalletDeployProgram", [profile(gateway.networkProfile()), path, ConfirmationPolicy.token("wallet-deploy-program")], true, function (response) {
             if (response.ok) {
-                appendHistory(qsTr("Deploy program"), "submitted", deployProgramOperationDetail(response.value))
+                appendHistory(qsTr("Deploy program"), "submitted", operationDetail(response.value, "deployProgram"))
             } else {
                 appendHistory(qsTr("Deploy program"), "down", response.error || qsTr("Program deployment failed."))
             }
@@ -209,7 +209,7 @@ WalletState {
 
         return runRequest(qsTr("Private sync"), "localWalletSyncPrivate", [profile(gateway.networkProfile()), ConfirmationPolicy.token("wallet-sync-private")], true, function (response) {
             if (response.ok) {
-                appendHistory(qsTr("Private sync"), "submitted", privateSyncOperationDetail(response.value))
+                appendHistory(qsTr("Private sync"), "submitted", operationDetail(response.value, "privateSync"))
             } else {
                 appendHistory(qsTr("Private sync"), "down", response.error || qsTr("Private sync failed."))
             }
@@ -230,8 +230,7 @@ WalletState {
             if (response.ok) {
                 accountsValue = response.value || null
                 accountsError = ""
-                const count = response.value && Array.isArray(response.value.accounts) ? response.value.accounts.length : 0
-                appendHistory(qsTr("Wallet accounts"), "loaded", qsTr("%1 accounts").arg(count))
+                appendHistory(qsTr("Wallet accounts"), "loaded", operationDetail(response.value, "accounts"))
             } else {
                 accountsValue = null
                 accountsError = response.error || qsTr("Wallet account list failed.")
@@ -269,7 +268,7 @@ WalletState {
         return runRequest(qsTr("IDL instruction"), "localWalletInstructionSubmit", [profile(gateway.networkProfile()), request || {}, ConfirmationPolicy.token("wallet-instruction-submit")], true, function (response) {
             if (response.ok) {
                 gateway.setIdlInstructionState(response.value || null, "")
-                appendHistory(qsTr("IDL instruction"), "submitted", idlInstructionOperationDetail(response.value))
+                appendHistory(qsTr("IDL instruction"), "submitted", operationDetail(response.value, "idlInstruction"))
             } else {
                 const error = response.error || qsTr("Instruction send failed.")
                 gateway.setIdlInstructionState(null, error)
@@ -307,6 +306,32 @@ WalletState {
                 appendHistory(qsTr("Bedrock balance"), "down", error)
             }
         })
+    }
+
+    function operationDetail(value, fallback) {
+        const report = value || {}
+        const detail = String(report.operation_detail || report.operationDetail || "")
+        if (detail.length > 0) {
+            return detail
+        }
+        switch (String(fallback || "")) {
+        case "deployProgram":
+            return deployProgramOperationDetail(report)
+        case "privateSync":
+            return privateSyncOperationDetail(report)
+        case "idlInstruction":
+            return idlInstructionOperationDetail(report)
+        case "accounts":
+            return accountsOperationDetail(report)
+        default:
+            return commandOperationDetail(report)
+        }
+    }
+
+    function accountsOperationDetail(value) {
+        const report = value || {}
+        const count = Array.isArray(report.accounts) ? report.accounts.length : 0
+        return qsTr("%1 accounts").arg(count)
     }
 
     function commandOperationDetail(value) {

@@ -129,7 +129,7 @@ ColumnLayout {
             theme: root.theme
             text: qsTr("Configure local wallet")
             Layout.preferredWidth: 172
-            onClicked: root.model.openLocalWallet(root.detail ? root.detail.account_id : "", "privateSync")
+            onClicked: root.model.entityNavigation.openLocalWallet(root.detail ? root.detail.account_id : "", "privateSync")
         }
 
         ActionButton {
@@ -166,7 +166,7 @@ ColumnLayout {
         onDataViewSelected: value => root.dataView = value
         onIdlTypeSelected: index => root.selectIdlType(index)
         onTypedIdlTypeSelected: text => root.selectTypedIdlType(text)
-        onRowActivated: (linkKind, linkValue) => root.model.openReference(linkKind, linkValue)
+        onRowActivated: (linkKind, linkValue) => root.model.entityNavigation.openReference(linkKind, linkValue)
     }
 
     ColumnLayout {
@@ -396,7 +396,7 @@ ColumnLayout {
                         text: qsTr("Configure wallet")
                         visible: !root.model.walletHomeConfigured()
                         Layout.preferredWidth: 156
-                        onClicked: root.model.openLocalWallet("", "profiles")
+                        onClicked: root.model.entityNavigation.openLocalWallet("", "profiles")
                     }
 
                     Item {
@@ -475,9 +475,9 @@ ColumnLayout {
                         programId: modelData.programId
                         onCellActivated: function (column) {
                             if (column === 0) {
-                                root.model.openReference("transaction", modelData.txHash)
+                                root.model.entityNavigation.openReference("transaction", modelData.txHash)
                             } else if (column === 3) {
-                                root.model.openReference("program", modelData.programId)
+                                root.model.entityNavigation.openReference("program", modelData.programId)
                             }
                         }
                     }

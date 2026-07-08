@@ -23,6 +23,28 @@ QtObject {
     property Domains.SourceRoutingState sourceRouting: Domains.SourceRoutingState {
         id: sourceRoutingState
 
+        blockchainModule: root.blockchainModule
+        indexerModule: root.indexerModule
+        deliveryModule: root.deliveryModule
+        storageModule: root.storageModule
+        blockchainSourceMode: root.blockchainSourceMode
+        indexerSourceMode: root.indexerSourceMode
+        executionSourceMode: root.executionSourceMode
+        messagingSourceMode: root.messagingSourceMode
+        storageSourceMode: root.storageSourceMode
+        nodeUrl: root.nodeUrl
+        indexerUrl: root.indexerUrl
+        sequencerUrl: root.sequencerUrl
+        messagingRestUrl: root.messagingRestUrl
+        messagingMetricsUrl: root.messagingMetricsUrl
+        messagingNetworkPreset: root.messagingNetworkPreset
+        messagingMutatingDiagnosticsEnabled: root.messagingMutatingDiagnosticsEnabled
+        storageRestUrl: root.storageRestUrl
+        storageMetricsUrl: root.storageMetricsUrl
+        storageNetworkPreset: root.storageNetworkPreset
+        storageCidProbe: root.storageCidProbe
+        storagePrivilegedDebugEnabled: root.storagePrivilegedDebugEnabled
+        storageMutatingDiagnosticsEnabled: root.storageMutatingDiagnosticsEnabled
         gateway: QtObject {
             function callInspector(method, args) {
                 return root.bridge.callModule(root.inspectorModule, method, Array.isArray(args) ? args : [])
@@ -39,8 +61,8 @@ QtObject {
         id: networkProfileState
         sourcePolicy: root.sourcePolicy
     }
-    readonly property var storageSource: storageSourceView()
-    readonly property var deliverySource: deliverySourceView()
+    readonly property var storageSource: sourceRouting.storageSourceView()
+    readonly property var deliverySource: sourceRouting.deliverySourceView()
 
     property string currentView: "overview"
     property string statusText: qsTr("Ready")
@@ -605,22 +627,22 @@ QtObject {
 
     function callModule(moduleName, method, args, label) { return AppModelCore.callModule(root, moduleName, method, args, label) }
 
-    function blockchainArgs(extra) { return sourceRouting.coreSourceArgs(blockchainSourceMode, nodeUrl, extra) }
+    function blockchainArgs(extra) { return sourceRouting.blockchainArgs(extra) }
 
-    function indexerArgs(extra) { return sourceRouting.coreSourceArgs(indexerSourceMode, indexerUrl, extra) }
+    function indexerArgs(extra) { return sourceRouting.indexerArgs(extra) }
 
-    function executionArgs(extra) { return sourceRouting.coreSourceArgs(executionSourceMode, sequencerUrl, extra) }
+    function executionArgs(extra) { return sourceRouting.executionArgs(extra) }
 
     function blockchainRpcArgs(extra) { return AppModelNetwork.blockchainRpcArgs(root, extra) }
 
     function executionRpcArgs(extra) { return AppModelNetwork.executionRpcArgs(root, extra) }
 
     function accountLookupArgs(account, idlJson, accountType) {
-        return sourceRouting.accountLookupArgs(executionSourceMode, sequencerUrl, indexerSourceMode, indexerUrl, account, idlJson, accountType)
+        return sourceRouting.accountArgs(account, idlJson, accountType)
     }
 
     function lezLookupArgs(target) {
-        return sourceRouting.lezLookupArgs(executionSourceMode, sequencerUrl, indexerSourceMode, indexerUrl, target)
+        return sourceRouting.lezArgs(target)
     }
 
     function requestModule(moduleName, method, args, label, showResult, cacheResult) { return AppModelCore.requestModule(root, moduleName, method, args, label, showResult, cacheResult) }
@@ -1007,15 +1029,15 @@ QtObject {
 
     function sourceModeSupportsMutatingDiagnostics(family, value) { return sourceRouting.sourceModeSupportsMutatingDiagnostics(family, value) }
 
-    function coreSourceView(role) { return AppModelNetwork.coreSourceView(root, role) }
+    function coreSourceView(role) { return sourceRouting.coreSourceView(role) }
 
-    function deliverySourceView() { return AppModelNetwork.deliverySourceView(root) }
+    function deliverySourceView() { return sourceRouting.deliverySourceView() }
 
-    function storageSourceView() { return AppModelNetwork.storageSourceView(root) }
+    function storageSourceView() { return sourceRouting.storageSourceView() }
 
-    function deliveryReportView(report) { return AppModelNetwork.deliveryReportView(root, report) }
+    function deliveryReportView(report) { return sourceRouting.deliveryReportView(report) }
 
-    function storageReportView(report) { return AppModelNetwork.storageReportView(root, report) }
+    function storageReportView(report) { return sourceRouting.storageReportView(report) }
 
     function networkConnectionRate(kind) { return AppModelNetwork.networkConnectionRate(root, kind) }
 
@@ -1079,21 +1101,13 @@ QtObject {
 
     function moduleReportError(report) { return AppModelNetwork.moduleReportError(root, report) }
 
-    function deliverySourceReportArgs() {
-        return sourceRouting.deliverySourceReportArgs(messagingSourceMode, configuredMessagingRestUrl(), messagingMetricsUrl)
-    }
+    function deliverySourceReportArgs() { return sourceRouting.deliverySourceReportArgs() }
 
-    function deliverySourceLabel() { return sourceRouting.sourceLabel("delivery", messagingSourceMode, qsTr("Direct Waku REST")) }
+    function deliverySourceLabel() { return sourceRouting.deliverySourceLabel() }
 
-    function deliverySourceTarget() {
-        return sourceRouting.sourceTarget("delivery", messagingSourceMode, {
-            module: deliveryModule,
-            rest: configuredMessagingRestUrl(),
-            metrics: messagingMetricsUrl
-        })
-    }
+    function deliverySourceTarget() { return sourceRouting.deliverySourceTarget() }
 
-    function configuredMessagingRestUrl() { return sourceRouting.configuredMessagingRestUrl(messagingRestUrl) }
+    function configuredMessagingRestUrl() { return sourceRouting.configuredMessagingRestUrl() }
 
     function normalizedMessagingSourceMode(value) { return sourceRouting.normalizedMessagingSourceMode(value) }
 
@@ -1103,48 +1117,25 @@ QtObject {
 
     function effectiveCoreSourceMode(value) { return sourceRouting.effectiveCoreSourceMode(value) }
 
-    function blockchainSourceLabel() { return sourceRouting.coreSourceLabel(blockchainSourceMode, qsTr("Bedrock RPC")) }
+    function blockchainSourceLabel() { return sourceRouting.blockchainSourceLabel() }
 
-    function blockchainSourceTarget() {
-        return effectiveCoreSourceMode(blockchainSourceMode) === "module" ? blockchainModule : String(nodeUrl || "")
-    }
+    function blockchainSourceTarget() { return sourceRouting.blockchainSourceTarget() }
 
-    function indexerSourceLabel() { return sourceRouting.coreSourceLabel(indexerSourceMode, qsTr("Indexer RPC")) }
+    function indexerSourceLabel() { return sourceRouting.indexerSourceLabel() }
 
-    function indexerSourceTarget() {
-        return effectiveCoreSourceMode(indexerSourceMode) === "module" ? indexerModule : String(indexerUrl || "")
-    }
+    function indexerSourceTarget() { return sourceRouting.indexerSourceTarget() }
 
-    function executionSourceLabel() {
-        return effectiveCoreSourceMode(executionSourceMode) === "module" ? qsTr("LEZ core module") : qsTr("Sequencer RPC")
-    }
+    function executionSourceLabel() { return sourceRouting.executionSourceLabel() }
 
-    function executionSourceTarget() {
-        return effectiveCoreSourceMode(executionSourceMode) === "module" ? "lez_core" : String(sequencerUrl || "")
-    }
+    function executionSourceTarget() { return sourceRouting.executionSourceTarget() }
 
-    function storageSourceReportArgs(includeCidProbe) {
-        return sourceRouting.storageSourceReportArgs(
-            storageSourceMode,
-            configuredStorageRestUrl(),
-            storageMetricsUrl,
-            storageCidProbe,
-            includeCidProbe === true,
-            storagePrivilegedDebugEnabled
-        )
-    }
+    function storageSourceReportArgs(includeCidProbe) { return sourceRouting.storageSourceReportArgs(includeCidProbe === true) }
 
-    function storageSourceLabel() { return sourceRouting.sourceLabel("storage", storageSourceMode, qsTr("Standalone REST")) }
+    function storageSourceLabel() { return sourceRouting.storageSourceLabel() }
 
-    function storageSourceTarget() {
-        return sourceRouting.sourceTarget("storage", storageSourceMode, {
-            module: storageModule,
-            rest: configuredStorageRestUrl(),
-            metrics: storageMetricsUrl
-        })
-    }
+    function storageSourceTarget() { return sourceRouting.storageSourceTarget() }
 
-    function configuredStorageRestUrl() { return sourceRouting.configuredStorageRestUrl(storageRestUrl) }
+    function configuredStorageRestUrl() { return sourceRouting.configuredStorageRestUrl() }
 
     function normalizedStorageSourceMode(value) { return sourceRouting.normalizedStorageSourceMode(value) }
 

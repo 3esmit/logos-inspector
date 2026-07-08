@@ -120,7 +120,7 @@ ColumnLayout {
                 Layout.fillWidth: true
                 onActivated: {
                     if (rowRoot.modelRef !== null) {
-                        rowRoot.modelRef.openReference("program", rowRoot.hex.length ? rowRoot.hex : rowRoot.base58)
+                        rowRoot.modelRef.entityNavigation.openReference("program", rowRoot.hex.length ? rowRoot.hex : rowRoot.base58)
                     }
                 }
             }

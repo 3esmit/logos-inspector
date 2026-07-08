@@ -15,47 +15,45 @@ use crate::{
 
 use super::super::value::to_value;
 use super::record::update_runtime_operation_progress;
-use super::spec::{
-    OperationCatalogEntry, OperationDomain, OperationExclusiveGroup, OperationMethod,
-};
+use super::spec::{OperationDefinition, OperationDomain, OperationExclusiveGroup, OperationMethod};
 use super::{
     RuntimeOperationRegistry, RuntimeOperationRequest, blocking_module_call,
     blocking_module_dispatch,
 };
 
-pub(super) const OPERATION_CATALOG: &[OperationCatalogEntry] = &[
-    OperationCatalogEntry::new(
+pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
+    OperationDefinition::new(
         OperationMethod::StorageManifests,
         "storageManifests",
         OperationDomain::Storage,
         "Storage manifests",
     ),
-    OperationCatalogEntry::new(
+    OperationDefinition::new(
         OperationMethod::StorageDownloadManifest,
         "storageDownloadManifest",
         OperationDomain::Storage,
         "Storage manifest",
     ),
-    OperationCatalogEntry::mutating(
+    OperationDefinition::mutating(
         OperationMethod::StorageFetch,
         "storageFetch",
         OperationDomain::Storage,
         "Storage fetch",
     ),
-    OperationCatalogEntry::mutating(
+    OperationDefinition::mutating(
         OperationMethod::StorageUploadUrl,
         "storageUploadUrl",
         OperationDomain::Storage,
         "Storage upload",
     ),
-    OperationCatalogEntry::cancellable(
+    OperationDefinition::cancellable(
         OperationMethod::StorageDownloadToUrl,
         "storageDownloadToUrl",
         OperationDomain::Storage,
         "Storage download",
         OperationExclusiveGroup::StorageDownload,
     ),
-    OperationCatalogEntry::mutating(
+    OperationDefinition::mutating(
         OperationMethod::StorageRemove,
         "storageRemove",
         OperationDomain::Storage,

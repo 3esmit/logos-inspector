@@ -301,7 +301,7 @@ ColumnLayout {
                     enabled: !root.model.busy && blockId.text.trim().length > 0
                     Layout.fillWidth: true
                     accessibleName: qsTr("Open LEZ block")
-                    onClicked: root.model.openLezBlock(blockId.text)
+                    onClicked: root.model.entityNavigation.openLezBlock(blockId.text)
                 }
 
                 ActionButton {
@@ -377,7 +377,7 @@ ColumnLayout {
                     enabled: !root.model.busy && txHash.text.trim().length > 0
                     Layout.fillWidth: true
                     accessibleName: qsTr("Open transaction screen")
-                    onClicked: root.model.openReference("transaction", txHash.text)
+                    onClicked: root.model.entityNavigation.openReference("transaction", txHash.text)
                 }
             }
         }

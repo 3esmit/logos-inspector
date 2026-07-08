@@ -89,7 +89,7 @@ ColumnLayout {
         labelWidth: 210
         surfaceColor: root.theme.surface
         onLinkActivated: function (kind, value) {
-            root.model.openReference(kind, value)
+            root.model.entityNavigation.openReference(kind, value)
         }
     }
 
@@ -143,7 +143,7 @@ ColumnLayout {
             labelWidth: 210
             surfaceColor: root.theme.surface
             onLinkActivated: function (kind, value) {
-                root.model.openReference(kind, value)
+                root.model.entityNavigation.openReference(kind, value)
             }
         }
 
@@ -155,7 +155,7 @@ ColumnLayout {
             labelWidth: 210
             surfaceColor: root.theme.surface
             onLinkActivated: function (kind, value) {
-                root.model.openReference(kind, value)
+                root.model.entityNavigation.openReference(kind, value)
             }
         }
 
@@ -167,7 +167,7 @@ ColumnLayout {
             labelWidth: 210
             surfaceColor: root.theme.surface
             onLinkActivated: function (kind, value) {
-                root.model.openReference(kind, value)
+                root.model.entityNavigation.openReference(kind, value)
             }
         }
     }
@@ -218,7 +218,7 @@ ColumnLayout {
                         labelWidth: 210
                         surfaceColor: root.theme.surface
                         onLinkActivated: function (kind, value) {
-                            root.model.openReference(kind, value)
+                            root.model.entityNavigation.openReference(kind, value)
                         }
                     }
 
@@ -285,7 +285,7 @@ ColumnLayout {
                 labelWidth: 210
                 surfaceColor: root.theme.surface
                 onLinkActivated: function (kind, value) {
-                    root.model.openReference(kind, value)
+                    root.model.entityNavigation.openReference(kind, value)
                 }
             }
         }

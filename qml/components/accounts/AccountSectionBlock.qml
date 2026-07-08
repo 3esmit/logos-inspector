@@ -59,7 +59,7 @@ ColumnLayout {
                     monospace: modelData.monospace !== undefined ? modelData.monospace : true
                     onActivated: {
                         if (root.modelRef !== null) {
-                            root.modelRef.openReference(modelData.linkKind, modelData.linkValue)
+                            root.modelRef.entityNavigation.openReference(modelData.linkKind, modelData.linkValue)
                         }
                     }
                 }
