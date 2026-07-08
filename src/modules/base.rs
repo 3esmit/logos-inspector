@@ -4,6 +4,7 @@ use crate::{
     ProbeReport, logoscore,
     source_routing::{
         SourceCapabilityFact, SourceFacts, SourceHealthFacts, SourceProbeFact, SourceProbeKey,
+        keyed_probe_result,
     },
 };
 
@@ -138,7 +139,23 @@ pub(super) fn call_source_probe(
     args: &[&str],
     key: SourceProbeKey,
 ) -> ProbeReport {
-    call_probe(module, method, args).with_probe_key(key.as_str())
+    let args = args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
+    let args_label = if args.is_empty() {
+        String::new()
+    } else {
+        format!("({})", args.join(", "))
+    };
+    let source_args = if args.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", args.join(" "))
+    };
+    keyed_probe_result(
+        key,
+        format!("{module}.{method}{args_label}"),
+        format!("logoscore call {module} {method}{source_args}"),
+        logoscore::call(module, method, &args),
+    )
 }
 
 pub(super) fn optional(value: Option<&str>) -> Option<&str> {

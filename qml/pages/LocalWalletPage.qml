@@ -8,6 +8,7 @@ import "../components"
 import "../components/common"
 import "../state"
 import "../theme"
+import "../utils/UiFormat.js" as UiFormat
 
 ColumnLayout {
     id: root
@@ -966,12 +967,12 @@ ColumnLayout {
     }
 
     function shortText(value, limit) {
-        const text = String(value || "")
-        const max = Math.max(8, Number(limit || 24))
-        if (text.length <= max) {
-            return text.length ? text : "-"
-        }
-        return text.slice(0, Math.max(4, max - 9)) + "..." + text.slice(-6)
+        return UiFormat.shortText(value, {
+            emptyText: "-",
+            limit: limit || 24,
+            minimum: 8,
+            tailLength: 6
+        })
     }
 
     function endpointLabel(value) {

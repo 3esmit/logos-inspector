@@ -6,6 +6,7 @@ import QtQuick.Layouts
 import "../services/BridgeHelpers.js" as BridgeHelpers
 import "../state"
 import "../theme"
+import "../utils/UiFormat.js" as UiFormat
 import "accounts"
 import "common"
 
@@ -1516,16 +1517,10 @@ ColumnLayout {
     }
 
     function valueText(value) {
-        if (value === undefined || value === null || value === "") {
-            return "-"
-        }
-        if (typeof value === "number") {
-            return value % 1 === 0 ? value.toLocaleString(Qt.locale(), "f", 0) : String(value)
-        }
-        if (typeof value === "object") {
-            return JSON.stringify(value)
-        }
-        return String(value)
+        return UiFormat.valueText(value, {
+            emptyText: "-",
+            objectMode: "json"
+        })
     }
 
     function displayLabel(value) {
@@ -1534,14 +1529,10 @@ ColumnLayout {
     }
 
     function numberText(value) {
-        if (value === undefined || value === null || value === "") {
-            return "-"
-        }
-        const numeric = Number(value)
-        if (Number.isFinite(numeric)) {
-            return numeric % 1 === 0 ? numeric.toLocaleString(Qt.locale(), "f", 0) : String(value)
-        }
-        return String(value)
+        return UiFormat.numberText(value, {
+            emptyText: "-",
+            coerceNumericStrings: true
+        })
     }
 
     function shortId(value) {

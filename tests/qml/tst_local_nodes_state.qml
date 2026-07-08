@@ -1,73 +1,15 @@
 import QtQuick
 import QtTest
 import "../../qml/state"
+import "fixtures"
 
 TestCase {
     id: testRoot
 
     name: "LocalNodesState"
 
-    QtObject {
+    StateGatewayFixture {
         id: gateway
-
-        property int requestCount: 0
-        property string lastMethod: ""
-        property var lastArgs: []
-        property string lastLabel: ""
-        property bool lastShowResult: false
-        property var calls: []
-        property var responses: ({})
-        property bool busy: false
-        property string statusText: ""
-        property string resultTitle: ""
-        property string resultText: ""
-        property bool resultIsError: false
-        property var resultValue: null
-        property var history: []
-
-        function request(method, args, label, showResult, callback) {
-            requestCount += 1
-            lastMethod = String(method || "")
-            lastArgs = args || []
-            lastLabel = String(label || "")
-            lastShowResult = showResult === true
-            calls = calls.concat([{
-                method: lastMethod,
-                args: lastArgs,
-                label: lastLabel,
-                showResult: lastShowResult
-            }])
-            const response = responses[lastMethod] !== undefined ? responses[lastMethod] : {
-                ok: true,
-                value: {},
-                text: "OK",
-                error: ""
-            }
-            callback(response)
-            return response
-        }
-
-        function setBusy(value, label) {
-            busy = value === true
-            const labelText = String(label || "")
-            if (busy && labelText.length) {
-                statusText = labelText
-            }
-        }
-
-        function setResult(title, text, isError, value) {
-            resultTitle = String(title || "")
-            resultText = String(text || "")
-            resultIsError = isError === true
-            resultValue = value === undefined ? null : value
-        }
-
-        function appendOperationHistory(operation, detail) {
-            history = history.concat([{
-                operation: operation,
-                detail: String(detail || "")
-            }])
-        }
     }
 
     LocalNodesState {
@@ -79,20 +21,7 @@ TestCase {
     }
 
     function init() {
-        gateway.requestCount = 0
-        gateway.lastMethod = ""
-        gateway.lastArgs = []
-        gateway.lastLabel = ""
-        gateway.lastShowResult = false
-        gateway.calls = []
-        gateway.responses = ({})
-        gateway.busy = false
-        gateway.statusText = ""
-        gateway.resultTitle = ""
-        gateway.resultText = ""
-        gateway.resultIsError = false
-        gateway.resultValue = null
-        gateway.history = []
+        gateway.reset()
 
         state.networkProfile = "default"
         state.report = null

@@ -6,6 +6,7 @@ import QtQuick.Layouts
 import "../components"
 import "../state"
 import "../theme"
+import "../utils/UiFormat.js" as UiFormat
 
 ColumnLayout {
     id: root
@@ -976,39 +977,27 @@ ColumnLayout {
     }
 
     function valueSummary(value) {
-        if (value === undefined || value === null || value === "") {
-            return "-"
-        }
-        if (Array.isArray(value)) {
-            return qsTr("%1 item(s)").arg(value.length)
-        }
-        if (typeof value === "object") {
-            return qsTr("%1 field(s)").arg(Object.keys(value).length)
+        if (value === undefined || value === null || value === "" || typeof value === "object") {
+            return UiFormat.valueSummary(value, {
+                emptyText: "-",
+                shortArrayLimit: -1,
+                objectSummary: "fields"
+            })
         }
         return root.valueText(value)
     }
 
     function valueText(value) {
-        if (value === undefined || value === null || value === "") {
-            return "-"
-        }
-        if (typeof value === "number") {
-            return value % 1 === 0 ? value.toLocaleString(Qt.locale(), "f", 0) : String(value)
-        }
-        if (typeof value === "object") {
-            return JSON.stringify(value)
-        }
-        return String(value)
+        return UiFormat.valueText(value, {
+            emptyText: "-",
+            objectMode: "json"
+        })
     }
 
     function numberText(value) {
-        if (value === undefined || value === null || value === "") {
-            return "-"
-        }
-        const numeric = Number(value)
-        if (Number.isFinite(numeric)) {
-            return numeric % 1 === 0 ? numeric.toLocaleString(Qt.locale(), "f", 0) : String(value)
-        }
-        return String(value)
+        return UiFormat.numberText(value, {
+            emptyText: "-",
+            coerceNumericStrings: true
+        })
     }
 }

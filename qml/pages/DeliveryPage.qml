@@ -7,6 +7,7 @@ import "../components"
 import "../components/modules"
 import "../state"
 import "../theme"
+import "../utils/UiFormat.js" as UiFormat
 
 ColumnLayout {
     id: root
@@ -930,73 +931,33 @@ ColumnLayout {
     }
 
     function countValue(value) {
-        if (value === undefined || value === null) {
-            return null
-        }
-        const scalar = root.model.scalarValue(value)
-        if (typeof scalar === "number" && Number.isFinite(scalar)) {
-            return scalar
-        }
-        if (Array.isArray(value)) {
-            return value.length
-        }
-        if (typeof value === "object") {
-            const keys = ["peers", "allPeers", "all_peers", "contentTopics", "content_topics", "topics", "items", "value", "result"]
-            for (let i = 0; i < keys.length; ++i) {
-                if (value[keys[i]] !== undefined) {
-                    const nested = root.countValue(value[keys[i]])
-                    if (nested !== null) {
-                        return nested
-                    }
-                }
-            }
-            return Object.keys(value).length
-        }
-        return null
+        return UiFormat.countValue(value, {
+            scalarValue: root.model.scalarValue,
+            nestedKeys: ["peers", "allPeers", "all_peers", "contentTopics", "content_topics", "topics", "items", "value", "result"]
+        })
     }
 
     function valueSummary(value) {
-        if (value === undefined || value === null || value === "") {
-            return qsTr("n/a")
-        }
-        if (Array.isArray(value)) {
-            if (value.length === 0) {
-                return qsTr("empty")
-            }
-            if (value.length <= 3) {
-                return value.map(function (item) { return String(item) }).join(", ")
-            }
-            return qsTr("%1 item(s)").arg(value.length)
-        }
-        if (typeof value === "object") {
-            if (value.result !== undefined) {
-                return root.valueSummary(value.result)
-            }
-            if (value.value !== undefined) {
-                return root.valueSummary(value.value)
-            }
-            return qsTr("%1 field(s)").arg(Object.keys(value).length)
-        }
-        return String(value)
+        return UiFormat.valueSummary(value, {
+            emptyText: qsTr("n/a"),
+            emptyArrayText: qsTr("empty"),
+            shortArrayLimit: 3,
+            unwrapKeys: ["result", "value"],
+            objectSummary: "fields"
+        })
     }
 
     function copyValue(value) {
-        if (value === undefined || value === null) {
-            return ""
-        }
-        if (typeof value === "object") {
-            return JSON.stringify(value, null, 2)
-        }
-        return String(value)
+        return UiFormat.copyValue(value)
     }
 
     function shortText(value, maxLength) {
-        const text = String(value || "")
-        const limit = Math.max(12, Number(maxLength || 32))
-        if (text.length <= limit) {
-            return text.length ? text : qsTr("n/a")
-        }
-        return text.slice(0, Math.max(4, limit - 8)) + "..." + text.slice(-5)
+        return UiFormat.shortText(value, {
+            emptyText: qsTr("n/a"),
+            limit: maxLength || 32,
+            minimum: 12,
+            tailLength: 5
+        })
     }
 
 }

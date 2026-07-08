@@ -4,7 +4,7 @@ use anyhow::{Context as _, Result, bail};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 
-use crate::value_to_string;
+use crate::{parse_json_body, read_response_body_text, response_excerpt, value_to_string};
 
 const JSON_RPC_TIMEOUT: Duration = Duration::from_secs(8);
 
@@ -37,17 +37,12 @@ pub async fn raw_json_rpc(endpoint: &str, method: &str, params: Value) -> Result
         .send()
         .await
         .with_context(|| format!("failed to call {endpoint}"))?;
-    let status = response.status();
-    let text = response
-        .text()
-        .await
-        .context("failed to read rpc response body")?;
+    let (status, text) =
+        read_response_body_text(response, "failed to read rpc response body").await?;
     if !status.is_success() {
         bail!("rpc HTTP {status}: {}", response_excerpt(&text));
     }
-    let json: Value = serde_json::from_str(&text)
-        .with_context(|| format!("invalid JSON-RPC response: {}", response_excerpt(&text)))?;
-    Ok(json)
+    parse_json_body(&text, "invalid JSON-RPC response", false)
 }
 
 pub async fn raw_json_rpc_result(endpoint: &str, method: &str, params: Value) -> Result<Value> {
@@ -82,20 +77,15 @@ pub async fn raw_http_json(endpoint: &str, path: &str) -> Result<Value> {
         .send()
         .await
         .with_context(|| format!("failed to call {url}"))?;
-    let status = response.status();
-    let text = response
-        .text()
-        .await
-        .context("failed to read http response body")?;
+    let (status, text) =
+        read_response_body_text(response, "failed to read http response body").await?;
     if !status.is_success() {
         bail!(
             "http call `{url}` failed with status {status}: {}",
             response_excerpt(&text)
         );
     }
-    let json: Value = serde_json::from_str(&text)
-        .with_context(|| format!("invalid JSON response: {}", response_excerpt(&text)))?;
-    Ok(json)
+    parse_json_body(&text, "invalid JSON response", false)
 }
 
 pub async fn raw_rpc_report(endpoint: &str, method: &str, params: Value) -> Result<RawRpcReport> {
@@ -104,10 +94,6 @@ pub async fn raw_rpc_report(endpoint: &str, method: &str, params: Value) -> Resu
         method: method.to_owned(),
         response: raw_json_rpc(endpoint, method, params).await?,
     })
-}
-
-pub(crate) fn response_excerpt(text: &str) -> String {
-    text.chars().take(400).collect()
 }
 
 pub(crate) fn normalize_cryptarchia_info(raw: Value) -> Value {

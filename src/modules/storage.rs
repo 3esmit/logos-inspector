@@ -1,4 +1,4 @@
-use crate::source_routing::{SourceProbeKey, StorageSourceReportKind, storage_source_facts};
+use crate::source_routing::{SourceProbeKey, SourceReportBuilder, StorageSourceReportKind};
 
 use super::base::{ModuleReport, STORAGE_MODULE, call_source_probe, module_info_probe, optional};
 
@@ -55,7 +55,7 @@ pub fn storage_report(cid: Option<&str>, privileged_debug_enabled: bool) -> Modu
         ));
     }
     let module_info = module_info_probe(STORAGE_MODULE);
-    ModuleReport::new(STORAGE_MODULE, module_info.clone(), probes.clone()).with_source_facts(
-        storage_source_facts(StorageSourceReportKind::Module, &module_info, &probes),
-    )
+    SourceReportBuilder::storage(STORAGE_MODULE, StorageSourceReportKind::Module, module_info)
+        .with_probes(probes)
+        .finish()
 }

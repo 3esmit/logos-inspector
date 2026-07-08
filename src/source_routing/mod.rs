@@ -20,6 +20,7 @@ mod adapters {
     };
 }
 mod policy;
+mod probe_report;
 mod reports;
 mod selection;
 
@@ -51,6 +52,9 @@ pub use policy::{
     delivery_source_facts, effective_source_mode, normalized_core_source_mode,
     normalized_source_mode, source_mode_is_token, source_mode_policy, source_policy_report,
     storage_source_facts,
+};
+pub(crate) use probe_report::{
+    SourceReportBuilder, keyed_probe_err, keyed_probe_ok, keyed_probe_result,
 };
 pub use reports::{delivery_source_report, storage_source_report};
 pub(crate) use selection::{
