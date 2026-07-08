@@ -1,4 +1,4 @@
-use crate::source_routing::{DeliverySourceReportKind, SourceProbeKey, delivery_source_facts};
+use crate::source_routing::{DeliverySourceReportKind, SourceProbeKey, SourceReportBuilder};
 
 use super::base::{
     DELIVERY_MODULE, ModuleReport, call_probe, call_source_probe, module_info_probe, optional,
@@ -53,9 +53,13 @@ pub fn delivery_report(info_id: Option<&str>) -> ModuleReport {
         });
     }
     let module_info = module_info_probe(DELIVERY_MODULE);
-    ModuleReport::new(DELIVERY_MODULE, module_info.clone(), probes.clone()).with_source_facts(
-        delivery_source_facts(DeliverySourceReportKind::Module, &module_info, &probes),
+    SourceReportBuilder::delivery(
+        DELIVERY_MODULE,
+        DeliverySourceReportKind::Module,
+        module_info,
     )
+    .with_probes(probes)
+    .finish()
 }
 
 fn delivery_node_info_probe_key(info_id: &str) -> Option<SourceProbeKey> {

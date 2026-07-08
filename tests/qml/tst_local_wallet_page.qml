@@ -4,6 +4,7 @@ import "../../qml/pages"
 import "../../qml/services"
 import "../../qml/state"
 import "../../qml/theme"
+import "fixtures"
 
 TestCase {
     id: testRoot
@@ -13,17 +14,8 @@ TestCase {
     width: 900
     height: 700
 
-    QtObject {
+    BridgeHostFixture {
         id: fakeHost
-
-        function callModuleJson(moduleName, method, argsJson) {
-            return JSON.stringify({
-                ok: true,
-                value: {},
-                text: "OK",
-                error: ""
-            })
-        }
     }
 
     BridgeClient {
@@ -81,5 +73,10 @@ TestCase {
             page.parseWalletCommandLine("account get --label \"Token \\\"A\\\"\""),
             ["account", "get", "--label", "Token \"A\""]
         )
+    }
+
+    function test_short_text_keeps_middle_truncation() {
+        compare(page.shortText("", 12), "-")
+        compare(page.shortText("abcdefghijklmnopqrstuvwxyz", 12), "abcd...uvwxyz")
     }
 }

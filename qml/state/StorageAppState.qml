@@ -32,9 +32,9 @@ QtObject {
     property var manifests: []
     property string lastOperation: qsTr("None")
     property string activeCid: cidProbe
-    property string pendingMethod: ""
-    property string pendingLabel: ""
-    property var pendingArgs: []
+    property alias pendingMethod: storageOperations.pendingMethod
+    property alias pendingLabel: storageOperations.pendingLabel
+    property alias pendingArgs: storageOperations.pendingArgs
     property alias terminalOperationId: storageOperations.terminalOperationId
     property alias operationStartPending: storageOperations.startPending
     property alias activeOperation: storageOperations.activeOperation
@@ -42,11 +42,16 @@ QtObject {
     property alias operationLog: storageOperations.operationLog
     property alias operationLogRevision: storageOperations.operationLogRevision
 
-    property NodeOperationClient operationClient: NodeOperationClient {
+    property SourceOperationFlow operationClient: SourceOperationFlow {
         id: storageOperations
 
         gateway: root.gateway
         domain: "storage"
+        moduleName: root.moduleName
+        effectiveSourceMode: root.effectiveSourceMode
+        restEndpoint: root.restEndpoint
+        usesRestEndpoint: root.usesRestEndpoint
+        mutatingDiagnosticsEnabled: root.mutatingDiagnosticsEnabled
         defaultLabel: qsTr("Storage operation")
         busyError: qsTr("A storage operation is already running.")
         terminalDetailProvider: function (operation) {
@@ -93,11 +98,7 @@ QtObject {
     }
 
     function storageArgs(extra) {
-        const args = [
-            effectiveSourceMode,
-            usesRestEndpoint ? restEndpoint : ""
-        ]
-        return args.concat(extra || [])
+        return storageOperations.sourceArgs(extra)
     }
 
     function setCidProbe(value) {
@@ -132,39 +133,22 @@ QtObject {
     }
 
     function confirmStorage(method, args, label) {
-        pendingMethod = String(method || "")
-        pendingArgs = [mutatingDiagnosticsEnabled === true].concat(args || [])
-        pendingLabel = String(label || "")
+        storageOperations.confirm(method, args, label, true)
     }
 
     function clearPendingStorage() {
-        pendingMethod = ""
-        pendingArgs = []
-        pendingLabel = ""
+        storageOperations.clearPending()
     }
 
     function runPendingStorage() {
-        if (!pendingMethod.length) {
-            return null
-        }
-        const response = startStorageOperation(pendingMethod, pendingArgs, pendingLabel)
-        clearPendingStorage()
-        return response
+        return storageOperations.runPending(function (method, args, label) {
+            return root.startStorageOperation(method, args, label)
+        })
     }
 
     function startStorageOperation(method, args, label) {
-        const request = {
-            domain: "storage",
-            sourceMode: effectiveSourceMode,
-            endpoint: restEndpoint,
-            module: moduleName,
-            method: String(method || ""),
-            args: storageArgs(args),
-            mutatingEnabled: mutatingDiagnosticsEnabled === true,
-            label: String(label || "")
-        }
         lastOperation = qsTr("Starting")
-        const started = storageOperations.start(request, label, function (response) {
+        const started = storageOperations.startOperation(method, args, label, function (response) {
             lastOperation = response && response.ok ? qsTr("Started") : qsTr("Error")
             if (response && response.ok) {
                 currentTab = "operations"
@@ -180,7 +164,7 @@ QtObject {
     }
 
     function pollStorageOperation(showResult) {
-        return storageOperations.poll(showResult === true, function (response) {
+        return storageOperations.pollOperation(showResult === true, function (response) {
             if (response && response.ok && StorageTransfer.applyDispatchAck(root, response.value)) {
                 return true
             }
@@ -189,7 +173,7 @@ QtObject {
     }
 
     function cancelStorageOperation() {
-        return storageOperations.cancel()
+        return storageOperations.cancelOperation()
     }
 
     function appendTerminalStorageOperation(operation) {

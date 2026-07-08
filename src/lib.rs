@@ -1,6 +1,7 @@
 mod bridge_envelope;
 mod command_runner;
 mod entity_id;
+mod http_response;
 pub mod idl_decode;
 pub mod inspection {
     pub mod l1 {
@@ -72,6 +73,10 @@ pub use blockchain::{
 };
 pub use entity_id::normalize_program_id_hex;
 pub(crate) use entity_id::{normalize_account_id_text, parse_account_id, parse_hash};
+pub(crate) use http_response::{
+    expect_success_response, parse_json_body, read_response_body_text, read_response_bytes,
+    read_response_text, response_excerpt,
+};
 pub use idl_decode::{
     AccountIdlDecodeReport, DecodedField, EventIdlDecodeReport, InstructionDecodeReport,
     decode_account_data_hex_with_idl, decode_event_data_hex_with_idl, decode_event_data_with_idl,
@@ -118,11 +123,11 @@ pub use overview::{
     InspectorScope, NodeProbe, OverviewReport, ServiceProbe, inspector_scopes, overview,
 };
 pub use probe::{ProbeField, ProbeReport};
+pub(crate) use rpc::json_rpc_result;
 pub use rpc::{
     RawRpcReport, logos_node_cryptarchia_info, raw_http_json, raw_json_rpc,
     raw_json_rpc_optional_result, raw_json_rpc_result, raw_rpc_report,
 };
-pub(crate) use rpc::{json_rpc_result, response_excerpt};
 pub use source_routing::{
     DEFAULT_DELIVERY_METRICS_ENDPOINT, DEFAULT_DELIVERY_REST_ENDPOINT,
     DEFAULT_STORAGE_METRICS_ENDPOINT, DEFAULT_STORAGE_REST_ENDPOINT,

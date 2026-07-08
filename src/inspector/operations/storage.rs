@@ -7,7 +7,7 @@ use tokio::io::AsyncWriteExt as _;
 
 use crate::{
     bridge::{blocking_value, to_value},
-    raw_http_json,
+    expect_success_response, raw_http_json,
     source_routing::{
         self, Args, require_mutating_diagnostics, rest_empty_request, rest_json_request, rest_url,
         storage_rest_source, storage_rest_upload,
@@ -271,17 +271,12 @@ pub(super) async fn storage_rest_download_tracked(
         .send()
         .await
         .with_context(|| format!("failed to call {}", rest_url(endpoint, &route)))?;
-    let status = response.status();
-    if !status.is_success() {
-        let bytes = response
-            .bytes()
-            .await
-            .context("failed to read storage download error body")?;
-        bail!(
-            "storage download failed with status {status}: {}",
-            response_excerpt_bytes(&bytes)
-        );
-    }
+    let response = expect_success_response(
+        response,
+        "storage download",
+        "failed to read storage download error body",
+    )
+    .await?;
     update_node_operation_progress(registry, operation_id, 0, response.content_length());
     let temp_path = format!("{path}.part");
     let mut file = tokio::fs::File::create(&temp_path)
@@ -329,8 +324,4 @@ pub(super) async fn storage_rest_download_tracked(
         "source": if local_only { "local" } else { "network" },
         "endpoint": endpoint,
     }))
-}
-
-fn response_excerpt_bytes(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).chars().take(400).collect()
 }

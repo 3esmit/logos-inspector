@@ -22,20 +22,26 @@ QtObject {
     property string activeTopic: "/logos-inspector/1/chat/proto"
 
     property string lastOperation: qsTr("None")
-    property string pendingMethod: ""
-    property string pendingLabel: ""
-    property var pendingArgs: []
+    property alias pendingMethod: deliveryOperations.pendingMethod
+    property alias pendingLabel: deliveryOperations.pendingLabel
+    property alias pendingArgs: deliveryOperations.pendingArgs
     property alias activeOperation: deliveryOperations.activeOperation
     property alias activeOperationRevision: deliveryOperations.activeOperationRevision
     property alias terminalOperationId: deliveryOperations.terminalOperationId
     property alias operationLog: deliveryOperations.operationLog
     property alias operationLogRevision: deliveryOperations.operationLogRevision
 
-    property NodeOperationClient operationClient: NodeOperationClient {
+    property SourceOperationFlow operationClient: SourceOperationFlow {
         id: deliveryOperations
 
         gateway: root.gateway
         domain: "delivery"
+        moduleName: root.moduleName
+        effectiveSourceMode: root.effectiveSourceMode
+        restEndpoint: root.restEndpoint
+        usesRestEndpoint: root.usesRestEndpoint
+        mutatingDiagnosticsEnabled: root.mutatingDiagnosticsEnabled
+        sourceArgsIncludeMutatingFlag: true
         defaultLabel: qsTr("Delivery operation")
         busyError: qsTr("A delivery operation is already running.")
 
@@ -70,29 +76,17 @@ QtObject {
     }
 
     function deliveryArgs(extra) {
-        const args = [
-            effectiveSourceMode,
-            usesRestEndpoint ? restEndpoint : "",
-            mutatingDiagnosticsEnabled === true
-        ]
-        return args.concat(extra || [])
+        return deliveryOperations.sourceArgs(extra)
     }
 
     function confirmDelivery(method, args, label) {
-        pendingMethod = String(method || "")
-        pendingArgs = args || []
-        pendingLabel = String(label || "")
+        deliveryOperations.confirm(method, args, label, false)
     }
 
     function runPendingDelivery() {
-        if (!pendingMethod.length) {
-            return null
-        }
-        const response = runDelivery(pendingMethod, pendingArgs, pendingLabel)
-        pendingMethod = ""
-        pendingArgs = []
-        pendingLabel = ""
-        return response
+        return deliveryOperations.runPending(function (method, args, label) {
+            return root.runDelivery(method, args, label)
+        })
     }
 
     function runDelivery(method, args, label) {
@@ -106,18 +100,8 @@ QtObject {
     }
 
     function startDeliveryOperation(method, args, label) {
-        const request = {
-            domain: "delivery",
-            sourceMode: effectiveSourceMode,
-            endpoint: restEndpoint,
-            module: moduleName,
-            method: String(method || ""),
-            args: deliveryArgs(args),
-            mutatingEnabled: mutatingDiagnosticsEnabled === true,
-            label: String(label || "")
-        }
         lastOperation = qsTr("Starting")
-        const started = deliveryOperations.start(request, label, function (response) {
+        const started = deliveryOperations.startOperation(method, args, label, function (response) {
             lastOperation = response && response.ok ? qsTr("Started") : qsTr("Error")
             if (response && response.ok) {
                 currentTab = "operations"
@@ -131,7 +115,7 @@ QtObject {
     }
 
     function pollDeliveryOperation(showResult) {
-        return deliveryOperations.poll(showResult === true)
+        return deliveryOperations.pollOperation(showResult === true)
     }
 
     function appendTerminalDeliveryOperation(operation) {

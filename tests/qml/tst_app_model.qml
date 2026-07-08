@@ -2,37 +2,15 @@ import QtQuick
 import QtTest
 import "../../qml/services"
 import "../../qml/state"
+import "fixtures"
 
 TestCase {
     id: testRoot
 
     name: "AppModel"
 
-    QtObject {
+    BridgeHostFixture {
         id: fakeHost
-
-        property int callCount: 0
-        property string lastMethod: ""
-        property var lastArgs: []
-        property var calls: []
-        property var responses: ({})
-
-        function callModuleJson(moduleName, method, argsJson) {
-            callCount += 1
-            lastMethod = String(method || "")
-            lastArgs = JSON.parse(String(argsJson || "[]"))
-            calls = calls.concat([{ method: lastMethod, args: lastArgs }])
-            const response = responses[lastMethod]
-            if (response !== undefined) {
-                return JSON.stringify(response)
-            }
-            return JSON.stringify({
-                ok: true,
-                value: {},
-                text: "OK",
-                error: ""
-            })
-        }
     }
 
     QtObject {
@@ -90,11 +68,7 @@ TestCase {
     }
 
     function init() {
-        fakeHost.callCount = 0
-        fakeHost.lastMethod = ""
-        fakeHost.lastArgs = []
-        fakeHost.calls = []
-        fakeHost.responses = ({})
+        fakeHost.reset()
         basecampHost.callCount = 0
         basecampHost.lastModule = ""
         basecampHost.lastMethod = ""

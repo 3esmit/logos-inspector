@@ -1,90 +1,15 @@
 import QtQuick
 import QtTest
 import "../../qml/state"
+import "fixtures"
 
 TestCase {
     id: testRoot
 
     name: "StorageAppState"
 
-    QtObject {
+    StateGatewayFixture {
         id: gateway
-
-        property int callCount: 0
-        property int requestCount: 0
-        property string lastMethod: ""
-        property var lastArgs: []
-        property string lastLabel: ""
-        property bool lastShowResult: false
-        property var calls: []
-        property var requests: []
-        property var callResponses: ({})
-        property var requestResponses: ({})
-        property string resultTitle: ""
-        property string resultText: ""
-        property bool resultIsError: false
-        property var resultValue: null
-        property var history: []
-        property string openedSection: ""
-        property string openedSubSection: ""
-
-        function call(method, args, label) {
-            callCount += 1
-            lastMethod = String(method || "")
-            lastArgs = args || []
-            lastLabel = String(label || "")
-            calls = calls.concat([{ method: lastMethod, args: lastArgs, label: lastLabel }])
-            return callResponses[lastMethod] !== undefined ? callResponses[lastMethod] : {
-                ok: true,
-                value: {},
-                text: "OK",
-                error: ""
-            }
-        }
-
-        function request(method, args, label, showResult, callback) {
-            requestCount += 1
-            lastMethod = String(method || "")
-            lastArgs = args || []
-            lastLabel = String(label || "")
-            lastShowResult = showResult === true
-            requests = requests.concat([{ method: lastMethod, args: lastArgs, label: lastLabel, showResult: lastShowResult }])
-            const response = requestResponses[lastMethod] !== undefined ? requestResponses[lastMethod] : {
-                ok: true,
-                value: {},
-                text: "OK",
-                error: ""
-            }
-            callback(response)
-            return response
-        }
-
-        function setResult(title, text, isError, value) {
-            resultTitle = String(title || "")
-            resultText = String(text || "")
-            resultIsError = isError === true
-            resultValue = value === undefined ? null : value
-        }
-
-        function clearResult() {
-            resultTitle = ""
-            resultText = ""
-            resultIsError = false
-            resultValue = null
-        }
-
-        function appendOperationHistory(operation, detail) {
-            history = history.concat([{ operation: operation, detail: String(detail || "") }])
-        }
-
-        function openSettings(section, subSection) {
-            openedSection = String(section || "")
-            openedSubSection = String(subSection || "")
-        }
-
-        function valueText(value) {
-            return String(value)
-        }
     }
 
     StorageAppState {
@@ -106,23 +31,7 @@ TestCase {
     }
 
     function init() {
-        gateway.callCount = 0
-        gateway.requestCount = 0
-        gateway.lastMethod = ""
-        gateway.lastArgs = []
-        gateway.lastLabel = ""
-        gateway.lastShowResult = false
-        gateway.calls = []
-        gateway.requests = []
-        gateway.callResponses = ({})
-        gateway.requestResponses = ({})
-        gateway.resultTitle = ""
-        gateway.resultText = ""
-        gateway.resultIsError = false
-        gateway.resultValue = null
-        gateway.history = []
-        gateway.openedSection = ""
-        gateway.openedSubSection = ""
+        gateway.reset()
 
         state.busy = false
         state.effectiveSourceMode = "rest"

@@ -1,11 +1,11 @@
 use std::path::Path;
 
-use anyhow::{Context as _, Result, bail};
-use reqwest::{Method, StatusCode, Url, header};
+use anyhow::{Context as _, Result};
+use reqwest::{Method, Url, header};
 use serde_json::{Value, json};
 use tokio_util::io::ReaderStream;
 
-use crate::response_excerpt;
+use crate::{parse_json_body, read_response_bytes, read_response_text};
 
 use super::super::selection::DeliveryStoreQuery;
 
@@ -88,23 +88,12 @@ pub(crate) async fn storage_rest_download_bytes(
     } else {
         format!("/data/{cid}/network/stream")
     };
-    let response = reqwest::Client::new()
-        .get(rest_url(endpoint, &route))
-        .send()
-        .await
-        .with_context(|| format!("failed to call {}", rest_url(endpoint, &route)))?;
-    let status = response.status();
-    let bytes = response
-        .bytes()
-        .await
-        .context("failed to read storage backup download body")?;
-    if !status.is_success() {
-        bail!(
-            "storage backup download failed with status {status}: {}",
-            response_excerpt_bytes(&bytes)
-        );
-    }
-    Ok(bytes.to_vec())
+    read_response_bytes(
+        reqwest::Client::new().get(rest_url(endpoint, &route)),
+        &rest_url(endpoint, &route),
+        "failed to read storage backup download body",
+    )
+    .await
 }
 
 pub(crate) fn delivery_store_query_url(
@@ -150,12 +139,7 @@ pub(crate) fn delivery_store_query_url(
 
 pub(crate) async fn raw_http_json_url(url: &str) -> Result<Value> {
     let text = send_text(reqwest::Client::new().get(url), url).await?;
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return Ok(Value::Null);
-    }
-    serde_json::from_str(trimmed)
-        .with_context(|| format!("invalid JSON response: {}", response_excerpt(trimmed)))
+    parse_json_body(&text, "invalid JSON response", true)
 }
 
 pub(crate) async fn rest_json_request(
@@ -170,8 +154,7 @@ pub(crate) async fn rest_json_request(
         request = request.json(&body);
     }
     let text = send_text(request, &url).await?;
-    serde_json::from_str(&text)
-        .with_context(|| format!("invalid JSON response: {}", response_excerpt(&text)))
+    parse_json_body(&text, "invalid JSON response", false)
 }
 
 pub(crate) async fn rest_empty_request(
@@ -190,30 +173,11 @@ pub(crate) async fn rest_empty_request(
 }
 
 pub(crate) async fn send_text(request: reqwest::RequestBuilder, label: &str) -> Result<String> {
-    let response = request
-        .send()
-        .await
-        .with_context(|| format!("failed to call {label}"))?;
-    let status = response.status();
-    let text = response
-        .text()
-        .await
-        .context("failed to read http response body")?;
-    if !status.is_success() && status != StatusCode::NO_CONTENT {
-        bail!(
-            "http call `{label}` failed with status {status}: {}",
-            response_excerpt(&text)
-        );
-    }
-    Ok(text)
+    read_response_text(request, label, "failed to read http response body", true).await
 }
 
 pub(crate) fn rest_url(endpoint: &str, path: &str) -> String {
     let endpoint = endpoint.trim_end_matches('/');
     let path = path.trim_start_matches('/');
     format!("{endpoint}/{path}")
-}
-
-fn response_excerpt_bytes(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).chars().take(400).collect()
 }
