@@ -4,7 +4,16 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import "components"
-import "pages"
+import "features/bedrock/pages" as BedrockPages
+import "features/chain/pages" as ChainPages
+import "features/dashboard/pages" as DashboardPages
+import "features/delivery/pages" as DeliveryPages
+import "features/lez/pages" as LezPages
+import "features/local/pages" as LocalPages
+import "features/modules/pages" as ModulePages
+import "features/settings/pages" as SettingsPages
+import "features/storage/pages" as StoragePages
+import "features/wallet/pages" as WalletPages
 import "services"
 import "state"
 import "theme"
@@ -295,7 +304,7 @@ Item {
 
     Component {
         id: overviewPage
-        OverviewPage {
+        DashboardPages.OverviewPage {
             theme: theme
             model: appModel
         }
@@ -303,7 +312,7 @@ Item {
 
     Component {
         id: blocksPage
-        BlocksPage {
+        BedrockPages.BlocksPage {
             theme: theme
             model: appModel
         }
@@ -311,7 +320,7 @@ Item {
 
     Component {
         id: blockDetailPage
-        BlockDetailPage {
+        ChainPages.BlockDetailPage {
             theme: theme
             model: appModel
             l2: false
@@ -320,7 +329,7 @@ Item {
 
     Component {
         id: transactionsPage
-        TransactionsPage {
+        BedrockPages.TransactionsPage {
             theme: theme
             model: appModel
         }
@@ -328,7 +337,7 @@ Item {
 
     Component {
         id: transactionDetailPage
-        TransactionDetailPage {
+        ChainPages.TransactionDetailPage {
             theme: theme
             model: appModel
             l2: false
@@ -337,7 +346,7 @@ Item {
 
     Component {
         id: transferActivityPage
-        TransferActivityPage {
+        LezPages.TransferActivityPage {
             theme: theme
             model: appModel
         }
@@ -345,7 +354,7 @@ Item {
 
     Component {
         id: blockchainPage
-        ModulePage {
+        ModulePages.ModulePage {
             theme: theme
             model: appModel
             moduleKind: "blockchain"
@@ -356,7 +365,7 @@ Item {
 
     Component {
         id: channelsPage
-        ChannelsPage {
+        BedrockPages.ChannelsPage {
             theme: theme
             model: appModel
         }
@@ -364,7 +373,7 @@ Item {
 
     Component {
         id: storagePage
-        StorageAppPage {
+        StoragePages.StorageAppPage {
             theme: theme
             model: appModel.storageApp
         }
@@ -372,7 +381,7 @@ Item {
 
     Component {
         id: messagingPage
-        DeliveryAppPage {
+        DeliveryPages.DeliveryAppPage {
             theme: theme
             model: appModel
         }
@@ -380,7 +389,7 @@ Item {
 
     Component {
         id: storageDiagnosticsPage
-        StoragePage {
+        StoragePages.StoragePage {
             theme: theme
             model: appModel
         }
@@ -388,7 +397,7 @@ Item {
 
     Component {
         id: deliveryDiagnosticsPage
-        DeliveryPage {
+        DeliveryPages.DeliveryPage {
             theme: theme
             model: appModel
         }
@@ -396,7 +405,7 @@ Item {
 
     Component {
         id: capabilitiesPage
-        ModulePage {
+        ModulePages.ModulePage {
             theme: theme
             model: appModel
             moduleKind: "capabilities"
@@ -407,7 +416,7 @@ Item {
 
     Component {
         id: lezBlocksPage
-        LezBlocksPage {
+        LezPages.LezBlocksPage {
             theme: theme
             model: appModel
         }
@@ -415,7 +424,7 @@ Item {
 
     Component {
         id: lezTransactionsPage
-        LezTransactionsPage {
+        LezPages.LezTransactionsPage {
             theme: theme
             model: appModel
         }
@@ -423,7 +432,7 @@ Item {
 
     Component {
         id: lezBlockDetailPage
-        BlockDetailPage {
+        ChainPages.BlockDetailPage {
             theme: theme
             model: appModel
             l2: true
@@ -432,7 +441,7 @@ Item {
 
     Component {
         id: lezTransactionDetailPage
-        TransactionDetailPage {
+        ChainPages.TransactionDetailPage {
             theme: theme
             model: appModel
             l2: true
@@ -441,7 +450,7 @@ Item {
 
     Component {
         id: accountsPage
-        AccountsPage {
+        LezPages.AccountsPage {
             theme: theme
             model: appModel
         }
@@ -449,7 +458,7 @@ Item {
 
     Component {
         id: programsPage
-        ProgramsPage {
+        LezPages.ProgramsPage {
             theme: theme
             model: appModel
         }
@@ -457,7 +466,7 @@ Item {
 
     Component {
         id: favoritesPage
-        FavoritesPage {
+        LocalPages.FavoritesPage {
             theme: theme
             model: appModel
         }
@@ -465,7 +474,7 @@ Item {
 
     Component {
         id: localWalletPage
-        LocalWalletPage {
+        WalletPages.LocalWalletPage {
             theme: theme
             model: appModel
         }
@@ -473,7 +482,7 @@ Item {
 
     Component {
         id: localNodesPage
-        LocalNodesPage {
+        LocalPages.LocalNodesPage {
             theme: theme
             model: appModel.localNodes
         }
@@ -481,7 +490,7 @@ Item {
 
     Component {
         id: indexerPage
-        IndexerPage {
+        LezPages.IndexerPage {
             theme: theme
             model: appModel
         }
@@ -489,7 +498,7 @@ Item {
 
     Component {
         id: settingsPage
-        SettingsPage {
+        SettingsPages.SettingsPage {
             theme: theme
             model: appModel
         }

@@ -6,13 +6,15 @@ use tokio::runtime::Runtime;
 
 use super::command_surface::{DispatchContext, dispatch_inspector_command};
 use super::value::to_value;
-use crate::bridge_envelope::{bridge_error_response_json, bridge_response_json};
 #[cfg(test)]
 use crate::source_routing::{
     self, CoreEndpointMode, DEFAULT_DELIVERY_REST_ENDPOINT, DEFAULT_STORAGE_REST_ENDPOINT,
     DeliveryStoreQuery, delivery_rest_source, delivery_store_query_url, storage_rest_source,
 };
-use crate::{inspector::operations::RuntimeOperationInterface, logoscore, source_routing::Args};
+use crate::support::bridge_envelope::{bridge_error_response_json, bridge_response_json};
+use crate::{
+    inspector::commands::operations::RuntimeOperationInterface, logoscore, source_routing::Args,
+};
 
 const INSPECTOR_MODULE: &str = "logos_inspector";
 #[cfg(test)]
@@ -637,13 +639,14 @@ mod tests {
 
     #[test]
     fn node_operation_request_normalizes_storage_endpoint_first_args() -> Result<()> {
-        let request = crate::inspector::operations::node_operation_request_from_value(json!({
-            "domain": "storage",
-            "sourceMode": "rest",
-            "endpoint": "http://127.0.0.1:8080/api/storage/v1",
-            "method": "storageDownloadManifest",
-            "args": ["http://127.0.0.1:8080/api/storage/v1", "z-storage"]
-        }))?;
+        let request =
+            crate::inspector::commands::operations::node_operation_request_from_value(json!({
+                "domain": "storage",
+                "sourceMode": "rest",
+                "endpoint": "http://127.0.0.1:8080/api/storage/v1",
+                "method": "storageDownloadManifest",
+                "args": ["http://127.0.0.1:8080/api/storage/v1", "z-storage"]
+            }))?;
 
         if request.args() != &json!(["rest", "http://127.0.0.1:8080/api/storage/v1", "z-storage"]) {
             bail!("unexpected normalized args: {}", request.args());
@@ -653,14 +656,15 @@ mod tests {
 
     #[test]
     fn node_operation_request_normalizes_delivery_endpoint_first_args() -> Result<()> {
-        let request = crate::inspector::operations::node_operation_request_from_value(json!({
-            "domain": "delivery",
-            "sourceMode": "rest",
-            "endpoint": "http://127.0.0.1:8645",
-            "method": "deliverySend",
-            "mutatingEnabled": true,
-            "args": ["http://127.0.0.1:8645", "/waku/2/default/proto", "hello"]
-        }))?;
+        let request =
+            crate::inspector::commands::operations::node_operation_request_from_value(json!({
+                "domain": "delivery",
+                "sourceMode": "rest",
+                "endpoint": "http://127.0.0.1:8645",
+                "method": "deliverySend",
+                "mutatingEnabled": true,
+                "args": ["http://127.0.0.1:8645", "/waku/2/default/proto", "hello"]
+            }))?;
 
         if request.args()
             != &json!([
@@ -678,13 +682,15 @@ mod tests {
 
     #[test]
     fn node_operation_request_keeps_delivery_store_query_read_only_args() -> Result<()> {
-        let request = crate::inspector::operations::node_operation_request_from_value(json!({
-            "domain": "delivery",
-            "sourceMode": "rest",
-            "endpoint": "http://127.0.0.1:8645",
-            "method": "deliveryStoreQuery",
-            "args": ["peer-a", "/topic/1/a/proto", "/waku/2/default-waku/proto", "cursor-a", 10, true, true]
-        }))?;
+        let request = crate::inspector::commands::operations::node_operation_request_from_value(
+            json!({
+                "domain": "delivery",
+                "sourceMode": "rest",
+                "endpoint": "http://127.0.0.1:8645",
+                "method": "deliveryStoreQuery",
+                "args": ["peer-a", "/topic/1/a/proto", "/waku/2/default-waku/proto", "cursor-a", 10, true, true]
+            }),
+        )?;
 
         if request.args()
             != &json!([
@@ -739,15 +745,16 @@ mod tests {
 
     #[test]
     fn node_operation_request_normalizes_module_delivery_send_args() -> Result<()> {
-        let request = crate::inspector::operations::node_operation_request_from_value(json!({
-            "domain": "delivery",
-            "sourceMode": "module",
-            "endpoint": "",
-            "method": "deliverySend",
-            "args": ["/waku/2/default/proto", "hello"],
-            "mutatingEnabled": true,
-            "label": "Send message"
-        }))?;
+        let request =
+            crate::inspector::commands::operations::node_operation_request_from_value(json!({
+                "domain": "delivery",
+                "sourceMode": "module",
+                "endpoint": "",
+                "method": "deliverySend",
+                "args": ["/waku/2/default/proto", "hello"],
+                "mutatingEnabled": true,
+                "label": "Send message"
+            }))?;
 
         if request.args()
             != &json!([

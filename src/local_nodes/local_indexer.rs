@@ -10,7 +10,7 @@ use std::{
 use anyhow::{Context as _, Result, bail};
 use serde_json::Value;
 
-use crate::{DEFAULT_INDEXER_ENDPOINT, state_store::load_settings_state};
+use crate::{DEFAULT_INDEXER_ENDPOINT, support::state_store::load_settings_state};
 
 const LEZ_DIR_ENV: &str = "LOGOS_EXECUTION_ZONE_DIR";
 const DISABLE_AUTO_BUILD_ENV: &str = "LOGOS_INSPECTOR_DISABLE_INDEXER_AUTO_BUILD";

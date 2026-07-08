@@ -42,7 +42,7 @@ mod tests {
     use super::{
         action_engine, commands::command_spec_for, model::LocalNodesState, paths::path_is_inside,
     };
-    use crate::time::now_millis;
+    use crate::support::time::now_millis;
 
     #[test]
     fn local_profile_includes_sequencer_and_network_actions() {

@@ -1,5 +1,5 @@
 import QtQml
-import "appmodel/AppModelModuleEvents.js" as AppModelModuleEvents
+import "modules/AppModelModuleEvents.js" as AppModelModuleEvents
 
 QtObject {
     id: root

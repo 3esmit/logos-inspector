@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 
 use super::{
     CoreEndpointMode, CoreSourceMode, DEFAULT_DELIVERY_REST_ENDPOINT,
-    DEFAULT_STORAGE_REST_ENDPOINT, SourceFamily, adapters, default_endpoint_for_domain,
+    DEFAULT_STORAGE_REST_ENDPOINT, SourceFamily, core, default_endpoint_for_domain,
     default_source_mode_for_domain, effective_source_mode, source_mode_is_token,
 };
 
@@ -229,11 +229,11 @@ pub(crate) fn require_mutating_diagnostics(args: &Args, index: usize, label: &st
 
 fn source_module_for_label(label: &str) -> &'static str {
     if label.contains("indexer") {
-        adapters::INDEXER_MODULE
+        core::adapters::INDEXER_MODULE
     } else if label.contains("sequencer") {
-        adapters::LEZ_CORE_MODULE
+        core::adapters::LEZ_CORE_MODULE
     } else {
-        adapters::BLOCKCHAIN_MODULE
+        core::adapters::BLOCKCHAIN_MODULE
     }
 }
 

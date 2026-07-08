@@ -2,7 +2,7 @@ use anyhow::{Result, bail};
 use serde_json::{Value, json};
 use tokio::runtime::Runtime;
 
-use super::{
+use super::commands::{
     operations::{OperationBridgeCommand, RuntimeOperationInterface, operation_bridge_command},
     runtime_methods::{self, RuntimeMethod},
 };
@@ -74,7 +74,7 @@ mod tests {
     use tokio::runtime::Runtime;
 
     use super::*;
-    use crate::inspector::{operations, runtime_methods};
+    use crate::inspector::commands::{operations, runtime_methods};
 
     #[test]
     fn surface_owns_operation_names() -> Result<()> {

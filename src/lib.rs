@@ -1,58 +1,57 @@
-mod bridge_envelope;
-mod command_runner;
-mod entity_id;
-mod http_response;
-pub mod idl_decode;
+pub mod blockchain;
+pub mod decode;
 pub mod inspection {
     pub mod l1 {
-        pub mod bedrock;
-        pub mod channels;
+        pub mod bedrock {
+            pub use crate::blockchain::bedrock::*;
+        }
+
+        pub mod channels {
+            pub use crate::blockchain::channels::*;
+        }
     }
 
     pub mod l2 {
-        pub mod lez;
+        pub mod lez {
+            pub use crate::lez::*;
+        }
     }
 
-    pub mod overview;
-    pub mod rpc;
+    pub mod overview {
+        pub use crate::overview::*;
+    }
+
+    pub mod rpc {
+        pub use crate::rpc::*;
+    }
 }
 
 mod inspector {
     pub mod bridge;
 
     mod command_surface;
-    pub(crate) mod operations;
-    mod runtime_methods;
+    pub(crate) mod commands;
     pub(crate) mod value;
 }
-mod json_value;
+pub mod lez;
 pub mod local_nodes;
 pub mod logoscore;
 pub mod modules;
 pub mod network;
+pub mod overview;
 pub mod probe;
-mod settings_backup;
+pub mod rpc;
 pub mod social;
 pub mod source_routing;
-mod state_store;
-mod time;
+pub(crate) mod support;
 pub mod wallet;
-
-pub mod blockchain {
-    pub use crate::inspection::l1::bedrock::*;
-    pub use crate::inspection::l1::channels::*;
-}
 
 pub mod bridge {
     pub use crate::inspector::bridge::InspectorBridge;
 }
 
-pub mod decode {
-    pub use crate::idl_decode::*;
-}
-
-pub mod lez {
-    pub use crate::inspection::l2::lez::*;
+pub mod idl_decode {
+    pub use crate::decode::*;
 }
 
 pub mod local_indexer {
@@ -62,31 +61,16 @@ pub mod local_indexer {
     };
 }
 
-pub mod overview {
-    pub use crate::inspection::overview::*;
-}
-
-pub mod rpc {
-    pub use crate::inspection::rpc::*;
-}
-
 // Compatibility shims. First-party code should prefer the domain modules above.
 pub use blockchain::{
     ChannelOperationMatch, ChannelScanReport, ChannelSummary, channel_scan, channel_state,
     extract_channel_operations, summarize_channel_operations,
 };
-pub use entity_id::normalize_program_id_hex;
-pub(crate) use entity_id::{normalize_account_id_text, parse_account_id, parse_hash};
-pub(crate) use http_response::{
-    expect_success_response, parse_json_body, read_response_body_text, read_response_bytes,
-    read_response_text, response_excerpt,
-};
-pub use idl_decode::{
+pub use decode::{
     AccountIdlDecodeReport, DecodedField, EventIdlDecodeReport, InstructionDecodeReport,
     decode_account_data_hex_with_idl, decode_event_data_hex_with_idl, decode_event_data_with_idl,
     decode_instruction_words_with_idl,
 };
-pub(crate) use json_value::{enum_payload, value_list_strings, value_to_string};
 pub use lez::{
     AccountReport, AccountTransactionSummary, SequencerAccountIdlReport, account_lookup,
     account_lookup_with_idl, account_transactions_by_account, sequencer_account,
@@ -136,6 +120,13 @@ pub use source_routing::{
     DEFAULT_DELIVERY_METRICS_ENDPOINT, DEFAULT_DELIVERY_REST_ENDPOINT,
     DEFAULT_STORAGE_METRICS_ENDPOINT, DEFAULT_STORAGE_REST_ENDPOINT,
 };
+pub use support::entity_id::normalize_program_id_hex;
+pub(crate) use support::entity_id::{normalize_account_id_text, parse_account_id, parse_hash};
+pub(crate) use support::http_response::{
+    expect_success_response, parse_json_body, read_response_body_text, read_response_bytes,
+    read_response_text, response_excerpt,
+};
+pub(crate) use support::json_value::{enum_payload, value_list_strings, value_to_string};
 pub use wallet::{
     LOCAL_WALLET_HOME_ENV, LocalWalletAccountRow, LocalWalletAccountsReport,
     LocalWalletCommandReport, LocalWalletDeployReport, LocalWalletInstructionReport,

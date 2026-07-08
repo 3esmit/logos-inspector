@@ -1,6 +1,6 @@
 import QtQml
 import "../services/BridgeHelpers.js" as BridgeHelpers
-import "appmodel/StorageTransfer.js" as StorageTransfer
+import "storage/StorageTransfer.js" as StorageTransfer
 
 QtObject {
     id: root

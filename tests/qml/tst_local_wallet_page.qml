@@ -1,6 +1,6 @@
 import QtQuick
 import QtTest
-import "../../qml/pages"
+import "../../qml/features/wallet/pages"
 import "../../qml/services"
 import "../../qml/state"
 import "../../qml/theme"
