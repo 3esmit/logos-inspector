@@ -86,9 +86,9 @@ mod tests {
 
     #[test]
     fn surface_owns_runtime_names() -> Result<()> {
-        for method in runtime_methods::RUNTIME_METHODS {
+        for method in runtime_methods::runtime_methods() {
             let name = method.as_str();
-            if inspector_command(name) != Some(InspectorCommand::Runtime(*method)) {
+            if inspector_command(name) != Some(InspectorCommand::Runtime(method)) {
                 bail!("runtime method `{name}` missing from inspector surface");
             }
         }
@@ -99,11 +99,7 @@ mod tests {
     fn surface_names_are_unique() -> Result<()> {
         let mut names = HashSet::new();
         for method in operations::operation_bridge_command_names()
-            .chain(
-                runtime_methods::RUNTIME_METHODS
-                    .iter()
-                    .map(|method| method.as_str()),
-            )
+            .chain(runtime_methods::runtime_method_names())
             .chain(["callModule"])
         {
             if !names.insert(method) {

@@ -3,11 +3,9 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use super::{
-    borsh::{
-        DecodedValue, decode_borsh_shape, decode_borsh_type, decode_instruction_type,
-        parse_hex_bytes,
-    },
+    borsh::{DecodedValue, decode_borsh_shape, decode_borsh_type, parse_hex_bytes},
     idl_type::idl_type_label,
+    instruction_codec::decode_instruction_type,
 };
 use crate::value_to_string;
 

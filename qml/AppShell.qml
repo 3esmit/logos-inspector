@@ -11,6 +11,7 @@ import "features/delivery/pages" as DeliveryPages
 import "features/lez/pages" as LezPages
 import "features/local/pages" as LocalPages
 import "features/modules/pages" as ModulePages
+import "features/programs/pages" as ProgramPages
 import "features/settings/pages" as SettingsPages
 import "features/storage/pages" as StoragePages
 import "features/wallet/pages" as WalletPages
@@ -421,7 +422,7 @@ Item {
 
     Component {
         id: programsPage
-        LezPages.ProgramsPage {
+        ProgramPages.ProgramsPage {
             theme: theme
             model: appModel
         }

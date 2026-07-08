@@ -1,4 +1,5 @@
 .import "../../services/BridgeHelpers.js" as BridgeHelpers
+.import "../OperationHistoryVocabulary.js" as OperationHistoryVocabulary
 .import "PageRegistry.js" as PageRegistry
 
 function handleNetworkConfigurationChanged(root) {
@@ -688,8 +689,7 @@ function coreUpdateNodeOperation(root, operation) {
 }
 
 function nodeOperationTerminal(root, operation) {
-    const status = String(operation && operation.status ? operation.status : "")
-    return status === "completed" || status === "failed" || status === "canceled"
+    return OperationHistoryVocabulary.isRuntimeTerminalStatus(operation && operation.status)
 }
 
 function nodeOperationResponse(root, operation) {
@@ -704,24 +704,28 @@ function nodeOperationResponse(root, operation) {
 }
 
 function appendNodeOperationHistory(root, operation, detail) {
+    appendOperationHistory(root, operation, detail)
+}
+
+function appendOperationHistory(root, operation, detail) {
     with (root) {
         const value = operation || {}
         const rows = Array.isArray(nodeOperationHistory) ? nodeOperationHistory.slice(-99) : []
-        rows.push({
-            time: new Date().toLocaleTimeString(Qt.locale(), "hh:mm:ss"),
-            label: String(value.label || value.method || qsTr("Node operation")),
-            status: String(value.status || ""),
-            detail: String(detail || nodeOperationDetail(root, value)),
-            domain: String(value.domain || ""),
-            method: String(value.method || ""),
-            operationId: String(value.operationId || "")
-        })
+        rows.push(OperationHistoryVocabulary.historyRecord(
+            value,
+            detail,
+            new Date().toLocaleTimeString(Qt.locale(), "hh:mm:ss")
+        ))
         nodeOperationHistory = rows
         nodeOperationsRevision += 1
     }
 }
 
 function nodeOperationHistoryRows(root, domain) {
+    return operationHistoryRows(root, domain)
+}
+
+function operationHistoryRows(root, domain) {
     with (root) {
         const revision = nodeOperationsRevision
         const wanted = String(domain || "")
@@ -732,26 +736,7 @@ function nodeOperationHistoryRows(root, domain) {
 }
 
 function nodeOperationDetail(root, operation) {
-    const value = operation || {}
-    const result = value.result
-    if (result && typeof result === "object") {
-        if (result.cid) {
-            return String(result.cid)
-        }
-        if (result.contentTopic) {
-            return String(result.contentTopic)
-        }
-        if (result.status) {
-            return String(result.status)
-        }
-    }
-    if (value.error) {
-        return String(value.error)
-    }
-    if (value.progress !== undefined && value.progress !== null) {
-        return String(Math.floor(Number(value.progress || 0) * 100)) + "%"
-    }
-    return String(value.method || "")
+    return OperationHistoryVocabulary.historyDetail(operation)
 }
 
 function copyObject(value) {

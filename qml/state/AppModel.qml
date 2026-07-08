@@ -1,7 +1,7 @@
 import QtQuick
-import QtQml.Models
 import "../services"
 import "app/AppModelCore.js" as AppModelCore
+import "domains" as Domains
 import "identity/AppModelIdentity.js" as AppModelIdentity
 import "network/AppModelNetwork.js" as AppModelNetwork
 import "metrics/AppModelMetrics.js" as AppModelMetrics
@@ -33,7 +33,7 @@ QtObject {
     property var resultValue: null
     property bool resultIsError: false
     property string resultOwner: ""
-    property ChainPageSession chainPages: ChainPageSession {
+    property Domains.NetworkInspectionState chainPages: Domains.NetworkInspectionState {
         id: chainPageState
 
         inspectorModule: root.inspectorModule
@@ -143,18 +143,21 @@ QtObject {
     property int messagingRollingWindow: 120
     property bool messagingAdminRestEnabled: false
     property bool messagingMutatingDiagnosticsEnabled: false
-    property int socialCommentPageSize: 20
-    property string socialIdentityDefaultMode: "perConversation"
-    property string selectedSocialIdentityKey: ""
-    property var socialConversationIdentityKeys: ({})
-    property int socialIdentityRevision: 0
-    property var socialCommentState: ({})
-    property int socialCommentRevision: 0
-    property var socialSharedIdls: ({})
-    property string sharedIdlPolicy: "suggestion"
-    property bool sharedIdlAutoShare: false
-    property var socialAutoSharedIdls: ({})
-    property int sharedIdlRevision: 0
+    property Domains.SocialCollaborationState social: Domains.SocialCollaborationState {
+        id: socialState
+    }
+    property alias socialCommentPageSize: socialState.commentPageSize
+    property alias socialIdentityDefaultMode: socialState.identityDefaultMode
+    property alias selectedSocialIdentityKey: socialState.selectedIdentityKey
+    property alias socialConversationIdentityKeys: socialState.conversationIdentityKeys
+    property alias socialIdentityRevision: socialState.identityRevision
+    property alias socialCommentState: socialState.commentState
+    property alias socialCommentRevision: socialState.commentRevision
+    property alias socialSharedIdls: socialState.sharedIdls
+    property alias sharedIdlPolicy: socialState.sharedIdlPolicy
+    property alias sharedIdlAutoShare: socialState.sharedIdlAutoShare
+    property alias socialAutoSharedIdls: socialState.autoSharedIdls
+    property alias sharedIdlRevision: socialState.sharedIdlRevision
     property string storageSourceMode: "auto"
     property string storageRestUrl: "http://127.0.0.1:8080/api/storage/v1"
     property string storageMetricsUrl: "http://127.0.0.1:8008/metrics"
@@ -207,10 +210,10 @@ QtObject {
     property int blockchainModuleEventRevision: 0
     property string blockchainLastEventText: ""
 
-    property IdlRegistryState idlRegistry: IdlRegistryState {
-        id: idlRegistryState
+    property Domains.ProgramDecodeState programDecode: Domains.ProgramDecodeState {
+        id: programDecodeState
 
-        gateway: QtObject {
+        registryGateway: QtObject {
             function canonicalProgramIdHex(value) {
                 return root.canonicalProgramIdHex(value)
             }
@@ -220,9 +223,10 @@ QtObject {
             }
         }
     }
-    property alias registeredIdls: idlRegistryState.registeredIdls
-    property ListModel socialIdentities: ListModel {}
-    property alias idlStateLoaded: idlRegistryState.loaded
+    property alias idlRegistry: programDecodeState.idlRegistry
+    property alias registeredIdls: programDecodeState.registeredIdls
+    property alias socialIdentities: socialState.identities
+    property alias idlStateLoaded: programDecodeState.loaded
     property LocalWalletAppState wallet: LocalWalletAppState {
         id: walletState
 
@@ -282,7 +286,11 @@ QtObject {
             }
 
             function appendNodeOperationHistory(operation, detail) {
-                return root.appendNodeOperationHistory(operation, detail)
+                return root.appendOperationHistory(operation, detail)
+            }
+
+            function appendOperationHistory(operation, detail) {
+                return root.appendOperationHistory(operation, detail)
             }
         }
     }
@@ -330,7 +338,7 @@ QtObject {
             }
 
             function appendOperationHistory(operation, detail) {
-                return root.appendNodeOperationHistory(operation, detail)
+                return root.appendOperationHistory(operation, detail)
             }
 
             function openSettings(section, subSection) {
@@ -381,7 +389,7 @@ QtObject {
             }
 
             function appendOperationHistory(operation, detail) {
-                return root.appendNodeOperationHistory(operation, detail)
+                return root.appendOperationHistory(operation, detail)
             }
         }
         busy: root.busy
@@ -426,7 +434,7 @@ QtObject {
             }
 
             function appendOperationHistory(operation, detail) {
-                return root.appendNodeOperationHistory(operation, detail)
+                return root.appendOperationHistory(operation, detail)
             }
         }
         networkProfile: root.networkProfile
@@ -442,14 +450,14 @@ QtObject {
     property var bedrockWalletBalanceValue: null
     property string bedrockWalletBalanceError: ""
     property string bedrockWalletModuleError: ""
-    property var accountIdlSelections: ({})
-    property int accountIdlSelectionRevision: 0
-    property var knownProgramIds: ({})
-    property int knownProgramIdsRevision: 0
-    property int accountAutoDecodeSerial: 0
-    property int transactionAutoDecodeSerial: 0
-    property int searchResolveSerial: 0
-    property int programOpenSerial: 0
+    property alias accountIdlSelections: programDecodeState.accountIdlSelections
+    property alias accountIdlSelectionRevision: programDecodeState.accountIdlSelectionRevision
+    property alias knownProgramIds: programDecodeState.knownProgramIds
+    property alias knownProgramIdsRevision: programDecodeState.knownProgramIdsRevision
+    property alias accountAutoDecodeSerial: programDecodeState.accountAutoDecodeSerial
+    property alias transactionAutoDecodeSerial: programDecodeState.transactionAutoDecodeSerial
+    property alias searchResolveSerial: programDecodeState.searchResolveSerial
+    property alias programOpenSerial: programDecodeState.programOpenSerial
     property var navExpanded: ({ l1: true, l2: true, network: true, diagnostics: false, local: true, system: true })
     property int navRevision: 0
     property var navigationBackStack: []
@@ -609,6 +617,10 @@ QtObject {
     function appendNodeOperationHistory(operation, detail) { return AppModelCore.appendNodeOperationHistory(root, operation, detail) }
 
     function nodeOperationHistoryRows(domain) { return AppModelCore.nodeOperationHistoryRows(root, domain) }
+
+    function appendOperationHistory(operation, detail) { return AppModelCore.appendOperationHistory(root, operation, detail) }
+
+    function operationHistoryRows(domain) { return AppModelCore.operationHistoryRows(root, domain) }
 
     function bridgeSupportsAsync() { return bridge.hasAsyncCalls() }
 

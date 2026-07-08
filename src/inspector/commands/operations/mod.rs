@@ -40,8 +40,8 @@ use record::{
 };
 pub(crate) use request::{NodeOperationRequest, node_operation_request_from_value};
 use request::{node_operation_backend, node_operation_context};
+pub(crate) use spec::OperationMethod;
 use spec::{OperationExclusiveGroup, normalized_operation_method};
-pub(crate) use spec::{OperationExecutor, OperationMethod};
 
 #[cfg(test)]
 use record::test_node_operation_record;

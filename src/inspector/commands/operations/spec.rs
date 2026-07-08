@@ -1,3 +1,5 @@
+use super::{chain, delivery, local_nodes, storage, wallet};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OperationDomain {
     Storage,
@@ -61,52 +63,6 @@ pub(crate) enum OperationExclusiveGroup {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OperationExecutor {
-    StorageManifests,
-    StorageDownloadManifest,
-    StorageFetch,
-    StorageUploadUrl,
-    StorageDownloadToUrl,
-    StorageRemove,
-    DeliverySubscribe,
-    DeliveryUnsubscribe,
-    DeliverySend,
-    DeliveryCreateNode,
-    DeliveryStart,
-    DeliveryStop,
-    DeliveryStoreQuery,
-    LocalNodesAction,
-    LocalWalletCreateAccount,
-    LocalWalletSendTransaction,
-    LocalWalletInstructionSubmit,
-    LocalWalletCommand,
-    LocalWalletDeployProgram,
-    LocalWalletSyncPrivate,
-    LocalWalletAccounts,
-    BlockchainNode,
-    BlockchainBlocks,
-    BlockchainLiveBlocks,
-    BlockchainBlock,
-    BlockchainTransaction,
-    Health,
-    Head,
-    Programs,
-    Block,
-    SequencerBlocks,
-    Transaction,
-    InspectTransaction,
-    TraceTransaction,
-    Account,
-    ResolveLezTarget,
-    IndexerHealth,
-    IndexerStatus,
-    IndexerFinalizedHead,
-    IndexerBlocks,
-    IndexerBlockByHash,
-    IndexerTransferRecipients,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct OperationRoute {
     pub(crate) domain: OperationDomain,
     pub(crate) method: OperationMethod,
@@ -115,10 +71,9 @@ pub(crate) struct OperationRoute {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct OperationCatalogEntry {
+pub(super) struct OperationCatalogEntry {
     method: OperationMethod,
     name: &'static str,
-    executor: OperationExecutor,
     domain: OperationDomain,
     label: &'static str,
     uses_mutating_flag: bool,
@@ -126,270 +81,59 @@ struct OperationCatalogEntry {
     exclusive_group: Option<OperationExclusiveGroup>,
 }
 
-macro_rules! operation_entry {
-    ($method:ident, $name:literal, $domain:ident, $label:literal) => {
-        OperationCatalogEntry {
-            method: OperationMethod::$method,
-            name: $name,
-            executor: OperationExecutor::$method,
-            domain: OperationDomain::$domain,
-            label: $label,
+impl OperationCatalogEntry {
+    pub(super) const fn new(
+        method: OperationMethod,
+        name: &'static str,
+        domain: OperationDomain,
+        label: &'static str,
+    ) -> Self {
+        Self {
+            method,
+            name,
+            domain,
+            label,
             uses_mutating_flag: false,
             cancellable: false,
             exclusive_group: None,
         }
-    };
-    ($method:ident, $name:literal, $domain:ident, $label:literal, mutating) => {
-        OperationCatalogEntry {
-            method: OperationMethod::$method,
-            name: $name,
-            executor: OperationExecutor::$method,
-            domain: OperationDomain::$domain,
-            label: $label,
+    }
+
+    pub(super) const fn mutating(
+        method: OperationMethod,
+        name: &'static str,
+        domain: OperationDomain,
+        label: &'static str,
+    ) -> Self {
+        Self {
+            method,
+            name,
+            domain,
+            label,
             uses_mutating_flag: true,
             cancellable: false,
             exclusive_group: None,
         }
-    };
-    ($method:ident, $name:literal, $domain:ident, $label:literal, mutating, cancellable, $exclusive_group:ident) => {
-        OperationCatalogEntry {
-            method: OperationMethod::$method,
-            name: $name,
-            executor: OperationExecutor::$method,
-            domain: OperationDomain::$domain,
-            label: $label,
+    }
+
+    pub(super) const fn cancellable(
+        method: OperationMethod,
+        name: &'static str,
+        domain: OperationDomain,
+        label: &'static str,
+        exclusive_group: OperationExclusiveGroup,
+    ) -> Self {
+        Self {
+            method,
+            name,
+            domain,
+            label,
             uses_mutating_flag: true,
             cancellable: true,
-            exclusive_group: Some(OperationExclusiveGroup::$exclusive_group),
+            exclusive_group: Some(exclusive_group),
         }
-    };
-}
+    }
 
-const STORAGE_DOWNLOAD_START_ALIAS: &str = "storageDownloadStart";
-
-const OPERATION_CATALOG: &[OperationCatalogEntry] = &[
-    operation_entry!(
-        StorageManifests,
-        "storageManifests",
-        Storage,
-        "Storage manifests"
-    ),
-    operation_entry!(
-        StorageDownloadManifest,
-        "storageDownloadManifest",
-        Storage,
-        "Storage manifest"
-    ),
-    operation_entry!(
-        StorageFetch,
-        "storageFetch",
-        Storage,
-        "Storage fetch",
-        mutating
-    ),
-    operation_entry!(
-        StorageUploadUrl,
-        "storageUploadUrl",
-        Storage,
-        "Storage upload",
-        mutating
-    ),
-    operation_entry!(
-        StorageDownloadToUrl,
-        "storageDownloadToUrl",
-        Storage,
-        "Storage download",
-        mutating,
-        cancellable,
-        StorageDownload
-    ),
-    operation_entry!(
-        StorageRemove,
-        "storageRemove",
-        Storage,
-        "Storage remove",
-        mutating
-    ),
-    operation_entry!(
-        DeliverySubscribe,
-        "deliverySubscribe",
-        Delivery,
-        "Delivery subscribe",
-        mutating
-    ),
-    operation_entry!(
-        DeliveryUnsubscribe,
-        "deliveryUnsubscribe",
-        Delivery,
-        "Delivery unsubscribe",
-        mutating
-    ),
-    operation_entry!(
-        DeliverySend,
-        "deliverySend",
-        Delivery,
-        "Delivery send",
-        mutating
-    ),
-    operation_entry!(
-        DeliveryCreateNode,
-        "deliveryCreateNode",
-        Delivery,
-        "Delivery create node",
-        mutating
-    ),
-    operation_entry!(
-        DeliveryStart,
-        "deliveryStart",
-        Delivery,
-        "Delivery start",
-        mutating
-    ),
-    operation_entry!(
-        DeliveryStop,
-        "deliveryStop",
-        Delivery,
-        "Delivery stop",
-        mutating
-    ),
-    operation_entry!(
-        DeliveryStoreQuery,
-        "deliveryStoreQuery",
-        Delivery,
-        "Delivery store query"
-    ),
-    operation_entry!(
-        LocalNodesAction,
-        "localNodesAction",
-        LocalNodes,
-        "Local node action"
-    ),
-    operation_entry!(
-        LocalWalletCreateAccount,
-        "localWalletCreateAccount",
-        Wallet,
-        "Wallet account"
-    ),
-    operation_entry!(
-        LocalWalletSendTransaction,
-        "localWalletSendTransaction",
-        Wallet,
-        "Wallet send"
-    ),
-    operation_entry!(
-        LocalWalletInstructionSubmit,
-        "localWalletInstructionSubmit",
-        Wallet,
-        "IDL instruction"
-    ),
-    operation_entry!(
-        LocalWalletCommand,
-        "localWalletCommand",
-        Wallet,
-        "Wallet command"
-    ),
-    operation_entry!(
-        LocalWalletDeployProgram,
-        "localWalletDeployProgram",
-        Wallet,
-        "Program deploy"
-    ),
-    operation_entry!(
-        LocalWalletSyncPrivate,
-        "localWalletSyncPrivate",
-        Wallet,
-        "Private sync"
-    ),
-    operation_entry!(
-        LocalWalletAccounts,
-        "localWalletAccounts",
-        Wallet,
-        "Wallet accounts"
-    ),
-    operation_entry!(
-        BlockchainNode,
-        "blockchainNode",
-        Blockchain,
-        "Blockchain node"
-    ),
-    operation_entry!(
-        BlockchainBlocks,
-        "blockchainBlocks",
-        Blockchain,
-        "Blockchain blocks"
-    ),
-    operation_entry!(
-        BlockchainLiveBlocks,
-        "blockchainLiveBlocks",
-        Blockchain,
-        "Blockchain live blocks"
-    ),
-    operation_entry!(
-        BlockchainBlock,
-        "blockchainBlock",
-        Blockchain,
-        "Blockchain block"
-    ),
-    operation_entry!(
-        BlockchainTransaction,
-        "blockchainTransaction",
-        Blockchain,
-        "Blockchain transaction"
-    ),
-    operation_entry!(Health, "health", Execution, "Execution health"),
-    operation_entry!(Head, "head", Execution, "Execution head"),
-    operation_entry!(Programs, "programs", Execution, "Programs"),
-    operation_entry!(Block, "block", Execution, "Sequencer block"),
-    operation_entry!(
-        SequencerBlocks,
-        "sequencerBlocks",
-        Execution,
-        "Sequencer blocks"
-    ),
-    operation_entry!(Transaction, "transaction", Execution, "Transaction"),
-    operation_entry!(
-        InspectTransaction,
-        "inspectTransaction",
-        Execution,
-        "Transaction inspection"
-    ),
-    operation_entry!(
-        TraceTransaction,
-        "traceTransaction",
-        Execution,
-        "Transaction trace"
-    ),
-    operation_entry!(Account, "account", Execution, "Account inspection"),
-    operation_entry!(
-        ResolveLezTarget,
-        "resolveLezTarget",
-        Execution,
-        "LEZ lookup"
-    ),
-    operation_entry!(IndexerHealth, "indexerHealth", Indexer, "Indexer health"),
-    operation_entry!(IndexerStatus, "indexerStatus", Indexer, "Indexer status"),
-    operation_entry!(
-        IndexerFinalizedHead,
-        "indexerFinalizedHead",
-        Indexer,
-        "Indexer finalized head"
-    ),
-    operation_entry!(IndexerBlocks, "indexerBlocks", Indexer, "Indexer blocks"),
-    operation_entry!(
-        IndexerBlockByHash,
-        "indexerBlockByHash",
-        Indexer,
-        "Indexer block"
-    ),
-    operation_entry!(
-        IndexerTransferRecipients,
-        "indexerTransferRecipients",
-        Indexer,
-        "Indexer transfer recipients"
-    ),
-];
-
-impl OperationCatalogEntry {
     fn route(self, start_async: bool) -> OperationRoute {
         OperationRoute {
             domain: self.domain,
@@ -400,22 +144,27 @@ impl OperationCatalogEntry {
     }
 }
 
+const STORAGE_DOWNLOAD_START_ALIAS: &str = "storageDownloadStart";
+
+const OPERATION_CATALOGS: &[&[OperationCatalogEntry]] = &[
+    storage::OPERATION_CATALOG,
+    delivery::OPERATION_CATALOG,
+    local_nodes::OPERATION_CATALOG,
+    wallet::OPERATION_CATALOG,
+    chain::OPERATION_CATALOG,
+];
+
+fn operation_catalog_entries() -> impl Iterator<Item = &'static OperationCatalogEntry> {
+    OPERATION_CATALOGS.iter().flat_map(|catalog| catalog.iter())
+}
+
 fn operation_catalog_entry(method: OperationMethod) -> OperationCatalogEntry {
-    for entry in OPERATION_CATALOG {
+    for entry in operation_catalog_entries() {
         if entry.method == method {
             return *entry;
         }
     }
-    OperationCatalogEntry {
-        method,
-        name: "operation",
-        executor: OperationExecutor::Head,
-        domain: OperationDomain::Execution,
-        label: "Operation",
-        uses_mutating_flag: false,
-        cancellable: false,
-        exclusive_group: None,
-    }
+    OperationCatalogEntry::new(method, "operation", OperationDomain::Execution, "Operation")
 }
 
 impl OperationDomain {
@@ -434,8 +183,7 @@ impl OperationDomain {
 
 impl OperationMethod {
     pub(crate) fn from_str(method: &str) -> Option<Self> {
-        OPERATION_CATALOG
-            .iter()
+        operation_catalog_entries()
             .find(|entry| entry.name == method)
             .map(|entry| entry.method)
     }
@@ -450,10 +198,6 @@ impl OperationMethod {
 
     pub(crate) fn label(self) -> &'static str {
         operation_catalog_entry(self).label
-    }
-
-    pub(crate) fn executor(self) -> OperationExecutor {
-        operation_catalog_entry(self).executor
     }
 
     pub(crate) fn uses_mutating_flag(self) -> bool {
@@ -479,8 +223,7 @@ pub(crate) fn operation_route(method: &str) -> Option<OperationRoute> {
 
 #[cfg(test)]
 pub(crate) fn operation_method_names() -> impl Iterator<Item = &'static str> {
-    OPERATION_CATALOG
-        .iter()
+    operation_catalog_entries()
         .map(|entry| entry.name)
         .chain(std::iter::once(STORAGE_DOWNLOAD_START_ALIAS))
 }
@@ -593,21 +336,19 @@ mod tests {
     }
 
     #[test]
-    fn operation_executors_are_owned_by_method_catalog() -> Result<()> {
-        let delivery_subscribe = OperationMethod::from_str("deliverySubscribe")
-            .context("deliverySubscribe should exist")?;
-        if delivery_subscribe.executor() != OperationExecutor::DeliverySubscribe {
-            bail!("deliverySubscribe has unexpected executor");
-        }
-        let blockchain_blocks = OperationMethod::from_str("blockchainBlocks")
-            .context("blockchainBlocks should exist")?;
-        if blockchain_blocks.executor() != OperationExecutor::BlockchainBlocks {
-            bail!("blockchainBlocks has unexpected executor");
-        }
-        let storage_download = OperationMethod::from_str("storageDownloadToUrl")
-            .context("storageDownloadToUrl should exist")?;
-        if storage_download.executor() != OperationExecutor::StorageDownloadToUrl {
-            bail!("storageDownloadToUrl has unexpected executor");
+    fn operation_catalogs_are_domain_owned() -> Result<()> {
+        let cases = [
+            (storage::OPERATION_CATALOG, OperationDomain::Storage),
+            (delivery::OPERATION_CATALOG, OperationDomain::Delivery),
+            (local_nodes::OPERATION_CATALOG, OperationDomain::LocalNodes),
+            (wallet::OPERATION_CATALOG, OperationDomain::Wallet),
+        ];
+        for (catalog, domain) in cases {
+            for entry in catalog {
+                if entry.domain != domain {
+                    bail!("operation `{}` escaped {domain:?} catalog", entry.name);
+                }
+            }
         }
         Ok(())
     }

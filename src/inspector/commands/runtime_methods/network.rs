@@ -9,6 +9,14 @@ use crate::{
 };
 
 use super::super::value::to_value;
+use super::{RuntimeMethod, RuntimeMethodEntry};
+
+pub(super) const METHOD_CATALOG: &[RuntimeMethodEntry] = &[
+    RuntimeMethodEntry::new(RuntimeMethod::Overview, "overview"),
+    RuntimeMethodEntry::new(RuntimeMethod::ChannelScan, "channelScan"),
+    RuntimeMethodEntry::new(RuntimeMethod::ChannelState, "channelState"),
+    RuntimeMethodEntry::new(RuntimeMethod::RawRpc, "rawRpc"),
+];
 
 pub(super) fn overview(runtime: &Runtime, args: Value) -> Result<Value> {
     let args = Args::new(args)?;

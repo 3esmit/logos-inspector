@@ -7,7 +7,7 @@ import QtQml.Models
 import QtQuick.Layouts
 import "../../../components"
 import "../../../components/common"
-import "../controls/programs"
+import "../../lez/controls/programs"
 import "../../../state"
 import "../../../theme"
 import "../../../utils/UiFormat.js" as UiFormat

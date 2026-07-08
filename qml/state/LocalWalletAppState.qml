@@ -409,17 +409,22 @@ WalletState {
         const record = appendOperation(labelText, statusValue, detailText)
         const historyStatus = operationStatus(statusValue)
         if (gateway) {
-            gateway.appendNodeOperationHistory({
-                domain: "wallet",
-                method: labelText,
-                status: historyStatus,
-                label: labelText,
-                result: {
-                    status: record.status,
-                    detail: record.detail
-                },
-                error: historyStatus === "failed" ? detailText : ""
-            }, detailText)
+            const appendHistoryCallback = typeof gateway.appendOperationHistory === "function"
+                ? gateway.appendOperationHistory
+                : gateway.appendNodeOperationHistory
+            if (appendHistoryCallback) {
+                appendHistoryCallback({
+                    domain: "wallet",
+                    method: labelText,
+                    status: historyStatus,
+                    label: labelText,
+                    result: {
+                        status: record.status,
+                        detail: record.detail
+                    },
+                    error: historyStatus === "failed" ? detailText : ""
+                }, detailText)
+            }
             savePersisted(gateway.networkProfile())
         }
         return record

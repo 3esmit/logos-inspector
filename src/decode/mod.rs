@@ -1,5 +1,6 @@
 pub(crate) mod borsh;
 pub(crate) mod idl_type;
+pub(crate) mod instruction_codec;
 mod reports;
 mod session;
 mod spel;

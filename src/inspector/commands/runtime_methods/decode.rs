@@ -15,6 +15,28 @@ use crate::{
 };
 
 use super::super::value::to_value;
+use super::{RuntimeMethod, RuntimeMethodEntry};
+
+pub(super) const METHOD_CATALOG: &[RuntimeMethodEntry] = &[
+    RuntimeMethodEntry::new(
+        RuntimeMethod::DecodeTransactionSummary,
+        "decodeTransactionSummary",
+    ),
+    RuntimeMethodEntry::new(RuntimeMethod::DecodeAccount, "decodeAccount"),
+    RuntimeMethodEntry::new(
+        RuntimeMethod::ResolveAccountDecodeSession,
+        "resolveAccountDecodeSession",
+    ),
+    RuntimeMethodEntry::new(
+        RuntimeMethod::ResolveTransactionDecodeSession,
+        "resolveTransactionDecodeSession",
+    ),
+    RuntimeMethodEntry::new(RuntimeMethod::DecodeInstruction, "decodeInstruction"),
+    RuntimeMethodEntry::new(RuntimeMethod::DecodeEvent, "decodeEvent"),
+    RuntimeMethodEntry::new(RuntimeMethod::SpelIdl, "spelIdl"),
+    RuntimeMethodEntry::new(RuntimeMethod::ProgramFile, "programFile"),
+    RuntimeMethodEntry::new(RuntimeMethod::NormalizeProgramId, "normalizeProgramId"),
+];
 
 pub(super) fn decode_transaction_summary(args: Value) -> Result<Value> {
     let args = Args::new(args)?;

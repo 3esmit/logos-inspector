@@ -9,12 +9,6 @@ pub(crate) struct DecodedValue {
     pub(crate) consumed: usize,
 }
 
-pub(crate) struct InstructionDecoded {
-    pub(crate) value: String,
-    pub(crate) consumed: usize,
-    pub(crate) type_label: String,
-}
-
 pub(crate) fn decode_borsh_shape(
     shape: &Value,
     bytes: &[u8],
@@ -264,122 +258,6 @@ fn decode_borsh_primitive(ty: &str, bytes: &[u8], offset: usize) -> Result<Decod
     Ok(DecodedValue { value, consumed })
 }
 
-pub(crate) fn decode_instruction_type(
-    ty: &Value,
-    words: &[u32],
-    offset: usize,
-    depth: usize,
-) -> Result<InstructionDecoded> {
-    if depth > 32 {
-        bail!("IDL nesting too deep");
-    }
-
-    let label = idl_type_label(ty);
-    if let Some(primitive) = ty.as_str() {
-        return decode_instruction_primitive(primitive, words, offset).map(|mut decoded| {
-            decoded.type_label = label;
-            decoded
-        });
-    }
-
-    let object = ty
-        .as_object()
-        .with_context(|| format!("unsupported instruction type {label}"))?;
-
-    if let Some(inner) = object.get("option") {
-        let tag = *words
-            .get(offset)
-            .with_context(|| format!("missing option tag at word {offset}"))?;
-        if tag == 0 {
-            return Ok(InstructionDecoded {
-                value: "None".to_owned(),
-                consumed: 1,
-                type_label: label,
-            });
-        }
-        if tag != 1 {
-            bail!("invalid option tag {tag}");
-        }
-        let decoded = decode_instruction_type(inner, words, offset + 1, depth + 1)?;
-        return Ok(InstructionDecoded {
-            value: format!("Some({})", decoded.value),
-            consumed: decoded.consumed + 1,
-            type_label: label,
-        });
-    }
-
-    if let Some((inner, len)) = fixed_array_type(ty)? {
-        let mut cursor = offset;
-        let mut values = Vec::with_capacity(len);
-        for _ in 0..len {
-            let decoded = decode_instruction_type(inner, words, cursor, depth + 1)?;
-            cursor += decoded.consumed;
-            values.push(decoded.value);
-        }
-        return Ok(InstructionDecoded {
-            value: format!("[{}]", values.join(", ")),
-            consumed: cursor - offset,
-            type_label: label,
-        });
-    }
-
-    bail!("unsupported instruction type {label}")
-}
-
-fn decode_instruction_primitive(
-    ty: &str,
-    words: &[u32],
-    offset: usize,
-) -> Result<InstructionDecoded> {
-    let (value, consumed) = match ty {
-        "bool" => (word_at(words, offset)? != 0).to_string().into_pair(1),
-        "u8" | "u16" | "u32" => (word_at(words, offset)? as u128).to_string().into_pair(1),
-        "i8" | "i16" | "i32" => (word_at(words, offset)? as i32).to_string().into_pair(1),
-        "u64" => read_words_unsigned(words, offset, 2)?
-            .to_string()
-            .into_pair(2),
-        "i64" => read_words_signed(words, offset, 2)?
-            .to_string()
-            .into_pair(2),
-        "u128" => read_words_unsigned(words, offset, 4)?
-            .to_string()
-            .into_pair(4),
-        "i128" => read_words_signed(words, offset, 4)?
-            .to_string()
-            .into_pair(4),
-        "account_id" => {
-            account_id_base58(&words_to_le_bytes(words_range(words, offset, 8)?)).into_pair(8)
-        }
-        "program_id" => hex::encode(words_to_le_bytes(words_range(words, offset, 8)?)).into_pair(8),
-        "string" => {
-            let len = usize::try_from(word_at(words, offset)?)
-                .context("string byte length does not fit usize")?;
-            let word_len = len.div_ceil(4);
-            let mut bytes = words_to_le_bytes(words_range(words, offset + 1, word_len)?);
-            bytes.truncate(len);
-            let value = String::from_utf8(bytes).context("string arg is not valid UTF-8")?;
-            value.into_pair(1 + word_len)
-        }
-        other => bail!("unsupported primitive instruction type `{other}`"),
-    };
-
-    Ok(InstructionDecoded {
-        value,
-        consumed,
-        type_label: ty.to_owned(),
-    })
-}
-
-trait IntoPair {
-    fn into_pair(self, consumed: usize) -> (String, usize);
-}
-
-impl IntoPair for String {
-    fn into_pair(self, consumed: usize) -> (String, usize) {
-        (self, consumed)
-    }
-}
-
 fn find_defined_shape<'a>(idl: &'a Value, name: &str) -> Option<&'a Value> {
     idl.get("types")
         .and_then(Value::as_array)
@@ -463,68 +341,6 @@ fn read_le_signed(bytes: &[u8], offset: usize, count: usize) -> Result<i128> {
         .context("cannot decode signed integer wider than 128 bits")?
         .copy_from_slice(bytes);
     Ok(i128::from_le_bytes(fixed))
-}
-
-fn word_at(words: &[u32], offset: usize) -> Result<u32> {
-    words
-        .get(offset)
-        .copied()
-        .with_context(|| format!("missing word {offset}"))
-}
-
-fn words_range(words: &[u32], offset: usize, count: usize) -> Result<&[u32]> {
-    if offset
-        .checked_add(count)
-        .is_some_and(|end| end <= words.len())
-    {
-        let end = offset + count;
-        words.get(offset..end).with_context(|| {
-            format!("unexpected end of instruction data at word {offset}, need {count} words")
-        })
-    } else {
-        bail!("unexpected end of instruction data at word {offset}, need {count} words")
-    }
-}
-
-fn read_words_unsigned(words: &[u32], offset: usize, count: usize) -> Result<u128> {
-    let words = words_range(words, offset, count)?;
-    if count > 4 {
-        bail!("cannot decode instruction integer wider than 128 bits");
-    }
-    let mut value = 0_u128;
-    for (index, word) in words.iter().copied().enumerate() {
-        value |= u128::from(word) << (32 * index);
-    }
-    Ok(value)
-}
-
-fn read_words_signed(words: &[u32], offset: usize, count: usize) -> Result<i128> {
-    let words = words_range(words, offset, count)?;
-    if count > 4 {
-        bail!("cannot decode instruction integer wider than 128 bits");
-    }
-    let high_word = words
-        .last()
-        .copied()
-        .context("cannot decode zero-width signed integer")?;
-    let fill = if high_word & 0x8000_0000 == 0 {
-        0_u32
-    } else {
-        u32::MAX
-    };
-    let mut fixed = [fill; 4];
-    fixed
-        .get_mut(..count)
-        .context("cannot decode instruction integer wider than 128 bits")?
-        .copy_from_slice(words);
-    let bytes = words_to_le_bytes(&fixed);
-    let mut fixed_bytes = [0_u8; 16];
-    fixed_bytes.copy_from_slice(&bytes);
-    Ok(i128::from_le_bytes(fixed_bytes))
-}
-
-fn words_to_le_bytes(words: &[u32]) -> Vec<u8> {
-    words.iter().flat_map(|word| word.to_le_bytes()).collect()
 }
 
 fn account_id_base58(bytes: &[u8]) -> String {

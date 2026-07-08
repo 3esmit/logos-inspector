@@ -5,6 +5,14 @@ use crate::{LocalNodeActionRequest, local_nodes_action, source_routing::Args};
 
 use super::super::value::{blocking_value, to_value};
 use super::NodeOperationRequest;
+use super::spec::{OperationCatalogEntry, OperationDomain, OperationMethod};
+
+pub(super) const OPERATION_CATALOG: &[OperationCatalogEntry] = &[OperationCatalogEntry::new(
+    OperationMethod::LocalNodesAction,
+    "localNodesAction",
+    OperationDomain::LocalNodes,
+    "Local node action",
+)];
 
 pub(super) async fn execute_local_nodes_action(request: &NodeOperationRequest) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
