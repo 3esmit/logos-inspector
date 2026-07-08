@@ -8,7 +8,8 @@ use crate::{
     local_wallet_deploy_program, local_wallet_instruction_submit, raw_json_rpc_optional_result,
     sequencer_block, sequencer_blocks, sequencer_health, sequencer_program_ids,
     sequencer_transaction,
-    source_routing::{self, Args, CoreEndpointMode, SourceEndpoint},
+    source_routing::{self, CoreEndpointMode, SourceEndpoint},
+    support::args::Args,
     support::confirmation::ConfirmationPolicy,
 };
 

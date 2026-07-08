@@ -24,6 +24,7 @@ CORE_FFI_LIB_NAME = "logos_inspector_core"
 STANDALONE_PACKAGE_NAME = "logos-inspector-standalone-gui"
 CORE_FFI_HEADER = Path("crates/core-ffi/include/logos_inspector_core.h")
 LEGACY_CORE_HEADER = Path("core/lib/logos_inspector_core.h")
+STANDALONE_QML_ENTRY = Path("qml/StandaloneMain.qml")
 
 
 @dataclass(frozen=True)
@@ -104,6 +105,23 @@ class PackageIdentity:
         ]
         if CORE_FFI_LIB_NAME not in external_names:
             errors.append("core/metadata.json must declare logos_inspector_core external library")
+        errors.extend(self.ui_resource_errors(ui_metadata))
+        return errors
+
+    def ui_resource_errors(self, ui_metadata: dict[str, Any]) -> list[str]:
+        errors: list[str] = []
+        view = metadata_relative_path(ui_metadata, "view")
+        icon = metadata_relative_path(ui_metadata, "icon")
+        if view is None:
+            errors.append("metadata.json view must be a repository-relative QML file")
+        elif not self.path(view).is_file():
+            errors.append(f"metadata.json view does not exist: {view}")
+        if icon is None:
+            errors.append("metadata.json icon must be a repository-relative asset")
+        elif not self.path(icon).is_file():
+            errors.append(f"metadata.json icon does not exist: {icon}")
+        if not self.path(STANDALONE_QML_ENTRY).is_file():
+            errors.append(f"standalone QML entry does not exist: {STANDALONE_QML_ENTRY}")
         return errors
 
     def header_errors(self) -> list[str]:
@@ -177,3 +195,13 @@ def direct_or_workspace(package: dict[str, Any], workspace: dict[str, Any], key:
     if inherited(package, key):
         return workspace.get(key)
     return package.get(key)
+
+
+def metadata_relative_path(metadata: dict[str, Any], key: str) -> Path | None:
+    value = metadata.get(key)
+    if not isinstance(value, str):
+        return None
+    path = Path(value)
+    if path.is_absolute() or ".." in path.parts:
+        return None
+    return path

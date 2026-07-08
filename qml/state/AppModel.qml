@@ -69,6 +69,25 @@ QtObject {
         id: appShellState
         model: root
     }
+    property AppRequestState requests: AppRequestState {
+        id: appRequestState
+
+        bridge: root.bridge
+        shell: appShellState
+        inspectorModule: root.inspectorModule
+        updateDashboardCache: function (method, value) {
+            return root.updateDashboardCache(method, value)
+        }
+        updateKnownProgramIds: function (value) {
+            return root.updateKnownProgramIds(value)
+        }
+        clearAccountDetail: function () {
+            root.accountDetailValue = null
+        }
+        updateNetworkConnectionStatus: function (method, response) {
+            return root.updateNetworkConnectionStatusForMethod(method, response)
+        }
+    }
     property alias currentView: appShellState.currentView
     property alias statusText: appShellState.statusText
     property alias busy: appShellState.busy
@@ -673,9 +692,9 @@ QtObject {
 
     function pageHasOutput(view) { return appShellState.pageHasOutput(view) }
 
-    function callInspector(method, args, label) { return AppModelCore.callInspector(root, method, args, label) }
+    function callInspector(method, args, label) { return appRequestState.callInspector(method, args, label) }
 
-    function callModule(moduleName, method, args, label) { return AppModelCore.callModule(root, moduleName, method, args, label) }
+    function callModule(moduleName, method, args, label) { return appRequestState.callModule(moduleName, method, args, label) }
 
     function blockchainArgs(extra) { return sourceRouting.blockchainArgs(extra) }
 
@@ -695,9 +714,9 @@ QtObject {
         return sourceRouting.lezArgs(target)
     }
 
-    function requestModule(moduleName, method, args, label, showResult, cacheResult) { return AppModelCore.requestModule(root, moduleName, method, args, label, showResult, cacheResult) }
+    function requestModule(moduleName, method, args, label, showResult, cacheResult) { return appRequestState.requestModule(moduleName, method, args, label, showResult, cacheResult) }
 
-    function requestModuleAsync(moduleName, method, args, label, showResult, callback, acceptResponse) { return AppModelCore.requestModuleAsync(root, moduleName, method, args, label, showResult, callback, acceptResponse) }
+    function requestModuleAsync(moduleName, method, args, label, showResult, callback, acceptResponse) { return appRequestState.requestModuleAsync(moduleName, method, args, label, showResult, callback, acceptResponse) }
 
     function runtimeOperationStart(request, showResult, callback) { return AppModelCore.runtimeOperationStart(root, request, showResult, callback) }
 

@@ -1,5 +1,6 @@
 mod accounts;
 mod model;
+mod plan;
 mod prepare;
 mod report;
 mod submit;
@@ -10,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::profile::resolve_instruction_wallet_home;
+use plan::instruction_plan;
 use prepare::prepare_instruction;
 use report::report_from_prepared;
 use submit::submit_instruction;
@@ -57,6 +59,8 @@ pub struct LocalWalletInstructionReport {
     pub submitted_at: Option<String>,
 }
 
+pub use plan::{InstructionPlanField, LocalWalletInstructionPlanReport};
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ResolvedInstructionAccount {
     pub name: String,
@@ -79,6 +83,12 @@ pub fn local_wallet_instruction_preview(request: Value) -> Result<LocalWalletIns
         serde_json::from_value(request).context("failed to parse IDL instruction request")?;
     let prepared = prepare_instruction(&request)?;
     Ok(report_from_prepared(prepared, "previewed", None, None))
+}
+
+pub fn local_wallet_instruction_plan(request: Value) -> Result<LocalWalletInstructionPlanReport> {
+    let request: LocalWalletInstructionRequest =
+        serde_json::from_value(request).context("failed to parse IDL instruction request")?;
+    instruction_plan(&request)
 }
 
 pub async fn local_wallet_instruction_submit(
@@ -170,6 +180,36 @@ mod tests {
             .unwrap_or_default();
         if !error.contains("program binary") {
             bail!("unexpected error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn instruction_plan_reports_fields_and_completion() -> Result<()> {
+        let account = format!("Private/0x{}", "33".repeat(32));
+        let mut request = sample_request(&account);
+        request.program_binary = "/tmp/program.bin".to_owned();
+        let report = local_wallet_instruction_plan(serde_json::to_value(request)?)?;
+
+        if report.instruction != "set_value" {
+            bail!("unexpected instruction: {}", report.instruction);
+        }
+        if !report.private_mode {
+            bail!("private mode was not detected");
+        }
+        if !report.program_binary_required {
+            bail!("program binary was not required");
+        }
+        if !report.inputs_complete {
+            bail!("complete request was reported incomplete");
+        }
+        let account_name = report.accounts.first().map(|field| field.name.as_str());
+        if account_name != Some("target") {
+            bail!("unexpected account field: {account_name:?}");
+        }
+        let arg_type = report.args.first().map(|field| field.type_label.as_str());
+        if arg_type != Some("u32") {
+            bail!("unexpected arg type: {arg_type:?}");
         }
         Ok(())
     }

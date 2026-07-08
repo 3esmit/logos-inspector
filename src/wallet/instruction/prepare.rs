@@ -9,24 +9,23 @@ use super::{
     LocalWalletInstructionRequest, ResolvedInstructionArg,
     accounts::resolve_accounts,
     model::{AccountPrivacy, InstructionMode, PreparedInstruction},
+    plan::{instruction_rows, parse_idl, select_instruction},
     values::{
-        InstructionData, ParsedValue, kebab_name, named_value, parse_typed_value,
-        program_id_from_hex, type_label,
+        InstructionData, ParsedValue, named_value, parse_typed_value, program_id_from_hex,
+        type_label,
     },
 };
 
 pub(super) fn prepare_instruction(
     request: &LocalWalletInstructionRequest,
 ) -> Result<PreparedInstruction> {
-    let idl: Value = serde_json::from_str(&request.idl_json).context("failed to parse IDL JSON")?;
+    let idl = parse_idl(&request.idl_json)?;
     let program_id_hex = normalize_program_id_hex(&request.program_id_hex)?;
     let program_id = program_id_from_hex(&program_id_hex)?;
-    let instructions = idl
-        .get("instructions")
-        .and_then(Value::as_array)
-        .context("IDL has no instructions array")?;
-    let (variant_index, instruction) = select_instruction(instructions, &request.instruction)?;
-    let instruction_name = instruction_name(instruction).to_owned();
+    let instructions = instruction_rows(&idl)?;
+    let selection = select_instruction(instructions, &request.instruction)?;
+    let instruction = &selection.instruction;
+    let instruction_name = selection.name;
     let args = instruction
         .get("args")
         .and_then(Value::as_array)
@@ -58,7 +57,7 @@ pub(super) fn prepare_instruction(
     }
 
     let instruction_words = risc0_zkvm::serde::to_vec(&InstructionData {
-        variant_index: variant_index as u32,
+        variant_index: selection.variant_index as u32,
         fields: &fields,
     })
     .map_err(|error| anyhow::anyhow!("failed to serialize instruction data: {error}"))?;
@@ -93,26 +92,4 @@ pub(super) fn prepare_instruction(
         args: report_args,
         instruction_words,
     })
-}
-
-fn select_instruction<'a>(instructions: &'a [Value], selected: &str) -> Result<(usize, &'a Value)> {
-    let selected = selected.trim();
-    if selected.is_empty() {
-        bail!("instruction is required");
-    }
-    instructions
-        .iter()
-        .enumerate()
-        .find(|(_, instruction)| {
-            let name = instruction_name(instruction);
-            name == selected || kebab_name(name) == selected
-        })
-        .with_context(|| format!("IDL instruction `{selected}` not found"))
-}
-
-fn instruction_name(instruction: &Value) -> &str {
-    instruction
-        .get("name")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown")
 }

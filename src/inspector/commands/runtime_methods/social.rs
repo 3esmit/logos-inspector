@@ -9,7 +9,7 @@ use crate::{
         decode_comment_page as decode_social_comment_page, decode_social_messages,
         project_comment_event as decode_social_comment_row, validate_topic,
     },
-    source_routing::Args,
+    support::args::Args,
 };
 
 use super::super::value::to_value;

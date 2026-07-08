@@ -113,8 +113,8 @@ pub mod compat {
         LocalWalletInstructionRequest, LocalWalletProfileStatus, LocalWalletSyncPrivateReport,
         ResolvedInstructionAccount, ResolvedInstructionArg, bedrock_wallet_balance,
         local_wallet_accounts, local_wallet_command, local_wallet_create_account,
-        local_wallet_deploy_program, local_wallet_instruction_preview,
-        local_wallet_instruction_submit, local_wallet_profile_status,
-        local_wallet_send_transaction, local_wallet_sync_private,
+        local_wallet_deploy_program, local_wallet_instruction_plan,
+        local_wallet_instruction_preview, local_wallet_instruction_submit,
+        local_wallet_profile_status, local_wallet_send_transaction, local_wallet_sync_private,
     };
 }
