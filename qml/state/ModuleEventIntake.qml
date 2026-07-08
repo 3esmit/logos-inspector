@@ -2,6 +2,7 @@ import QtQml
 import "modules/BlockchainModuleEvents.js" as BlockchainModuleEvents
 import "modules/DeliveryModuleEvents.js" as DeliveryModuleEvents
 import "modules/StorageModuleEvents.js" as StorageModuleEvents
+import "storage/StorageOperationContracts.js" as StorageOperationContracts
 
 QtObject {
     id: root
@@ -59,17 +60,7 @@ QtObject {
             },
             {
                 moduleName: model.storageModule,
-                events: [
-                    "storageStart",
-                    "storageStop",
-                    "storageConnect",
-                    "storageUploadProgress",
-                    "storageUploadDone",
-                    "storageDownloadProgress",
-                    "storageDownloadDone",
-                    "storageDownloadManifestDone",
-                    "storageRemoveDone"
-                ]
+                events: StorageOperationContracts.subscriptionEvents()
             },
             {
                 moduleName: model.blockchainModule,

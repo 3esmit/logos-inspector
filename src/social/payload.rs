@@ -33,7 +33,7 @@ pub fn parse_social_payload(
     parse_social_payload_value(&value, expected_account_id)
 }
 
-fn parse_social_payload_value(
+pub(crate) fn parse_social_payload_value(
     value: &Value,
     expected_account_id: Option<&str>,
 ) -> Result<SocialPayload> {

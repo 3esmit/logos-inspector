@@ -25,6 +25,19 @@ pub fn social_messages_from_store(
         .collect()
 }
 
+#[must_use]
+pub fn social_store_cursor(value: &Value) -> Option<String> {
+    first_store_cursor(value, 0).map(ToOwned::to_owned)
+}
+
+#[must_use]
+pub fn last_social_message_cursor(messages: &[SocialMessage]) -> Option<String> {
+    messages
+        .iter()
+        .rev()
+        .find_map(|message| non_empty(message.cursor.as_str()).map(ToOwned::to_owned))
+}
+
 fn social_message_from_store_object(
     topic: &str,
     message: &Value,
@@ -90,6 +103,41 @@ fn first_string<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
     let object = value.as_object()?;
     keys.iter()
         .find_map(|key| object.get(*key).and_then(Value::as_str))
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
+        .and_then(non_empty)
+}
+
+fn first_store_cursor(value: &Value, depth: usize) -> Option<&str> {
+    if depth > 5 {
+        return None;
+    }
+    match value {
+        Value::Array(items) => items
+            .iter()
+            .find_map(|item| first_store_cursor(item, depth + 1)),
+        Value::Object(object) => first_string(
+            value,
+            &[
+                "paginationCursor",
+                "pagination_cursor",
+                "nextCursor",
+                "next_cursor",
+            ],
+        )
+        .or_else(|| {
+            ["value", "result", "page", "pagination"]
+                .iter()
+                .filter_map(|key| object.get(*key))
+                .find_map(|child| first_store_cursor(child, depth + 1))
+        }),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => None,
+    }
+}
+
+fn non_empty(value: &str) -> Option<&str> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
 }

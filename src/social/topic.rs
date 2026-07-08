@@ -28,6 +28,17 @@ pub fn lez_account_idl_topic(id: &str) -> Option<String> {
     Some(format!("/lez/account/{id}/idl"))
 }
 
+#[must_use]
+pub fn social_topic_is_valid(topic: &str) -> bool {
+    let mut segments = topic.trim().split('/');
+    segments.next() == Some("")
+        && segments.next().is_some_and(|segment| !segment.is_empty())
+        && segments.next().is_some_and(|segment| !segment.is_empty())
+        && segments.next().is_some_and(|segment| !segment.is_empty())
+        && segments.next().is_some_and(|segment| !segment.is_empty())
+        && segments.next().is_none()
+}
+
 impl SocialLayer {
     fn as_topic_segment(self) -> &'static str {
         match self {

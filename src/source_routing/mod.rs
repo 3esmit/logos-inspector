@@ -17,6 +17,7 @@ pub(crate) use core::adapters::{
 pub(crate) use delivery::adapters::{
     DELIVERY_MODULE, delivery_lifecycle_args, delivery_message_args, delivery_store_query_url,
 };
+pub(crate) use delivery::delivery_module_probe_plan;
 pub use delivery::delivery_source_report;
 pub use network_profiles::{
     CUSTOM_NETWORK_PROFILE, DEFAULT_NETWORK_PROFILE, NetworkEndpoints, NetworkProfile,
@@ -42,11 +43,12 @@ pub(crate) use selection::{
 };
 pub use shared::SourceReport;
 pub(crate) use shared::{
-    SourceReportBuilder, call_value, dispatch_result, raw_http_json_url, rest_empty_request,
-    rest_json_request, rest_url,
+    ModuleProbeStep, SourceReportBuilder, call_value, dispatch_result, raw_http_json_url,
+    rest_empty_request, rest_json_request, rest_url,
 };
 pub(crate) use storage::adapters::{
     STORAGE_MODULE, is_storage_module_source, storage_args, storage_rest_download_bytes,
     storage_rest_upload, storage_rest_upload_bytes,
 };
+pub(crate) use storage::storage_module_probe_plan;
 pub use storage::storage_source_report;
