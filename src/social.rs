@@ -1,9 +1,15 @@
+pub mod collaboration;
 mod comments;
 mod delivery_store;
 mod payload;
 mod shared_idl;
 mod topic;
 
+pub use collaboration::{
+    SharedAccountIdlQuery, SocialCommentQuery, accepted_shared_account_idls, build_comment_topic,
+    build_lez_account_idl_topic, decode_comment_page, decode_social_messages,
+    project_comment_event, validate_topic,
+};
 pub use comments::{
     SocialCommentPage, SocialCommentRow, social_comment_page_from_store,
     social_comment_row_from_event, social_comment_rows_from_messages,

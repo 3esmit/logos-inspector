@@ -10,7 +10,7 @@ mod process;
 
 pub use local_indexer::{
     bootstrap_default_local_indexer, bootstrap_default_local_indexer_for_saved_settings,
-    is_default_local_indexer_endpoint,
+    default_local_indexer_requested_by_saved_settings, is_default_local_indexer_endpoint,
 };
 pub use model::{
     LocalDevnetListReport, LocalDevnetRecord, LocalNodeActionRequest, LocalNodeConfigRecord,

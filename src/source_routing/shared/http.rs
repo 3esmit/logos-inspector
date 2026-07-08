@@ -5,9 +5,9 @@ use reqwest::{Method, Url, header};
 use serde_json::{Value, json};
 use tokio_util::io::ReaderStream;
 
-use crate::support::http_response::{read_response_bytes, read_response_json, read_response_text};
-
 use crate::source_routing::selection::DeliveryStoreQuery;
+pub(crate) use crate::support::raw_source_transport::rest_url;
+use crate::support::raw_source_transport::{request_bytes, request_json, request_text};
 
 pub(crate) async fn storage_rest_upload(
     endpoint: &str,
@@ -88,9 +88,10 @@ pub(crate) async fn storage_rest_download_bytes(
     } else {
         format!("/data/{cid}/network/stream")
     };
-    read_response_bytes(
-        reqwest::Client::new().get(rest_url(endpoint, &route)),
-        &rest_url(endpoint, &route),
+    let url = rest_url(endpoint, &route);
+    request_bytes(
+        reqwest::Client::new().get(&url),
+        &url,
         "failed to read storage backup download body",
     )
     .await
@@ -138,7 +139,7 @@ pub(crate) fn delivery_store_query_url(
 }
 
 pub(crate) async fn raw_http_json_url(url: &str) -> Result<Value> {
-    read_response_json(
+    request_json(
         reqwest::Client::new().get(url),
         url,
         "failed to read http response body",
@@ -164,7 +165,7 @@ pub(crate) async fn rest_json_request(
     if let Some(body) = body {
         request = request.json(&body);
     }
-    read_response_json(
+    request_json(
         request,
         &url,
         "failed to read http response body",
@@ -191,11 +192,5 @@ pub(crate) async fn rest_empty_request(
 }
 
 pub(crate) async fn send_text(request: reqwest::RequestBuilder, label: &str) -> Result<String> {
-    read_response_text(request, label, "failed to read http response body", true).await
-}
-
-pub(crate) fn rest_url(endpoint: &str, path: &str) -> String {
-    let endpoint = endpoint.trim_end_matches('/');
-    let path = path.trim_start_matches('/');
-    format!("{endpoint}/{path}")
+    request_text(request, label, "failed to read http response body", true).await
 }

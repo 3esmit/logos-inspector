@@ -14,20 +14,21 @@ pub(crate) use transactions::{
 };
 
 use super::transfers::{TransferActivityPage, transfer_recipient_summaries_from_blocks};
-use crate::{json_rpc_result, raw_json_rpc, raw_json_rpc_optional_result};
+use crate::{raw_json_rpc, raw_json_rpc_optional_result};
 
 pub async fn indexer_block_by_hash(
     endpoint: &str,
     header_hash: &str,
 ) -> Result<Option<IndexerBlockReport>> {
     let parsed_hash = crate::parse_hash(header_hash, "block header hash")?;
-    let response = raw_json_rpc(endpoint, "getBlockByHash", json!([parsed_hash.to_string()]))
-        .await
-        .with_context(|| format!("failed to fetch indexer block {}", parsed_hash))?;
-    let Some(result) = json_rpc_result(&response, "getBlockByHash")? else {
+    let result =
+        raw_json_rpc_optional_result(endpoint, "getBlockByHash", json!([parsed_hash.to_string()]))
+            .await
+            .with_context(|| format!("failed to fetch indexer block {}", parsed_hash))?;
+    if result.is_null() {
         return Ok(None);
-    };
-    Ok(Some(summarize_indexer_block(result)))
+    }
+    Ok(Some(summarize_indexer_block(&result)))
 }
 
 pub async fn indexer_blocks(
@@ -36,12 +37,12 @@ pub async fn indexer_blocks(
     limit: u64,
 ) -> Result<Vec<IndexerBlockReport>> {
     let before = before.map_or(Value::Null, |block_id| json!(block_id));
-    let response = raw_json_rpc(endpoint, "getBlocks", json!([before, limit]))
+    let result = raw_json_rpc_optional_result(endpoint, "getBlocks", json!([before, limit]))
         .await
         .context("failed to fetch indexer blocks")?;
-    let Some(result) = json_rpc_result(&response, "getBlocks")? else {
+    if result.is_null() {
         return Ok(Vec::new());
-    };
+    }
     let blocks = result
         .as_array()
         .context("getBlocks result was not an array")?;

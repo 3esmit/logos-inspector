@@ -53,10 +53,17 @@ pub fn bootstrap_default_local_indexer() -> Result<()> {
 }
 
 pub fn bootstrap_default_local_indexer_for_saved_settings() -> Result<()> {
-    if saved_settings_use_default_local_indexer()? {
+    if default_local_indexer_requested_by_saved_settings()? {
         bootstrap_default_local_indexer()?;
     }
     Ok(())
+}
+
+pub fn default_local_indexer_requested_by_saved_settings() -> Result<bool> {
+    let settings = load_settings_state()?;
+    Ok(is_default_local_indexer_endpoint(
+        saved_settings_indexer_endpoint(&settings),
+    ))
 }
 
 #[must_use]
@@ -65,13 +72,6 @@ pub fn is_default_local_indexer_endpoint(endpoint: &str) -> bool {
     endpoint == DEFAULT_INDEXER_ENDPOINT.trim_end_matches('/')
         || endpoint == "http://localhost:8779"
         || endpoint == "http://[::1]:8779"
-}
-
-fn saved_settings_use_default_local_indexer() -> Result<bool> {
-    let settings = load_settings_state()?;
-    Ok(is_default_local_indexer_endpoint(
-        saved_settings_indexer_endpoint(&settings),
-    ))
 }
 
 fn saved_settings_indexer_endpoint(settings: &Value) -> &str {

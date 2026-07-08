@@ -1,31 +1,6 @@
 pub mod blockchain;
 pub mod cli;
 pub mod decode;
-pub mod inspection {
-    pub mod l1 {
-        pub mod bedrock {
-            pub use crate::blockchain::bedrock::*;
-        }
-
-        pub mod channels {
-            pub use crate::blockchain::channels::*;
-        }
-    }
-
-    pub mod l2 {
-        pub mod lez {
-            pub use crate::lez::*;
-        }
-    }
-
-    pub mod overview {
-        pub use crate::overview::*;
-    }
-
-    pub mod rpc {
-        pub use crate::rpc::*;
-    }
-}
 
 mod inspector {
     pub mod bridge;
@@ -36,107 +11,24 @@ mod inspector {
 }
 pub mod lez;
 pub mod local_nodes;
-pub mod logoscore;
 pub mod modules;
-pub mod network;
 pub mod overview;
 pub mod probe;
+mod public_surface;
 pub mod rpc;
 pub mod social;
 pub mod source_routing;
 pub(crate) mod support;
 pub mod wallet;
 
-pub mod bridge {
-    pub use crate::inspector::bridge::InspectorBridge;
-}
-
-pub mod program_decode {
-    pub use crate::decode::*;
-}
-
-pub mod idl_decode {
-    pub use crate::program_decode::*;
-}
-
-pub mod local_indexer {
-    pub use crate::local_nodes::{
-        bootstrap_default_local_indexer, bootstrap_default_local_indexer_for_saved_settings,
-        is_default_local_indexer_endpoint,
-    };
-}
+pub use public_surface::{
+    bridge, idl_decode, inspection, local_indexer, logoscore, network, program_decode,
+};
 
 // Compatibility shims. First-party code should prefer the domain modules above.
-pub use blockchain::{
-    ChannelOperationMatch, ChannelScanReport, ChannelSummary, channel_scan, channel_state,
-    extract_channel_operations, logos_node_cryptarchia_info, summarize_channel_operations,
-};
-pub use decode::{
-    AccountIdlDecodeReport, DecodedField, EventIdlDecodeReport, InstructionDecodeReport,
-    decode_account_data_hex_with_idl, decode_event_data_hex_with_idl, decode_event_data_with_idl,
-    decode_instruction_words_with_idl,
-};
-pub use lez::{
-    AccountReport, AccountTransactionSummary, SequencerAccountIdlReport, account_lookup,
-    account_lookup_with_idl, account_transactions_by_account, sequencer_account,
-    sequencer_account_with_idl,
-};
-pub use lez::{
-    BlockSummary, last_sequencer_block_id, sequencer_block, sequencer_blocks, sequencer_health,
-    sequencer_program_ids, sequencer_transaction, sequencer_transaction_inspection,
-    sequencer_transaction_inspection_with_idl, sequencer_transaction_trace,
-    sequencer_transaction_trace_with_idl, summarize_block,
-};
-pub use lez::{
-    IndexerBlockReport, IndexerStatusReport, indexer_block_by_hash, indexer_blocks, indexer_health,
-    indexer_status, indexer_transfer_recipients,
-};
-pub use lez::{
-    ProgramFileInfo, ProgramIdEntry, program_file_info, program_id_base58, program_id_hex,
-};
-pub use lez::{RecipientTransferSummary, TransferActivityPage, TransferRecipientSummary};
-pub use lez::{
-    TransactionIdlInspectionReport, TransactionInspectionReport, TransactionInspectionRow,
-    TransactionInspectionSection, TransactionSummary, TransactionTraceRefs, TransactionTraceReport,
-    TransactionTraceStep, inspect_transaction_summary, inspect_transaction_summary_with_idl,
-    summarize_transaction, trace_transaction_summary, trace_transaction_summary_with_idl,
-};
-pub use local_nodes::{
-    LocalDevnetListReport, LocalDevnetRecord, LocalNodeActionRequest, LocalNodeOperationReport,
-    LocalNodeReport, LocalNodeStatus, NodeAction, NodeKind, local_devnet_list, local_nodes_action,
-    local_nodes_status,
-};
-pub use network::{
-    CUSTOM_NETWORK_PROFILE, DEFAULT_INDEXER_ENDPOINT, DEFAULT_NETWORK_PROFILE,
-    DEFAULT_NODE_ENDPOINT, DEFAULT_SEQUENCER_ENDPOINT, LOCAL_SEQUENCER_ENDPOINT, NetworkEndpoints,
-    NetworkProfile, TESTNET_SEQUENCER_ENDPOINT, infer_network_profile, network_profiles,
-    resolve_network_endpoints,
-};
-pub use overview::{
-    InspectorScope, NodeProbe, OverviewReport, ServiceProbe, inspector_scopes, overview,
-};
-pub use probe::{ProbeField, ProbeReport};
-pub(crate) use rpc::json_rpc_result;
-pub use rpc::{
-    RawRpcReport, raw_http_json, raw_json_rpc, raw_json_rpc_optional_result, raw_json_rpc_result,
-    raw_rpc_report,
-};
-pub use source_routing::{
-    DEFAULT_DELIVERY_METRICS_ENDPOINT, DEFAULT_DELIVERY_REST_ENDPOINT,
-    DEFAULT_STORAGE_METRICS_ENDPOINT, DEFAULT_STORAGE_REST_ENDPOINT,
-};
-pub use support::entity_id::normalize_program_id_hex;
+pub use public_surface::compat::*;
 pub(crate) use support::entity_id::{normalize_account_id_text, parse_account_id, parse_hash};
-pub(crate) use support::http_response::{expect_success_response, response_excerpt};
+pub(crate) use support::http_response::response_excerpt;
 pub(crate) use support::json_value::{enum_payload, value_list_strings, value_to_string};
-pub use wallet::{
-    LOCAL_WALLET_HOME_ENV, LocalWalletAccountRow, LocalWalletAccountsReport,
-    LocalWalletCommandReport, LocalWalletDeployReport, LocalWalletInstructionReport,
-    LocalWalletInstructionRequest, LocalWalletProfileStatus, LocalWalletSyncPrivateReport,
-    ResolvedInstructionAccount, ResolvedInstructionArg, bedrock_wallet_balance,
-    local_wallet_accounts, local_wallet_command, local_wallet_create_account,
-    local_wallet_deploy_program, local_wallet_instruction_preview, local_wallet_instruction_submit,
-    local_wallet_profile_status, local_wallet_send_transaction, local_wallet_sync_private,
-};
 
 pub const ACCOUNT_TRANSACTION_LIMIT: usize = 20;
