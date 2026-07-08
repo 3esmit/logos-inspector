@@ -4,7 +4,6 @@ use tokio::runtime::Runtime;
 
 use crate::{
     raw_http_json,
-    social::social_messages_from_store as decode_social_messages,
     source_routing::{
         self, Args, require_mutating_diagnostics, storage_rest_download_bytes, storage_rest_source,
         storage_rest_upload_bytes,
@@ -107,14 +106,4 @@ pub(super) fn storage_restore_settings(runtime: &Runtime, args: Value) -> Result
         "favorites": summary.favorites_count,
         "idl_count": summary.idl_count,
     }))
-}
-
-pub(super) fn social_messages_from_store(args: Value) -> Result<Value> {
-    let args = Args::new(args)?;
-    let topic = args.string(0, "social topic")?;
-    let value = args
-        .value(1)
-        .context("Delivery Store response is required")?;
-    let expected_account = args.optional_string(2);
-    to_value(decode_social_messages(topic, value, expected_account))
 }

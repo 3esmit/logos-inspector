@@ -1,5 +1,6 @@
 mod base;
 mod delivery;
+pub(crate) mod logos_core;
 mod storage;
 
 pub use base::{

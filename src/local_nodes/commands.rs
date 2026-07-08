@@ -4,7 +4,7 @@ use anyhow::Result;
 use serde_json::{Value, json};
 
 use super::{NodeAction, NodeKind};
-use crate::{logoscore, support::command_runner::spawn_detached};
+use crate::{modules::logos_core, support::command_runner::spawn_detached};
 
 const BLOCKCHAIN_MODULE: &str = "blockchain_module";
 const INDEXER_MODULE: &str = "lez_indexer_module";
@@ -95,7 +95,7 @@ pub(super) fn execute_command_spec(spec: &LocalNodeCommandSpec) -> Result<Value>
             method,
             call_args,
         } => {
-            let output = logoscore::call(module, method, call_args)?;
+            let output = logos_core::call(module, method, call_args)?;
             Ok(json!({
                 "runner": output.runner,
                 "value": output.value,

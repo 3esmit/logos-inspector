@@ -10,7 +10,8 @@ use crate::{
         next_indexer_blocks_cursor, summarize_account_transaction, summarize_indexer_block,
         summarize_indexer_status_response, transfer_recipient_summaries_from_blocks,
     },
-    logoscore, response_excerpt,
+    modules::logos_core,
+    response_excerpt,
 };
 
 pub(crate) const BLOCKCHAIN_MODULE: &str = "blockchain_module";
@@ -171,7 +172,7 @@ pub(crate) fn attach_module_account_transactions(account: &mut AccountReport) {
 }
 
 pub(crate) fn call_value(module: &str, method: &str, args: &[String]) -> Result<Value> {
-    let output = logoscore::call(module, method, args)?;
+    let output = logos_core::call(module, method, args)?;
     unwrap_call_output(module, method, output.value)
 }
 

@@ -13,7 +13,8 @@ use crate::source_routing::{
 };
 use crate::support::bridge_envelope::{bridge_error_response_json, bridge_response_json};
 use crate::{
-    inspector::commands::operations::RuntimeOperationInterface, logoscore, source_routing::Args,
+    inspector::commands::operations::RuntimeOperationInterface, modules::logos_core,
+    source_routing::Args,
 };
 
 const INSPECTOR_MODULE: &str = "logos_inspector";
@@ -83,7 +84,7 @@ impl InspectorBridge {
                     .unwrap_or_else(|| value.to_string())
             })
             .collect::<Vec<_>>();
-        to_value(logoscore::call(module, method, &args)?)
+        to_value(logos_core::call(module, method, &args)?)
     }
 }
 

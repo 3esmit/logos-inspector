@@ -1,9 +1,11 @@
 use anyhow::{Context as _, Result, bail};
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use std::time::Duration;
 
-use crate::{ProbeReport, logos_node_cryptarchia_info, raw_http_json, response_excerpt};
+use crate::{
+    ProbeReport, response_excerpt, rpc::raw_http_json, support::json_value::value_to_string,
+};
 
 const BLOCK_STREAM_SNAPSHOT_TIMEOUT: Duration = Duration::from_millis(250);
 const BLOCK_STREAM_SNAPSHOT_MAX_BYTES: usize = 256 * 1024;
@@ -48,6 +50,12 @@ pub async fn blockchain_node_report(endpoint: &str) -> BlockchainNodeReport {
             mantle_metrics,
         ),
     }
+}
+
+pub async fn logos_node_cryptarchia_info(endpoint: &str) -> Result<Value> {
+    raw_http_json(endpoint, "/cryptarchia/info")
+        .await
+        .map(normalize_cryptarchia_info)
 }
 
 pub async fn blockchain_blocks(endpoint: &str, slot_from: u64, slot_to: u64) -> Result<Value> {
@@ -563,6 +571,82 @@ async fn post_json(endpoint: &str, path: &str, body: &Value) -> Result<Value> {
     Ok(value)
 }
 
+fn normalize_cryptarchia_info(raw: Value) -> Value {
+    let source = raw
+        .get("cryptarchia_info")
+        .filter(|value| value.is_object())
+        .unwrap_or(&raw);
+    let mut info = Map::new();
+
+    if let Some(lib) = first_present(source, &["lib", "lib_hash"]) {
+        insert_value(&mut info, "lib", lib.clone());
+        insert_value(&mut info, "lib_hash", lib.clone());
+    }
+    if let Some(lib_slot) = first_u64(source, &["lib_slot", "lib_height"]) {
+        insert_value(&mut info, "lib_slot", json!(lib_slot));
+    }
+    if let Some(tip) = first_present(source, &["tip", "tip_hash", "hash"]) {
+        insert_value(&mut info, "tip", tip.clone());
+        insert_value(&mut info, "tip_hash", tip.clone());
+    }
+    if let Some(slot) = first_u64(source, &["slot", "tip_slot", "height"]) {
+        insert_value(&mut info, "slot", json!(slot));
+    }
+    if let Some(height) = first_u64(source, &["height", "slot"]) {
+        insert_value(&mut info, "height", json!(height));
+    }
+
+    if let Some(mode) = raw
+        .get("mode")
+        .or_else(|| source.get("mode"))
+        .and_then(mode_text)
+    {
+        insert_value(&mut info, "mode", json!(mode));
+    }
+
+    let mut normalized = info.clone();
+    normalized.insert("cryptarchia_info".to_owned(), Value::Object(info));
+    normalized.insert("raw".to_owned(), raw);
+    Value::Object(normalized)
+}
+
+fn insert_value(map: &mut Map<String, Value>, key: &str, value: Value) {
+    map.insert(key.to_owned(), value);
+}
+
+fn first_present<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a Value> {
+    keys.iter().find_map(|key| value.get(*key))
+}
+
+fn first_u64(value: &Value, keys: &[&str]) -> Option<u64> {
+    keys.iter().find_map(|key| {
+        value.get(*key).and_then(|value| {
+            value
+                .as_u64()
+                .or_else(|| value.as_str().and_then(|value| value.trim().parse().ok()))
+        })
+    })
+}
+
+fn mode_text(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => Some(value.clone()),
+        Value::Number(_) | Value::Bool(_) => Some(value_to_string(value)),
+        Value::Object(object) => {
+            let mut entries = object.iter();
+            let (key, value) = entries.next()?;
+            if entries.next().is_some() {
+                return Some(value_to_string(value));
+            }
+            if value.is_null() {
+                return Some(key.clone());
+            }
+            Some(value_to_string(value))
+        }
+        Value::Null | Value::Array(_) => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -733,6 +817,103 @@ data: {"header":{"id":"live-3","slot":43},"transactions":[]}"#;
         ensure_nested_string(first, &["header", "id"], "slot-10")?;
         ensure_nested_string(second, &["header", "id"], "slot-5")?;
         Ok(())
+    }
+
+    #[test]
+    fn normalize_cryptarchia_info_accepts_nested_mode_object() {
+        let raw = json!({
+            "cryptarchia_info": {
+                "lib": "lib-hash",
+                "lib_slot": "20",
+                "tip": "tip-hash",
+                "slot": 30
+            },
+            "mode": { "Started": "Online" }
+        });
+
+        let normalized = normalize_cryptarchia_info(raw.clone());
+
+        assert_eq!(
+            normalized.pointer("/cryptarchia_info/lib"),
+            Some(&json!("lib-hash"))
+        );
+        assert_eq!(
+            normalized.pointer("/cryptarchia_info/lib_slot"),
+            Some(&json!(20))
+        );
+        assert_eq!(
+            normalized.pointer("/cryptarchia_info/tip"),
+            Some(&json!("tip-hash"))
+        );
+        assert_eq!(
+            normalized.pointer("/cryptarchia_info/slot"),
+            Some(&json!(30))
+        );
+        assert_eq!(
+            normalized.pointer("/cryptarchia_info/height"),
+            Some(&json!(30))
+        );
+        assert_eq!(
+            normalized.pointer("/cryptarchia_info/mode"),
+            Some(&json!("Online"))
+        );
+        assert_eq!(normalized.get("mode"), Some(&json!("Online")));
+        assert_eq!(normalized.get("raw"), Some(&raw));
+    }
+
+    #[test]
+    fn normalize_cryptarchia_info_accepts_flat_string_mode() {
+        let raw = json!({
+            "lib_hash": "lib-hash",
+            "lib_slot": 8,
+            "tip_hash": "tip-hash",
+            "height": "13",
+            "mode": "Running"
+        });
+
+        let normalized = normalize_cryptarchia_info(raw);
+
+        assert_eq!(
+            normalized.pointer("/cryptarchia_info/lib"),
+            Some(&json!("lib-hash"))
+        );
+        assert_eq!(
+            normalized.pointer("/cryptarchia_info/tip"),
+            Some(&json!("tip-hash"))
+        );
+        assert_eq!(
+            normalized.pointer("/cryptarchia_info/slot"),
+            Some(&json!(13))
+        );
+        assert_eq!(
+            normalized.pointer("/cryptarchia_info/height"),
+            Some(&json!(13))
+        );
+        assert_eq!(
+            normalized.pointer("/cryptarchia_info/mode"),
+            Some(&json!("Running"))
+        );
+    }
+
+    #[test]
+    fn normalize_cryptarchia_info_accepts_numeric_mode() {
+        let normalized = normalize_cryptarchia_info(json!({ "mode": 2 }));
+
+        assert_eq!(
+            normalized.pointer("/cryptarchia_info/mode"),
+            Some(&json!("2"))
+        );
+    }
+
+    #[test]
+    fn normalize_cryptarchia_info_tolerates_missing_optional_fields() {
+        let normalized = normalize_cryptarchia_info(json!({}));
+
+        assert_eq!(
+            normalized.pointer("/cryptarchia_info"),
+            Some(&Value::Object(Map::new()))
+        );
+        assert!(normalized.get("raw").is_some());
     }
 
     fn ensure_nested_string(value: &Value, path: &[&str], expected: &str) -> Result<()> {

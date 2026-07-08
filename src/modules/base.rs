@@ -1,11 +1,11 @@
 use serde::Serialize;
 
 use crate::{
-    ProbeReport, logoscore,
+    ProbeReport,
     source_routing::{SourceProbeKey, SourceReport},
 };
 
-use super::{delivery_report, storage_report};
+use super::{delivery_report, logos_core, storage_report};
 
 pub(super) const BLOCKCHAIN_MODULE: &str = "blockchain_module";
 pub(super) const STORAGE_MODULE: &str = "storage_module";
@@ -46,7 +46,7 @@ pub fn logoscore_status_report() -> ProbeReport {
     ProbeReport::from_result(
         "logoscore status",
         "logoscore status --json",
-        logoscore::status(),
+        logos_core::status(),
     )
 }
 
@@ -91,7 +91,7 @@ pub(super) fn module_info_probe(module: &str) -> ProbeReport {
     ProbeReport::from_result(
         format!("{module} info"),
         format!("logoscore module-info {module} --json"),
-        logoscore::module_info(module),
+        logos_core::module_info(module),
     )
 }
 
@@ -128,7 +128,7 @@ fn call_module_probe(
     let probe = ProbeReport::from_result(
         format!("{module}.{method}{args_label}"),
         format!("logoscore call {module} {method}{source_args}"),
-        logoscore::call(module, method, &args),
+        logos_core::call(module, method, &args),
     );
     match key {
         Some(key) => probe.with_probe_key(key.as_str()),
