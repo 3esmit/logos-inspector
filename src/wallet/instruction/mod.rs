@@ -9,9 +9,10 @@ use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::profile::resolve_instruction_wallet_home;
 use prepare::prepare_instruction;
 use report::report_from_prepared;
-use submit::{resolve_wallet_home, submit_instruction};
+use submit::submit_instruction;
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct LocalWalletInstructionRequest {
@@ -84,7 +85,7 @@ pub async fn local_wallet_instruction_submit(
     profile: Value,
     request: Value,
 ) -> Result<LocalWalletInstructionReport> {
-    let wallet_home = resolve_wallet_home(profile)?;
+    let wallet_home = resolve_instruction_wallet_home(profile)?;
     let request: LocalWalletInstructionRequest =
         serde_json::from_value(request).context("failed to parse IDL instruction request")?;
     let prepared = prepare_instruction(&request)?;

@@ -7,11 +7,11 @@ use std::{
 
 use anyhow::Result;
 
+use super::profile::local_wallet_binary_is_path_like;
 use super::{
     LOCAL_WALLET_DEPLOY_TIMEOUT, LOCAL_WALLET_ENV_ALLOWLIST, LOCAL_WALLET_HOME_ENV,
     LOCAL_WALLET_LIST_TIMEOUT, LOCAL_WALLET_MUTATION_TIMEOUT, LOCAL_WALLET_OUTPUT_LIMIT,
     LOCAL_WALLET_POLL_INTERVAL, LOCAL_WALLET_SYNC_TIMEOUT, LOCAL_WALLET_VERSION_TIMEOUT,
-    local_wallet_binary_is_path_like,
 };
 use crate::support::command_runner::{CommandRunPolicy, output_text, run_command};
 

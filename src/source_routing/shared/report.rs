@@ -4,11 +4,11 @@ use crate::ProbeReport;
 
 use crate::source_routing::{
     DeliverySourceReportKind, SourceCapabilityFact, SourceFacts, SourceHealthFacts,
-    SourceProbeFact, SourceProbeKey, StorageSourceReportKind, delivery_source_facts,
-    storage_source_facts,
+    SourceProbeFact, SourceProbeKey, StorageSourceReportKind,
 };
 
 use super::evidence::SourceEvidence;
+use super::facts::source_facts_for_report;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SourceReport {
@@ -188,14 +188,7 @@ impl SourceReportBuilder {
     }
 
     fn source_facts(&self) -> SourceFacts {
-        match self.kind {
-            SourceReportKind::Delivery(kind) => {
-                delivery_source_facts(kind, &self.evidence.module_info, &self.evidence.probes)
-            }
-            SourceReportKind::Storage(kind) => {
-                storage_source_facts(kind, &self.evidence.module_info, &self.evidence.probes)
-            }
-        }
+        source_facts_for_report(self.kind, &self.evidence.module_info, &self.evidence.probes)
     }
 }
 

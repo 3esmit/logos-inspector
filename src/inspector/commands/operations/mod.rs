@@ -43,7 +43,7 @@ use record::{
 };
 pub(crate) use request::{RuntimeOperationRequest, runtime_operation_request_from_value};
 use request::{runtime_operation_backend, runtime_operation_context};
-pub(crate) use spec::{OperationDomain, OperationMethod};
+pub(crate) use spec::OperationMethod;
 use spec::{OperationExclusiveGroup, normalized_operation_method};
 
 #[cfg(test)]

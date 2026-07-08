@@ -5,16 +5,13 @@ use std::{
 };
 
 use ::wallet::{AccountIdentity, WalletCore};
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result};
 use lee::program::Program;
-use serde::Deserialize;
-use serde_json::Value;
 
 use super::{
     LocalWalletInstructionRequest,
     model::{AccountPrivacy, InstructionMode, PreparedAccount, PreparedInstruction},
 };
-use crate::wallet::LOCAL_WALLET_HOME_ENV;
 
 pub(super) async fn submit_instruction(
     wallet_home: PathBuf,
@@ -103,36 +100,4 @@ fn load_program(path: &Path) -> Result<Program> {
         .with_context(|| format!("failed to read program binary at {}", path.display()))?;
     Program::new(bytes.into())
         .map_err(|error| anyhow::anyhow!("failed to parse program binary: {error:?}"))
-}
-
-pub(super) fn resolve_wallet_home(profile: Value) -> Result<PathBuf> {
-    #[derive(Deserialize)]
-    struct Profile {
-        #[serde(default, alias = "walletHome")]
-        wallet_home: String,
-    }
-
-    let profile: Profile =
-        serde_json::from_value(profile).context("failed to parse local wallet profile")?;
-    let explicit = profile.wallet_home.trim();
-    let home = if explicit.is_empty() {
-        std::env::var(LOCAL_WALLET_HOME_ENV).unwrap_or_default()
-    } else {
-        explicit.to_owned()
-    };
-    let home = home.trim();
-    if home.is_empty() {
-        bail!("wallet home directory is required to send IDL instruction");
-    }
-    let home = PathBuf::from(home);
-    if !home.is_dir() {
-        bail!("wallet home directory is not reachable");
-    }
-    if !home.join("wallet_config.json").is_file() {
-        bail!("wallet home missing wallet_config.json");
-    }
-    if !home.join("storage.json").is_file() {
-        bail!("wallet home missing storage.json");
-    }
-    Ok(home)
 }

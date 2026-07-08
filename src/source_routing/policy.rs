@@ -875,7 +875,7 @@ pub fn source_policy_report() -> SourcePolicyReport {
 }
 
 #[must_use]
-pub fn storage_source_facts(
+pub(crate) fn storage_source_facts(
     kind: StorageSourceReportKind,
     module_info: &ProbeReport,
     probes: &[ProbeReport],
@@ -889,7 +889,7 @@ pub fn storage_source_facts(
 }
 
 #[must_use]
-pub fn delivery_source_facts(
+pub(crate) fn delivery_source_facts(
     kind: DeliverySourceReportKind,
     module_info: &ProbeReport,
     probes: &[ProbeReport],

@@ -32,9 +32,8 @@ pub use policy::{
     SourceHealthStatus, SourceModeFamilies, SourceModePolicy, SourcePolicyDefaults,
     SourcePolicyReport, SourceProbeFact, SourceProbeKey, StorageSourceMode,
     StorageSourceReportKind, TESTNET_SEQUENCER_ENDPOINT, default_endpoint_for_domain,
-    default_source_mode_for_domain, delivery_source_facts, effective_source_mode,
-    normalized_core_source_mode, normalized_source_mode, source_mode_is_token, source_mode_policy,
-    source_policy_report, storage_source_facts,
+    default_source_mode_for_domain, effective_source_mode, normalized_core_source_mode,
+    normalized_source_mode, source_mode_is_token, source_mode_policy, source_policy_report,
 };
 pub(crate) use selection::{
     AccountSources, Args, DeliveryStoreQuery, SourceArgsNormalization, SourceEndpoint,

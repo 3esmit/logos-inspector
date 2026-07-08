@@ -1,4 +1,5 @@
 pub(crate) mod evidence;
+pub(crate) mod facts;
 pub(crate) mod http;
 pub(crate) mod inspection;
 pub(crate) mod module_bridge;
