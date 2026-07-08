@@ -1,5 +1,6 @@
 .import "../../services/BridgeHelpers.js" as BridgeHelpers
 .import "../modules/ModuleEventEnvelope.js" as ModuleEventEnvelope
+.import "StorageOperationContracts.js" as StorageOperationContracts
 
 function applyStatusUpdate(root, operation) {
     const payload = operationPayload(operation && operation.result)
@@ -131,41 +132,6 @@ function applyModuleEvent(root, eventName, args) {
     return true
 }
 
-function eventContract(method) {
-    switch (String(method || "")) {
-    case "storageUploadUrl":
-        return {
-            method: "storageUploadUrl",
-            progress: "storageUploadProgress",
-            terminal: "storageUploadDone",
-            match: "session"
-        }
-    case "storageDownloadToUrl":
-        return {
-            method: "storageDownloadToUrl",
-            progress: "storageDownloadProgress",
-            terminal: "storageDownloadDone",
-            match: "sessionOrCid"
-        }
-    case "storageDownloadManifest":
-        return {
-            method: "storageDownloadManifest",
-            progress: "",
-            terminal: "storageDownloadManifestDone",
-            match: "cid"
-        }
-    case "storageRemove":
-        return {
-            method: "storageRemove",
-            progress: "",
-            terminal: "storageRemoveDone",
-            match: "cid"
-        }
-    default:
-        return null
-    }
-}
-
 function correlates(operation, event) {
     if (!operation || !event || !event.contract) {
         return false
@@ -199,7 +165,7 @@ function isModuleDispatchAck(operation, payload) {
     if (String(operation.backend || "").indexOf("module") < 0) {
         return false
     }
-    if (!eventContract(operation.method)) {
+    if (!StorageOperationContracts.eventContract(operation.method)) {
         return false
     }
     return payload.dispatched === true
@@ -207,7 +173,7 @@ function isModuleDispatchAck(operation, payload) {
 
 function normalizeModuleEvent(eventName, args) {
     const payload = eventPayload(args)
-    const contract = contractForEvent(eventName)
+    const contract = StorageOperationContracts.contractForEvent(eventName)
     const error = textValue(payload && payload.error ? payload.error : "")
     const success = payload && payload.success !== false && error.length === 0
     const bytes = Number(payload && (payload.bytes || payload.byteCount || payload.byte_count || 0))
@@ -226,23 +192,6 @@ function normalizeModuleEvent(eventName, args) {
         bytes: Number.isFinite(bytes) ? Math.max(0, bytes) : 0,
         total: Number.isFinite(total) && total > 0 ? total : 0
     }
-}
-
-function contractForEvent(eventName) {
-    const name = String(eventName || "")
-    const methods = [
-        "storageUploadUrl",
-        "storageDownloadToUrl",
-        "storageDownloadManifest",
-        "storageRemove"
-    ]
-    for (let i = 0; i < methods.length; ++i) {
-        const contract = eventContract(methods[i])
-        if (contract && (contract.progress === name || contract.terminal === name)) {
-            return contract
-        }
-    }
-    return null
 }
 
 function matchesEventIdentity(operation, event) {
@@ -365,20 +314,7 @@ function eventPayload(args) {
 }
 
 function methodForEvent(eventName) {
-    switch (String(eventName || "")) {
-    case "storageUploadProgress":
-    case "storageUploadDone":
-        return "storageUploadUrl"
-    case "storageDownloadProgress":
-    case "storageDownloadDone":
-        return "storageDownloadToUrl"
-    case "storageDownloadManifestDone":
-        return "storageDownloadManifest"
-    case "storageRemoveDone":
-        return "storageRemove"
-    default:
-        return String(eventName || "storageModuleEvent")
-    }
+    return StorageOperationContracts.methodForEvent(eventName)
 }
 
 function labelForEvent(eventName) {

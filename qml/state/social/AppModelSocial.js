@@ -1,5 +1,3 @@
-.import "../../services/BridgeHelpers.js" as BridgeHelpers
-
 function socialCommentTopic(root, layer, entity, id) {
     const layerText = normalizedSocialLayer(layer)
     const entityText = normalizedSocialEntity(entity)
@@ -108,29 +106,30 @@ function loadSocialComments(root, topic, reset, pageSize, expectedAccountId) {
             return false
         }
 
-        const parsed = root.requestModule(
+        const page = root.requestModule(
             inspectorModule,
-            "socialMessagesFromStore",
+            "socialCommentPageFromStore",
             [key, response.value, String(expectedAccountId || "")],
             qsTr("Comments"),
             false,
             false
         )
-        if (!parsed.ok) {
+        if (!page.ok) {
             setSocialCommentState(key, {
                 rows: reset === true ? [] : root.socialComments(key),
                 cursor: cursor,
                 loading: false,
-                error: parsed.error || qsTr("Comment decode failed."),
+                error: page.error || qsTr("Comment decode failed."),
                 exhausted: false
             })
             return false
         }
 
-        const incoming = root.socialCommentRowsFromMessages(parsed.value)
+        const pageValue = page.value && typeof page.value === "object" ? page.value : ({})
+        const incoming = Array.isArray(pageValue.rows) ? pageValue.rows : []
         const existing = reset === true ? [] : root.socialComments(key)
         const merged = root.mergeSocialCommentRows(existing, incoming)
-        const nextCursor = root.socialStoreCursor(response.value) || root.lastSocialMessageCursor(parsed.value)
+        const nextCursor = String(pageValue.cursor || "")
         setSocialCommentState(key, {
             rows: merged,
             cursor: nextCursor,
@@ -164,7 +163,7 @@ function applyIncomingComment(root, event) {
         return false
     }
     const current = root.socialCommentStateForTopic(topic)
-    const row = {
+    const row = socialCommentRowFromIncomingEvent(root, incoming) || {
         key: "event|" + String(incoming.messageHash || "") + "|" + String(payload.created_at || ""),
         cursor: "",
         topic: topic,
@@ -182,6 +181,19 @@ function applyIncomingComment(root, event) {
         exhausted: current.exhausted === true
     })
     return true
+}
+
+function socialCommentRowFromIncomingEvent(root, incoming) {
+    const bridge = root.bridge || null
+    if (!bridge || typeof bridge.callModule !== "function") {
+        return null
+    }
+    const response = bridge.callModule(root.inspectorModule, "socialCommentRowFromEvent", [incoming || {}])
+    if (response.ok === true && response.value && typeof response.value === "object" && !Array.isArray(response.value)
+            && String(response.value.body || "").length > 0) {
+        return response.value
+    }
+    return null
 }
 
 function socialCommentRowsFromMessages(root, messages) {
@@ -584,76 +596,26 @@ function refreshSharedIdlsForAccount(root, accountId, dataHex, ownerProgramId) {
         if (!response.ok) {
             return false
         }
-        const parsed = root.requestModule(
+        const acceptedResponse = root.requestModule(
             inspectorModule,
-            "socialMessagesFromStore",
-            [topic, response.value, account],
+            "acceptedSharedIdlEntriesFromStore",
+            [topic, response.value, account, data, String(ownerProgramId || "")],
             qsTr("Shared IDLs"),
             false,
             false
         )
-        if (!parsed.ok || !Array.isArray(parsed.value)) {
+        if (!acceptedResponse.ok || !Array.isArray(acceptedResponse.value)) {
             return false
         }
         let accepted = 0
-        for (let i = 0; i < parsed.value.length; ++i) {
-            const payload = parsed.value[i] && parsed.value[i].payload ? parsed.value[i].payload : null
-            const entry = root.verifiedSharedIdlEntry(account, data, ownerProgramId, topic, payload)
+        for (let i = 0; i < acceptedResponse.value.length; ++i) {
+            const entry = acceptedResponse.value[i] || null
             if (entry && root.applySharedIdlPolicy(account, entry)) {
                 accepted += 1
             }
         }
         return accepted > 0
     }
-}
-
-function verifiedSharedIdlEntry(root, accountId, dataHex, ownerProgramId, topic, payload) {
-    if (!payload || String(payload.kind || "") !== "lez_account_idl") {
-        return null
-    }
-    const idlJson = String(payload.idl_json || "")
-    const programId = String(payload.program_id || "")
-    const programIdHex = root.canonicalProgramIdHex(programId) || root.normalizedHexText(programId)
-    const owner = root.accountOwnerCacheKey(ownerProgramId)
-    if (owner.length > 0 && programIdHex.length > 0 && owner !== programIdHex) {
-        return null
-    }
-    const accountTypes = idlAccountTypesFromJson(idlJson)
-    for (let i = 0; i < accountTypes.length; ++i) {
-        const response = root.decodeAccountData(dataHex, idlJson, accountTypes[i])
-        if (response.ok && response.value && root.accountDecodeFullyConsumed(response.value)) {
-            const name = String(payload.idl_name || root.idlNameFromJson(idlJson) || qsTr("Shared IDL"))
-            return {
-                key: root.idlKey(name, programIdHex, idlJson),
-                name: name,
-                programId: programId,
-                programIdHex: programIdHex,
-                programBinary: "",
-                json: idlJson,
-                source: "shared",
-                sharedTopic: String(topic || ""),
-                sharedIdentity: payload.identity || {},
-                sharedAccountId: String(accountId || ""),
-                accountType: accountTypes[i]
-            }
-        }
-    }
-    return null
-}
-
-function idlAccountTypesFromJson(idlJson) {
-    const parsed = BridgeHelpers.parseJson(String(idlJson || ""))
-    if (!parsed.ok || !parsed.value || !Array.isArray(parsed.value.accounts)) {
-        return []
-    }
-    const rows = []
-    for (let i = 0; i < parsed.value.accounts.length; ++i) {
-        const name = String((parsed.value.accounts[i] || {}).name || "")
-        if (name.length) {
-            rows.push(name)
-        }
-    }
-    return rows
 }
 
 function applySharedIdlPolicy(root, accountId, entry) {

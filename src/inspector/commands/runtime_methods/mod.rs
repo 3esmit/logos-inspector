@@ -51,6 +51,10 @@ pub(crate) enum RuntimeMethod {
     StorageBackupSettings,
     StorageRestoreSettings,
     SocialMessagesFromStore,
+    SocialCommentPageFromStore,
+    SocialCommentRowFromEvent,
+    SocialTopicValid,
+    AcceptedSharedIdlEntriesFromStore,
 }
 
 pub(crate) const RUNTIME_METHODS: &[RuntimeMethod] = &[
@@ -92,6 +96,10 @@ pub(crate) const RUNTIME_METHODS: &[RuntimeMethod] = &[
     RuntimeMethod::StorageBackupSettings,
     RuntimeMethod::StorageRestoreSettings,
     RuntimeMethod::SocialMessagesFromStore,
+    RuntimeMethod::SocialCommentPageFromStore,
+    RuntimeMethod::SocialCommentRowFromEvent,
+    RuntimeMethod::SocialTopicValid,
+    RuntimeMethod::AcceptedSharedIdlEntriesFromStore,
 ];
 
 impl RuntimeMethod {
@@ -142,6 +150,10 @@ impl RuntimeMethod {
             Self::StorageBackupSettings => "storageBackupSettings",
             Self::StorageRestoreSettings => "storageRestoreSettings",
             Self::SocialMessagesFromStore => "socialMessagesFromStore",
+            Self::SocialCommentPageFromStore => "socialCommentPageFromStore",
+            Self::SocialCommentRowFromEvent => "socialCommentRowFromEvent",
+            Self::SocialTopicValid => "socialTopicValid",
+            Self::AcceptedSharedIdlEntriesFromStore => "acceptedSharedIdlEntriesFromStore",
         }
     }
 }
@@ -192,6 +204,12 @@ pub(crate) fn handle(runtime: &Runtime, method: RuntimeMethod, args: Value) -> R
         RuntimeMethod::StorageBackupSettings => storage::storage_backup_settings(runtime, args)?,
         RuntimeMethod::StorageRestoreSettings => storage::storage_restore_settings(runtime, args)?,
         RuntimeMethod::SocialMessagesFromStore => social::social_messages_from_store(args)?,
+        RuntimeMethod::SocialCommentPageFromStore => social::social_comment_page_from_store(args)?,
+        RuntimeMethod::SocialCommentRowFromEvent => social::social_comment_row_from_event(args)?,
+        RuntimeMethod::SocialTopicValid => social::social_topic_valid(args)?,
+        RuntimeMethod::AcceptedSharedIdlEntriesFromStore => {
+            social::accepted_shared_idl_entries_from_store(args)?
+        }
     };
     Ok(value)
 }

@@ -717,8 +717,6 @@ QtObject {
 
     function refreshSharedIdlsForAccount(accountId, dataHex, ownerProgramId) { return AppModelSocial.refreshSharedIdlsForAccount(root, accountId, dataHex, ownerProgramId) }
 
-    function verifiedSharedIdlEntry(accountId, dataHex, ownerProgramId, topic, payload) { return AppModelSocial.verifiedSharedIdlEntry(root, accountId, dataHex, ownerProgramId, topic, payload) }
-
     function applySharedIdlPolicy(accountId, entry) { return AppModelSocial.applySharedIdlPolicy(root, accountId, entry) }
 
     function sharedIdlSuggestions(accountId) { return AppModelSocial.sharedIdlSuggestions(root, accountId) }

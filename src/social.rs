@@ -1,10 +1,21 @@
+mod comments;
 mod delivery_store;
 mod payload;
+mod shared_idl;
 mod topic;
 
-pub use delivery_store::{SocialMessage, social_messages_from_store};
+pub use comments::{
+    SocialCommentPage, SocialCommentRow, social_comment_page_from_store,
+    social_comment_row_from_event, social_comment_rows_from_messages,
+};
+pub use delivery_store::{
+    SocialMessage, last_social_message_cursor, social_messages_from_store, social_store_cursor,
+};
 pub use payload::{SocialPayload, parse_social_payload};
-pub use topic::{SocialEntity, SocialLayer, comment_topic, lez_account_idl_topic};
+pub use shared_idl::{AcceptedSharedIdlEntry, accepted_shared_idl_entries_from_store};
+pub use topic::{
+    SocialEntity, SocialLayer, comment_topic, lez_account_idl_topic, social_topic_is_valid,
+};
 
 #[cfg(test)]
 mod tests {
@@ -196,5 +207,157 @@ mod tests {
         };
         assert_eq!(first.cursor, "cursor-1");
         assert!(matches!(first.payload, SocialPayload::Comment { .. }));
+        assert_eq!(social_store_cursor(&store).as_deref(), Some("next"));
+    }
+
+    #[test]
+    fn store_comment_page_projects_rows_and_cursor() {
+        let topic = "/lez/account/account-1/comments";
+        let valid_payload = json!({
+            "kind": "comment",
+            "version": 1,
+            "identity": { "display_name": "Ada" },
+            "body": "hello",
+            "created_at": "2026-07-05T00:00:00.000Z",
+            "conversation_id": topic
+        });
+        let store = json!({
+            "value": {
+                "messages": [{
+                    "contentTopic": topic,
+                    "payload": BASE64_STANDARD.encode(valid_payload.to_string()),
+                    "cursor": "cursor-1"
+                }],
+                "pagination": {
+                    "next_cursor": "cursor-2"
+                }
+            }
+        });
+
+        let page = social_comment_page_from_store(topic, &store, None);
+
+        assert_eq!(page.cursor, "cursor-2");
+        assert_eq!(page.rows.len(), 1);
+        let first = page.rows.first();
+        assert!(first.is_some(), "missing projected comment row");
+        let Some(first) = first else {
+            return;
+        };
+        assert_eq!(first.key, "cursor-1|2026-07-05T00:00:00.000Z|Ada|hello");
+        assert_eq!(first.display_name, "Ada");
+        assert_eq!(first.body, "hello");
+    }
+
+    #[test]
+    fn incoming_comment_event_projects_comment_row() {
+        let topic = "/lez/account/account-1/comments";
+        let event = json!({
+            "topic": topic,
+            "messageHash": "hash-1",
+            "payload": {
+                "kind": "comment",
+                "version": 1,
+                "identity": { "display_name": "Peer" },
+                "body": "hello",
+                "created_at": "2026-07-07T00:00:00Z",
+                "conversation_id": topic
+            }
+        });
+
+        let row = social_comment_row_from_event(&event);
+
+        assert!(row.is_some(), "missing projected event row");
+        let Some(row) = row else {
+            return;
+        };
+        assert_eq!(row.key, "event|hash-1|2026-07-07T00:00:00Z");
+        assert_eq!(row.topic, topic);
+        assert_eq!(row.display_name, "Peer");
+        assert_eq!(row.body, "hello");
+    }
+
+    #[test]
+    fn social_topic_validation_accepts_four_segment_topics_only() {
+        assert!(social_topic_is_valid("/lez/account/account-1/comments"));
+        assert!(!social_topic_is_valid("/lez/account/account-1"));
+        assert!(!social_topic_is_valid("lez/account/account-1/comments"));
+    }
+
+    #[test]
+    fn shared_idl_acceptance_keeps_only_full_account_decodes() {
+        let topic = "/lez/account/account-1/idl";
+        let program_id = "1111111111111111111111111111111111111111111111111111111111111111";
+        let other_program_id = "2222222222222222222222222222222222222222222222222222222222222222";
+        let idl = r#"{
+            "name": "test_program",
+            "accounts": [
+                {
+                    "name": "ShortAccount",
+                    "type": {
+                        "kind": "struct",
+                        "fields": [
+                            { "name": "tag", "type": "u8" }
+                        ]
+                    }
+                }
+            ]
+        }"#;
+        let payload = json!({
+            "kind": "lez_account_idl",
+            "version": 1,
+            "identity": { "display_name": "Ada" },
+            "account_id": "account-1",
+            "program_id": program_id,
+            "idl_name": "SharedProgram",
+            "idl_json": idl,
+            "created_at": "2026-07-05T00:00:00.000Z"
+        });
+        let store = json!({
+            "messages": [{
+                "contentTopic": topic,
+                "payload": BASE64_STANDARD.encode(payload.to_string()),
+                "cursor": "cursor-1"
+            }]
+        });
+
+        let accepted = accepted_shared_idl_entries_from_store(
+            topic,
+            &store,
+            "account-1",
+            "01",
+            Some(program_id),
+        );
+
+        assert_eq!(accepted.len(), 1);
+        let first = accepted.first();
+        assert!(first.is_some(), "missing accepted shared IDL");
+        let Some(first) = first else {
+            return;
+        };
+        assert_eq!(first.name, "SharedProgram");
+        assert_eq!(first.account_type, "ShortAccount");
+        assert_eq!(first.shared_topic, topic);
+        assert_eq!(first.shared_account_id, "account-1");
+
+        assert!(
+            accepted_shared_idl_entries_from_store(
+                topic,
+                &store,
+                "account-1",
+                "0102",
+                Some(program_id),
+            )
+            .is_empty()
+        );
+        assert!(
+            accepted_shared_idl_entries_from_store(
+                topic,
+                &store,
+                "account-1",
+                "01",
+                Some(other_program_id),
+            )
+            .is_empty()
+        );
     }
 }
