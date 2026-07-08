@@ -26,15 +26,15 @@ The host must provide the declared runtime modules for inspection actions.
 - Nix with flakes enabled for the QML UI.
 - Python 3 for circuit bootstrap.
 - Network access to the selected sequencer and indexer endpoints.
-- Logos blockchain circuits `v0.5.3` when building Rust dependencies that
-  require circuit verification keys.
+- Logos blockchain circuits from `build-artifacts.json` when building Rust
+  dependencies that require circuit verification keys.
 
 ## Build
 
 Prepare the Logos blockchain circuits once per machine or CI workspace:
 
 ```bash
-python3 scripts/setup-circuits.py v0.5.3 /tmp/logos-blockchain-circuits
+python3 scripts/setup-circuits.py --install-dir /tmp/logos-blockchain-circuits
 export LOGOS_BLOCKCHAIN_CIRCUITS=/tmp/logos-blockchain-circuits
 export RISC0_SKIP_BUILD=1
 ```
@@ -51,21 +51,20 @@ Build the standalone QML host alongside the launcher:
 cargo build -p logos-inspector -p logos-inspector-standalone-gui
 ```
 
-Run the standard Rust verification set:
+Run the local verification profile:
 
 ```bash
-cargo fmt --all -- --check
-cargo check
-cargo clippy --all-targets -- -D warnings
-cargo test
+python3 scripts/check-build-pipeline.py local
 ```
 
-Run QML smoke tests:
+Focused profiles are available for Rust, QML, web UI, package identity, and
+external artifact checks:
 
 ```bash
-QT_QPA_PLATFORM=offscreen qmltestrunner -input tests/qml/tst_app_model.qml
-QT_QPA_PLATFORM=offscreen qmltestrunner -input tests/qml/tst_common_controls.qml
-qmllint qml/pages/BlocksPage.qml qml/state/AppModel.qml qml/state/appmodel/AppModelPages.js
+python3 scripts/check-build-pipeline.py --list
+python3 scripts/check-build-pipeline.py rust
+python3 scripts/check-build-pipeline.py qml
+python3 scripts/check-build-pipeline.py web
 ```
 
 Check the Nix standalone build plan before running a full build:
@@ -107,7 +106,7 @@ On Windows, run the same script with Python and set the environment variable in
 PowerShell:
 
 ```powershell
-py -3 scripts/setup-circuits.py v0.5.3 $env:TEMP\logos-blockchain-circuits
+py -3 scripts/setup-circuits.py --install-dir $env:TEMP\logos-blockchain-circuits
 $env:LOGOS_BLOCKCHAIN_CIRCUITS="$env:TEMP\logos-blockchain-circuits"
 ```
 
@@ -212,6 +211,5 @@ TokenDefinition, or AMM knowledge is required.
 ## Dependency pins
 
 The core library depends on internal LEZ crates that are not published on
-crates.io. The manifests pin those crates to
-`logos-blockchain/logos-execution-zone` tag `v0.2.0-rc6`, matching the LEZ
-program workspace release line.
+crates.io. `build-artifacts.json` records the LEZ, circuits, and rapidsnark
+pins used by Cargo, Nix, CI, and the circuit setup script.

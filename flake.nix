@@ -11,6 +11,7 @@
       lib = nixpkgs.lib;
       cargoToml = builtins.fromTOML (builtins.readFile ./Cargo.toml);
       packageVersion = cargoToml.workspace.package.version;
+      buildArtifacts = builtins.fromJSON (builtins.readFile ./build-artifacts.json);
 
       qmlSystems = [
         "x86_64-linux"
@@ -27,48 +28,21 @@
 
       coreSystems = standaloneSystems;
 
-      circuitsVersion = "0.5.3";
+      circuitsRelease = buildArtifacts.circuits.release;
+      circuitsTargets = buildArtifacts.circuits.targets;
 
-      circuitsTargets = {
-        x86_64-linux = {
-          os = "linux";
-          arch = "x86_64";
-          hash = "sha256-2/Fw6ko+MCO2Paiw4zUQ1eacjvtPGP2n53RL39Ibntc=";
-        };
-        aarch64-linux = {
-          os = "linux";
-          arch = "aarch64";
-          hash = "sha256-5779U71gejCEOmWToziHLyh3n/DVTyEemsbMG+HbJJM=";
-        };
-        aarch64-darwin = {
-          os = "macos";
-          arch = "aarch64";
-          hash = "sha256-WFKsOEx93MIT/+l8gVQpTMoAwMjMTIHD1FzL/+AFcXA=";
-        };
-      };
+      rapidsnarkVersion = buildArtifacts.rapidsnark.version;
+      rapidsnarkTargets = buildArtifacts.rapidsnark.targets;
+      lezRevision = buildArtifacts.lez.revision;
+      lezSourceHash = buildArtifacts.lez.sourceHash;
 
-      rapidsnarkVersion = "0.0.8";
-      lezRevision = "e37876a64028a335eb693198a1ed6a0e875ec5b4";
-      lezSourceHash = "sha256-ltLcysXUdVUXAe25Tl8x7e7ZsTzj1sHlyS3glp97TAo=";
-
-      rapidsnarkHashes = {
-        x86_64-linux = "sha256-88+TkECQYCKBN0WbYLRB+qi6TEhbjVfrpCqlSgm0DR8=";
-        aarch64-linux = "sha256-kcSITwWZjEv9gadzYL7LiG+DVtEEFbQJuhd/LTyOxJU=";
-        aarch64-darwin = "sha256-DmhMmMq7/HKsx+Iz4rdsKYBDEwqwMZALo+ZJePJvAJg=";
-        x86_64-darwin = "sha256-/GCXzzT5mkBeXkVQAGEF9OmJXXcYz4KoXNzjFvhSgNU=";
-      };
+      standaloneShareDir = "share/logos-inspector";
+      standaloneQmlEnvVar = "LOGOS_INSPECTOR_QML_DIR";
+      standaloneQmlSubdir = "${standaloneShareDir}/qml";
+      standaloneIconsSubdir = "${standaloneShareDir}/icons";
 
       rapidsnarkAssetUrl = system:
-        let
-          forkBase = "https://github.com/logos-blockchain/logos-blockchain-rust-rapidsnark/releases/download/rapidsnark-pic-v${rapidsnarkVersion}";
-          iden3Base = "https://github.com/iden3/rapidsnark/releases/download/v${rapidsnarkVersion}";
-        in
-        {
-          x86_64-linux = "${forkBase}/rapidsnark-linux-x86_64-pic-v${rapidsnarkVersion}.zip";
-          aarch64-linux = "${forkBase}/rapidsnark-linux-aarch64-pic-v${rapidsnarkVersion}.zip";
-          aarch64-darwin = "${iden3Base}/rapidsnark-macOS-arm64-v${rapidsnarkVersion}.zip";
-          x86_64-darwin = "${iden3Base}/rapidsnark-macOS-x86_64-v${rapidsnarkVersion}.zip";
-        }.${system};
+        rapidsnarkTargets.${system}.url;
 
       mkRapidsnark = pkgs:
         let
@@ -79,7 +53,7 @@
           version = rapidsnarkVersion;
           src = pkgs.fetchzip {
             url = rapidsnarkAssetUrl system;
-            hash = rapidsnarkHashes.${system};
+            hash = rapidsnarkTargets.${system}.hash;
           };
           phases = [ "installPhase" ];
           installPhase = ''
@@ -99,7 +73,7 @@
           target = circuitsTargets.${pkgs.stdenv.hostPlatform.system};
         in
         pkgs.fetchzip {
-          url = "https://github.com/logos-blockchain/logos-blockchain-circuits/releases/download/v${circuitsVersion}/logos-blockchain-circuits-v${circuitsVersion}-${target.os}-${target.arch}.tar.gz";
+          url = "https://github.com/logos-blockchain/logos-blockchain-circuits/releases/download/${circuitsRelease}/logos-blockchain-circuits-${circuitsRelease}-${target.os}-${target.arch}.tar.gz";
           hash = target.hash;
         };
 
@@ -125,77 +99,68 @@
         ln -s ${lezSource}/artifacts /build/cargo-vendor-dir/artifacts
       '';
 
+      qtUnifiedQmakeSetup = pkgs: ''
+        qtBuildRoot="$TMPDIR/qt-unified"
+        mkdir -p "$qtBuildRoot/bin" "$qtBuildRoot/include" "$qtBuildRoot/lib" "$qtBuildRoot/libexec" "$qtBuildRoot/plugins"
+
+        for qtDir in ${pkgs.qt6.qtbase} ${pkgs.qt6.qtdeclarative}; do
+          if [ -d "$qtDir/bin" ]; then
+            for item in "$qtDir"/bin/*; do
+              ln -sfn "$item" "$qtBuildRoot/bin/$(basename "$item")"
+            done
+          fi
+          if [ -d "$qtDir/include" ]; then
+            for item in "$qtDir"/include/*; do
+              ln -sfn "$item" "$qtBuildRoot/include/$(basename "$item")"
+            done
+          fi
+          if [ -d "$qtDir/lib" ]; then
+            for item in "$qtDir"/lib/*; do
+              ln -sfn "$item" "$qtBuildRoot/lib/$(basename "$item")"
+            done
+          fi
+          if [ -d "$qtDir/libexec" ]; then
+            for item in "$qtDir"/libexec/*; do
+              ln -sfn "$item" "$qtBuildRoot/libexec/$(basename "$item")"
+            done
+          fi
+          if [ -d "$qtDir/lib/qt-6/plugins" ]; then
+            for item in "$qtDir"/lib/qt-6/plugins/*; do
+              ln -sfn "$item" "$qtBuildRoot/plugins/$(basename "$item")"
+            done
+          fi
+        done
+
+        rm -f "$qtBuildRoot/bin/qmake" "$qtBuildRoot/bin/qmake6"
+        cat > "$qtBuildRoot/bin/qmake6" <<EOF
+#!/bin/sh
+if [ "\$1" = "-query" ]; then
+  case "\$2" in
+    QT_HOST_BINS | QT_HOST_BINS/get | QT_INSTALL_BINS | QT_INSTALL_BINS/get) echo "$qtBuildRoot/bin"; exit 0 ;;
+    QT_HOST_LIBEXECS | QT_HOST_LIBEXECS/get | QT_INSTALL_LIBEXECS | QT_INSTALL_LIBEXECS/get) echo "$qtBuildRoot/libexec"; exit 0 ;;
+    QT_INSTALL_HEADERS) echo "$qtBuildRoot/include"; exit 0 ;;
+    QT_INSTALL_LIBS) echo "$qtBuildRoot/lib"; exit 0 ;;
+    QT_INSTALL_PLUGINS) echo "$qtBuildRoot/plugins"; exit 0 ;;
+    QT_INSTALL_PREFIX) echo "$qtBuildRoot"; exit 0 ;;
+  esac
+fi
+exec ${pkgs.qt6.qtbase}/bin/qmake6 "\$@"
+EOF
+        chmod +x "$qtBuildRoot/bin/qmake6"
+        export QMAKE="$qtBuildRoot/bin/qmake6"
+      '';
+
       forSystems = systems: f:
         lib.genAttrs systems
           (system: f (import nixpkgs { inherit system; }));
 
       forAllSystems = forSystems qmlSystems;
 
-      workspaceRoot = toString ./.;
-
-      relativeToRoot = path:
-        let
-          pathString = toString path;
-          prefix = workspaceRoot + "/";
-        in
-        if pathString == workspaceRoot then "" else lib.removePrefix prefix pathString;
-
-      sourceFilter = path: type:
-        let
-          name = builtins.baseNameOf path;
-          ignoredDirectories = [
-            ".direnv"
-            "coverage"
-            "dist"
-            "node_modules"
-            "target"
-            "tmp"
-          ];
-          isIgnoredDirectory = type == "directory" && builtins.elem name ignoredDirectories;
-          isHiddenDirectory = type == "directory" && lib.hasPrefix "." name;
-          isResultLink = name == "result" || lib.hasPrefix "result-" name;
-          isLogFile = lib.hasSuffix ".log" name;
-        in
-        lib.cleanSourceFilter path type
-        && !isIgnoredDirectory
-        && !isHiddenDirectory
-        && !isResultLink
-        && !isLogFile;
-
-      source = lib.cleanSourceWith {
-        src = ./.;
-        filter = sourceFilter;
-      };
-
-      standaloneRustSource = lib.cleanSourceWith {
-        src = ./.;
-        filter = path: type:
-          let
-            rel = relativeToRoot path;
-            isRuntimeAsset =
-              rel == "qml" || lib.hasPrefix "qml/" rel
-              || rel == "icons" || lib.hasPrefix "icons/" rel;
-          in
-          sourceFilter path type && !isRuntimeAsset;
-      };
-
-      standaloneAssetSource = lib.cleanSourceWith {
-        src = ./.;
-        filter = path: type:
-          let
-            rel = relativeToRoot path;
-            isRuntimeAsset =
-              rel == ""
-              || rel == "qml" || lib.hasPrefix "qml/" rel
-              || rel == "icons" || lib.hasPrefix "icons/" rel;
-          in
-          sourceFilter path type && isRuntimeAsset;
-      };
-
-      coreModuleSource = lib.cleanSourceWith {
-        src = ./core;
-        filter = sourceFilter;
-      };
+      sourceSets = import ./nix/source-sets.nix { inherit lib; root = ./.; };
+      source = sourceSets.workspace;
+      standaloneRustSource = sourceSets.standaloneRust;
+      standaloneAssetSource = sourceSets.standaloneAssets;
+      coreModuleSource = sourceSets.coreModule;
 
       qmlModule = logos-module-builder.lib.mkLogosQmlModule {
         src = source;
@@ -287,55 +252,7 @@
           doCheck = false;
           preBuild = ''
             ${linkLezArtifacts circuitBuild.lezSource}
-
-            qtBuildRoot="$TMPDIR/qt-unified"
-            mkdir -p "$qtBuildRoot/bin" "$qtBuildRoot/include" "$qtBuildRoot/lib" "$qtBuildRoot/libexec" "$qtBuildRoot/plugins"
-
-            for qtDir in ${pkgs.qt6.qtbase} ${pkgs.qt6.qtdeclarative}; do
-              if [ -d "$qtDir/bin" ]; then
-                for item in "$qtDir"/bin/*; do
-                  ln -sfn "$item" "$qtBuildRoot/bin/$(basename "$item")"
-                done
-              fi
-              if [ -d "$qtDir/include" ]; then
-                for item in "$qtDir"/include/*; do
-                  ln -sfn "$item" "$qtBuildRoot/include/$(basename "$item")"
-                done
-              fi
-              if [ -d "$qtDir/lib" ]; then
-                for item in "$qtDir"/lib/*; do
-                  ln -sfn "$item" "$qtBuildRoot/lib/$(basename "$item")"
-                done
-              fi
-              if [ -d "$qtDir/libexec" ]; then
-                for item in "$qtDir"/libexec/*; do
-                  ln -sfn "$item" "$qtBuildRoot/libexec/$(basename "$item")"
-                done
-              fi
-              if [ -d "$qtDir/lib/qt-6/plugins" ]; then
-                for item in "$qtDir"/lib/qt-6/plugins/*; do
-                  ln -sfn "$item" "$qtBuildRoot/plugins/$(basename "$item")"
-                done
-              fi
-            done
-
-            rm -f "$qtBuildRoot/bin/qmake" "$qtBuildRoot/bin/qmake6"
-            cat > "$qtBuildRoot/bin/qmake6" <<EOF
-#!/bin/sh
-if [ "\$1" = "-query" ]; then
-  case "\$2" in
-    QT_HOST_BINS | QT_HOST_BINS/get | QT_INSTALL_BINS | QT_INSTALL_BINS/get) echo "$qtBuildRoot/bin"; exit 0 ;;
-    QT_HOST_LIBEXECS | QT_HOST_LIBEXECS/get | QT_INSTALL_LIBEXECS | QT_INSTALL_LIBEXECS/get) echo "$qtBuildRoot/libexec"; exit 0 ;;
-    QT_INSTALL_HEADERS) echo "$qtBuildRoot/include"; exit 0 ;;
-    QT_INSTALL_LIBS) echo "$qtBuildRoot/lib"; exit 0 ;;
-    QT_INSTALL_PLUGINS) echo "$qtBuildRoot/plugins"; exit 0 ;;
-    QT_INSTALL_PREFIX) echo "$qtBuildRoot"; exit 0 ;;
-  esac
-fi
-exec ${pkgs.qt6.qtbase}/bin/qmake6 "\$@"
-EOF
-            chmod +x "$qtBuildRoot/bin/qmake6"
-            export QMAKE="$qtBuildRoot/bin/qmake6"
+            ${qtUnifiedQmakeSetup pkgs}
           '';
           preFixup = ''
             ${lib.optionalString pkgs.stdenv.isLinux ''
@@ -362,13 +279,13 @@ EOF
           installPhase = ''
             runHook preInstall
 
-            mkdir -p "$out/bin" "$out/share/logos-inspector"
-            cp -r ${standaloneAssetSource}/qml "$out/share/logos-inspector/qml"
-            cp -r ${standaloneAssetSource}/icons "$out/share/logos-inspector/icons"
+            mkdir -p "$out/bin" "$out/${standaloneShareDir}"
+            cp -r ${standaloneAssetSource}/qml "$out/${standaloneQmlSubdir}"
+            cp -r ${standaloneAssetSource}/icons "$out/${standaloneIconsSubdir}"
 
             makeWrapper ${binary}/bin/logos-inspector-standalone-gui \
               "$out/bin/logos-inspector-standalone-gui" \
-              --set LOGOS_INSPECTOR_QML_DIR "$out/share/logos-inspector/qml"
+              --set ${standaloneQmlEnvVar} "$out/${standaloneQmlSubdir}"
 
             runHook postInstall
           '';

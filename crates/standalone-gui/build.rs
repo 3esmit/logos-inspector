@@ -3,7 +3,7 @@ use std::{env, process::Command};
 use cxx_qt_build::{CxxQtBuilder, QmlModule};
 
 fn main() {
-    emit_qt_rpath();
+    emit_qt_runtime_link_args();
 
     CxxQtBuilder::new_qml_module(QmlModule::new("LogosInspectorStandalone"))
         .qt_module("Network")
@@ -11,7 +11,7 @@ fn main() {
         .build();
 }
 
-fn emit_qt_rpath() {
+fn emit_qt_runtime_link_args() {
     println!("cargo:rerun-if-env-changed=QMAKE");
     println!("cargo:rerun-if-env-changed=PATH");
     println!("cargo:rerun-if-env-changed=NIX_BUILD_TOP");

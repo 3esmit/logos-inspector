@@ -5,12 +5,11 @@ import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { findCargoBinary } from "./cargo-artifacts.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "public");
 const repoRoot = path.resolve(__dirname, "..");
-const cliDebug = path.resolve(repoRoot, "target/debug/logos-inspector");
-const cliRelease = path.resolve(repoRoot, "target/release/logos-inspector");
 const configuredCli = process.env.LOGOS_INSPECTOR_CLI
   ? path.resolve(process.env.LOGOS_INSPECTOR_CLI)
   : null;
@@ -84,20 +83,12 @@ async function readBody(req) {
   return raw ? JSON.parse(raw) : {};
 }
 
-async function exists(file) {
-  try {
-    await stat(file);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 async function cliPath() {
-  if (configuredCli && await exists(configuredCli)) return configuredCli;
-  if (await exists(cliDebug)) return cliDebug;
-  if (await exists(cliRelease)) return cliRelease;
-  return null;
+  return findCargoBinary({
+    repoRoot,
+    binaryName: process.platform === "win32" ? "logos-inspector.exe" : "logos-inspector",
+    configuredCli
+  });
 }
 
 function runProcess(command, args, options = {}) {

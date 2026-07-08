@@ -6,6 +6,6 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check public/app.js"
+    "check": "node --check server.js && node --check public/app.js && node --check cargo-artifacts.js && node --test cargo-artifacts.test.js"
   }
 }
