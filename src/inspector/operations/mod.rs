@@ -12,6 +12,8 @@ use anyhow::{Context as _, Result, bail};
 use serde_json::{Value, json};
 use tokio::runtime::Runtime;
 
+use crate::time::now_millis;
+
 mod chain;
 mod delivery;
 mod dispatch;
@@ -28,7 +30,7 @@ use entrypoint::{OperationRunner, handle_operation_command};
 use record::{
     NodeOperation, NodeOperationRecord, NodeOperationRegistry, NodeOperationStatus,
     active_operation_in_exclusive_group, finish_node_operation, node_operation_event_value,
-    node_operation_value, now_millis, push_node_operation_event_locked, update_node_operation,
+    node_operation_value, push_node_operation_event_locked, update_node_operation,
 };
 pub(crate) use request::{NodeOperationRequest, node_operation_request_from_value};
 use request::{node_operation_backend, node_operation_context};

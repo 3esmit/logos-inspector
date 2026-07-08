@@ -1,25 +1,67 @@
-pub mod blockchain;
-pub mod bridge;
 mod command_runner;
 mod entity_id;
 pub mod idl_decode;
-pub mod inspection;
-mod inspector;
+pub mod inspection {
+    pub mod l1 {
+        pub mod bedrock;
+        pub mod channels;
+    }
+
+    pub mod l2 {
+        pub mod lez;
+    }
+
+    pub mod overview;
+    pub mod rpc;
+}
+
+mod inspector {
+    pub mod bridge;
+
+    mod dispatch_catalog;
+    pub(crate) mod operations;
+    mod runtime_methods;
+}
 mod json_value;
-pub mod lez;
-pub mod local_indexer;
 pub mod local_nodes;
 pub mod logoscore;
 pub mod modules;
 mod network;
-mod overview;
 mod probe;
-mod rpc;
 mod settings_backup;
 pub mod social;
 pub mod source_routing;
 mod state_store;
+mod time;
 mod wallet;
+
+pub mod blockchain {
+    pub use crate::inspection::l1::bedrock::*;
+    pub use crate::inspection::l1::channels::*;
+}
+
+pub mod bridge {
+    pub use crate::inspector::bridge::*;
+}
+
+pub mod lez {
+    pub use crate::inspection::l2::lez::*;
+}
+
+pub mod local_indexer {
+    pub use crate::local_nodes::{
+        bootstrap_default_local_indexer, bootstrap_default_local_indexer_for_saved_settings,
+        is_default_local_indexer_endpoint,
+    };
+}
+
+mod overview {
+    pub use crate::inspection::overview::*;
+}
+
+mod rpc {
+    pub use crate::inspection::rpc::*;
+}
 
 pub use blockchain::{
     ChannelOperationMatch, ChannelScanReport, ChannelSummary, channel_scan, channel_state,

@@ -234,13 +234,11 @@ pub(super) async fn execute_account_operation(request: &NodeOperationRequest) ->
         blocking_value("indexer module account transactions", move || {
             source_routing::attach_module_account_transactions(&mut account);
             if let Some(idl) = idl.as_deref() {
-                to_value(
-                    crate::lez::accounts::account_report_with_optional_idl_decode(
-                        account,
-                        idl,
-                        account_type.as_deref(),
-                    ),
-                )
+                to_value(crate::lez::account_report_with_optional_idl_decode(
+                    account,
+                    idl,
+                    account_type.as_deref(),
+                ))
             } else {
                 to_value(account)
             }

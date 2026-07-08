@@ -225,7 +225,7 @@ fn transaction_signature_public_key(signature: &Value) -> Option<String> {
     }
 }
 
-fn summarize_transfer_outputs(value: &Value) -> Vec<TransactionTransferOutputSummary> {
+pub(crate) fn summarize_transfer_outputs(value: &Value) -> Vec<TransactionTransferOutputSummary> {
     let mut outputs = Vec::new();
     collect_transfer_outputs(value, &mut outputs);
     outputs
@@ -287,4 +287,50 @@ fn first_output_field(object: &serde_json::Map<String, Value>, keys: &[&str]) ->
 
 fn transfer_outputs_key(key: &str) -> bool {
     matches!(key, "outputs" | "transfer_outputs" | "transferOutputs")
+}
+
+#[cfg(test)]
+mod tests {
+    use anyhow::{Context as _, Result, bail};
+
+    use super::*;
+
+    #[test]
+    fn summarize_transfer_outputs_accepts_output_aliases() -> Result<()> {
+        let raw = serde_json::json!({
+            "nested": {
+                "transferOutputs": [
+                    { "accountId": "account-1", "quantity": "9" }
+                ],
+                "transfer_outputs": [
+                    { "public_key": "key-2", "balance": 4 }
+                ]
+            }
+        });
+
+        let outputs = summarize_transfer_outputs(&raw);
+
+        if outputs.len() != 2 {
+            bail!("unexpected transfer output count: {}", outputs.len());
+        }
+        let first = outputs
+            .first()
+            .context("first transfer output is missing")?;
+        let second = outputs
+            .get(1)
+            .context("second transfer output is missing")?;
+        if first.recipient != "account-1" {
+            bail!("unexpected first recipient: {}", first.recipient);
+        }
+        if first.amount.as_deref() != Some("9") {
+            bail!("unexpected first amount: {:?}", first.amount);
+        }
+        if second.recipient != "key-2" {
+            bail!("unexpected second recipient: {}", second.recipient);
+        }
+        if second.amount.as_deref() != Some("4") {
+            bail!("unexpected second amount: {:?}", second.amount);
+        }
+        Ok(())
+    }
 }

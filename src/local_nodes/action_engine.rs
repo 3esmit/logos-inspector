@@ -6,7 +6,7 @@ use std::{
 use anyhow::{Context as _, Result, bail};
 use serde_json::{Value, json};
 
-use crate::state_store::config_dir;
+use crate::{state_store::config_dir, time::now_millis};
 
 use super::commands::{command_spec_for, execute_command_spec, operation_detail_from_value};
 use super::model::{
@@ -16,7 +16,6 @@ use super::model::{
 };
 use super::paths::{path_is_inside, remove_dir_inside};
 use super::process::{find_command, process_is_alive, stop_process};
-use super::time::now_millis;
 
 const STATE_FILE: &str = "local_nodes.json";
 const MANIFEST_FILE: &str = "local-network.json";

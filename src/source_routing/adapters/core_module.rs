@@ -6,7 +6,10 @@ use crate::{
     IndexerStatusReport, ProbeReport, TransferActivityPage,
     blockchain::BlockchainLiveBlocksReport,
     blockchain::BlockchainNodeReport,
-    lez::{accounts, indexer, transfers::transfer_recipient_summaries_from_blocks},
+    lez::{
+        next_indexer_blocks_cursor, summarize_account_transaction, summarize_indexer_block,
+        summarize_indexer_status_response, transfer_recipient_summaries_from_blocks,
+    },
     logoscore, response_excerpt,
 };
 
@@ -92,7 +95,7 @@ pub(crate) fn indexer_health() -> Result<Value> {
 
 pub(crate) fn indexer_status() -> Result<IndexerStatusReport> {
     let value = call_value(INDEXER_MODULE, "getStatus", &[])?;
-    Ok(indexer::summarize_indexer_status_response(&json!({
+    Ok(summarize_indexer_status_response(&json!({
         "result": value,
     })))
 }
@@ -107,10 +110,7 @@ pub(crate) fn indexer_blocks(before: Option<u64>, limit: u64) -> Result<Vec<Inde
     let blocks = value
         .as_array()
         .context("getBlocks result was not an array")?;
-    Ok(blocks
-        .iter()
-        .map(indexer::summarize_indexer_block)
-        .collect())
+    Ok(blocks.iter().map(summarize_indexer_block).collect())
 }
 
 pub(crate) fn indexer_block_by_hash(header_hash: &str) -> Result<Option<IndexerBlockReport>> {
@@ -119,7 +119,7 @@ pub(crate) fn indexer_block_by_hash(header_hash: &str) -> Result<Option<IndexerB
     if empty_module_lookup(&value) {
         return Ok(None);
     }
-    Ok(Some(indexer::summarize_indexer_block(&value)))
+    Ok(Some(summarize_indexer_block(&value)))
 }
 
 pub(crate) fn indexer_transfer_recipients(
@@ -128,7 +128,7 @@ pub(crate) fn indexer_transfer_recipients(
 ) -> Result<TransferActivityPage> {
     let blocks = indexer_blocks(before, limit)?;
     Ok(TransferActivityPage {
-        next_before_block: indexer::next_indexer_blocks_cursor(&blocks),
+        next_before_block: next_indexer_blocks_cursor(&blocks),
         recipients: transfer_recipient_summaries_from_blocks(&blocks),
     })
 }
@@ -151,7 +151,7 @@ pub(crate) fn account_transactions_by_account(
         .iter()
         .enumerate()
         .map(|(index, transaction)| {
-            accounts::summarize_account_transaction(transaction, offset + index, account_id)
+            summarize_account_transaction(transaction, offset + index, account_id)
         })
         .collect())
 }

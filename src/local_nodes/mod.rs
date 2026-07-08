@@ -6,7 +6,6 @@ mod local_indexer;
 mod model;
 mod paths;
 mod process;
-mod time;
 
 pub use local_indexer::{
     bootstrap_default_local_indexer, bootstrap_default_local_indexer_for_saved_settings,
@@ -42,8 +41,8 @@ mod tests {
 
     use super::{
         action_engine, commands::command_spec_for, model::LocalNodesState, paths::path_is_inside,
-        time::now_millis,
     };
+    use crate::time::now_millis;
 
     #[test]
     fn local_profile_includes_sequencer_and_network_actions() {

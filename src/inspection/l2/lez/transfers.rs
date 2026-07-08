@@ -1,10 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
-use serde_json::Value;
 
-use super::{indexer::IndexerBlockReport, transaction_facts::AccountTransactionSummary};
-use crate::value_to_string;
+use super::{
+    indexer::IndexerBlockReport,
+    transaction_facts::{AccountTransactionSummary, summarize_transfer_outputs},
+};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct TransferRecipientSummary {
@@ -135,86 +136,22 @@ struct DecodedTransferOutput {
     amount: Option<u128>,
 }
 
-fn decoded_transfer_outputs(value: &Value) -> Vec<DecodedTransferOutput> {
-    let mut outputs = Vec::new();
-    collect_decoded_transfer_outputs(value, &mut outputs);
-    outputs
-}
-
 fn transaction_transfer_outputs(tx: &AccountTransactionSummary) -> Vec<DecodedTransferOutput> {
-    if !tx.transfer_outputs.is_empty() {
-        return tx
-            .transfer_outputs
-            .iter()
-            .map(|output| DecodedTransferOutput {
-                recipient: output.recipient.clone(),
-                amount: output
-                    .amount
-                    .as_deref()
-                    .and_then(|amount| amount.parse::<u128>().ok()),
-            })
-            .collect();
-    }
-    decoded_transfer_outputs(&tx.raw)
-}
-
-fn collect_decoded_transfer_outputs(value: &Value, outputs: &mut Vec<DecodedTransferOutput>) {
-    match value {
-        Value::Object(object) => {
-            for (key, value) in object {
-                if transfer_outputs_key(key) {
-                    if let Some(items) = value.as_array() {
-                        outputs.extend(items.iter().filter_map(decoded_transfer_output));
-                    }
-                } else {
-                    collect_decoded_transfer_outputs(value, outputs);
-                }
-            }
-        }
-        Value::Array(items) => {
-            for item in items {
-                collect_decoded_transfer_outputs(item, outputs);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn decoded_transfer_output(value: &Value) -> Option<DecodedTransferOutput> {
-    let Value::Object(object) = value else {
-        return None;
+    let outputs = if tx.transfer_outputs.is_empty() {
+        summarize_transfer_outputs(&tx.raw)
+    } else {
+        tx.transfer_outputs.clone()
     };
-    let recipient = first_output_field(
-        object,
-        &[
-            "recipient",
-            "recipient_id",
-            "recipientId",
-            "account_id",
-            "accountId",
-            "to",
-            "address",
-            "public_key",
-            "publicKey",
-        ],
-    )?;
-    Some(DecodedTransferOutput {
-        recipient,
-        amount: first_output_field(object, &["amount", "value", "quantity", "balance"])
-            .and_then(|value| value.parse::<u128>().ok()),
-    })
-}
-
-fn first_output_field(object: &serde_json::Map<String, Value>, keys: &[&str]) -> Option<String> {
-    keys.iter()
-        .find_map(|key| object.get(*key))
-        .map(value_to_string)
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty() && value != "null")
-}
-
-fn transfer_outputs_key(key: &str) -> bool {
-    matches!(key, "outputs" | "transfer_outputs" | "transferOutputs")
+    outputs
+        .into_iter()
+        .map(|output| DecodedTransferOutput {
+            recipient: output.recipient,
+            amount: output
+                .amount
+                .as_deref()
+                .and_then(|amount| amount.parse::<u128>().ok()),
+        })
+        .collect()
 }
 
 fn add_optional_amounts(left: Option<u128>, right: Option<u128>) -> Option<u128> {
