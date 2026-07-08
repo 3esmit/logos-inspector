@@ -335,6 +335,8 @@ mod tests {
             return;
         };
         assert_eq!(first.name, "SharedProgram");
+        assert_eq!(first.source, "shared");
+        assert_eq!(first.program_id_hex, program_id);
         assert_eq!(first.account_type, "ShortAccount");
         assert_eq!(first.shared_topic, topic);
         assert_eq!(first.shared_account_id, "account-1");

@@ -3,8 +3,8 @@ use serde_json::Value;
 
 use super::{SocialPayload, social_messages_from_store};
 use crate::{
-    idl_decode::{ProgramDecodeCandidate, resolve_account_decode_session},
     normalize_program_id_hex,
+    program_decode::{ProgramDecodeCandidate, resolve_account_decode_session},
 };
 
 #[derive(Debug, Clone, Serialize, PartialEq)]

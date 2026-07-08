@@ -6,10 +6,10 @@ use super::{
     TransactionTraceReport, trace_transaction_summary_with_idl,
 };
 use crate::{
-    idl_decode::{
+    normalize_program_id_hex,
+    program_decode::{
         ProgramDecodeCandidate, SelectedDecodeEvidence, resolve_transaction_decode_session,
     },
-    normalize_program_id_hex,
     support::state_store::RegisteredIdlEntry,
 };
 

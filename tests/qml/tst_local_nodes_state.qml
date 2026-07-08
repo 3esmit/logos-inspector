@@ -186,6 +186,14 @@ TestCase {
     }
 
     function test_network_actions_follow_profile_mode() {
+        state.networkProfile = "local"
+        state.report = null
+        state.revision += 1
+
+        verify(!state.localMode())
+        compare(state.networkActions().length, 0)
+        verify(!state.networkActionEnabled("new_network"))
+
         state.report = ({
             profile: "default",
             mode: "public_testnet",
@@ -216,13 +224,13 @@ TestCase {
 
         verify(state.actionEnabled("bedrock", "start"))
         verify(!state.actionEnabled("bedrock", "purge"))
-        compare(state.modeLabel(), "Localnet")
+        compare(state.modeLabel(), "Local Devnet")
 
         gateway.busy = true
         verify(!state.actionEnabled("bedrock", "start"))
         gateway.busy = false
 
-        compare(state.actionLabel("reset_network"), "Reset network")
+        compare(state.actionLabel("reset_network"), "Reset Local Devnet")
         compare(state.nodeByKind("sequencer").label, "Sequencer")
         compare(state.toolProblem(), "sequencer_service not found. Local sequencer start requires a configured binary.")
     }

@@ -86,7 +86,7 @@ impl LocalNodeActionEngine {
         }
 
         if request.action.is_network_action() && normalized_profile != "local" {
-            bail!("local network actions require the local network profile");
+            bail!("local devnet actions require local operations mode");
         }
 
         Ok(())
@@ -313,7 +313,7 @@ fn new_network(
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| format!("devnet-{}", now_millis()));
         if state.devnets.iter().any(|record| record.id == id) {
-            bail!("local network `{id}` already exists");
+            bail!("local devnet `{id}` already exists");
         }
 
         let workspace_root = PathBuf::from(&state.managed_workspace_root);
@@ -343,7 +343,7 @@ fn new_network(
         state.devnets.push(record);
         Ok(OperationOutcome {
             status: "created".to_owned(),
-            detail: format!("created local network `{id}`"),
+            detail: format!("created local devnet `{id}`"),
             command: None,
         })
     })
@@ -376,7 +376,7 @@ fn load_network(
         state.active_devnet = Some(record.id.clone());
         Ok(OperationOutcome {
             status: "loaded".to_owned(),
-            detail: format!("loaded local network `{}`", record.id),
+            detail: format!("loaded local devnet `{}`", record.id),
             command: None,
         })
     })
@@ -394,7 +394,7 @@ fn delete_network(
             .iter()
             .position(|record| record.id == network_id)
         else {
-            bail!("local network `{network_id}` was not found");
+            bail!("local devnet `{network_id}` was not found");
         };
         let record = state.devnets.remove(position);
         remove_dir_inside(
@@ -406,7 +406,7 @@ fn delete_network(
         }
         Ok(OperationOutcome {
             status: "deleted".to_owned(),
-            detail: format!("deleted local network `{network_id}`"),
+            detail: format!("deleted local devnet `{network_id}`"),
             command: None,
         })
     })
@@ -421,7 +421,7 @@ fn reset_network(
         stop_all_owned_processes(state, &network_id);
         let workspace_root = PathBuf::from(&state.managed_workspace_root);
         let Some(record) = state.devnet_mut(&network_id) else {
-            bail!("local network `{network_id}` was not found");
+            bail!("local devnet `{network_id}` was not found");
         };
         let workspace = PathBuf::from(&record.workspace);
         for node in &mut record.nodes {
@@ -438,7 +438,7 @@ fn reset_network(
         }
         Ok(OperationOutcome {
             status: "reset".to_owned(),
-            detail: format!("reset local network `{network_id}`"),
+            detail: format!("reset local devnet `{network_id}`"),
             command: None,
         })
     })
@@ -581,7 +581,7 @@ fn node_start(
         let kind = required_node(request)?;
         let Some(record) = state.active_devnet_mut() else {
             if profile == "local" {
-                bail!("active local network is required");
+                bail!("active devnet is required");
             }
             return start_external_node(kind);
         };
@@ -658,7 +658,7 @@ fn node_stop(
         let kind = required_node(request)?;
         let Some(record) = state.active_devnet_mut() else {
             if profile == "local" {
-                bail!("active local network is required");
+                bail!("active devnet is required");
             }
             return stop_external_node(kind);
         };
@@ -745,7 +745,7 @@ fn node_purge(
         let kind = required_node(request)?;
         let workspace_root = PathBuf::from(&state.managed_workspace_root);
         let Some(record) = state.active_devnet_mut() else {
-            bail!("active local network is required");
+            bail!("active devnet is required");
         };
         let Some(config) = node_config_mut(record, kind) else {
             bail!("{} config is not available", kind.label());
@@ -812,7 +812,7 @@ fn target_network_id(state: &LocalNodesState, request: &LocalNodeActionRequest) 
         .network_id
         .clone()
         .or_else(|| state.active_devnet.clone())
-        .context("local network id is required")
+        .context("local devnet id is required")
 }
 
 fn default_node_config(workspace: &Path, kind: NodeKind) -> LocalNodeConfigRecord {
@@ -869,7 +869,7 @@ fn write_devnet_manifest(record: &LocalDevnetRecord) -> Result<()> {
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
     let text = serde_json::to_string_pretty(record)
-        .context("failed to serialize local network manifest")?;
+        .context("failed to serialize local devnet manifest")?;
     fs::write(&path, text).with_context(|| format!("failed to write {}", path.display()))?;
     Ok(())
 }

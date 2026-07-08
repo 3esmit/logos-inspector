@@ -3,6 +3,7 @@ import QtTest
 import "../../qml/services"
 import "../../qml/state"
 import "../../qml/state/network/SourcePolicyCatalog.js" as SourcePolicyCatalog
+import "../../qml/state/network/SourceDiagnosticsProjection.js" as SourceDiagnostics
 import "fixtures"
 
 TestCase {
@@ -378,6 +379,8 @@ TestCase {
 
         compare(model.normalizedMessagingSourceMode("metrics"), "metrics")
         compare(model.normalizedMessagingSourceMode("network-monitor"), "network-monitor")
+        compare(model.normalizedMessagingSourceMode("delivery network monitor"), "network-monitor")
+        compare(model.normalizedMessagingSourceMode("network monitor"), "unsupported")
         compare(model.normalizedStorageSourceMode("metrics"), "metrics")
 
         model.messagingSourceMode = "network-monitor"
@@ -394,6 +397,7 @@ TestCase {
         const deliveryKeys = deliveryOptions.map(option => option.key)
         verify(deliveryKeys.indexOf("metrics") >= 0)
         verify(deliveryKeys.indexOf("network-monitor") >= 0)
+        compare(sourceOption(deliveryOptions, "network-monitor").label, "Delivery Network Monitor")
     }
 
     function test_messaging_and_storage_auto_use_module_routes_in_basecamp() {
@@ -574,6 +578,10 @@ TestCase {
         installSourceModePolicy(model)
 
         compare(model.normalizedMessagingSourceMode("network-monitor"), "network-monitor")
+        compare(model.normalizedMessagingSourceMode("delivery network monitor"), "network-monitor")
+        compare(model.normalizedMessagingSourceMode("discovery crawler"), "network-monitor")
+        compare(model.normalizedMessagingSourceMode("network monitor"), "unsupported")
+        compare(model.normalizedMessagingSourceMode("crawler"), "unsupported")
         model.messagingSourceMode = "network-monitor"
 
         compare(model.effectiveMessagingSourceMode(model.messagingSourceMode), "network-monitor")
@@ -680,6 +688,85 @@ TestCase {
 
         compare(model.moduleProbeValue("storage", "peerId"), "peer-from-fact")
         compare(model.moduleProbeError("storage", "collectMetrics"), "metrics unavailable")
+    }
+
+    function test_source_diagnostics_prefer_current_report_facts() {
+        model.storageModuleReport = {
+            module: "storage_rest",
+            probe_facts: [
+                {
+                    key: "space",
+                    label: "stale",
+                    source: "old",
+                    ok: true,
+                    value: "stale-space",
+                    error: null
+                }
+            ],
+            probes: []
+        }
+        const report = {
+            module: "storage_rest",
+            probe_facts: [
+                {
+                    key: "space",
+                    label: "current",
+                    source: "new",
+                    ok: true,
+                    value: "current-space",
+                    error: null
+                },
+                {
+                    key: "manifests",
+                    label: "failed",
+                    source: "new",
+                    ok: false,
+                    value: null,
+                    error: "manifest probe failed"
+                }
+            ],
+            probes: []
+        }
+
+        compare(SourceDiagnostics.probeValue(model, "storage", report, "space"), "current-space")
+        compare(SourceDiagnostics.failedProbeCount(report), 1)
+    }
+
+    function test_source_report_view_uses_fact_only_source_evidence() {
+        const report = {
+            module: "storage_rest",
+            health: {
+                reachable: true,
+                ready: true,
+                status: "healthy",
+                summary: "storage source ready",
+                detail: "space observed"
+            },
+            probe_facts: [
+                {
+                    key: "space",
+                    label: "Repository space",
+                    source: "storage",
+                    ok: true,
+                    value: { used: 1 },
+                    error: null
+                }
+            ],
+            capability_facts: [
+                {
+                    key: "space",
+                    label: "Repository space",
+                    available: true,
+                    evidence: "1 field(s)",
+                    value: { used: 1 }
+                }
+            ],
+            probes: []
+        }
+        const view = model.storageReportView(report)
+
+        compare(view.probeValue("space").used, 1)
+        verify(view.capabilityAvailable("space"))
     }
 
     function test_delivery_throughput_metric_aliases() {
@@ -1021,6 +1108,34 @@ TestCase {
         verify(model.applySharedIdlPolicy("account-1", sharedEntry))
         compare(model.registeredIdls.count, 1)
         compare(model.registeredIdls.get(0).source, "shared")
+        compare(model.idlEntryAt(0).accountType, "State")
+    }
+
+    function test_shared_idl_policy_rejects_wrong_account_or_non_shared_entries() {
+        const sharedEntry = {
+            key: "shared-1",
+            name: "Shared",
+            programIdHex: "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+            json: "{\"name\":\"Shared\",\"accounts\":[]}",
+            source: "shared",
+            sharedAccountId: "account-2",
+            accountType: "State"
+        }
+        const localEntry = {
+            key: "local-1",
+            name: "Local",
+            programIdHex: sharedEntry.programIdHex,
+            json: "{\"name\":\"Local\",\"accounts\":[]}",
+            source: "local",
+            sharedAccountId: "account-1",
+            accountType: "State"
+        }
+        model.setSharedIdlPolicy("suggestion")
+
+        verify(!model.applySharedIdlPolicy("account-1", sharedEntry))
+        verify(!model.applySharedIdlPolicy("account-1", localEntry))
+        compare(model.sharedIdlSuggestions("account-1").length, 0)
+        compare(model.registeredIdls.count, 0)
     }
 
     function test_local_idl_priority_beats_shared_match() {
@@ -1060,6 +1175,52 @@ TestCase {
         compare(candidates.length, 2)
         compare(candidates[0].entry.key, "local-1")
         compare(candidates[1].entry.key, "shared-1")
+    }
+
+    function test_registered_shared_idl_keeps_local_priority_and_account_type() {
+        const programIdHex = "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+        const sharedEntry = {
+            key: "shared-1",
+            name: "Shared",
+            programId: "0x" + programIdHex,
+            programIdHex: programIdHex,
+            programBinary: "",
+            json: "{\"name\":\"Shared\",\"accounts\":[]}",
+            source: "shared",
+            sharedTopic: "/lez/account/account-1/idl",
+            sharedIdentity: {},
+            sharedAccountId: "account-1",
+            accountType: "State"
+        }
+        const localEntry = {
+            key: "local-1",
+            name: "Local",
+            programId: "0x" + programIdHex,
+            programIdHex: programIdHex,
+            programBinary: "",
+            json: "{\"name\":\"Local\",\"accounts\":[]}",
+            source: "local",
+            sharedTopic: "",
+            sharedIdentity: {},
+            sharedAccountId: "",
+            accountType: ""
+        }
+
+        model.setSharedIdlPolicy("autoRegister")
+        verify(model.applySharedIdlPolicy("account-1", sharedEntry))
+        model.registeredIdls.append(localEntry)
+
+        const entries = model.idlEntriesForProgram(programIdHex)
+        compare(entries.length, 2)
+        compare(entries[0].key, "local-1")
+        compare(entries[1].key, "shared-1")
+        compare(entries[1].accountType, "State")
+
+        const candidates = model.accountDecodeCandidates("account-1", programIdHex)
+        const payload = model.programDecodeCandidatePayload(candidates)
+        compare(candidates[0].entry.key, "local-1")
+        compare(candidates[1].entry.key, "shared-1")
+        compare(payload[1].accountType, "State")
     }
 
     function test_settings_backup_to_storage_uses_wallet_profile_and_persists_cid() {

@@ -528,7 +528,7 @@ ColumnLayout {
             root.statusRow(qsTr("Store"), root.sourceFactObservedState("store", storeKnown), storeKnown ? root.metricDisplay("messaging.store_peers") : root.sourceFactEvidence("store", qsTr("No Store fact.")), root.sourceFactObservedTone("store", storeKnown)),
             root.statusRow(qsTr("Filter"), root.sourceFactObservedState("filter", filterKnown), filterKnown ? root.metricDisplay("messaging.filter_peers") : root.sourceFactEvidence("filter", qsTr("No Filter fact.")), root.sourceFactObservedTone("filter", filterKnown)),
             root.statusRow(qsTr("Lightpush"), root.sourceFactObservedState("lightpush", lightpushKnown), lightpushKnown ? root.metricDisplay("messaging.lightpush_peers") : root.sourceFactEvidence("lightpush", qsTr("No Lightpush fact.")), root.sourceFactObservedTone("lightpush", lightpushKnown)),
-            root.statusRow(qsTr("Discovery"), root.sourceFactObservedState("network_monitor", discoveryKnown), discoveryKnown ? qsTr("%1 peer(s)").arg(discovered) : root.sourceFactEvidence("network_monitor", qsTr("No network monitor peer snapshot.")), root.sourceFactObservedTone("network_monitor", discoveryKnown)),
+            root.statusRow(qsTr("Discovery"), root.sourceFactObservedState("network_monitor", discoveryKnown), discoveryKnown ? qsTr("%1 peer(s)").arg(discovered) : root.sourceFactEvidence("network_monitor", qsTr("No Delivery Network Monitor peer snapshot.")), root.sourceFactObservedTone("network_monitor", discoveryKnown)),
             root.statusRow(qsTr("RLN / spam protection"), qsTr("unknown"), qsTr("No passive metric selected"), "neutral")
         ]
     }
@@ -544,9 +544,9 @@ ColumnLayout {
         return [
             root.statusRow(qsTr("Local connected peers"), root.metricKnown("messaging.peer_count") ? qsTr("observed") : qsTr("unknown"), root.metricDisplay("messaging.peer_count"), root.metricKnown("messaging.peer_count") ? "success" : "neutral"),
             root.statusRow(qsTr("Relay mesh peers"), root.metricKnown("messaging.pubsub_peers") ? qsTr("observed") : qsTr("unknown"), root.metricDisplay("messaging.pubsub_peers"), root.metricKnown("messaging.pubsub_peers") ? "success" : "neutral"),
-            root.statusRow(qsTr("Discovery peers"), discovered !== null ? qsTr("observed") : qsTr("unknown"), discovered !== null ? qsTr("%1 peer(s)").arg(discovered) : qsTr("No network monitor peer snapshot."), discovered !== null ? "success" : "neutral"),
+            root.statusRow(qsTr("Discovery peers"), discovered !== null ? qsTr("observed") : qsTr("unknown"), discovered !== null ? qsTr("%1 peer(s)").arg(discovered) : qsTr("No Delivery Network Monitor peer snapshot."), discovered !== null ? "success" : "neutral"),
             root.statusRow(qsTr("Service peers"), servicePeers !== null ? qsTr("observed") : qsTr("unknown"), servicePeers !== null ? qsTr("%1 service peer(s)").arg(servicePeers) : qsTr("No Store/Filter/Lightpush peer metrics."), servicePeers !== null ? "success" : "neutral"),
-            root.statusRow(qsTr("Content topics"), topics !== null ? qsTr("observed") : qsTr("unknown"), topics !== null ? qsTr("%1 topic(s)").arg(topics) : qsTr("No network monitor topic snapshot."), topics !== null ? "success" : "neutral")
+            root.statusRow(qsTr("Content topics"), topics !== null ? qsTr("observed") : qsTr("unknown"), topics !== null ? qsTr("%1 topic(s)").arg(topics) : qsTr("No Delivery Network Monitor topic snapshot."), topics !== null ? "success" : "neutral")
         ]
     }
 
@@ -701,7 +701,7 @@ ColumnLayout {
         return [
             root.metricRow(qsTr("Pubsub peers"), "messaging.pubsub_peers"),
             root.metricRow(qsTr("Content topics"), "messaging.content_topics"),
-            root.statusRow(qsTr("Topic-to-shard mapping"), topics !== null ? qsTr("observed") : qsTr("unknown"), topics !== null ? qsTr("%1 content topic(s)").arg(topics) : qsTr("Requires topic metadata or network monitor source."), topics !== null ? "success" : "neutral"),
+            root.statusRow(qsTr("Topic-to-shard mapping"), topics !== null ? qsTr("observed") : qsTr("unknown"), topics !== null ? qsTr("%1 content topic(s)").arg(topics) : qsTr("Requires topic metadata or Delivery Network Monitor source."), topics !== null ? "success" : "neutral"),
             root.metricRow(qsTr("Store query pressure"), "messaging.store_query_requests_recent"),
             root.metricRow(qsTr("Filter query pressure"), "messaging.filter_requests_recent")
         ]

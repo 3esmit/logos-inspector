@@ -45,13 +45,14 @@ QtObject {
             source: String(row.source || ""),
             sharedTopic: String(row.sharedTopic || row.shared_topic || ""),
             sharedIdentity: row.sharedIdentity || row.shared_identity || ({}),
-            sharedAccountId: String(row.sharedAccountId || row.shared_account_id || "")
+            sharedAccountId: String(row.sharedAccountId || row.shared_account_id || ""),
+            accountType: String(row.accountType || row.account_type || "")
         }
     }
 
     function entryAt(index) {
         if (index < 0 || index >= registeredIdls.count) {
-            return { key: "", name: "", programId: "", programIdHex: "", programBinary: "", json: "" }
+            return { key: "", name: "", programId: "", programIdHex: "", programBinary: "", json: "", accountType: "" }
         }
         const row = registeredIdls.get(index)
         return normalizedEntry(row, index)
@@ -99,14 +100,19 @@ QtObject {
                 rows.push(entry)
             }
         }
-        rows.sort(function (left, right) {
-            const leftShared = String(left.source || "") === "shared"
-            const rightShared = String(right.source || "") === "shared"
-            if (leftShared === rightShared) {
-                return String(left.name || "").localeCompare(String(right.name || ""))
-            }
-            return leftShared ? -1 : 1
-        })
+        rows.sort(compareDecodeEntries)
         return rows
+    }
+
+    function compareDecodeEntries(left, right) {
+        const sourceOrder = decodeSourcePriority(left) - decodeSourcePriority(right)
+        if (sourceOrder !== 0) {
+            return sourceOrder
+        }
+        return String(left.name || "").localeCompare(String(right.name || ""))
+    }
+
+    function decodeSourcePriority(entry) {
+        return String(entry && entry.source ? entry.source : "") === "shared" ? 1 : 0
     }
 }

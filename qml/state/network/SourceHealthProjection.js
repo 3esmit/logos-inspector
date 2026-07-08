@@ -107,15 +107,7 @@ function sourceHealthReady(report) {
 }
 
 function sourceCapability(report, key) {
-    const wanted = String(key || "")
-    const facts = report && Array.isArray(report.capability_facts) ? report.capability_facts : []
-    for (let i = 0; i < facts.length; ++i) {
-        const fact = facts[i] || {}
-        if (String(fact.key || "") === wanted) {
-            return fact
-        }
-    }
-    return null
+    return sourceFact(report, "capability_facts", key)
 }
 
 function sourceCapabilityAvailable(report, key) {
@@ -134,8 +126,12 @@ function sourceCapabilityValue(report, key) {
 }
 
 function sourceProbeFact(report, key) {
+    return sourceFact(report, "probe_facts", key)
+}
+
+function sourceFact(report, fieldName, key) {
     const wanted = String(key || "")
-    const facts = report && Array.isArray(report.probe_facts) ? report.probe_facts : []
+    const facts = report && Array.isArray(report[fieldName]) ? report[fieldName] : []
     for (let i = 0; i < facts.length; ++i) {
         const fact = facts[i] || {}
         if (String(fact.key || "") === wanted) {
@@ -174,28 +170,27 @@ function reportProbe(report, method) {
     }
     const moduleInfo = report.module_info || null
     if (moduleInfo) {
-        if (String(moduleInfo.probe_key || "") === wanted) {
-            return moduleInfo
-        }
-        const label = String(moduleInfo.label || "")
-        const source = String(moduleInfo.source || "")
-        if (label.indexOf("." + wanted) >= 0 || source.indexOf(" " + wanted) >= 0) {
+        if (probeMatchesKey(moduleInfo, wanted)) {
             return moduleInfo
         }
     }
     const probes = Array.isArray(report.probes) ? report.probes : []
     for (let i = 0; i < probes.length; ++i) {
         const probe = probes[i] || {}
-        if (String(probe.probe_key || "") === wanted) {
-            return probe
-        }
-        const label = String(probe.label || "")
-        const source = String(probe.source || "")
-        if (label.indexOf("." + wanted) >= 0 || source.indexOf(" " + wanted) >= 0) {
+        if (probeMatchesKey(probe, wanted)) {
             return probe
         }
     }
     return null
+}
+
+function probeMatchesKey(probe, wanted) {
+    if (String(probe.probe_key || "") === wanted) {
+        return true
+    }
+    const label = String(probe.label || "")
+    const source = String(probe.source || "")
+    return label.indexOf("." + wanted) >= 0 || source.indexOf(" " + wanted) >= 0
 }
 
 function deliveryReportHealthy(root, report) {
