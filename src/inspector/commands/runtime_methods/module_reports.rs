@@ -5,10 +5,10 @@ use tokio::runtime::Runtime;
 use crate::{
     modules::{
         blockchain_module_report as inspect_blockchain_module_report,
+        capabilities_report as inspect_capabilities_report,
         delivery_report as inspect_delivery_report, logoscore_status_report, modules_report,
         storage_report as inspect_storage_report,
     },
-    network_profiles,
     source_routing::{
         Args, delivery_source_report as inspect_delivery_source_report, source_policy_report,
         storage_source_report as inspect_storage_source_report,
@@ -18,11 +18,15 @@ use crate::{
 use super::super::value::to_value;
 
 pub(super) fn source_policy() -> Result<Value> {
-    to_value(source_policy_report(network_profiles()))
+    to_value(source_policy_report())
 }
 
 pub(super) fn modules() -> Result<Value> {
     to_value(modules_report())
+}
+
+pub(super) fn capabilities_report() -> Result<Value> {
+    to_value(inspect_capabilities_report())
 }
 
 pub(super) fn logoscore_status() -> Result<Value> {

@@ -37,6 +37,7 @@ pub(crate) enum OperationMethod {
     BlockchainLiveBlocks,
     BlockchainBlock,
     BlockchainTransaction,
+    Health,
     Head,
     Programs,
     Block,
@@ -87,6 +88,7 @@ pub(crate) enum OperationExecutor {
     BlockchainLiveBlocks,
     BlockchainBlock,
     BlockchainTransaction,
+    Health,
     Head,
     Programs,
     Block,
@@ -334,6 +336,7 @@ const OPERATION_CATALOG: &[OperationCatalogEntry] = &[
         Blockchain,
         "Blockchain transaction"
     ),
+    operation_entry!(Health, "health", Execution, "Execution health"),
     operation_entry!(Head, "head", Execution, "Execution head"),
     operation_entry!(Programs, "programs", Execution, "Programs"),
     operation_entry!(Block, "block", Execution, "Sequencer block"),

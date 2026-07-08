@@ -24,6 +24,17 @@ impl ProbeField {
             error: Some(error.to_string()),
         }
     }
+
+    pub(crate) fn from_result<T, E>(result: Result<T, E>) -> Self
+    where
+        T: Serialize,
+        E: std::fmt::Display,
+    {
+        match result {
+            Ok(value) => Self::ok(value),
+            Err(error) => Self::err(error),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]

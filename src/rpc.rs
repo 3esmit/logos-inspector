@@ -4,7 +4,7 @@ use anyhow::{Context as _, Result, bail};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 
-use crate::{parse_json_body, read_response_body_text, response_excerpt, value_to_string};
+use crate::support::{http_response::read_response_json, json_value::value_to_string};
 
 const JSON_RPC_TIMEOUT: Duration = Duration::from_secs(8);
 
@@ -30,19 +30,18 @@ pub async fn raw_json_rpc(endpoint: &str, method: &str, params: Value) -> Result
         "method": method,
         "params": params,
     });
-    let response = reqwest::Client::new()
-        .post(endpoint)
-        .timeout(JSON_RPC_TIMEOUT)
-        .json(&body)
-        .send()
-        .await
-        .with_context(|| format!("failed to call {endpoint}"))?;
-    let (status, text) =
-        read_response_body_text(response, "failed to read rpc response body").await?;
-    if !status.is_success() {
-        bail!("rpc HTTP {status}: {}", response_excerpt(&text));
-    }
-    parse_json_body(&text, "invalid JSON-RPC response", false)
+    read_response_json(
+        reqwest::Client::new()
+            .post(endpoint)
+            .timeout(JSON_RPC_TIMEOUT)
+            .json(&body),
+        endpoint,
+        "failed to read rpc response body",
+        "invalid JSON-RPC response",
+        false,
+        false,
+    )
+    .await
 }
 
 pub async fn raw_json_rpc_result(endpoint: &str, method: &str, params: Value) -> Result<Value> {
@@ -72,20 +71,15 @@ pub async fn raw_http_json(endpoint: &str, path: &str) -> Result<Value> {
     let endpoint = endpoint.trim_end_matches('/');
     let path = path.trim_start_matches('/');
     let url = format!("{endpoint}/{path}");
-    let response = reqwest::Client::new()
-        .get(&url)
-        .send()
-        .await
-        .with_context(|| format!("failed to call {url}"))?;
-    let (status, text) =
-        read_response_body_text(response, "failed to read http response body").await?;
-    if !status.is_success() {
-        bail!(
-            "http call `{url}` failed with status {status}: {}",
-            response_excerpt(&text)
-        );
-    }
-    parse_json_body(&text, "invalid JSON response", false)
+    read_response_json(
+        reqwest::Client::new().get(&url),
+        &url,
+        "failed to read http response body",
+        "invalid JSON response",
+        false,
+        false,
+    )
+    .await
 }
 
 pub async fn raw_rpc_report(endpoint: &str, method: &str, params: Value) -> Result<RawRpcReport> {

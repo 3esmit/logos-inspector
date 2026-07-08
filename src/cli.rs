@@ -6,33 +6,20 @@ use std::{
 
 use anyhow::{Context as _, Result};
 use clap::{Args as ClapArgs, Parser, Subcommand};
-use logos_inspector::{
-    blockchain::{blockchain_blocks, blockchain_node_report, channel_scan},
-    decode::{
-        decode_account_data_hex_with_idl, decode_event_data_hex_with_idl,
-        decode_instruction_words_with_idl, spel_idl_report,
-    },
-    lez::{
-        account_lookup, account_lookup_with_idl, last_sequencer_block_id, program_file_info,
-        sequencer_block, sequencer_health, sequencer_program_ids, sequencer_transaction,
-        sequencer_transaction_inspection, sequencer_transaction_inspection_with_idl,
-        sequencer_transaction_trace, sequencer_transaction_trace_with_idl,
+use serde_json::{Value, json};
+use tokio::runtime::Runtime;
+
+use crate::{
+    inspector::{
+        command_surface::{DispatchContext, dispatch_inspector_command},
+        commands::operations::RuntimeOperationInterface,
+        value::to_value,
     },
     local_nodes::{bootstrap_default_local_indexer, is_default_local_indexer_endpoint},
-    modules::{
-        blockchain_module_report, capabilities_report, logoscore_status_report, modules_report,
-    },
-    network::{network_profiles, resolve_network_endpoints},
-    overview::overview,
-    rpc::raw_rpc_report,
-    source_routing::{delivery_source_report, source_policy_report, storage_source_report},
-    wallet::{
-        bedrock_wallet_balance, local_wallet_accounts, local_wallet_command,
-        local_wallet_create_account, local_wallet_profile_status, local_wallet_send_transaction,
-        local_wallet_sync_private,
-    },
+    logoscore,
+    source_routing::{Args as SourceArgs, NetworkEndpoints, resolve_network_endpoints},
+    support::confirmation::ConfirmationPolicy,
 };
-use serde_json::Value;
 
 #[derive(Debug, Parser)]
 #[command(name = "logos-inspector")]
@@ -256,7 +243,7 @@ pub struct SequencerArgs {
 }
 
 impl EndpointArgs {
-    fn endpoints(&self) -> Result<logos_inspector::NetworkEndpoints> {
+    fn endpoints(&self) -> Result<NetworkEndpoints> {
         let endpoints = resolve_network_endpoints(
             self.profile.as_deref(),
             self.sequencer_url.as_deref(),
@@ -280,245 +267,309 @@ impl SequencerArgs {
 }
 
 pub fn run(args: CliArgs) -> Result<()> {
-    let runtime = tokio::runtime::Runtime::new().context("failed to create tokio runtime")?;
-    match args.command {
-        CliCommand::Overview(endpoints) => {
-            let endpoints = endpoints.endpoints()?;
-            maybe_bootstrap_default_local_indexer(&endpoints.indexer_endpoint)?;
-            let report = runtime.block_on(overview(
-                &endpoints.sequencer_endpoint,
-                &endpoints.indexer_endpoint,
-                &endpoints.node_endpoint,
-            ));
-            print_json(&report)
+    let invocation = args.command.invocation()?;
+    if let Some(endpoint) = invocation.bootstrap_indexer_endpoint.as_deref() {
+        maybe_bootstrap_default_local_indexer(endpoint)?;
+    }
+    let runtime = CliCommandRuntime::new()?;
+    let value = runtime.call(invocation.method, invocation.args)?;
+    match invocation.output {
+        CliOutput::Json => print_json(&value),
+        CliOutput::Text => print_text_value(&value),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CliOutput {
+    Json,
+    Text,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct CliInvocation {
+    method: &'static str,
+    args: Value,
+    output: CliOutput,
+    bootstrap_indexer_endpoint: Option<String>,
+}
+
+impl CliInvocation {
+    fn json(method: &'static str, args: Value) -> Self {
+        Self {
+            method,
+            args,
+            output: CliOutput::Json,
+            bootstrap_indexer_endpoint: None,
         }
-        CliCommand::Health(endpoints) => {
-            let sequencer_url = endpoints.sequencer_url()?;
-            runtime.block_on(sequencer_health(&sequencer_url))?;
-            print_line("ok")
+    }
+
+    fn text(method: &'static str, args: Value) -> Self {
+        Self {
+            output: CliOutput::Text,
+            ..Self::json(method, args)
         }
-        CliCommand::Head(endpoints) => {
-            let sequencer_url = endpoints.sequencer_url()?;
-            let head = runtime.block_on(last_sequencer_block_id(&sequencer_url))?;
-            print_line(head)
-        }
-        CliCommand::Programs(endpoints) => {
-            let sequencer_url = endpoints.sequencer_url()?;
-            let programs = runtime.block_on(sequencer_program_ids(&sequencer_url))?;
-            print_json(&programs)
-        }
-        CliCommand::Block {
-            block_id,
-            endpoints,
-        } => {
-            let sequencer_url = endpoints.sequencer_url()?;
-            let block = runtime.block_on(sequencer_block(&sequencer_url, block_id))?;
-            print_json(&block)
-        }
-        CliCommand::Tx { hash, endpoints } => {
-            let sequencer_url = endpoints.sequencer_url()?;
-            let tx = runtime.block_on(sequencer_transaction(&sequencer_url, &hash))?;
-            print_json(&tx)
-        }
-        CliCommand::InspectTx {
-            hash,
-            idl,
-            endpoints,
-        } => {
-            let sequencer_url = endpoints.sequencer_url()?;
-            if let Some(idl) = idl {
-                let idl_json = read_idl(&idl)?;
-                let tx = runtime.block_on(sequencer_transaction_inspection_with_idl(
-                    &sequencer_url,
-                    &hash,
-                    &idl_json,
-                ))?;
-                print_json(&tx)
-            } else {
-                let tx =
-                    runtime.block_on(sequencer_transaction_inspection(&sequencer_url, &hash))?;
-                print_json(&tx)
+    }
+
+    fn with_indexer_bootstrap(mut self, endpoint: &str) -> Self {
+        self.bootstrap_indexer_endpoint = Some(endpoint.to_owned());
+        self
+    }
+}
+
+struct CliCommandRuntime {
+    runtime: Runtime,
+    operations: RuntimeOperationInterface,
+}
+
+impl CliCommandRuntime {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            runtime: Runtime::new().context("failed to create tokio runtime")?,
+            operations: RuntimeOperationInterface::default(),
+        })
+    }
+
+    fn call(&self, method: &str, args: Value) -> Result<Value> {
+        let call_core_module = |module: &str, method: &str, args: Value| {
+            let args = SourceArgs::new(args)?
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .map(ToOwned::to_owned)
+                        .unwrap_or_else(|| value.to_string())
+                })
+                .collect::<Vec<_>>();
+            to_value(logoscore::call(module, method, &args)?)
+        };
+        let context = DispatchContext {
+            runtime: &self.runtime,
+            operations: &self.operations,
+            call_core_module: &call_core_module,
+        };
+        dispatch_inspector_command(&context, method, args)?
+            .with_context(|| format!("unknown inspector method `{method}`"))
+    }
+}
+
+impl CliCommand {
+    fn invocation(self) -> Result<CliInvocation> {
+        match self {
+            CliCommand::Overview(endpoints) => {
+                let endpoints = endpoints.endpoints()?;
+                Ok(CliInvocation::json(
+                    "overview",
+                    json!([
+                        endpoints.sequencer_endpoint,
+                        endpoints.indexer_endpoint,
+                        endpoints.node_endpoint
+                    ]),
+                )
+                .with_indexer_bootstrap(&endpoints.indexer_endpoint))
             }
-        }
-        CliCommand::TraceTx {
-            hash,
-            idl,
-            endpoints,
-        } => {
-            let sequencer_url = endpoints.sequencer_url()?;
-            if let Some(idl) = idl {
-                let idl_json = read_idl(&idl)?;
-                let tx = runtime.block_on(sequencer_transaction_trace_with_idl(
-                    &sequencer_url,
-                    &hash,
-                    &idl_json,
-                ))?;
-                print_json(&tx)
-            } else {
-                let tx = runtime.block_on(sequencer_transaction_trace(&sequencer_url, &hash))?;
-                print_json(&tx)
+            CliCommand::Health(endpoints) => Ok(CliInvocation::text(
+                "health",
+                json!([endpoints.sequencer_url()?]),
+            )),
+            CliCommand::Head(endpoints) => Ok(CliInvocation::json(
+                "head",
+                json!([endpoints.sequencer_url()?]),
+            )),
+            CliCommand::Programs(endpoints) => Ok(CliInvocation::json(
+                "programs",
+                json!([endpoints.sequencer_url()?]),
+            )),
+            CliCommand::Block {
+                block_id,
+                endpoints,
+            } => Ok(CliInvocation::json(
+                "block",
+                json!([endpoints.sequencer_url()?, block_id]),
+            )),
+            CliCommand::Tx { hash, endpoints } => Ok(CliInvocation::json(
+                "transaction",
+                json!([endpoints.sequencer_url()?, hash]),
+            )),
+            CliCommand::InspectTx {
+                hash,
+                idl,
+                endpoints,
+            } => Ok(CliInvocation::json(
+                "inspectTransaction",
+                json!([
+                    endpoints.sequencer_url()?,
+                    hash,
+                    optional_idl_json(idl.as_deref())?
+                ]),
+            )),
+            CliCommand::TraceTx {
+                hash,
+                idl,
+                endpoints,
+            } => Ok(CliInvocation::json(
+                "traceTransaction",
+                json!([
+                    endpoints.sequencer_url()?,
+                    hash,
+                    optional_idl_json(idl.as_deref())?
+                ]),
+            )),
+            CliCommand::Account {
+                account_id,
+                idl,
+                idl_account,
+                endpoints,
+            } => {
+                let endpoints = endpoints.endpoints()?;
+                Ok(CliInvocation::json(
+                    "account",
+                    json!([
+                        endpoints.sequencer_endpoint,
+                        endpoints.indexer_endpoint,
+                        account_id,
+                        optional_idl_json(idl.as_deref())?,
+                        idl_account.unwrap_or_default()
+                    ]),
+                )
+                .with_indexer_bootstrap(&endpoints.indexer_endpoint))
             }
-        }
-        CliCommand::Account {
-            account_id,
-            idl,
-            idl_account,
-            endpoints,
-        } => {
-            let endpoints = endpoints.endpoints()?;
-            maybe_bootstrap_default_local_indexer(&endpoints.indexer_endpoint)?;
-            if let Some(idl) = idl {
-                let idl_json = read_idl(&idl)?;
-                let account = runtime.block_on(account_lookup_with_idl(
-                    &endpoints.sequencer_endpoint,
-                    &endpoints.indexer_endpoint,
-                    &account_id,
-                    &idl_json,
-                    idl_account.as_deref(),
-                ))?;
-                print_json(&account)
-            } else {
-                let account = runtime.block_on(account_lookup(
-                    &endpoints.sequencer_endpoint,
-                    &endpoints.indexer_endpoint,
-                    &account_id,
-                ))?;
-                print_json(&account)
+            CliCommand::DecodeAccount {
+                data_hex,
+                idl,
+                idl_account,
+            } => Ok(CliInvocation::json(
+                "decodeAccount",
+                json!([data_hex, read_idl(&idl)?, idl_account.unwrap_or_default()]),
+            )),
+            CliCommand::DecodeInstruction {
+                program_id,
+                words,
+                idl,
+                accounts,
+            } => Ok(CliInvocation::json(
+                "decodeInstruction",
+                json!([
+                    program_id,
+                    parse_words(&words)?,
+                    read_idl(&idl)?,
+                    parse_accounts(accounts.as_deref())?
+                ]),
+            )),
+            CliCommand::DecodeEvent {
+                data_hex,
+                idl,
+                event,
+            } => Ok(CliInvocation::json(
+                "decodeEvent",
+                json!([data_hex, read_idl(&idl)?, event.unwrap_or_default()]),
+            )),
+            CliCommand::ProgramFile { path } => {
+                Ok(CliInvocation::json("programFile", json!([path])))
             }
-        }
-        CliCommand::DecodeAccount {
-            data_hex,
-            idl,
-            idl_account,
-        } => {
-            let idl_json = read_idl(&idl)?;
-            print_json(&decode_account_data_hex_with_idl(
-                &idl_json,
-                idl_account.as_deref(),
-                &data_hex,
-                None,
-            )?)
-        }
-        CliCommand::DecodeInstruction {
-            program_id,
-            words,
-            idl,
-            accounts,
-        } => {
-            let idl_json = read_idl(&idl)?;
-            let words = parse_words(&words)?;
-            let accounts = parse_accounts(accounts.as_deref())?;
-            print_json(&decode_instruction_words_with_idl(
-                &idl_json,
-                &program_id,
-                &words,
-                &accounts,
-            )?)
-        }
-        CliCommand::DecodeEvent {
-            data_hex,
-            idl,
-            event,
-        } => {
-            let idl_json = read_idl(&idl)?;
-            print_json(&decode_event_data_hex_with_idl(
-                &idl_json,
-                event.as_deref(),
-                &data_hex,
-            )?)
-        }
-        CliCommand::ProgramFile { path } => print_json(&program_file_info(path)?),
-        CliCommand::BlockchainNode(endpoints) => {
-            let endpoints = endpoints.endpoints()?;
-            let report = runtime.block_on(blockchain_node_report(&endpoints.node_endpoint));
-            print_json(&report)
-        }
-        CliCommand::BlockchainBlocks {
-            slot_from,
-            slot_to,
-            endpoints,
-        } => {
-            let endpoints = endpoints.endpoints()?;
-            let blocks = runtime.block_on(blockchain_blocks(
-                &endpoints.node_endpoint,
+            CliCommand::BlockchainNode(endpoints) => {
+                let endpoints = endpoints.endpoints()?;
+                Ok(CliInvocation::json(
+                    "blockchainNode",
+                    json!([endpoints.node_endpoint]),
+                ))
+            }
+            CliCommand::BlockchainBlocks {
                 slot_from,
                 slot_to,
-            ))?;
-            print_json(&blocks)
-        }
-        CliCommand::LogoscoreStatus => print_json(&logoscore_status_report()),
-        CliCommand::SourcePolicy => print_json(&source_policy_report(network_profiles())),
-        CliCommand::Modules => print_json(&modules_report()),
-        CliCommand::BlockchainModule { address } => {
-            print_json(&blockchain_module_report(address.as_deref()))
-        }
-        CliCommand::Storage {
-            cid,
-            source_mode,
-            rest_url,
-            metrics_url,
-        } => {
-            let report = runtime.block_on(storage_source_report(
-                &source_mode,
-                rest_url.as_deref(),
-                metrics_url.as_deref(),
-                cid.as_deref(),
-                false,
-            ));
-            print_json(&report)
-        }
-        CliCommand::Messaging {
-            source_mode,
-            rest_url,
-            metrics_url,
-        } => {
-            let report = runtime.block_on(delivery_source_report(
-                &source_mode,
-                rest_url.as_deref(),
-                metrics_url.as_deref(),
-            ));
-            print_json(&report)
-        }
-        CliCommand::Capabilities => print_json(&capabilities_report()),
-        CliCommand::Channels {
-            slot_from,
-            slot_to,
-            endpoints,
-        } => {
-            let endpoints = endpoints.endpoints()?;
-            let report =
-                runtime.block_on(channel_scan(&endpoints.node_endpoint, slot_from, slot_to))?;
-            print_json(&report)
-        }
-        CliCommand::SpelIdl { idl } => {
-            let idl_json = read_idl(&idl)?;
-            print_json(&spel_idl_report(&idl_json)?)
-        }
-        CliCommand::Rpc {
-            endpoint,
-            method,
-            params,
-        } => {
-            let params = parse_rpc_params(params)?;
-            let report = runtime.block_on(raw_rpc_report(&endpoint, &method, params))?;
-            print_json(&report)
-        }
-        CliCommand::Wallet { command } => match command {
-            WalletCommand::Status(profile) => {
-                print_json(&local_wallet_profile_status(profile.value())?)
+                endpoints,
+            } => {
+                let endpoints = endpoints.endpoints()?;
+                Ok(CliInvocation::json(
+                    "blockchainBlocks",
+                    json!([endpoints.node_endpoint, slot_from, slot_to]),
+                ))
             }
-            WalletCommand::Accounts(profile) => {
-                print_json(&local_wallet_accounts(profile.value())?)
+            CliCommand::LogoscoreStatus => Ok(CliInvocation::json("logoscoreStatus", json!([]))),
+            CliCommand::SourcePolicy => Ok(CliInvocation::json("sourcePolicy", json!([]))),
+            CliCommand::Modules => Ok(CliInvocation::json("modules", json!([]))),
+            CliCommand::BlockchainModule { address } => Ok(CliInvocation::json(
+                "blockchainModuleReport",
+                json!([address.unwrap_or_default()]),
+            )),
+            CliCommand::Storage {
+                cid,
+                source_mode,
+                rest_url,
+                metrics_url,
+            } => Ok(CliInvocation::json(
+                "storageSourceReport",
+                json!([
+                    source_mode,
+                    rest_url.unwrap_or_default(),
+                    metrics_url.unwrap_or_default(),
+                    cid.unwrap_or_default(),
+                    false
+                ]),
+            )),
+            CliCommand::Messaging {
+                source_mode,
+                rest_url,
+                metrics_url,
+            } => Ok(CliInvocation::json(
+                "deliverySourceReport",
+                json!([
+                    source_mode,
+                    rest_url.unwrap_or_default(),
+                    metrics_url.unwrap_or_default()
+                ]),
+            )),
+            CliCommand::Capabilities => Ok(CliInvocation::json("capabilitiesReport", json!([]))),
+            CliCommand::Channels {
+                slot_from,
+                slot_to,
+                endpoints,
+            } => {
+                let endpoints = endpoints.endpoints()?;
+                Ok(CliInvocation::json(
+                    "channelScan",
+                    json!([endpoints.node_endpoint, slot_from, slot_to]),
+                ))
             }
+            CliCommand::SpelIdl { idl } => {
+                Ok(CliInvocation::json("spelIdl", json!([read_idl(&idl)?])))
+            }
+            CliCommand::Rpc {
+                endpoint,
+                method,
+                params,
+            } => Ok(CliInvocation::json(
+                "rawRpc",
+                json!([endpoint, method, parse_rpc_params(params)?]),
+            )),
+            CliCommand::Wallet { command } => command.invocation(),
+        }
+    }
+}
+
+impl WalletCommand {
+    fn invocation(self) -> Result<CliInvocation> {
+        match self {
+            WalletCommand::Status(profile) => Ok(CliInvocation::json(
+                "localWalletProfileStatus",
+                json!([profile.value()]),
+            )),
+            WalletCommand::Accounts(profile) => Ok(CliInvocation::json(
+                "localWalletAccounts",
+                json!([profile.value()]),
+            )),
             WalletCommand::CreateAccount {
                 profile,
                 privacy,
                 label,
-            } => print_json(&local_wallet_create_account(
-                profile.value(),
-                &privacy,
-                label.as_deref(),
-            )?),
+            } => Ok(CliInvocation::json(
+                "localWalletCreateAccount",
+                json!([
+                    profile.value(),
+                    privacy,
+                    label.unwrap_or_default(),
+                    ConfirmationPolicy::WalletCreateAccount.token()
+                ]),
+            )),
             WalletCommand::Send {
                 profile,
                 from,
@@ -528,38 +579,49 @@ pub fn run(args: CliArgs) -> Result<()> {
                 to_keys,
                 to_identifier,
                 amount,
-            } => print_json(&local_wallet_send_transaction(
-                profile.value(),
-                serde_json::json!({
-                    "from": from,
-                    "to": to.unwrap_or_default(),
-                    "to_npk": to_npk.unwrap_or_default(),
-                    "to_vpk": to_vpk.unwrap_or_default(),
-                    "to_keys": to_keys.unwrap_or_default(),
-                    "to_identifier": to_identifier.unwrap_or_default(),
-                    "amount": amount,
-                }),
-            )?),
-            WalletCommand::Incoming(profile) => {
-                print_json(&local_wallet_sync_private(profile.value())?)
-            }
-            WalletCommand::Command { profile, args } => {
-                print_json(&local_wallet_command(profile.value(), args)?)
-            }
+            } => Ok(CliInvocation::json(
+                "localWalletSendTransaction",
+                json!([
+                    profile.value(),
+                    {
+                        "from": from,
+                        "to": to.unwrap_or_default(),
+                        "to_npk": to_npk.unwrap_or_default(),
+                        "to_vpk": to_vpk.unwrap_or_default(),
+                        "to_keys": to_keys.unwrap_or_default(),
+                        "to_identifier": to_identifier.unwrap_or_default(),
+                        "amount": amount,
+                    },
+                    ConfirmationPolicy::WalletSendTransaction.token()
+                ]),
+            )),
+            WalletCommand::Incoming(profile) => Ok(CliInvocation::json(
+                "localWalletSyncPrivate",
+                json!([
+                    profile.value(),
+                    ConfirmationPolicy::WalletSyncPrivate.token()
+                ]),
+            )),
+            WalletCommand::Command { profile, args } => Ok(CliInvocation::json(
+                "localWalletCommand",
+                json!([
+                    profile.value(),
+                    args,
+                    ConfirmationPolicy::WalletCommand.token()
+                ]),
+            )),
             WalletCommand::BedrockBalance {
                 public_key,
                 tip,
                 endpoints,
             } => {
                 let endpoints = endpoints.endpoints()?;
-                let balance = runtime.block_on(bedrock_wallet_balance(
-                    &endpoints.node_endpoint,
-                    &public_key,
-                    tip.as_deref(),
-                ))?;
-                print_json(&balance)
+                Ok(CliInvocation::json(
+                    "bedrockWalletBalance",
+                    json!([endpoints.node_endpoint, public_key, tip.unwrap_or_default()]),
+                ))
             }
-        },
+        }
     }
 }
 
@@ -580,6 +642,13 @@ fn maybe_bootstrap_default_local_indexer(endpoint: &str) -> Result<()> {
         bootstrap_default_local_indexer()?;
     }
     Ok(())
+}
+
+fn optional_idl_json(value: Option<&str>) -> Result<String> {
+    match value {
+        Some(value) => read_idl(value),
+        None => Ok(String::new()),
+    }
 }
 
 fn parse_rpc_params(params: Option<String>) -> Result<Value> {
@@ -633,9 +702,125 @@ fn print_json(value: &impl serde::Serialize) -> Result<()> {
     print_line(serde_json::to_string_pretty(value)?)
 }
 
+fn print_text_value(value: &Value) -> Result<()> {
+    if let Some(value) = value.as_str() {
+        return print_line(value);
+    }
+    print_line(value)
+}
+
 fn print_line(value: impl std::fmt::Display) -> Result<()> {
     let stdout = io::stdout();
     let mut stdout = stdout.lock();
     writeln!(stdout, "{value}")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use anyhow::ensure;
+
+    use super::*;
+
+    #[test]
+    fn account_command_plans_shared_account_operation_with_bootstrap() -> Result<()> {
+        let invocation = CliCommand::Account {
+            account_id: "account-1".to_owned(),
+            idl: None,
+            idl_account: Some("Vault".to_owned()),
+            endpoints: EndpointArgs {
+                profile: None,
+                sequencer_url: Some("https://sequencer.invalid".to_owned()),
+                indexer_url: Some("http://127.0.0.1:8779".to_owned()),
+                node_url: None,
+            },
+        }
+        .invocation()?;
+
+        ensure!(invocation.method == "account", "unexpected method");
+        ensure!(
+            invocation.output == CliOutput::Json,
+            "unexpected output mode: {:?}",
+            invocation.output
+        );
+        ensure!(
+            invocation.bootstrap_indexer_endpoint.as_deref() == Some("http://127.0.0.1:8779"),
+            "unexpected bootstrap endpoint"
+        );
+        ensure!(
+            invocation.args
+                == json!([
+                    "https://sequencer.invalid",
+                    "http://127.0.0.1:8779",
+                    "account-1",
+                    "",
+                    "Vault"
+                ]),
+            "unexpected args: {}",
+            invocation.args
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn decode_instruction_command_plans_runtime_decode_method() -> Result<()> {
+        let invocation = CliCommand::DecodeInstruction {
+            program_id: "program-1".to_owned(),
+            words: "1, 2 3".to_owned(),
+            idl: "{\"name\":\"Demo\"}".to_owned(),
+            accounts: Some("acct-1, acct-2".to_owned()),
+        }
+        .invocation()?;
+
+        ensure!(
+            invocation.method == "decodeInstruction",
+            "unexpected method"
+        );
+        ensure!(
+            invocation.args
+                == json!([
+                    "program-1",
+                    [1, 2, 3],
+                    "{\"name\":\"Demo\"}",
+                    ["acct-1", "acct-2"]
+                ]),
+            "unexpected args: {}",
+            invocation.args
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn wallet_send_command_uses_shared_confirmation_token() -> Result<()> {
+        let invocation = WalletCommand::Send {
+            profile: WalletProfileArgs {
+                wallet_binary: Some("wallet".to_owned()),
+                wallet_home: Some("/tmp/wallet".to_owned()),
+                network_profile: Some("local".to_owned()),
+            },
+            from: "acct-1".to_owned(),
+            to: Some("acct-2".to_owned()),
+            to_npk: None,
+            to_vpk: None,
+            to_keys: None,
+            to_identifier: None,
+            amount: "1".to_owned(),
+        }
+        .invocation()?;
+
+        ensure!(
+            invocation.method == "localWalletSendTransaction",
+            "unexpected method"
+        );
+        ensure!(
+            invocation.args.pointer("/2").and_then(Value::as_str)
+                == Some(ConfirmationPolicy::WalletSendTransaction.token()),
+            "unexpected confirmation token"
+        );
+        ensure!(
+            invocation.args.pointer("/1/from").and_then(Value::as_str) == Some("acct-1"),
+            "unexpected sender"
+        );
+        Ok(())
+    }
 }

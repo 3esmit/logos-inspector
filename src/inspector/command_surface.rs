@@ -1,4 +1,4 @@
-use anyhow::{Result, bail};
+use anyhow::Result;
 use serde_json::{Value, json};
 use tokio::runtime::Runtime;
 
@@ -18,7 +18,6 @@ pub(crate) struct DispatchContext<'a> {
 enum InspectorCommand {
     Operation(OperationBridgeCommand),
     Runtime(RuntimeMethod),
-    CapabilitiesReport,
     CallModule,
 }
 
@@ -38,9 +37,6 @@ pub(crate) fn dispatch_inspector_command(
         InspectorCommand::Runtime(method) => {
             runtime_methods::handle(context.runtime, method, args).map(Some)
         }
-        InspectorCommand::CapabilitiesReport => {
-            bail!("capability_module does not expose Inspector capability listing")
-        }
         InspectorCommand::CallModule => {
             let args = Args::new(args)?;
             let module = args.string(0, "module name")?;
@@ -59,7 +55,6 @@ fn inspector_command(method: &str) -> Option<InspectorCommand> {
         return Some(InspectorCommand::Runtime(method));
     }
     match method {
-        "capabilitiesReport" => Some(InspectorCommand::CapabilitiesReport),
         "callModule" => Some(InspectorCommand::CallModule),
         _ => None,
     }
@@ -109,7 +104,7 @@ mod tests {
                     .iter()
                     .map(|method| method.as_str()),
             )
-            .chain(["capabilitiesReport", "callModule"])
+            .chain(["callModule"])
         {
             if !names.insert(method) {
                 bail!("duplicate inspector method `{method}`");

@@ -75,6 +75,7 @@ pub(super) async fn execute_node_operation(
         OperationExecutor::BlockchainTransaction => {
             chain::execute_blockchain_transaction(&request).await
         }
+        OperationExecutor::Health => chain::execute_execution_health(&request).await,
         OperationExecutor::Head => chain::execute_execution_head(&request).await,
         OperationExecutor::Programs => chain::execute_programs(&request).await,
         OperationExecutor::Block => chain::execute_sequencer_block(&request).await,

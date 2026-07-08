@@ -22,6 +22,18 @@ pub(crate) async fn read_response_text(
     Ok(text)
 }
 
+pub(crate) async fn read_response_json(
+    request: reqwest::RequestBuilder,
+    label: &str,
+    body_context: &'static str,
+    invalid_context: &'static str,
+    allow_no_content: bool,
+    empty_as_null: bool,
+) -> Result<Value> {
+    let text = read_response_text(request, label, body_context, allow_no_content).await?;
+    parse_json_body(&text, invalid_context, empty_as_null)
+}
+
 pub(crate) async fn read_response_body_text(
     response: Response,
     body_context: &'static str,

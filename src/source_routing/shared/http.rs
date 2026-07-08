@@ -5,7 +5,7 @@ use reqwest::{Method, Url, header};
 use serde_json::{Value, json};
 use tokio_util::io::ReaderStream;
 
-use crate::{parse_json_body, read_response_bytes, read_response_text};
+use crate::support::http_response::{read_response_bytes, read_response_json, read_response_text};
 
 use crate::source_routing::selection::DeliveryStoreQuery;
 
@@ -138,8 +138,19 @@ pub(crate) fn delivery_store_query_url(
 }
 
 pub(crate) async fn raw_http_json_url(url: &str) -> Result<Value> {
-    let text = send_text(reqwest::Client::new().get(url), url).await?;
-    parse_json_body(&text, "invalid JSON response", true)
+    read_response_json(
+        reqwest::Client::new().get(url),
+        url,
+        "failed to read http response body",
+        "invalid JSON response",
+        true,
+        true,
+    )
+    .await
+}
+
+pub(crate) async fn raw_http_text_url(url: &str) -> Result<String> {
+    send_text(reqwest::Client::new().get(url), url).await
 }
 
 pub(crate) async fn rest_json_request(
@@ -153,8 +164,15 @@ pub(crate) async fn rest_json_request(
     if let Some(body) = body {
         request = request.json(&body);
     }
-    let text = send_text(request, &url).await?;
-    parse_json_body(&text, "invalid JSON response", false)
+    read_response_json(
+        request,
+        &url,
+        "failed to read http response body",
+        "invalid JSON response",
+        true,
+        false,
+    )
+    .await
 }
 
 pub(crate) async fn rest_empty_request(

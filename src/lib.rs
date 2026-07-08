@@ -1,4 +1,5 @@
 pub mod blockchain;
+pub mod cli;
 pub mod decode;
 pub mod inspection {
     pub mod l1 {
@@ -29,7 +30,7 @@ pub mod inspection {
 mod inspector {
     pub mod bridge;
 
-    mod command_surface;
+    pub(crate) mod command_surface;
     pub(crate) mod commands;
     pub(crate) mod value;
 }
@@ -122,10 +123,7 @@ pub use source_routing::{
 };
 pub use support::entity_id::normalize_program_id_hex;
 pub(crate) use support::entity_id::{normalize_account_id_text, parse_account_id, parse_hash};
-pub(crate) use support::http_response::{
-    expect_success_response, parse_json_body, read_response_body_text, read_response_bytes,
-    read_response_text, response_excerpt,
-};
+pub(crate) use support::http_response::{expect_success_response, response_excerpt};
 pub(crate) use support::json_value::{enum_payload, value_list_strings, value_to_string};
 pub use wallet::{
     LOCAL_WALLET_HOME_ENV, LocalWalletAccountRow, LocalWalletAccountsReport,

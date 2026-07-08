@@ -3,6 +3,7 @@ use serde_json::Value;
 
 use crate::{
     TransactionSummary, decode_account_data_hex_with_idl, decode_event_data_hex_with_idl,
+    decode_instruction_words_with_idl,
     idl_decode::{
         ProgramDecodeCandidate,
         resolve_account_decode_session as resolve_account_decode_session_report,
@@ -72,6 +73,28 @@ pub(super) fn resolve_transaction_decode_session(args: Value) -> Result<Value> {
         &summary,
         &candidates,
     ))
+}
+
+pub(super) fn decode_instruction(args: Value) -> Result<Value> {
+    let args = Args::new(args)?;
+    let words: Vec<u32> = serde_json::from_value(
+        args.value(1)
+            .cloned()
+            .context("instruction words are required")?,
+    )
+    .context("failed to parse instruction words")?;
+    let accounts: Vec<String> = serde_json::from_value(
+        args.value(3)
+            .cloned()
+            .unwrap_or_else(|| Value::Array(Vec::new())),
+    )
+    .context("failed to parse instruction accounts")?;
+    to_value(decode_instruction_words_with_idl(
+        args.string(2, "IDL JSON")?,
+        args.string(0, "program id")?,
+        &words,
+        &accounts,
+    )?)
 }
 
 pub(super) fn decode_event(args: Value) -> Result<Value> {

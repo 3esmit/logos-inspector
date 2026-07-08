@@ -1,7 +1,8 @@
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::{ProbeReport, network::NetworkProfile};
+use super::{NetworkProfile, network_profiles};
+use crate::ProbeReport;
 
 pub const TESTNET_SEQUENCER_ENDPOINT: &str = "https://testnet.lez.logos.co/";
 pub const LOCAL_SEQUENCER_ENDPOINT: &str = "http://127.0.0.1:3040/";
@@ -734,7 +735,7 @@ pub fn default_endpoint_for_domain(domain: &str) -> &'static str {
 }
 
 #[must_use]
-pub fn source_policy_report(network_profiles: &[NetworkProfile]) -> SourcePolicyReport {
+pub fn source_policy_report() -> SourcePolicyReport {
     SourcePolicyReport {
         version: 2,
         defaults: SourcePolicyDefaults {
@@ -747,7 +748,7 @@ pub fn source_policy_report(network_profiles: &[NetworkProfile]) -> SourcePolicy
             storage_rest_endpoint: DEFAULT_STORAGE_REST_ENDPOINT,
             storage_metrics_endpoint: DEFAULT_STORAGE_METRICS_ENDPOINT,
         },
-        network_profiles: network_profiles.to_vec(),
+        network_profiles: network_profiles().to_vec(),
         source_modes: SourceModeFamilies {
             core: CORE_SOURCE_MODES,
             delivery: DELIVERY_SOURCE_MODES,
@@ -1568,7 +1569,7 @@ mod tests {
 
     #[test]
     fn source_policy_report_exposes_labels_and_adapter_facts() {
-        let policy = source_policy_report(&[]);
+        let policy = source_policy_report();
         let delivery_rest = policy
             .source_modes
             .delivery
