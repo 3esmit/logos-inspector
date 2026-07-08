@@ -1,0 +1,51 @@
+{
+  "circuits": {
+    "repo": "logos-blockchain/logos-blockchain-circuits",
+    "release": "v0.5.3",
+    "targets": {
+      "x86_64-linux": {
+        "os": "linux",
+        "arch": "x86_64",
+        "hash": "sha256-2/Fw6ko+MCO2Paiw4zUQ1eacjvtPGP2n53RL39Ibntc="
+      },
+      "aarch64-linux": {
+        "os": "linux",
+        "arch": "aarch64",
+        "hash": "sha256-5779U71gejCEOmWToziHLyh3n/DVTyEemsbMG+HbJJM="
+      },
+      "aarch64-darwin": {
+        "os": "macos",
+        "arch": "aarch64",
+        "hash": "sha256-WFKsOEx93MIT/+l8gVQpTMoAwMjMTIHD1FzL/+AFcXA="
+      }
+    }
+  },
+  "rapidsnark": {
+    "version": "0.0.8",
+    "cargoRev": "e91187f8ccb5bbfc7bb00dac88169112428da78f",
+    "targets": {
+      "x86_64-linux": {
+        "url": "https://github.com/logos-blockchain/logos-blockchain-rust-rapidsnark/releases/download/rapidsnark-pic-v0.0.8/rapidsnark-linux-x86_64-pic-v0.0.8.zip",
+        "hash": "sha256-88+TkECQYCKBN0WbYLRB+qi6TEhbjVfrpCqlSgm0DR8="
+      },
+      "aarch64-linux": {
+        "url": "https://github.com/logos-blockchain/logos-blockchain-rust-rapidsnark/releases/download/rapidsnark-pic-v0.0.8/rapidsnark-linux-aarch64-pic-v0.0.8.zip",
+        "hash": "sha256-kcSITwWZjEv9gadzYL7LiG+DVtEEFbQJuhd/LTyOxJU="
+      },
+      "aarch64-darwin": {
+        "url": "https://github.com/iden3/rapidsnark/releases/download/v0.0.8/rapidsnark-macOS-arm64-v0.0.8.zip",
+        "hash": "sha256-DmhMmMq7/HKsx+Iz4rdsKYBDEwqwMZALo+ZJePJvAJg="
+      },
+      "x86_64-darwin": {
+        "url": "https://github.com/iden3/rapidsnark/releases/download/v0.0.8/rapidsnark-macOS-x86_64-v0.0.8.zip",
+        "hash": "sha256-/GCXzzT5mkBeXkVQAGEF9OmJXXcYz4KoXNzjFvhSgNU="
+      }
+    }
+  },
+  "lez": {
+    "repo": "logos-blockchain/logos-execution-zone",
+    "cargoTag": "v0.2.0-rc6",
+    "revision": "e37876a64028a335eb693198a1ed6a0e875ec5b4",
+    "sourceHash": "sha256-ltLcysXUdVUXAe25Tl8x7e7ZsTzj1sHlyS3glp97TAo="
+  }
+}

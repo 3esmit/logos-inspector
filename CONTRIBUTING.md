@@ -5,10 +5,7 @@
 Run these checks before opening a pull request:
 
 ```bash
-cargo fmt --all -- --check
-RISC0_SKIP_BUILD=1 cargo check --workspace
-node --check ui/server.js
-node --check ui/public/app.js
+python3 scripts/check-build-pipeline.py local
 ```
 
 ## Guidelines
@@ -19,4 +16,3 @@ node --check ui/public/app.js
   credentials, or generated build outputs.
 - Prefer read-only inspection features in the UI. Transaction submission
   helpers belong in the CLI and must be explicit.
-

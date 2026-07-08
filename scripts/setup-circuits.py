@@ -11,25 +11,38 @@ import urllib.request
 from pathlib import Path, PurePosixPath
 from typing import Optional
 
-
-REPO = "logos-blockchain/logos-blockchain-circuits"
-DEFAULT_VERSION = "v0.5.3"
+from build_artifacts import (
+    circuit_artifact_name,
+    circuit_artifact_url,
+    circuit_target_by_platform,
+    circuits_release,
+    load_catalog,
+)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Install Logos blockchain circuits")
-    parser.add_argument("version", nargs="?", default=DEFAULT_VERSION)
+    parser.add_argument("version", nargs="?")
     parser.add_argument(
         "install_dir",
         nargs="?",
-        default=str(Path.home() / ".logos-blockchain-circuits"),
+    )
+    parser.add_argument(
+        "--install-dir",
+        dest="install_dir_option",
+        help="installation directory; keeps version optional",
     )
     args = parser.parse_args()
 
-    target = current_target()
-    artifact = f"logos-blockchain-circuits-{args.version}-{target}.tar.gz"
-    url = f"https://github.com/{REPO}/releases/download/{args.version}/{artifact}"
-    install_dir = Path(args.install_dir).expanduser().resolve()
+    catalog = load_catalog()
+    release = args.version or circuits_release(catalog)
+    target = current_target(catalog)
+    artifact = circuit_artifact_name(release, target)
+    url = circuit_artifact_url(catalog, release, target)
+    install_dir_arg = args.install_dir_option or args.install_dir or str(
+        Path.home() / ".logos-blockchain-circuits"
+    )
+    install_dir = Path(install_dir_arg).expanduser().resolve()
 
     with tempfile.TemporaryDirectory(prefix="logos-circuits-") as tmp:
         archive = Path(tmp) / artifact
@@ -41,14 +54,14 @@ def main() -> int:
         install_dir.mkdir(parents=True, exist_ok=True)
         extract_archive(archive, install_dir)
 
-    print(f"installed {args.version} at {install_dir}")
+    print(f"installed {release} at {install_dir}")
     print(f"LOGOS_BLOCKCHAIN_CIRCUITS={install_dir}")
     print(f"POSIX: export LOGOS_BLOCKCHAIN_CIRCUITS={install_dir}")
     print(f"PowerShell: $env:LOGOS_BLOCKCHAIN_CIRCUITS='{install_dir}'")
     return 0
 
 
-def current_target() -> str:
+def current_target(catalog: dict) -> dict[str, str]:
     system = platform.system().lower()
     machine = platform.machine().lower()
 
@@ -68,7 +81,7 @@ def current_target() -> str:
     else:
         raise SystemExit(f"unsupported architecture: {platform.machine()}")
 
-    return f"{os_name}-{arch}"
+    return circuit_target_by_platform(catalog, os_name, arch)
 
 
 def extract_archive(archive: Path, install_dir: Path) -> None:

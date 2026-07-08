@@ -4,14 +4,14 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from package_identity import PackageIdentity
+from build_artifacts import BuildArtifacts
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def main() -> int:
-    errors = PackageIdentity(ROOT).validate()
+    errors = BuildArtifacts(ROOT).validate()
     if errors:
         for error in errors:
             print(f"error: {error}", file=sys.stderr)
