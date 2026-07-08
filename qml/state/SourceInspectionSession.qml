@@ -45,7 +45,7 @@ QtObject {
     }
 
     function probeValue(method) {
-        return SourceDiagnostics.probeValue(model, moduleFamily(), method)
+        return SourceDiagnostics.probeValue(model, moduleFamily(), report(), method)
     }
 
     function probe(method) {

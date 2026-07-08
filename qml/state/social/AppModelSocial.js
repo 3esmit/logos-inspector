@@ -623,16 +623,39 @@ function applySharedIdlPolicy(root, accountId, entry) {
     if (policy === "disabled") {
         return false
     }
+    const acceptedEntry = acceptedSharedIdlEntryForAccount(root, accountId, entry)
+    if (!acceptedEntry) {
+        return false
+    }
     if (policy === "autoRegister") {
-        if (!idlEntryExists(root, entry.key)) {
-            root.registeredIdls.append(entry)
+        if (!idlEntryExists(root, acceptedEntry.key)) {
+            root.registeredIdls.append(acceptedEntry)
             root.saveIdlState()
         }
         root.sharedIdlRevision += 1
         return true
     }
-    storeSharedIdl(root, accountId, entry)
+    storeSharedIdl(root, accountId, acceptedEntry)
     return true
+}
+
+function acceptedSharedIdlEntryForAccount(root, accountId, entry) {
+    const account = String(accountId || "").trim()
+    if (!account.length || !entry) {
+        return null
+    }
+    const normalized = root.normalizedIdlEntry(entry, 0)
+    if (!normalized || String(normalized.source || "") !== "shared") {
+        return null
+    }
+    if (String(normalized.sharedAccountId || "") !== account) {
+        return null
+    }
+    if (!String(normalized.key || "").length || !String(normalized.json || "").length
+            || !String(normalized.programIdHex || "").length || !String(normalized.accountType || "").length) {
+        return null
+    }
+    return normalized
 }
 
 function idlEntryExists(root, key) {

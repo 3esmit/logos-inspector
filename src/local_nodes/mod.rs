@@ -58,6 +58,8 @@ mod tests {
             !action_engine::available_actions_for("default", None, false)
                 .contains(&NodeAction::NewNetwork)
         );
+        assert_eq!(NodeAction::NewNetwork.label(), "New Local Devnet");
+        assert_eq!(NodeAction::ResetNetwork.label(), "Reset Local Devnet");
     }
 
     #[test]

@@ -51,8 +51,12 @@ pub mod bridge {
     pub use crate::inspector::bridge::InspectorBridge;
 }
 
-pub mod idl_decode {
+pub mod program_decode {
     pub use crate::decode::*;
+}
+
+pub mod idl_decode {
+    pub use crate::program_decode::*;
 }
 
 pub mod local_indexer {

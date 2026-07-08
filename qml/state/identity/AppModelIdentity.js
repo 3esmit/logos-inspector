@@ -1,45 +1,9 @@
-.import "../../services/BridgeHelpers.js" as BridgeHelpers
-
-function loadIdlState(root) {
-    with (root) {
-        const response = bridge.callModule(inspectorModule, "loadIdlState", [])
-        idlStateLoaded = true
-        if (!response.ok || !response.value || typeof response.value !== "object") {
-            return
-        }
-
-        registeredIdls.clear()
-        const idls = Array.isArray(response.value.idls) ? response.value.idls : []
-        for (let i = 0; i < idls.length; ++i) {
-            const entry = root.normalizedIdlEntry(idls[i], registeredIdls.count)
-            if (entry !== null && entry.json.length) {
-                registeredIdls.append(entry)
-            }
-        }
-
-        accountIdlSelections = response.value.account_idl_selections && typeof response.value.account_idl_selections === "object"
-            ? response.value.account_idl_selections
-            : ({})
-        accountIdlSelectionRevision += 1
-    }
-}
-
 function saveIdlState(root) {
     with (root) {
         if (!idlStateLoaded) {
             return
         }
-        bridge.callModule(inspectorModule, "saveIdlState", [idlStatePayload()])
-    }
-}
-
-function idlStatePayload(root) {
-    with (root) {
-        return {
-            version: 1,
-            idls: registeredIdlEntries(),
-            account_idl_selections: accountIdlSelections || {}
-        }
+        bridge.callModule(inspectorModule, "saveIdlState", [root.idlStatePayload()])
     }
 }
 
@@ -210,9 +174,9 @@ function restoreSettingsFromStorage(root, cid, useWallet) {
             settingsBackupStatus = response.error || qsTr("Settings restore failed.")
             return false
         }
-        loadSettingsState()
-        loadIdlState()
-        loadWalletState()
+        root.loadSettingsState()
+        root.loadIdlState()
+        root.loadWalletState()
         settingsBackupCid = backupCid
         settingsRestoreCid = backupCid
         settingsBackupEncrypted = response.value && response.value.encrypted === true
@@ -634,109 +598,6 @@ function walletJsonText(value) {
         return JSON.stringify(value, null, 2)
     } catch (error) {
         return String(value || "")
-    }
-}
-
-function registeredIdlEntries(root) {
-    with (root) {
-        const rows = []
-        for (let i = 0; i < registeredIdls.count; ++i) {
-            rows.push(root.idlEntryAt(i))
-        }
-        return rows
-    }
-}
-
-function normalizedIdlEntry(root, entry, fallbackIndex) {
-    with (root) {
-        const row = entry || {}
-        const json = String(row.json || "")
-        const name = String(row.name || root.idlNameFromJson(json) || qsTr("IDL %1").arg(Number(fallbackIndex || 0) + 1))
-        const programId = String(row.programId || row.program_id || "")
-        const programIdHex = String(row.programIdHex || row.program_id_hex || root.canonicalProgramIdHex(programId))
-        return {
-            key: String(row.key || root.idlKey(name, programIdHex, json)),
-            name: name,
-            programId: programId,
-            programIdHex: programIdHex,
-            programBinary: String(row.programBinary || row.program_binary || ""),
-            json: json,
-            source: String(row.source || ""),
-            sharedTopic: String(row.sharedTopic || row.shared_topic || ""),
-            sharedIdentity: row.sharedIdentity || row.shared_identity || ({}),
-            sharedAccountId: String(row.sharedAccountId || row.shared_account_id || "")
-        }
-    }
-}
-
-function idlEntryAt(root, index) {
-    with (root) {
-        if (index < 0 || index >= registeredIdls.count) {
-            return { key: "", name: "", programId: "", programIdHex: "", programBinary: "", json: "" }
-        }
-        const row = registeredIdls.get(index)
-        return root.normalizedIdlEntry(row, index)
-    }
-}
-
-function idlNameFromJson(root, json) {
-    with (root) {
-        const parsed = BridgeHelpers.parseJson(String(json || ""))
-        return parsed.ok && parsed.value && parsed.value.name ? String(parsed.value.name) : ""
-    }
-}
-
-function idlKey(root, name, programId, json) {
-    with (root) {
-        const text = String(name || "") + "\n" + String(programId || "") + "\n" + String(json || "")
-        let hash = 2166136261
-        for (let i = 0; i < text.length; ++i) {
-            hash ^= text.charCodeAt(i)
-            hash = Math.imul(hash, 16777619)
-        }
-        return (hash >>> 0).toString(16)
-    }
-}
-
-function idlEntryForKey(root, key) {
-    with (root) {
-        const text = String(key || "")
-        if (!text.length) {
-            return null
-        }
-        for (let i = 0; i < registeredIdls.count; ++i) {
-            const entry = root.idlEntryAt(i)
-            if (entry.key === text) {
-                return entry
-            }
-        }
-        return null
-    }
-}
-
-function idlEntriesForProgram(root, programId) {
-    with (root) {
-        const normalizedProgram = root.canonicalProgramIdHex(programId) || root.normalizedHexText(programId)
-        if (!normalizedProgram.length) {
-            return []
-        }
-        const entries = []
-        for (let i = 0; i < registeredIdls.count; ++i) {
-            const entry = root.idlEntryAt(i)
-            const entryProgram = String(entry.programIdHex || "") || root.canonicalProgramIdHex(entry.programId) || root.normalizedHexText(entry.programId)
-            if (entryProgram === normalizedProgram) {
-                entries.push(entry)
-            }
-        }
-        entries.sort(function (left, right) {
-            const leftShared = String(left.source || "") === "shared"
-            const rightShared = String(right.source || "") === "shared"
-            if (leftShared === rightShared) {
-                return 0
-            }
-            return leftShared ? 1 : -1
-        })
-        return entries
     }
 }
 

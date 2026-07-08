@@ -2,8 +2,9 @@ function probe(model, family, report, method) {
     return model.sourceProbeFact(report, method) || model.moduleProbe(family, method)
 }
 
-function probeValue(model, family, method) {
-    return model.moduleProbeValue(family, method)
+function probeValue(model, family, report, method) {
+    const value = model.reportProbeValue(report, method)
+    return value !== null ? value : model.moduleProbeValue(family, method)
 }
 
 function probeKnown(page, family, method) {
@@ -45,6 +46,15 @@ function failedProbeCount(report) {
     if (!report) {
         return failed
     }
+    const facts = Array.isArray(report.probe_facts) ? report.probe_facts : []
+    if (facts.length > 0) {
+        for (let i = 0; i < facts.length; ++i) {
+            if (facts[i] && facts[i].ok === false) {
+                failed += 1
+            }
+        }
+        return failed
+    }
     if (report.module_info && report.module_info.ok === false) {
         failed += 1
     }
@@ -74,8 +84,10 @@ function evidenceRows(page, emptyMessage) {
     }
     const report = page.report()
     const probes = report && Array.isArray(report.probes) ? report.probes : []
-    for (let i = 0; i < probes.length; ++i) {
-        rows.push(page.probeRow(probes[i], qsTr("Probe")))
+    const facts = report && Array.isArray(report.probe_facts) ? report.probe_facts : []
+    const evidence = probes.length > 0 ? probes : facts
+    for (let i = 0; i < evidence.length; ++i) {
+        rows.push(page.probeRow(evidence[i], qsTr("Probe")))
     }
     if (rows.length === 0) {
         rows.push(page.statusRow(qsTr("Probe evidence"), qsTr("empty"), emptyMessage, "neutral"))

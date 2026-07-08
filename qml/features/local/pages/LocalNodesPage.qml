@@ -67,7 +67,7 @@ ColumnLayout {
 
             StatusChip {
                 theme: root.theme
-                label: qsTr("Active")
+                label: qsTr("Active Devnet")
                 value: root.shortText(root.activeNetworkId(), 24)
                 detail: root.activeNetworkId()
                 tone: root.activeNetworkId().length ? "success" : "warning"
@@ -119,7 +119,7 @@ ColumnLayout {
     Panel {
         visible: root.model.localMode()
         theme: root.theme
-        title: qsTr("Local Network")
+        title: qsTr("Local Devnet")
 
         ColumnLayout {
             spacing: root.theme.gapSmall
@@ -133,7 +133,7 @@ ColumnLayout {
 
                 FieldRow {
                     theme: root.theme
-                    label: qsTr("Network ID")
+                    label: qsTr("Devnet ID")
                     sourceText: root.newNetworkId
                     syncSourceText: true
                     placeholderText: qsTr("devnet")
@@ -474,17 +474,17 @@ ColumnLayout {
     function confirmMessage() {
         const action = root.pendingAction
         if (action === "delete_network") {
-            return qsTr("This stops all local nodes in %1 and removes the managed workspace plus node data.").arg(root.activeNetworkId())
+            return qsTr("This stops all local nodes in Local Devnet %1 and removes the managed workspace plus node data.").arg(root.activeNetworkId())
         }
         if (action === "reset_network") {
-            return qsTr("This stops all local nodes in %1, deletes node databases, and regenerates configs in the same workspace.").arg(root.activeNetworkId())
+            return qsTr("This stops all local nodes in Local Devnet %1, deletes node databases, and regenerates configs in the same workspace.").arg(root.activeNetworkId())
         }
         if (action === "new_network") {
-            const target = root.pendingNetworkId.length ? root.pendingNetworkId : qsTr("a generated devnet")
-            return qsTr("This creates %1 under the managed local nodes workspace and makes it active.").arg(target)
+            const target = root.pendingNetworkId.length ? root.pendingNetworkId : qsTr("a generated Local Devnet")
+            return qsTr("This creates %1 under the Managed Workspace Root and sets it as Active Devnet.").arg(target)
         }
         if (action === "load_network") {
-            return qsTr("This loads the managed local network manifest from %1 and makes it active.").arg(root.pendingWorkspace)
+            return qsTr("This loads the Local Devnet manifest from %1 and sets it as Active Devnet.").arg(root.pendingWorkspace)
         }
         const node = root.model.nodeByKind(root.pendingNode) || {}
         if (action === "purge") {

@@ -38,7 +38,7 @@ QtObject {
     }
 
     function refreshDevnets() {
-        return gateway.request("localDevnetList", [networkProfile], qsTr("Local networks"), false, function (response) {
+        return gateway.request("localDevnetList", [networkProfile], qsTr("Local Devnets"), false, function (response) {
             if (response.ok) {
                 devnets = response.value && Array.isArray(response.value.devnets) ? response.value.devnets : []
             }
@@ -151,13 +151,13 @@ QtObject {
         case "uninstall":
             return qsTr("Uninstall")
         case "new_network":
-            return qsTr("New network")
+            return qsTr("New Local Devnet")
         case "load_network":
-            return qsTr("Load network")
+            return qsTr("Load Local Devnet")
         case "delete_network":
-            return qsTr("Delete network")
+            return qsTr("Delete Local Devnet")
         case "reset_network":
-            return qsTr("Reset network")
+            return qsTr("Reset Local Devnet")
         case "start":
             return qsTr("Start")
         case "stop":
@@ -213,6 +213,9 @@ QtObject {
 
     function localMode() {
         const reportValue = report || null
+        if (!reportValue) {
+            return false
+        }
         const mode = reportValue ? String(reportValue.mode || "") : ""
         if (mode.length) {
             return mode === "localnet"
@@ -221,11 +224,11 @@ QtObject {
         if (profile.length) {
             return profile === "local"
         }
-        return networkProfile === "local"
+        return false
     }
 
     function modeLabel() {
-        return localMode() ? qsTr("Localnet") : qsTr("Public/Testnet")
+        return localMode() ? qsTr("Local Devnet") : qsTr("External Network")
     }
 
     function summaryText() {

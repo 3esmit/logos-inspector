@@ -192,6 +192,24 @@ pub enum SourceProbeKey {
     StorageVersion,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SourceCapabilityKey {
+    Identity,
+    Space,
+    ManifestListing,
+    Debug,
+    Metrics,
+    CidExists,
+    Health,
+    Relay,
+    Store,
+    Filter,
+    Lightpush,
+    NetworkMonitor,
+    RestApi,
+    ModuleApi,
+}
+
 impl SourceProbeKey {
     #[must_use]
     pub fn as_str(self) -> &'static str {
@@ -228,6 +246,48 @@ impl SourceProbeKey {
             Self::StorageSpace => "space",
             Self::StorageSpr => "spr",
             Self::StorageVersion => "version",
+        }
+    }
+}
+
+impl SourceCapabilityKey {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Identity => "identity",
+            Self::Space => "space",
+            Self::ManifestListing => "manifest_listing",
+            Self::Debug => "debug",
+            Self::Metrics => "metrics",
+            Self::CidExists => "cid_exists",
+            Self::Health => "health",
+            Self::Relay => "relay",
+            Self::Store => "store",
+            Self::Filter => "filter",
+            Self::Lightpush => "lightpush",
+            Self::NetworkMonitor => "network_monitor",
+            Self::RestApi => "rest_api",
+            Self::ModuleApi => "module_api",
+        }
+    }
+
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Identity => "Identity",
+            Self::Space => "Repository space",
+            Self::ManifestListing => "Manifest listing",
+            Self::Debug => "Debug topology",
+            Self::Metrics => "Metrics",
+            Self::CidExists => "CID existence",
+            Self::Health => "Health endpoint",
+            Self::Relay => "Relay",
+            Self::Store => "Store",
+            Self::Filter => "Filter",
+            Self::Lightpush => "Lightpush",
+            Self::NetworkMonitor => "Delivery Network Monitor",
+            Self::RestApi => "REST API",
+            Self::ModuleApi => "Module API",
         }
     }
 }
@@ -452,16 +512,16 @@ const DELIVERY_SOURCE_MODES: &[SourceModePolicy] = &[
         key: "network-monitor",
         aliases: &[
             "network-monitor",
-            "network monitor",
+            "delivery-network-monitor",
+            "delivery network monitor",
             "discovery-crawler",
             "discovery crawler",
-            "crawler",
         ],
         effective: "network-monitor",
-        label_key: "network_monitor",
-        label: "Network monitor",
-        source_label: "Network monitor",
-        summary: "Inspect fleet topology from allpeersinfo, contenttopics, and metrics",
+        label_key: "delivery_network_monitor",
+        label: "Delivery Network Monitor",
+        source_label: "Delivery Network Monitor",
+        summary: "Inspect Delivery fleet topology from allpeersinfo, contenttopics, and metrics",
         implemented: true,
         adapter: DELIVERY_MONITOR_ADAPTER,
     },
@@ -1033,45 +1093,39 @@ fn storage_source_capability_facts(
 ) -> Vec<SourceCapabilityFact> {
     let mut facts = vec![
         any_probe_fact(
-            "identity",
-            "Identity",
+            SourceCapabilityKey::Identity,
             probe_facts,
             &[SourceProbeKey::StoragePeerId, SourceProbeKey::StorageSpr],
         ),
         any_probe_fact(
-            "space",
-            "Repository space",
+            SourceCapabilityKey::Space,
             probe_facts,
             &[SourceProbeKey::StorageSpace],
         ),
         any_probe_fact(
-            "manifest_listing",
-            "Manifest listing",
+            SourceCapabilityKey::ManifestListing,
             probe_facts,
             &[SourceProbeKey::StorageManifests],
         ),
         any_probe_fact(
-            "debug",
-            "Debug topology",
+            SourceCapabilityKey::Debug,
             probe_facts,
             &[SourceProbeKey::StorageDebug],
         ),
         storage_metrics_fact(probe_facts),
     ];
     if let Some(probe) = source_probe_fact(probe_facts, SourceProbeKey::StorageExists) {
-        facts.push(probe_fact("cid_exists", "CID existence", probe));
+        facts.push(probe_fact(SourceCapabilityKey::CidExists, probe));
     }
     if kind == StorageSourceReportKind::Rest {
-        facts.push(SourceCapabilityFact::available(
-            "rest_api",
-            "REST API",
+        facts.push(capability_available(
+            SourceCapabilityKey::RestApi,
             "REST probes available",
             None,
         ));
     } else if kind == StorageSourceReportKind::Module {
-        facts.push(SourceCapabilityFact::available(
-            "module_api",
-            "Module API",
+        facts.push(capability_available(
+            SourceCapabilityKey::ModuleApi,
             "LogosCore storage module available",
             None,
         ));
@@ -1085,8 +1139,7 @@ fn delivery_source_capability_facts(
 ) -> Vec<SourceCapabilityFact> {
     let mut facts = vec![
         any_probe_fact(
-            "identity",
-            "Identity",
+            SourceCapabilityKey::Identity,
             probe_facts,
             &[
                 SourceProbeKey::DeliveryPeerId,
@@ -1098,8 +1151,7 @@ fn delivery_source_capability_facts(
             ],
         ),
         any_probe_fact(
-            "health",
-            "Health endpoint",
+            SourceCapabilityKey::Health,
             probe_facts,
             &[
                 SourceProbeKey::DeliveryHealth,
@@ -1109,8 +1161,7 @@ fn delivery_source_capability_facts(
         ),
         delivery_metrics_fact(probe_facts),
         delivery_protocol_fact(
-            "relay",
-            "Relay",
+            SourceCapabilityKey::Relay,
             &[
                 "waku_relay",
                 "waku_pubsub",
@@ -1121,8 +1172,7 @@ fn delivery_source_capability_facts(
             probe_facts,
         ),
         delivery_protocol_fact(
-            "store",
-            "Store",
+            SourceCapabilityKey::Store,
             &[
                 "waku_store",
                 "waku_store_peers",
@@ -1133,22 +1183,19 @@ fn delivery_source_capability_facts(
             probe_facts,
         ),
         delivery_protocol_fact(
-            "filter",
-            "Filter",
+            SourceCapabilityKey::Filter,
             &["waku_filter", "waku_filter_peers", "waku_filter_requests"],
             &["filter"],
             probe_facts,
         ),
         delivery_protocol_fact(
-            "lightpush",
-            "Lightpush",
+            SourceCapabilityKey::Lightpush,
             &["waku_lightpush", "waku_lightpush_peers", "lightpush"],
             &["lightpush"],
             probe_facts,
         ),
         any_probe_fact(
-            "network_monitor",
-            "Network monitor",
+            SourceCapabilityKey::NetworkMonitor,
             probe_facts,
             &[
                 SourceProbeKey::DeliveryAllPeersInfo,
@@ -1157,16 +1204,14 @@ fn delivery_source_capability_facts(
         ),
     ];
     if kind == DeliverySourceReportKind::Rest {
-        facts.push(SourceCapabilityFact::available(
-            "rest_api",
-            "REST API",
+        facts.push(capability_available(
+            SourceCapabilityKey::RestApi,
             "REST probes available",
             None,
         ));
     } else if kind == DeliverySourceReportKind::Module {
-        facts.push(SourceCapabilityFact::available(
-            "module_api",
-            "Module API",
+        facts.push(capability_available(
+            SourceCapabilityKey::ModuleApi,
             "LogosCore delivery module available",
             None,
         ));
@@ -1227,8 +1272,7 @@ fn source_report_error(module_info: &ProbeReport, probes: &[ProbeReport]) -> Opt
 }
 
 fn any_probe_fact(
-    key: &str,
-    label: &str,
+    key: SourceCapabilityKey,
     facts: &[SourceProbeFact],
     probe_keys: &[SourceProbeKey],
 ) -> SourceCapabilityFact {
@@ -1236,7 +1280,7 @@ fn any_probe_fact(
     for probe_key in probe_keys {
         if let Some(probe) = source_probe_fact(facts, *probe_key) {
             if probe.ok {
-                return probe_fact(key, label, probe);
+                return probe_fact(key, probe);
             }
             if fallback.is_none() {
                 fallback = Some(probe);
@@ -1244,18 +1288,17 @@ fn any_probe_fact(
         }
     }
     fallback.map_or_else(
-        || SourceCapabilityFact::unavailable(key, label, "not observed"),
-        |probe| probe_fact(key, label, probe),
+        || capability_unavailable(key, "not observed"),
+        |probe| probe_fact(key, probe),
     )
 }
 
-fn probe_fact(key: &str, label: &str, probe: &SourceProbeFact) -> SourceCapabilityFact {
+fn probe_fact(key: SourceCapabilityKey, probe: &SourceProbeFact) -> SourceCapabilityFact {
     if probe.ok {
-        SourceCapabilityFact::available(key, label, probe.evidence.clone(), probe.value.clone())
+        capability_available(key, probe.evidence.clone(), probe.value.clone())
     } else {
-        SourceCapabilityFact::unavailable(
+        capability_unavailable(
             key,
-            label,
             probe
                 .error
                 .clone()
@@ -1265,23 +1308,37 @@ fn probe_fact(key: &str, label: &str, probe: &SourceProbeFact) -> SourceCapabili
     }
 }
 
+fn capability_available(
+    key: SourceCapabilityKey,
+    evidence: impl Into<String>,
+    value: Option<Value>,
+) -> SourceCapabilityFact {
+    SourceCapabilityFact::available(key.as_str(), key.label(), evidence, value)
+}
+
+fn capability_unavailable(
+    key: SourceCapabilityKey,
+    evidence: impl Into<String>,
+) -> SourceCapabilityFact {
+    SourceCapabilityFact::unavailable(key.as_str(), key.label(), evidence)
+}
+
 fn storage_metrics_fact(facts: &[SourceProbeFact]) -> SourceCapabilityFact {
     let probe = source_probe_fact(facts, SourceProbeKey::StorageCollectMetrics);
     if storage_metrics_evidence_present(facts) {
-        return SourceCapabilityFact::available(
-            "metrics",
-            "Metrics",
+        return capability_available(
+            SourceCapabilityKey::Metrics,
             "OpenMetrics text observed",
             probe.and_then(|probe| probe.value.clone()),
         );
     }
     probe.map_or_else(
-        || SourceCapabilityFact::unavailable("metrics", "Metrics", "not observed"),
+        || capability_unavailable(SourceCapabilityKey::Metrics, "not observed"),
         |probe| {
             if probe.ok {
-                SourceCapabilityFact::unavailable("metrics", "Metrics", "metrics response empty")
+                capability_unavailable(SourceCapabilityKey::Metrics, "metrics response empty")
             } else {
-                probe_fact("metrics", "Metrics", probe)
+                probe_fact(SourceCapabilityKey::Metrics, probe)
             }
         },
     )
@@ -1291,43 +1348,40 @@ fn delivery_metrics_fact(facts: &[SourceProbeFact]) -> SourceCapabilityFact {
     let probe = source_probe_fact(facts, SourceProbeKey::DeliveryCollectOpenMetricsText)
         .or_else(|| source_probe_fact(facts, SourceProbeKey::DeliveryNodeInfoMetrics));
     if delivery_metrics_evidence_present(facts) {
-        return SourceCapabilityFact::available(
-            "metrics",
-            "Metrics",
+        return capability_available(
+            SourceCapabilityKey::Metrics,
             "known Waku metric family observed",
             probe.and_then(|probe| probe.value.clone()),
         );
     }
     probe.map_or_else(
-        || SourceCapabilityFact::unavailable("metrics", "Metrics", "not observed"),
+        || capability_unavailable(SourceCapabilityKey::Metrics, "not observed"),
         |probe| {
             if probe.ok {
-                SourceCapabilityFact::unavailable(
-                    "metrics",
-                    "Metrics",
+                capability_unavailable(
+                    SourceCapabilityKey::Metrics,
                     "no known Waku metric family observed",
                 )
             } else {
-                probe_fact("metrics", "Metrics", probe)
+                probe_fact(SourceCapabilityKey::Metrics, probe)
             }
         },
     )
 }
 
 fn delivery_protocol_fact(
-    key: &str,
-    label: &str,
+    key: SourceCapabilityKey,
     metric_needles: &[&str],
     protocol_needles: &[&str],
     facts: &[SourceProbeFact],
 ) -> SourceCapabilityFact {
     if metric_text_contains(facts, metric_needles) {
-        return SourceCapabilityFact::available(key, label, "metric family observed", None);
+        return capability_available(key, "metric family observed", None);
     }
     if protocol_health_contains(facts, protocol_needles) {
-        return SourceCapabilityFact::available(key, label, "protocol health observed", None);
+        return capability_available(key, "protocol health observed", None);
     }
-    SourceCapabilityFact::unavailable(key, label, "not observed")
+    capability_unavailable(key, "not observed")
 }
 
 fn storage_metrics_evidence_present(facts: &[SourceProbeFact]) -> bool {
@@ -1546,12 +1600,26 @@ mod tests {
     }
 
     #[test]
-    fn delivery_source_modes_keep_network_monitor_aliases() {
+    fn delivery_source_modes_scope_network_monitor_aliases() {
         assert_eq!(
             DeliverySourceMode::from_token("discovery crawler")
                 .effective()
                 .as_str(),
             "network-monitor"
+        );
+        assert_eq!(
+            DeliverySourceMode::from_token("delivery network monitor")
+                .effective()
+                .as_str(),
+            "network-monitor"
+        );
+        assert_eq!(
+            DeliverySourceMode::from_token("network monitor").as_str(),
+            "unsupported"
+        );
+        assert_eq!(
+            DeliverySourceMode::from_token("crawler").as_str(),
+            "unsupported"
         );
         assert!(DeliverySourceMode::is_source_token("direct waku rest"));
     }
@@ -1580,6 +1648,11 @@ mod tests {
             .storage
             .iter()
             .find(|mode| mode.key == "auto");
+        let delivery_network_monitor = policy
+            .source_modes
+            .delivery
+            .iter()
+            .find(|mode| mode.key == "network-monitor");
 
         assert_eq!(policy.version, 2);
         assert_eq!(
@@ -1597,6 +1670,54 @@ mod tests {
             Some("Auto: Standalone REST")
         );
         assert!(storage_auto.is_some_and(|mode| mode.adapter.supports_cid_probe));
+        assert_eq!(
+            delivery_network_monitor.map(|mode| mode.label),
+            Some("Delivery Network Monitor")
+        );
+        assert_eq!(
+            delivery_network_monitor.map(|mode| mode.source_label),
+            Some("Delivery Network Monitor")
+        );
+        assert!(delivery_network_monitor.is_some_and(|mode| {
+            !mode.aliases.contains(&"network monitor") && !mode.aliases.contains(&"crawler")
+        }));
+    }
+
+    #[test]
+    fn source_capability_key_keeps_wire_contract() {
+        let expected = [
+            (SourceCapabilityKey::Identity, "identity", "Identity"),
+            (SourceCapabilityKey::Space, "space", "Repository space"),
+            (
+                SourceCapabilityKey::ManifestListing,
+                "manifest_listing",
+                "Manifest listing",
+            ),
+            (SourceCapabilityKey::Debug, "debug", "Debug topology"),
+            (SourceCapabilityKey::Metrics, "metrics", "Metrics"),
+            (
+                SourceCapabilityKey::CidExists,
+                "cid_exists",
+                "CID existence",
+            ),
+            (SourceCapabilityKey::Health, "health", "Health endpoint"),
+            (SourceCapabilityKey::Relay, "relay", "Relay"),
+            (SourceCapabilityKey::Store, "store", "Store"),
+            (SourceCapabilityKey::Filter, "filter", "Filter"),
+            (SourceCapabilityKey::Lightpush, "lightpush", "Lightpush"),
+            (
+                SourceCapabilityKey::NetworkMonitor,
+                "network_monitor",
+                "Delivery Network Monitor",
+            ),
+            (SourceCapabilityKey::RestApi, "rest_api", "REST API"),
+            (SourceCapabilityKey::ModuleApi, "module_api", "Module API"),
+        ];
+
+        for (key, wire_key, label) in expected {
+            assert_eq!(key.as_str(), wire_key);
+            assert_eq!(key.label(), label);
+        }
     }
 
     #[test]
