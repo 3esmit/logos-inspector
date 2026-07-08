@@ -180,6 +180,51 @@ TestCase {
         compare(gateway.history.length, 0)
     }
 
+    function test_storage_dispatch_ack_and_module_terminal_share_history() {
+        gateway.requestResponses = ({
+            runtimeOperationStart: {
+                ok: true,
+                value: {
+                    operationId: "storage-upload-ack",
+                    domain: "storage",
+                    backend: "module",
+                    method: "storageUploadUrl",
+                    status: "completed",
+                    label: "Upload file",
+                    result: {
+                        dispatched: true,
+                        sessionId: "session-1",
+                        requestId: "request-1",
+                        path: "/tmp/file.bin"
+                    },
+                    error: ""
+                },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        state.startStorageOperation("storageUploadUrl", ["/tmp/file.bin", 65536], "Upload file")
+
+        compare(state.activeOperation.status, "running")
+        compare(state.operationLog.length, 1)
+
+        verify(state.applyStorageModuleEvent("storageUploadDone", [
+            JSON.stringify({ sessionId: "session-1", requestId: "request-1", success: true, cid: "z-done" })
+        ]))
+
+        compare(state.activeOperation.status, "completed")
+        compare(state.activeOperation.cid, "z-done")
+        compare(gateway.history.length, 1)
+        compare(state.operationLog.length, 2)
+
+        verify(!state.applyStorageModuleEvent("storageUploadDone", [
+            JSON.stringify({ sessionId: "session-1", requestId: "request-1", success: true, cid: "z-done" })
+        ]))
+        compare(gateway.history.length, 1)
+        compare(state.operationLog.length, 2)
+    }
+
     function test_terminal_operation_sets_result_and_history_once() {
         state.updateActiveOperation({
             operationId: "storage-download-1",
@@ -384,6 +429,7 @@ TestCase {
         compare(state.activeOperation.cid, "z-done")
         compare(state.lastOperation, "Complete")
         compare(gateway.history.length, 1)
+        compare(state.operationLog.length, 1)
 
         verify(!state.applyStorageModuleEvent("storageUploadDone", [
             JSON.stringify({ sessionId: "1", success: true, cid: "z-done", bytes: 8 })
