@@ -3,9 +3,10 @@ use std::sync::atomic::AtomicBool;
 use anyhow::Result;
 use serde_json::Value;
 
+use super::spec::OperationExecutor;
 use super::{
-    OperationDomain, RuntimeOperationRegistry, RuntimeOperationRequest, blockchain, delivery, lez,
-    local_nodes, storage, wallet,
+    RuntimeOperationRegistry, RuntimeOperationRequest, blockchain, delivery, lez, local_nodes,
+    storage, wallet,
 };
 
 pub(super) async fn execute_runtime_operation(
@@ -14,14 +15,14 @@ pub(super) async fn execute_runtime_operation(
     operation_id: &str,
     cancel_requested: &AtomicBool,
 ) -> Result<Value> {
-    match request.method().domain() {
-        OperationDomain::Storage => {
+    match request.method().executor() {
+        OperationExecutor::Storage => {
             storage::execute(&request, registry, operation_id, cancel_requested).await
         }
-        OperationDomain::Delivery => delivery::execute(&request).await,
-        OperationDomain::LocalNodes => local_nodes::execute(&request).await,
-        OperationDomain::Wallet => wallet::execute(&request).await,
-        OperationDomain::Blockchain => blockchain::execute(&request).await,
-        OperationDomain::Execution | OperationDomain::Indexer => lez::execute(&request).await,
+        OperationExecutor::Delivery => delivery::execute(&request).await,
+        OperationExecutor::LocalNodes => local_nodes::execute(&request).await,
+        OperationExecutor::Wallet => wallet::execute(&request).await,
+        OperationExecutor::Blockchain => blockchain::execute(&request).await,
+        OperationExecutor::Lez => lez::execute(&request).await,
     }
 }

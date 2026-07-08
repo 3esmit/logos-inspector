@@ -12,6 +12,16 @@ pub(crate) enum OperationDomain {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum OperationExecutor {
+    Storage,
+    Delivery,
+    LocalNodes,
+    Wallet,
+    Blockchain,
+    Lez,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OperationMethod {
     StorageManifests,
     StorageDownloadManifest,
@@ -75,6 +85,7 @@ pub(super) struct OperationDefinition {
     method: OperationMethod,
     name: &'static str,
     domain: OperationDomain,
+    executor: OperationExecutor,
     label: &'static str,
     uses_mutating_flag: bool,
     cancellable: bool,
@@ -92,6 +103,7 @@ impl OperationDefinition {
             method,
             name,
             domain,
+            executor: OperationExecutor::for_domain(domain),
             label,
             uses_mutating_flag: false,
             cancellable: false,
@@ -109,6 +121,7 @@ impl OperationDefinition {
             method,
             name,
             domain,
+            executor: OperationExecutor::for_domain(domain),
             label,
             uses_mutating_flag: true,
             cancellable: false,
@@ -127,6 +140,7 @@ impl OperationDefinition {
             method,
             name,
             domain,
+            executor: OperationExecutor::for_domain(domain),
             label,
             uses_mutating_flag: true,
             cancellable: true,
@@ -184,6 +198,19 @@ impl OperationDomain {
     }
 }
 
+impl OperationExecutor {
+    const fn for_domain(domain: OperationDomain) -> Self {
+        match domain {
+            OperationDomain::Storage => Self::Storage,
+            OperationDomain::Delivery => Self::Delivery,
+            OperationDomain::LocalNodes => Self::LocalNodes,
+            OperationDomain::Wallet => Self::Wallet,
+            OperationDomain::Blockchain => Self::Blockchain,
+            OperationDomain::Execution | OperationDomain::Indexer => Self::Lez,
+        }
+    }
+}
+
 impl OperationMethod {
     pub(crate) fn from_str(method: &str) -> Option<Self> {
         operation_definitions()
@@ -197,6 +224,10 @@ impl OperationMethod {
 
     pub(crate) fn domain(self) -> OperationDomain {
         operation_definition(self).domain
+    }
+
+    pub(super) fn executor(self) -> OperationExecutor {
+        operation_definition(self).executor
     }
 
     pub(crate) fn label(self) -> &'static str {
@@ -344,6 +375,32 @@ mod tests {
         }
         if storage_upload.exclusive_group().is_some() {
             bail!("storageUploadUrl should not own an exclusive group");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn operation_executor_is_owned_by_method_definition() -> Result<()> {
+        let cases = [
+            ("storageFetch", OperationExecutor::Storage),
+            ("deliverySend", OperationExecutor::Delivery),
+            ("localNodesAction", OperationExecutor::LocalNodes),
+            ("localWalletAccounts", OperationExecutor::Wallet),
+            ("blockchainBlock", OperationExecutor::Blockchain),
+            ("indexerStatus", OperationExecutor::Lez),
+            ("resolveLezTarget", OperationExecutor::Lez),
+        ];
+
+        for (method, executor) in cases {
+            let method = OperationMethod::from_str(method)
+                .with_context(|| format!("{method} should exist"))?;
+            if method.executor() != executor {
+                bail!(
+                    "unexpected executor for {}: {:?}",
+                    method.as_str(),
+                    method.executor()
+                );
+            }
         }
         Ok(())
     }

@@ -17,6 +17,7 @@ use super::model::{
 use super::paths::{path_is_inside, remove_dir_inside};
 use super::presentation;
 use super::process::{find_command, process_is_alive, stop_process};
+use super::workflow::{LocalNodeWorkflow, node_set_for_profile, normalized_profile};
 
 const STATE_FILE: &str = "local_nodes.json";
 const MANIFEST_FILE: &str = "local-network.json";
@@ -60,38 +61,13 @@ impl LocalNodeActionEngine {
         ConfirmationPolicy::LocalNodeAction.require(confirmation)?;
 
         let mut state = self.store.load()?;
-        let normalized_profile = normalized_profile(profile);
-        self.validate_request(normalized_profile, &request, &state)?;
+        let workflow = LocalNodeWorkflow::for_state(profile, &state);
+        workflow.validate_request(&request)?;
 
-        let operation = dispatch_action(&mut state, normalized_profile, &request);
+        let operation = dispatch_action(&mut state, workflow.profile(), &request);
         state.push_operation(operation);
         self.store.save(&state)?;
         Ok(self.projector.report(profile, &state))
-    }
-
-    fn validate_request(
-        &self,
-        normalized_profile: &str,
-        request: &LocalNodeActionRequest,
-        state: &LocalNodesState,
-    ) -> Result<()> {
-        if !action_allowed(
-            normalized_profile,
-            request.action,
-            request.node,
-            state.active_devnet.is_some(),
-        ) {
-            bail!(
-                "{} is not available for profile `{normalized_profile}`",
-                request.action.label()
-            );
-        }
-
-        if request.action.is_network_action() && normalized_profile != "local" {
-            bail!("local devnet actions require local operations mode");
-        }
-
-        Ok(())
     }
 }
 
@@ -113,67 +89,6 @@ fn dispatch_action(
     }
 }
 
-#[must_use]
-pub(super) fn node_set_for_profile(profile: &str) -> Vec<NodeKind> {
-    if normalized_profile(profile) == "local" {
-        vec![
-            NodeKind::Bedrock,
-            NodeKind::Sequencer,
-            NodeKind::Indexer,
-            NodeKind::Storage,
-            NodeKind::Messaging,
-        ]
-    } else {
-        vec![
-            NodeKind::Bedrock,
-            NodeKind::Indexer,
-            NodeKind::Storage,
-            NodeKind::Messaging,
-        ]
-    }
-}
-
-#[must_use]
-pub(super) fn available_actions_for(
-    profile: &str,
-    node: Option<NodeKind>,
-    has_active_devnet: bool,
-) -> Vec<NodeAction> {
-    let local_mode = normalized_profile(profile) == "local";
-    if node.is_none() {
-        if local_mode {
-            let mut actions = vec![NodeAction::NewNetwork, NodeAction::LoadNetwork];
-            if has_active_devnet {
-                actions.extend([NodeAction::ResetNetwork, NodeAction::DeleteNetwork]);
-            }
-            return actions;
-        }
-        return Vec::new();
-    }
-
-    let Some(kind) = node else {
-        return Vec::new();
-    };
-    if !node_set_for_profile(profile).contains(&kind) {
-        return Vec::new();
-    }
-
-    if local_mode && !has_active_devnet {
-        return vec![NodeAction::Install];
-    }
-
-    let mut actions = vec![
-        NodeAction::Install,
-        NodeAction::Start,
-        NodeAction::Stop,
-        NodeAction::Uninstall,
-    ];
-    if local_mode {
-        actions.push(NodeAction::Purge);
-    }
-    actions
-}
-
 #[derive(Debug, Clone, Copy, Default)]
 struct LocalNodeReportProjector;
 
@@ -188,12 +103,14 @@ impl LocalNodeReportProjector {
     }
 
     fn report(self, profile: &str, state: &LocalNodesState) -> LocalNodeReport {
-        let profile = normalized_profile(profile);
+        let workflow = LocalNodeWorkflow::for_state(profile, state);
+        let profile = workflow.profile();
         let active = state.active_devnet();
         let tools = self.tool_statuses();
-        let nodes = node_set_for_profile(profile)
+        let nodes = workflow
+            .node_set()
             .into_iter()
-            .map(|kind| self.node_status(profile, state, active, &tools, kind))
+            .map(|kind| self.node_status(workflow, state, active, &tools, kind))
             .collect::<Vec<_>>();
         let installed = nodes
             .iter()
@@ -210,7 +127,7 @@ impl LocalNodeReportProjector {
         LocalNodeReport {
             profile: profile.to_owned(),
             mode: presentation::mode_for_profile(profile).to_owned(),
-            available_network_actions: available_actions_for(profile, None, active.is_some()),
+            available_network_actions: workflow.network_actions(),
             primary_problem: presentation::primary_problem(profile, &tools, &nodes),
             active_devnet: state.active_devnet.clone(),
             workspace_root: state.managed_workspace_root.clone(),
@@ -228,7 +145,7 @@ impl LocalNodeReportProjector {
 
     fn node_status(
         self,
-        profile: &str,
+        workflow: LocalNodeWorkflow,
         state: &LocalNodesState,
         active: Option<&LocalDevnetRecord>,
         tools: &LocalNodeTools,
@@ -266,7 +183,7 @@ impl LocalNodeReportProjector {
             package_path: config.and_then(|node| node.package_path.clone()),
             process_id,
             last_action,
-            available_actions: available_actions_for(profile, Some(kind), active.is_some()),
+            available_actions: workflow.node_actions(kind),
             detail: node_status_detail(kind, install_state, run_state, tools),
         }
     }
@@ -326,22 +243,6 @@ fn last_operation_for(state: &LocalNodesState, kind: NodeKind) -> Option<LocalNo
         .rev()
         .find(|operation| operation.node == Some(kind))
         .cloned()
-}
-
-fn action_allowed(
-    profile: &str,
-    action: NodeAction,
-    node: Option<NodeKind>,
-    has_active_devnet: bool,
-) -> bool {
-    available_actions_for(profile, node, has_active_devnet).contains(&action)
-}
-
-fn normalized_profile(profile: &str) -> &str {
-    match profile.trim().to_ascii_lowercase().as_str() {
-        "local" | "localnet" | "devnet" => "local",
-        _ => "default",
-    }
 }
 
 fn new_network(

@@ -5,9 +5,8 @@ import "domains" as Domains
 import "identity/AppModelIdentity.js" as AppModelIdentity
 import "network/AppModelNetwork.js" as AppModelNetwork
 import "metrics/AppModelMetrics.js" as AppModelMetrics
-import "ConfirmationPolicy.js" as ConfirmationPolicy
+import "programs" as Programs
 import "programs/AppModelRegistry.js" as AppModelRegistry
-import "programs/ProgramOperationDetails.js" as ProgramOperationDetails
 import "social/AppModelSocial.js" as AppModelSocial
 import "programs/ProgramDecodeSession.js" as ProgramDecodeSession
 
@@ -492,8 +491,53 @@ QtObject {
     property alias localNodesOperations: localNodesState.operations
     property alias localNodesRevision: localNodesState.revision
     property alias localDevnets: localNodesState.devnets
-    property var idlInstructionPreviewValue: null
-    property string idlInstructionError: ""
+    property Programs.ProgramExecutionState programExecution: Programs.ProgramExecutionState {
+        id: programExecutionState
+
+        gateway: QtObject {
+            function request(method, args, label, showResult, callback) {
+                return root.requestModuleAsync(root.inspectorModule, method, args || [], label, showResult === true, callback)
+            }
+
+            function busy() {
+                return root.busy
+            }
+
+            function setBusy(value) {
+                root.busy = value === true
+            }
+
+            function setStatus(value) {
+                root.statusText = String(value || "")
+            }
+
+            function setResult(title, text, isError, value) {
+                return root.setResult(title, text, isError, value)
+            }
+
+            function walletProfile() {
+                return root.wallet.profile(root.networkProfile)
+            }
+
+            function walletProfileConfigured() {
+                return root.wallet.profileConfigured()
+            }
+
+            function walletHomeConfigured() {
+                return root.wallet.homeConfigured()
+            }
+
+            function openLocalWallet(tab) {
+                return root.openLocalWallet("", tab)
+            }
+
+            function appendOperationHistory(operation, detail) {
+                return root.appendOperationHistory(operation, detail)
+            }
+        }
+    }
+    property alias idlInstructionPreviewValue: programExecutionState.idlInstructionPreviewValue
+    property alias idlInstructionError: programExecutionState.idlInstructionError
     property var bedrockWalletBalanceValue: null
     property string bedrockWalletBalanceError: ""
     property string bedrockWalletModuleError: ""
@@ -877,40 +921,9 @@ QtObject {
 
     function walletCommandOperationDetail(value) { return wallet.commandOperationDetail(value) }
 
-    function deployProgramBinary(programPath) {
-        const path = String(programPath || "").trim()
-        if (busy) {
-            setResult(qsTr("Program deploy"), qsTr("Another inspection is already running."), true, null)
-            return null
-        }
-        if (!path.length) {
-            setResult(qsTr("Program deploy"), qsTr("Program binary path is required."), true, null)
-            return null
-        }
-        if (!wallet.profileConfigured()) {
-            openLocalWallet("", "profiles")
-            setResult(qsTr("Program deploy"), qsTr("Configure wallet binary and wallet home before deploying a program."), true, null)
-            return null
-        }
+    function deployProgramBinary(programPath) { return programExecution.deployProgramBinary(programPath) }
 
-        busy = true
-        return requestModuleAsync(inspectorModule, "localWalletDeployProgram", [wallet.profile(networkProfile), path, ConfirmationPolicy.token("wallet-deploy-program")], qsTr("Program deploy"), true, function (response) {
-            busy = false
-            const detail = response.ok
-                ? deployProgramOperationDetail(response.value)
-                : String(response.error || qsTr("Program deployment failed."))
-            appendOperationHistory({
-                domain: "execution",
-                method: qsTr("Program deploy"),
-                status: response.ok ? "completed" : "failed",
-                label: qsTr("Program deploy"),
-                result: response.ok ? response.value || {} : null,
-                error: response.ok ? "" : detail
-            }, detail)
-        })
-    }
-
-    function deployProgramOperationDetail(value) { return ProgramOperationDetails.deployProgramOperationDetail(value) }
+    function deployProgramOperationDetail(value) { return programExecution.deployProgramOperationDetail(value) }
 
     function syncPrivateWallet() { return wallet.syncPrivate() }
 
@@ -924,65 +937,11 @@ QtObject {
 
     function appendLocalWalletOperation(label, status, detail) { return wallet.appendHistory(label, status, detail) }
 
-    function previewIdlInstruction(request) {
-        if (busy) {
-            setResult(qsTr("IDL instruction"), qsTr("Another inspection is already running."), true, null)
-            return null
-        }
-        idlInstructionPreviewValue = null
-        idlInstructionError = ""
-        busy = true
-        statusText = qsTr("IDL instruction")
-        return requestModuleAsync(inspectorModule, "localWalletInstructionPreview", [request || {}], qsTr("IDL instruction"), false, function (response) {
-            busy = false
-            if (response.ok) {
-                idlInstructionPreviewValue = response.value || null
-                idlInstructionError = ""
-            } else {
-                idlInstructionPreviewValue = null
-                idlInstructionError = response.error || qsTr("Instruction preview failed.")
-            }
-        })
-    }
+    function previewIdlInstruction(request) { return programExecution.previewIdlInstruction(request) }
 
-    function sendIdlInstruction(request) {
-        if (busy) {
-            setResult(qsTr("IDL instruction"), qsTr("Another inspection is already running."), true, null)
-            return null
-        }
-        if (!wallet.homeConfigured()) {
-            openLocalWallet("", "profiles")
-            setResult(qsTr("IDL instruction"), qsTr("Configure wallet home before sending an IDL instruction."), true, null)
-            return null
-        }
+    function sendIdlInstruction(request) { return programExecution.sendIdlInstruction(request) }
 
-        idlInstructionPreviewValue = null
-        idlInstructionError = ""
-        busy = true
-        return requestModuleAsync(inspectorModule, "localWalletInstructionSubmit", [wallet.profile(networkProfile), request || {}, ConfirmationPolicy.token("wallet-instruction-submit")], qsTr("IDL instruction"), true, function (response) {
-            busy = false
-            const detail = response.ok
-                ? idlInstructionOperationDetail(response.value)
-                : String(response.error || qsTr("Instruction send failed."))
-            if (response.ok) {
-                idlInstructionPreviewValue = response.value || null
-                idlInstructionError = ""
-            } else {
-                idlInstructionPreviewValue = null
-                idlInstructionError = detail
-            }
-            appendOperationHistory({
-                domain: "execution",
-                method: qsTr("IDL instruction"),
-                status: response.ok ? "completed" : "failed",
-                label: qsTr("IDL instruction"),
-                result: response.ok ? response.value || {} : null,
-                error: response.ok ? "" : detail
-            }, detail)
-        })
-    }
-
-    function idlInstructionOperationDetail(value) { return ProgramOperationDetails.idlInstructionOperationDetail(value) }
+    function idlInstructionOperationDetail(value) { return programExecution.idlInstructionOperationDetail(value) }
 
     function refreshBedrockWalletModule(address) { return AppModelIdentity.refreshBedrockWalletModule(root, address) }
 

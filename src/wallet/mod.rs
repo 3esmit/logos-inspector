@@ -11,11 +11,17 @@ use serde_json::{Value, json};
 use crate::{ProgramFileInfo, program_file_info, raw_http_json};
 
 mod instruction;
+mod profile;
 mod runner;
 
 pub use instruction::{
     LocalWalletInstructionReport, LocalWalletInstructionRequest, ResolvedInstructionAccount,
     ResolvedInstructionArg, local_wallet_instruction_preview, local_wallet_instruction_submit,
+};
+use profile::{
+    LocalWalletProfileInput, detect_wallet_binary, detect_wallet_home,
+    local_wallet_binary_is_path_like, parse_local_wallet_profile, resolve_local_wallet_profile,
+    wallet_home_is_configured,
 };
 use runner::{
     CliLocalWalletRunner, LocalWalletInvocation, LocalWalletRunner, local_wallet_output_text,
@@ -143,16 +149,6 @@ pub struct LocalWalletAccountRow {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-struct LocalWalletProfileInput {
-    #[serde(default, alias = "walletBinary")]
-    wallet_binary: String,
-    #[serde(default, alias = "walletHome")]
-    wallet_home: String,
-    #[serde(default, alias = "networkProfile")]
-    network_profile: String,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
 struct LocalWalletSendNativeInput {
     #[serde(default)]
     from: String,
@@ -170,59 +166,11 @@ struct LocalWalletSendNativeInput {
     amount: String,
 }
 
-#[derive(Debug, Clone)]
-struct ResolvedLocalWalletProfile {
-    wallet_binary: String,
-    wallet_home: String,
-    wallet_home_source: String,
-}
-
 pub fn local_wallet_profile_status(profile: Value) -> Result<LocalWalletProfileStatus> {
     local_wallet_profile_status_with_env(
         profile,
         env::var(LOCAL_WALLET_HOME_ENV).unwrap_or_default(),
     )
-}
-
-fn resolve_local_wallet_profile(
-    profile: Value,
-    action: &str,
-    require_config: bool,
-) -> Result<ResolvedLocalWalletProfile> {
-    let profile: LocalWalletProfileInput =
-        serde_json::from_value(profile).context("failed to parse local wallet profile")?;
-    let wallet_binary = profile.wallet_binary.trim();
-    if wallet_binary.is_empty() {
-        bail!("wallet binary is required to {action}");
-    }
-    if local_wallet_binary_is_path_like(wallet_binary) && !Path::new(wallet_binary).is_file() {
-        bail!("wallet binary is not reachable");
-    }
-
-    let explicit_home = profile.wallet_home.trim();
-    let env_wallet_home = env::var(LOCAL_WALLET_HOME_ENV).unwrap_or_default();
-    let (wallet_home, wallet_home_source) = if !explicit_home.is_empty() {
-        (explicit_home.to_owned(), "profile")
-    } else if !env_wallet_home.trim().is_empty() {
-        (env_wallet_home.trim().to_owned(), LOCAL_WALLET_HOME_ENV)
-    } else {
-        (String::new(), "none")
-    };
-    if wallet_home.is_empty() {
-        bail!("wallet home directory is required to {action}");
-    }
-    if !Path::new(&wallet_home).is_dir() {
-        bail!("wallet home directory is not reachable");
-    }
-    if require_config && !wallet_home_is_configured(Path::new(&wallet_home)) {
-        bail!("wallet home missing wallet_config.json");
-    }
-
-    Ok(ResolvedLocalWalletProfile {
-        wallet_binary: wallet_binary.to_owned(),
-        wallet_home,
-        wallet_home_source: wallet_home_source.to_owned(),
-    })
 }
 
 pub fn local_wallet_deploy_program(
@@ -625,8 +573,7 @@ fn local_wallet_profile_status_with_runner<R: LocalWalletRunner>(
     profile: Value,
     nssa_env_home: String,
 ) -> Result<LocalWalletProfileStatus> {
-    let profile: LocalWalletProfileInput =
-        serde_json::from_value(profile).context("failed to parse local wallet profile")?;
+    let profile: LocalWalletProfileInput = parse_local_wallet_profile(profile)?;
     let wallet_binary = profile.wallet_binary.trim();
     let explicit_home = profile.wallet_home.trim();
     let (env_home, env_home_source) = if !nssa_env_home.trim().is_empty() {
@@ -707,24 +654,6 @@ fn local_wallet_profile_status_with_runner<R: LocalWalletRunner>(
         home_source: home_source.to_owned(),
         network_profile: profile.network_profile.trim().to_owned(),
     })
-}
-
-fn local_wallet_binary_is_path_like(binary: &str) -> bool {
-    let binary = binary.trim();
-    Path::new(binary).is_absolute()
-        || binary.contains(std::path::MAIN_SEPARATOR)
-        || binary.contains('/')
-        || binary.contains('\\')
-}
-
-impl ResolvedLocalWalletProfile {
-    fn redactions(&self) -> Vec<&str> {
-        let mut redactions = vec![self.wallet_home.as_str()];
-        if local_wallet_binary_is_path_like(&self.wallet_binary) {
-            redactions.push(self.wallet_binary.as_str());
-        }
-        redactions
-    }
 }
 
 fn normalized_wallet_account_privacy(value: &str) -> Result<&'static str> {
@@ -972,75 +901,6 @@ fn normalize_bedrock_hex_id(value: &str, label: &str) -> Result<String> {
         bail!("{label} must be 64 hex characters")
     }
     Ok(text.to_ascii_lowercase())
-}
-
-fn detect_wallet_binary() -> Option<PathBuf> {
-    if let Some(path) = env_path_if_file("LOGOS_WALLET_BINARY") {
-        return Some(path);
-    }
-
-    if let Some(path) = find_binary_in_path("wallet") {
-        return Some(path);
-    }
-
-    let home = env::var_os("HOME").map(PathBuf::from)?;
-    [
-        home.join(".cargo").join("bin").join(binary_name("wallet")),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")))
-            .join("logos-execution-zone")
-            .join("target")
-            .join("release")
-            .join(binary_name("wallet")),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")))
-            .join("logos-execution-zone")
-            .join("target")
-            .join("debug")
-            .join(binary_name("wallet")),
-    ]
-    .into_iter()
-    .find(|path| path.is_file())
-}
-
-fn detect_wallet_home() -> Option<PathBuf> {
-    if let Some(path) = env_path_if_wallet_home(LOCAL_WALLET_HOME_ENV) {
-        return Some(path);
-    }
-    None
-}
-
-fn env_path_if_file(variable: &str) -> Option<PathBuf> {
-    let path = env::var_os(variable).map(PathBuf::from)?;
-    path.is_file().then_some(path)
-}
-
-fn env_path_if_wallet_home(variable: &str) -> Option<PathBuf> {
-    let path = env::var_os(variable).map(PathBuf::from)?;
-    wallet_home_is_configured(&path).then_some(path)
-}
-
-fn wallet_home_is_configured(path: &Path) -> bool {
-    path.is_dir() && path.join("wallet_config.json").is_file()
-}
-
-fn find_binary_in_path(binary: &str) -> Option<PathBuf> {
-    let binary = binary_name(binary);
-    env::var_os("PATH")
-        .into_iter()
-        .flat_map(|paths| env::split_paths(&paths).collect::<Vec<_>>())
-        .map(|path| path.join(&binary))
-        .find(|path| path.is_file())
-}
-
-fn binary_name(binary: &str) -> String {
-    if cfg!(windows) {
-        format!("{binary}.exe")
-    } else {
-        binary.to_owned()
-    }
 }
 
 pub(crate) fn unix_time_text() -> String {

@@ -7,6 +7,7 @@ mod model;
 mod paths;
 mod presentation;
 mod process;
+mod workflow;
 
 pub use local_indexer::{
     bootstrap_default_local_indexer, bootstrap_default_local_indexer_for_saved_settings,
@@ -42,20 +43,20 @@ mod tests {
 
     use super::{
         action_engine, commands::command_spec_for, model::LocalNodesState, paths::path_is_inside,
+        workflow,
     };
     use crate::support::time::now_millis;
 
     #[test]
     fn local_profile_includes_sequencer_and_network_actions() {
-        let nodes = action_engine::node_set_for_profile("local");
+        let nodes = workflow::node_set_for_profile("local");
 
         assert!(nodes.contains(&NodeKind::Sequencer));
         assert!(
-            action_engine::available_actions_for("local", None, false)
-                .contains(&NodeAction::NewNetwork)
+            workflow::available_actions_for("local", None, false).contains(&NodeAction::NewNetwork)
         );
         assert!(
-            !action_engine::available_actions_for("default", None, false)
+            !workflow::available_actions_for("default", None, false)
                 .contains(&NodeAction::NewNetwork)
         );
         assert_eq!(NodeAction::NewNetwork.label(), "New Local Devnet");
@@ -64,9 +65,8 @@ mod tests {
 
     #[test]
     fn testnet_profile_excludes_local_sequencer_and_purge() {
-        let nodes = action_engine::node_set_for_profile("default");
-        let actions =
-            action_engine::available_actions_for("default", Some(NodeKind::Bedrock), true);
+        let nodes = workflow::node_set_for_profile("default");
+        let actions = workflow::available_actions_for("default", Some(NodeKind::Bedrock), true);
 
         assert!(!nodes.contains(&NodeKind::Sequencer));
         assert!(!actions.contains(&NodeAction::Purge));
