@@ -14,12 +14,13 @@ use crate::{
 };
 
 use super::super::value::to_value;
-use super::record::update_node_operation_progress;
+use super::record::update_runtime_operation_progress;
 use super::spec::{
     OperationCatalogEntry, OperationDomain, OperationExclusiveGroup, OperationMethod,
 };
 use super::{
-    NodeOperationRegistry, NodeOperationRequest, blocking_module_call, blocking_module_dispatch,
+    RuntimeOperationRegistry, RuntimeOperationRequest, blocking_module_call,
+    blocking_module_dispatch,
 };
 
 pub(super) const OPERATION_CATALOG: &[OperationCatalogEntry] = &[
@@ -62,7 +63,7 @@ pub(super) const OPERATION_CATALOG: &[OperationCatalogEntry] = &[
     ),
 ];
 
-pub(super) async fn execute_storage_manifests(request: &NodeOperationRequest) -> Result<Value> {
+pub(super) async fn execute_storage_manifests(request: &RuntimeOperationRequest) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
     if let Some(module_args) = source_routing::storage_args(&args, false, "storage manifests")? {
         return blocking_module_call(
@@ -78,7 +79,7 @@ pub(super) async fn execute_storage_manifests(request: &NodeOperationRequest) ->
 }
 
 pub(super) async fn execute_storage_download_manifest(
-    request: &NodeOperationRequest,
+    request: &RuntimeOperationRequest,
 ) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
     if let Some(module_args) =
@@ -109,7 +110,7 @@ pub(super) async fn execute_storage_download_manifest(
     to_value(raw_http_json(source.endpoint, &format!("/data/{cid}/network/manifest")).await?)
 }
 
-pub(super) async fn execute_storage_fetch(request: &NodeOperationRequest) -> Result<Value> {
+pub(super) async fn execute_storage_fetch(request: &RuntimeOperationRequest) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
     if let Some(module_args) = source_routing::storage_args(&args, true, "storage network action")?
     {
@@ -141,7 +142,7 @@ pub(super) async fn execute_storage_fetch(request: &NodeOperationRequest) -> Res
     .with_context(|| format!("failed to start storage network fetch for {cid}"))
 }
 
-pub(super) async fn execute_storage_upload(request: &NodeOperationRequest) -> Result<Value> {
+pub(super) async fn execute_storage_upload(request: &RuntimeOperationRequest) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
     if let Some(module_args) = source_routing::storage_args(&args, true, "storage upload action")? {
         let mut values = module_args.values;
@@ -178,8 +179,8 @@ pub(super) async fn execute_storage_upload(request: &NodeOperationRequest) -> Re
 }
 
 pub(super) async fn execute_storage_download(
-    request: &NodeOperationRequest,
-    registry: &NodeOperationRegistry,
+    request: &RuntimeOperationRequest,
+    registry: &RuntimeOperationRegistry,
     operation_id: &str,
     cancel_requested: &AtomicBool,
 ) -> Result<Value> {
@@ -230,7 +231,7 @@ pub(super) async fn execute_storage_download(
     .with_context(|| format!("failed to download storage CID {cid} to `{path}`"))
 }
 
-pub(super) async fn execute_storage_remove(request: &NodeOperationRequest) -> Result<Value> {
+pub(super) async fn execute_storage_remove(request: &RuntimeOperationRequest) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
     if let Some(module_args) = source_routing::storage_args(&args, true, "storage remove action")? {
         let cid = module_args
@@ -271,7 +272,7 @@ pub(super) async fn storage_rest_download_tracked(
     cid: &str,
     path: &str,
     local_only: bool,
-    registry: &NodeOperationRegistry,
+    registry: &RuntimeOperationRegistry,
     operation_id: &str,
     cancel_requested: &AtomicBool,
 ) -> Result<Value> {
@@ -294,7 +295,7 @@ pub(super) async fn storage_rest_download_tracked(
         "failed to read storage download error body",
     )
     .await?;
-    update_node_operation_progress(registry, operation_id, 0, response.content_length());
+    update_runtime_operation_progress(registry, operation_id, 0, response.content_length());
     let temp_path = format!("{path}.part");
     let mut file = tokio::fs::File::create(&temp_path)
         .await
@@ -314,7 +315,7 @@ pub(super) async fn storage_rest_download_tracked(
                 .await
                 .with_context(|| format!("failed to write download file `{temp_path}`"))?;
             bytes = bytes.saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
-            update_node_operation_progress(registry, operation_id, bytes, None);
+            update_runtime_operation_progress(registry, operation_id, bytes, None);
         }
         file.flush()
             .await

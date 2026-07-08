@@ -9,7 +9,7 @@ use crate::source_routing::{
 };
 
 use super::spec::{OperationCatalogEntry, OperationDomain, OperationMethod};
-use super::{NodeOperationRequest, blocking_module_call, blocking_module_dispatch};
+use super::{RuntimeOperationRequest, blocking_module_call, blocking_module_dispatch};
 
 const MAX_DELIVERY_STORE_PAGE_SIZE: u64 = 100;
 
@@ -59,7 +59,7 @@ pub(super) const OPERATION_CATALOG: &[OperationCatalogEntry] = &[
 ];
 
 pub(super) async fn execute_delivery_subscription(
-    request: &NodeOperationRequest,
+    request: &RuntimeOperationRequest,
     method: Method,
     module_method: &'static str,
 ) -> Result<Value> {
@@ -93,7 +93,7 @@ pub(super) async fn execute_delivery_subscription(
     }))
 }
 
-pub(super) async fn execute_delivery_send(request: &NodeOperationRequest) -> Result<Value> {
+pub(super) async fn execute_delivery_send(request: &RuntimeOperationRequest) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
     if let Some(module_args) =
         source_routing::delivery_message_args(&args, "delivery message action")?
@@ -144,7 +144,7 @@ pub(super) async fn execute_delivery_send(request: &NodeOperationRequest) -> Res
 }
 
 pub(super) async fn execute_delivery_module_action(
-    request: &NodeOperationRequest,
+    request: &RuntimeOperationRequest,
     method: &'static str,
 ) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
@@ -159,7 +159,9 @@ pub(super) async fn execute_delivery_module_action(
     .await
 }
 
-pub(super) async fn execute_delivery_store_query(request: &NodeOperationRequest) -> Result<Value> {
+pub(super) async fn execute_delivery_store_query(
+    request: &RuntimeOperationRequest,
+) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
     let source = delivery_rest_source(&args)?;
     let peer_addr = args.optional_string(source.next_index + 1);

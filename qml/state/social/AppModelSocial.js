@@ -1,46 +1,18 @@
 function socialCommentTopic(root, layer, entity, id) {
-    const layerText = normalizedSocialLayer(layer)
-    const entityText = normalizedSocialEntity(entity)
-    const idText = normalizedSocialTopicId(id)
-    if (!layerText.length || !entityText.length || !idText.length) {
-        return ""
-    }
-    return "/" + layerText + "/" + entityText + "/" + idText + "/comments"
+    return socialRuntimeString(root, "socialCommentTopic", [String(layer || ""), String(entity || ""), String(id || "")])
 }
 
 function socialLezAccountIdlTopic(root, accountId) {
-    const idText = normalizedSocialTopicId(accountId)
-    return idText.length ? "/lez/account/" + idText + "/idl" : ""
+    return socialRuntimeString(root, "socialLezAccountIdlTopic", [String(accountId || "")])
 }
 
-function normalizedSocialTopicId(value) {
-    const text = String(value || "").trim().replace(/^\/+/, "").replace(/\/+$/, "")
-    return text.length > 0 && text.indexOf("/") < 0 ? text : ""
-}
-
-function normalizedSocialLayer(value) {
-    const text = String(value || "").trim().toLowerCase()
-    if (text === "cryptarchia" || text === "bedrock" || text === "l1") {
-        return "cryptarchia"
+function socialRuntimeString(root, method, args) {
+    const bridge = root.bridge || null
+    if (!bridge || typeof bridge.callModule !== "function") {
+        return ""
     }
-    if (text === "lez" || text === "l2") {
-        return "lez"
-    }
-    return ""
-}
-
-function normalizedSocialEntity(value) {
-    const text = String(value || "").trim().toLowerCase()
-    if (text === "transaction" || text === "tx") {
-        return "transaction"
-    }
-    if (text === "block") {
-        return "block"
-    }
-    if (text === "account") {
-        return "account"
-    }
-    return ""
+    const response = bridge.callModule(root.inspectorModule, method, args || [])
+    return response && response.ok === true && typeof response.value === "string" ? response.value : ""
 }
 
 function socialComments(root, topic) {
@@ -382,7 +354,12 @@ function socialCommentSendAvailable(root, topic) {
 }
 
 function validSocialTopic(root, topic) {
-    return /^\/[^/]+\/[^/]+\/[^/]+\/[^/]+$/.test(String(topic || "").trim())
+    const bridge = root.bridge || null
+    if (!bridge || typeof bridge.callModule !== "function") {
+        return false
+    }
+    const response = bridge.callModule(root.inspectorModule, "socialTopicValid", [String(topic || "")])
+    return response && response.ok === true && response.value === true
 }
 
 function socialPageSize(root, pageSize) {

@@ -8,8 +8,8 @@ QtObject {
     required property var gateway
 
     property string domain: ""
-    property string defaultLabel: qsTr("Node operation")
-    property string busyError: qsTr("A node operation is already running.")
+    property string defaultLabel: qsTr("Runtime operation")
+    property string busyError: qsTr("A runtime operation is already running.")
     property bool startPending: false
     property var activeOperation: null
     property int activeOperationRevision: 0
@@ -50,17 +50,20 @@ QtObject {
             }
         }
 
+        if (gateway && typeof gateway.startRuntimeOperation === "function") {
+            return gateway.startRuntimeOperation(request, false, callback)
+        }
         if (gateway && typeof gateway.startNodeOperation === "function") {
             return gateway.startNodeOperation(request, false, callback)
         }
         if (gateway && typeof gateway.request === "function") {
-            return gateway.request("nodeOperationStart", [request], operationLabel, false, callback)
+            return gateway.request("runtimeOperationStart", [request], operationLabel, false, callback)
         }
 
         const failed = {
             ok: false,
             text: "",
-            error: qsTr("Node operation bridge is unavailable.")
+            error: qsTr("Runtime operation bridge is unavailable.")
         }
         callback(failed)
         return failed
@@ -83,7 +86,7 @@ QtObject {
                     method: String(operation && operation.method ? operation.method : ""),
                     status: "failed",
                     label: String(operation && operation.label ? operation.label : defaultLabel),
-                    error: String((response && response.error) || qsTr("Node operation status failed."))
+                    error: String((response && response.error) || qsTr("Runtime operation status failed."))
                 }
                 updateActiveOperation(failedOperation)
                 appendTerminalOperation(failedOperation)
@@ -95,11 +98,14 @@ QtObject {
             }
         }
 
+        if (gateway && typeof gateway.runtimeOperationStatus === "function") {
+            return gateway.runtimeOperationStatus(operationId, showResult === true, callback)
+        }
         if (gateway && typeof gateway.nodeOperationStatus === "function") {
             return gateway.nodeOperationStatus(operationId, showResult === true, callback)
         }
         if (gateway && typeof gateway.request === "function") {
-            return gateway.request("nodeOperationStatus", [operationId], qsTr("Node operation"), showResult === true, callback)
+            return gateway.request("runtimeOperationStatus", [operationId], qsTr("Runtime operation"), showResult === true, callback)
         }
         return null
     }
@@ -120,11 +126,14 @@ QtObject {
             }
         }
 
+        if (gateway && typeof gateway.runtimeOperationCancel === "function") {
+            return gateway.runtimeOperationCancel(operationId, false, callback)
+        }
         if (gateway && typeof gateway.nodeOperationCancel === "function") {
             return gateway.nodeOperationCancel(operationId, false, callback)
         }
         if (gateway && typeof gateway.request === "function") {
-            return gateway.request("nodeOperationCancel", [operationId], qsTr("Cancel operation"), false, callback)
+            return gateway.request("runtimeOperationCancel", [operationId], qsTr("Cancel operation"), false, callback)
         }
         return null
     }

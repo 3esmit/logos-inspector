@@ -4,7 +4,7 @@ mod idl_resolver;
 mod indexer;
 mod programs;
 mod sequencer;
-mod session;
+mod target_resolution;
 mod transactions;
 mod transfers;
 
@@ -34,7 +34,7 @@ pub use sequencer::{
     sequencer_transaction_inspection_with_idl, sequencer_transaction_trace,
     sequencer_transaction_trace_with_idl,
 };
-pub(crate) use session::LezInspectionSession;
+pub(crate) use target_resolution::LezTargetResolver;
 pub(crate) use transactions::inspect_transaction;
 pub use transactions::{
     TransactionIdlInspectionReport, TransactionInspectionReport, TransactionInspectionRow,

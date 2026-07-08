@@ -112,7 +112,7 @@ TestCase {
 
     function test_pending_mutation_starts_node_operation() {
         gateway.requestResponses = ({
-            nodeOperationStart: {
+            runtimeOperationStart: {
                 ok: true,
                 value: {
                     operationId: "storage-upload-1",
@@ -131,7 +131,7 @@ TestCase {
         state.runPendingStorage()
 
         compare(gateway.requestCount, 1)
-        compare(gateway.lastMethod, "nodeOperationStart")
+        compare(gateway.lastMethod, "runtimeOperationStart")
         compare(gateway.lastArgs[0].domain, "storage")
         compare(gateway.lastArgs[0].sourceMode, "rest")
         compare(gateway.lastArgs[0].args[0], "rest")
@@ -145,7 +145,7 @@ TestCase {
 
     function test_start_dispatch_ack_becomes_running_module_operation() {
         gateway.requestResponses = ({
-            nodeOperationStart: {
+            runtimeOperationStart: {
                 ok: true,
                 value: {
                     operationId: "storage-upload-ack",
@@ -193,7 +193,7 @@ TestCase {
             contentLength: 8
         })
         gateway.requestResponses = ({
-            nodeOperationStatus: {
+            runtimeOperationStatus: {
                 ok: true,
                 value: {
                     operationId: "storage-download-1",
@@ -289,7 +289,7 @@ TestCase {
             label: "Upload"
         })
         gateway.requestResponses = ({
-            nodeOperationStatus: {
+            runtimeOperationStatus: {
                 ok: true,
                 value: {
                     operationId: "op-1",
@@ -327,7 +327,7 @@ TestCase {
         })
         state.terminalOperationId = "op-1"
         gateway.requestResponses = ({
-            nodeOperationStatus: {
+            runtimeOperationStatus: {
                 ok: true,
                 value: {
                     operationId: "op-1",

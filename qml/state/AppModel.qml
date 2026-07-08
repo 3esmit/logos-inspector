@@ -35,6 +35,10 @@ QtObject {
     }
     property alias sourcePolicy: sourceRoutingState.sourcePolicy
     property alias sourcePolicyLoaded: sourceRoutingState.sourcePolicyLoaded
+    property Domains.NetworkProfileState networkProfiles: Domains.NetworkProfileState {
+        id: networkProfileState
+        sourcePolicy: root.sourcePolicy
+    }
     readonly property var storageSource: storageSourceView()
     readonly property var deliverySource: deliverySourceView()
 
@@ -180,10 +184,10 @@ QtObject {
     property bool storageLocalDiagnosticsEnabled: false
     property bool storagePrivilegedDebugEnabled: false
     property bool storageMutatingDiagnosticsEnabled: false
-    property var nodeOperations: ({})
-    property var nodeOperationEventSeq: ({})
-    property var nodeOperationHistory: []
-    property int nodeOperationsRevision: 0
+    property var runtimeOperations: ({})
+    property var runtimeOperationEventSeq: ({})
+    property var runtimeOperationHistory: []
+    property int runtimeOperationsRevision: 0
     property string settingsBackupCid: ""
     property string settingsRestoreCid: ""
     property bool settingsBackupEncrypted: false
@@ -220,6 +224,8 @@ QtObject {
     property var blockchainModuleReport: null
     property var storageModuleReport: null
     property var messagingModuleReport: null
+    property var storageSourceReport: null
+    property var messagingSourceReport: null
     property int blockchainModuleEventRevision: 0
     property string blockchainLastEventText: ""
 
@@ -296,6 +302,10 @@ QtObject {
             function setIdlInstructionState(value, error) {
                 root.idlInstructionPreviewValue = value
                 root.idlInstructionError = String(error || "")
+            }
+
+            function appendRuntimeOperationHistory(operation, detail) {
+                return root.appendOperationHistory(operation, detail)
             }
 
             function appendNodeOperationHistory(operation, detail) {
@@ -379,7 +389,7 @@ QtObject {
         resultText: root.resultText
         resultIsError: root.resultIsError
         resultOwner: root.resultOwner
-        sourceReport: root.storageModuleReport
+        sourceReport: root.storageSourceReport
     }
     property alias storageAppTab: storageAppState.currentTab
     property alias storageCidProbe: storageAppState.cidProbe
@@ -393,12 +403,12 @@ QtObject {
                 return root.callInspector(method, args, label)
             }
 
-            function startNodeOperation(request, showResult, callback) {
-                return root.nodeOperationStart(request, showResult === true, callback)
+            function startRuntimeOperation(request, showResult, callback) {
+                return root.runtimeOperationStart(request, showResult === true, callback)
             }
 
-            function nodeOperationStatus(operationId, showResult, callback) {
-                return root.nodeOperationStatus(operationId, showResult === true, callback)
+            function runtimeOperationStatus(operationId, showResult, callback) {
+                return root.runtimeOperationStatus(operationId, showResult === true, callback)
             }
 
             function appendOperationHistory(operation, detail) {
@@ -617,23 +627,41 @@ QtObject {
 
     function requestModuleAsync(moduleName, method, args, label, showResult, callback, acceptResponse) { return AppModelCore.requestModuleAsync(root, moduleName, method, args, label, showResult, callback, acceptResponse) }
 
-    function nodeOperationStart(request, showResult, callback) { return AppModelCore.nodeOperationStart(root, request, showResult, callback) }
+    function runtimeOperationStart(request, showResult, callback) { return AppModelCore.runtimeOperationStart(root, request, showResult, callback) }
 
-    function nodeOperationStatus(operationId, showResult, callback) { return AppModelCore.nodeOperationStatus(root, operationId, showResult, callback) }
+    function runtimeOperationStatus(operationId, showResult, callback) { return AppModelCore.runtimeOperationStatus(root, operationId, showResult, callback) }
 
-    function nodeOperationEvents(operationId, afterSeq, showResult, callback) { return AppModelCore.nodeOperationEvents(root, operationId, afterSeq, showResult, callback) }
+    function runtimeOperationEvents(operationId, afterSeq, showResult, callback) { return AppModelCore.runtimeOperationEvents(root, operationId, afterSeq, showResult, callback) }
 
-    function nodeOperationCancel(operationId, showResult, callback) { return AppModelCore.nodeOperationCancel(root, operationId, showResult, callback) }
+    function runtimeOperationCancel(operationId, showResult, callback) { return AppModelCore.runtimeOperationCancel(root, operationId, showResult, callback) }
 
-    function updateNodeOperation(operation) { return AppModelCore.updateNodeOperation(root, operation) }
+    function updateRuntimeOperation(operation) { return AppModelCore.updateRuntimeOperation(root, operation) }
 
-    function nodeOperationTerminal(operation) { return AppModelCore.nodeOperationTerminal(root, operation) }
+    function runtimeOperationTerminal(operation) { return AppModelCore.runtimeOperationTerminal(root, operation) }
 
-    function nodeOperationResponse(operation) { return AppModelCore.nodeOperationResponse(root, operation) }
+    function runtimeOperationResponse(operation) { return AppModelCore.runtimeOperationResponse(root, operation) }
 
-    function appendNodeOperationHistory(operation, detail) { return AppModelCore.appendNodeOperationHistory(root, operation, detail) }
+    function appendRuntimeOperationHistory(operation, detail) { return AppModelCore.appendRuntimeOperationHistory(root, operation, detail) }
 
-    function nodeOperationHistoryRows(domain) { return AppModelCore.nodeOperationHistoryRows(root, domain) }
+    function runtimeOperationHistoryRows(domain) { return AppModelCore.runtimeOperationHistoryRows(root, domain) }
+
+    function nodeOperationStart(request, showResult, callback) { return runtimeOperationStart(request, showResult, callback) }
+
+    function nodeOperationStatus(operationId, showResult, callback) { return runtimeOperationStatus(operationId, showResult, callback) }
+
+    function nodeOperationEvents(operationId, afterSeq, showResult, callback) { return runtimeOperationEvents(operationId, afterSeq, showResult, callback) }
+
+    function nodeOperationCancel(operationId, showResult, callback) { return runtimeOperationCancel(operationId, showResult, callback) }
+
+    function updateNodeOperation(operation) { return updateRuntimeOperation(operation) }
+
+    function nodeOperationTerminal(operation) { return runtimeOperationTerminal(operation) }
+
+    function nodeOperationResponse(operation) { return runtimeOperationResponse(operation) }
+
+    function appendNodeOperationHistory(operation, detail) { return appendRuntimeOperationHistory(operation, detail) }
+
+    function nodeOperationHistoryRows(domain) { return runtimeOperationHistoryRows(domain) }
 
     function appendOperationHistory(operation, detail) { return AppModelCore.appendOperationHistory(root, operation, detail) }
 
@@ -1142,13 +1170,56 @@ QtObject {
 
     function boolSetting(value, key, fallback) { return AppModelNetwork.boolSetting(root, value, key, fallback) }
 
-    function normalizedNetworkProfile(value) { return AppModelNetwork.normalizedNetworkProfile(root, value) }
+    function normalizedNetworkProfile(value) { return networkProfileState.normalizedProfile(value) }
 
-    function resolvedNetworkProfile(storedProfile, sequencer, indexer, node) { return AppModelNetwork.resolvedNetworkProfile(root, storedProfile, sequencer, indexer, node) }
+    function resolvedNetworkProfile(storedProfile, sequencer, indexer, node) { return networkProfileState.resolvedProfile(storedProfile, sequencer, indexer, node) }
 
-    function inferNetworkProfileFromEndpoints(sequencer, indexer, node) { return AppModelNetwork.inferNetworkProfileFromEndpoints(root, sequencer, indexer, node) }
+    function inferNetworkProfileFromEndpoints(sequencer, indexer, node) { return networkProfileState.inferProfile(sequencer, indexer, node) }
 
-    function normalizeEndpoint(value) { return AppModelNetwork.normalizeEndpoint(root, value) }
+    function normalizeEndpoint(value) { return networkProfileState.normalizeEndpoint(value) }
+
+    function loadNetworkProfileSettings(value) {
+        const settings = networkProfileState.settingsFromPayload(value, networkProfile, sequencerUrl, indexerUrl, nodeUrl)
+        networkProfile = settings.profile
+        sequencerUrl = settings.sequencerUrl
+        indexerUrl = settings.indexerUrl
+        nodeUrl = settings.nodeUrl
+    }
+
+    function networkProfileSettingsPayload() { return networkProfileState.settingsPayload(networkProfile, sequencerUrl, indexerUrl, nodeUrl) }
+
+    function networkProfileOptions() { return networkProfileState.optionRows() }
+
+    function profileIndexFor(value) { return networkProfileState.profileIndex(value) }
+
+    function profileIndex() { return profileIndexFor(networkProfile) }
+
+    function applyProfileIndex(index) { return applyProfile(index) }
+
+    function applyProfile(index) {
+        const profile = networkProfileState.profileAt(index)
+        if (profile === "custom") {
+            networkProfile = inferNetworkProfileFromEndpoints(sequencerUrl, indexerUrl, nodeUrl)
+            return
+        }
+        const endpoints = networkProfileState.applyProfile(profile)
+        if (!endpoints) {
+            return
+        }
+        networkProfile = endpoints.profile
+        sequencerUrl = endpoints.sequencerUrl
+        indexerUrl = endpoints.indexerUrl
+        nodeUrl = endpoints.nodeUrl
+        messagingNetworkPreset = "logos.test"
+    }
+
+    function networkProfileLabel(value) { return networkProfileState.profileLabel(value) }
+
+    function networkProfileSummary(value) { return networkProfileState.profileSummary(value) }
+
+    function networkProfileDetail() { return networkProfileState.profileDetail(sequencerUrl, indexerUrl, nodeUrl) }
+
+    function networkProfileCacheScope() { return networkProfileState.cacheScope(networkProfile, sequencerUrl) }
 
     function normalizedMessagingNetworkPreset(value) { return AppModelNetwork.normalizedMessagingNetworkPreset(root, value) }
 
@@ -1334,7 +1405,7 @@ QtObject {
 
     function programIdKnown(programId) { return AppModelRegistry.programIdKnown(root, programId) }
 
-    function knownProgramCacheScope() { return AppModelRegistry.knownProgramCacheScope(root) }
+    function knownProgramCacheScope() { return networkProfileCacheScope() }
 
     function knownProgramIdRows() { return AppModelRegistry.knownProgramIdRows(root) }
 
@@ -1343,10 +1414,6 @@ QtObject {
     function registerIdl(name, programId, json, programBinary) { return AppModelRegistry.registerIdl(root, name, programId, json, programBinary) }
 
     function removeIdl(index) { return AppModelRegistry.removeIdl(root, index) }
-
-    function profileIndex() { return AppModelRegistry.profileIndex(root) }
-
-    function applyProfile(index) { return AppModelRegistry.applyProfile(root, index) }
 
     function clearDashboardMetricHistoryForPrefix(prefix) { return AppModelMetrics.clearDashboardMetricHistoryForPrefix(root, prefix) }
 }

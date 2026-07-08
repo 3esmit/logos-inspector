@@ -8,6 +8,8 @@ use crate::source_routing::{
     storage_source_facts,
 };
 
+use super::evidence::SourceEvidence;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct SourceReport {
     pub module: String,
@@ -44,10 +46,8 @@ pub(crate) enum SourceReportKind {
 
 #[derive(Debug)]
 pub(crate) struct SourceReportBuilder {
-    module: String,
     kind: SourceReportKind,
-    module_info: ProbeReport,
-    probes: Vec<ProbeReport>,
+    evidence: SourceEvidence,
 }
 
 pub(crate) fn source_text_metrics_report<E>(
@@ -115,11 +115,13 @@ impl SourceReportBuilder {
         module_info: ProbeReport,
     ) -> Self {
         Self {
-            module: module.into(),
             kind,
-            module_info,
-            probes: Vec::new(),
+            evidence: SourceEvidence::new(module, module_info, Vec::new()),
         }
+    }
+
+    pub(crate) fn from_evidence(kind: SourceReportKind, evidence: SourceEvidence) -> Self {
+        Self { kind, evidence }
     }
 
     pub(crate) fn delivery(
@@ -139,17 +141,17 @@ impl SourceReportBuilder {
     }
 
     pub(crate) fn include_module_info_probe(mut self) -> Self {
-        self.probes.push(self.module_info.clone());
+        self.evidence.probes.push(self.evidence.module_info.clone());
         self
     }
 
     pub(crate) fn with_probes(mut self, probes: Vec<ProbeReport>) -> Self {
-        self.probes = probes;
+        self.evidence.probes = probes;
         self
     }
 
     pub(crate) fn push_probe(&mut self, probe: ProbeReport) {
-        self.probes.push(probe);
+        self.evidence.probes.push(probe);
     }
 
     pub(crate) fn push_ok(
@@ -177,19 +179,31 @@ impl SourceReportBuilder {
 
     pub(crate) fn finish(self) -> SourceReport {
         let facts = self.source_facts();
-        SourceReport::new(self.module, self.module_info, self.probes, facts)
+        SourceReport::new(
+            self.evidence.module,
+            self.evidence.module_info,
+            self.evidence.probes,
+            facts,
+        )
     }
 
     fn source_facts(&self) -> SourceFacts {
         match self.kind {
             SourceReportKind::Delivery(kind) => {
-                delivery_source_facts(kind, &self.module_info, &self.probes)
+                delivery_source_facts(kind, &self.evidence.module_info, &self.evidence.probes)
             }
             SourceReportKind::Storage(kind) => {
-                storage_source_facts(kind, &self.module_info, &self.probes)
+                storage_source_facts(kind, &self.evidence.module_info, &self.evidence.probes)
             }
         }
     }
+}
+
+pub(crate) fn source_report_from_evidence(
+    kind: SourceReportKind,
+    evidence: SourceEvidence,
+) -> SourceReport {
+    SourceReportBuilder::from_evidence(kind, evidence).finish()
 }
 
 pub(crate) fn keyed_probe_result<T, E>(

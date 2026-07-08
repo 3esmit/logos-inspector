@@ -12,6 +12,15 @@ pub enum SocialEntity {
 }
 
 #[must_use]
+pub fn comment_topic_from_parts(layer: &str, entity: &str, id: &str) -> Option<String> {
+    comment_topic(
+        SocialLayer::from_text(layer)?,
+        SocialEntity::from_text(entity)?,
+        id,
+    )
+}
+
+#[must_use]
 pub fn comment_topic(layer: SocialLayer, entity: SocialEntity, id: &str) -> Option<String> {
     let id = normalized_topic_id(id)?;
     Some(format!(
@@ -40,6 +49,14 @@ pub fn social_topic_is_valid(topic: &str) -> bool {
 }
 
 impl SocialLayer {
+    fn from_text(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "cryptarchia" | "bedrock" | "l1" => Some(Self::Cryptarchia),
+            "lez" | "l2" => Some(Self::Lez),
+            _ => None,
+        }
+    }
+
     fn as_topic_segment(self) -> &'static str {
         match self {
             Self::Cryptarchia => "cryptarchia",
@@ -49,6 +66,15 @@ impl SocialLayer {
 }
 
 impl SocialEntity {
+    fn from_text(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "transaction" | "tx" => Some(Self::Transaction),
+            "block" => Some(Self::Block),
+            "account" => Some(Self::Account),
+            _ => None,
+        }
+    }
+
     fn as_topic_segment(self) -> &'static str {
         match self {
             Self::Transaction => "transaction",

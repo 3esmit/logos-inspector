@@ -40,10 +40,6 @@ function moduleReport(root, kind) {
 function moduleProbe(root, kind, method) {
     with (root) {
         const report = root.moduleReport(kind)
-        const fact = root.sourceProbeFact(report, method)
-        if (fact) {
-            return fact
-        }
         const probes = report && Array.isArray(report.probes) ? report.probes : []
         const wanted = String(method || "")
         if (report && report.module_info && String(report.module_info.probe_key || "") === wanted) {

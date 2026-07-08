@@ -77,12 +77,16 @@ ColumnLayout {
         id: storageSourceOptions
     }
 
-    Component.onCompleted: settingsRoot.refreshSourceOptions()
+    Component.onCompleted: {
+        settingsRoot.refreshProfileOptions()
+        settingsRoot.refreshSourceOptions()
+    }
 
     Connections {
         target: settingsRoot.model
 
         function onSourcePolicyChanged() {
+            settingsRoot.refreshProfileOptions()
             settingsRoot.refreshSourceOptions()
         }
     }
@@ -851,11 +855,7 @@ ColumnLayout {
     }
 
     function applyProfileIndex(index) {
-        if (index === 2) {
-            settingsRoot.syncProfileFromEndpoints()
-            return
-        }
-        settingsRoot.model.applyProfile(index)
+        settingsRoot.model.applyProfileIndex(index)
     }
 
     function deliverySourceIndexFor(value) {
@@ -888,6 +888,14 @@ ColumnLayout {
         settingsRoot.populateSourceOptions(storageSourceOptions, "storage")
     }
 
+    function refreshProfileOptions() {
+        profileOptions.clear()
+        const options = settingsRoot.model.networkProfileOptions()
+        for (let i = 0; i < options.length; ++i) {
+            profileOptions.append(options[i])
+        }
+    }
+
     function populateSourceOptions(targetModel, family) {
         targetModel.clear()
         const options = settingsRoot.model.sourceModeOptions(family)
@@ -897,13 +905,7 @@ ColumnLayout {
     }
 
     function profileIndexFor(value) {
-        if (value === "local") {
-            return 1
-        }
-        if (value === "custom") {
-            return 2
-        }
-        return 0
+        return settingsRoot.model.profileIndexFor(value)
     }
 
     function inferProfile(sequencer, indexer, node) {
@@ -911,34 +913,19 @@ ColumnLayout {
     }
 
     function profileLabel(value) {
-        if (value === "local") {
-            return qsTr("Local")
-        }
-        if (value === "custom") {
-            return qsTr("Custom")
-        }
-        return qsTr("Testnet")
+        return settingsRoot.model.networkProfileLabel(value)
     }
 
     function profileSummary(value) {
-        if (value === "local") {
-            return qsTr("All endpoints local")
-        }
-        if (value === "custom") {
-            return qsTr("Manual endpoints")
-        }
-        return qsTr("Default testnet")
+        return settingsRoot.model.networkProfileSummary(value)
     }
 
     function profileDetail() {
-        return qsTr("%1 / %2 / %3")
-            .arg(settingsRoot.shortEndpoint(settingsRoot.model.sequencerUrl))
-            .arg(settingsRoot.shortEndpoint(settingsRoot.model.indexerUrl))
-            .arg(settingsRoot.shortEndpoint(settingsRoot.model.nodeUrl))
+        return settingsRoot.model.networkProfileDetail()
     }
 
     function normalizeEndpoint(value) {
-        return String(value || "").trim().replace(/\/+$/, "")
+        return settingsRoot.model.normalizeEndpoint(value)
     }
 
     function shortEndpoint(value) {

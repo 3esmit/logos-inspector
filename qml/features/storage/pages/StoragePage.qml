@@ -850,7 +850,7 @@ ColumnLayout {
             return metricsKnown || root.probeValue("collectMetrics") !== null ? qsTr("metrics") : qsTr("module")
         }
         if (sourceMode === "rest") {
-            const metricsProbe = root.model.moduleProbe("storage", "collectMetrics")
+            const metricsProbe = root.probe("collectMetrics")
             if (root.metricsEndpointConfigured() && metricsProbe && metricsProbe.ok === false) {
                 return qsTr("metrics error")
             }
@@ -875,7 +875,7 @@ ColumnLayout {
             return metricsEvidence.length > 0 && metricsEvidence !== "not observed" ? metricsEvidence : root.shortText(root.model.storageMetricsUrl, 48)
         }
         if (sourceMode === "rest" && root.metricsEndpointConfigured()) {
-            const metricsProbe = root.model.moduleProbe("storage", "collectMetrics")
+            const metricsProbe = root.probe("collectMetrics")
             if (metricsProbe && metricsProbe.ok === false && metricsProbe.error) {
                 return qsTr("REST %1; metrics %2: %3")
                     .arg(root.shortText(root.model.storageRestUrl, 24))
@@ -895,7 +895,7 @@ ColumnLayout {
             return "warning"
         }
         if (sourceMode === "rest") {
-            const metricsProbe = root.model.moduleProbe("storage", "collectMetrics")
+            const metricsProbe = root.probe("collectMetrics")
             if (root.metricsEndpointConfigured() && metricsProbe && metricsProbe.ok === false) {
                 return "error"
             }

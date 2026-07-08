@@ -4,7 +4,7 @@ use serde_json::Value;
 use crate::{LocalNodeActionRequest, local_nodes_action, source_routing::Args};
 
 use super::super::value::{blocking_value, to_value};
-use super::NodeOperationRequest;
+use super::RuntimeOperationRequest;
 use super::spec::{OperationCatalogEntry, OperationDomain, OperationMethod};
 
 pub(super) const OPERATION_CATALOG: &[OperationCatalogEntry] = &[OperationCatalogEntry::new(
@@ -14,7 +14,7 @@ pub(super) const OPERATION_CATALOG: &[OperationCatalogEntry] = &[OperationCatalo
     "Local node action",
 )];
 
-pub(super) async fn execute_local_nodes_action(request: &NodeOperationRequest) -> Result<Value> {
+pub(super) async fn execute_local_nodes_action(request: &RuntimeOperationRequest) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
     let action_request = serde_json::from_value::<LocalNodeActionRequest>(
         args.value(1)

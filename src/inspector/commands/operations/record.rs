@@ -13,15 +13,15 @@ use crate::support::time::now_millis;
 
 use super::spec::OperationExclusiveGroup;
 
-pub(super) type NodeOperationRegistry = Arc<Mutex<HashMap<String, NodeOperationRecord>>>;
+pub(super) type RuntimeOperationRegistry = Arc<Mutex<HashMap<String, RuntimeOperationRecord>>>;
 
 #[derive(Debug, Clone)]
-pub(super) struct NodeOperation {
+pub(super) struct RuntimeOperation {
     pub(super) operation_id: String,
     pub(super) domain: String,
     pub(super) backend: String,
     pub(super) method: String,
-    pub(super) status: NodeOperationStatus,
+    pub(super) status: RuntimeOperationStatus,
     pub(super) label: String,
     pub(super) context: Value,
     pub(super) external_session_id: Option<String>,
@@ -37,7 +37,7 @@ pub(super) struct NodeOperation {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct NodeOperationEvent {
+pub(super) struct RuntimeOperationEvent {
     pub(super) seq: u64,
     operation_id: String,
     domain: String,
@@ -52,14 +52,14 @@ pub(super) struct NodeOperationEvent {
 }
 
 #[derive(Debug)]
-pub(super) struct NodeOperationRecord {
-    pub(super) operation: NodeOperation,
-    pub(super) events: Vec<NodeOperationEvent>,
+pub(super) struct RuntimeOperationRecord {
+    pub(super) operation: RuntimeOperation,
+    pub(super) events: Vec<RuntimeOperationEvent>,
     pub(super) cancel_requested: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum NodeOperationStatus {
+pub(super) enum RuntimeOperationStatus {
     Running,
     Canceling,
     Completed,
@@ -67,7 +67,7 @@ pub(super) enum NodeOperationStatus {
     Canceled,
 }
 
-impl NodeOperationStatus {
+impl RuntimeOperationStatus {
     pub(super) fn as_str(self) -> &'static str {
         match self {
             Self::Running => "running",
@@ -83,10 +83,10 @@ impl NodeOperationStatus {
     }
 }
 
-pub(super) fn update_node_operation(
-    registry: &NodeOperationRegistry,
+pub(super) fn update_runtime_operation(
+    registry: &RuntimeOperationRegistry,
     operation_id: &str,
-    update: impl FnOnce(&mut NodeOperationRecord),
+    update: impl FnOnce(&mut RuntimeOperationRecord),
 ) {
     if let Ok(mut operations) = registry.lock()
         && let Some(record) = operations.get_mut(operation_id)
@@ -96,26 +96,26 @@ pub(super) fn update_node_operation(
 }
 
 pub(super) fn active_operation_in_exclusive_group(
-    record: &NodeOperationRecord,
+    record: &RuntimeOperationRecord,
     group: OperationExclusiveGroup,
 ) -> bool {
     record.operation.exclusive_group == Some(group) && !record.operation.status.is_terminal()
 }
 
-pub(super) fn update_node_operation_progress(
-    registry: &NodeOperationRegistry,
+pub(super) fn update_runtime_operation_progress(
+    registry: &RuntimeOperationRegistry,
     operation_id: &str,
     bytes_written: u64,
     content_length: Option<u64>,
 ) {
-    update_node_operation(registry, operation_id, |record| {
+    update_runtime_operation(registry, operation_id, |record| {
         record.operation.bytes_written = bytes_written;
         if content_length.is_some() {
             record.operation.content_length = content_length;
         }
         let progress = operation_progress(bytes_written, record.operation.content_length);
         record.operation.progress = progress;
-        push_node_operation_event_locked(
+        push_runtime_operation_event_locked(
             record,
             "progress",
             "operation progress",
@@ -126,21 +126,21 @@ pub(super) fn update_node_operation_progress(
     });
 }
 
-pub(super) fn finish_node_operation(
-    registry: &NodeOperationRegistry,
+pub(super) fn finish_runtime_operation(
+    registry: &RuntimeOperationRegistry,
     operation_id: &str,
     cancel_requested: &AtomicBool,
     result: Result<Value>,
 ) {
-    update_node_operation(registry, operation_id, |record| match result {
+    update_runtime_operation(registry, operation_id, |record| match result {
         Ok(value) => {
-            record.operation.status = NodeOperationStatus::Completed;
+            record.operation.status = RuntimeOperationStatus::Completed;
             record.operation.external_session_id = external_session_id(&value);
             record.operation.result = Some(value.clone());
             record.operation.error = None;
             record.operation.progress = Some(1.0);
             record.operation.updated_at = now_millis();
-            push_node_operation_event_locked(
+            push_runtime_operation_event_locked(
                 record,
                 "completed",
                 "operation completed",
@@ -151,10 +151,10 @@ pub(super) fn finish_node_operation(
         }
         Err(error) if cancel_requested.load(Ordering::Relaxed) => {
             let error_text = error.to_string();
-            record.operation.status = NodeOperationStatus::Canceled;
+            record.operation.status = RuntimeOperationStatus::Canceled;
             record.operation.error = Some(error_text.clone());
             record.operation.updated_at = now_millis();
-            push_node_operation_event_locked(
+            push_runtime_operation_event_locked(
                 record,
                 "canceled",
                 "operation canceled",
@@ -165,10 +165,10 @@ pub(super) fn finish_node_operation(
         }
         Err(error) => {
             let error_text = error.to_string();
-            record.operation.status = NodeOperationStatus::Failed;
+            record.operation.status = RuntimeOperationStatus::Failed;
             record.operation.error = Some(error_text.clone());
             record.operation.updated_at = now_millis();
-            push_node_operation_event_locked(
+            push_runtime_operation_event_locked(
                 record,
                 "failed",
                 "operation failed",
@@ -180,8 +180,8 @@ pub(super) fn finish_node_operation(
     });
 }
 
-pub(super) fn push_node_operation_event_locked(
-    record: &mut NodeOperationRecord,
+pub(super) fn push_runtime_operation_event_locked(
+    record: &mut RuntimeOperationRecord,
     phase: &str,
     message: &str,
     progress: Option<f64>,
@@ -195,7 +195,7 @@ pub(super) fn push_node_operation_event_locked(
     let seq = u64::try_from(record.events.len())
         .unwrap_or(u64::MAX)
         .saturating_add(1);
-    record.events.push(NodeOperationEvent {
+    record.events.push(RuntimeOperationEvent {
         seq,
         operation_id: record.operation.operation_id.clone(),
         domain: record.operation.domain.clone(),
@@ -239,7 +239,7 @@ fn external_session_id(value: &Value) -> Option<String> {
     None
 }
 
-pub(super) fn node_operation_value(operation: &NodeOperation) -> Value {
+pub(super) fn runtime_operation_value(operation: &RuntimeOperation) -> Value {
     let mut value = json!({
         "operationId": operation.operation_id,
         "domain": operation.domain,
@@ -284,7 +284,7 @@ pub(super) fn node_operation_value(operation: &NodeOperation) -> Value {
     value
 }
 
-pub(super) fn node_operation_event_value(event: &NodeOperationEvent) -> Value {
+pub(super) fn runtime_operation_event_value(event: &RuntimeOperationEvent) -> Value {
     json!({
         "seq": event.seq,
         "operationId": event.operation_id,
@@ -301,17 +301,17 @@ pub(super) fn node_operation_event_value(event: &NodeOperationEvent) -> Value {
 }
 
 #[cfg(test)]
-pub(super) fn test_node_operation_record(
+pub(super) fn test_runtime_operation_record(
     operation_id: &str,
     domain: &str,
     method: &str,
-    status: NodeOperationStatus,
+    status: RuntimeOperationStatus,
     cancellable: bool,
     exclusive_group: Option<OperationExclusiveGroup>,
     cancel_requested: Arc<AtomicBool>,
-) -> NodeOperationRecord {
-    NodeOperationRecord {
-        operation: NodeOperation {
+) -> RuntimeOperationRecord {
+    RuntimeOperationRecord {
+        operation: RuntimeOperation {
             operation_id: operation_id.to_owned(),
             domain: domain.to_owned(),
             backend: "test".to_owned(),

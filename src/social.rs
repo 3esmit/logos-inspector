@@ -14,7 +14,8 @@ pub use delivery_store::{
 pub use payload::{SocialPayload, parse_social_payload};
 pub use shared_idl::{AcceptedSharedIdlEntry, accepted_shared_idl_entries_from_store};
 pub use topic::{
-    SocialEntity, SocialLayer, comment_topic, lez_account_idl_topic, social_topic_is_valid,
+    SocialEntity, SocialLayer, comment_topic, comment_topic_from_parts, lez_account_idl_topic,
+    social_topic_is_valid,
 };
 
 #[cfg(test)]
@@ -85,6 +86,19 @@ mod tests {
             None
         );
         assert_eq!(lez_account_idl_topic("/"), None);
+    }
+
+    #[test]
+    fn comment_topic_from_parts_accepts_ui_aliases() {
+        assert_eq!(
+            comment_topic_from_parts("bedrock", "tx", "tx-1").as_deref(),
+            Some("/cryptarchia/transaction/tx-1/comments")
+        );
+        assert_eq!(
+            comment_topic_from_parts("l2", "account", "account-1").as_deref(),
+            Some("/lez/account/account-1/comments")
+        );
+        assert_eq!(comment_topic_from_parts("missing", "tx", "tx-1"), None);
     }
 
     #[test]

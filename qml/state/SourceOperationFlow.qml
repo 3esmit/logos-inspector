@@ -12,8 +12,8 @@ QtObject {
     property bool usesRestEndpoint: false
     property bool mutatingDiagnosticsEnabled: false
     property bool sourceArgsIncludeMutatingFlag: false
-    property string defaultLabel: qsTr("Node operation")
-    property string busyError: qsTr("A node operation is already running.")
+    property string defaultLabel: qsTr("Runtime operation")
+    property string busyError: qsTr("A runtime operation is already running.")
     property var terminalDetailProvider: null
 
     property string pendingMethod: ""
@@ -31,7 +31,7 @@ QtObject {
     signal startFailed(var response)
     signal terminalOperation(var operation)
 
-    property NodeOperationClient operationClient: NodeOperationClient {
+    property RuntimeOperationClient operationClient: RuntimeOperationClient {
         id: operations
 
         gateway: root.gateway

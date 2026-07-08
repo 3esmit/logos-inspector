@@ -101,6 +101,8 @@ TestCase {
         model.blockchainModuleReport = null
         model.storageModuleReport = null
         model.messagingModuleReport = null
+        model.storageSourceReport = null
+        model.messagingSourceReport = null
         model.deliveryModuleEvents = []
         model.deliveryModuleEventRevision = 0
         model.deliveryConnectionStatus = ""
@@ -109,10 +111,10 @@ TestCase {
         model.blockchainLastEventText = ""
         model.storageActiveOperation = null
         model.storageActiveOperationRevision = 0
-        model.nodeOperations = ({})
-        model.nodeOperationEventSeq = ({})
-        model.nodeOperationHistory = []
-        model.nodeOperationsRevision = 0
+        model.runtimeOperations = ({})
+        model.runtimeOperationEventSeq = ({})
+        model.runtimeOperationHistory = []
+        model.runtimeOperationsRevision = 0
         model.networkConnectionStatus = ({})
         model.networkConnectionStatusRevision = 0
         model.dashboardMetricHistory = ({})
@@ -308,7 +310,7 @@ TestCase {
         compare(fakeHost.calls[0].args[2], "confirm-local-node-action")
         compare(fakeHost.calls[1].method, "localDevnetList")
         compare(model.localNodesOperations.length, 1)
-        const localNodeHistory = model.nodeOperationHistoryRows("localNodes")
+        const localNodeHistory = model.runtimeOperationHistoryRows("localNodes")
         compare(localNodeHistory.length, 1)
         compare(localNodeHistory[0].label, "Start Bedrock")
         compare(localNodeHistory[0].status, "completed")
@@ -655,7 +657,7 @@ TestCase {
         compare(model.sourceCapabilityAvailable(report, "identity"), false)
     }
 
-    function test_source_probe_facts_drive_module_probe_lookup_without_probe_names() {
+    function test_module_probe_lookup_ignores_source_facts_without_probe_names() {
         model.storageModuleReport = {
             module: "storage_rest",
             probe_facts: [
@@ -686,8 +688,8 @@ TestCase {
             ]
         }
 
-        compare(model.moduleProbeValue("storage", "peerId"), "peer-from-fact")
-        compare(model.moduleProbeError("storage", "collectMetrics"), "metrics unavailable")
+        compare(model.moduleProbeValue("storage", "peerId"), null)
+        compare(model.moduleProbeError("storage", "collectMetrics"), "")
     }
 
     function test_source_diagnostics_prefer_current_report_facts() {
@@ -805,7 +807,7 @@ TestCase {
 
     function test_node_operation_start_dispatches_generic_request() {
         fakeHost.responses = {
-            nodeOperationStart: {
+            runtimeOperationStart: {
                 ok: true,
                 value: {
                     operationId: "op-2",
@@ -820,7 +822,7 @@ TestCase {
         }
         let seen = null
 
-        model.nodeOperationStart({
+        model.runtimeOperationStart({
             domain: "delivery",
             method: "deliverySend",
             args: ["rest", "http://127.0.0.1:8645", true, "/topic/1/a/proto", "hello"],
@@ -830,9 +832,9 @@ TestCase {
         })
 
         tryVerify(function () { return seen !== null })
-        compare(fakeHost.lastMethod, "nodeOperationStart")
+        compare(fakeHost.lastMethod, "runtimeOperationStart")
         compare(fakeHost.lastArgs[0].method, "deliverySend")
-        compare(model.nodeOperations["op-2"].domain, "delivery")
+        compare(model.runtimeOperations["op-2"].domain, "delivery")
     }
 
     function test_node_operation_history_filters_by_domain() {
@@ -853,14 +855,14 @@ TestCase {
             error: "send failed"
         }
 
-        model.appendNodeOperationHistory(storageOperation, "")
-        model.appendNodeOperationHistory(deliveryOperation, "")
+        model.appendRuntimeOperationHistory(storageOperation, "")
+        model.appendRuntimeOperationHistory(deliveryOperation, "")
 
-        const storageRows = model.nodeOperationHistoryRows("storage")
+        const storageRows = model.runtimeOperationHistoryRows("storage")
         compare(storageRows.length, 1)
         compare(storageRows[0].operationId, "op-storage")
         compare(storageRows[0].detail, "z-storage")
-        compare(model.nodeOperationHistoryRows("delivery")[0].detail, "send failed")
+        compare(model.runtimeOperationHistoryRows("delivery")[0].detail, "send failed")
     }
 
     function test_wallet_profile_configured_accepts_checked_env_home_source() {
@@ -1020,6 +1022,22 @@ TestCase {
     }
 
     function test_social_comment_topics_for_supported_detail_kinds() {
+        fakeHost.responses = {
+            socialCommentTopic: function(args) {
+                const layer = String(args[0] || "")
+                const entity = String(args[1] || "")
+                const id = String(args[2] || "")
+                if (id.indexOf("/") >= 0) {
+                    return { ok: true, value: "", text: "", error: "" }
+                }
+                return { ok: true, value: "/" + layer + "/" + entity + "/" + id + "/comments", text: "OK", error: "" }
+            },
+            socialLezAccountIdlTopic: function(args) {
+                const account = String(args[0] || "")
+                return { ok: true, value: account.length ? "/lez/account/" + account + "/idl" : "", text: "OK", error: "" }
+            }
+        }
+
         compare(model.socialCommentTopic("cryptarchia", "transaction", "tx-1"), "/cryptarchia/transaction/tx-1/comments")
         compare(model.socialCommentTopic("cryptarchia", "block", "block-1"), "/cryptarchia/block/block-1/comments")
         compare(model.socialCommentTopic("cryptarchia", "account", "account-1"), "/cryptarchia/account/account-1/comments")
@@ -1522,7 +1540,7 @@ TestCase {
         compare(model.localWalletOperations.length, 1)
         compare(model.localWalletOperations[0].label, "Deploy program")
         compare(model.localWalletOperations[0].status, "submitted")
-        const history = model.nodeOperationHistoryRows("wallet")
+        const history = model.runtimeOperationHistoryRows("wallet")
         compare(history.length, 1)
         compare(history[0].label, "Deploy program")
         compare(history[0].status, "completed")
@@ -1566,7 +1584,7 @@ TestCase {
         compare(model.walletCreateLabel, "")
         compare(model.localWalletOperations[0].label, "Create account")
         compare(model.localWalletOperations[0].status, "created")
-        compare(model.nodeOperationHistoryRows("wallet")[0].label, "Create account")
+        compare(model.runtimeOperationHistoryRows("wallet")[0].label, "Create account")
     }
 
     function test_send_wallet_transaction_uses_confirmation_and_logs_operation() {

@@ -409,9 +409,15 @@ WalletState {
         const record = appendOperation(labelText, statusValue, detailText)
         const historyStatus = operationStatus(statusValue)
         if (gateway) {
-            const appendHistoryCallback = typeof gateway.appendOperationHistory === "function"
+            let appendHistoryCallback = typeof gateway.appendOperationHistory === "function"
                 ? gateway.appendOperationHistory
-                : gateway.appendNodeOperationHistory
+                : null
+            if (!appendHistoryCallback && typeof gateway.appendRuntimeOperationHistory === "function") {
+                appendHistoryCallback = gateway.appendRuntimeOperationHistory
+            }
+            if (!appendHistoryCallback && typeof gateway.appendNodeOperationHistory === "function") {
+                appendHistoryCallback = gateway.appendNodeOperationHistory
+            }
             if (appendHistoryCallback) {
                 appendHistoryCallback({
                     domain: "wallet",

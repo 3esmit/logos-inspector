@@ -279,10 +279,8 @@ function networkConnectionKindForMethod(root, method) {
             return "indexer"
         case "head":
             return "execution"
-        case "deliveryReport":
         case "deliverySourceReport":
             return "messaging"
-        case "storageReport":
         case "storageSourceReport":
             return "storage"
         default:
@@ -370,11 +368,11 @@ function cacheNetworkConnectionResult(root, kind, response) {
             return
         }
         if (target === "messaging") {
-            messagingModuleReport = value || null
+            messagingSourceReport = value || null
             return
         }
         if (target === "storage") {
-            storageModuleReport = value || null
+            storageSourceReport = value || null
         }
     }
 }
@@ -545,71 +543,6 @@ function boolSetting(root, value, key, fallback) {
             return raw
         }
         return fallback === true
-    }
-}
-
-function normalizedNetworkProfile(root, value) {
-    with (root) {
-        const profile = String(value || "default")
-        if (profile === "local" || profile === "custom") {
-            return profile
-        }
-        return "default"
-    }
-}
-
-function resolvedNetworkProfile(root, storedProfile, sequencer, indexer, node) {
-    with (root) {
-        const inferred = root.inferNetworkProfileFromEndpoints(sequencer, indexer, node)
-        if (inferred !== "custom") {
-            return inferred
-        }
-        return root.normalizedNetworkProfile(storedProfile) === "custom" ? "custom" : inferred
-    }
-}
-
-function inferNetworkProfileFromEndpoints(root, sequencer, indexer, node) {
-    with (root) {
-        const seq = root.normalizeEndpoint(sequencer)
-        const idx = root.normalizeEndpoint(indexer)
-        const nod = root.normalizeEndpoint(node)
-        const profiles = sourcePolicy && Array.isArray(sourcePolicy.network_profiles)
-            ? sourcePolicy.network_profiles
-            : fallbackNetworkProfiles(root)
-        for (let i = 0; i < profiles.length; ++i) {
-            const profile = profiles[i] || {}
-            if (seq === root.normalizeEndpoint(profile.sequencer_endpoint)
-                    && idx === root.normalizeEndpoint(profile.indexer_endpoint)
-                    && nod === root.normalizeEndpoint(profile.node_endpoint)) {
-                return String(profile.id || "custom")
-            }
-        }
-        return "custom"
-    }
-}
-
-function fallbackNetworkProfiles(root) {
-    with (root) {
-        return [
-            {
-                id: "default",
-                sequencer_endpoint: root.sourcePolicyDefault("sequencer_endpoint", "https://testnet.lez.logos.co/"),
-                indexer_endpoint: root.sourcePolicyDefault("indexer_endpoint", "http://127.0.0.1:8779/"),
-                node_endpoint: root.sourcePolicyDefault("node_endpoint", "http://127.0.0.1:8080/")
-            },
-            {
-                id: "local",
-                sequencer_endpoint: root.sourcePolicyDefault("local_sequencer_endpoint", "http://127.0.0.1:3040/"),
-                indexer_endpoint: root.sourcePolicyDefault("indexer_endpoint", "http://127.0.0.1:8779/"),
-                node_endpoint: root.sourcePolicyDefault("node_endpoint", "http://127.0.0.1:8080/")
-            }
-        ]
-    }
-}
-
-function normalizeEndpoint(root, value) {
-    with (root) {
-        return String(value || "").trim().replace(/\/+$/, "")
     }
 }
 

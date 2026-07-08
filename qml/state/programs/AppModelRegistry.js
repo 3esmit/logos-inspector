@@ -26,9 +26,7 @@ function programIdKnown(root, programId) {
 }
 
 function knownProgramCacheScope(root) {
-    with (root) {
-        return [String(networkProfile || ""), String(sequencerUrl || "")].join("|")
-    }
+    return root.networkProfileCacheScope()
 }
 
 function knownProgramIdRows(root) {
@@ -130,35 +128,5 @@ function removeIdl(root, index) {
             accountIdlSelectionRevision += 1
         }
         saveIdlState()
-    }
-}
-
-function profileIndex(root) {
-    with (root) {
-        if (networkProfile === "local") {
-            return 1
-        }
-        if (networkProfile === "custom") {
-            return 2
-        }
-        return 0
-    }
-}
-
-function applyProfile(root, index) {
-    with (root) {
-        if (index === 1) {
-            networkProfile = "local"
-            sequencerUrl = root.sourcePolicyDefault("local_sequencer_endpoint", "http://127.0.0.1:3040/")
-            indexerUrl = root.sourcePolicyDefault("indexer_endpoint", "http://127.0.0.1:8779/")
-            nodeUrl = root.sourcePolicyDefault("node_endpoint", "http://127.0.0.1:8080/")
-            return
-        }
-
-        networkProfile = "default"
-        sequencerUrl = root.sourcePolicyDefault("sequencer_endpoint", "https://testnet.lez.logos.co/")
-        indexerUrl = root.sourcePolicyDefault("indexer_endpoint", "http://127.0.0.1:8779/")
-        nodeUrl = root.sourcePolicyDefault("node_endpoint", "http://127.0.0.1:8080/")
-        messagingNetworkPreset = "logos.test"
     }
 }

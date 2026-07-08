@@ -587,7 +587,7 @@ mod tests {
     }
 
     #[test]
-    fn node_operation_cancel_marks_cancelable_operation() -> Result<()> {
+    fn runtime_operation_cancel_marks_cancelable_operation() -> Result<()> {
         let bridge = InspectorBridge::new()?;
         let cancel_requested = bridge.runtime_operations.insert_test_running_operation(
             "existing",
@@ -612,7 +612,7 @@ mod tests {
     }
 
     #[test]
-    fn node_operation_start_accepts_storage_download_request() -> Result<()> {
+    fn runtime_operation_start_accepts_storage_download_request() -> Result<()> {
         let bridge = InspectorBridge::new()?;
         let value = bridge.call_module_value(
             INSPECTOR_MODULE,
@@ -639,9 +639,9 @@ mod tests {
     }
 
     #[test]
-    fn node_operation_request_normalizes_storage_endpoint_first_args() -> Result<()> {
+    fn runtime_operation_request_normalizes_storage_endpoint_first_args() -> Result<()> {
         let request =
-            crate::inspector::commands::operations::node_operation_request_from_value(json!({
+            crate::inspector::commands::operations::runtime_operation_request_from_value(json!({
                 "domain": "storage",
                 "sourceMode": "rest",
                 "endpoint": "http://127.0.0.1:8080/api/storage/v1",
@@ -656,9 +656,9 @@ mod tests {
     }
 
     #[test]
-    fn node_operation_request_normalizes_delivery_endpoint_first_args() -> Result<()> {
+    fn runtime_operation_request_normalizes_delivery_endpoint_first_args() -> Result<()> {
         let request =
-            crate::inspector::commands::operations::node_operation_request_from_value(json!({
+            crate::inspector::commands::operations::runtime_operation_request_from_value(json!({
                 "domain": "delivery",
                 "sourceMode": "rest",
                 "endpoint": "http://127.0.0.1:8645",
@@ -682,8 +682,8 @@ mod tests {
     }
 
     #[test]
-    fn node_operation_request_keeps_delivery_store_query_read_only_args() -> Result<()> {
-        let request = crate::inspector::commands::operations::node_operation_request_from_value(
+    fn runtime_operation_request_keeps_delivery_store_query_read_only_args() -> Result<()> {
+        let request = crate::inspector::commands::operations::runtime_operation_request_from_value(
             json!({
                 "domain": "delivery",
                 "sourceMode": "rest",
@@ -712,7 +712,7 @@ mod tests {
     }
 
     #[test]
-    fn node_operation_start_rejects_second_storage_download() -> Result<()> {
+    fn runtime_operation_start_rejects_second_storage_download() -> Result<()> {
         let bridge = InspectorBridge::new()?;
         bridge.runtime_operations.insert_test_running_operation(
             "storage-download-existing",
@@ -745,9 +745,9 @@ mod tests {
     }
 
     #[test]
-    fn node_operation_request_normalizes_module_delivery_send_args() -> Result<()> {
+    fn runtime_operation_request_normalizes_module_delivery_send_args() -> Result<()> {
         let request =
-            crate::inspector::commands::operations::node_operation_request_from_value(json!({
+            crate::inspector::commands::operations::runtime_operation_request_from_value(json!({
                 "domain": "delivery",
                 "sourceMode": "module",
                 "endpoint": "",
