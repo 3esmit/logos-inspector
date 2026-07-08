@@ -2,24 +2,59 @@
 .import "StorageOperationContracts.js" as StorageOperationContracts
 
 function applyStatusUpdate(root, operation) {
-    const payload = operationPayload(operation && operation.result)
-    if (!isModuleDispatchAck(operation, payload)) {
-        return false
+    return commitReduction(root, reduceRuntimeStatus(root, operation))
+}
+
+function reduceRuntimeStatus(root, operation) {
+    if (!operation || typeof operation !== "object") {
+        return ignored()
     }
+    if (String(operation.domain || "") !== "storage") {
+        return ignored()
+    }
+    const payload = operationPayload(operation && operation.result)
+    if (isModuleDispatchAck(operation, payload)) {
+        return reduceDispatchAck(root, operation, payload)
+    }
+    return reduceRuntimeOperation(root, operation)
+}
+
+function reduceDispatchAck(root, operation, payload) {
     if (terminalizedOperation(root, operation)) {
-        return true
+        return handled()
     }
     const active = root.activeOperation || {}
     if (textValue(active.operationId).length && !sameOperationId(active, operation)) {
-        return false
+        return ignored()
     }
     const next = mergeDispatchAck(storageModuleOperation(active, operation), payload)
-    root.updateActiveOperation(next)
-    root.lastOperation = qsTr("Running")
-    return true
+    return activeReduction(next, qsTr("Running"))
+}
+
+function reduceRuntimeOperation(root, operation) {
+    const active = root.activeOperation || {}
+    if (textValue(active.operationId).length && !sameOperationId(active, operation)) {
+        return ignored()
+    }
+    const next = runtimeOperation(active, operation)
+    if (runtimeTerminal(next)) {
+        return terminalReduction(next)
+    }
+    return activeReduction(next, runningStatusText(next))
 }
 
 function storageModuleOperation(active, operation) {
+    const prior = active || {}
+    const next = operationWithCarriedFields(active, operation)
+    next.backend = next.backend || prior.backend || "module"
+    return next
+}
+
+function runtimeOperation(active, operation) {
+    return operationWithCarriedFields(active, operation)
+}
+
+function operationWithCarriedFields(active, operation) {
     const next = copyOperation(operation)
     const prior = active || {}
     const carry = [
@@ -37,7 +72,6 @@ function storageModuleOperation(active, operation) {
             next[key] = prior[key]
         }
     }
-    next.backend = next.backend || prior.backend || "module"
     return next
 }
 
@@ -72,28 +106,40 @@ function sameOperationId(left, right) {
 
 function terminalizedOperation(root, operation) {
     const operationId = textValue(operation && operation.operationId)
-    return operationId.length > 0 && operationId === textValue(root.terminalOperationId)
-}
-
-function applyModuleEvent(root, eventName, args) {
-    const name = String(eventName || "")
-    const event = normalizeModuleEvent(name, args)
-    if (!event.payload) {
+    if (!operationId.length) {
         return false
     }
-    if (!event.contract) {
-        const success = event.success
-        root.appendOperation(labelForEvent(name), {
-            ok: success,
-            value: event.payload,
-            error: success ? "" : event.error
-        })
-        root.lastOperation = labelForEvent(name)
+    if (operationId === textValue(root.terminalOperationId)) {
         return true
     }
     const active = root.activeOperation || {}
-    if (!correlates(active, event)) {
+    if (!sameOperationId(active, operation) || !runtimeTerminal(active)) {
         return false
+    }
+    return !isModuleDispatchAck(active, operationPayload(active.result))
+}
+
+function applyModuleEvent(root, eventName, args) {
+    return commitReduction(root, reduceModuleEvent(root, eventName, args))
+}
+
+function reduceModuleEvent(root, eventName, args) {
+    const name = String(eventName || "")
+    const event = normalizeModuleEvent(name, args)
+    if (!event.payload) {
+        return ignored()
+    }
+    if (!event.contract) {
+        const success = event.success
+        return logReduction(labelForEvent(name), {
+            ok: success,
+            value: event.payload,
+            error: success ? "" : event.error
+        }, labelForEvent(name))
+    }
+    const active = root.activeOperation || {}
+    if (!correlates(active, event)) {
+        return ignored()
     }
 
     const operation = copyOperation(active)
@@ -106,6 +152,9 @@ function applyModuleEvent(root, eventName, args) {
     if (!String(operation.externalSessionId || "").length && event.sessionId.length) {
         operation.externalSessionId = event.sessionId
     }
+    if (!String(operation.requestId || "").length && event.requestId.length) {
+        operation.requestId = event.requestId
+    }
     if (event.cid.length) {
         operation.cid = event.cid
     }
@@ -116,19 +165,10 @@ function applyModuleEvent(root, eventName, args) {
     operation.status = event.terminal ? (event.success ? "completed" : "failed") : "running"
     operation.result = event.terminal ? event.payload : (operation.result || null)
     operation.error = event.success ? "" : event.error
-    root.updateActiveOperation(operation)
     if (event.terminal) {
-        root.appendOperation(labelForEvent(name), {
-            ok: event.success,
-            value: event.payload,
-            error: operation.error
-        })
-        root.appendTerminalStorageOperation(operation)
-        root.lastOperation = event.success ? qsTr("Complete") : qsTr("Stopped")
-    } else {
-        root.lastOperation = qsTr("Running")
+        return terminalReduction(operation)
     }
-    return true
+    return activeReduction(operation, qsTr("Running"))
 }
 
 function correlates(operation, event) {
@@ -186,6 +226,7 @@ function normalizeModuleEvent(eventName, args) {
         success: success,
         error: success ? "" : (error.length ? error : qsTr("Storage module event failed.")),
         sessionId: textValue(payload && (payload.sessionId || payload.session_id || payload.id)),
+        requestId: textValue(payload && (payload.requestId || payload.request_id)),
         cid: textValue(payload && payload.cid),
         path: textValue(payload && payload.path),
         bytes: Number.isFinite(bytes) ? Math.max(0, bytes) : 0,
@@ -194,14 +235,13 @@ function normalizeModuleEvent(eventName, args) {
 }
 
 function matchesEventIdentity(operation, event) {
-    const operationSession = textValue(operation.externalSessionId || operation.sessionId)
     const operationCid = textValue(operation.cid || (operation.context && operation.context.cid))
     switch (String(event.contract.match || "")) {
     case "session":
-        return operationSession.length ? operationSession === event.sessionId : event.sessionId.length > 0
+        return matchesEventSession(operation, event)
     case "sessionOrCid":
-        if (operationSession.length || event.sessionId.length) {
-            return operationSession.length ? operationSession === event.sessionId : event.sessionId.length > 0
+        if (hasEventSessionIdentity(operation, event)) {
+            return matchesEventSession(operation, event)
         }
         return operationCid.length > 0 && operationCid === event.cid
     case "cid":
@@ -209,6 +249,24 @@ function matchesEventIdentity(operation, event) {
     default:
         return false
     }
+}
+
+function matchesEventSession(operation, event) {
+    const operationSession = textValue(operation.externalSessionId || operation.sessionId)
+    const operationRequest = textValue(operation.requestId || operation.request_id)
+    if (operationSession.length && event.sessionId.length) {
+        return operationSession === event.sessionId
+    }
+    if (operationRequest.length && event.requestId.length) {
+        return operationRequest === event.requestId
+    }
+    return !operationSession.length && !operationRequest.length && (event.sessionId.length > 0 || event.requestId.length > 0)
+}
+
+function hasEventSessionIdentity(operation, event) {
+    return textValue(operation.externalSessionId || operation.sessionId).length > 0
+            || event.sessionId.length > 0
+            || event.requestId.length > 0
 }
 
 function applyEventProgress(operation, event) {
@@ -225,6 +283,75 @@ function applyEventProgress(operation, event) {
     } else if (event.terminal && event.success) {
         operation.progress = 1
     }
+}
+
+function commitReduction(root, reduction) {
+    if (!reduction || reduction.handled !== true) {
+        return false
+    }
+    if (reduction.operation) {
+        root.updateActiveOperation(reduction.operation)
+    }
+    if (reduction.logLabel) {
+        root.appendOperation(reduction.logLabel, reduction.logResponse)
+    }
+    if (reduction.terminal === true && reduction.operation) {
+        root.appendTerminalStorageOperation(reduction.operation)
+    }
+    if (reduction.lastOperation !== undefined) {
+        root.lastOperation = reduction.lastOperation
+    } else if (reduction.terminal === true && reduction.operation) {
+        root.lastOperation = terminalStatusText(reduction.operation)
+    }
+    return true
+}
+
+function ignored() {
+    return { handled: false }
+}
+
+function handled() {
+    return { handled: true }
+}
+
+function activeReduction(operation, lastOperation) {
+    return {
+        handled: true,
+        operation: operation,
+        terminal: false,
+        lastOperation: lastOperation
+    }
+}
+
+function terminalReduction(operation) {
+    return {
+        handled: true,
+        operation: operation,
+        terminal: true
+    }
+}
+
+function logReduction(label, response, lastOperation) {
+    return {
+        handled: true,
+        logLabel: label,
+        logResponse: response,
+        lastOperation: lastOperation
+    }
+}
+
+function runtimeTerminal(operation) {
+    const status = String(operation && operation.status ? operation.status : "")
+    return status === "completed" || status === "failed" || status === "canceled"
+}
+
+function runningStatusText(operation) {
+    const status = String(operation && operation.status ? operation.status : "")
+    return status === "canceling" ? qsTr("Canceling") : qsTr("Running")
+}
+
+function terminalStatusText(operation) {
+    return String(operation && operation.status ? operation.status : "") === "completed" ? qsTr("Complete") : qsTr("Stopped")
 }
 
 function textValue(value) {

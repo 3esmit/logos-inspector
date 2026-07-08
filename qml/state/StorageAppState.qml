@@ -180,7 +180,7 @@ QtObject {
     }
 
     function appendTerminalStorageOperation(operation) {
-        storageOperations.appendTerminalOperation(operation, activeStorageDetailText())
+        return storageOperations.appendTerminalOperation(operation, activeStorageDetailText())
     }
 
     function completeTerminalStorageOperation(operation) {
