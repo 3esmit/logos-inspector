@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use crate::{
     ProbeReport, response_excerpt, rpc::raw_http_json, support::json_value::value_to_string,
+    support::raw_source_transport::request_text,
 };
 
 const BLOCK_STREAM_SNAPSHOT_TIMEOUT: Duration = Duration::from_millis(250);
@@ -161,23 +162,13 @@ async fn blockchain_blocks_range_text(
     let url = format!(
         "{endpoint}/cryptarchia/blocks_range?slot_from={slot_from}&slot_to={slot_to}&order=descending&blocks_limit={limit}&server_batch_size={batch_size}&block_filter=mutable_and_immutable"
     );
-    let response = reqwest::Client::new()
-        .get(&url)
-        .send()
-        .await
-        .with_context(|| format!("failed to call {url}"))?;
-    let status = response.status();
-    let text = response
-        .text()
-        .await
-        .context("failed to read http response body")?;
-    if !status.is_success() {
-        bail!(
-            "http call `{url}` failed with status {status}: {}",
-            response_excerpt(&text)
-        );
-    }
-    Ok(text)
+    request_text(
+        reqwest::Client::new().get(&url),
+        &url,
+        "failed to read http response body",
+        false,
+    )
+    .await
 }
 
 async fn blockchain_blocks_stream_text(endpoint: &str, limit: u64) -> Result<String> {

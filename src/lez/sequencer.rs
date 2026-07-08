@@ -9,7 +9,7 @@ use super::{
     inspect_transaction_summary_with_idl, programs::program_entries, summarize_block,
     summarize_transaction, trace_transaction_summary, trace_transaction_summary_with_idl,
 };
-use crate::{json_rpc_result, parse_hash, raw_json_rpc};
+use crate::{parse_hash, raw_json_rpc_optional_result};
 
 pub async fn sequencer_health(endpoint: &str) -> Result<()> {
     sequencer_client(endpoint)?
@@ -34,12 +34,13 @@ pub async fn sequencer_program_ids(endpoint: &str) -> Result<Vec<ProgramIdEntry>
 }
 
 pub async fn sequencer_block(endpoint: &str, block_id: u64) -> Result<Option<BlockSummary>> {
-    let response = raw_json_rpc(endpoint, "getBlock", Value::Array(vec![json!(block_id)]))
-        .await
-        .with_context(|| format!("failed to fetch sequencer block {block_id}"))?;
-    let Some(result) = json_rpc_result(&response, "getBlock")? else {
+    let result =
+        raw_json_rpc_optional_result(endpoint, "getBlock", Value::Array(vec![json!(block_id)]))
+            .await
+            .with_context(|| format!("failed to fetch sequencer block {block_id}"))?;
+    if result.is_null() {
         return Ok(None);
-    };
+    }
     let encoded = result
         .as_str()
         .context("sequencer getBlock result was not a base64 block")?;

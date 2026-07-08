@@ -1,12 +1,20 @@
+use std::{future::Future, pin::Pin};
+
+use anyhow::Result;
 use serde::Serialize;
 use serde_json::Value;
 
 use crate::{
     blockchain::logos_node_cryptarchia_info,
-    lez::{indexer_health, last_sequencer_block_id, sequencer_health, sequencer_program_ids},
+    lez::{
+        ProgramIdEntry, indexer_health, last_sequencer_block_id, sequencer_health,
+        sequencer_program_ids,
+    },
     probe::ProbeField,
     rpc::raw_json_rpc_optional_result,
 };
+
+type OverviewProbeFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct InspectorScope {
@@ -69,6 +77,91 @@ pub async fn overview(
     indexer_endpoint: &str,
     node_endpoint: &str,
 ) -> OverviewReport {
+    let endpoints = OverviewEndpoints::new(sequencer_endpoint, indexer_endpoint, node_endpoint);
+    overview_with_adapter(&endpoints, &DirectOverviewProbeAdapter).await
+}
+
+#[derive(Debug, Clone)]
+struct OverviewEndpoints {
+    sequencer: String,
+    indexer: String,
+    node: String,
+}
+
+impl OverviewEndpoints {
+    fn new(sequencer_endpoint: &str, indexer_endpoint: &str, node_endpoint: &str) -> Self {
+        Self {
+            sequencer: sequencer_endpoint.to_owned(),
+            indexer: indexer_endpoint.to_owned(),
+            node: node_endpoint.to_owned(),
+        }
+    }
+}
+
+trait OverviewProbeAdapter {
+    fn node_consensus<'a>(&'a self, endpoint: &'a str) -> OverviewProbeFuture<'a, Value>;
+
+    fn sequencer_health<'a>(&'a self, endpoint: &'a str) -> OverviewProbeFuture<'a, ()>;
+
+    fn sequencer_head<'a>(&'a self, endpoint: &'a str) -> OverviewProbeFuture<'a, u64>;
+
+    fn sequencer_programs<'a>(
+        &'a self,
+        endpoint: &'a str,
+    ) -> OverviewProbeFuture<'a, Vec<ProgramIdEntry>>;
+
+    fn indexer_head<'a>(&'a self, endpoint: &'a str) -> OverviewProbeFuture<'a, Value>;
+
+    fn indexer_health<'a>(&'a self, endpoint: &'a str) -> OverviewProbeFuture<'a, Value>;
+}
+
+struct DirectOverviewProbeAdapter;
+
+impl OverviewProbeAdapter for DirectOverviewProbeAdapter {
+    fn node_consensus<'a>(&'a self, endpoint: &'a str) -> OverviewProbeFuture<'a, Value> {
+        Box::pin(async move { logos_node_cryptarchia_info(endpoint).await })
+    }
+
+    fn sequencer_health<'a>(&'a self, endpoint: &'a str) -> OverviewProbeFuture<'a, ()> {
+        Box::pin(async move { sequencer_health(endpoint).await })
+    }
+
+    fn sequencer_head<'a>(&'a self, endpoint: &'a str) -> OverviewProbeFuture<'a, u64> {
+        Box::pin(async move { last_sequencer_block_id(endpoint).await })
+    }
+
+    fn sequencer_programs<'a>(
+        &'a self,
+        endpoint: &'a str,
+    ) -> OverviewProbeFuture<'a, Vec<ProgramIdEntry>> {
+        Box::pin(async move { sequencer_program_ids(endpoint).await })
+    }
+
+    fn indexer_head<'a>(&'a self, endpoint: &'a str) -> OverviewProbeFuture<'a, Value> {
+        Box::pin(async move {
+            raw_json_rpc_optional_result(endpoint, "getLastFinalizedBlockId", Value::Array(vec![]))
+                .await
+        })
+    }
+
+    fn indexer_health<'a>(&'a self, endpoint: &'a str) -> OverviewProbeFuture<'a, Value> {
+        Box::pin(async move { indexer_health(endpoint).await })
+    }
+}
+
+struct OverviewProbeResults {
+    node_consensus: Result<Value>,
+    sequencer_health: Result<()>,
+    sequencer_head: Result<u64>,
+    sequencer_programs: Result<Vec<ProgramIdEntry>>,
+    indexer_head: Result<Value>,
+    indexer_health: Result<Value>,
+}
+
+async fn overview_with_adapter(
+    endpoints: &OverviewEndpoints,
+    adapter: &impl OverviewProbeAdapter,
+) -> OverviewReport {
     let (
         node_consensus,
         sequencer_health,
@@ -77,38 +170,51 @@ pub async fn overview(
         indexer_head,
         indexer_health,
     ) = tokio::join!(
-        logos_node_cryptarchia_info(node_endpoint),
-        sequencer_health(sequencer_endpoint),
-        last_sequencer_block_id(sequencer_endpoint),
-        sequencer_program_ids(sequencer_endpoint),
-        raw_json_rpc_optional_result(
-            indexer_endpoint,
-            "getLastFinalizedBlockId",
-            Value::Array(vec![]),
-        ),
-        indexer_health(indexer_endpoint),
+        adapter.node_consensus(&endpoints.node),
+        adapter.sequencer_health(&endpoints.sequencer),
+        adapter.sequencer_head(&endpoints.sequencer),
+        adapter.sequencer_programs(&endpoints.sequencer),
+        adapter.indexer_head(&endpoints.indexer),
+        adapter.indexer_health(&endpoints.indexer),
     );
 
+    overview_report_from_probe_results(
+        endpoints,
+        OverviewProbeResults {
+            node_consensus,
+            sequencer_health,
+            sequencer_head,
+            sequencer_programs,
+            indexer_head,
+            indexer_health,
+        },
+    )
+}
+
+fn overview_report_from_probe_results(
+    endpoints: &OverviewEndpoints,
+    results: OverviewProbeResults,
+) -> OverviewReport {
     let node = node_probe(
-        node_endpoint,
-        overview_probe(OverviewProbeKey::NodeConsensus, node_consensus),
+        &endpoints.node,
+        overview_probe(OverviewProbeKey::NodeConsensus, results.node_consensus),
     );
     let sequencer = service_probe(
-        sequencer_endpoint,
+        &endpoints.sequencer,
         overview_probe(
             OverviewProbeKey::SequencerHealth,
-            sequencer_health.map(|()| "ok"),
+            results.sequencer_health.map(|()| "ok"),
         ),
-        overview_probe(OverviewProbeKey::SequencerHead, sequencer_head),
+        overview_probe(OverviewProbeKey::SequencerHead, results.sequencer_head),
         Some(overview_probe(
             OverviewProbeKey::SequencerPrograms,
-            sequencer_programs.map(|programs| programs.len()),
+            results.sequencer_programs.map(|programs| programs.len()),
         )),
     );
     let indexer = service_probe(
-        indexer_endpoint,
-        overview_probe(OverviewProbeKey::IndexerHealth, indexer_health),
-        overview_probe(OverviewProbeKey::IndexerHead, indexer_head),
+        &endpoints.indexer,
+        overview_probe(OverviewProbeKey::IndexerHealth, results.indexer_health),
+        overview_probe(OverviewProbeKey::IndexerHead, results.indexer_head),
         None,
     );
 
@@ -137,7 +243,7 @@ struct OverviewProbe {
     field: ProbeField,
 }
 
-fn overview_probe<T, E>(key: OverviewProbeKey, result: Result<T, E>) -> OverviewProbe
+fn overview_probe<T, E>(key: OverviewProbeKey, result: std::result::Result<T, E>) -> OverviewProbe
 where
     T: Serialize,
     E: std::fmt::Display,
@@ -183,30 +289,165 @@ fn service_probe(
 
 #[cfg(test)]
 mod tests {
-    use std::io;
-
+    use anyhow::{Result, anyhow, ensure};
     use serde_json::json;
 
     use super::*;
 
-    #[test]
-    fn overview_probe_projects_success() {
-        let probe = overview_probe(OverviewProbeKey::SequencerHead, Ok::<_, io::Error>(42_u64));
+    struct ReadyOverviewAdapter;
 
-        assert_eq!(probe.key, OverviewProbeKey::SequencerHead);
-        assert!(probe.field.ok);
-        assert_eq!(probe.field.value, Some(json!(42)));
-        assert_eq!(probe.field.error, None);
+    impl OverviewProbeAdapter for ReadyOverviewAdapter {
+        fn node_consensus<'a>(&'a self, _endpoint: &'a str) -> OverviewProbeFuture<'a, Value> {
+            ok(json!({"mode": "normal"}))
+        }
+
+        fn sequencer_health<'a>(&'a self, _endpoint: &'a str) -> OverviewProbeFuture<'a, ()> {
+            ok(())
+        }
+
+        fn sequencer_head<'a>(&'a self, _endpoint: &'a str) -> OverviewProbeFuture<'a, u64> {
+            ok(42)
+        }
+
+        fn sequencer_programs<'a>(
+            &'a self,
+            _endpoint: &'a str,
+        ) -> OverviewProbeFuture<'a, Vec<ProgramIdEntry>> {
+            ok(vec![
+                ProgramIdEntry {
+                    label: "first".to_owned(),
+                    base58: "program-1".to_owned(),
+                    hex: "01".to_owned(),
+                },
+                ProgramIdEntry {
+                    label: "second".to_owned(),
+                    base58: "program-2".to_owned(),
+                    hex: "02".to_owned(),
+                },
+            ])
+        }
+
+        fn indexer_head<'a>(&'a self, _endpoint: &'a str) -> OverviewProbeFuture<'a, Value> {
+            ok(json!("head-1"))
+        }
+
+        fn indexer_health<'a>(&'a self, _endpoint: &'a str) -> OverviewProbeFuture<'a, Value> {
+            ok(json!({"ready": true}))
+        }
+    }
+
+    struct DegradedOverviewAdapter;
+
+    impl OverviewProbeAdapter for DegradedOverviewAdapter {
+        fn node_consensus<'a>(&'a self, _endpoint: &'a str) -> OverviewProbeFuture<'a, Value> {
+            err("node unavailable")
+        }
+
+        fn sequencer_health<'a>(&'a self, _endpoint: &'a str) -> OverviewProbeFuture<'a, ()> {
+            ok(())
+        }
+
+        fn sequencer_head<'a>(&'a self, _endpoint: &'a str) -> OverviewProbeFuture<'a, u64> {
+            err("head unavailable")
+        }
+
+        fn sequencer_programs<'a>(
+            &'a self,
+            _endpoint: &'a str,
+        ) -> OverviewProbeFuture<'a, Vec<ProgramIdEntry>> {
+            ok(Vec::new())
+        }
+
+        fn indexer_head<'a>(&'a self, _endpoint: &'a str) -> OverviewProbeFuture<'a, Value> {
+            ok(Value::Null)
+        }
+
+        fn indexer_health<'a>(&'a self, _endpoint: &'a str) -> OverviewProbeFuture<'a, Value> {
+            err("indexer unavailable")
+        }
     }
 
     #[test]
-    fn overview_probe_projects_error() {
-        let error = io::Error::other("node unavailable");
-        let probe = overview_probe::<u64, _>(OverviewProbeKey::NodeConsensus, Err(error));
+    fn overview_with_adapter_projects_ready_sources() -> Result<()> {
+        let endpoints = OverviewEndpoints::new("seq", "idx", "node");
+        let runtime = tokio::runtime::Runtime::new()?;
 
-        assert_eq!(probe.key, OverviewProbeKey::NodeConsensus);
-        assert!(!probe.field.ok);
-        assert_eq!(probe.field.value, None);
-        assert_eq!(probe.field.error.as_deref(), Some("node unavailable"));
+        let report = runtime.block_on(overview_with_adapter(&endpoints, &ReadyOverviewAdapter));
+
+        ensure!(report.product == "Logos Inspector", "unexpected product");
+        ensure!(report.scopes.len() == 4, "unexpected scope count");
+        ensure!(report.node.endpoint == "node", "unexpected node endpoint");
+        ensure!(
+            report.node.consensus.value == Some(json!({"mode": "normal"})),
+            "unexpected node consensus"
+        );
+        ensure!(
+            report.sequencer.endpoint == "seq",
+            "unexpected sequencer endpoint"
+        );
+        ensure!(
+            report.sequencer.health.value == Some(json!("ok")),
+            "unexpected sequencer health"
+        );
+        ensure!(
+            report.sequencer.head.value == Some(json!(42)),
+            "unexpected sequencer head"
+        );
+        ensure!(
+            report
+                .sequencer
+                .programs
+                .as_ref()
+                .and_then(|field| field.value.as_ref())
+                == Some(&json!(2)),
+            "unexpected sequencer program count"
+        );
+        ensure!(
+            report.indexer.endpoint == "idx",
+            "unexpected indexer endpoint"
+        );
+        ensure!(
+            report.indexer.health.value == Some(json!({"ready": true})),
+            "unexpected indexer health"
+        );
+        ensure!(
+            report.indexer.head.value == Some(json!("head-1")),
+            "unexpected indexer head"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn overview_with_adapter_preserves_degraded_source_errors() -> Result<()> {
+        let endpoints = OverviewEndpoints::new("seq", "idx", "node");
+        let runtime = tokio::runtime::Runtime::new()?;
+
+        let report = runtime.block_on(overview_with_adapter(&endpoints, &DegradedOverviewAdapter));
+
+        ensure!(!report.node.consensus.ok, "node consensus should fail");
+        ensure!(
+            report.node.consensus.error.as_deref() == Some("node unavailable"),
+            "unexpected node error"
+        );
+        ensure!(report.sequencer.health.ok, "sequencer health should pass");
+        ensure!(!report.sequencer.head.ok, "sequencer head should fail");
+        ensure!(
+            report.sequencer.head.error.as_deref() == Some("head unavailable"),
+            "unexpected sequencer head error"
+        );
+        ensure!(!report.indexer.health.ok, "indexer health should fail");
+        ensure!(
+            report.indexer.health.error.as_deref() == Some("indexer unavailable"),
+            "unexpected indexer health error"
+        );
+        Ok(())
+    }
+
+    fn ok<'a, T: Send + 'a>(value: T) -> OverviewProbeFuture<'a, T> {
+        Box::pin(async move { Ok(value) })
+    }
+
+    fn err<'a, T: Send + 'a>(message: &'static str) -> OverviewProbeFuture<'a, T> {
+        Box::pin(async move { Err(anyhow!(message)) })
     }
 }

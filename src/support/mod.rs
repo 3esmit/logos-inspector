@@ -4,6 +4,7 @@ pub(crate) mod confirmation;
 pub(crate) mod entity_id;
 pub(crate) mod http_response;
 pub(crate) mod json_value;
+pub(crate) mod raw_source_transport;
 pub(crate) mod settings_backup;
 pub(crate) mod state_store;
 pub(crate) mod time;

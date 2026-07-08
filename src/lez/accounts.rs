@@ -10,7 +10,7 @@ use super::{
 };
 use crate::{
     ACCOUNT_TRANSACTION_LIMIT, AccountIdlDecodeReport, decode_account_data_hex_with_idl,
-    json_rpc_result, parse_account_id, raw_json_rpc,
+    parse_account_id, raw_json_rpc_optional_result,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -152,16 +152,16 @@ pub async fn account_transactions_by_account(
     limit: usize,
 ) -> Result<Vec<AccountTransactionSummary>> {
     let account_id = parse_account_id(account_id)?.to_string();
-    let response = raw_json_rpc(
+    let result = raw_json_rpc_optional_result(
         indexer_endpoint,
         "getTransactionsByAccount",
         json!([account_id.as_str(), offset, limit]),
     )
     .await
     .with_context(|| format!("failed to fetch transactions for account {account_id}"))?;
-    let Some(result) = json_rpc_result(&response, "getTransactionsByAccount")? else {
+    if result.is_null() {
         return Ok(Vec::new());
-    };
+    }
     let transactions = result
         .as_array()
         .context("getTransactionsByAccount result was not an array")?;

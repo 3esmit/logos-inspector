@@ -1,146 +1,42 @@
-use std::{
-    env,
-    path::{Path, PathBuf},
-    process::Command,
-};
+mod planner;
 
 use anyhow::{Context as _, Result, bail};
-use logos_inspector::local_nodes::bootstrap_default_local_indexer_for_saved_settings;
+use logos_inspector::local_nodes::bootstrap_default_local_indexer;
+use planner::{GuiLaunchTarget, plan_launch};
+use std::{path::Path, process::Command};
 
 pub fn run() -> Result<()> {
-    if env::var_os("LOGOS_INSPECTOR_ENABLE_INDEXER_AUTO_BOOTSTRAP").is_some() {
-        bootstrap_default_local_indexer_for_saved_settings()?;
+    let plan = plan_launch()?;
+    if plan.bootstrap_default_local_indexer {
+        bootstrap_default_local_indexer()?;
     }
 
-    if let Some(program) = standalone_program() {
-        let status = Command::new(&program)
-            .status()
-            .with_context(|| format!("failed to launch standalone GUI at {}", program.display()))?;
-
-        if !status.success() {
-            bail!("standalone GUI exited with {status}");
+    match plan.target {
+        GuiLaunchTarget::StandaloneProgram(program) => {
+            run_program(&program, "standalone GUI")?;
         }
-        return Ok(());
-    }
+        GuiLaunchTarget::Nix { flake_ref } => {
+            let status = Command::new("nix")
+                .args(["run", &flake_ref])
+                .status()
+                .context("failed to launch QML UI with nix")?;
 
-    let flake_ref = format!("path:{}#standalone", env!("CARGO_MANIFEST_DIR"));
-    let status = Command::new("nix")
-        .args(["run", &flake_ref])
-        .status()
-        .context("failed to launch QML UI with nix")?;
-
-    if !status.success() {
-        bail!("QML UI exited with {status}");
+            if !status.success() {
+                bail!("QML UI exited with {status}");
+            }
+        }
     }
 
     Ok(())
 }
 
-fn standalone_program() -> Option<PathBuf> {
-    if let Some(program) = env::var_os("LOGOS_INSPECTOR_STANDALONE_GUI") {
-        let program = PathBuf::from(program);
-        if program.is_file() {
-            return Some(program);
-        }
+fn run_program(program: &Path, label: &str) -> Result<()> {
+    let status = Command::new(program)
+        .status()
+        .with_context(|| format!("failed to launch {label} at {}", program.display()))?;
+
+    if !status.success() {
+        bail!("{label} exited with {status}");
     }
-
-    let exe = env::current_exe().ok()?;
-    sibling_standalone_program(&exe)
-}
-
-fn sibling_standalone_program(exe: &Path) -> Option<PathBuf> {
-    let sibling = exe.with_file_name(standalone_binary_name());
-    if sibling.is_file() && sibling_is_current_enough(exe, &sibling) {
-        return Some(sibling);
-    }
-    None
-}
-
-fn sibling_is_current_enough(exe: &Path, sibling: &Path) -> bool {
-    let exe_mtime = exe.metadata().and_then(|metadata| metadata.modified()).ok();
-    let sibling_mtime = sibling
-        .metadata()
-        .and_then(|metadata| metadata.modified())
-        .ok();
-    match (exe_mtime, sibling_mtime) {
-        (Some(exe_mtime), Some(sibling_mtime)) => sibling_mtime >= exe_mtime,
-        _ => true,
-    }
-}
-
-fn standalone_binary_name() -> &'static str {
-    if cfg!(windows) {
-        "logos-inspector-standalone-gui.exe"
-    } else {
-        "logos-inspector-standalone-gui"
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    use std::{
-        fs, thread,
-        time::{Duration, SystemTime},
-    };
-
-    #[test]
-    fn sibling_standalone_program_rejects_older_sibling() -> Result<()> {
-        let dir = temp_test_dir("older");
-        fs::create_dir_all(&dir)?;
-        let exe = dir.join("logos-inspector");
-        let sibling = dir.join(standalone_binary_name());
-        touch(&sibling)?;
-        thread::sleep(Duration::from_millis(20));
-        touch(&exe)?;
-
-        let selected = sibling_standalone_program(&exe);
-
-        cleanup_temp_dir(&dir)?;
-        if selected.is_some() {
-            bail!("older standalone sibling should not be selected, got {selected:?}");
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn sibling_standalone_program_accepts_newer_sibling() -> Result<()> {
-        let dir = temp_test_dir("newer");
-        fs::create_dir_all(&dir)?;
-        let exe = dir.join("logos-inspector");
-        let sibling = dir.join(standalone_binary_name());
-        touch(&exe)?;
-        thread::sleep(Duration::from_millis(20));
-        touch(&sibling)?;
-
-        let selected = sibling_standalone_program(&exe);
-
-        cleanup_temp_dir(&dir)?;
-        if selected.as_deref() != Some(sibling.as_path()) {
-            bail!("newer standalone sibling should be selected, got {selected:?}");
-        }
-        Ok(())
-    }
-
-    fn touch(path: &Path) -> Result<()> {
-        fs::write(path, [])?;
-        Ok(())
-    }
-
-    fn temp_test_dir(name: &str) -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or_default();
-        env::temp_dir().join(format!(
-            "logos-inspector-gui-{name}-{}-{nanos}",
-            std::process::id()
-        ))
-    }
-
-    fn cleanup_temp_dir(path: &Path) -> Result<()> {
-        fs::remove_dir_all(path)?;
-        Ok(())
-    }
+    Ok(())
 }
