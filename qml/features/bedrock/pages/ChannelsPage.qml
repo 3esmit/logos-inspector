@@ -3,7 +3,6 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Layouts
 import "../../../components"
-import "../../../components/common"
 import "../../../state"
 import "../../../theme"
 import "../../../utils/UiFormat.js" as UiFormat
@@ -23,24 +22,13 @@ ColumnLayout {
         }
     }
 
-    ListToolbar {
+    PagedInspectionTable {
         theme: root.theme
         loadCount: root.model.channelsPageLimit
         rangeText: root.slotRangeText()
         canGoNewer: root.canLoadNewer()
         canGoOlder: root.model.channelsPageSlotFrom > 0
         busy: root.model.busy
-        Layout.fillWidth: true
-        onRefresh: root.model.refreshChannelsPage()
-        onNewer: root.model.newerChannelsPage()
-        onOlder: root.model.olderChannelsPage()
-        onLoadCountSelected: function (count) {
-            root.model.setChannelsPageLimit(count)
-        }
-    }
-
-    DataTableFrame {
-        theme: root.theme
         Layout.fillWidth: true
         headerCells: [
             { text: qsTr("Channel"), width: 210, fill: true },
@@ -50,6 +38,12 @@ ColumnLayout {
             { text: qsTr("Keys"), width: 86 }
         ]
         rows: root.channelRows()
+        onRefreshRequested: root.model.refreshChannelsPage()
+        onNewerRequested: root.model.newerChannelsPage()
+        onOlderRequested: root.model.olderChannelsPage()
+        onLoadCountSelected: function (count) {
+            root.model.setChannelsPageLimit(count)
+        }
         onCellActivated: function (row, column, cell, rowData) {
             if (column === 0 && rowData.channelRaw.length > 0) {
                 root.model.openChannel(rowData.raw)

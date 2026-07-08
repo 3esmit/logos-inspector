@@ -5,44 +5,19 @@ import QtQuick.Layouts
 import "../../../components"
 import "../../../state"
 
-Panel {
+SourceSettingsPanel {
     id: root
 
     property real pageWidth: 900
     property AppModel modelRef
-    property string subtitle: ""
-    property string statusText: qsTr("Unknown")
-    property string statusDetail: ""
-    property color statusColor: theme.textMuted
     property var sourceOptions
 
-    signal queryClicked()
+    busy: root.modelRef ? root.modelRef.busy : false
+    queryAccessibleName: qsTr("Query Delivery status")
 
-    RowLayout {
-        spacing: root.theme.gap
-        Layout.fillWidth: true
-
-        Text {
-            text: root.subtitle
-            color: root.theme.textMuted
-            textFormat: Text.PlainText
-            wrapMode: Text.Wrap
-            font.pixelSize: root.theme.secondaryText
-            Layout.fillWidth: true
-        }
-
-        StatusPill {
-            theme: root.theme
-            text: root.statusText
-            colorToken: root.statusColor
-        }
-    }
-
-    GridLayout {
-        columns: root.pageWidth < 760 ? 1 : 2
-        columnSpacing: root.theme.gap
-        rowSpacing: root.theme.gap
-        Layout.fillWidth: true
+    SourceSettingsGrid {
+        theme: root.theme
+        pageWidth: root.pageWidth
 
         ComboField {
             theme: root.theme
@@ -108,30 +83,6 @@ Panel {
             detail: qsTr("Allows publish, subscribe, and unsubscribe actions after per-action confirmation.")
             checked: root.modelRef.messagingMutatingDiagnosticsEnabled
             onToggled: root.modelRef.messagingMutatingDiagnosticsEnabled = checked
-        }
-    }
-
-    RowLayout {
-        spacing: root.theme.gapSmall
-        Layout.fillWidth: true
-
-        ActionButton {
-            theme: root.theme
-            text: qsTr("Query status")
-            primary: true
-            enabled: !root.modelRef.busy
-            Layout.preferredWidth: 132
-            accessibleName: qsTr("Query Delivery status")
-            onClicked: root.queryClicked()
-        }
-
-        Text {
-            text: root.statusDetail
-            color: root.theme.textMuted
-            textFormat: Text.PlainText
-            wrapMode: Text.Wrap
-            font.pixelSize: root.theme.dataText
-            Layout.fillWidth: true
         }
     }
 

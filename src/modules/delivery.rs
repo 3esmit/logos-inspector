@@ -1,10 +1,10 @@
-use crate::source_routing::{DeliverySourceReportKind, SourceProbeKey, SourceReportBuilder};
-
-use super::base::{
-    DELIVERY_MODULE, ModuleReport, call_probe, call_source_probe, module_info_probe, optional,
+use crate::source_routing::{
+    DeliverySourceReportKind, SourceProbeKey, SourceReport, SourceReportBuilder,
 };
 
-pub fn delivery_report(info_id: Option<&str>) -> ModuleReport {
+use super::base::{DELIVERY_MODULE, call_probe, call_source_probe, module_info_probe, optional};
+
+pub fn delivery_report(info_id: Option<&str>) -> SourceReport {
     let mut probes = vec![
         call_source_probe(
             DELIVERY_MODULE,

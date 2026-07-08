@@ -1,4 +1,5 @@
 import QtQml
+import "ConfirmationPolicy.js" as ConfirmationPolicy
 
 QtObject {
     id: root
@@ -66,7 +67,7 @@ QtObject {
 
         const operationLabel = String(label || actionLabel(action))
         gateway.setBusy(true, operationLabel)
-        return gateway.request("localNodesAction", [networkProfile, request, "confirm-local-node-action"], operationLabel, true, function (response) {
+        return gateway.request("localNodesAction", [networkProfile, request, ConfirmationPolicy.token("local-node-action")], operationLabel, true, function (response) {
             gateway.setBusy(false, "")
             if (response.ok) {
                 report = response.value || null

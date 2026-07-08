@@ -3,7 +3,6 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Layouts
 import "../../../components"
-import "../../../components/common"
 import "../../../state"
 import "../../../theme"
 import "../../../utils/UiFormat.js" as UiFormat
@@ -23,24 +22,13 @@ ColumnLayout {
         }
     }
 
-    ListToolbar {
+    PagedInspectionTable {
         theme: root.theme
         loadCount: root.model.lezTransactionsPageLimit
         rangeText: root.rangeText()
         canGoNewer: root.model.lezTransactionsPageBeforeBlock > 0
         canGoOlder: root.model.lezTransactionsPageNextBeforeBlock > 0 || root.model.lezTransactionsPageOverflowRows.length > 0
         busy: root.model.busy
-        Layout.fillWidth: true
-        onRefresh: root.model.refreshLezTransactionsPage(root.model.lezTransactionsPageBeforeBlock > 0 ? root.model.lezTransactionsPageBeforeBlock : null)
-        onNewer: root.model.newerLezTransactionsPage()
-        onOlder: root.model.olderLezTransactionsPage()
-        onLoadCountSelected: function (count) {
-            root.model.setLezTransactionsPageLimit(count)
-        }
-    }
-
-    DataTableFrame {
-        theme: root.theme
         Layout.fillWidth: true
         headerCells: [
             { text: qsTr("L2 block"), width: 96 },
@@ -49,6 +37,12 @@ ColumnLayout {
             { text: qsTr("Words / bytes"), width: 72 }
         ]
         rows: root.transactionRows()
+        onRefreshRequested: root.model.refreshLezTransactionsPage(root.model.lezTransactionsPageBeforeBlock > 0 ? root.model.lezTransactionsPageBeforeBlock : null)
+        onNewerRequested: root.model.newerLezTransactionsPage()
+        onOlderRequested: root.model.olderLezTransactionsPage()
+        onLoadCountSelected: function (count) {
+            root.model.setLezTransactionsPageLimit(count)
+        }
         onCellActivated: function (row, column, cell, rowData) {
             if (column === 0 && rowData.blockHash.length > 0) {
                 root.model.openReference("indexerBlock", rowData.blockHash)

@@ -8,8 +8,7 @@ use crate::source_routing::{
     raw_http_json_url, require_mutating_diagnostics, rest_empty_request,
 };
 
-use super::super::value::blocking_value;
-use super::NodeOperationRequest;
+use super::{NodeOperationRequest, blocking_module_call, blocking_module_dispatch};
 
 const MAX_DELIVERY_STORE_PAGE_SIZE: u64 = 100;
 
@@ -22,13 +21,12 @@ pub(super) async fn execute_delivery_subscription(
     if let Some(module_args) =
         source_routing::delivery_message_args(&args, "delivery message action")?
     {
-        return blocking_value("delivery module message action", move || {
-            source_routing::call_value(
-                source_routing::DELIVERY_MODULE,
-                module_method,
-                &module_args.values,
-            )
-        })
+        return blocking_module_call(
+            "delivery module message action",
+            source_routing::DELIVERY_MODULE,
+            module_method,
+            module_args.values,
+        )
         .await;
     }
     let source = delivery_rest_source(&args)?;
@@ -66,19 +64,13 @@ pub(super) async fn execute_delivery_send(request: &NodeOperationRequest) -> Res
             .and_then(Value::as_str)
             .map(str::len)
             .unwrap_or(0);
-        return blocking_value("delivery module send", move || {
-            let value = source_routing::call_value(
-                source_routing::DELIVERY_MODULE,
-                "send",
-                &module_args.values,
-            )?;
-            Ok(source_routing::dispatch_result(
-                source_routing::DELIVERY_MODULE,
-                "send",
-                value,
-                &[("contentTopic", topic), ("bytes", payload_len.to_string())],
-            ))
-        })
+        return blocking_module_dispatch(
+            "delivery module send",
+            source_routing::DELIVERY_MODULE,
+            "send",
+            module_args.values,
+            vec![("contentTopic", topic), ("bytes", payload_len.to_string())],
+        )
         .await;
     }
     let source = delivery_rest_source(&args)?;
@@ -112,9 +104,12 @@ pub(super) async fn execute_delivery_module_action(
     let args = Args::new(request.args.clone())?;
     let call_args =
         source_routing::delivery_lifecycle_args(&args, "delivery node lifecycle action")?;
-    blocking_value("delivery module node action", move || {
-        source_routing::call_value(source_routing::DELIVERY_MODULE, method, &call_args)
-    })
+    blocking_module_call(
+        "delivery module node action",
+        source_routing::DELIVERY_MODULE,
+        method,
+        call_args,
+    )
     .await
 }
 

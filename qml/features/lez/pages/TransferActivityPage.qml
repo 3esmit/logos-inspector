@@ -3,7 +3,6 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Layouts
 import "../../../components"
-import "../../../components/common"
 import "../../../state"
 import "../../../theme"
 import "../../../utils/UiFormat.js" as UiFormat
@@ -38,7 +37,7 @@ ColumnLayout {
         }
     }
 
-    ListToolbar {
+    PagedInspectionTable {
         theme: root.theme
         loadCount: root.model.transferActivityLimit
         rangeText: root.transferActivityRangeText()
@@ -46,19 +45,14 @@ ColumnLayout {
         canGoOlder: root.model.transferActivityNextBeforeBlock > 0 || root.model.transferActivityOverflowRows.length > 0
         busy: root.model.busy
         Layout.fillWidth: true
-        onRefresh: root.model.refreshTransferActivityPage()
-        onNewer: root.model.previousTransferActivityPage()
-        onOlder: root.model.nextTransferActivityPage()
+        headerCells: root.recipientHeaderCells()
+        rows: root.recipientRows()
+        onRefreshRequested: root.model.refreshTransferActivityPage()
+        onNewerRequested: root.model.previousTransferActivityPage()
+        onOlderRequested: root.model.nextTransferActivityPage()
         onLoadCountSelected: function (count) {
             root.model.setTransferActivityPageLimit(count)
         }
-    }
-
-    DataTableFrame {
-        theme: root.theme
-        Layout.fillWidth: true
-        headerCells: root.recipientHeaderCells()
-        rows: root.recipientRows()
         onCellActivated: function (row, column, cell, rowData) {
             if (column === 0 && rowData.recipientRaw.length > 0) {
                 root.model.openRecipient(rowData.recipientRaw)

@@ -1,8 +1,10 @@
-use crate::source_routing::{SourceProbeKey, SourceReportBuilder, StorageSourceReportKind};
+use crate::source_routing::{
+    SourceProbeKey, SourceReport, SourceReportBuilder, StorageSourceReportKind,
+};
 
-use super::base::{ModuleReport, STORAGE_MODULE, call_source_probe, module_info_probe, optional};
+use super::base::{STORAGE_MODULE, call_source_probe, module_info_probe, optional};
 
-pub fn storage_report(cid: Option<&str>, privileged_debug_enabled: bool) -> ModuleReport {
+pub fn storage_report(cid: Option<&str>, privileged_debug_enabled: bool) -> SourceReport {
     let mut probes = vec![
         call_source_probe(
             STORAGE_MODULE,

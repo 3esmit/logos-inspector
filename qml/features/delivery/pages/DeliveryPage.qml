@@ -14,6 +14,13 @@ ColumnLayout {
 
     required property Theme theme
     required property AppModel model
+
+    SourceInspectionSession {
+        id: sourceSession
+        model: root.model
+        theme: root.theme
+        family: "delivery"
+    }
     property string currentTab: "overview"
 
     width: parent ? parent.width : 900
@@ -333,19 +340,19 @@ ColumnLayout {
     }
 
     function refreshSource(showResult) {
-        root.model.queryNetworkConnection("messaging", showResult === true)
+        sourceSession.refresh(showResult)
     }
 
     function pending() {
-        return root.model.networkConnectionIsPending("messaging")
+        return sourceSession.pending()
     }
 
     function report() {
-        return root.model.moduleReport("messaging")
+        return sourceSession.report()
     }
 
     function status() {
-        return root.model.networkConnectionState("messaging")
+        return sourceSession.status()
     }
 
     function statusLine() {
@@ -390,7 +397,7 @@ ColumnLayout {
     }
 
     function sourceName() {
-        return root.model.deliverySourceLabel()
+        return sourceSession.sourceLabel()
     }
 
     function sourceShortLabel() {
@@ -426,8 +433,8 @@ ColumnLayout {
 
     function sourceBadges() {
         const rows = [
-            root.model.deliverySourceLabel(),
-            root.shortText(root.model.deliverySourceTarget(), 42),
+            sourceSession.sourceLabel(),
+            root.shortText(sourceSession.sourceTarget(), 42),
             root.model.normalizedMessagingNetworkPreset(root.model.messagingNetworkPreset),
             qsTr("%1 s window").arg(root.model.messagingRollingWindow)
         ]
@@ -443,11 +450,11 @@ ColumnLayout {
     }
 
     function probeValue(method) {
-        return root.model.moduleProbeValue("messaging", method)
+        return sourceSession.probeValue(method)
     }
 
     function probe(method) {
-        return root.model.sourceProbeFact(root.report(), method) || root.model.moduleProbe("messaging", method)
+        return sourceSession.probe(method)
     }
 
     function probeOk(method) {
@@ -456,37 +463,15 @@ ColumnLayout {
     }
 
     function metricDisplay(key) {
-        const value = root.model.dashboardMetricValue(key)
-        return value === null || value === undefined ? qsTr("n/a") : root.model.valueText(value)
+        return sourceSession.metricDisplay(key)
     }
 
     function metricTone(key) {
-        const value = Number(root.model.dashboardMetricValue(key))
-        if (!Number.isFinite(value)) {
-            return root.theme.textMuted
-        }
-        if (key.indexOf("error") >= 0 || key.indexOf("failed") >= 0) {
-            return value > 0 ? root.theme.error : root.theme.success
-        }
-        return value > 0 ? root.theme.success : root.theme.textMuted
+        return sourceSession.metricTone(key)
     }
 
     function failedProbeCount() {
-        let failed = 0
-        const report = root.report()
-        if (!report) {
-            return failed
-        }
-        if (report.module_info && report.module_info.ok === false) {
-            failed += 1
-        }
-        const probes = Array.isArray(report.probes) ? report.probes : []
-        for (let i = 0; i < probes.length; ++i) {
-            if (probes[i] && probes[i].ok === false) {
-                failed += 1
-            }
-        }
-        return failed
+        return sourceSession.failedProbeCount()
     }
 
     function identityEvidence() {
@@ -506,12 +491,11 @@ ColumnLayout {
     }
 
     function sourceFactAvailable(key) {
-        return root.model.sourceCapabilityAvailable(root.report(), key) === true
+        return sourceSession.sourceFactAvailable(key)
     }
 
     function sourceFactEvidence(key, fallback) {
-        const evidence = root.model.sourceCapabilityEvidence(root.report(), key)
-        return evidence.length > 0 ? evidence : fallback
+        return sourceSession.sourceFactEvidence(key, fallback)
     }
 
     function sourceFactObservedState(key, fallbackKnown) {
@@ -550,20 +534,7 @@ ColumnLayout {
     }
 
     function evidenceRows() {
-        const rows = []
-        const info = root.moduleInfoProbe()
-        if (info) {
-            rows.push(root.probeRow(info, qsTr("Source check")))
-        }
-        const report = root.report()
-        const probes = report && Array.isArray(report.probes) ? report.probes : []
-        for (let i = 0; i < probes.length; ++i) {
-            rows.push(root.probeRow(probes[i], qsTr("Probe")))
-        }
-        if (rows.length === 0) {
-            rows.push(root.statusRow(qsTr("Probe evidence"), qsTr("empty"), qsTr("Refresh source to load probe evidence."), "neutral"))
-        }
-        return rows
+        return sourceSession.evidenceRows(root, qsTr("Refresh source to load probe evidence."))
     }
 
     function topologyRows() {
@@ -843,8 +814,7 @@ ColumnLayout {
     }
 
     function metricKnown(key) {
-        const value = root.model.dashboardMetricValue(key)
-        return value !== null && value !== undefined
+        return sourceSession.metricKnown(key)
     }
 
     function restMetricsState() {

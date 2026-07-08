@@ -1,14 +1,43 @@
 use serde::Serialize;
 
-use crate::{ProbeReport, modules::ModuleReport};
+use crate::ProbeReport;
 
 use crate::source_routing::{
-    DeliverySourceReportKind, SourceFacts, SourceProbeKey, StorageSourceReportKind,
-    delivery_source_facts, storage_source_facts,
+    DeliverySourceReportKind, SourceCapabilityFact, SourceFacts, SourceHealthFacts,
+    SourceProbeFact, SourceProbeKey, StorageSourceReportKind, delivery_source_facts,
+    storage_source_facts,
 };
 
+#[derive(Debug, Clone, Serialize)]
+pub struct SourceReport {
+    pub module: String,
+    pub module_info: ProbeReport,
+    pub probes: Vec<ProbeReport>,
+    pub health: SourceHealthFacts,
+    pub probe_facts: Vec<SourceProbeFact>,
+    pub capability_facts: Vec<SourceCapabilityFact>,
+}
+
+impl SourceReport {
+    fn new(
+        module: impl Into<String>,
+        module_info: ProbeReport,
+        probes: Vec<ProbeReport>,
+        facts: SourceFacts,
+    ) -> Self {
+        Self {
+            module: module.into(),
+            module_info,
+            probes,
+            health: facts.health,
+            probe_facts: facts.probe_facts,
+            capability_facts: facts.capability_facts,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SourceReportKind {
+pub(crate) enum SourceReportKind {
     Delivery(DeliverySourceReportKind),
     Storage(StorageSourceReportKind),
 }
@@ -21,18 +50,84 @@ pub(crate) struct SourceReportBuilder {
     probes: Vec<ProbeReport>,
 }
 
+pub(crate) fn source_text_metrics_report<E>(
+    module: impl Into<String>,
+    kind: SourceReportKind,
+    endpoint: &str,
+    scrape: MetricsProbeSpec,
+    collect: MetricsProbeSpec,
+    result: Result<String, E>,
+) -> SourceReport
+where
+    E: std::fmt::Display,
+{
+    let module = module.into();
+    match result {
+        Ok(text) => {
+            let module_info = keyed_probe_ok(
+                scrape.key,
+                scrape.label,
+                endpoint,
+                serde_json::json!({
+                    "bytes": text.len(),
+                    "lines": text.lines().count(),
+                }),
+            );
+            let mut report = SourceReportBuilder::new(module, kind, module_info);
+            report.push_ok(collect.key, collect.label, endpoint, text);
+            report.finish()
+        }
+        Err(error) => {
+            let error = error.to_string();
+            let module_info = keyed_probe_err(scrape.key, scrape.label, endpoint, &error);
+            let mut report = SourceReportBuilder::new(module, kind, module_info);
+            report.push_probe(keyed_probe_err(collect.key, collect.label, endpoint, error));
+            report.finish()
+        }
+    }
+}
+
+pub(crate) fn unsupported_source_report(
+    module_prefix: &str,
+    family_label: &str,
+    kind: SourceReportKind,
+    mode: &str,
+) -> SourceReport {
+    let module = format!("{module_prefix}_{mode}");
+    let module_info = ProbeReport::err(
+        format!("{family_label} source"),
+        mode,
+        format!("{family_label} source mode `{mode}` is not implemented"),
+    );
+    SourceReportBuilder::new(module, kind, module_info).finish()
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct MetricsProbeSpec {
+    pub(crate) key: SourceProbeKey,
+    pub(crate) label: &'static str,
+}
+
 impl SourceReportBuilder {
+    pub(crate) fn new(
+        module: impl Into<String>,
+        kind: SourceReportKind,
+        module_info: ProbeReport,
+    ) -> Self {
+        Self {
+            module: module.into(),
+            kind,
+            module_info,
+            probes: Vec::new(),
+        }
+    }
+
     pub(crate) fn delivery(
         module: impl Into<String>,
         kind: DeliverySourceReportKind,
         module_info: ProbeReport,
     ) -> Self {
-        Self {
-            module: module.into(),
-            kind: SourceReportKind::Delivery(kind),
-            module_info,
-            probes: Vec::new(),
-        }
+        Self::new(module, SourceReportKind::Delivery(kind), module_info)
     }
 
     pub(crate) fn storage(
@@ -40,12 +135,7 @@ impl SourceReportBuilder {
         kind: StorageSourceReportKind,
         module_info: ProbeReport,
     ) -> Self {
-        Self {
-            module: module.into(),
-            kind: SourceReportKind::Storage(kind),
-            module_info,
-            probes: Vec::new(),
-        }
+        Self::new(module, SourceReportKind::Storage(kind), module_info)
     }
 
     pub(crate) fn include_module_info_probe(mut self) -> Self {
@@ -85,9 +175,9 @@ impl SourceReportBuilder {
         self.push_probe(keyed_probe_result(key, label, source, result));
     }
 
-    pub(crate) fn finish(self) -> ModuleReport {
+    pub(crate) fn finish(self) -> SourceReport {
         let facts = self.source_facts();
-        ModuleReport::new(self.module, self.module_info, self.probes).with_source_facts(facts)
+        SourceReport::new(self.module, self.module_info, self.probes, facts)
     }
 
     fn source_facts(&self) -> SourceFacts {
@@ -173,8 +263,8 @@ mod tests {
         .include_module_info_probe()
         .finish();
 
-        if report.health.is_none() {
-            bail!("source health facts were not attached");
+        if !report.health.reachable {
+            bail!("source health facts were not attached: {report:?}");
         }
         if !report
             .probe_facts
@@ -182,6 +272,38 @@ mod tests {
             .any(|fact| fact.key == SourceProbeKey::StoragePeerId.as_str())
         {
             bail!("source probe facts were not attached: {report:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn source_report_serializes_with_stable_top_level_shape() -> Result<()> {
+        let module_info = keyed_probe_ok(
+            SourceProbeKey::StoragePeerId,
+            "storage_rest.peerId",
+            "http://storage/peerid",
+            "peer-a",
+        );
+        let report = SourceReportBuilder::storage(
+            "storage_rest",
+            StorageSourceReportKind::Rest,
+            module_info,
+        )
+        .include_module_info_probe()
+        .finish();
+        let value = serde_json::to_value(report)?;
+
+        for key in [
+            "module",
+            "module_info",
+            "probes",
+            "health",
+            "probe_facts",
+            "capability_facts",
+        ] {
+            if value.get(key).is_none() {
+                bail!("source report missing `{key}`: {value}");
+            }
         }
         Ok(())
     }

@@ -1,4 +1,4 @@
-use crate::modules::ModuleReport;
+use crate::source_routing::SourceReport;
 
 pub async fn storage_source_report(
     source_mode: &str,
@@ -6,7 +6,7 @@ pub async fn storage_source_report(
     metrics_endpoint: Option<&str>,
     cid: Option<&str>,
     privileged_debug_enabled: bool,
-) -> ModuleReport {
+) -> SourceReport {
     crate::source_routing::shared::inspection::storage_source_report(
         source_mode,
         rest_endpoint,

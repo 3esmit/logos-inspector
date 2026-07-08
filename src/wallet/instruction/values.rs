@@ -4,7 +4,7 @@ use anyhow::{Context as _, Result, bail};
 use lee_core::program::ProgramId;
 use serde_json::Value;
 
-use crate::normalize_program_id_hex;
+use crate::{decode::idl_type::fixed_array_type, normalize_program_id_hex};
 
 #[derive(Debug, Clone)]
 pub(super) struct ParsedValue {
@@ -86,8 +86,8 @@ pub(super) fn parse_typed_value(raw: &str, ty: &Value) -> Result<ParsedValue> {
     if let Some(primitive) = ty.as_str() {
         return parse_primitive(raw, primitive);
     }
-    if let Some(array) = ty.get("array") {
-        return parse_array(raw, array);
+    if fixed_array_type(ty)?.is_some() {
+        return parse_array(raw, ty);
     }
     if let Some(vec) = ty.get("vec") {
         return parse_vec(raw, vec);
@@ -195,17 +195,12 @@ fn parse_primitive(raw: &str, primitive: &str) -> Result<ParsedValue> {
     }
 }
 
-fn parse_array(raw: &str, array: &Value) -> Result<ParsedValue> {
-    let items = array.as_array().context("IDL array type is not an array")?;
-    let elem = items.first().context("IDL array type missing element")?;
-    let size = items
-        .get(1)
-        .and_then(Value::as_u64)
-        .context("IDL array type missing size")? as usize;
+fn parse_array(raw: &str, ty: &Value) -> Result<ParsedValue> {
+    let (elem, size) = fixed_array_type(ty)?.context("IDL array type is not an array")?;
     match elem.as_str() {
         Some("u8") => parse_u8_array(raw, size),
         Some("u32") => parse_u32_array(raw, size),
-        _ => bail!("unsupported array IDL arg type `{}`", array),
+        _ => bail!("unsupported array IDL arg type `{}`", ty),
     }
 }
 
@@ -268,6 +263,25 @@ fn parse_u32_array(raw: &str, size: usize) -> Result<ParsedValue> {
 }
 
 fn parse_vec(raw: &str, elem: &Value) -> Result<ParsedValue> {
+    if let Some((array_elem, size)) = fixed_array_type(elem)? {
+        if array_elem.as_str() != Some("u8") {
+            bail!("unsupported vector element type `{elem}`");
+        }
+        let values = if raw.trim().is_empty() {
+            Vec::new()
+        } else {
+            raw.split(',')
+                .map(str::trim)
+                .map(|item| parse_u8_array(item, size).map(|parsed| parsed.dynamic))
+                .collect::<Result<Vec<_>>>()?
+        };
+        return Ok(parsed_value(
+            format!("{} items", values.len()),
+            DynamicValue::Seq(values),
+            None,
+        ));
+    }
+
     match elem.as_str() {
         Some("u8") => {
             let values = if raw.trim().is_empty() {
@@ -299,31 +313,6 @@ fn parse_vec(raw: &str, elem: &Value) -> Result<ParsedValue> {
                 None,
             ))
         }
-        _ if elem.get("array").is_some() => {
-            let array = elem.get("array").context("checked array type")?;
-            let items = array.as_array().context("IDL array type is not an array")?;
-            let array_elem = items.first().context("IDL array type missing element")?;
-            let size = items
-                .get(1)
-                .and_then(Value::as_u64)
-                .context("IDL array type missing size")? as usize;
-            if array_elem.as_str() != Some("u8") {
-                bail!("unsupported vector element type `{elem}`");
-            }
-            let values = if raw.trim().is_empty() {
-                Vec::new()
-            } else {
-                raw.split(',')
-                    .map(str::trim)
-                    .map(|item| parse_u8_array(item, size).map(|parsed| parsed.dynamic))
-                    .collect::<Result<Vec<_>>>()?
-            };
-            Ok(parsed_value(
-                format!("{} items", values.len()),
-                DynamicValue::Seq(values),
-                None,
-            ))
-        }
         _ => bail!("unsupported vector IDL arg type `{elem}`"),
     }
 }
@@ -344,19 +333,10 @@ pub(super) fn type_label(ty: &Value) -> String {
     match ty {
         Value::String(value) => value.clone(),
         Value::Object(object) if object.contains_key("array") => {
-            let Some(items) = object.get("array").and_then(Value::as_array) else {
-                return ty.to_string();
-            };
-            let elem = items
-                .first()
-                .map(type_label)
-                .unwrap_or_else(|| "?".to_owned());
-            let size = items
-                .get(1)
-                .and_then(Value::as_u64)
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "?".to_owned());
-            format!("[{elem}; {size}]")
+            if let Ok(Some((elem, size))) = fixed_array_type(ty) {
+                return format!("[{}; {size}]", type_label(elem));
+            }
+            ty.to_string()
         }
         Value::Object(object) if object.contains_key("vec") => {
             let elem = object

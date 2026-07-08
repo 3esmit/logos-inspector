@@ -6,7 +6,7 @@ use std::{
 use anyhow::{Context as _, Result, bail};
 use serde_json::{Value, json};
 
-use crate::support::{state_store::config_dir, time::now_millis};
+use crate::support::{confirmation::ConfirmationPolicy, state_store::config_dir, time::now_millis};
 
 use super::commands::{command_spec_for, execute_command_spec, operation_detail_from_value};
 use super::model::{
@@ -19,7 +19,6 @@ use super::process::{find_command, process_is_alive, stop_process};
 
 const STATE_FILE: &str = "local_nodes.json";
 const MANIFEST_FILE: &str = "local-network.json";
-const CONFIRMATION_TOKEN: &str = "confirm-local-node-action";
 const DEFAULT_DEPLOYMENT: &str = "local";
 
 #[derive(Debug, Clone)]
@@ -55,9 +54,7 @@ impl LocalNodeActionEngine {
         request: LocalNodeActionRequest,
         confirmation: Option<&str>,
     ) -> Result<LocalNodeReport> {
-        if confirmation != Some(CONFIRMATION_TOKEN) {
-            bail!("local node action requires explicit confirmation");
-        }
+        ConfirmationPolicy::LocalNodeAction.require(confirmation)?;
 
         let mut state = self.store.load()?;
         let normalized_profile = normalized_profile(profile);

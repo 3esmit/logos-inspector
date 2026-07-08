@@ -3,7 +3,6 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Layouts
 import "../../../components"
-import "../../../components/common"
 import "../../../state"
 import "../../../theme"
 import "../../../utils/UiFormat.js" as UiFormat
@@ -23,24 +22,13 @@ ColumnLayout {
         }
     }
 
-    ListToolbar {
+    PagedInspectionTable {
         theme: root.theme
         loadCount: root.model.lezBlocksPageLimit
         rangeText: root.rangeText()
         canGoNewer: root.model.lezBlocksPageBeforeBlock > 0
         canGoOlder: root.model.lezBlocksPageNextBeforeBlock > 0
         busy: root.model.busy || root.model.lezBlocksPageLoading
-        Layout.fillWidth: true
-        onRefresh: root.model.refreshLezBlocksPage(root.model.lezBlocksPageBeforeBlock > 0 ? root.model.lezBlocksPageBeforeBlock : null)
-        onNewer: root.model.newerLezBlocksPage()
-        onOlder: root.model.olderLezBlocksPage()
-        onLoadCountSelected: function (count) {
-            root.model.setLezBlocksPageLimit(count)
-        }
-    }
-
-    DataTableFrame {
-        theme: root.theme
         Layout.fillWidth: true
         headerCells: [
             { text: qsTr("L2 block"), width: 96 },
@@ -49,6 +37,12 @@ ColumnLayout {
             { text: qsTr("Bedrock"), width: 98 }
         ]
         rows: root.blockRows()
+        onRefreshRequested: root.model.refreshLezBlocksPage(root.model.lezBlocksPageBeforeBlock > 0 ? root.model.lezBlocksPageBeforeBlock : null)
+        onNewerRequested: root.model.newerLezBlocksPage()
+        onOlderRequested: root.model.olderLezBlocksPage()
+        onLoadCountSelected: function (count) {
+            root.model.setLezBlocksPageLimit(count)
+        }
         onCellActivated: function (row, column, cell, rowData) {
             if ((column === 0 || column === 1) && rowData.blockHash.length > 0) {
                 root.model.openReference("indexerBlock", rowData.blockHash, rowData.rawBlock)
