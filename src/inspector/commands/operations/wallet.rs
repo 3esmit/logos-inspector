@@ -8,7 +8,7 @@ use crate::{
 };
 
 use super::super::value::{blocking_value, to_value};
-use super::NodeOperationRequest;
+use super::RuntimeOperationRequest;
 use super::spec::{OperationCatalogEntry, OperationDomain, OperationMethod};
 
 pub(super) const OPERATION_CATALOG: &[OperationCatalogEntry] = &[
@@ -56,7 +56,9 @@ pub(super) const OPERATION_CATALOG: &[OperationCatalogEntry] = &[
     ),
 ];
 
-pub(super) async fn execute_wallet_create_account(request: &NodeOperationRequest) -> Result<Value> {
+pub(super) async fn execute_wallet_create_account(
+    request: &RuntimeOperationRequest,
+) -> Result<Value> {
     let args = confirmed_wallet_args(request, 3, ConfirmationPolicy::WalletCreateAccount)?;
     let profile = wallet_profile_arg(&args)?;
     let privacy = args.string(1, "account privacy")?.to_owned();
@@ -72,7 +74,7 @@ pub(super) async fn execute_wallet_create_account(request: &NodeOperationRequest
 }
 
 pub(super) async fn execute_wallet_send_transaction(
-    request: &NodeOperationRequest,
+    request: &RuntimeOperationRequest,
 ) -> Result<Value> {
     let args = confirmed_wallet_args(request, 2, ConfirmationPolicy::WalletSendTransaction)?;
     let profile = wallet_profile_arg(&args)?;
@@ -87,7 +89,7 @@ pub(super) async fn execute_wallet_send_transaction(
 }
 
 pub(super) async fn execute_wallet_instruction_submit(
-    request: &NodeOperationRequest,
+    request: &RuntimeOperationRequest,
 ) -> Result<Value> {
     let args = confirmed_wallet_args(request, 2, ConfirmationPolicy::WalletInstructionSubmit)?;
     to_value(
@@ -101,7 +103,7 @@ pub(super) async fn execute_wallet_instruction_submit(
     )
 }
 
-pub(super) async fn execute_wallet_command(request: &NodeOperationRequest) -> Result<Value> {
+pub(super) async fn execute_wallet_command(request: &RuntimeOperationRequest) -> Result<Value> {
     let args = confirmed_wallet_args(request, 2, ConfirmationPolicy::WalletCommand)?;
     let command_args = serde_json::from_value::<Vec<String>>(
         args.value(1)
@@ -116,7 +118,9 @@ pub(super) async fn execute_wallet_command(request: &NodeOperationRequest) -> Re
     .await
 }
 
-pub(super) async fn execute_wallet_deploy_program(request: &NodeOperationRequest) -> Result<Value> {
+pub(super) async fn execute_wallet_deploy_program(
+    request: &RuntimeOperationRequest,
+) -> Result<Value> {
     let args = confirmed_wallet_args(request, 2, ConfirmationPolicy::WalletDeployProgram)?;
     let profile = wallet_profile_arg(&args)?;
     let program_path = args.string(1, "program path")?.to_owned();
@@ -126,7 +130,9 @@ pub(super) async fn execute_wallet_deploy_program(request: &NodeOperationRequest
     .await
 }
 
-pub(super) async fn execute_wallet_sync_private(request: &NodeOperationRequest) -> Result<Value> {
+pub(super) async fn execute_wallet_sync_private(
+    request: &RuntimeOperationRequest,
+) -> Result<Value> {
     let args = confirmed_wallet_args(request, 1, ConfirmationPolicy::WalletSyncPrivate)?;
     let profile = wallet_profile_arg(&args)?;
     blocking_value("private wallet sync", move || {
@@ -135,7 +141,7 @@ pub(super) async fn execute_wallet_sync_private(request: &NodeOperationRequest) 
     .await
 }
 
-pub(super) async fn execute_wallet_accounts(request: &NodeOperationRequest) -> Result<Value> {
+pub(super) async fn execute_wallet_accounts(request: &RuntimeOperationRequest) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
     let profile = wallet_profile_arg(&args)?;
     blocking_value("wallet accounts", move || {
@@ -145,7 +151,7 @@ pub(super) async fn execute_wallet_accounts(request: &NodeOperationRequest) -> R
 }
 
 fn confirmed_wallet_args(
-    request: &NodeOperationRequest,
+    request: &RuntimeOperationRequest,
     confirmation_index: usize,
     policy: ConfirmationPolicy,
 ) -> Result<Args> {

@@ -36,7 +36,8 @@ QtObject {
             args: lastArgs
         }])
         if (responses[lastMethod] !== undefined) {
-            return JSON.stringify(responses[lastMethod])
+            const response = responses[lastMethod]
+            return JSON.stringify(typeof response === "function" ? response(lastArgs) : response)
         }
         if (strictUnexpectedCalls) {
             throw new Error("Unexpected bridge call: " + lastMethod)

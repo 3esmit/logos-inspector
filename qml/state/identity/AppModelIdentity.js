@@ -18,11 +18,7 @@ function loadSettingsState(root) {
 
         settingsStateError = ""
         const value = response.value
-        const storedNetworkProfile = root.normalizedNetworkProfile(root.stringSetting(value, "network_profile", networkProfile))
-        sequencerUrl = root.stringSetting(value, "sequencer_url", sequencerUrl)
-        indexerUrl = root.stringSetting(value, "indexer_url", indexerUrl)
-        nodeUrl = root.stringSetting(value, "node_url", nodeUrl)
-        networkProfile = root.resolvedNetworkProfile(storedNetworkProfile, sequencerUrl, indexerUrl, nodeUrl)
+        root.loadNetworkProfileSettings(value)
         blockchainSourceMode = root.normalizedCoreSourceMode(root.stringSetting(value, "blockchain_source_mode", blockchainSourceMode))
         indexerSourceMode = root.normalizedCoreSourceMode(root.stringSetting(value, "indexer_source_mode", indexerSourceMode))
         executionSourceMode = "rpc"
@@ -76,14 +72,14 @@ function saveSettingsState(root) {
 
 function settingsStatePayload(root) {
     with (root) {
-        const resolvedProfile = root.inferNetworkProfileFromEndpoints(sequencerUrl, indexerUrl, nodeUrl)
         const social = root.socialSettingsPayload()
+        const network = root.networkProfileSettingsPayload()
         return Object.assign({
             version: 1,
-            network_profile: resolvedProfile,
-            sequencer_url: String(sequencerUrl || ""),
-            indexer_url: String(indexerUrl || ""),
-            node_url: String(nodeUrl || ""),
+            network_profile: network.network_profile,
+            sequencer_url: network.sequencer_url,
+            indexer_url: network.indexer_url,
+            node_url: network.node_url,
             blockchain_source_mode: root.normalizedCoreSourceMode(blockchainSourceMode),
             indexer_source_mode: root.normalizedCoreSourceMode(indexerSourceMode),
             execution_source_mode: "rpc",
@@ -641,9 +637,7 @@ function accountCacheKey(root, accountId, ownerProgramId) {
 }
 
 function accountNetworkCacheScope(root) {
-    with (root) {
-        return [String(networkProfile || ""), String(sequencerUrl || "")].join("|")
-    }
+    return root.networkProfileCacheScope()
 }
 
 function accountOwnerCacheKey(root, ownerProgramId) {

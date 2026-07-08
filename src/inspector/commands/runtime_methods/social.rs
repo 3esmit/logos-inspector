@@ -4,6 +4,8 @@ use serde_json::Value;
 use crate::{
     social::{
         accepted_shared_idl_entries_from_store as decode_accepted_shared_idls,
+        comment_topic_from_parts as build_social_comment_topic,
+        lez_account_idl_topic as build_lez_account_idl_topic,
         social_comment_page_from_store as decode_social_comment_page,
         social_comment_row_from_event as decode_social_comment_row,
         social_messages_from_store as decode_social_messages, social_topic_is_valid,
@@ -15,6 +17,8 @@ use super::super::value::to_value;
 use super::RuntimeMethodEntry;
 
 pub(super) const METHOD_CATALOG: &[RuntimeMethodEntry] = &[
+    RuntimeMethodEntry::sync("socialCommentTopic", social_comment_topic),
+    RuntimeMethodEntry::sync("socialLezAccountIdlTopic", social_lez_account_idl_topic),
     RuntimeMethodEntry::sync("socialMessagesFromStore", social_messages_from_store),
     RuntimeMethodEntry::sync("socialCommentPageFromStore", social_comment_page_from_store),
     RuntimeMethodEntry::sync("socialCommentRowFromEvent", social_comment_row_from_event),
@@ -24,6 +28,23 @@ pub(super) const METHOD_CATALOG: &[RuntimeMethodEntry] = &[
         accepted_shared_idl_entries_from_store,
     ),
 ];
+
+pub(super) fn social_comment_topic(args: Value) -> Result<Value> {
+    let args = Args::new(args)?;
+    to_value(
+        build_social_comment_topic(
+            args.string(0, "social layer")?,
+            args.string(1, "social entity")?,
+            args.string(2, "social topic id")?,
+        )
+        .unwrap_or_default(),
+    )
+}
+
+pub(super) fn social_lez_account_idl_topic(args: Value) -> Result<Value> {
+    let args = Args::new(args)?;
+    to_value(build_lez_account_idl_topic(args.string(0, "account id")?).unwrap_or_default())
+}
 
 pub(super) fn social_messages_from_store(args: Value) -> Result<Value> {
     let args = Args::new(args)?;

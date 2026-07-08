@@ -1,3 +1,4 @@
+pub(crate) mod evidence;
 pub(crate) mod http;
 pub(crate) mod inspection;
 pub(crate) mod module_bridge;
@@ -8,4 +9,3 @@ pub(crate) use http::{raw_http_json_url, rest_empty_request, rest_json_request, 
 pub(crate) use module_bridge::{call_value, dispatch_result};
 pub(crate) use plan::ModuleProbeStep;
 pub use report::SourceReport;
-pub(crate) use report::SourceReportBuilder;

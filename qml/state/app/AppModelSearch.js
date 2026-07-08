@@ -1,4 +1,5 @@
 .import "../../services/BridgeHelpers.js" as BridgeHelpers
+.import "../chain/LezTargetNavigation.js" as LezTargetNavigation
 
 function refreshDashboard(root) {
     with (root) {
@@ -36,7 +37,7 @@ function refreshDashboard(root) {
                 }
                 if (request.method === "blockchainNode") {
                     root.updateNetworkConnectionStatus("blockchain", response)
-                } else if (request.method === "storageReport" || request.method === "storageSourceReport") {
+                } else if (request.method === "storageSourceReport") {
                     root.updateNetworkConnectionStatus("storage", response)
                 } else if (request.method === "deliverySourceReport") {
                     root.updateNetworkConnectionStatus("messaging", response)
@@ -52,8 +53,8 @@ function refreshDashboard(root) {
                             node: dashboardNode || null,
                             l1Blocks: dashboardL1Blocks || [],
                             blocks: dashboardBlocks || [],
-                            storage: storageModuleReport || null,
-                            messaging: messagingModuleReport || null
+                            storage: storageSourceReport || null,
+                            messaging: messagingSourceReport || null
                         }), false)
                     } else {
                         setResult(qsTr("Dashboard"), dashboardError, true)
@@ -82,10 +83,14 @@ function updateDashboardCache(root, method, value) {
             blockchainModuleReport = value || null
         } else if (method === "account") {
             accountDetailValue = value || null
-        } else if (method === "storageReport" || method === "storageSourceReport") {
+        } else if (method === "storageReport") {
             storageModuleReport = value || null
-        } else if (method === "deliveryReport" || method === "deliverySourceReport") {
+        } else if (method === "storageSourceReport") {
+            storageSourceReport = value || null
+        } else if (method === "deliveryReport") {
             messagingModuleReport = value || null
+        } else if (method === "deliverySourceReport") {
+            messagingSourceReport = value || null
         }
     }
 }
@@ -377,43 +382,7 @@ function resolveSearchHash(root, hash) {
 }
 
 function applyResolvedLezTarget(root, response, errorTitle) {
-    with (root) {
-        if (!response.ok || response.value === null || response.value === undefined) {
-            return false
-        }
-        const resolved = response.value || {}
-        const payload = resolved.payload === undefined ? null : resolved.payload
-        switch (String(resolved.kind || "")) {
-        case "block":
-            if (payload !== null) {
-                selectView("l2BlockDetail", false)
-                blockDetailValue = root.indexerBlockDetail(payload)
-                setResult(qsTr("LEZ block"), BridgeHelpers.formatValue(blockDetailValue), false, blockDetailValue)
-                return true
-            }
-            break
-        case "transaction":
-            if (payload !== null) {
-                selectView("l2TransactionDetail", false)
-                transactionDetailValue = payload
-                lezTransactionsPageError = ""
-                setResult(qsTr("LEZ transaction"), BridgeHelpers.formatValue(payload), false, payload)
-                root.autoDecodeTransactionDetail(payload)
-                return true
-            }
-            break
-        case "account":
-            selectView("accounts", false)
-            accountTab = "lookup"
-            accountDetailValue = payload
-            setResult(qsTr("Account lookup"), BridgeHelpers.formatValue(payload), false, payload)
-            return true
-        default:
-            break
-        }
-        setResult(errorTitle || qsTr("Search"), qsTr("No block, transaction, or account found."), true, null)
-        return true
-    }
+    return LezTargetNavigation.applyResolvedTarget(root, response, errorTitle)
 }
 
 function resolveSearchTransaction(root, serial, hash, recordHistory) {

@@ -1,9 +1,10 @@
 use anyhow::Result;
 use serde_json::{Value, json};
 
+use super::evidence::SourceEvidence;
 use super::report::{
     MetricsProbeSpec, SourceReportBuilder, SourceReportKind, keyed_probe_result,
-    source_text_metrics_report, unsupported_source_report,
+    source_report_from_evidence, source_text_metrics_report, unsupported_source_report,
 };
 use crate::source_routing::{
     DEFAULT_DELIVERY_METRICS_ENDPOINT, DEFAULT_DELIVERY_REST_ENDPOINT,
@@ -12,7 +13,7 @@ use crate::source_routing::{
 };
 use crate::{
     ProbeReport,
-    modules::{delivery_report, storage_report},
+    modules::{ModuleReport, delivery_report, storage_report},
 };
 
 use super::http::raw_http_text_url;
@@ -25,7 +26,10 @@ pub async fn storage_source_report(
     privileged_debug_enabled: bool,
 ) -> SourceReport {
     match effective_source_mode(SourceFamily::Storage, source_mode) {
-        "module" => storage_report(cid, privileged_debug_enabled),
+        "module" => module_source_report(
+            SourceReportKind::Storage(StorageSourceReportKind::Module),
+            storage_report(cid, privileged_debug_enabled),
+        ),
         "rest" => {
             storage_rest_report(
                 rest_endpoint,
@@ -46,12 +50,22 @@ pub async fn delivery_source_report(
     metrics_endpoint: Option<&str>,
 ) -> SourceReport {
     match effective_source_mode(SourceFamily::Delivery, source_mode) {
-        "module" => delivery_report(None),
+        "module" => module_source_report(
+            SourceReportKind::Delivery(DeliverySourceReportKind::Module),
+            delivery_report(None),
+        ),
         "rest" => delivery_rest_report(rest_endpoint, metrics_endpoint).await,
         "metrics" => delivery_metrics_report(metrics_endpoint).await,
         "network-monitor" => delivery_network_monitor_report(rest_endpoint, metrics_endpoint).await,
         mode => unsupported_delivery_source_report(mode),
     }
+}
+
+fn module_source_report(kind: SourceReportKind, report: ModuleReport) -> SourceReport {
+    source_report_from_evidence(
+        kind,
+        SourceEvidence::new(report.module, report.module_info, report.probes),
+    )
 }
 
 async fn storage_rest_report(
@@ -526,6 +540,26 @@ mod tests {
         assert_eq!(
             scalar_field(&info, &["enrUri"]).as_ref(),
             Some(&json!("enr:-abc"))
+        );
+    }
+
+    #[test]
+    fn module_report_adapter_derives_source_facts_from_keyed_evidence() {
+        let module_info = ProbeReport::ok("storage module", "module-info", json!({}))
+            .with_probe_key(SourceProbeKey::StoragePeerId.as_str());
+        let report = ModuleReport::new("storage_module", module_info, Vec::new());
+
+        let source_report = module_source_report(
+            SourceReportKind::Storage(StorageSourceReportKind::Module),
+            report,
+        );
+
+        assert!(source_report.health.reachable);
+        assert!(
+            source_report
+                .probe_facts
+                .iter()
+                .any(|fact| fact.key == SourceProbeKey::StoragePeerId.as_str())
         );
     }
 }

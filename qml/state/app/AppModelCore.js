@@ -20,6 +20,8 @@ function handleNetworkConfigurationChanged(root) {
         blockchainModuleReport = null
         storageModuleReport = null
         messagingModuleReport = null
+        storageSourceReport = null
+        messagingSourceReport = null
         storageActiveOperation = null
         storageActiveOperationRevision += 1
         localNodesReport = null
@@ -601,13 +603,13 @@ function requestModuleAsync(root, moduleName, method, args, label, showResult, c
     }
 }
 
-function nodeOperationStart(root, request, showResult, callback) {
+function runtimeOperationStart(root, request, showResult, callback) {
     with (root) {
         const operationRequest = request && typeof request === "object" ? request : ({})
-        const label = String(operationRequest.label || operationRequest.method || qsTr("Node operation"))
-        return requestModuleAsync(inspectorModule, "nodeOperationStart", [operationRequest], label, showResult === true, function (response) {
+        const label = String(operationRequest.label || operationRequest.method || qsTr("Runtime operation"))
+        return requestModuleAsync(inspectorModule, "runtimeOperationStart", [operationRequest], label, showResult === true, function (response) {
             if (response && response.ok) {
-                coreUpdateNodeOperation(root, response.value)
+                coreUpdateRuntimeOperation(root, response.value)
             }
             if (callback) {
                 callback(response)
@@ -616,15 +618,15 @@ function nodeOperationStart(root, request, showResult, callback) {
     }
 }
 
-function nodeOperationStatus(root, operationId, showResult, callback) {
+function runtimeOperationStatus(root, operationId, showResult, callback) {
     with (root) {
         const id = String(operationId || "")
         if (!id.length) {
             return null
         }
-        return requestModuleAsync(inspectorModule, "nodeOperationStatus", [id], qsTr("Node operation"), showResult === true, function (response) {
+        return requestModuleAsync(inspectorModule, "runtimeOperationStatus", [id], qsTr("Runtime operation"), showResult === true, function (response) {
             if (response && response.ok) {
-                coreUpdateNodeOperation(root, response.value)
+                coreUpdateRuntimeOperation(root, response.value)
             }
             if (callback) {
                 callback(response)
@@ -633,18 +635,18 @@ function nodeOperationStatus(root, operationId, showResult, callback) {
     }
 }
 
-function nodeOperationEvents(root, operationId, afterSeq, showResult, callback) {
+function runtimeOperationEvents(root, operationId, afterSeq, showResult, callback) {
     with (root) {
         const id = String(operationId || "")
         if (!id.length) {
             return null
         }
-        return requestModuleAsync(inspectorModule, "nodeOperationEvents", [id, Number(afterSeq || 0)], qsTr("Node operation events"), showResult === true, function (response) {
+        return requestModuleAsync(inspectorModule, "runtimeOperationEvents", [id, Number(afterSeq || 0)], qsTr("Runtime operation events"), showResult === true, function (response) {
             if (response && response.ok && response.value) {
-                coreUpdateNodeOperation(root, response.value.operation)
-                const next = copyObject(nodeOperationEventSeq)
+                coreUpdateRuntimeOperation(root, response.value.operation)
+                const next = copyObject(runtimeOperationEventSeq)
                 next[id] = response.value.nextSeq || 0
-                nodeOperationEventSeq = next
+                runtimeOperationEventSeq = next
             }
             if (callback) {
                 callback(response)
@@ -653,15 +655,15 @@ function nodeOperationEvents(root, operationId, afterSeq, showResult, callback) 
     }
 }
 
-function nodeOperationCancel(root, operationId, showResult, callback) {
+function runtimeOperationCancel(root, operationId, showResult, callback) {
     with (root) {
         const id = String(operationId || "")
         if (!id.length) {
             return null
         }
-        return requestModuleAsync(inspectorModule, "nodeOperationCancel", [id], qsTr("Cancel operation"), showResult === true, function (response) {
+        return requestModuleAsync(inspectorModule, "runtimeOperationCancel", [id], qsTr("Cancel operation"), showResult === true, function (response) {
             if (response && response.ok) {
-                coreUpdateNodeOperation(root, response.value)
+                coreUpdateRuntimeOperation(root, response.value)
             }
             if (callback) {
                 callback(response)
@@ -670,29 +672,29 @@ function nodeOperationCancel(root, operationId, showResult, callback) {
     }
 }
 
-function updateNodeOperation(root, operation) {
-    coreUpdateNodeOperation(root, operation)
+function updateRuntimeOperation(root, operation) {
+    coreUpdateRuntimeOperation(root, operation)
 }
 
-function coreUpdateNodeOperation(root, operation) {
+function coreUpdateRuntimeOperation(root, operation) {
     with (root) {
         const value = operation || null
         const operationId = String(value && value.operationId ? value.operationId : "")
         if (!operationId.length) {
             return
         }
-        const next = copyObject(nodeOperations)
+        const next = copyObject(runtimeOperations)
         next[operationId] = value
-        nodeOperations = next
-        nodeOperationsRevision += 1
+        runtimeOperations = next
+        runtimeOperationsRevision += 1
     }
 }
 
-function nodeOperationTerminal(root, operation) {
+function runtimeOperationTerminal(root, operation) {
     return OperationHistoryVocabulary.isRuntimeTerminalStatus(operation && operation.status)
 }
 
-function nodeOperationResponse(root, operation) {
+function runtimeOperationResponse(root, operation) {
     const status = String(operation && operation.status ? operation.status : "")
     const ok = status === "completed"
     return {
@@ -703,39 +705,75 @@ function nodeOperationResponse(root, operation) {
     }
 }
 
-function appendNodeOperationHistory(root, operation, detail) {
+function appendRuntimeOperationHistory(root, operation, detail) {
     appendOperationHistory(root, operation, detail)
 }
 
 function appendOperationHistory(root, operation, detail) {
     with (root) {
         const value = operation || {}
-        const rows = Array.isArray(nodeOperationHistory) ? nodeOperationHistory.slice(-99) : []
+        const rows = Array.isArray(runtimeOperationHistory) ? runtimeOperationHistory.slice(-99) : []
         rows.push(OperationHistoryVocabulary.historyRecord(
             value,
             detail,
             new Date().toLocaleTimeString(Qt.locale(), "hh:mm:ss")
         ))
-        nodeOperationHistory = rows
-        nodeOperationsRevision += 1
+        runtimeOperationHistory = rows
+        runtimeOperationsRevision += 1
     }
 }
 
-function nodeOperationHistoryRows(root, domain) {
+function runtimeOperationHistoryRows(root, domain) {
     return operationHistoryRows(root, domain)
+}
+
+function nodeOperationStart(root, request, showResult, callback) {
+    return runtimeOperationStart(root, request, showResult, callback)
+}
+
+function nodeOperationStatus(root, operationId, showResult, callback) {
+    return runtimeOperationStatus(root, operationId, showResult, callback)
+}
+
+function nodeOperationEvents(root, operationId, afterSeq, showResult, callback) {
+    return runtimeOperationEvents(root, operationId, afterSeq, showResult, callback)
+}
+
+function nodeOperationCancel(root, operationId, showResult, callback) {
+    return runtimeOperationCancel(root, operationId, showResult, callback)
+}
+
+function updateNodeOperation(root, operation) {
+    return updateRuntimeOperation(root, operation)
+}
+
+function nodeOperationTerminal(root, operation) {
+    return runtimeOperationTerminal(root, operation)
+}
+
+function nodeOperationResponse(root, operation) {
+    return runtimeOperationResponse(root, operation)
+}
+
+function appendNodeOperationHistory(root, operation, detail) {
+    return appendRuntimeOperationHistory(root, operation, detail)
+}
+
+function nodeOperationHistoryRows(root, domain) {
+    return runtimeOperationHistoryRows(root, domain)
 }
 
 function operationHistoryRows(root, domain) {
     with (root) {
-        const revision = nodeOperationsRevision
+        const revision = runtimeOperationsRevision
         const wanted = String(domain || "")
-        const rows = Array.isArray(nodeOperationHistory) ? nodeOperationHistory.slice(0) : []
+        const rows = Array.isArray(runtimeOperationHistory) ? runtimeOperationHistory.slice(0) : []
         const filtered = wanted.length ? rows.filter(row => String(row.domain || "") === wanted) : rows
         return filtered.reverse()
     }
 }
 
-function nodeOperationDetail(root, operation) {
+function runtimeOperationDetail(root, operation) {
     return OperationHistoryVocabulary.historyDetail(operation)
 }
 

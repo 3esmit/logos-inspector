@@ -43,8 +43,8 @@ pub(crate) use selection::{
 };
 pub use shared::SourceReport;
 pub(crate) use shared::{
-    ModuleProbeStep, SourceReportBuilder, call_value, dispatch_result, raw_http_json_url,
-    rest_empty_request, rest_json_request, rest_url,
+    ModuleProbeStep, call_value, dispatch_result, raw_http_json_url, rest_empty_request,
+    rest_json_request, rest_url,
 };
 pub(crate) use storage::adapters::{
     STORAGE_MODULE, is_storage_module_source, storage_args, storage_rest_download_bytes,

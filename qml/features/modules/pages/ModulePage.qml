@@ -875,10 +875,6 @@ ColumnLayout {
             return null
         }
         const wanted = String(method || "")
-        const fact = root.model.sourceProbeFact(report, wanted)
-        if (fact) {
-            return fact
-        }
         const probes = Array.isArray(report.probes) ? report.probes : []
         for (let i = 0; i < probes.length; ++i) {
             const probe = probes[i] || {}

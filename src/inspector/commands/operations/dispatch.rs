@@ -5,13 +5,13 @@ use reqwest::Method;
 use serde_json::Value;
 
 use super::{
-    NodeOperationRegistry, NodeOperationRequest, OperationMethod, chain, delivery, local_nodes,
-    storage, wallet,
+    OperationMethod, RuntimeOperationRegistry, RuntimeOperationRequest, chain, delivery,
+    local_nodes, storage, wallet,
 };
 
-pub(super) async fn execute_node_operation(
-    request: NodeOperationRequest,
-    registry: &NodeOperationRegistry,
+pub(super) async fn execute_runtime_operation(
+    request: RuntimeOperationRequest,
+    registry: &RuntimeOperationRegistry,
     operation_id: &str,
     cancel_requested: &AtomicBool,
 ) -> Result<Value> {

@@ -16,7 +16,7 @@ pub(super) struct OperationSourceSelection {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct NodeOperationRequest {
+pub(crate) struct RuntimeOperationRequest {
     pub(super) domain: String,
     pub(super) method: OperationMethod,
     pub(super) source: OperationSourceSelection,
@@ -24,7 +24,7 @@ pub(crate) struct NodeOperationRequest {
     pub(super) label: String,
 }
 
-impl NodeOperationRequest {
+impl RuntimeOperationRequest {
     pub(crate) fn from_call(method: OperationMethod, args: Value, label: &str) -> Self {
         Self {
             domain: method.domain().as_str().to_owned(),
@@ -61,15 +61,17 @@ impl NodeOperationRequest {
     }
 }
 
-pub(crate) fn node_operation_request_from_value(value: Value) -> Result<NodeOperationRequest> {
+pub(crate) fn runtime_operation_request_from_value(
+    value: Value,
+) -> Result<RuntimeOperationRequest> {
     let object = value
         .as_object()
-        .context("node operation request must be a JSON object")?;
+        .context("runtime operation request must be a JSON object")?;
     let method = object_string(object, "method")
         .filter(|value| !value.is_empty())
-        .context("node operation method is required")?;
+        .context("runtime operation method is required")?;
     let method = OperationMethod::from_str(&method)
-        .with_context(|| format!("unknown node operation method `{method}`"))?;
+        .with_context(|| format!("unknown runtime operation method `{method}`"))?;
     let domain =
         object_string(object, "domain").unwrap_or_else(|| method.domain().as_str().to_owned());
     let args = object
@@ -78,7 +80,7 @@ pub(crate) fn node_operation_request_from_value(value: Value) -> Result<NodeOper
         .unwrap_or_else(|| Value::Array(Vec::new()));
     let label = object_string(object, "label").unwrap_or_else(|| method.label().to_owned());
     let source = OperationSourceSelection::from_object(object);
-    let mut request = NodeOperationRequest {
+    let mut request = RuntimeOperationRequest {
         domain,
         method,
         source,
@@ -156,11 +158,11 @@ impl OperationSourceSelection {
     }
 }
 
-pub(super) fn node_operation_backend(request: &NodeOperationRequest) -> String {
+pub(super) fn runtime_operation_backend(request: &RuntimeOperationRequest) -> String {
     request.source.backend_from_args(&request.args)
 }
 
-pub(super) fn node_operation_context(request: &NodeOperationRequest) -> Value {
+pub(super) fn runtime_operation_context(request: &RuntimeOperationRequest) -> Value {
     let mut context = serde_json::Map::new();
     request.source.add_context_fields(&mut context);
     if request.domain == OperationDomain::Storage.as_str()

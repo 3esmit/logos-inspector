@@ -15,10 +15,10 @@ pub(crate) trait OperationRunner {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OperationBridgeCommand {
-    NodeOperationStart,
-    NodeOperationStatus,
-    NodeOperationEvents,
-    NodeOperationCancel,
+    RuntimeOperationStart,
+    RuntimeOperationStatus,
+    RuntimeOperationEvents,
+    RuntimeOperationCancel,
     StorageOperationStatus,
     StorageOperationCancel,
     Route(OperationRoute),
@@ -27,19 +27,35 @@ pub(crate) enum OperationBridgeCommand {
 const OPERATION_CONTROL_METHODS: &[(&str, OperationBridgeCommand)] = &[
     (
         "nodeOperationStart",
-        OperationBridgeCommand::NodeOperationStart,
+        OperationBridgeCommand::RuntimeOperationStart,
+    ),
+    (
+        "runtimeOperationStart",
+        OperationBridgeCommand::RuntimeOperationStart,
     ),
     (
         "nodeOperationStatus",
-        OperationBridgeCommand::NodeOperationStatus,
+        OperationBridgeCommand::RuntimeOperationStatus,
+    ),
+    (
+        "runtimeOperationStatus",
+        OperationBridgeCommand::RuntimeOperationStatus,
     ),
     (
         "nodeOperationEvents",
-        OperationBridgeCommand::NodeOperationEvents,
+        OperationBridgeCommand::RuntimeOperationEvents,
+    ),
+    (
+        "runtimeOperationEvents",
+        OperationBridgeCommand::RuntimeOperationEvents,
     ),
     (
         "nodeOperationCancel",
-        OperationBridgeCommand::NodeOperationCancel,
+        OperationBridgeCommand::RuntimeOperationCancel,
+    ),
+    (
+        "runtimeOperationCancel",
+        OperationBridgeCommand::RuntimeOperationCancel,
     ),
     (
         "storageOperationStatus",
@@ -73,10 +89,10 @@ pub(crate) fn handle_operation_command(
     args: &Value,
 ) -> Result<Value> {
     let value = match command {
-        OperationBridgeCommand::NodeOperationStart => node_operation_start(runner, args)?,
-        OperationBridgeCommand::NodeOperationStatus => node_operation_status(runner, args)?,
-        OperationBridgeCommand::NodeOperationEvents => node_operation_events(runner, args)?,
-        OperationBridgeCommand::NodeOperationCancel => node_operation_cancel(runner, args)?,
+        OperationBridgeCommand::RuntimeOperationStart => runtime_operation_start(runner, args)?,
+        OperationBridgeCommand::RuntimeOperationStatus => runtime_operation_status(runner, args)?,
+        OperationBridgeCommand::RuntimeOperationEvents => runtime_operation_events(runner, args)?,
+        OperationBridgeCommand::RuntimeOperationCancel => runtime_operation_cancel(runner, args)?,
         OperationBridgeCommand::StorageOperationStatus => storage_operation_status(runner, args)?,
         OperationBridgeCommand::StorageOperationCancel => storage_operation_cancel(runner, args)?,
         OperationBridgeCommand::Route(route) => {
@@ -90,30 +106,30 @@ pub(crate) fn handle_operation_command(
     Ok(value)
 }
 
-fn node_operation_start(runner: &impl OperationRunner, args: &Value) -> Result<Value> {
+fn runtime_operation_start(runner: &impl OperationRunner, args: &Value) -> Result<Value> {
     let args = Args::new(args.clone())?;
     runner.start_from_value(
         args.value(0)
             .cloned()
-            .context("node operation request is required")?,
+            .context("runtime operation request is required")?,
     )
 }
 
-fn node_operation_status(runner: &impl OperationRunner, args: &Value) -> Result<Value> {
+fn runtime_operation_status(runner: &impl OperationRunner, args: &Value) -> Result<Value> {
     let args = Args::new(args.clone())?;
-    runner.status(args.string(0, "node operation id")?)
+    runner.status(args.string(0, "runtime operation id")?)
 }
 
-fn node_operation_events(runner: &impl OperationRunner, args: &Value) -> Result<Value> {
+fn runtime_operation_events(runner: &impl OperationRunner, args: &Value) -> Result<Value> {
     let args = Args::new(args.clone())?;
-    let operation_id = args.string(0, "node operation id")?;
+    let operation_id = args.string(0, "runtime operation id")?;
     let after_seq = args.value(1).and_then(Value::as_u64).unwrap_or(0);
     runner.events(operation_id, after_seq)
 }
 
-fn node_operation_cancel(runner: &impl OperationRunner, args: &Value) -> Result<Value> {
+fn runtime_operation_cancel(runner: &impl OperationRunner, args: &Value) -> Result<Value> {
     let args = Args::new(args.clone())?;
-    runner.cancel(args.string(0, "node operation id")?)
+    runner.cancel(args.string(0, "runtime operation id")?)
 }
 
 fn storage_operation_status(runner: &impl OperationRunner, args: &Value) -> Result<Value> {
@@ -227,7 +243,7 @@ mod tests {
     }
 
     #[test]
-    fn handle_operation_command_routes_node_operation_start_request() -> Result<()> {
+    fn handle_operation_command_routes_runtime_operation_start_request() -> Result<()> {
         let runner = FakeRunner::default();
         let request = json!({
             "domain": "delivery",
@@ -236,7 +252,7 @@ mod tests {
         });
 
         let command = operation_bridge_command("nodeOperationStart")
-            .context("node operation start command")?;
+            .context("runtime operation start command")?;
         let value = handle_operation_command(&runner, command, &json!([request]))?;
 
         if value != json!({ "operationId": "started" }) {

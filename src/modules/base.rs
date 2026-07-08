@@ -1,9 +1,6 @@
 use serde::Serialize;
 
-use crate::{
-    ProbeReport,
-    source_routing::{SourceProbeKey, SourceReport},
-};
+use crate::{ProbeReport, source_routing::SourceProbeKey};
 
 use super::{delivery_report, logos_core, storage_report};
 
@@ -16,8 +13,8 @@ const CAPABILITY_MODULE: &str = "capability_module";
 pub struct LogosModulesReport {
     pub status: ProbeReport,
     pub blockchain: ModuleReport,
-    pub storage: SourceReport,
-    pub delivery: SourceReport,
+    pub storage: ModuleReport,
+    pub delivery: ModuleReport,
     pub capabilities: ModuleReport,
 }
 
@@ -138,4 +135,41 @@ fn call_module_probe(
 
 pub(super) fn optional(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use anyhow::{Result, bail};
+
+    use super::*;
+
+    #[test]
+    fn modules_report_serializes_storage_and_delivery_as_module_surface() -> Result<()> {
+        let probe = ProbeReport::ok("ok", "test", serde_json::json!({}));
+        let value = serde_json::to_value(LogosModulesReport {
+            status: probe.clone(),
+            blockchain: ModuleReport::new("blockchain_module", probe.clone(), Vec::new()),
+            storage: ModuleReport::new("storage_module", probe.clone(), Vec::new()),
+            delivery: ModuleReport::new("delivery_module", probe.clone(), Vec::new()),
+            capabilities: ModuleReport::new("capability_module", probe, Vec::new()),
+        })?;
+
+        for key in ["storage", "delivery"] {
+            let report = value
+                .get(key)
+                .and_then(serde_json::Value::as_object)
+                .ok_or_else(|| anyhow::anyhow!("missing `{key}` module report"))?;
+            for source_key in ["health", "probe_facts", "capability_facts"] {
+                if report.contains_key(source_key) {
+                    bail!("module report `{key}` leaked `{source_key}`: {report:?}");
+                }
+            }
+            for module_key in ["module", "module_info", "probes"] {
+                if !report.contains_key(module_key) {
+                    bail!("module report `{key}` missing `{module_key}`: {report:?}");
+                }
+            }
+        }
+        Ok(())
+    }
 }
