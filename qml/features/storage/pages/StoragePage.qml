@@ -14,6 +14,13 @@ ColumnLayout {
 
     required property Theme theme
     required property AppModel model
+
+    SourceInspectionSession {
+        id: sourceSession
+        model: root.model
+        theme: root.theme
+        family: "storage"
+    }
     property string currentTab: "overview"
 
     width: parent ? parent.width : 900
@@ -393,19 +400,19 @@ ColumnLayout {
     }
 
     function refreshSource(showResult, includeCidProbe) {
-        root.model.queryNetworkConnection("storage", showResult === true, includeCidProbe === true)
+        sourceSession.refresh(showResult, includeCidProbe)
     }
 
     function pending() {
-        return root.model.networkConnectionIsPending("storage")
+        return sourceSession.pending()
     }
 
     function report() {
-        return root.model.moduleReport("storage")
+        return sourceSession.report()
     }
 
     function status() {
-        return root.model.networkConnectionState("storage")
+        return sourceSession.status()
     }
 
     function statusLine() {
@@ -450,7 +457,7 @@ ColumnLayout {
     }
 
     function sourceName() {
-        return root.model.storageSourceLabel()
+        return sourceSession.sourceLabel()
     }
 
     function sourceShortLabel() {
@@ -484,8 +491,8 @@ ColumnLayout {
 
     function sourceBadges() {
         const rows = [
-            root.model.storageSourceLabel(),
-            root.shortText(root.model.storageSourceTarget(), 42),
+            sourceSession.sourceLabel(),
+            root.shortText(sourceSession.sourceTarget(), 42),
             root.model.storageNetworkPreset,
             qsTr("%1 s window").arg(root.model.storageRollingWindow)
         ]
@@ -501,63 +508,31 @@ ColumnLayout {
     }
 
     function probeValue(method) {
-        return root.model.moduleProbeValue("storage", method)
+        return sourceSession.probeValue(method)
     }
 
     function probe(method) {
-        return root.model.sourceProbeFact(root.report(), method) || root.model.moduleProbe("storage", method)
+        return sourceSession.probe(method)
     }
 
     function probeKnown(method) {
-        const probe = root.probe(method)
-        if (!probe || probe.ok !== true || probe.value === undefined || probe.value === null) {
-            return false
-        }
-        return !root.probeSkipped(probe)
-    }
-
-    function probeSkipped(probe) {
-        const value = probe && probe.value
-        return value && typeof value === "object" && value.skipped === true
+        return sourceSession.probeKnown(method)
     }
 
     function metricDisplay(key) {
-        const value = root.model.dashboardMetricValue(key)
-        return value === null || value === undefined ? qsTr("n/a") : root.model.valueText(value)
+        return sourceSession.metricDisplay(key)
     }
 
     function metricKnown(key) {
-        const value = root.model.dashboardMetricValue(key)
-        return value !== null && value !== undefined
+        return sourceSession.metricKnown(key)
     }
 
     function metricTone(key) {
-        const value = Number(root.model.dashboardMetricValue(key))
-        if (!Number.isFinite(value)) {
-            return root.theme.textMuted
-        }
-        if (key.indexOf("failed") >= 0 || key.indexOf("error") >= 0) {
-            return value > 0 ? root.theme.error : root.theme.success
-        }
-        return value > 0 ? root.theme.success : root.theme.textMuted
+        return sourceSession.metricTone(key)
     }
 
     function failedProbeCount() {
-        let failed = 0
-        const report = root.report()
-        if (!report) {
-            return failed
-        }
-        if (report.module_info && report.module_info.ok === false) {
-            failed += 1
-        }
-        const probes = Array.isArray(report.probes) ? report.probes : []
-        for (let i = 0; i < probes.length; ++i) {
-            if (probes[i] && probes[i].ok === false) {
-                failed += 1
-            }
-        }
-        return failed
+        return sourceSession.failedProbeCount()
     }
 
     function identityEvidence() {
@@ -577,12 +552,11 @@ ColumnLayout {
     }
 
     function sourceFactAvailable(key) {
-        return root.model.sourceCapabilityAvailable(root.report(), key) === true
+        return sourceSession.sourceFactAvailable(key)
     }
 
     function sourceFactEvidence(key, fallback) {
-        const evidence = root.model.sourceCapabilityEvidence(root.report(), key)
-        return evidence.length > 0 ? evidence : fallback
+        return sourceSession.sourceFactEvidence(key, fallback)
     }
 
     function capacitySummary() {
@@ -781,20 +755,7 @@ ColumnLayout {
     }
 
     function evidenceRows() {
-        const rows = []
-        const info = root.moduleInfoProbe()
-        if (info) {
-            rows.push(root.probeRow(info, qsTr("Source check")))
-        }
-        const report = root.report()
-        const probes = report && Array.isArray(report.probes) ? report.probes : []
-        for (let i = 0; i < probes.length; ++i) {
-            rows.push(root.probeRow(probes[i], qsTr("Probe")))
-        }
-        if (rows.length === 0) {
-            rows.push(root.statusRow(qsTr("Probe evidence"), qsTr("empty"), qsTr("Refresh source to load probe evidence."), "neutral"))
-        }
-        return rows
+        return sourceSession.evidenceRows(root, qsTr("Refresh source to load probe evidence."))
     }
 
     function statusRow(label, state, evidence, tone) {

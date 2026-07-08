@@ -13,20 +13,21 @@ use crate::{
     },
 };
 
-use super::super::value::{blocking_value, to_value};
+use super::super::value::to_value;
 use super::record::update_node_operation_progress;
-use super::{NodeOperationRegistry, NodeOperationRequest};
+use super::{
+    NodeOperationRegistry, NodeOperationRequest, blocking_module_call, blocking_module_dispatch,
+};
 
 pub(super) async fn execute_storage_manifests(request: &NodeOperationRequest) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
     if let Some(module_args) = source_routing::storage_args(&args, false, "storage manifests")? {
-        return blocking_value("storage module manifests", move || {
-            source_routing::call_value(
-                source_routing::STORAGE_MODULE,
-                "manifests",
-                &module_args.values,
-            )
-        })
+        return blocking_module_call(
+            "storage module manifests",
+            source_routing::STORAGE_MODULE,
+            "manifests",
+            module_args.values,
+        )
         .await;
     }
     let source = storage_rest_source(&args)?;
@@ -46,19 +47,13 @@ pub(super) async fn execute_storage_download_manifest(
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
-        return blocking_value("storage module manifest download", move || {
-            let value = source_routing::call_value(
-                source_routing::STORAGE_MODULE,
-                "downloadManifest",
-                &module_args.values,
-            )?;
-            Ok(source_routing::dispatch_result(
-                source_routing::STORAGE_MODULE,
-                "downloadManifest",
-                value,
-                &[("cid", cid)],
-            ))
-        })
+        return blocking_module_dispatch(
+            "storage module manifest download",
+            source_routing::STORAGE_MODULE,
+            "downloadManifest",
+            module_args.values,
+            vec![("cid", cid)],
+        )
         .await;
     }
     let source = storage_rest_source(&args)?;
@@ -81,19 +76,13 @@ pub(super) async fn execute_storage_fetch(request: &NodeOperationRequest) -> Res
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
-        return blocking_value("storage module fetch", move || {
-            let value = source_routing::call_value(
-                source_routing::STORAGE_MODULE,
-                "fetch",
-                &module_args.values,
-            )?;
-            Ok(source_routing::dispatch_result(
-                source_routing::STORAGE_MODULE,
-                "fetch",
-                value,
-                &[("cid", cid)],
-            ))
-        })
+        return blocking_module_dispatch(
+            "storage module fetch",
+            source_routing::STORAGE_MODULE,
+            "fetch",
+            module_args.values,
+            vec![("cid", cid)],
+        )
         .await;
     }
     let source = storage_rest_source(&args)?;
@@ -121,16 +110,13 @@ pub(super) async fn execute_storage_upload(request: &NodeOperationRequest) -> Re
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
-        return blocking_value("storage module upload", move || {
-            let value =
-                source_routing::call_value(source_routing::STORAGE_MODULE, "uploadUrl", &values)?;
-            Ok(source_routing::dispatch_result(
-                source_routing::STORAGE_MODULE,
-                "uploadUrl",
-                value,
-                &[("path", path)],
-            ))
-        })
+        return blocking_module_dispatch(
+            "storage module upload",
+            source_routing::STORAGE_MODULE,
+            "uploadUrl",
+            values,
+            vec![("path", path)],
+        )
         .await;
     }
     let source = storage_rest_source(&args)?;
@@ -174,19 +160,13 @@ pub(super) async fn execute_storage_download(
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
-        return blocking_value("storage module download", move || {
-            let value = source_routing::call_value(
-                source_routing::STORAGE_MODULE,
-                "downloadToUrl",
-                &values,
-            )?;
-            Ok(source_routing::dispatch_result(
-                source_routing::STORAGE_MODULE,
-                "downloadToUrl",
-                value,
-                &[("cid", cid), ("path", path)],
-            ))
-        })
+        return blocking_module_dispatch(
+            "storage module download",
+            source_routing::STORAGE_MODULE,
+            "downloadToUrl",
+            values,
+            vec![("cid", cid), ("path", path)],
+        )
         .await;
     }
     let source = storage_rest_source(&args)?;
@@ -216,19 +196,13 @@ pub(super) async fn execute_storage_remove(request: &NodeOperationRequest) -> Re
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
-        return blocking_value("storage module remove", move || {
-            let value = source_routing::call_value(
-                source_routing::STORAGE_MODULE,
-                "remove",
-                &module_args.values,
-            )?;
-            Ok(source_routing::dispatch_result(
-                source_routing::STORAGE_MODULE,
-                "remove",
-                value,
-                &[("cid", cid)],
-            ))
-        })
+        return blocking_module_dispatch(
+            "storage module remove",
+            source_routing::STORAGE_MODULE,
+            "remove",
+            module_args.values,
+            vec![("cid", cid)],
+        )
         .await;
     }
     let source = storage_rest_source(&args)?;

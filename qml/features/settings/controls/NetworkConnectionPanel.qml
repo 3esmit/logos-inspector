@@ -2,16 +2,13 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQml.Models
-import QtQuick.Layouts
 import "../../../components"
 
-Panel {
+SourceSettingsPanel {
     id: root
 
     property real pageWidth: 900
-    property bool busy: false
     property string kind: ""
-    property string subtitle: ""
     property string connectionType: ""
     property string endpointLabel: qsTr("URL")
     property string endpoint: ""
@@ -26,45 +23,19 @@ Panel {
     property string auxiliaryText: ""
     property string auxiliaryPlaceholder: ""
     property int refreshRate: 30
-    property string statusText: qsTr("Unknown")
-    property string statusDetail: ""
-    property color statusColor: theme.textMuted
 
     signal endpointEdited(string value)
     signal auxiliaryEdited(string value)
     signal refreshRateEdited(int value)
     signal sourceActivated(int index)
-    signal queryClicked()
 
     ListModel {
         id: emptySourceOptions
     }
 
-    RowLayout {
-        spacing: root.theme.gap
-        Layout.fillWidth: true
-
-        Text {
-            text: root.subtitle
-            color: root.theme.textMuted
-            textFormat: Text.PlainText
-            wrapMode: Text.Wrap
-            font.pixelSize: root.theme.secondaryText
-            Layout.fillWidth: true
-        }
-
-        StatusPill {
-            theme: root.theme
-            text: root.statusText
-            colorToken: root.statusColor
-        }
-    }
-
-    GridLayout {
-        columns: root.pageWidth < 760 ? 1 : 2
-        columnSpacing: root.theme.gap
-        rowSpacing: root.theme.gap
-        Layout.fillWidth: true
+    SourceSettingsGrid {
+        theme: root.theme
+        pageWidth: root.pageWidth
 
         InfoField {
             theme: root.theme
@@ -113,30 +84,6 @@ Panel {
             syncSourceText: true
             placeholderText: root.auxiliaryPlaceholder
             onTextEdited: text => root.auxiliaryEdited(text)
-        }
-    }
-
-    RowLayout {
-        spacing: root.theme.gapSmall
-        Layout.fillWidth: true
-
-        ActionButton {
-            theme: root.theme
-            text: qsTr("Query status")
-            primary: true
-            enabled: !root.busy
-            Layout.preferredWidth: 132
-            accessibleName: qsTr("Query %1 status").arg(root.title)
-            onClicked: root.queryClicked()
-        }
-
-        Text {
-            text: root.statusDetail
-            color: root.theme.textMuted
-            textFormat: Text.PlainText
-            wrapMode: Text.Wrap
-            font.pixelSize: root.theme.dataText
-            Layout.fillWidth: true
         }
     }
 }

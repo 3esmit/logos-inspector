@@ -1,5 +1,6 @@
 pub(crate) mod bridge_envelope;
 pub(crate) mod command_runner;
+pub(crate) mod confirmation;
 pub(crate) mod entity_id;
 pub(crate) mod http_response;
 pub(crate) mod json_value;

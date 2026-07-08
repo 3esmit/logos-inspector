@@ -25,6 +25,12 @@ struct LogosCoreRunner {
     label: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunnerPreference {
+    Default,
+    PreferService,
+}
+
 pub fn status() -> Result<LogosCoreOutput> {
     run_json(["status", "--json"])
 }
@@ -61,14 +67,7 @@ where
     I: IntoIterator<Item = S> + Clone,
     S: AsRef<str>,
 {
-    let mut errors = Vec::new();
-    for runner in ordered_runners(false) {
-        match run_json_with(&runner, args.clone()) {
-            Ok(output) => return Ok(output),
-            Err(error) => errors.push(format!("{error:#}")),
-        }
-    }
-    bail!("logoscore failed: {}", errors.join("; "))
+    run_json_with_preference(args, RunnerPreference::Default)
 }
 
 fn run_json_prefer_service<I, S>(args: I) -> Result<LogosCoreOutput>
@@ -76,8 +75,16 @@ where
     I: IntoIterator<Item = S> + Clone,
     S: AsRef<str>,
 {
+    run_json_with_preference(args, RunnerPreference::PreferService)
+}
+
+fn run_json_with_preference<I, S>(args: I, preference: RunnerPreference) -> Result<LogosCoreOutput>
+where
+    I: IntoIterator<Item = S> + Clone,
+    S: AsRef<str>,
+{
     let mut errors = Vec::new();
-    for runner in ordered_runners(true) {
+    for runner in ordered_runners(preference) {
         match run_json_with(&runner, args.clone()) {
             Ok(output) => return Ok(output),
             Err(error) => errors.push(format!("{error:#}")),
@@ -129,9 +136,15 @@ fn command_timeout() -> Duration {
         .unwrap_or_else(|| Duration::from_secs(5))
 }
 
-fn ordered_runners(prefer_service: bool) -> Vec<LogosCoreRunner> {
-    let runners = runners();
-    if !prefer_service {
+fn ordered_runners(preference: RunnerPreference) -> Vec<LogosCoreRunner> {
+    order_runners(runners(), preference)
+}
+
+fn order_runners(
+    runners: Vec<LogosCoreRunner>,
+    preference: RunnerPreference,
+) -> Vec<LogosCoreRunner> {
+    if preference == RunnerPreference::Default {
         return runners;
     }
 
@@ -275,5 +288,34 @@ mod tests {
 
         let value = value.pointer("/result/value").and_then(Value::as_str);
         assert_eq!(value, Some("@[Version, Metrics]"));
+    }
+
+    #[test]
+    fn service_preference_keeps_configured_runner_first() {
+        let configured = LogosCoreRunner {
+            program: "logoscore".to_owned(),
+            sudo_user: None,
+            home: Some("/tmp/home".to_owned()),
+            label: "configured logoscore".to_owned(),
+        };
+        let plain = LogosCoreRunner {
+            program: "logoscore".to_owned(),
+            sudo_user: None,
+            home: None,
+            label: "plain logoscore".to_owned(),
+        };
+        let service = LogosCoreRunner {
+            program: "logoscore".to_owned(),
+            sudo_user: Some("logos".to_owned()),
+            home: Some("/var/lib/logos-node".to_owned()),
+            label: "service user logoscore".to_owned(),
+        };
+
+        let ordered = order_runners(
+            vec![configured.clone(), plain.clone(), service.clone()],
+            RunnerPreference::PreferService,
+        );
+
+        assert_eq!(ordered, vec![configured, service, plain]);
     }
 }

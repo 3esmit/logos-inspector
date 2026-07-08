@@ -1,22 +1,17 @@
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result};
 use serde_json::Value;
 
 use crate::{
     local_wallet_accounts, local_wallet_command, local_wallet_create_account,
     local_wallet_deploy_program, local_wallet_instruction_submit, local_wallet_send_transaction,
-    local_wallet_sync_private, source_routing::Args,
+    local_wallet_sync_private, source_routing::Args, support::confirmation::ConfirmationPolicy,
 };
 
 use super::super::value::{blocking_value, to_value};
 use super::NodeOperationRequest;
 
 pub(super) async fn execute_wallet_create_account(request: &NodeOperationRequest) -> Result<Value> {
-    let args = confirmed_wallet_args(
-        request,
-        3,
-        "confirm-create-account",
-        "wallet account creation requires explicit confirmation",
-    )?;
+    let args = confirmed_wallet_args(request, 3, ConfirmationPolicy::WalletCreateAccount)?;
     let profile = wallet_profile_arg(&args)?;
     let privacy = args.string(1, "account privacy")?.to_owned();
     let label = args.optional_string(2).map(ToOwned::to_owned);
@@ -33,12 +28,7 @@ pub(super) async fn execute_wallet_create_account(request: &NodeOperationRequest
 pub(super) async fn execute_wallet_send_transaction(
     request: &NodeOperationRequest,
 ) -> Result<Value> {
-    let args = confirmed_wallet_args(
-        request,
-        2,
-        "confirm-send-transaction",
-        "wallet transaction send requires explicit confirmation",
-    )?;
+    let args = confirmed_wallet_args(request, 2, ConfirmationPolicy::WalletSendTransaction)?;
     let profile = wallet_profile_arg(&args)?;
     let send_request = args
         .value(1)
@@ -53,12 +43,7 @@ pub(super) async fn execute_wallet_send_transaction(
 pub(super) async fn execute_wallet_instruction_submit(
     request: &NodeOperationRequest,
 ) -> Result<Value> {
-    let args = confirmed_wallet_args(
-        request,
-        2,
-        "confirm-idl-instruction",
-        "IDL instruction send requires explicit confirmation",
-    )?;
+    let args = confirmed_wallet_args(request, 2, ConfirmationPolicy::WalletInstructionSubmit)?;
     to_value(
         local_wallet_instruction_submit(
             wallet_profile_arg(&args)?,
@@ -71,12 +56,7 @@ pub(super) async fn execute_wallet_instruction_submit(
 }
 
 pub(super) async fn execute_wallet_command(request: &NodeOperationRequest) -> Result<Value> {
-    let args = confirmed_wallet_args(
-        request,
-        2,
-        "confirm-wallet-command",
-        "wallet command requires explicit confirmation",
-    )?;
+    let args = confirmed_wallet_args(request, 2, ConfirmationPolicy::WalletCommand)?;
     let command_args = serde_json::from_value::<Vec<String>>(
         args.value(1)
             .cloned()
@@ -91,12 +71,7 @@ pub(super) async fn execute_wallet_command(request: &NodeOperationRequest) -> Re
 }
 
 pub(super) async fn execute_wallet_deploy_program(request: &NodeOperationRequest) -> Result<Value> {
-    let args = confirmed_wallet_args(
-        request,
-        2,
-        "confirm-deploy-program",
-        "program deployment requires explicit confirmation",
-    )?;
+    let args = confirmed_wallet_args(request, 2, ConfirmationPolicy::WalletDeployProgram)?;
     let profile = wallet_profile_arg(&args)?;
     let program_path = args.string(1, "program path")?.to_owned();
     blocking_value("program deployment", move || {
@@ -106,12 +81,7 @@ pub(super) async fn execute_wallet_deploy_program(request: &NodeOperationRequest
 }
 
 pub(super) async fn execute_wallet_sync_private(request: &NodeOperationRequest) -> Result<Value> {
-    let args = confirmed_wallet_args(
-        request,
-        1,
-        "confirm-sync-private",
-        "private wallet sync requires explicit confirmation",
-    )?;
+    let args = confirmed_wallet_args(request, 1, ConfirmationPolicy::WalletSyncPrivate)?;
     let profile = wallet_profile_arg(&args)?;
     blocking_value("private wallet sync", move || {
         to_value(local_wallet_sync_private(profile)?)
@@ -131,13 +101,10 @@ pub(super) async fn execute_wallet_accounts(request: &NodeOperationRequest) -> R
 fn confirmed_wallet_args(
     request: &NodeOperationRequest,
     confirmation_index: usize,
-    token: &str,
-    error: &str,
+    policy: ConfirmationPolicy,
 ) -> Result<Args> {
     let args = Args::new(request.args.clone())?;
-    if args.optional_string(confirmation_index) != Some(token) {
-        bail!("{error}");
-    }
+    policy.require(args.optional_string(confirmation_index))?;
     Ok(args)
 }
 

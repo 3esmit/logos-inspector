@@ -552,11 +552,11 @@ const STORAGE_SOURCE_MODES: &[SourceModePolicy] = &[
 
 impl CoreSourceMode {
     pub fn from_token(value: &str) -> Option<Self> {
-        match normalized(value).as_str() {
+        let policy = source_mode_policy_for_token(SourceFamily::Core, value)?;
+        match policy.key {
             "auto" => Some(Self::Auto),
-            "rpc" | "direct-rpc" | "direct rpc" | "standalone" | "standalone-rpc"
-            | "standalone rpc" => Some(Self::Rpc),
-            "module" | "basecamp" | "basecamp-module" | "basecamp module" => Some(Self::Module),
+            "rpc" => Some(Self::Rpc),
+            "module" => Some(Self::Module),
             _ => None,
         }
     }
@@ -588,15 +588,16 @@ impl CoreEndpointMode {
 
 impl DeliverySourceMode {
     pub fn from_token(value: &str) -> Self {
-        match normalized(value).as_str() {
-            "auto" => Self::Auto,
-            "module" | "basecamp" | "basecamp-module" | "basecamp module" => Self::Module,
-            "rest" | "direct-rest" | "direct waku rest" | "waku-rest" => Self::Rest,
-            "metrics" | "metrics-only" | "metrics only" => Self::Metrics,
-            "network-monitor" | "network monitor" | "discovery-crawler" | "discovery crawler"
-            | "crawler" => Self::NetworkMonitor,
-            _ => Self::Unsupported,
-        }
+        source_mode_policy_for_token(SourceFamily::Delivery, value)
+            .map(|policy| match policy.key {
+                "auto" => Self::Auto,
+                "module" => Self::Module,
+                "rest" => Self::Rest,
+                "metrics" => Self::Metrics,
+                "network-monitor" => Self::NetworkMonitor,
+                _ => Self::Unsupported,
+            })
+            .unwrap_or(Self::Unsupported)
     }
 
     pub fn effective(self) -> Self {
@@ -626,14 +627,15 @@ impl DeliverySourceMode {
 
 impl StorageSourceMode {
     pub fn from_token(value: &str) -> Self {
-        match normalized(value).as_str() {
-            "auto" => Self::Auto,
-            "module" | "basecamp" | "basecamp-module" | "basecamp module" => Self::Module,
-            "rest" | "standalone" | "standalone-rest" | "standalone rest" | "direct-rest"
-            | "direct rest" => Self::Rest,
-            "metrics" | "metrics-only" | "metrics only" => Self::Metrics,
-            _ => Self::Unsupported,
-        }
+        source_mode_policy_for_token(SourceFamily::Storage, value)
+            .map(|policy| match policy.key {
+                "auto" => Self::Auto,
+                "module" => Self::Module,
+                "rest" => Self::Rest,
+                "metrics" => Self::Metrics,
+                _ => Self::Unsupported,
+            })
+            .unwrap_or(Self::Unsupported)
     }
 
     pub fn effective(self) -> Self {
@@ -687,17 +689,13 @@ pub fn normalized_core_source_mode(value: &str) -> &'static str {
 
 #[must_use]
 pub fn source_mode_policy(family: SourceFamily, value: &str) -> &'static SourceModePolicy {
-    family
-        .modes()
-        .iter()
-        .find(|mode| source_mode_matches(mode, value))
-        .unwrap_or_else(|| {
-            family
-                .modes()
-                .iter()
-                .find(|mode| mode.key == fallback_source_mode_key(family))
-                .unwrap_or_else(|| fallback_source_mode(family))
-        })
+    source_mode_policy_for_token(family, value).unwrap_or_else(|| {
+        family
+            .modes()
+            .iter()
+            .find(|mode| mode.key == fallback_source_mode_key(family))
+            .unwrap_or_else(|| fallback_source_mode(family))
+    })
 }
 
 #[must_use]
@@ -798,6 +796,16 @@ fn fallback_source_mode(family: SourceFamily) -> &'static SourceModePolicy {
         SourceFamily::Core => &FALLBACK_CORE_SOURCE_MODE,
         SourceFamily::Delivery | SourceFamily::Storage => &FALLBACK_UNSUPPORTED_SOURCE_MODE,
     }
+}
+
+fn source_mode_policy_for_token(
+    family: SourceFamily,
+    value: &str,
+) -> Option<&'static SourceModePolicy> {
+    family
+        .modes()
+        .iter()
+        .find(|mode| source_mode_matches(mode, value))
 }
 
 fn source_probe_facts(module_info: &ProbeReport, probes: &[ProbeReport]) -> Vec<SourceProbeFact> {

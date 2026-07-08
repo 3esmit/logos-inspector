@@ -2,6 +2,8 @@ use anyhow::{Context as _, Result, bail};
 use lee::AccountId;
 use serde_json::{Map, Value, json};
 
+use super::idl_type::{fixed_array_type, idl_type_label};
+
 pub(crate) struct DecodedValue {
     pub(crate) value: Value,
     pub(crate) consumed: usize,
@@ -174,7 +176,7 @@ pub(crate) fn decode_borsh_type(
         });
     }
 
-    if let Some((inner, len)) = fixed_array_type(object)? {
+    if let Some((inner, len)) = fixed_array_type(ty)? {
         let mut cursor = offset;
         let mut values = Vec::with_capacity(len);
         for _ in 0..len {
@@ -306,7 +308,7 @@ pub(crate) fn decode_instruction_type(
         });
     }
 
-    if let Some((inner, len)) = fixed_array_type(object)? {
+    if let Some((inner, len)) = fixed_array_type(ty)? {
         let mut cursor = offset;
         let mut values = Vec::with_capacity(len);
         for _ in 0..len {
@@ -392,72 +394,6 @@ fn find_defined_shape<'a>(idl: &'a Value, name: &str) -> Option<&'a Value> {
                 .find(|item| item.get("name").and_then(Value::as_str) == Some(name))
                 .and_then(|item| item.get("type"))
         })
-}
-
-pub(crate) fn idl_type_label(ty: &Value) -> String {
-    if let Some(value) = ty.as_str() {
-        return value.to_owned();
-    }
-    if let Some(inner) = ty.get("option") {
-        return format!("option<{}>", idl_type_label(inner));
-    }
-    if let Some(inner) = ty.get("vec") {
-        return format!("vec<{}>", idl_type_label(inner));
-    }
-    if let Some(object) = ty.as_object()
-        && let Ok(Some((inner, len))) = fixed_array_type(object)
-    {
-        return format!("array<{}, {len}>", idl_type_label(inner));
-    }
-    if let Some(name) = ty.get("defined").and_then(Value::as_str) {
-        return name.to_owned();
-    }
-    ty.to_string()
-}
-
-fn fixed_array_type(object: &Map<String, Value>) -> Result<Option<(&Value, usize)>> {
-    let Some(array) = object.get("array") else {
-        return Ok(None);
-    };
-    match array {
-        Value::Array(items) => {
-            if items.len() != 2 {
-                bail!("array type must be [element_type, len]");
-            }
-            let inner = items
-                .first()
-                .context("array type missing element type after length check")?;
-            let len_value = items
-                .get(1)
-                .context("array type missing length after length check")?;
-            Ok(Some((inner, array_len(len_value)?)))
-        }
-        Value::Object(array_object) => {
-            let inner = array_object
-                .get("type")
-                .or_else(|| array_object.get("inner"))
-                .or_else(|| array_object.get("element"))
-                .context("array type object missing element type")?;
-            let len_value = array_object
-                .get("len")
-                .or_else(|| array_object.get("length"))
-                .context("array type object missing length")?;
-            Ok(Some((inner, array_len(len_value)?)))
-        }
-        _ => bail!("array type must be [element_type, len] or object"),
-    }
-}
-
-fn array_len(value: &Value) -> Result<usize> {
-    let len = value
-        .as_u64()
-        .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
-        .context("array length must be an unsigned integer")?;
-    let len = usize::try_from(len).context("array length does not fit usize")?;
-    if len > 100_000 {
-        bail!("array length too large: {len}");
-    }
-    Ok(len)
 }
 
 pub(crate) fn parse_hex_bytes(value: &str) -> Result<Vec<u8>> {

@@ -4,7 +4,6 @@ import QtQuick
 import QtQml.Models
 import QtQuick.Layouts
 import "../../../components"
-import "../../../components/common"
 import "../../../state"
 import "../../../theme"
 import "../../../utils/UiFormat.js" as UiFormat
@@ -92,9 +91,10 @@ ColumnLayout {
         Layout.fillWidth: true
     }
 
-    DataTableFrame {
+    PagedInspectionTable {
         visible: root.visibleRows().length > 0
         theme: root.theme
+        toolbarVisible: false
         Layout.fillWidth: true
         headerCells: [
             { text: qsTr("Type"), width: 116 },

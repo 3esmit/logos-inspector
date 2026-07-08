@@ -2,10 +2,7 @@ use serde::Serialize;
 
 use crate::{
     ProbeReport, logoscore,
-    source_routing::{
-        SourceCapabilityFact, SourceFacts, SourceHealthFacts, SourceProbeFact, SourceProbeKey,
-        keyed_probe_result,
-    },
+    source_routing::{SourceProbeKey, SourceReport},
 };
 
 use super::{delivery_report, storage_report};
@@ -19,8 +16,8 @@ const CAPABILITY_MODULE: &str = "capability_module";
 pub struct LogosModulesReport {
     pub status: ProbeReport,
     pub blockchain: ModuleReport,
-    pub storage: ModuleReport,
-    pub delivery: ModuleReport,
+    pub storage: SourceReport,
+    pub delivery: SourceReport,
     pub capabilities: ModuleReport,
 }
 
@@ -29,12 +26,6 @@ pub struct ModuleReport {
     pub module: String,
     pub module_info: ProbeReport,
     pub probes: Vec<ProbeReport>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub health: Option<SourceHealthFacts>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub probe_facts: Vec<SourceProbeFact>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub capability_facts: Vec<SourceCapabilityFact>,
 }
 
 impl ModuleReport {
@@ -47,17 +38,7 @@ impl ModuleReport {
             module: module.into(),
             module_info,
             probes,
-            health: None,
-            probe_facts: Vec::new(),
-            capability_facts: Vec::new(),
         }
-    }
-
-    pub(crate) fn with_source_facts(mut self, facts: SourceFacts) -> Self {
-        self.health = Some(facts.health);
-        self.probe_facts = facts.probe_facts;
-        self.capability_facts = facts.capability_facts;
-        self
     }
 }
 
@@ -115,22 +96,7 @@ pub(super) fn module_info_probe(module: &str) -> ProbeReport {
 }
 
 pub(super) fn call_probe(module: &str, method: &str, args: &[&str]) -> ProbeReport {
-    let args = args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
-    let args_label = if args.is_empty() {
-        String::new()
-    } else {
-        format!("({})", args.join(", "))
-    };
-    let source_args = if args.is_empty() {
-        String::new()
-    } else {
-        format!(" {}", args.join(" "))
-    };
-    ProbeReport::from_result(
-        format!("{module}.{method}{args_label}"),
-        format!("logoscore call {module} {method}{source_args}"),
-        logoscore::call(module, method, &args),
-    )
+    call_module_probe(module, method, args, None)
 }
 
 pub(super) fn call_source_probe(
@@ -138,6 +104,15 @@ pub(super) fn call_source_probe(
     method: &str,
     args: &[&str],
     key: SourceProbeKey,
+) -> ProbeReport {
+    call_module_probe(module, method, args, Some(key))
+}
+
+fn call_module_probe(
+    module: &str,
+    method: &str,
+    args: &[&str],
+    key: Option<SourceProbeKey>,
 ) -> ProbeReport {
     let args = args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
     let args_label = if args.is_empty() {
@@ -150,12 +125,15 @@ pub(super) fn call_source_probe(
     } else {
         format!(" {}", args.join(" "))
     };
-    keyed_probe_result(
-        key,
+    let probe = ProbeReport::from_result(
         format!("{module}.{method}{args_label}"),
         format!("logoscore call {module} {method}{source_args}"),
         logoscore::call(module, method, &args),
-    )
+    );
+    match key {
+        Some(key) => probe.with_probe_key(key.as_str()),
+        None => probe,
+    }
 }
 
 pub(super) fn optional(value: Option<&str>) -> Option<&str> {

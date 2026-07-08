@@ -3,7 +3,6 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Layouts
 import "../../../components"
-import "../../../components/common"
 import "../../../state"
 import "../../../theme"
 import "../../../utils/UiFormat.js" as UiFormat
@@ -23,24 +22,13 @@ ColumnLayout {
         }
     }
 
-    ListToolbar {
+    PagedInspectionTable {
         theme: root.theme
         loadCount: root.model.transactionsPageLimit
         rangeText: root.transactionRangeText()
         canGoNewer: root.canLoadNewer()
         canGoOlder: root.model.transactionsPageNextBeforeBlock > 0
         busy: root.model.busy
-        Layout.fillWidth: true
-        onRefresh: root.model.refreshTransactionsPage()
-        onNewer: root.model.newerTransactionsPage()
-        onOlder: root.model.olderTransactionsPage()
-        onLoadCountSelected: function (count) {
-            root.model.setTransactionsPageLimit(count)
-        }
-    }
-
-    DataTableFrame {
-        theme: root.theme
         Layout.fillWidth: true
         headerCells: [
             { text: qsTr("L1 slot"), width: 96 },
@@ -49,6 +37,12 @@ ColumnLayout {
             { text: qsTr("Ops"), width: 64 }
         ]
         rows: root.transactionRows()
+        onRefreshRequested: root.model.refreshTransactionsPage()
+        onNewerRequested: root.model.newerTransactionsPage()
+        onOlderRequested: root.model.olderTransactionsPage()
+        onLoadCountSelected: function (count) {
+            root.model.setTransactionsPageLimit(count)
+        }
         onCellActivated: function (row, column, cell, rowData) {
             if (column === 1 && rowData.txHash.length > 0) {
                 root.model.openMantleTransaction(rowData.txHash)

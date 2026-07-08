@@ -1,5 +1,6 @@
 import QtQml
 import "../utils/UiFormat.js" as UiFormat
+import "ConfirmationPolicy.js" as ConfirmationPolicy
 
 WalletState {
     id: root
@@ -93,7 +94,7 @@ WalletState {
         const privacy = String(createPrivacy || "public").toLowerCase() === "private" ? "private" : "public"
         const label = String(createLabel || "").trim()
 
-        return runRequest(qsTr("Wallet account"), "localWalletCreateAccount", [profile(gateway.networkProfile()), privacy, label, "confirm-create-account"], true, function (response) {
+        return runRequest(qsTr("Wallet account"), "localWalletCreateAccount", [profile(gateway.networkProfile()), privacy, label, ConfirmationPolicy.token("wallet-create-account")], true, function (response) {
             if (response.ok) {
                 appendHistory(qsTr("Create account"), "created", commandOperationDetail(response.value))
                 createLabel = ""
@@ -128,7 +129,7 @@ WalletState {
             return null
         }
 
-        return runRequest(qsTr("Wallet send"), "localWalletSendTransaction", [profile(gateway.networkProfile()), request, "confirm-send-transaction"], true, function (response) {
+        return runRequest(qsTr("Wallet send"), "localWalletSendTransaction", [profile(gateway.networkProfile()), request, ConfirmationPolicy.token("wallet-send-transaction")], true, function (response) {
             if (response.ok) {
                 appendHistory(qsTr("Send transaction"), "submitted", commandOperationDetail(response.value))
             } else {
@@ -145,7 +146,7 @@ WalletState {
             return null
         }
 
-        return runRequest(qsTr("Read incoming"), "localWalletSyncPrivate", [profile(gateway.networkProfile()), "confirm-sync-private"], true, function (response) {
+        return runRequest(qsTr("Read incoming"), "localWalletSyncPrivate", [profile(gateway.networkProfile()), ConfirmationPolicy.token("wallet-sync-private")], true, function (response) {
             if (response.ok) {
                 appendHistory(qsTr("Read incoming"), "submitted", privateSyncOperationDetail(response.value))
             } else {
@@ -167,7 +168,7 @@ WalletState {
             return null
         }
 
-        return runRequest(qsTr("Wallet command"), "localWalletCommand", [profile(gateway.networkProfile()), args, "confirm-wallet-command"], true, function (response) {
+        return runRequest(qsTr("Wallet command"), "localWalletCommand", [profile(gateway.networkProfile()), args, ConfirmationPolicy.token("wallet-command")], true, function (response) {
             if (response.ok) {
                 appendHistory(qsTr("Wallet command"), "completed", commandOperationDetail(response.value))
             } else {
@@ -189,7 +190,7 @@ WalletState {
             return null
         }
 
-        return runRequest(qsTr("Program deploy"), "localWalletDeployProgram", [profile(gateway.networkProfile()), path, "confirm-deploy-program"], true, function (response) {
+        return runRequest(qsTr("Program deploy"), "localWalletDeployProgram", [profile(gateway.networkProfile()), path, ConfirmationPolicy.token("wallet-deploy-program")], true, function (response) {
             if (response.ok) {
                 appendHistory(qsTr("Deploy program"), "submitted", deployProgramOperationDetail(response.value))
             } else {
@@ -206,7 +207,7 @@ WalletState {
             return null
         }
 
-        return runRequest(qsTr("Private sync"), "localWalletSyncPrivate", [profile(gateway.networkProfile()), "confirm-sync-private"], true, function (response) {
+        return runRequest(qsTr("Private sync"), "localWalletSyncPrivate", [profile(gateway.networkProfile()), ConfirmationPolicy.token("wallet-sync-private")], true, function (response) {
             if (response.ok) {
                 appendHistory(qsTr("Private sync"), "submitted", privateSyncOperationDetail(response.value))
             } else {
@@ -265,7 +266,7 @@ WalletState {
             return null
         }
 
-        return runRequest(qsTr("IDL instruction"), "localWalletInstructionSubmit", [profile(gateway.networkProfile()), request || {}, "confirm-idl-instruction"], true, function (response) {
+        return runRequest(qsTr("IDL instruction"), "localWalletInstructionSubmit", [profile(gateway.networkProfile()), request || {}, ConfirmationPolicy.token("wallet-instruction-submit")], true, function (response) {
             if (response.ok) {
                 gateway.setIdlInstructionState(response.value || null, "")
                 appendHistory(qsTr("IDL instruction"), "submitted", idlInstructionOperationDetail(response.value))

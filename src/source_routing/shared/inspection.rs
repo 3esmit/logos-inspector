@@ -1,15 +1,18 @@
 use anyhow::Result;
 use serde_json::{Value, json};
 
-use super::report::{SourceReportBuilder, keyed_probe_err, keyed_probe_ok, keyed_probe_result};
+use super::report::{
+    MetricsProbeSpec, SourceReportBuilder, SourceReportKind, keyed_probe_result,
+    source_text_metrics_report, unsupported_source_report,
+};
 use crate::source_routing::{
     DEFAULT_DELIVERY_METRICS_ENDPOINT, DEFAULT_DELIVERY_REST_ENDPOINT,
     DEFAULT_STORAGE_METRICS_ENDPOINT, DEFAULT_STORAGE_REST_ENDPOINT, DeliverySourceReportKind,
-    SourceFamily, SourceProbeKey, StorageSourceReportKind, effective_source_mode,
+    SourceFamily, SourceProbeKey, SourceReport, StorageSourceReportKind, effective_source_mode,
 };
 use crate::{
     ProbeReport,
-    modules::{ModuleReport, delivery_report, storage_report},
+    modules::{delivery_report, storage_report},
     read_response_text,
 };
 
@@ -19,7 +22,7 @@ pub async fn storage_source_report(
     metrics_endpoint: Option<&str>,
     cid: Option<&str>,
     privileged_debug_enabled: bool,
-) -> ModuleReport {
+) -> SourceReport {
     match effective_source_mode(SourceFamily::Storage, source_mode) {
         "module" => storage_report(cid, privileged_debug_enabled),
         "rest" => {
@@ -40,7 +43,7 @@ pub async fn delivery_source_report(
     source_mode: &str,
     rest_endpoint: Option<&str>,
     metrics_endpoint: Option<&str>,
-) -> ModuleReport {
+) -> SourceReport {
     match effective_source_mode(SourceFamily::Delivery, source_mode) {
         "module" => delivery_report(None),
         "rest" => delivery_rest_report(rest_endpoint, metrics_endpoint).await,
@@ -55,7 +58,7 @@ async fn storage_rest_report(
     metrics_endpoint: Option<&str>,
     cid: Option<&str>,
     privileged_debug_enabled: bool,
-) -> ModuleReport {
+) -> SourceReport {
     let endpoint = optional(rest_endpoint).unwrap_or(DEFAULT_STORAGE_REST_ENDPOINT);
     let space_source = http_url(endpoint, "/space");
     let spr_source = http_url(endpoint, "/spr");
@@ -130,55 +133,22 @@ async fn storage_rest_report(
     report.finish()
 }
 
-async fn storage_metrics_report(metrics_endpoint: Option<&str>) -> ModuleReport {
+async fn storage_metrics_report(metrics_endpoint: Option<&str>) -> SourceReport {
     let endpoint = optional(metrics_endpoint).unwrap_or(DEFAULT_STORAGE_METRICS_ENDPOINT);
-    let metrics = raw_http_text_url(endpoint).await;
-    match metrics {
-        Ok(text) => {
-            let module_info = keyed_probe_ok(
-                SourceProbeKey::StorageMetricsScrape,
-                "storage_metrics.scrape",
-                endpoint,
-                json!({
-                    "bytes": text.len(),
-                    "lines": text.lines().count(),
-                }),
-            );
-            let mut report = SourceReportBuilder::storage(
-                "storage_metrics",
-                StorageSourceReportKind::Metrics,
-                module_info,
-            );
-            report.push_ok(
-                SourceProbeKey::StorageCollectMetrics,
-                "storage_metrics.collectMetrics",
-                endpoint,
-                text,
-            );
-            report.finish()
-        }
-        Err(error) => {
-            let error = error.to_string();
-            let module_info = keyed_probe_err(
-                SourceProbeKey::StorageMetricsScrape,
-                "storage_metrics.scrape",
-                endpoint,
-                &error,
-            );
-            let mut report = SourceReportBuilder::storage(
-                "storage_metrics",
-                StorageSourceReportKind::Metrics,
-                module_info,
-            );
-            report.push_probe(keyed_probe_err(
-                SourceProbeKey::StorageCollectMetrics,
-                "storage_metrics.collectMetrics",
-                endpoint,
-                error,
-            ));
-            report.finish()
-        }
-    }
+    source_text_metrics_report(
+        "storage_metrics",
+        SourceReportKind::Storage(StorageSourceReportKind::Metrics),
+        endpoint,
+        MetricsProbeSpec {
+            key: SourceProbeKey::StorageMetricsScrape,
+            label: "storage_metrics.scrape",
+        },
+        MetricsProbeSpec {
+            key: SourceProbeKey::StorageCollectMetrics,
+            label: "storage_metrics.collectMetrics",
+        },
+        raw_http_text_url(endpoint).await,
+    )
 }
 
 async fn storage_metrics_probe(metrics_endpoint: &str) -> ProbeReport {
@@ -190,14 +160,13 @@ async fn storage_metrics_probe(metrics_endpoint: &str) -> ProbeReport {
     )
 }
 
-fn unsupported_storage_source_report(mode: &str) -> ModuleReport {
-    let module = format!("storage_{mode}");
-    let module_info = ProbeReport::err(
-        "storage source",
+fn unsupported_storage_source_report(mode: &str) -> SourceReport {
+    unsupported_source_report(
+        "storage",
+        "storage",
+        SourceReportKind::Storage(StorageSourceReportKind::Unsupported),
         mode,
-        format!("storage source mode `{mode}` is not implemented"),
-    );
-    SourceReportBuilder::storage(module, StorageSourceReportKind::Unsupported, module_info).finish()
+    )
 }
 
 fn normalize_storage_manifests(value: Value) -> Value {
@@ -229,7 +198,7 @@ fn normalize_storage_exists(value: Value, cid: &str) -> Value {
 async fn delivery_rest_report(
     rest_endpoint: Option<&str>,
     metrics_endpoint: Option<&str>,
-) -> ModuleReport {
+) -> SourceReport {
     let endpoint = optional(rest_endpoint).unwrap_or(DEFAULT_DELIVERY_REST_ENDPOINT);
     let health_source = http_url(endpoint, "/health");
     let info_source = http_url(endpoint, "/info");
@@ -381,55 +350,22 @@ fn push_delivery_probe(
     }
 }
 
-async fn delivery_metrics_report(metrics_endpoint: Option<&str>) -> ModuleReport {
+async fn delivery_metrics_report(metrics_endpoint: Option<&str>) -> SourceReport {
     let endpoint = optional(metrics_endpoint).unwrap_or(DEFAULT_DELIVERY_METRICS_ENDPOINT);
-    let metrics = raw_http_text_url(endpoint).await;
-    match metrics {
-        Ok(text) => {
-            let module_info = keyed_probe_ok(
-                SourceProbeKey::DeliveryMetricsScrape,
-                "delivery_metrics.scrape",
-                endpoint,
-                json!({
-                    "bytes": text.len(),
-                    "lines": text.lines().count(),
-                }),
-            );
-            let mut report = SourceReportBuilder::delivery(
-                "delivery_metrics",
-                DeliverySourceReportKind::Metrics,
-                module_info,
-            );
-            report.push_ok(
-                SourceProbeKey::DeliveryCollectOpenMetricsText,
-                "delivery_metrics.collectOpenMetricsText",
-                endpoint,
-                text,
-            );
-            report.finish()
-        }
-        Err(error) => {
-            let error = error.to_string();
-            let module_info = keyed_probe_err(
-                SourceProbeKey::DeliveryMetricsScrape,
-                "delivery_metrics.scrape",
-                endpoint,
-                &error,
-            );
-            let mut report = SourceReportBuilder::delivery(
-                "delivery_metrics",
-                DeliverySourceReportKind::Metrics,
-                module_info,
-            );
-            report.push_probe(keyed_probe_err(
-                SourceProbeKey::DeliveryCollectOpenMetricsText,
-                "delivery_metrics.collectOpenMetricsText",
-                endpoint,
-                error,
-            ));
-            report.finish()
-        }
-    }
+    source_text_metrics_report(
+        "delivery_metrics",
+        SourceReportKind::Delivery(DeliverySourceReportKind::Metrics),
+        endpoint,
+        MetricsProbeSpec {
+            key: SourceProbeKey::DeliveryMetricsScrape,
+            label: "delivery_metrics.scrape",
+        },
+        MetricsProbeSpec {
+            key: SourceProbeKey::DeliveryCollectOpenMetricsText,
+            label: "delivery_metrics.collectOpenMetricsText",
+        },
+        raw_http_text_url(endpoint).await,
+    )
 }
 
 async fn delivery_metrics_probe(metrics_endpoint: &str) -> ProbeReport {
@@ -444,7 +380,7 @@ async fn delivery_metrics_probe(metrics_endpoint: &str) -> ProbeReport {
 async fn delivery_network_monitor_report(
     rest_endpoint: Option<&str>,
     metrics_endpoint: Option<&str>,
-) -> ModuleReport {
+) -> SourceReport {
     let endpoint = optional(rest_endpoint).unwrap_or(DEFAULT_DELIVERY_REST_ENDPOINT);
     let all_peers_source = http_url(endpoint, "/allpeersinfo");
     let content_topics_source = http_url(endpoint, "/contenttopics");
@@ -481,15 +417,13 @@ async fn delivery_network_monitor_report(
     report.finish()
 }
 
-fn unsupported_delivery_source_report(mode: &str) -> ModuleReport {
-    let module = format!("delivery_{mode}");
-    let module_info = ProbeReport::err(
-        "delivery source",
+fn unsupported_delivery_source_report(mode: &str) -> SourceReport {
+    unsupported_source_report(
+        "delivery",
+        "delivery",
+        SourceReportKind::Delivery(DeliverySourceReportKind::Unsupported),
         mode,
-        format!("delivery source mode `{mode}` is not implemented"),
-    );
-    SourceReportBuilder::delivery(module, DeliverySourceReportKind::Unsupported, module_info)
-        .finish()
+    )
 }
 
 async fn raw_http_value(endpoint: &str, path: &str) -> Result<Value> {
