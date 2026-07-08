@@ -4,7 +4,7 @@ use tokio::runtime::Runtime;
 
 use super::commands::{
     operations::{OperationBridgeCommand, RuntimeOperationInterface, operation_bridge_command},
-    runtime_methods::{self, RuntimeMethod},
+    runtime_methods::{self, RuntimeMethodEntry},
 };
 use crate::source_routing::Args;
 
@@ -17,7 +17,7 @@ pub(crate) struct DispatchContext<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InspectorCommand {
     Operation(OperationBridgeCommand),
-    Runtime(RuntimeMethod),
+    Runtime(&'static RuntimeMethodEntry),
     CallModule,
 }
 
@@ -51,7 +51,7 @@ fn inspector_command(method: &str) -> Option<InspectorCommand> {
     if let Some(command) = operation_bridge_command(method) {
         return Some(InspectorCommand::Operation(command));
     }
-    if let Some(method) = RuntimeMethod::from_str(method) {
+    if let Some(method) = runtime_methods::lookup(method) {
         return Some(InspectorCommand::Runtime(method));
     }
     match method {
@@ -86,9 +86,9 @@ mod tests {
 
     #[test]
     fn surface_owns_runtime_names() -> Result<()> {
-        for method in runtime_methods::runtime_methods() {
-            let name = method.as_str();
-            if inspector_command(name) != Some(InspectorCommand::Runtime(method)) {
+        for method in runtime_methods::runtime_method_entries() {
+            if inspector_command(method.name()) != Some(InspectorCommand::Runtime(method)) {
+                let name = method.name();
                 bail!("runtime method `{name}` missing from inspector surface");
             }
         }

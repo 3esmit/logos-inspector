@@ -9,13 +9,13 @@ use crate::{
 };
 
 use super::super::value::to_value;
-use super::{RuntimeMethod, RuntimeMethodEntry};
+use super::RuntimeMethodEntry;
 
 pub(super) const METHOD_CATALOG: &[RuntimeMethodEntry] = &[
-    RuntimeMethodEntry::new(RuntimeMethod::Overview, "overview"),
-    RuntimeMethodEntry::new(RuntimeMethod::ChannelScan, "channelScan"),
-    RuntimeMethodEntry::new(RuntimeMethod::ChannelState, "channelState"),
-    RuntimeMethodEntry::new(RuntimeMethod::RawRpc, "rawRpc"),
+    RuntimeMethodEntry::with_runtime("overview", overview),
+    RuntimeMethodEntry::with_runtime("channelScan", channel_scan),
+    RuntimeMethodEntry::with_runtime("channelState", channel_state),
+    RuntimeMethodEntry::with_runtime("rawRpc", raw_rpc),
 ];
 
 pub(super) fn overview(runtime: &Runtime, args: Value) -> Result<Value> {

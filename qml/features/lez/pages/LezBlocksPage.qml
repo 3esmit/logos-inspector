@@ -18,7 +18,7 @@ ColumnLayout {
 
     Component.onCompleted: {
         if (!model.lezBlocksPageRows.length) {
-            model.refreshLezBlocksPage();
+            model.chainPages.refreshLezBlocksPage();
         }
     }
 
@@ -37,11 +37,11 @@ ColumnLayout {
             { text: qsTr("Bedrock"), width: 98 }
         ]
         rows: root.blockRows()
-        onRefreshRequested: root.model.refreshLezBlocksPage(root.model.lezBlocksPageBeforeBlock > 0 ? root.model.lezBlocksPageBeforeBlock : null)
-        onNewerRequested: root.model.newerLezBlocksPage()
-        onOlderRequested: root.model.olderLezBlocksPage()
+        onRefreshRequested: root.model.chainPages.refreshLezBlocksPage(root.model.lezBlocksPageBeforeBlock > 0 ? root.model.lezBlocksPageBeforeBlock : null)
+        onNewerRequested: root.model.chainPages.newerLezBlocksPage()
+        onOlderRequested: root.model.chainPages.olderLezBlocksPage()
         onLoadCountSelected: function (count) {
-            root.model.setLezBlocksPageLimit(count)
+            root.model.chainPages.setLezBlocksPageLimit(count)
         }
         onCellActivated: function (row, column, cell, rowData) {
             if ((column === 0 || column === 1) && rowData.blockHash.length > 0) {
@@ -54,7 +54,7 @@ ColumnLayout {
         visible: root.model.lezBlocksPageError.length > 0
         theme: root.theme
         tone: "warning"
-        title: root.model.sourceProblemTitle("indexer", root.model.lezBlocksPageError, qsTr("L2 blocks unavailable"))
+        title: root.model.chainPages.sourceProblemTitle("indexer", root.model.lezBlocksPageError, qsTr("L2 blocks unavailable"))
         message: root.model.lezBlocksPageError
         Layout.fillWidth: true
     }
@@ -65,7 +65,7 @@ ColumnLayout {
             return [{
                 cells: [
                     { text: "-", width: 96 },
-                    { text: root.model.sourceEmptyText("indexer", root.model.lezBlocksPageError, qsTr("No indexed blocks")), width: 220, fill: true, monospace: false },
+                    { text: root.model.chainPages.sourceEmptyText("indexer", root.model.lezBlocksPageError, qsTr("No indexed blocks")), width: 220, fill: true, monospace: false },
                     { text: "-", width: 64 },
                     { text: "-", width: 98 }
                 ],

@@ -796,7 +796,7 @@ TestCase {
             { recipient: "overflow", account_ref: "overflow", source: "transfer_outputs", transfers: [] }
         ]
 
-        const detail = model.transferRecipientDetailById("overflow")
+        const detail = model.chainPages.transferRecipientDetailById("overflow")
 
         verify(detail !== null)
         compare(detail.address, "overflow")
@@ -1544,7 +1544,7 @@ TestCase {
             }
         }
 
-        model.refreshBlocksPage()
+        model.chainPages.refreshBlocksPage()
 
         compare(fakeHost.lastMethod, "blockchainBlocks")
         compare(fakeHost.lastArgs[1], 0)
@@ -1552,8 +1552,8 @@ TestCase {
         compare(fakeHost.lastArgs[3], 20)
         compare(model.blocksPageRows.length, 2)
         compare(model.blocksPageRows[0].header.slot, 30)
-        compare(model.blockStatus(model.blocksPageRows[0]), "pending")
-        compare(model.blockStatus(model.blocksPageRows[1]), "finalized")
+        compare(model.chainPages.blockStatus(model.blocksPageRows[0]), "pending")
+        compare(model.chainPages.blockStatus(model.blocksPageRows[1]), "finalized")
     }
 
     function test_blocks_live_mode_merges_and_dedupes_snapshot() {
@@ -1596,8 +1596,8 @@ TestCase {
             }
         }
 
-        compare(model.mergeLiveBlocks(fakeHost.responses.blockchainLiveBlocks.value.blocks, model.blocksPageRows, 20).length, 2)
-        model.startBlocksLiveMode()
+        compare(model.chainPages.mergeLiveBlocks(fakeHost.responses.blockchainLiveBlocks.value.blocks, model.blocksPageRows, 20).length, 2)
+        model.chainPages.startBlocksLiveMode()
 
         compare(model.blocksLiveEnabled, true)
         compare(fakeHost.lastMethod, "blockchainLiveBlocks")
@@ -1662,7 +1662,7 @@ TestCase {
             { header: { slot: 30, id: "slot-30" }, transactions: [] }
         ]
 
-        model.stopBlocksLiveMode()
+        model.chainPages.stopBlocksLiveMode()
 
         compare(model.blocksLiveEnabled, false)
         compare(model.blocksLiveError, "")
@@ -1694,7 +1694,7 @@ TestCase {
             }
         }
 
-        model.refreshLezBlocksPage()
+        model.chainPages.refreshLezBlocksPage()
 
         tryCompare(model, "lezBlocksPageLoading", false)
         compare(model.lezBlocksPageRows.length, 3)
@@ -1712,7 +1712,7 @@ TestCase {
     }
 
     function test_lez_blocks_page_finishes_from_first_available_source() {
-        model.finishLezBlocksPage(0, {
+        model.chainPages.finishLezBlocksPage(0, {
             ok: true,
             value: [
                 { block_id: 203, header_hash: "seq-203", tx_count: 0, bedrock_status: "Submitted", transactions: [] }
@@ -1749,14 +1749,14 @@ TestCase {
             }
         }
 
-        model.refreshLezTransactionsPage()
+        model.chainPages.refreshLezTransactionsPage()
         const callsAfterFirstPage = fakeHost.callCount
 
         compare(model.lezTransactionsPageRows.length, 2)
         compare(model.lezTransactionsPageRows[0].hash, "tx-1")
         compare(model.lezTransactionsPageOverflowRows.length, 1)
 
-        model.olderLezTransactionsPage()
+        model.chainPages.olderLezTransactionsPage()
 
         compare(fakeHost.callCount, callsAfterFirstPage)
         compare(model.lezTransactionsPageRows.length, 1)
@@ -1782,14 +1782,14 @@ TestCase {
             }
         }
 
-        model.refreshTransferActivityPage()
+        model.chainPages.refreshTransferActivityPage()
         const callsAfterFirstPage = fakeHost.callCount
 
         compare(model.transferActivityRows.length, 2)
         compare(model.transferActivityRows[0].recipient, "r1")
         compare(model.transferActivityOverflowRows.length, 1)
 
-        model.nextTransferActivityPage()
+        model.chainPages.nextTransferActivityPage()
 
         compare(fakeHost.callCount, callsAfterFirstPage)
         compare(model.transferActivityRows.length, 1)
@@ -1988,7 +1988,7 @@ TestCase {
     }
 
     function test_source_empty_text_uses_sync_and_shape_state() {
-        compare(model.sourceEmptyText("indexer", "", "No indexed blocks"), "No indexed blocks")
+        compare(model.chainPages.sourceEmptyText("indexer", "", "No indexed blocks"), "No indexed blocks")
 
         model.updateNetworkConnectionStatus("indexer", {
             ok: true,
@@ -1997,8 +1997,8 @@ TestCase {
             error: ""
         })
 
-        compare(model.sourceEmptyText("indexer", "", "No indexed blocks"), "Source reachable; syncing")
-        compare(model.sourceProblemTitle("indexer", "Response shape unknown. Raw JSON remains available.", "L2 blocks unavailable"), "Response shape unknown")
+        compare(model.chainPages.sourceEmptyText("indexer", "", "No indexed blocks"), "Source reachable; syncing")
+        compare(model.chainPages.sourceProblemTitle("indexer", "Response shape unknown. Raw JSON remains available.", "L2 blocks unavailable"), "Response shape unknown")
     }
 
     function test_bedrock_network_summary_unwraps_probe_slot() {

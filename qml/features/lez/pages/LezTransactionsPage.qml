@@ -18,7 +18,7 @@ ColumnLayout {
 
     Component.onCompleted: {
         if (!model.lezTransactionsPageRows.length) {
-            model.refreshLezTransactionsPage();
+            model.chainPages.refreshLezTransactionsPage();
         }
     }
 
@@ -37,11 +37,11 @@ ColumnLayout {
             { text: qsTr("Words / bytes"), width: 72 }
         ]
         rows: root.transactionRows()
-        onRefreshRequested: root.model.refreshLezTransactionsPage(root.model.lezTransactionsPageBeforeBlock > 0 ? root.model.lezTransactionsPageBeforeBlock : null)
-        onNewerRequested: root.model.newerLezTransactionsPage()
-        onOlderRequested: root.model.olderLezTransactionsPage()
+        onRefreshRequested: root.model.chainPages.refreshLezTransactionsPage(root.model.lezTransactionsPageBeforeBlock > 0 ? root.model.lezTransactionsPageBeforeBlock : null)
+        onNewerRequested: root.model.chainPages.newerLezTransactionsPage()
+        onOlderRequested: root.model.chainPages.olderLezTransactionsPage()
         onLoadCountSelected: function (count) {
-            root.model.setLezTransactionsPageLimit(count)
+            root.model.chainPages.setLezTransactionsPageLimit(count)
         }
         onCellActivated: function (row, column, cell, rowData) {
             if (column === 0 && rowData.blockHash.length > 0) {
@@ -56,7 +56,7 @@ ColumnLayout {
         visible: root.model.lezTransactionsPageError.length > 0
         theme: root.theme
         tone: "warning"
-        title: root.model.sourceProblemTitle("indexer", root.model.lezTransactionsPageError, qsTr("L2 transactions unavailable"))
+        title: root.model.chainPages.sourceProblemTitle("indexer", root.model.lezTransactionsPageError, qsTr("L2 transactions unavailable"))
         message: root.model.lezTransactionsPageError
         Layout.fillWidth: true
     }
@@ -67,7 +67,7 @@ ColumnLayout {
             return [{
                 cells: [
                     { text: "-", width: 96 },
-                    { text: root.model.sourceEmptyText("indexer", root.model.lezTransactionsPageError, qsTr("No indexed transactions")), width: 180, fill: true, monospace: false },
+                    { text: root.model.chainPages.sourceEmptyText("indexer", root.model.lezTransactionsPageError, qsTr("No indexed transactions")), width: 180, fill: true, monospace: false },
                     { text: "-", width: 180, fill: true },
                     { text: "-", width: 72 }
                 ],

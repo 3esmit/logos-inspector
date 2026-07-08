@@ -33,6 +33,10 @@ TestCase {
 
     function sampleReport() {
         return {
+            profile: "local",
+            mode: "localnet",
+            available_network_actions: ["new_network", "load_network", "reset_network", "delete_network"],
+            primary_problem: "missing_sequencer_binary",
             active_devnet: "devnet",
             workspace_root: "/tmp/logos-devnet",
             summary: {
@@ -182,13 +186,23 @@ TestCase {
     }
 
     function test_network_actions_follow_profile_mode() {
-        state.report = ({ active_devnet: "devnet" })
+        state.report = ({
+            profile: "default",
+            mode: "public_testnet",
+            available_network_actions: []
+        })
         state.revision += 1
 
         verify(!state.networkActionEnabled("new_network"))
         verify(!state.networkActionEnabled("delete_network"))
 
-        state.networkProfile = "local"
+        state.report = ({
+            profile: "local",
+            mode: "localnet",
+            active_devnet: "devnet",
+            available_network_actions: ["new_network", "load_network", "reset_network", "delete_network"]
+        })
+        state.revision += 1
 
         verify(state.networkActionEnabled("new_network"))
         verify(state.networkActionEnabled("reset_network"))

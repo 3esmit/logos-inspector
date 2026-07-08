@@ -1369,9 +1369,7 @@ ColumnLayout {
             if (serial !== root.relatedTransactionDecodeSerial) {
                 return
             }
-            const session = response && response.ok === true && response.value ? response.value : null
-            const selection = session && session.selected ? session.selected : (session && session.partial ? session.partial : null)
-            const decoded = selection && selection.report ? root.model.transactionDecodedInstruction(selection.report) : null
+            const decoded = root.model.transactionDecodeSessionInstruction(response)
             if (decoded) {
                 root.storeRelatedTransactionDecode(txHash, decoded)
                 return

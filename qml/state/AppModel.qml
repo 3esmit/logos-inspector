@@ -20,8 +20,21 @@ QtObject {
     readonly property string storageModule: "storage_module"
     readonly property string deliveryModule: "delivery_module"
     readonly property string capabilityModule: "capability_module"
-    property var sourcePolicy: ({})
-    property bool sourcePolicyLoaded: false
+    property Domains.SourceRoutingState sourceRouting: Domains.SourceRoutingState {
+        id: sourceRoutingState
+
+        gateway: QtObject {
+            function callInspector(method, args) {
+                return root.bridge.callModule(root.inspectorModule, method, Array.isArray(args) ? args : [])
+            }
+
+            function prefersBasecampModules() {
+                return root.prefersBasecampModules()
+            }
+        }
+    }
+    property alias sourcePolicy: sourceRoutingState.sourcePolicy
+    property alias sourcePolicyLoaded: sourceRoutingState.sourcePolicyLoaded
     readonly property var storageSource: storageSourceView()
     readonly property var deliverySource: deliverySourceView()
 
@@ -582,19 +595,23 @@ QtObject {
 
     function callModule(moduleName, method, args, label) { return AppModelCore.callModule(root, moduleName, method, args, label) }
 
-    function blockchainArgs(extra) { return AppModelNetwork.blockchainArgs(root, extra) }
+    function blockchainArgs(extra) { return sourceRouting.coreSourceArgs(blockchainSourceMode, nodeUrl, extra) }
 
-    function indexerArgs(extra) { return AppModelNetwork.indexerArgs(root, extra) }
+    function indexerArgs(extra) { return sourceRouting.coreSourceArgs(indexerSourceMode, indexerUrl, extra) }
 
-    function executionArgs(extra) { return AppModelNetwork.executionArgs(root, extra) }
+    function executionArgs(extra) { return sourceRouting.coreSourceArgs(executionSourceMode, sequencerUrl, extra) }
 
     function blockchainRpcArgs(extra) { return AppModelNetwork.blockchainRpcArgs(root, extra) }
 
     function executionRpcArgs(extra) { return AppModelNetwork.executionRpcArgs(root, extra) }
 
-    function accountLookupArgs(account, idlJson, accountType) { return AppModelNetwork.accountLookupArgs(root, account, idlJson, accountType) }
+    function accountLookupArgs(account, idlJson, accountType) {
+        return sourceRouting.accountLookupArgs(executionSourceMode, sequencerUrl, indexerSourceMode, indexerUrl, account, idlJson, accountType)
+    }
 
-    function lezLookupArgs(target) { return AppModelNetwork.lezLookupArgs(root, target) }
+    function lezLookupArgs(target) {
+        return sourceRouting.lezLookupArgs(executionSourceMode, sequencerUrl, indexerSourceMode, indexerUrl, target)
+    }
 
     function requestModule(moduleName, method, args, label, showResult, cacheResult) { return AppModelCore.requestModule(root, moduleName, method, args, label, showResult, cacheResult) }
 
@@ -886,9 +903,9 @@ QtObject {
 
     function accountIdlSelection(accountId, ownerProgramId) { return AppModelIdentity.accountIdlSelection(root, accountId, ownerProgramId) }
 
-    function cachedIdlEntryForAccount(accountId, ownerProgramId) { return AppModelIdentity.cachedIdlEntryForAccount(root, accountId, ownerProgramId) }
+    function cachedIdlEntryForAccount(accountId, ownerProgramId) { return ProgramDecodeSession.cachedIdlEntryForAccount(root, accountId, ownerProgramId) }
 
-    function cachedAccountType(accountId, ownerProgramId) { return AppModelIdentity.cachedAccountType(root, accountId, ownerProgramId) }
+    function cachedAccountType(accountId, ownerProgramId) { return ProgramDecodeSession.cachedAccountType(root, accountId, ownerProgramId) }
 
     function accountCacheKey(accountId, ownerProgramId) { return AppModelIdentity.accountCacheKey(root, accountId, ownerProgramId) }
 
@@ -896,13 +913,13 @@ QtObject {
 
     function accountOwnerCacheKey(ownerProgramId) { return AppModelIdentity.accountOwnerCacheKey(root, ownerProgramId) }
 
-    function accountDecodeFullyConsumed(value) { return AppModelIdentity.accountDecodeFullyConsumed(root, value) }
+    function accountDecodeFullyConsumed(value) { return ProgramDecodeSession.accountDecodeFullyConsumed(root, value) }
 
-    function transactionDecodeFullyConsumed(value) { return AppModelIdentity.transactionDecodeFullyConsumed(root, value) }
+    function transactionDecodeFullyConsumed(value) { return ProgramDecodeSession.transactionDecodeFullyConsumed(root, value) }
 
-    function transactionDecodedInstruction(value) { return AppModelIdentity.transactionDecodedInstruction(root, value) }
+    function transactionDecodedInstruction(value) { return ProgramDecodeSession.transactionDecodedInstruction(root, value) }
 
-    function transactionSummaryFromDetail(value) { return AppModelIdentity.transactionSummaryFromDetail(root, value) }
+    function transactionSummaryFromDetail(value) { return ProgramDecodeSession.transactionSummaryFromDetail(root, value) }
 
     function normalizedHexText(value) { return AppModelIdentity.normalizedHexText(root, value) }
 
@@ -922,6 +939,10 @@ QtObject {
 
     function tryTransactionDecodeCandidate(serial, summary, candidates, index, partialValue) { return ProgramDecodeSession.tryTransactionDecodeCandidate(root, serial, summary, candidates, index, partialValue) }
 
+    function transactionDecodeSessionReport(response) { return ProgramDecodeSession.transactionDecodeSessionReport(root, response) }
+
+    function transactionDecodeSessionInstruction(response) { return ProgramDecodeSession.transactionDecodeSessionInstruction(root, response) }
+
     function programDecodeCandidatePayload(candidates) { return ProgramDecodeSession.programDecodeCandidatePayload(root, candidates) }
 
     function decodeSelectionEntry(selection, candidates) { return ProgramDecodeSession.decodeSelectionEntry(root, selection, candidates) }
@@ -932,31 +953,31 @@ QtObject {
 
     function canonicalRefreshRate(seconds) { return AppModelNetwork.canonicalRefreshRate(root, seconds) }
 
-    function loadSourcePolicy() { return AppModelNetwork.loadSourcePolicy(root) }
+    function loadSourcePolicy() { return sourceRouting.loadSourcePolicy() }
 
-    function sourcePolicyDefault(key, fallback) { return AppModelNetwork.sourcePolicyDefault(root, key, fallback) }
+    function sourcePolicyDefault(key, fallback) { return sourceRouting.sourcePolicyDefault(key, fallback) }
 
-    function sourceModePolicy(family, value) { return AppModelNetwork.sourceModePolicy(root, family, value) }
+    function sourceModePolicy(family, value) { return sourceRouting.sourceModePolicy(family, value) }
 
-    function sourceModePolicies(family) { return AppModelNetwork.sourceModePolicies(root, family) }
+    function sourceModePolicies(family) { return sourceRouting.sourceModePolicies(family) }
 
-    function sourceModeOptions(family) { return AppModelNetwork.sourceModeOptions(root, family) }
+    function sourceModeOptions(family) { return sourceRouting.sourceModeOptions(family) }
 
-    function sourceModeIndexFor(family, value, options) { return AppModelNetwork.sourceModeIndexFor(root, family, value, options) }
+    function sourceModeIndexFor(family, value, options) { return sourceRouting.sourceModeIndexFor(family, value, options) }
 
-    function sourceModeAt(index, options) { return AppModelNetwork.sourceModeAt(root, index, options) }
+    function sourceModeAt(index, options) { return sourceRouting.sourceModeAt(index, options) }
 
-    function sourceModeAdapter(family, value) { return AppModelNetwork.sourceModeAdapter(root, family, value) }
+    function sourceModeAdapter(family, value) { return sourceRouting.sourceModeAdapter(family, value) }
 
-    function resolvedSourceModeKey(family, value) { return AppModelNetwork.resolvedSourceModeKey(root, family, value) }
+    function resolvedSourceModeKey(family, value) { return sourceRouting.resolvedSourceModeKey(family, value) }
 
-    function sourceModeTargetKind(family, value) { return AppModelNetwork.sourceModeTargetKind(root, family, value) }
+    function sourceModeTargetKind(family, value) { return sourceRouting.sourceModeTargetKind(family, value) }
 
-    function sourceModeUsesEndpoint(family, value, endpointKind) { return AppModelNetwork.sourceModeUsesEndpoint(root, family, value, endpointKind) }
+    function sourceModeUsesEndpoint(family, value, endpointKind) { return sourceRouting.sourceModeUsesEndpoint(family, value, endpointKind) }
 
-    function sourceModeSupportsCidProbe(family, value) { return AppModelNetwork.sourceModeSupportsCidProbe(root, family, value) }
+    function sourceModeSupportsCidProbe(family, value) { return sourceRouting.sourceModeSupportsCidProbe(family, value) }
 
-    function sourceModeSupportsMutatingDiagnostics(family, value) { return AppModelNetwork.sourceModeSupportsMutatingDiagnostics(root, family, value) }
+    function sourceModeSupportsMutatingDiagnostics(family, value) { return sourceRouting.sourceModeSupportsMutatingDiagnostics(family, value) }
 
     function coreSourceView(role) { return AppModelNetwork.coreSourceView(root, role) }
 
@@ -1030,45 +1051,76 @@ QtObject {
 
     function moduleReportError(report) { return AppModelNetwork.moduleReportError(root, report) }
 
-    function deliverySourceReportArgs() { return AppModelNetwork.deliverySourceReportArgs(root) }
+    function deliverySourceReportArgs() {
+        return sourceRouting.deliverySourceReportArgs(messagingSourceMode, configuredMessagingRestUrl(), messagingMetricsUrl)
+    }
 
-    function deliverySourceLabel() { return AppModelNetwork.deliverySourceLabel(root) }
+    function deliverySourceLabel() { return sourceRouting.sourceLabel("delivery", messagingSourceMode, qsTr("Direct Waku REST")) }
 
-    function deliverySourceTarget() { return AppModelNetwork.deliverySourceTarget(root) }
+    function deliverySourceTarget() {
+        return sourceRouting.sourceTarget("delivery", messagingSourceMode, {
+            module: deliveryModule,
+            rest: configuredMessagingRestUrl(),
+            metrics: messagingMetricsUrl
+        })
+    }
 
-    function configuredMessagingRestUrl() { return AppModelNetwork.configuredMessagingRestUrl(root) }
+    function configuredMessagingRestUrl() { return sourceRouting.configuredMessagingRestUrl(messagingRestUrl) }
 
-    function normalizedMessagingSourceMode(value) { return AppModelNetwork.normalizedMessagingSourceMode(root, value) }
+    function normalizedMessagingSourceMode(value) { return sourceRouting.normalizedMessagingSourceMode(value) }
 
-    function effectiveMessagingSourceMode(value) { return AppModelNetwork.effectiveMessagingSourceMode(root, value === undefined ? messagingSourceMode : value) }
+    function effectiveMessagingSourceMode(value) { return sourceRouting.effectiveMessagingSourceMode(value === undefined ? messagingSourceMode : value) }
 
-    function normalizedCoreSourceMode(value) { return AppModelNetwork.normalizedCoreSourceMode(root, value) }
+    function normalizedCoreSourceMode(value) { return sourceRouting.normalizedCoreSourceMode(value) }
 
-    function effectiveCoreSourceMode(value) { return AppModelNetwork.effectiveCoreSourceMode(root, value) }
+    function effectiveCoreSourceMode(value) { return sourceRouting.effectiveCoreSourceMode(value) }
 
-    function blockchainSourceLabel() { return AppModelNetwork.blockchainSourceLabel(root) }
+    function blockchainSourceLabel() { return sourceRouting.coreSourceLabel(blockchainSourceMode, qsTr("Bedrock RPC")) }
 
-    function blockchainSourceTarget() { return AppModelNetwork.blockchainSourceTarget(root) }
+    function blockchainSourceTarget() {
+        return effectiveCoreSourceMode(blockchainSourceMode) === "module" ? blockchainModule : String(nodeUrl || "")
+    }
 
-    function indexerSourceLabel() { return AppModelNetwork.indexerSourceLabel(root) }
+    function indexerSourceLabel() { return sourceRouting.coreSourceLabel(indexerSourceMode, qsTr("Indexer RPC")) }
 
-    function indexerSourceTarget() { return AppModelNetwork.indexerSourceTarget(root) }
+    function indexerSourceTarget() {
+        return effectiveCoreSourceMode(indexerSourceMode) === "module" ? indexerModule : String(indexerUrl || "")
+    }
 
-    function executionSourceLabel() { return AppModelNetwork.executionSourceLabel(root) }
+    function executionSourceLabel() {
+        return effectiveCoreSourceMode(executionSourceMode) === "module" ? qsTr("LEZ core module") : qsTr("Sequencer RPC")
+    }
 
-    function executionSourceTarget() { return AppModelNetwork.executionSourceTarget(root) }
+    function executionSourceTarget() {
+        return effectiveCoreSourceMode(executionSourceMode) === "module" ? "lez_core" : String(sequencerUrl || "")
+    }
 
-    function storageSourceReportArgs(includeCidProbe) { return AppModelNetwork.storageSourceReportArgs(root, includeCidProbe) }
+    function storageSourceReportArgs(includeCidProbe) {
+        return sourceRouting.storageSourceReportArgs(
+            storageSourceMode,
+            configuredStorageRestUrl(),
+            storageMetricsUrl,
+            storageCidProbe,
+            includeCidProbe === true,
+            storagePrivilegedDebugEnabled
+        )
+    }
 
-    function storageSourceLabel() { return AppModelNetwork.storageSourceLabel(root) }
+    function storageSourceLabel() { return sourceRouting.sourceLabel("storage", storageSourceMode, qsTr("Standalone REST")) }
 
-    function storageSourceTarget() { return AppModelNetwork.storageSourceTarget(root) }
+    function storageSourceTarget() {
+        return sourceRouting.sourceTarget("storage", storageSourceMode, {
+            module: storageModule,
+            rest: configuredStorageRestUrl(),
+            metrics: storageMetricsUrl
+        })
+    }
 
-    function configuredStorageRestUrl() { return AppModelNetwork.configuredStorageRestUrl(root) }
+    function configuredStorageRestUrl() { return sourceRouting.configuredStorageRestUrl(storageRestUrl) }
 
-    function normalizedStorageSourceMode(value) { return AppModelNetwork.normalizedStorageSourceMode(root, value) }
+    function normalizedStorageSourceMode(value) { return sourceRouting.normalizedStorageSourceMode(value) }
 
-    function effectiveStorageSourceMode(value) { return AppModelNetwork.effectiveStorageSourceMode(root, value === undefined ? storageSourceMode : value) }
+    function effectiveStorageSourceMode(value) { return sourceRouting.effectiveStorageSourceMode(value === undefined ? storageSourceMode : value) }
 
     function networkConnectionState(kind) { return AppModelNetwork.networkConnectionState(root, kind) }
 
@@ -1191,144 +1243,6 @@ QtObject {
     function defaultFooterFieldSelections() { return AppModelMetrics.defaultFooterFieldSelections(root) }
 
     function defaultDashboardGraphSelections() { return AppModelMetrics.defaultDashboardGraphSelections(root) }
-
-    function refreshBlocksPage(anchorSlot) { return chainPages.refreshBlocksPage(anchorSlot) }
-
-    function startBlocksLiveMode() { return chainPages.startBlocksLiveMode() }
-
-    function stopBlocksLiveMode() { return chainPages.stopBlocksLiveMode() }
-
-    function refreshBlocksLivePage() { return chainPages.refreshBlocksLivePage() }
-
-    function mergeLiveBlocks(liveBlocks, existingBlocks, limit) { return chainPages.mergeLiveBlocks(liveBlocks, existingBlocks, limit) }
-
-    function blocksLiveStatusText() { return chainPages.blocksLiveStatusText() }
-
-    function olderBlocksPage() { return chainPages.olderBlocksPage() }
-
-    function newerBlocksPage() { return chainPages.newerBlocksPage() }
-
-    function setBlocksPageLimit(limit) { return chainPages.setBlocksPageLimit(limit) }
-
-    function sortedBlocks(blocks) { return chainPages.sortedBlocks(blocks) }
-
-    function blockSlot(block) { return chainPages.blockSlot(block) }
-
-    function blockHash(block) { return chainPages.blockHash(block) }
-
-    function blockParent(block) { return chainPages.blockParent(block) }
-
-    function blockProof(block) { return chainPages.blockProof(block) }
-
-    function blockRoot(block) { return chainPages.blockRoot(block) }
-
-    function blockHeight(block) { return chainPages.blockHeight(block) }
-
-    function blockVersion(block) { return chainPages.blockVersion(block) }
-
-    function blockSignature(block) { return chainPages.blockSignature(block) }
-
-    function blockStatus(block) { return chainPages.blockStatus(block) }
-
-    function blockchainInfo() { return chainPages.blockchainInfo() }
-
-    function sourceEmptyText(source, error, fallback) { return chainPages.sourceEmptyText(source, error, fallback) }
-
-    function sourceProblemTitle(source, error, fallback) { return chainPages.sourceProblemTitle(source, error, fallback) }
-
-    function blockTransactions(block) { return chainPages.blockTransactions(block) }
-
-    function blockchainBlockDetail(block) { return chainPages.blockchainBlockDetail(block) }
-
-    function blockchainBlockDetailById(value) { return chainPages.blockchainBlockDetailById(value) }
-
-    function normalizedHashOrValue(value) { return chainPages.normalizedHashOrValue(value) }
-
-    function refreshTransactionsPage(beforeBlock) { return chainPages.refreshTransactionsPage(beforeBlock) }
-
-    function olderTransactionsPage() { return chainPages.olderTransactionsPage() }
-
-    function newerTransactionsPage() { return chainPages.newerTransactionsPage() }
-
-    function setTransactionsPageLimit(limit) { return chainPages.setTransactionsPageLimit(limit) }
-
-    function refreshLezBlocksPage(beforeBlock) { return chainPages.refreshLezBlocksPage(beforeBlock) }
-
-    function finishLezBlocksPage(beforeBlock, sequencerResponse, indexerResponse) { return chainPages.finishLezBlocksPage(beforeBlock, sequencerResponse, indexerResponse) }
-
-    function olderLezBlocksPage() { return chainPages.olderLezBlocksPage() }
-
-    function newerLezBlocksPage() { return chainPages.newerLezBlocksPage() }
-
-    function setLezBlocksPageLimit(limit) { return chainPages.setLezBlocksPageLimit(limit) }
-
-    function refreshLezTransactionsPage(beforeBlock) { return chainPages.refreshLezTransactionsPage(beforeBlock) }
-
-    function olderLezTransactionsPage() { return chainPages.olderLezTransactionsPage() }
-
-    function newerLezTransactionsPage() { return chainPages.newerLezTransactionsPage() }
-
-    function setLezTransactionsPageLimit(limit) { return chainPages.setLezTransactionsPageLimit(limit) }
-
-    function sortedIndexerBlocks(blocks) { return chainPages.sortedIndexerBlocks(blocks) }
-
-    function mergedLezBlocks(sequencerBlocks, indexerBlocks, limit) { return chainPages.mergedLezBlocks(sequencerBlocks, indexerBlocks, limit) }
-
-    function indexerBlockId(block) { return chainPages.indexerBlockId(block) }
-
-    function indexerBlockHash(block) { return chainPages.indexerBlockHash(block) }
-
-    function nextIndexerBlocksCursor(blocks) { return chainPages.nextIndexerBlocksCursor(blocks) }
-
-    function normalizedPositiveInteger(value) { return chainPages.normalizedPositiveInteger(value) }
-
-    function lezTransactionRowsFromBlocks(blocks) { return chainPages.lezTransactionRowsFromBlocks(blocks) }
-
-    function lezTransactionHash(tx) { return chainPages.lezTransactionHash(tx) }
-
-    function transactionProgramIdHex(tx) { return chainPages.transactionProgramIdHex(tx) }
-
-    function lezTransactionOpCount(tx) { return chainPages.lezTransactionOpCount(tx) }
-
-    function transactionRowsFromBlocks(blocks) { return chainPages.transactionRowsFromBlocks(blocks) }
-
-    function sortedBlockchainBlocks(blocks) { return chainPages.sortedBlockchainBlocks(blocks) }
-
-    function transactionHash(tx) { return chainPages.transactionHash(tx) }
-
-    function transactionOps(tx) { return chainPages.transactionOps(tx) }
-
-    function operationSummary(op, tx, index) { return chainPages.operationSummary(op, tx, index) }
-
-    function byteHex(value) { return chainPages.byteHex(value) }
-
-    function operationName(opcode) { return chainPages.operationName(opcode) }
-
-    function refreshTransferActivityPage(beforeBlock, preserveHistory) { return chainPages.refreshTransferActivityPage(beforeBlock, preserveHistory) }
-
-    function nextTransferActivityPage() { return chainPages.nextTransferActivityPage() }
-
-    function previousTransferActivityPage() { return chainPages.previousTransferActivityPage() }
-
-    function setTransferActivityPageLimit(limit) { return chainPages.setTransferActivityPageLimit(limit) }
-
-    function nextTransferActivityBlock(recipients) { return chainPages.nextTransferActivityBlock(recipients) }
-
-    function transferRecipientDetail(row) { return chainPages.transferRecipientDetail(row) }
-
-    function transferRecipientDetailById(value) { return chainPages.transferRecipientDetailById(value) }
-
-    function refreshChannelsPage(anchorSlot) { return chainPages.refreshChannelsPage(anchorSlot) }
-
-    function olderChannelsPage() { return chainPages.olderChannelsPage() }
-
-    function newerChannelsPage() { return chainPages.newerChannelsPage() }
-
-    function setChannelsPageLimit(limit) { return chainPages.setChannelsPageLimit(limit) }
-
-    function channelDetail(row) { return chainPages.channelDetail(row) }
-
-    function channelDetailById(value) { return chainPages.channelDetailById(value) }
 
     function refreshDashboard() { return entityNavigation.refreshDashboard() }
 

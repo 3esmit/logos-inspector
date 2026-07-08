@@ -77,7 +77,7 @@ function openMantleTransaction(root, hash) {
             return
         }
 
-        const response = requestModule(inspectorModule, "blockchainTransaction", root.blockchainArgs([root.normalizedHashOrValue(value)]), qsTr("Mantle transaction"), false)
+        const response = requestModule(inspectorModule, "blockchainTransaction", root.blockchainArgs([root.chainPages.normalizedHashOrValue(value)]), qsTr("Mantle transaction"), false)
         if (response.ok) {
             const fetched = root.blockchainTransactionDetail(response.value, value)
             transactionDetailValue = fetched
@@ -280,12 +280,12 @@ function openBlockchainBlock(root, blockOrId) {
     with (root) {
         let detail = null
         if (blockOrId && typeof blockOrId === "object") {
-            detail = blockchainBlockDetail(blockOrId)
+            detail = root.chainPages.blockchainBlockDetail(blockOrId)
         } else {
-            detail = blockchainBlockDetailById(blockOrId)
+            detail = root.chainPages.blockchainBlockDetailById(blockOrId)
         }
         if (!detail) {
-            const fallback = blockOrId && typeof blockOrId === "object" ? blockHash(blockOrId) : blockOrId
+            const fallback = blockOrId && typeof blockOrId === "object" ? root.chainPages.blockHash(blockOrId) : blockOrId
             if (/^[0-9]+$/.test(String(fallback || "").trim())) {
                 loadBlockchainBlockBySlot(Number(fallback))
                 return
@@ -314,18 +314,18 @@ function loadBlockchainBlockById(root, blockId) {
         blockDetailError = ""
         const response = requestModule(inspectorModule, "blockchainBlock", root.blockchainArgs([value]), qsTr("Block lookup"), false)
         if (response.ok) {
-            blockDetailValue = blockchainBlockDetail(response.value)
+            blockDetailValue = root.chainPages.blockchainBlockDetail(response.value)
             blockDetailError = ""
             blocksPageError = ""
             setResult(qsTr("Block"), BridgeHelpers.formatValue(blockDetailValue), false, blockDetailValue)
             return
         }
-        const normalized = normalizedHashOrValue(value)
+        const normalized = root.chainPages.normalizedHashOrValue(value)
         const retryValue = normalized !== value ? normalized : ""
         if (retryValue.length) {
             const retry = requestModule(inspectorModule, "blockchainBlock", root.blockchainArgs([retryValue]), qsTr("Block lookup"), false)
             if (retry.ok) {
-                blockDetailValue = blockchainBlockDetail(retry.value)
+                blockDetailValue = root.chainPages.blockchainBlockDetail(retry.value)
                 blockDetailError = ""
                 blocksPageError = ""
                 setResult(qsTr("Block"), BridgeHelpers.formatValue(blockDetailValue), false, blockDetailValue)
@@ -350,7 +350,7 @@ function loadBlockchainBlockBySlot(root, slot) {
         if (response.ok) {
             const blocks = Array.isArray(response.value) ? response.value : []
             if (blocks.length > 0) {
-                blockDetailValue = blockchainBlockDetail(blocks[0])
+                blockDetailValue = root.chainPages.blockchainBlockDetail(blocks[0])
                 blockDetailError = ""
                 setResult(qsTr("Block"), BridgeHelpers.formatValue(blockDetailValue), false, blockDetailValue)
                 return
@@ -389,11 +389,11 @@ function openBlockchainTransaction(root, transaction, block) {
 
 function transactionDetail(root, hash) {
     with (root) {
-        const normalized = normalizedHashOrValue(hash)
+        const normalized = root.chainPages.normalizedHashOrValue(hash)
         const rows = transactionsPageRows || []
         for (let i = 0; i < rows.length; ++i) {
             const row = rows[i]
-            if (normalizedHashOrValue(row.hash) === normalized) {
+            if (root.chainPages.normalizedHashOrValue(row.hash) === normalized) {
                 return {
                     type: "blockchain_transaction",
                     hash: row.hash,
@@ -673,7 +673,7 @@ function programRecentTransactions(root, programId) {
         const rows = Array.isArray(lezTransactionsPageRows) ? lezTransactionsPageRows : []
         for (let i = 0; i < rows.length; ++i) {
             const row = rows[i] || {}
-            const txProgram = root.transactionProgramIdHex(row.raw || row)
+            const txProgram = root.chainPages.transactionProgramIdHex(row.raw || row)
             if (txProgram === normalized) {
                 matches.push({
                     hash: String(row.hash || ""),
@@ -700,7 +700,7 @@ function openRecipient(root, recipient) {
             return
         }
 
-        const detail = transferRecipientDetailById(value)
+        const detail = root.chainPages.transferRecipientDetailById(value)
         pushNavigationHistory()
         if (detail) {
             selectView("transferActivity", false)
@@ -716,7 +716,7 @@ function openRecipient(root, recipient) {
 
 function openChannel(root, channel) {
     with (root) {
-        const detail = typeof channel === "object" ? channelDetail(channel) : channelDetailById(channel)
+        const detail = typeof channel === "object" ? root.chainPages.channelDetail(channel) : root.chainPages.channelDetailById(channel)
         pushNavigationHistory()
         if (detail) {
             selectView("channels", false)
@@ -731,7 +731,7 @@ function openChannel(root, channel) {
         if (response.ok) {
             const raw = response.value && typeof response.value === "object" ? response.value : {}
             const state = raw.channel && typeof raw.channel === "object" && !Array.isArray(raw.channel) ? raw.channel : raw
-            const value = root.channelDetail(Object.assign({}, state, {
+            const value = root.chainPages.channelDetail(Object.assign({}, state, {
                 channel: String(raw.channel_id || state.channel_id || channelId),
                 channel_id: String(raw.channel_id || state.channel_id || channelId),
                 raw: raw,

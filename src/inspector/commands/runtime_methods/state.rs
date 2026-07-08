@@ -11,15 +11,15 @@ use crate::{
     },
 };
 
-use super::{RuntimeMethod, RuntimeMethodEntry};
+use super::RuntimeMethodEntry;
 
 pub(super) const METHOD_CATALOG: &[RuntimeMethodEntry] = &[
-    RuntimeMethodEntry::new(RuntimeMethod::LoadIdlState, "loadIdlState"),
-    RuntimeMethodEntry::new(RuntimeMethod::SaveIdlState, "saveIdlState"),
-    RuntimeMethodEntry::new(RuntimeMethod::LoadWalletState, "loadWalletState"),
-    RuntimeMethodEntry::new(RuntimeMethod::SaveWalletState, "saveWalletState"),
-    RuntimeMethodEntry::new(RuntimeMethod::LoadSettingsState, "loadSettingsState"),
-    RuntimeMethodEntry::new(RuntimeMethod::SaveSettingsState, "saveSettingsState"),
+    RuntimeMethodEntry::no_args("loadIdlState", load_idl_state),
+    RuntimeMethodEntry::sync("saveIdlState", save_idl_state),
+    RuntimeMethodEntry::no_args("loadWalletState", load_wallet_state),
+    RuntimeMethodEntry::sync("saveWalletState", save_wallet_state),
+    RuntimeMethodEntry::no_args("loadSettingsState", load_settings_state),
+    RuntimeMethodEntry::sync("saveSettingsState", save_settings_state),
 ];
 
 pub(super) fn load_idl_state() -> Result<Value> {

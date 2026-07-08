@@ -123,7 +123,7 @@ QtObject {
         case "deliveryOperation":
             return root.deliveryApp() ? root.deliveryApp().pollDeliveryOperation(false) : null
         case "liveBlocks":
-            return model.refreshBlocksLivePage()
+            return model.chainPages ? model.chainPages.refreshBlocksLivePage() : model.refreshBlocksLivePage()
         default:
             return null
         }

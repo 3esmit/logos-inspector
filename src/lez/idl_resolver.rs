@@ -3,11 +3,12 @@ use serde_json::Value;
 
 use super::{
     AccountTransactionSummary, TransactionIdlInspectionReport, TransactionSummary,
-    TransactionTraceReport, inspect_transaction_summary_with_idl,
-    trace_transaction_summary_with_idl,
+    TransactionTraceReport, trace_transaction_summary_with_idl,
 };
 use crate::{
-    idl_decode::{ProgramDecodeCandidate, resolve_transaction_decode_session},
+    idl_decode::{
+        ProgramDecodeCandidate, SelectedDecodeEvidence, resolve_transaction_decode_session,
+    },
     normalize_program_id_hex,
     support::state_store::RegisteredIdlEntry,
 };
@@ -25,15 +26,8 @@ impl<'a> RegisteredIdlResolver<'a> {
         &self,
         summary: &TransactionSummary,
     ) -> Option<TransactionIdlInspectionReport> {
-        let candidates = self
-            .matching_entries(summary)
-            .map(program_decode_candidate_from_registered_entry)
-            .collect::<Vec<_>>();
-        let session = resolve_transaction_decode_session(summary, &candidates);
-        session
-            .selected
-            .or(session.partial)
-            .map(|selection| selection.report)
+        self.selected_transaction_decode(summary)
+            .map(|(_, report)| report)
     }
 
     pub(crate) fn transaction_trace(
@@ -116,22 +110,35 @@ impl<'a> RegisteredIdlResolver<'a> {
         &self,
         summary: &TransactionSummary,
     ) -> Option<(&'a RegisteredIdlEntry, TransactionIdlInspectionReport)> {
-        let mut partial = None;
-        for entry in self.matching_entries(summary) {
-            let Ok(report) = inspect_transaction_summary_with_idl(summary, &entry.json) else {
-                continue;
-            };
-            if let Some(decoded) = &report.decoded_instruction {
-                if decoded.decode_error.is_none() && decoded.remaining_words.is_empty() {
-                    return Some((entry, report));
-                }
-                if partial.is_none() {
-                    partial = Some((entry, report));
-                }
-            }
-        }
-        partial
+        let candidate_entries = self
+            .matching_entries(summary)
+            .map(|entry| (entry, program_decode_candidate_from_registered_entry(entry)))
+            .collect::<Vec<_>>();
+        let candidates = candidate_entries
+            .iter()
+            .map(|(_, candidate)| candidate.clone())
+            .collect::<Vec<_>>();
+        let session = resolve_transaction_decode_session(summary, &candidates);
+        let selection = session.selected.or(session.partial)?;
+        let entry = candidate_entries
+            .iter()
+            .find(|(_, candidate)| candidate_matches_evidence(candidate, &selection.evidence))
+            .map(|(entry, _)| *entry)?;
+        Some((entry, selection.report))
     }
+}
+
+fn candidate_matches_evidence(
+    candidate: &ProgramDecodeCandidate,
+    evidence: &SelectedDecodeEvidence,
+) -> bool {
+    let evidence_key = evidence.key.trim();
+    if !evidence_key.is_empty() {
+        return candidate.key == evidence_key;
+    }
+    candidate.name == evidence.name
+        && candidate.program_id_hex == evidence.program_id_hex
+        && candidate.source == evidence.source
 }
 
 fn program_decode_candidate_from_registered_entry(

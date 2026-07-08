@@ -16,21 +16,18 @@ use crate::{
 };
 
 use super::super::value::to_value;
-use super::{RuntimeMethod, RuntimeMethodEntry};
+use super::RuntimeMethodEntry;
 
 pub(super) const METHOD_CATALOG: &[RuntimeMethodEntry] = &[
-    RuntimeMethodEntry::new(RuntimeMethod::SourcePolicy, "sourcePolicy"),
-    RuntimeMethodEntry::new(RuntimeMethod::Modules, "modules"),
-    RuntimeMethodEntry::new(RuntimeMethod::CapabilitiesReport, "capabilitiesReport"),
-    RuntimeMethodEntry::new(RuntimeMethod::LogoscoreStatus, "logoscoreStatus"),
-    RuntimeMethodEntry::new(
-        RuntimeMethod::BlockchainModuleReport,
-        "blockchainModuleReport",
-    ),
-    RuntimeMethodEntry::new(RuntimeMethod::StorageReport, "storageReport"),
-    RuntimeMethodEntry::new(RuntimeMethod::StorageSourceReport, "storageSourceReport"),
-    RuntimeMethodEntry::new(RuntimeMethod::DeliveryReport, "deliveryReport"),
-    RuntimeMethodEntry::new(RuntimeMethod::DeliverySourceReport, "deliverySourceReport"),
+    RuntimeMethodEntry::no_args("sourcePolicy", source_policy),
+    RuntimeMethodEntry::no_args("modules", modules),
+    RuntimeMethodEntry::no_args("capabilitiesReport", capabilities_report),
+    RuntimeMethodEntry::no_args("logoscoreStatus", logoscore_status),
+    RuntimeMethodEntry::sync("blockchainModuleReport", blockchain_module_report),
+    RuntimeMethodEntry::sync("storageReport", storage_report),
+    RuntimeMethodEntry::with_runtime("storageSourceReport", storage_source_report),
+    RuntimeMethodEntry::sync("deliveryReport", delivery_report),
+    RuntimeMethodEntry::with_runtime("deliverySourceReport", delivery_source_report),
 ];
 
 pub(super) fn source_policy() -> Result<Value> {

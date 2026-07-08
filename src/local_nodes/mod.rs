@@ -5,6 +5,7 @@ mod commands;
 mod local_indexer;
 mod model;
 mod paths;
+mod presentation;
 mod process;
 
 pub use local_indexer::{
@@ -13,8 +14,8 @@ pub use local_indexer::{
 };
 pub use model::{
     LocalDevnetListReport, LocalDevnetRecord, LocalNodeActionRequest, LocalNodeConfigRecord,
-    LocalNodeOperationReport, LocalNodeReport, LocalNodeStatus, LocalNodeSummary, LocalNodeTools,
-    NodeAction, NodeKind, ToolStatus,
+    LocalNodeOperationReport, LocalNodeProblemCode, LocalNodeReport, LocalNodeStatus,
+    LocalNodeSummary, LocalNodeTools, NodeAction, NodeKind, ToolStatus,
 };
 
 pub fn local_nodes_status(profile: &str) -> Result<LocalNodeReport> {
@@ -67,6 +68,108 @@ mod tests {
 
         assert!(!nodes.contains(&NodeKind::Sequencer));
         assert!(!actions.contains(&NodeAction::Purge));
+    }
+
+    #[test]
+    fn report_exposes_normalized_profile_and_network_actions() {
+        let state = LocalNodesState {
+            version: 1,
+            active_devnet: Some("devnet".to_owned()),
+            managed_workspace_root: "/tmp/local-nodes".to_owned(),
+            devnets: vec![LocalDevnetRecord {
+                id: "devnet".to_owned(),
+                label: "Devnet".to_owned(),
+                workspace: "/tmp/local-nodes/devnet".to_owned(),
+                manifest_path: "/tmp/local-nodes/devnet/local-network.json".to_owned(),
+                created_at: 0,
+                updated_at: 0,
+                nodes: Vec::new(),
+            }],
+            operations: Vec::new(),
+        };
+
+        let report = action_engine::report_for_state("devnet", &state);
+
+        assert_eq!(report.profile, "local");
+        assert_eq!(report.mode, "localnet");
+        assert!(
+            report
+                .available_network_actions
+                .contains(&NodeAction::NewNetwork)
+        );
+        assert!(
+            report
+                .available_network_actions
+                .contains(&NodeAction::ResetNetwork)
+        );
+        assert!(
+            report
+                .available_network_actions
+                .contains(&NodeAction::DeleteNetwork)
+        );
+    }
+
+    #[test]
+    fn local_node_primary_problem_prefers_missing_logoscore() {
+        let nodes = vec![local_node_status(
+            NodeKind::Sequencer,
+            "needs_configuration",
+        )];
+        let missing_logoscore = LocalNodeTools {
+            logoscore: ToolStatus {
+                available: false,
+                command: "logoscore".to_owned(),
+                path: None,
+            },
+            lgpm: ToolStatus {
+                available: false,
+                command: "lgpm".to_owned(),
+                path: None,
+            },
+        };
+        let configured_tools = LocalNodeTools {
+            logoscore: ToolStatus {
+                available: true,
+                command: "logoscore".to_owned(),
+                path: Some("/usr/bin/logoscore".to_owned()),
+            },
+            lgpm: ToolStatus {
+                available: false,
+                command: "lgpm".to_owned(),
+                path: None,
+            },
+        };
+
+        assert_eq!(
+            super::presentation::primary_problem("local", &missing_logoscore, &nodes),
+            Some(LocalNodeProblemCode::MissingLogoscore)
+        );
+        assert_eq!(
+            super::presentation::primary_problem("local", &configured_tools, &nodes),
+            Some(LocalNodeProblemCode::MissingSequencerBinary)
+        );
+        assert_eq!(
+            super::presentation::primary_problem("default", &configured_tools, &nodes),
+            None
+        );
+    }
+
+    fn local_node_status(kind: NodeKind, install_state: &str) -> LocalNodeStatus {
+        LocalNodeStatus {
+            kind,
+            key: kind.as_str().to_owned(),
+            label: kind.as_str().to_owned(),
+            install_state: install_state.to_owned(),
+            run_state: "stopped".to_owned(),
+            endpoint: None,
+            data_dir: None,
+            config_path: None,
+            package_path: None,
+            process_id: None,
+            last_action: None,
+            available_actions: Vec::new(),
+            detail: String::new(),
+        }
     }
 
     #[test]

@@ -556,13 +556,13 @@ ColumnLayout {
             return dashboardL1Blocks.slice(0, 5).map(function (block) {
                 const header = block.header || {}
                 const transactions = Array.isArray(block.transactions) ? block.transactions : []
-                const hash = root.model.blockHash(block)
+                const hash = root.model.chainPages.blockHash(block)
                 return {
                     slot: root.numberText(header.slot),
                     slotRaw: String(header.slot || ""),
                     header: root.shortHash(hash),
                     tx: root.numberText(transactions.length),
-                    status: root.model.blockStatus(block),
+                    status: root.model.chainPages.blockStatus(block),
                     blockHash: hash
                 }
             })
@@ -572,13 +572,13 @@ ColumnLayout {
             return blocks.slice(0, 5).map(function (block) {
                 const header = block.header || {}
                 const transactions = Array.isArray(block.transactions) ? block.transactions : []
-                const hash = root.model.blockHash(block)
+                const hash = root.model.chainPages.blockHash(block)
                 return {
                     slot: root.numberText(header.slot),
                     slotRaw: String(header.slot || ""),
                     header: root.shortHash(hash),
                     tx: root.numberText(transactions.length),
-                    status: root.model.blockStatus(block),
+                    status: root.model.chainPages.blockStatus(block),
                     blockHash: hash
                 }
             })
@@ -640,11 +640,11 @@ ColumnLayout {
         if (loaded.length > 0) {
             return loaded
         }
-        return root.model.mergedLezBlocks(root.model.dashboardSequencerBlocks || [], model.dashboardBlocks || [], 5)
+        return root.model.chainPages.mergedLezBlocks(root.model.dashboardSequencerBlocks || [], model.dashboardBlocks || [], 5)
     }
 
     function l1TransactionRows() {
-        const transactions = root.model.transactionRowsFromBlocks(root.model.blocksPageRows || []).slice(0, 5)
+        const transactions = root.model.chainPages.transactionRowsFromBlocks(root.model.blocksPageRows || []).slice(0, 5)
         if (transactions.length > 0) {
             return transactions.map(function (tx) {
                 const txHash = String(tx.hash || "")

@@ -33,7 +33,7 @@ ColumnLayout {
 
     Component.onCompleted: {
         if (!model.transferActivityRows.length) {
-            model.refreshTransferActivityPage();
+            model.chainPages.refreshTransferActivityPage();
         }
     }
 
@@ -47,11 +47,11 @@ ColumnLayout {
         Layout.fillWidth: true
         headerCells: root.recipientHeaderCells()
         rows: root.recipientRows()
-        onRefreshRequested: root.model.refreshTransferActivityPage()
-        onNewerRequested: root.model.previousTransferActivityPage()
-        onOlderRequested: root.model.nextTransferActivityPage()
+        onRefreshRequested: root.model.chainPages.refreshTransferActivityPage()
+        onNewerRequested: root.model.chainPages.previousTransferActivityPage()
+        onOlderRequested: root.model.chainPages.nextTransferActivityPage()
         onLoadCountSelected: function (count) {
-            root.model.setTransferActivityPageLimit(count)
+            root.model.chainPages.setTransferActivityPageLimit(count)
         }
         onCellActivated: function (row, column, cell, rowData) {
             if (column === 0 && rowData.recipientRaw.length > 0) {
@@ -73,7 +73,7 @@ ColumnLayout {
         visible: root.model.transferActivityError.length > 0
         theme: root.theme
         tone: "warning"
-        title: root.model.sourceProblemTitle("indexer", root.model.transferActivityError, qsTr("Transfer activity unavailable"))
+        title: root.model.chainPages.sourceProblemTitle("indexer", root.model.transferActivityError, qsTr("Transfer activity unavailable"))
         message: root.model.transferActivityError
         Layout.fillWidth: true
     }
@@ -102,7 +102,7 @@ ColumnLayout {
                 recipientRaw: "",
                 sourceRaw: "",
                 cells: [
-                    { text: root.model.sourceEmptyText("indexer", root.model.transferActivityError, qsTr("No account references in loaded range")), width: 240, fill: true, monospace: false },
+                    { text: root.model.chainPages.sourceEmptyText("indexer", root.model.transferActivityError, qsTr("No account references in loaded range")), width: 240, fill: true, monospace: false },
                     { text: "-", width: 112, monospace: false },
                     { text: "-", width: 120 },
                     { text: "-", width: 82 },

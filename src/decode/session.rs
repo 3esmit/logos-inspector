@@ -131,9 +131,7 @@ impl ProgramDecodeSession {
                         evidence: candidate.evidence(Some(report.account_type.clone())),
                         report,
                     };
-                    if selection.report.consumed_bytes == selection.report.total_bytes
-                        && selection.report.remaining_bytes == 0
-                    {
+                    if account_decode_is_full(&selection.report) {
                         return ResolvedAccountDecodeSession {
                             selected: Some(selection),
                             partial,
@@ -167,12 +165,10 @@ impl ProgramDecodeSession {
             let Ok(report) = inspect_transaction_summary_with_idl(summary, &candidate.json) else {
                 continue;
             };
-            let is_full = match report.decoded_instruction.as_ref() {
-                Some(decoded) => {
-                    decoded.decode_error.is_none() && decoded.remaining_words.is_empty()
-                }
-                None => continue,
-            };
+            if report.decoded_instruction.is_none() {
+                continue;
+            }
+            let is_full = transaction_decode_is_full(&report);
             let selection = TransactionDecodeSelection {
                 evidence: candidate.evidence(None),
                 report,
@@ -197,6 +193,17 @@ impl ProgramDecodeSession {
     fn candidate_count(&self) -> usize {
         self.candidates.len()
     }
+}
+
+fn account_decode_is_full(report: &AccountIdlDecodeReport) -> bool {
+    report.consumed_bytes == report.total_bytes && report.remaining_bytes == 0
+}
+
+fn transaction_decode_is_full(report: &TransactionIdlInspectionReport) -> bool {
+    report
+        .decoded_instruction
+        .as_ref()
+        .is_some_and(|decoded| decoded.decode_error.is_none() && decoded.remaining_words.is_empty())
 }
 
 fn unique_candidates(candidates: &[ProgramDecodeCandidate]) -> Vec<ProgramDecodeCandidate> {
@@ -227,6 +234,12 @@ fn candidate_identity(candidate: &ProgramDecodeCandidate) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    use crate::{
+        InstructionDecodeReport,
+        lez::{TransactionInspectionReport, TransactionInspectionSection},
+    };
 
     fn candidate(
         key: &str,
@@ -258,5 +271,83 @@ mod tests {
         let session = ProgramDecodeSession::new(&candidates);
 
         assert_eq!(session.candidate_count(), 3);
+    }
+
+    #[test]
+    fn account_full_verdict_requires_all_bytes_consumed() {
+        assert!(account_decode_is_full(&account_report(4, 4, 0)));
+        assert!(!account_decode_is_full(&account_report(3, 4, 1)));
+    }
+
+    #[test]
+    fn transaction_full_verdict_requires_decoded_instruction_without_remainder() {
+        assert!(transaction_decode_is_full(&transaction_report(Some(
+            decoded_instruction(None, Vec::new())
+        ))));
+        assert!(!transaction_decode_is_full(&transaction_report(Some(
+            decoded_instruction(Some("unknown variant"), Vec::new())
+        ))));
+        assert!(!transaction_decode_is_full(&transaction_report(Some(
+            decoded_instruction(None, vec![7])
+        ))));
+        assert!(!transaction_decode_is_full(&transaction_report(None)));
+    }
+
+    fn account_report(
+        consumed_bytes: usize,
+        total_bytes: usize,
+        remaining_bytes: usize,
+    ) -> AccountIdlDecodeReport {
+        AccountIdlDecodeReport {
+            account_id: None,
+            account_type: "Account".to_owned(),
+            consumed_bytes,
+            total_bytes,
+            remaining_bytes,
+            remaining_data_hex: None,
+            decoded: json!({}),
+            rows: Vec::new(),
+        }
+    }
+
+    fn transaction_report(
+        decoded_instruction: Option<InstructionDecodeReport>,
+    ) -> TransactionIdlInspectionReport {
+        TransactionIdlInspectionReport {
+            inspection: TransactionInspectionReport {
+                hash: "tx".to_owned(),
+                kind: "Public".to_owned(),
+                sections: Vec::<TransactionInspectionSection>::new(),
+                raw_summary: TransactionSummary {
+                    hash: "tx".to_owned(),
+                    kind: "Public".to_owned(),
+                    program_id_hex: None,
+                    account_ids: Vec::new(),
+                    nonces: Vec::new(),
+                    instruction_data: Vec::new(),
+                    bytecode_len: None,
+                    raw_signature_valid: None,
+                    message_prehash: None,
+                    prehash_signature_valid: None,
+                },
+            },
+            decoded_instruction,
+        }
+    }
+
+    fn decoded_instruction(
+        decode_error: Option<&str>,
+        remaining_words: Vec<u32>,
+    ) -> InstructionDecodeReport {
+        InstructionDecodeReport {
+            program_id: "program".to_owned(),
+            idl_name: Some("IDL".to_owned()),
+            instruction: "transfer".to_owned(),
+            variant_index: 0,
+            accounts: Vec::new(),
+            args: Vec::new(),
+            decode_error: decode_error.map(str::to_owned),
+            remaining_words,
+        }
     }
 }

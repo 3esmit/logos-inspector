@@ -10,19 +10,16 @@ use crate::{
 };
 
 use super::super::value::to_value;
-use super::{RuntimeMethod, RuntimeMethodEntry};
+use super::RuntimeMethodEntry;
 
 pub(super) const METHOD_CATALOG: &[RuntimeMethodEntry] = &[
-    RuntimeMethodEntry::new(
-        RuntimeMethod::LocalWalletProfileStatus,
-        "localWalletProfileStatus",
-    ),
-    RuntimeMethodEntry::new(
-        RuntimeMethod::LocalWalletInstructionPreview,
+    RuntimeMethodEntry::sync("localWalletProfileStatus", local_wallet_profile_status),
+    RuntimeMethodEntry::sync(
         "localWalletInstructionPreview",
+        local_wallet_instruction_preview,
     ),
-    RuntimeMethodEntry::new(RuntimeMethod::BedrockWalletBalance, "bedrockWalletBalance"),
-    RuntimeMethodEntry::new(RuntimeMethod::DetectWalletProfile, "detectWalletProfile"),
+    RuntimeMethodEntry::with_runtime("bedrockWalletBalance", bedrock_wallet_balance),
+    RuntimeMethodEntry::no_args("detectWalletProfile", detect_wallet_profile),
 ];
 
 pub(super) fn local_wallet_profile_status(args: Value) -> Result<Value> {

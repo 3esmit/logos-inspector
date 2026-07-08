@@ -15,6 +15,7 @@ use super::model::{
     LocalNodesState, NodeAction, NodeKind, ToolStatus,
 };
 use super::paths::{path_is_inside, remove_dir_inside};
+use super::presentation;
 use super::process::{find_command, process_is_alive, stop_process};
 
 const STATE_FILE: &str = "local_nodes.json";
@@ -171,7 +172,7 @@ pub(super) fn available_actions_for(
     actions
 }
 
-fn report_for_state(profile: &str, state: &LocalNodesState) -> LocalNodeReport {
+pub(super) fn report_for_state(profile: &str, state: &LocalNodesState) -> LocalNodeReport {
     let profile = normalized_profile(profile);
     let active = state.active_devnet();
     let tools = tool_statuses();
@@ -193,11 +194,9 @@ fn report_for_state(profile: &str, state: &LocalNodesState) -> LocalNodeReport {
         .count();
     LocalNodeReport {
         profile: profile.to_owned(),
-        mode: if profile == "local" {
-            "localnet".to_owned()
-        } else {
-            "public_testnet".to_owned()
-        },
+        mode: presentation::mode_for_profile(profile).to_owned(),
+        available_network_actions: available_actions_for(profile, None, active.is_some()),
+        primary_problem: presentation::primary_problem(profile, &tools, &nodes),
         active_devnet: state.active_devnet.clone(),
         workspace_root: state.managed_workspace_root.clone(),
         summary: LocalNodeSummary {
