@@ -13,8 +13,9 @@ use crate::source_routing::{
 use crate::{
     ProbeReport,
     modules::{delivery_report, storage_report},
-    read_response_text,
 };
+
+use super::http::raw_http_text_url;
 
 pub async fn storage_source_report(
     source_mode: &str,
@@ -436,16 +437,6 @@ async fn raw_http_value(endpoint: &str, path: &str) -> Result<Value> {
         Ok(value) => Ok(value),
         Err(_) => Ok(Value::String(trimmed.to_owned())),
     }
-}
-
-async fn raw_http_text_url(url: &str) -> Result<String> {
-    read_response_text(
-        reqwest::Client::new().get(url),
-        url,
-        "failed to read http response body",
-        true,
-    )
-    .await
 }
 
 fn http_url(endpoint: &str, path: &str) -> String {

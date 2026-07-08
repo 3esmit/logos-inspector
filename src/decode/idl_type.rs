@@ -68,6 +68,7 @@ fn array_len(value: &Value) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::ensure;
     use serde_json::json;
 
     #[test]
@@ -75,12 +76,18 @@ mod tests {
         let tuple_shape = json!({ "array": ["u8", 3] });
         let object_shape = json!({ "array": { "type": "u32", "len": "2" } });
 
-        assert_eq!(fixed_array_type(&tuple_shape)?.map(|(_, len)| len), Some(3));
-        assert_eq!(
-            fixed_array_type(&object_shape)?.map(|(_, len)| len),
-            Some(2)
+        ensure!(
+            fixed_array_type(&tuple_shape)?.map(|(_, len)| len) == Some(3),
+            "tuple array length mismatch"
         );
-        assert_eq!(idl_type_label(&object_shape), "array<u32, 2>");
+        ensure!(
+            fixed_array_type(&object_shape)?.map(|(_, len)| len) == Some(2),
+            "object array length mismatch"
+        );
+        ensure!(
+            idl_type_label(&object_shape) == "array<u32, 2>",
+            "object array label mismatch"
+        );
         Ok(())
     }
 }

@@ -1,5 +1,6 @@
 mod core;
 mod delivery;
+mod network_profiles;
 mod policy;
 mod selection;
 mod shared;
@@ -17,6 +18,10 @@ pub(crate) use delivery::adapters::{
     DELIVERY_MODULE, delivery_lifecycle_args, delivery_message_args, delivery_store_query_url,
 };
 pub use delivery::delivery_source_report;
+pub use network_profiles::{
+    CUSTOM_NETWORK_PROFILE, DEFAULT_NETWORK_PROFILE, NetworkEndpoints, NetworkProfile,
+    infer_network_profile, network_profiles, resolve_network_endpoints,
+};
 pub use policy::{
     CoreEndpointMode, CoreSourceMode, DEFAULT_DELIVERY_METRICS_ENDPOINT,
     DEFAULT_DELIVERY_REST_ENDPOINT, DEFAULT_INDEXER_ENDPOINT, DEFAULT_NODE_ENDPOINT,

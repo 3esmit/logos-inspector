@@ -6,9 +6,9 @@ use crate::{
     indexer_health, indexer_status, indexer_transfer_recipients, last_sequencer_block_id,
     lez::{LezInspectionSession, RegisteredIdlResolver},
     raw_json_rpc_optional_result, sequencer_account, sequencer_block, sequencer_blocks,
-    sequencer_program_ids, sequencer_transaction, sequencer_transaction_inspection,
-    sequencer_transaction_inspection_with_idl, sequencer_transaction_trace,
-    sequencer_transaction_trace_with_idl,
+    sequencer_health, sequencer_program_ids, sequencer_transaction,
+    sequencer_transaction_inspection, sequencer_transaction_inspection_with_idl,
+    sequencer_transaction_trace, sequencer_transaction_trace_with_idl,
     source_routing::{self, Args, CoreEndpointMode, SourceEndpoint},
     support::state_store::registered_idl_entries,
 };
@@ -118,6 +118,14 @@ pub(super) async fn execute_blockchain_transaction(
         )
         .await?,
     )
+}
+
+pub(super) async fn execute_execution_health(request: &NodeOperationRequest) -> Result<Value> {
+    let args = Args::new(request.args.clone())?;
+    let source = args.source_endpoint(0, "sequencer endpoint")?;
+    require_rpc_operation_source(&source, "health")?;
+    sequencer_health(source.endpoint).await?;
+    Ok(json!("ok"))
 }
 
 pub(super) async fn execute_execution_head(request: &NodeOperationRequest) -> Result<Value> {
