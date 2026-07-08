@@ -35,7 +35,7 @@ pub use policy::{
     source_mode_is_token, source_mode_policy, source_policy_report,
 };
 pub(crate) use selection::{
-    AccountSources, Args, DeliveryStoreQuery, SourceArgsNormalization, SourceEndpoint,
+    AccountSources, DeliveryStoreQuery, SourceArgsNormalization, SourceEndpoint,
     delivery_rest_source, normalized_source_args, require_mutating_diagnostics,
     storage_rest_source,
 };

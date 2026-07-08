@@ -51,7 +51,7 @@ mod tests {
     use anyhow::bail;
 
     use super::*;
-    use crate::source_routing::Args;
+    use crate::support::args::Args;
 
     #[test]
     fn call_module_response_json_wraps_parse_errors() -> Result<()> {

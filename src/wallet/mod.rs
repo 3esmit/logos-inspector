@@ -15,8 +15,10 @@ mod profile;
 mod runner;
 
 pub use instruction::{
-    LocalWalletInstructionReport, LocalWalletInstructionRequest, ResolvedInstructionAccount,
-    ResolvedInstructionArg, local_wallet_instruction_preview, local_wallet_instruction_submit,
+    InstructionPlanField, LocalWalletInstructionPlanReport, LocalWalletInstructionReport,
+    LocalWalletInstructionRequest, ResolvedInstructionAccount, ResolvedInstructionArg,
+    local_wallet_instruction_plan, local_wallet_instruction_preview,
+    local_wallet_instruction_submit,
 };
 use profile::{
     LocalWalletProfileInput, detect_wallet_binary, detect_wallet_home,

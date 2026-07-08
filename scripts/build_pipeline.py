@@ -34,11 +34,13 @@ def profile_steps(profile: str, root: Path = ROOT) -> list[BuildStep]:
     cargo_workspace = ("cargo", "check", "--workspace")
     clippy_workspace = ("cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings")
     test_workspace = ("cargo", "test", "--workspace")
+    source_policy_artifact = (sys.executable, "scripts/source_policy_artifact.py", "check")
 
     profiles: dict[str, list[BuildStep]] = {
         "ci": [
             BuildStep("rustfmt", ("cargo", "fmt", "--all", "--", "--check")),
             BuildStep("package identity", (sys.executable, "scripts/check-package-identity.py")),
+            BuildStep("source policy artifact", source_policy_artifact, rust_env),
             BuildStep("build artifacts", (sys.executable, "scripts/check-build-artifacts.py")),
             BuildStep(
                 "circuits",
@@ -55,6 +57,7 @@ def profile_steps(profile: str, root: Path = ROOT) -> list[BuildStep]:
         "local": [
             BuildStep("rustfmt", ("cargo", "fmt", "--all", "--", "--check")),
             BuildStep("package identity", (sys.executable, "scripts/check-package-identity.py")),
+            BuildStep("source policy artifact", source_policy_artifact, rust_env),
             BuildStep("build artifacts", (sys.executable, "scripts/check-build-artifacts.py")),
             BuildStep("cargo check workspace", cargo_workspace, rust_env),
             BuildStep("clippy workspace", clippy_workspace, rust_env),
@@ -76,9 +79,11 @@ def profile_steps(profile: str, root: Path = ROOT) -> list[BuildStep]:
         ],
         "identity": [
             BuildStep("package identity", (sys.executable, "scripts/check-package-identity.py")),
+            BuildStep("source policy artifact", source_policy_artifact, rust_env),
             BuildStep("build artifacts", (sys.executable, "scripts/check-build-artifacts.py")),
         ],
         "artifacts": [
+            BuildStep("source policy artifact", source_policy_artifact, rust_env),
             BuildStep("build artifacts", (sys.executable, "scripts/check-build-artifacts.py")),
         ],
     }

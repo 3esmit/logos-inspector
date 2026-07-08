@@ -5,7 +5,8 @@ use tokio::runtime::Runtime;
 use crate::{
     channel_scan as inspect_channel_scan, channel_state as inspect_channel_state,
     overview as inspect_overview, raw_rpc_report,
-    source_routing::{Args, CoreEndpointMode, SourceEndpoint},
+    source_routing::{CoreEndpointMode, SourceEndpoint},
+    support::args::Args,
 };
 
 use super::super::value::to_value;

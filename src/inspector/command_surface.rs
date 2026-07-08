@@ -7,7 +7,7 @@ use super::commands::{
     runtime_methods::{self, RuntimeMethodEntry},
 };
 use super::value::to_value;
-use crate::{modules::logos_core, source_routing::Args};
+use crate::{modules::logos_core, support::args::Args};
 
 pub(crate) const INSPECTOR_MODULE: &str = "logos_inspector";
 

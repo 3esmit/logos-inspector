@@ -10,9 +10,10 @@ use tokio::io::AsyncWriteExt as _;
 use crate::{
     raw_http_json,
     source_routing::{
-        self, Args, require_mutating_diagnostics, rest_empty_request, rest_json_request, rest_url,
+        self, require_mutating_diagnostics, rest_empty_request, rest_json_request, rest_url,
         storage_rest_source, storage_rest_upload,
     },
+    support::args::Args,
     support::raw_source_transport::request_success,
 };
 

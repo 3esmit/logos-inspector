@@ -1,7 +1,10 @@
 use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
-use crate::source_routing::{Args, SourceFamily, effective_source_mode, source_mode_is_token};
+use crate::{
+    source_routing::{SourceFamily, effective_source_mode, source_mode_is_token},
+    support::args::Args,
+};
 
 pub(crate) const DELIVERY_MODULE: &str = "delivery_module";
 pub(crate) const STORAGE_MODULE: &str = "storage_module";
