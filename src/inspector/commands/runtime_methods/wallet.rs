@@ -10,6 +10,20 @@ use crate::{
 };
 
 use super::super::value::to_value;
+use super::{RuntimeMethod, RuntimeMethodEntry};
+
+pub(super) const METHOD_CATALOG: &[RuntimeMethodEntry] = &[
+    RuntimeMethodEntry::new(
+        RuntimeMethod::LocalWalletProfileStatus,
+        "localWalletProfileStatus",
+    ),
+    RuntimeMethodEntry::new(
+        RuntimeMethod::LocalWalletInstructionPreview,
+        "localWalletInstructionPreview",
+    ),
+    RuntimeMethodEntry::new(RuntimeMethod::BedrockWalletBalance, "bedrockWalletBalance"),
+    RuntimeMethodEntry::new(RuntimeMethod::DetectWalletProfile, "detectWalletProfile"),
+];
 
 pub(super) fn local_wallet_profile_status(args: Value) -> Result<Value> {
     let args = Args::new(args)?;

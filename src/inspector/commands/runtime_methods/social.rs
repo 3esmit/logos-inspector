@@ -12,6 +12,27 @@ use crate::{
 };
 
 use super::super::value::to_value;
+use super::{RuntimeMethod, RuntimeMethodEntry};
+
+pub(super) const METHOD_CATALOG: &[RuntimeMethodEntry] = &[
+    RuntimeMethodEntry::new(
+        RuntimeMethod::SocialMessagesFromStore,
+        "socialMessagesFromStore",
+    ),
+    RuntimeMethodEntry::new(
+        RuntimeMethod::SocialCommentPageFromStore,
+        "socialCommentPageFromStore",
+    ),
+    RuntimeMethodEntry::new(
+        RuntimeMethod::SocialCommentRowFromEvent,
+        "socialCommentRowFromEvent",
+    ),
+    RuntimeMethodEntry::new(RuntimeMethod::SocialTopicValid, "socialTopicValid"),
+    RuntimeMethodEntry::new(
+        RuntimeMethod::AcceptedSharedIdlEntriesFromStore,
+        "acceptedSharedIdlEntriesFromStore",
+    ),
+];
 
 pub(super) fn social_messages_from_store(args: Value) -> Result<Value> {
     let args = Args::new(args)?;

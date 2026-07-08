@@ -8,9 +8,55 @@ use crate::source_routing::{
     raw_http_json_url, require_mutating_diagnostics, rest_empty_request,
 };
 
+use super::spec::{OperationCatalogEntry, OperationDomain, OperationMethod};
 use super::{NodeOperationRequest, blocking_module_call, blocking_module_dispatch};
 
 const MAX_DELIVERY_STORE_PAGE_SIZE: u64 = 100;
+
+pub(super) const OPERATION_CATALOG: &[OperationCatalogEntry] = &[
+    OperationCatalogEntry::mutating(
+        OperationMethod::DeliverySubscribe,
+        "deliverySubscribe",
+        OperationDomain::Delivery,
+        "Delivery subscribe",
+    ),
+    OperationCatalogEntry::mutating(
+        OperationMethod::DeliveryUnsubscribe,
+        "deliveryUnsubscribe",
+        OperationDomain::Delivery,
+        "Delivery unsubscribe",
+    ),
+    OperationCatalogEntry::mutating(
+        OperationMethod::DeliverySend,
+        "deliverySend",
+        OperationDomain::Delivery,
+        "Delivery send",
+    ),
+    OperationCatalogEntry::mutating(
+        OperationMethod::DeliveryCreateNode,
+        "deliveryCreateNode",
+        OperationDomain::Delivery,
+        "Delivery create node",
+    ),
+    OperationCatalogEntry::mutating(
+        OperationMethod::DeliveryStart,
+        "deliveryStart",
+        OperationDomain::Delivery,
+        "Delivery start",
+    ),
+    OperationCatalogEntry::mutating(
+        OperationMethod::DeliveryStop,
+        "deliveryStop",
+        OperationDomain::Delivery,
+        "Delivery stop",
+    ),
+    OperationCatalogEntry::new(
+        OperationMethod::DeliveryStoreQuery,
+        "deliveryStoreQuery",
+        OperationDomain::Delivery,
+        "Delivery store query",
+    ),
+];
 
 pub(super) async fn execute_delivery_subscription(
     request: &NodeOperationRequest,

@@ -12,6 +12,18 @@ mod storage;
 mod wallet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct RuntimeMethodEntry {
+    method: RuntimeMethod,
+    name: &'static str,
+}
+
+impl RuntimeMethodEntry {
+    pub(super) const fn new(method: RuntimeMethod, name: &'static str) -> Self {
+        Self { method, name }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RuntimeMethod {
     DecodeTransactionSummary,
     DecodeAccount,
@@ -57,104 +69,45 @@ pub(crate) enum RuntimeMethod {
     AcceptedSharedIdlEntriesFromStore,
 }
 
-pub(crate) const RUNTIME_METHODS: &[RuntimeMethod] = &[
-    RuntimeMethod::DecodeTransactionSummary,
-    RuntimeMethod::DecodeAccount,
-    RuntimeMethod::ResolveAccountDecodeSession,
-    RuntimeMethod::ResolveTransactionDecodeSession,
-    RuntimeMethod::DecodeInstruction,
-    RuntimeMethod::DecodeEvent,
-    RuntimeMethod::SpelIdl,
-    RuntimeMethod::ProgramFile,
-    RuntimeMethod::NormalizeProgramId,
-    RuntimeMethod::Overview,
-    RuntimeMethod::ChannelScan,
-    RuntimeMethod::ChannelState,
-    RuntimeMethod::RawRpc,
-    RuntimeMethod::LocalWalletProfileStatus,
-    RuntimeMethod::LocalWalletInstructionPreview,
-    RuntimeMethod::BedrockWalletBalance,
-    RuntimeMethod::DetectWalletProfile,
-    RuntimeMethod::LocalNodesStatus,
-    RuntimeMethod::LocalDevnetList,
-    RuntimeMethod::LoadIdlState,
-    RuntimeMethod::SaveIdlState,
-    RuntimeMethod::LoadWalletState,
-    RuntimeMethod::SaveWalletState,
-    RuntimeMethod::LoadSettingsState,
-    RuntimeMethod::SaveSettingsState,
-    RuntimeMethod::SourcePolicy,
-    RuntimeMethod::Modules,
-    RuntimeMethod::CapabilitiesReport,
-    RuntimeMethod::LogoscoreStatus,
-    RuntimeMethod::BlockchainModuleReport,
-    RuntimeMethod::StorageReport,
-    RuntimeMethod::StorageSourceReport,
-    RuntimeMethod::DeliveryReport,
-    RuntimeMethod::DeliverySourceReport,
-    RuntimeMethod::StorageExists,
-    RuntimeMethod::StorageBackupSettings,
-    RuntimeMethod::StorageRestoreSettings,
-    RuntimeMethod::SocialMessagesFromStore,
-    RuntimeMethod::SocialCommentPageFromStore,
-    RuntimeMethod::SocialCommentRowFromEvent,
-    RuntimeMethod::SocialTopicValid,
-    RuntimeMethod::AcceptedSharedIdlEntriesFromStore,
+const RUNTIME_METHOD_CATALOGS: &[&[RuntimeMethodEntry]] = &[
+    decode::METHOD_CATALOG,
+    network::METHOD_CATALOG,
+    wallet::METHOD_CATALOG,
+    local_nodes::METHOD_CATALOG,
+    state::METHOD_CATALOG,
+    module_reports::METHOD_CATALOG,
+    storage::METHOD_CATALOG,
+    social::METHOD_CATALOG,
 ];
+
+fn runtime_method_entries() -> impl Iterator<Item = &'static RuntimeMethodEntry> {
+    RUNTIME_METHOD_CATALOGS
+        .iter()
+        .flat_map(|catalog| catalog.iter())
+}
+
+#[cfg(test)]
+pub(crate) fn runtime_methods() -> impl Iterator<Item = RuntimeMethod> {
+    runtime_method_entries().map(|entry| entry.method)
+}
+
+#[cfg(test)]
+pub(crate) fn runtime_method_names() -> impl Iterator<Item = &'static str> {
+    runtime_method_entries().map(|entry| entry.name)
+}
 
 impl RuntimeMethod {
     pub(crate) fn from_str(method: &str) -> Option<Self> {
-        RUNTIME_METHODS
-            .iter()
-            .copied()
-            .find(|candidate| candidate.as_str() == method)
+        runtime_method_entries()
+            .find(|entry| entry.name == method)
+            .map(|entry| entry.method)
     }
 
+    #[cfg(test)]
     pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::DecodeTransactionSummary => "decodeTransactionSummary",
-            Self::DecodeAccount => "decodeAccount",
-            Self::ResolveAccountDecodeSession => "resolveAccountDecodeSession",
-            Self::ResolveTransactionDecodeSession => "resolveTransactionDecodeSession",
-            Self::DecodeInstruction => "decodeInstruction",
-            Self::DecodeEvent => "decodeEvent",
-            Self::SpelIdl => "spelIdl",
-            Self::ProgramFile => "programFile",
-            Self::NormalizeProgramId => "normalizeProgramId",
-            Self::Overview => "overview",
-            Self::ChannelScan => "channelScan",
-            Self::ChannelState => "channelState",
-            Self::RawRpc => "rawRpc",
-            Self::LocalWalletProfileStatus => "localWalletProfileStatus",
-            Self::LocalWalletInstructionPreview => "localWalletInstructionPreview",
-            Self::BedrockWalletBalance => "bedrockWalletBalance",
-            Self::DetectWalletProfile => "detectWalletProfile",
-            Self::LocalNodesStatus => "localNodesStatus",
-            Self::LocalDevnetList => "localDevnetList",
-            Self::LoadIdlState => "loadIdlState",
-            Self::SaveIdlState => "saveIdlState",
-            Self::LoadWalletState => "loadWalletState",
-            Self::SaveWalletState => "saveWalletState",
-            Self::LoadSettingsState => "loadSettingsState",
-            Self::SaveSettingsState => "saveSettingsState",
-            Self::SourcePolicy => "sourcePolicy",
-            Self::Modules => "modules",
-            Self::CapabilitiesReport => "capabilitiesReport",
-            Self::LogoscoreStatus => "logoscoreStatus",
-            Self::BlockchainModuleReport => "blockchainModuleReport",
-            Self::StorageReport => "storageReport",
-            Self::StorageSourceReport => "storageSourceReport",
-            Self::DeliveryReport => "deliveryReport",
-            Self::DeliverySourceReport => "deliverySourceReport",
-            Self::StorageExists => "storageExists",
-            Self::StorageBackupSettings => "storageBackupSettings",
-            Self::StorageRestoreSettings => "storageRestoreSettings",
-            Self::SocialMessagesFromStore => "socialMessagesFromStore",
-            Self::SocialCommentPageFromStore => "socialCommentPageFromStore",
-            Self::SocialCommentRowFromEvent => "socialCommentRowFromEvent",
-            Self::SocialTopicValid => "socialTopicValid",
-            Self::AcceptedSharedIdlEntriesFromStore => "acceptedSharedIdlEntriesFromStore",
-        }
+        runtime_method_entries()
+            .find(|entry| entry.method == self)
+            .map_or("runtimeMethod", |entry| entry.name)
     }
 }
 

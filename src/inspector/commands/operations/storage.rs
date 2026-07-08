@@ -15,9 +15,52 @@ use crate::{
 
 use super::super::value::to_value;
 use super::record::update_node_operation_progress;
+use super::spec::{
+    OperationCatalogEntry, OperationDomain, OperationExclusiveGroup, OperationMethod,
+};
 use super::{
     NodeOperationRegistry, NodeOperationRequest, blocking_module_call, blocking_module_dispatch,
 };
+
+pub(super) const OPERATION_CATALOG: &[OperationCatalogEntry] = &[
+    OperationCatalogEntry::new(
+        OperationMethod::StorageManifests,
+        "storageManifests",
+        OperationDomain::Storage,
+        "Storage manifests",
+    ),
+    OperationCatalogEntry::new(
+        OperationMethod::StorageDownloadManifest,
+        "storageDownloadManifest",
+        OperationDomain::Storage,
+        "Storage manifest",
+    ),
+    OperationCatalogEntry::mutating(
+        OperationMethod::StorageFetch,
+        "storageFetch",
+        OperationDomain::Storage,
+        "Storage fetch",
+    ),
+    OperationCatalogEntry::mutating(
+        OperationMethod::StorageUploadUrl,
+        "storageUploadUrl",
+        OperationDomain::Storage,
+        "Storage upload",
+    ),
+    OperationCatalogEntry::cancellable(
+        OperationMethod::StorageDownloadToUrl,
+        "storageDownloadToUrl",
+        OperationDomain::Storage,
+        "Storage download",
+        OperationExclusiveGroup::StorageDownload,
+    ),
+    OperationCatalogEntry::mutating(
+        OperationMethod::StorageRemove,
+        "storageRemove",
+        OperationDomain::Storage,
+        "Storage remove",
+    ),
+];
 
 pub(super) async fn execute_storage_manifests(request: &NodeOperationRequest) -> Result<Value> {
     let args = Args::new(request.args.clone())?;

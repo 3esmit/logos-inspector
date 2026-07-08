@@ -1,5 +1,6 @@
 import QtQml
 import "ConfirmationPolicy.js" as ConfirmationPolicy
+import "OperationHistoryVocabulary.js" as OperationHistoryVocabulary
 
 QtObject {
     id: root
@@ -109,7 +110,7 @@ QtObject {
         gateway.appendOperationHistory({
             domain: "localNodes",
             method: "localNodesAction",
-            status: statusText === "failed" ? "failed" : "completed",
+            status: OperationHistoryVocabulary.syntheticHistoryStatus(statusText),
             label: labelText,
             result: {
                 status: statusText,

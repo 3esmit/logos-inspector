@@ -9,6 +9,52 @@ use crate::{
 
 use super::super::value::{blocking_value, to_value};
 use super::NodeOperationRequest;
+use super::spec::{OperationCatalogEntry, OperationDomain, OperationMethod};
+
+pub(super) const OPERATION_CATALOG: &[OperationCatalogEntry] = &[
+    OperationCatalogEntry::new(
+        OperationMethod::LocalWalletCreateAccount,
+        "localWalletCreateAccount",
+        OperationDomain::Wallet,
+        "Wallet account",
+    ),
+    OperationCatalogEntry::new(
+        OperationMethod::LocalWalletSendTransaction,
+        "localWalletSendTransaction",
+        OperationDomain::Wallet,
+        "Wallet send",
+    ),
+    OperationCatalogEntry::new(
+        OperationMethod::LocalWalletInstructionSubmit,
+        "localWalletInstructionSubmit",
+        OperationDomain::Wallet,
+        "IDL instruction",
+    ),
+    OperationCatalogEntry::new(
+        OperationMethod::LocalWalletCommand,
+        "localWalletCommand",
+        OperationDomain::Wallet,
+        "Wallet command",
+    ),
+    OperationCatalogEntry::new(
+        OperationMethod::LocalWalletDeployProgram,
+        "localWalletDeployProgram",
+        OperationDomain::Wallet,
+        "Program deploy",
+    ),
+    OperationCatalogEntry::new(
+        OperationMethod::LocalWalletSyncPrivate,
+        "localWalletSyncPrivate",
+        OperationDomain::Wallet,
+        "Private sync",
+    ),
+    OperationCatalogEntry::new(
+        OperationMethod::LocalWalletAccounts,
+        "localWalletAccounts",
+        OperationDomain::Wallet,
+        "Wallet accounts",
+    ),
+];
 
 pub(super) async fn execute_wallet_create_account(request: &NodeOperationRequest) -> Result<Value> {
     let args = confirmed_wallet_args(request, 3, ConfirmationPolicy::WalletCreateAccount)?;

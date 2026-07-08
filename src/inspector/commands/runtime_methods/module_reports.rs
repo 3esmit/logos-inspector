@@ -16,6 +16,22 @@ use crate::{
 };
 
 use super::super::value::to_value;
+use super::{RuntimeMethod, RuntimeMethodEntry};
+
+pub(super) const METHOD_CATALOG: &[RuntimeMethodEntry] = &[
+    RuntimeMethodEntry::new(RuntimeMethod::SourcePolicy, "sourcePolicy"),
+    RuntimeMethodEntry::new(RuntimeMethod::Modules, "modules"),
+    RuntimeMethodEntry::new(RuntimeMethod::CapabilitiesReport, "capabilitiesReport"),
+    RuntimeMethodEntry::new(RuntimeMethod::LogoscoreStatus, "logoscoreStatus"),
+    RuntimeMethodEntry::new(
+        RuntimeMethod::BlockchainModuleReport,
+        "blockchainModuleReport",
+    ),
+    RuntimeMethodEntry::new(RuntimeMethod::StorageReport, "storageReport"),
+    RuntimeMethodEntry::new(RuntimeMethod::StorageSourceReport, "storageSourceReport"),
+    RuntimeMethodEntry::new(RuntimeMethod::DeliveryReport, "deliveryReport"),
+    RuntimeMethodEntry::new(RuntimeMethod::DeliverySourceReport, "deliverySourceReport"),
+];
 
 pub(super) fn source_policy() -> Result<Value> {
     to_value(source_policy_report())

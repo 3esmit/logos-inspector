@@ -1602,33 +1602,15 @@ mod tests {
     #[test]
     fn qml_fallback_catalog_tracks_rust_source_policy() -> Result<(), String> {
         let catalog_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("qml/state/network/SourcePolicyCatalog.js");
+            .join("qml/state/network/SourcePolicyCatalog.generated.js");
         let catalog = std::fs::read_to_string(catalog_path)
             .map_err(|error| format!("QML source policy catalog is readable: {error}"))?;
-        let policy = source_policy_report();
-
-        require_catalog_entry(&catalog, &format!("version: {}", policy.version))?;
-        require_catalog_entry(&catalog, DEFAULT_SEQUENCER_ENDPOINT)?;
-        require_catalog_entry(&catalog, DEFAULT_INDEXER_ENDPOINT)?;
-        require_catalog_entry(&catalog, DEFAULT_NODE_ENDPOINT)?;
-        require_catalog_entry(&catalog, DEFAULT_DELIVERY_REST_ENDPOINT)?;
-        require_catalog_entry(&catalog, DEFAULT_DELIVERY_METRICS_ENDPOINT)?;
-        require_catalog_entry(&catalog, DEFAULT_STORAGE_REST_ENDPOINT)?;
-        require_catalog_entry(&catalog, DEFAULT_STORAGE_METRICS_ENDPOINT)?;
-
-        for modes in [
-            policy.source_modes.core,
-            policy.source_modes.delivery,
-            policy.source_modes.storage,
-        ] {
-            for mode in modes {
-                require_catalog_entry(&catalog, &source_mode_record_call(mode)).map_err(|_| {
-                    format!(
-                        "QML fallback catalog is missing Rust policy mode `{}`",
-                        mode.key
-                    )
-                })?;
-            }
+        let expected = generated_source_policy_catalog()
+            .map_err(|error| format!("failed to generate source policy catalog: {error}"))?;
+        if catalog != expected {
+            return Err(
+                "QML generated source policy catalog does not match Rust source policy".to_owned(),
+            );
         }
         Ok(())
     }
@@ -1800,49 +1782,11 @@ mod tests {
         assert!(facts.health.ready);
     }
 
-    fn source_mode_record_call(mode: &SourceModePolicy) -> String {
-        format!(
-            "sourceModeRecord({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {})",
-            js_string(mode.key),
-            js_array(mode.aliases),
-            js_string(mode.effective),
-            js_string(mode.label),
-            js_string(mode.source_label),
-            js_string(mode.summary),
-            js_string(mode.adapter.target),
-            mode.adapter.uses_rest_endpoint,
-            mode.adapter.uses_metrics_endpoint,
-            mode.adapter.supports_cid_probe,
-            mode.adapter.supports_mutating_diagnostics
-        )
-    }
-
-    fn js_string(value: &str) -> String {
-        format!(
-            "\"{}\"",
-            value
-                .replace('\\', "\\\\")
-                .replace('"', "\\\"")
-                .replace('\n', "\\n")
-        )
-    }
-
-    fn js_array(values: &[&str]) -> String {
-        format!(
-            "[{}]",
-            values
-                .iter()
-                .map(|value| js_string(value))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
-    }
-
-    fn require_catalog_entry(catalog: &str, expected: &str) -> Result<(), String> {
-        if catalog.contains(expected) {
-            Ok(())
-        } else {
-            Err(format!("QML fallback catalog is missing `{expected}`"))
-        }
+    fn generated_source_policy_catalog() -> Result<String, serde_json::Error> {
+        let policy_json = serde_json::to_string(&source_policy_report())?;
+        let policy_literal = serde_json::to_string(&policy_json)?;
+        Ok(format!(
+            "const SOURCE_POLICY_JSON = {policy_literal}\n\nfunction sourcePolicy() {{\n    return JSON.parse(SOURCE_POLICY_JSON)\n}}\n"
+        ))
     }
 }

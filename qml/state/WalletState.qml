@@ -1,4 +1,5 @@
 import QtQml
+import "OperationHistoryVocabulary.js" as OperationHistoryVocabulary
 
 QtObject {
     id: root
@@ -80,11 +81,7 @@ QtObject {
     }
 
     function operationStatus(statusText) {
-        const value = String(statusText || "").toLowerCase()
-        if (value === "down" || value === "failed" || value === "error") {
-            return "failed"
-        }
-        return "completed"
+        return OperationHistoryVocabulary.syntheticHistoryStatus(statusText)
     }
 
     function appendOperation(label, statusText, detail) {

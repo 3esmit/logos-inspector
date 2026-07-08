@@ -5,7 +5,7 @@ use reqwest::Method;
 use serde_json::Value;
 
 use super::{
-    NodeOperationRegistry, NodeOperationRequest, OperationExecutor, chain, delivery, local_nodes,
+    NodeOperationRegistry, NodeOperationRequest, OperationMethod, chain, delivery, local_nodes,
     storage, wallet,
 };
 
@@ -15,86 +15,86 @@ pub(super) async fn execute_node_operation(
     operation_id: &str,
     cancel_requested: &AtomicBool,
 ) -> Result<Value> {
-    match request.executor() {
-        OperationExecutor::StorageManifests => storage::execute_storage_manifests(&request).await,
-        OperationExecutor::StorageDownloadManifest => {
+    match request.method() {
+        OperationMethod::StorageManifests => storage::execute_storage_manifests(&request).await,
+        OperationMethod::StorageDownloadManifest => {
             storage::execute_storage_download_manifest(&request).await
         }
-        OperationExecutor::StorageFetch => storage::execute_storage_fetch(&request).await,
-        OperationExecutor::StorageUploadUrl => storage::execute_storage_upload(&request).await,
-        OperationExecutor::StorageDownloadToUrl => {
+        OperationMethod::StorageFetch => storage::execute_storage_fetch(&request).await,
+        OperationMethod::StorageUploadUrl => storage::execute_storage_upload(&request).await,
+        OperationMethod::StorageDownloadToUrl => {
             storage::execute_storage_download(&request, registry, operation_id, cancel_requested)
                 .await
         }
-        OperationExecutor::StorageRemove => storage::execute_storage_remove(&request).await,
-        OperationExecutor::DeliverySubscribe => {
+        OperationMethod::StorageRemove => storage::execute_storage_remove(&request).await,
+        OperationMethod::DeliverySubscribe => {
             delivery::execute_delivery_subscription(&request, Method::POST, "subscribe").await
         }
-        OperationExecutor::DeliveryUnsubscribe => {
+        OperationMethod::DeliveryUnsubscribe => {
             delivery::execute_delivery_subscription(&request, Method::DELETE, "unsubscribe").await
         }
-        OperationExecutor::DeliverySend => delivery::execute_delivery_send(&request).await,
-        OperationExecutor::DeliveryCreateNode => {
+        OperationMethod::DeliverySend => delivery::execute_delivery_send(&request).await,
+        OperationMethod::DeliveryCreateNode => {
             delivery::execute_delivery_module_action(&request, "createNode").await
         }
-        OperationExecutor::DeliveryStart => {
+        OperationMethod::DeliveryStart => {
             delivery::execute_delivery_module_action(&request, "start").await
         }
-        OperationExecutor::DeliveryStop => {
+        OperationMethod::DeliveryStop => {
             delivery::execute_delivery_module_action(&request, "stop").await
         }
-        OperationExecutor::DeliveryStoreQuery => {
+        OperationMethod::DeliveryStoreQuery => {
             delivery::execute_delivery_store_query(&request).await
         }
-        OperationExecutor::LocalNodesAction => {
+        OperationMethod::LocalNodesAction => {
             local_nodes::execute_local_nodes_action(&request).await
         }
-        OperationExecutor::LocalWalletCreateAccount => {
+        OperationMethod::LocalWalletCreateAccount => {
             wallet::execute_wallet_create_account(&request).await
         }
-        OperationExecutor::LocalWalletSendTransaction => {
+        OperationMethod::LocalWalletSendTransaction => {
             wallet::execute_wallet_send_transaction(&request).await
         }
-        OperationExecutor::LocalWalletInstructionSubmit => {
+        OperationMethod::LocalWalletInstructionSubmit => {
             wallet::execute_wallet_instruction_submit(&request).await
         }
-        OperationExecutor::LocalWalletCommand => wallet::execute_wallet_command(&request).await,
-        OperationExecutor::LocalWalletDeployProgram => {
+        OperationMethod::LocalWalletCommand => wallet::execute_wallet_command(&request).await,
+        OperationMethod::LocalWalletDeployProgram => {
             wallet::execute_wallet_deploy_program(&request).await
         }
-        OperationExecutor::LocalWalletSyncPrivate => {
+        OperationMethod::LocalWalletSyncPrivate => {
             wallet::execute_wallet_sync_private(&request).await
         }
-        OperationExecutor::LocalWalletAccounts => wallet::execute_wallet_accounts(&request).await,
-        OperationExecutor::BlockchainNode => chain::execute_blockchain_node(&request).await,
-        OperationExecutor::BlockchainBlocks => chain::execute_blockchain_blocks(&request).await,
-        OperationExecutor::BlockchainLiveBlocks => {
+        OperationMethod::LocalWalletAccounts => wallet::execute_wallet_accounts(&request).await,
+        OperationMethod::BlockchainNode => chain::execute_blockchain_node(&request).await,
+        OperationMethod::BlockchainBlocks => chain::execute_blockchain_blocks(&request).await,
+        OperationMethod::BlockchainLiveBlocks => {
             chain::execute_blockchain_live_blocks(&request).await
         }
-        OperationExecutor::BlockchainBlock => chain::execute_blockchain_block(&request).await,
-        OperationExecutor::BlockchainTransaction => {
+        OperationMethod::BlockchainBlock => chain::execute_blockchain_block(&request).await,
+        OperationMethod::BlockchainTransaction => {
             chain::execute_blockchain_transaction(&request).await
         }
-        OperationExecutor::Health => chain::execute_execution_health(&request).await,
-        OperationExecutor::Head => chain::execute_execution_head(&request).await,
-        OperationExecutor::Programs => chain::execute_programs(&request).await,
-        OperationExecutor::Block => chain::execute_sequencer_block(&request).await,
-        OperationExecutor::SequencerBlocks => chain::execute_sequencer_blocks(&request).await,
-        OperationExecutor::Transaction => chain::execute_sequencer_transaction(&request).await,
-        OperationExecutor::InspectTransaction => chain::execute_inspect_transaction(&request).await,
-        OperationExecutor::TraceTransaction => chain::execute_trace_transaction(&request).await,
-        OperationExecutor::Account => chain::execute_account_operation(&request).await,
-        OperationExecutor::ResolveLezTarget => chain::execute_resolve_lez_target(&request).await,
-        OperationExecutor::IndexerHealth => chain::execute_indexer_health_operation(&request).await,
-        OperationExecutor::IndexerStatus => chain::execute_indexer_status_operation(&request).await,
-        OperationExecutor::IndexerFinalizedHead => {
+        OperationMethod::Health => chain::execute_execution_health(&request).await,
+        OperationMethod::Head => chain::execute_execution_head(&request).await,
+        OperationMethod::Programs => chain::execute_programs(&request).await,
+        OperationMethod::Block => chain::execute_sequencer_block(&request).await,
+        OperationMethod::SequencerBlocks => chain::execute_sequencer_blocks(&request).await,
+        OperationMethod::Transaction => chain::execute_sequencer_transaction(&request).await,
+        OperationMethod::InspectTransaction => chain::execute_inspect_transaction(&request).await,
+        OperationMethod::TraceTransaction => chain::execute_trace_transaction(&request).await,
+        OperationMethod::Account => chain::execute_account_operation(&request).await,
+        OperationMethod::ResolveLezTarget => chain::execute_resolve_lez_target(&request).await,
+        OperationMethod::IndexerHealth => chain::execute_indexer_health_operation(&request).await,
+        OperationMethod::IndexerStatus => chain::execute_indexer_status_operation(&request).await,
+        OperationMethod::IndexerFinalizedHead => {
             chain::execute_indexer_finalized_head(&request).await
         }
-        OperationExecutor::IndexerBlocks => chain::execute_indexer_blocks_operation(&request).await,
-        OperationExecutor::IndexerBlockByHash => {
+        OperationMethod::IndexerBlocks => chain::execute_indexer_blocks_operation(&request).await,
+        OperationMethod::IndexerBlockByHash => {
             chain::execute_indexer_block_by_hash_operation(&request).await
         }
-        OperationExecutor::IndexerTransferRecipients => {
+        OperationMethod::IndexerTransferRecipients => {
             chain::execute_indexer_transfer_recipients_operation(&request).await
         }
     }

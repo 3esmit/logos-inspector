@@ -5,7 +5,7 @@ use crate::source_routing::{
     Args, SourceArgsNormalization, normalized_source_args, storage_rest_source,
 };
 
-use super::spec::{OperationDomain, OperationExclusiveGroup, OperationExecutor, OperationMethod};
+use super::spec::{OperationDomain, OperationExclusiveGroup, OperationMethod};
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct OperationSourceSelection {
@@ -39,8 +39,8 @@ impl NodeOperationRequest {
         self.method.as_str()
     }
 
-    pub(crate) fn executor(&self) -> OperationExecutor {
-        self.method.executor()
+    pub(super) fn method(&self) -> OperationMethod {
+        self.method
     }
 
     pub(crate) fn label(&self) -> &str {

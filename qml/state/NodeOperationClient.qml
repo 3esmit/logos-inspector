@@ -1,5 +1,6 @@
 import QtQml
 import "../services/BridgeHelpers.js" as BridgeHelpers
+import "OperationHistoryVocabulary.js" as OperationHistoryVocabulary
 
 QtObject {
     id: root
@@ -165,8 +166,7 @@ QtObject {
     }
 
     function terminal(operation) {
-        const status = String(operation && operation.status ? operation.status : "")
-        return status === "completed" || status === "failed" || status === "canceled"
+        return OperationHistoryVocabulary.isRuntimeTerminalStatus(operation && operation.status)
     }
 
     function statusText() {

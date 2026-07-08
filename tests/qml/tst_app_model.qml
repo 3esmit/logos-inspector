@@ -2,6 +2,7 @@ import QtQuick
 import QtTest
 import "../../qml/services"
 import "../../qml/state"
+import "../../qml/state/network/SourcePolicyCatalog.js" as SourcePolicyCatalog
 import "fixtures"
 
 TestCase {
@@ -209,49 +210,18 @@ TestCase {
     }
 
     function installSourceModePolicy(targetModel) {
-        targetModel.sourcePolicy = ({
-            source_modes: {
-                core: [
-                    sourceMode("auto", ["auto"], "rpc", "Auto", "Auto: Direct RPC", "Use configured direct RPC endpoint", "rpc_endpoint", false, false, false, false),
-                    sourceMode("rpc", ["rpc"], "rpc", "Direct RPC", "Direct RPC", "Use configured standalone RPC endpoint", "rpc_endpoint", false, false, false, false),
-                    sourceMode("module", ["basecamp"], "module", "Basecamp module", "Basecamp module", "Use Basecamp module transport", "module", false, false, false, true)
-                ],
-                delivery: [
-                    sourceMode("auto", ["auto"], "rest", "Auto", "Auto: Direct Waku REST", "Use direct Waku REST", "rest_endpoint", true, true, false, true),
-                    sourceMode("rest", ["rest"], "rest", "Direct Waku REST", "Direct Waku REST", "Read-only health, info, version, and optional metrics", "rest_endpoint", true, true, false, true),
-                    sourceMode("module", ["basecamp module"], "module", "Delivery module", "Delivery module", "Use delivery_module through logoscore", "module", false, false, false, true),
-                    sourceMode("metrics", ["metrics"], "metrics", "Metrics only", "Metrics only", "Scrape metrics", "metrics_endpoint", false, true, false, false),
-                    sourceMode("network-monitor", ["network-monitor", "discovery crawler"], "network-monitor", "Network monitor", "Network monitor", "Inspect fleet topology", "rest_endpoint", true, true, false, false),
-                    sourceMode("unsupported", ["unsupported"], "unsupported", "Unsupported saved source", "Unsupported source", "Select a supported source", "none", false, false, false, false)
-                ],
-                storage: [
-                    sourceMode("auto", ["auto"], "rest", "Auto", "Auto: Standalone REST", "Use standalone REST", "rest_endpoint", true, true, true, true),
-                    sourceMode("rest", ["standalone rest", "rest"], "rest", "Standalone REST", "Standalone REST", "Read-only storage facts", "rest_endpoint", true, true, true, true),
-                    sourceMode("module", ["basecamp module", "module"], "module", "Storage module", "Storage module", "Use storage_module through logoscore", "module", false, false, true, true),
-                    sourceMode("metrics", ["metrics"], "metrics", "Metrics only", "Metrics only", "Scrape metrics", "metrics_endpoint", false, true, false, false),
-                    sourceMode("unsupported", ["c-library", "local-os", "unsupported"], "unsupported", "Unsupported saved source", "Unsupported source", "Select a supported source", "none", false, false, false, false)
-                ]
-            }
-        })
+        targetModel.sourcePolicy = SourcePolicyCatalog.fallbackPolicy()
         targetModel.sourcePolicyLoaded = true
     }
 
-    function sourceMode(key, aliases, effective, label, sourceLabel, summary, target, usesRest, usesMetrics, supportsCid, supportsMutating) {
-        return {
-            key: key,
-            aliases: aliases,
-            effective: effective,
-            label: label,
-            source_label: sourceLabel,
-            summary: summary,
-            adapter: {
-                target: target,
-                uses_rest_endpoint: usesRest,
-                uses_metrics_endpoint: usesMetrics,
-                supports_cid_probe: supportsCid,
-                supports_mutating_diagnostics: supportsMutating
+    function sourceOption(options, key) {
+        for (let i = 0; i < options.length; ++i) {
+            const option = options[i] || {}
+            if (String(option.key || "") === key) {
+                return option
             }
         }
+        return ({})
     }
 
     function test_basecamp_bridge_routes_inspector_calls_through_generic_call() {
@@ -618,7 +588,7 @@ TestCase {
 
         const storageOptions = model.sourceModeOptions("storage")
         verify(storageOptions.length >= 5)
-        compare(storageOptions[1].label, "Standalone REST")
+        compare(sourceOption(storageOptions, "rest").label, "Standalone REST")
 
         model.storageSourceMode = "module"
         compare(model.storageSourceLabel(), "Storage module")
