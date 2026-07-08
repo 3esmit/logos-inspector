@@ -13,7 +13,7 @@ use super::{
     LOCAL_WALLET_POLL_INTERVAL, LOCAL_WALLET_SYNC_TIMEOUT, LOCAL_WALLET_VERSION_TIMEOUT,
     local_wallet_binary_is_path_like,
 };
-use crate::command_runner::{CommandRunPolicy, output_text, run_command};
+use crate::support::command_runner::{CommandRunPolicy, output_text, run_command};
 
 pub(super) enum LocalWalletInvocation<'a> {
     Version,

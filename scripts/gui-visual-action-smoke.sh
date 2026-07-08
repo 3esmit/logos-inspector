@@ -14,7 +14,7 @@ run_qml_tests() {
     -import "$ROOT/qml" \
     -import "$ROOT/qml/components" \
     -import "$ROOT/qml/components/common" \
-    -import "$ROOT/qml/components/settings" \
+    -import "$ROOT/qml/features/settings/controls" \
     -import "$ROOT/qml/theme"
 }
 

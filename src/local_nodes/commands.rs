@@ -4,7 +4,7 @@ use anyhow::Result;
 use serde_json::{Value, json};
 
 use super::{NodeAction, NodeKind};
-use crate::{command_runner::spawn_detached, logoscore};
+use crate::{logoscore, support::command_runner::spawn_detached};
 
 const BLOCKCHAIN_MODULE: &str = "blockchain_module";
 const INDEXER_MODULE: &str = "lez_indexer_module";

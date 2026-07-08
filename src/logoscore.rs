@@ -4,7 +4,7 @@ use anyhow::{Context as _, Result, bail};
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::command_runner::{CommandRunPolicy, output_text, run_command};
+use crate::support::command_runner::{CommandRunPolicy, output_text, run_command};
 
 const LOGOSCORE_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const LOGOSCORE_OUTPUT_LIMIT: usize = 4096;

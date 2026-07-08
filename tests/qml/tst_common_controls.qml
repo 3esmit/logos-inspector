@@ -5,7 +5,7 @@ import QtTest
 import "../../qml/theme"
 import "../../qml/components"
 import "../../qml/components/common"
-import "../../qml/components/settings"
+import "../../qml/features/settings/controls"
 
 TestCase {
     id: testRoot

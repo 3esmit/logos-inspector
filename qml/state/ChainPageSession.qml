@@ -1,5 +1,5 @@
 import QtQml
-import "appmodel/AppModelPages.js" as AppModelPages
+import "chain/AppModelPages.js" as AppModelPages
 
 QtObject {
     id: root

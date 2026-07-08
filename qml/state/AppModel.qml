@@ -1,14 +1,14 @@
 import QtQuick
 import QtQml.Models
 import "../services"
-import "appmodel/AppModelCore.js" as AppModelCore
-import "appmodel/AppModelIdentity.js" as AppModelIdentity
-import "appmodel/AppModelNetwork.js" as AppModelNetwork
-import "appmodel/AppModelMetrics.js" as AppModelMetrics
-import "appmodel/AppModelRegistry.js" as AppModelRegistry
-import "appmodel/AppModelSocial.js" as AppModelSocial
-import "appmodel/AppModelModuleEvents.js" as AppModelModuleEvents
-import "appmodel/ProgramDecodeSession.js" as ProgramDecodeSession
+import "app/AppModelCore.js" as AppModelCore
+import "identity/AppModelIdentity.js" as AppModelIdentity
+import "network/AppModelNetwork.js" as AppModelNetwork
+import "metrics/AppModelMetrics.js" as AppModelMetrics
+import "programs/AppModelRegistry.js" as AppModelRegistry
+import "social/AppModelSocial.js" as AppModelSocial
+import "modules/AppModelModuleEvents.js" as AppModelModuleEvents
+import "programs/ProgramDecodeSession.js" as ProgramDecodeSession
 
 QtObject {
     id: root

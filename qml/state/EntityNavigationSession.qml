@@ -1,6 +1,6 @@
 import QtQml
-import "appmodel/AppModelOpeners.js" as AppModelOpeners
-import "appmodel/AppModelSearch.js" as AppModelSearch
+import "chain/AppModelOpeners.js" as AppModelOpeners
+import "app/AppModelSearch.js" as AppModelSearch
 
 QtObject {
     id: root
