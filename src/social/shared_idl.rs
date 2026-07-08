@@ -91,6 +91,9 @@ fn accepted_shared_idl_entry(input: SharedIdlInput<'_>) -> Option<AcceptedShared
             json: input.idl_json.clone(),
             account_type: Some(account_type),
             source: Some("shared".to_owned()),
+            cached: false,
+            shared: true,
+            owner_matched: false,
         })
         .collect::<Vec<_>>();
     let session =

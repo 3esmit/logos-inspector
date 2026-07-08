@@ -1,38 +1,28 @@
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result};
 use serde_json::Value;
 #[cfg(test)]
 use serde_json::json;
-use tokio::runtime::Runtime;
 
-use super::command_surface::{DispatchContext, dispatch_inspector_command};
-use super::value::to_value;
+use super::command_surface::{INSPECTOR_MODULE, InspectorCommandSurface};
 #[cfg(test)]
 use crate::source_routing::{
     self, CoreEndpointMode, DEFAULT_DELIVERY_REST_ENDPOINT, DEFAULT_STORAGE_REST_ENDPOINT,
     DeliveryStoreQuery, delivery_rest_source, delivery_store_query_url, storage_rest_source,
 };
 use crate::support::bridge_envelope::{bridge_error_response_json, bridge_response_json};
-use crate::{
-    inspector::commands::operations::RuntimeOperationInterface, modules::logos_core,
-    source_routing::Args,
-};
-
-const INSPECTOR_MODULE: &str = "logos_inspector";
 #[cfg(test)]
 const BLOCKCHAIN_MODULE: &str = source_routing::BLOCKCHAIN_MODULE;
 #[cfg(test)]
 const INDEXER_MODULE: &str = source_routing::INDEXER_MODULE;
 
 pub struct InspectorBridge {
-    runtime: Runtime,
-    runtime_operations: RuntimeOperationInterface,
+    surface: InspectorCommandSurface,
 }
 
 impl InspectorBridge {
     pub fn new() -> Result<Self> {
         Ok(Self {
-            runtime: Runtime::new().context("failed to create tokio runtime")?,
-            runtime_operations: RuntimeOperationInterface::default(),
+            surface: InspectorCommandSurface::new()?,
         })
     }
 
@@ -52,45 +42,16 @@ impl InspectorBridge {
     }
 
     fn call_module_value(&self, module: &str, method: &str, args: Value) -> Result<Value> {
-        if module == INSPECTOR_MODULE {
-            self.call_inspector_value(method, args)
-        } else {
-            self.call_logoscore_module(module, method, args)
-        }
-    }
-
-    fn call_inspector_value(&self, method: &str, args: Value) -> Result<Value> {
-        let call_core_module = |module: &str, method: &str, args: Value| {
-            self.call_logoscore_module(module, method, args)
-        };
-        let context = DispatchContext {
-            runtime: &self.runtime,
-            operations: &self.runtime_operations,
-            call_core_module: &call_core_module,
-        };
-        if let Some(value) = dispatch_inspector_command(&context, method, args)? {
-            return Ok(value);
-        }
-        bail!("unknown inspector method `{method}`")
-    }
-
-    fn call_logoscore_module(&self, module: &str, method: &str, args: Value) -> Result<Value> {
-        let args = Args::new(args)?
-            .iter()
-            .map(|value| {
-                value
-                    .as_str()
-                    .map(ToOwned::to_owned)
-                    .unwrap_or_else(|| value.to_string())
-            })
-            .collect::<Vec<_>>();
-        to_value(logos_core::call(module, method, &args)?)
+        self.surface.call_module(module, method, args)
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use anyhow::bail;
+
     use super::*;
+    use crate::source_routing::Args;
 
     #[test]
     fn call_module_response_json_wraps_parse_errors() -> Result<()> {
@@ -589,12 +550,10 @@ mod tests {
     #[test]
     fn runtime_operation_cancel_marks_cancelable_operation() -> Result<()> {
         let bridge = InspectorBridge::new()?;
-        let cancel_requested = bridge.runtime_operations.insert_test_running_operation(
-            "existing",
-            "storage",
-            "storageDownloadToUrl",
-            true,
-        );
+        let cancel_requested = bridge
+            .surface
+            .operations_for_test()
+            .insert_test_running_operation("existing", "storage", "storageDownloadToUrl", true);
 
         let value = bridge.call_module_value(
             INSPECTOR_MODULE,
@@ -714,12 +673,15 @@ mod tests {
     #[test]
     fn runtime_operation_start_rejects_second_storage_download() -> Result<()> {
         let bridge = InspectorBridge::new()?;
-        bridge.runtime_operations.insert_test_running_operation(
-            "storage-download-existing",
-            "storage",
-            "storageDownloadToUrl",
-            true,
-        );
+        bridge
+            .surface
+            .operations_for_test()
+            .insert_test_running_operation(
+                "storage-download-existing",
+                "storage",
+                "storageDownloadToUrl",
+                true,
+            );
 
         let result = bridge.call_module_value(
             INSPECTOR_MODULE,
@@ -786,7 +748,7 @@ mod tests {
         {
             bail!("unexpected error: {error:#}");
         }
-        let operations_len = bridge.runtime_operations.len()?;
+        let operations_len = bridge.surface.operations_for_test().len()?;
         if operations_len != 0 {
             bail!("expected operation registry cleanup, found {operations_len}",);
         }

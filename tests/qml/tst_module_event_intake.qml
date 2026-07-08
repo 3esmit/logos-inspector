@@ -2,6 +2,7 @@ import QtQuick
 import QtTest
 import "../../qml/services"
 import "../../qml/state"
+import "../../qml/state/modules/ModuleEventEnvelope.js" as ModuleEventEnvelope
 
 TestCase {
     id: testRoot
@@ -85,6 +86,18 @@ TestCase {
         compare(fakeHost.subscriptions[0].eventName, "messageSent")
         compare(fakeHost.subscriptions[fakeHost.subscriptions.length - 1].moduleName, model.blockchainModule)
         compare(fakeHost.subscriptions[fakeHost.subscriptions.length - 1].eventName, "newBlock")
+    }
+
+    function test_raw_module_event_builds_canonical_envelope() {
+        const envelope = ModuleEventEnvelope.fromRaw("delivery_module", "connectionStateChanged", [
+            JSON.stringify({ connectionStatus: "connected" })
+        ])
+
+        compare(envelope.moduleName, "delivery_module")
+        compare(envelope.eventName, "connectionStateChanged")
+        compare(envelope.args.length, 1)
+        compare(envelope.object.connectionStatus, "connected")
+        compare(envelope.payload.connectionStatus, "connected")
     }
 
     function test_host_swap_resubscribes_catalog() {

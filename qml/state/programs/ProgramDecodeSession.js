@@ -11,7 +11,7 @@ function autoDecodeAccountData(root, dataHex, accountId, ownerProgramId, callbac
             return serial
         }
 
-        root.resolveAccountDecodeSessionAsync(String(dataHex || ""), accountId, ProgramDecodeCandidates.programDecodeCandidatePayload(candidates), function (response) {
+        root.selectAccountDecodeSessionAsync(String(dataHex || ""), accountId, ownerProgramId, ProgramDecodeCandidates.programDecodeCandidatePayload(candidates), function (response) {
             if (serial !== accountAutoDecodeSerial) {
                 return
             }

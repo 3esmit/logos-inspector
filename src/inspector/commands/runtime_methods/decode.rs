@@ -7,8 +7,8 @@ use crate::{
     normalize_program_id_hex,
     program_decode::{
         ProgramDecodeCandidate,
-        resolve_account_decode_session as resolve_account_decode_session_report,
-        resolve_transaction_decode_session as resolve_transaction_decode_session_report,
+        select_account_decode_session as select_account_decode_session_report,
+        select_transaction_decode_session as select_transaction_decode_session_report,
         spel_idl_report,
     },
     program_file_info,
@@ -21,6 +21,11 @@ use super::RuntimeMethodEntry;
 pub(super) const METHOD_CATALOG: &[RuntimeMethodEntry] = &[
     RuntimeMethodEntry::sync("decodeTransactionSummary", decode_transaction_summary),
     RuntimeMethodEntry::sync("decodeAccount", decode_account),
+    RuntimeMethodEntry::sync("selectAccountDecodeSession", select_account_decode_session),
+    RuntimeMethodEntry::sync(
+        "selectTransactionDecodeSession",
+        select_transaction_decode_session,
+    ),
     RuntimeMethodEntry::sync(
         "resolveAccountDecodeSession",
         resolve_account_decode_session,
@@ -61,6 +66,10 @@ pub(super) fn decode_account(args: Value) -> Result<Value> {
 }
 
 pub(super) fn resolve_account_decode_session(args: Value) -> Result<Value> {
+    select_account_decode_session(args)
+}
+
+pub(super) fn select_account_decode_session(args: Value) -> Result<Value> {
     let args = Args::new(args)?;
     let candidates: Vec<ProgramDecodeCandidate> = serde_json::from_value(
         args.value(2)
@@ -68,14 +77,19 @@ pub(super) fn resolve_account_decode_session(args: Value) -> Result<Value> {
             .unwrap_or_else(|| Value::Array(Vec::new())),
     )
     .context("failed to parse decode candidates")?;
-    to_value(resolve_account_decode_session_report(
+    to_value(select_account_decode_session_report(
         args.optional_string(1),
+        args.optional_string(3),
         args.string(0, "account data hex")?,
         &candidates,
     ))
 }
 
 pub(super) fn resolve_transaction_decode_session(args: Value) -> Result<Value> {
+    select_transaction_decode_session(args)
+}
+
+pub(super) fn select_transaction_decode_session(args: Value) -> Result<Value> {
     let args = Args::new(args)?;
     let summary: TransactionSummary = serde_json::from_value(
         args.value(0)
@@ -89,7 +103,7 @@ pub(super) fn resolve_transaction_decode_session(args: Value) -> Result<Value> {
             .unwrap_or_else(|| Value::Array(Vec::new())),
     )
     .context("failed to parse decode candidates")?;
-    to_value(resolve_transaction_decode_session_report(
+    to_value(select_transaction_decode_session_report(
         &summary,
         &candidates,
     ))
