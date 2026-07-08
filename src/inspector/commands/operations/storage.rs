@@ -1,5 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use serde_json::Map;
+
 use anyhow::{Context as _, Result, bail};
 use reqwest::Method;
 use serde_json::{Value, json};
@@ -60,6 +62,79 @@ pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
         "Storage remove",
     ),
 ];
+
+pub(super) async fn execute(
+    request: &RuntimeOperationRequest,
+    registry: &RuntimeOperationRegistry,
+    operation_id: &str,
+    cancel_requested: &AtomicBool,
+) -> Result<Value> {
+    match request.method() {
+        OperationMethod::StorageManifests => execute_storage_manifests(request).await,
+        OperationMethod::StorageDownloadManifest => {
+            execute_storage_download_manifest(request).await
+        }
+        OperationMethod::StorageFetch => execute_storage_fetch(request).await,
+        OperationMethod::StorageUploadUrl => execute_storage_upload(request).await,
+        OperationMethod::StorageDownloadToUrl => {
+            execute_storage_download(request, registry, operation_id, cancel_requested).await
+        }
+        OperationMethod::StorageRemove => execute_storage_remove(request).await,
+        _ => bail!("`{}` is not a Storage operation", request.method_name()),
+    }
+}
+
+pub(super) fn add_operation_context(
+    request: &RuntimeOperationRequest,
+    context: &mut Map<String, Value>,
+) {
+    let Ok(args) = Args::new(request.args.clone()) else {
+        return;
+    };
+    let Ok(source) = storage_rest_source(&args) else {
+        return;
+    };
+    context.insert("endpoint".to_owned(), json!(source.endpoint));
+    match request.method() {
+        OperationMethod::StorageDownloadToUrl => {
+            if let Some(cid) = args.optional_string(source.next_index + 1) {
+                context.insert("cid".to_owned(), json!(cid));
+            }
+            if let Some(path) = args.optional_string(source.next_index + 2) {
+                context.insert("path".to_owned(), json!(path));
+            }
+            context.insert(
+                "source".to_owned(),
+                json!(if args.optional_bool(source.next_index + 3) {
+                    "local"
+                } else {
+                    "network"
+                }),
+            );
+        }
+        OperationMethod::StorageUploadUrl => {
+            if let Some(path) = args.optional_string(source.next_index + 1) {
+                context.insert("path".to_owned(), json!(path));
+            }
+        }
+        OperationMethod::StorageFetch | OperationMethod::StorageRemove => {
+            if let Some(cid) = args.optional_string(source.next_index + 1) {
+                context.insert("cid".to_owned(), json!(cid));
+            }
+        }
+        OperationMethod::StorageDownloadManifest => {
+            let cid_index = if matches!(args.value(source.next_index), Some(Value::Bool(_))) {
+                source.next_index + 1
+            } else {
+                source.next_index
+            };
+            if let Some(cid) = args.optional_string(cid_index) {
+                context.insert("cid".to_owned(), json!(cid));
+            }
+        }
+        _ => {}
+    }
+}
 
 pub(super) async fn execute_storage_manifests(request: &RuntimeOperationRequest) -> Result<Value> {
     let args = Args::new(request.args.clone())?;

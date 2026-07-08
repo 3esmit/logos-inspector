@@ -1,6 +1,6 @@
 .import "../../services/BridgeHelpers.js" as BridgeHelpers
-.import "SourceHealthProjection.js" as SourceHealthProjection
-.import "SourceRoutingUi.js" as SourceRoutingUi
+.import "../source_routing/SourceHealthProjection.js" as SourceHealthProjection
+.import "../source_routing/SourceRoutingUi.js" as SourceRoutingUi
 
 function refreshInterval(root, seconds) {
     with (root) {

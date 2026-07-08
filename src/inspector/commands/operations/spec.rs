@@ -1,4 +1,4 @@
-use super::{chain, delivery, local_nodes, storage, wallet};
+use super::{blockchain, delivery, lez, local_nodes, storage, wallet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OperationDomain {
@@ -151,7 +151,8 @@ const OPERATION_DEFINITION_SETS: &[&[OperationDefinition]] = &[
     delivery::OPERATION_DEFINITIONS,
     local_nodes::OPERATION_DEFINITIONS,
     wallet::OPERATION_DEFINITIONS,
-    chain::OPERATION_DEFINITIONS,
+    blockchain::OPERATION_DEFINITIONS,
+    lez::OPERATION_DEFINITIONS,
 ];
 
 fn operation_definitions() -> impl Iterator<Item = &'static OperationDefinition> {
@@ -276,6 +277,16 @@ mod tests {
                 "Transaction inspection",
             ),
             ("resolveLezTarget", OperationDomain::Execution, "LEZ lookup"),
+            (
+                "localWalletDeployProgram",
+                OperationDomain::Execution,
+                "Program deploy",
+            ),
+            (
+                "localWalletInstructionSubmit",
+                OperationDomain::Execution,
+                "IDL instruction",
+            ),
         ];
 
         for (name, domain, label) in cases {

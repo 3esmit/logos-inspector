@@ -36,7 +36,7 @@ TestCase {
         state.deliveryNodeStatus = ""
     }
 
-    function test_message_received_event_returns_comment_effect() {
+    function test_message_received_event_returns_delivery_message_effect() {
         const topic = "/lez/account/account-1/comments"
         const payload = {
             kind: "comment",
@@ -55,10 +55,10 @@ TestCase {
         ])
 
         verify(effect.changed)
-        verify(effect.incomingComment)
-        compare(effect.incomingComment.topic, topic)
-        compare(effect.incomingComment.messageHash, "hash-1")
-        compare(effect.incomingComment.payload.body, "hello")
+        verify(effect.deliveryMessage)
+        compare(effect.deliveryMessage.topic, topic)
+        compare(effect.deliveryMessage.messageHash, "hash-1")
+        compare(effect.deliveryMessage.payload, JSON.stringify(payload))
         compare(state.moduleEventRows()[0].label, "messageReceived")
         compare(state.moduleEventRows()[0].status, "event")
     }
@@ -73,7 +73,7 @@ TestCase {
 
         verify(effect.changed)
         verify(effect.refreshMessagingConnection)
-        verify(!effect.incomingComment)
+        verify(!effect.deliveryMessage)
         compare(state.moduleEventSummary(), "connected")
         compare(state.moduleEventRows()[0].label, "connectionStateChanged")
     }

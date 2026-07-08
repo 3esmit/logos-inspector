@@ -6,8 +6,8 @@ function handle(root, eventName, args) {
     if (effect.refreshMessagingConnection === true) {
         root.queryNetworkConnection("messaging", false)
     }
-    if (effect.incomingComment) {
-        root.applyIncomingSocialComment(effect.incomingComment)
+    if (effect.deliveryMessage) {
+        root.applyIncomingSocialMessage(effect.deliveryMessage)
     }
     return true
 }

@@ -1805,7 +1805,7 @@ mod tests {
     #[test]
     fn qml_fallback_catalog_tracks_rust_source_policy() -> Result<(), String> {
         let catalog_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("qml/state/network/SourcePolicyCatalog.generated.js");
+            .join("qml/state/source_routing/SourcePolicyCatalog.generated.js");
         let catalog = std::fs::read_to_string(catalog_path)
             .map_err(|error| format!("QML source policy catalog is readable: {error}"))?;
         let expected = generated_source_policy_catalog()

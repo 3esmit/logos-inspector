@@ -1,4 +1,4 @@
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use serde_json::Value;
 
 use crate::{LocalNodeActionRequest, local_nodes_action, source_routing::Args};
@@ -13,6 +13,16 @@ pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[OperationDefi
     OperationDomain::LocalNodes,
     "Local node action",
 )];
+
+pub(super) async fn execute(request: &RuntimeOperationRequest) -> Result<Value> {
+    match request.method() {
+        OperationMethod::LocalNodesAction => execute_local_nodes_action(request).await,
+        _ => bail!(
+            "`{}` is not a Local Operations operation",
+            request.method_name()
+        ),
+    }
+}
 
 pub(super) async fn execute_local_nodes_action(request: &RuntimeOperationRequest) -> Result<Value> {
     let args = Args::new(request.args.clone())?;

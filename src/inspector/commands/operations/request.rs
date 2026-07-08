@@ -1,11 +1,10 @@
 use anyhow::{Context as _, Result};
 use serde_json::{Value, json};
 
-use crate::source_routing::{
-    Args, SourceArgsNormalization, normalized_source_args, storage_rest_source,
-};
+use crate::source_routing::{SourceArgsNormalization, normalized_source_args};
 
 use super::spec::{OperationDomain, OperationExclusiveGroup, OperationMethod};
+use super::storage;
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct OperationSourceSelection {
@@ -165,50 +164,77 @@ pub(super) fn runtime_operation_backend(request: &RuntimeOperationRequest) -> St
 pub(super) fn runtime_operation_context(request: &RuntimeOperationRequest) -> Value {
     let mut context = serde_json::Map::new();
     request.source.add_context_fields(&mut context);
-    if request.domain == OperationDomain::Storage.as_str()
-        && let Ok(args) = Args::new(request.args.clone())
-        && let Ok(source) = storage_rest_source(&args)
-    {
-        context.insert("endpoint".to_owned(), json!(source.endpoint));
-        match request.method_name() {
-            "storageDownloadToUrl" => {
-                if let Some(cid) = args.optional_string(source.next_index + 1) {
-                    context.insert("cid".to_owned(), json!(cid));
-                }
-                if let Some(path) = args.optional_string(source.next_index + 2) {
-                    context.insert("path".to_owned(), json!(path));
-                }
-                context.insert(
-                    "source".to_owned(),
-                    json!(if args.optional_bool(source.next_index + 3) {
-                        "local"
-                    } else {
-                        "network"
-                    }),
-                );
-            }
-            "storageUploadUrl" => {
-                if let Some(path) = args.optional_string(source.next_index + 1) {
-                    context.insert("path".to_owned(), json!(path));
-                }
-            }
-            "storageFetch" | "storageRemove" => {
-                if let Some(cid) = args.optional_string(source.next_index + 1) {
-                    context.insert("cid".to_owned(), json!(cid));
-                }
-            }
-            "storageDownloadManifest" => {
-                let cid_index = if matches!(args.value(source.next_index), Some(Value::Bool(_))) {
-                    source.next_index + 1
-                } else {
-                    source.next_index
-                };
-                if let Some(cid) = args.optional_string(cid_index) {
-                    context.insert("cid".to_owned(), json!(cid));
-                }
-            }
-            _ => {}
-        }
+    if request.method.domain() == OperationDomain::Storage {
+        storage::add_operation_context(request, &mut context);
     }
     Value::Object(context)
+}
+
+#[cfg(test)]
+mod tests {
+    use anyhow::{Result, bail};
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn runtime_operation_request_normalizes_storage_source_and_context() -> Result<()> {
+        let request = runtime_operation_request_from_value(json!({
+            "domain": "storage",
+            "method": "storageDownloadToUrl",
+            "sourceMode": "rest",
+            "endpoint": "http://storage.local/api",
+            "mutatingEnabled": true,
+            "args": ["cid-a", "/tmp/cid-a.bin", false],
+            "label": "Download"
+        }))?;
+
+        if request.args
+            != json!([
+                "rest",
+                "http://storage.local/api",
+                true,
+                "cid-a",
+                "/tmp/cid-a.bin",
+                false
+            ])
+        {
+            bail!("unexpected normalized args: {:?}", request.args);
+        }
+        if runtime_operation_context(&request)
+            != json!({
+                "endpoint": "http://storage.local/api",
+                "source": "network",
+                "mutatingEnabled": true,
+                "cid": "cid-a",
+                "path": "/tmp/cid-a.bin"
+            })
+        {
+            bail!("unexpected runtime operation context");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_operation_context_keeps_non_storage_context_generic() -> Result<()> {
+        let request = runtime_operation_request_from_value(json!({
+            "domain": "delivery",
+            "method": "deliverySend",
+            "sourceMode": "rest",
+            "endpoint": "http://delivery.local",
+            "mutatingEnabled": true,
+            "args": ["/topic", "hello"]
+        }))?;
+
+        if runtime_operation_context(&request)
+            != json!({
+                "endpoint": "http://delivery.local",
+                "source": "rest",
+                "mutatingEnabled": true
+            })
+        {
+            bail!("unexpected delivery context");
+        }
+        Ok(())
+    }
 }

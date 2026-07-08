@@ -61,22 +61,6 @@ pub(crate) fn run_command(mut command: Command, policy: CommandRunPolicy<'_>) ->
     Ok(output)
 }
 
-pub(crate) fn spawn_detached(mut command: Command, label: &str) -> Result<u32> {
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt as _;
-        command.process_group(0);
-    }
-    let child = command
-        .spawn()
-        .with_context(|| format!("failed to start {label}"))?;
-    Ok(child.id())
-}
-
 pub(crate) fn process_message(output: &Output, redactions: &[&str], limit: usize) -> String {
     let message = if output.stderr.is_empty() {
         output_text(&output.stdout, redactions, limit)
