@@ -179,37 +179,11 @@ QtObject {
     }
 
     function statusText() {
-        const operation = active()
-        const status = String(operation && operation.status ? operation.status : "")
-        switch (status) {
-        case "running":
-            return String(operation && operation.label ? operation.label : qsTr("Running"))
-        case "canceling":
-            return qsTr("Canceling")
-        case "completed":
-            return qsTr("Complete")
-        case "failed":
-            return qsTr("Failed")
-        case "canceled":
-            return qsTr("Canceled")
-        default:
-            return qsTr("Idle")
-        }
+        return OperationHistoryVocabulary.runtimeStatusText(active(), defaultLabel)
     }
 
     function tone() {
-        const operation = active()
-        const status = String(operation && operation.status ? operation.status : "")
-        if (status === "completed") {
-            return "success"
-        }
-        if (status === "failed") {
-            return "error"
-        }
-        if (status === "running" || status === "canceling") {
-            return "warning"
-        }
-        return "neutral"
+        return OperationHistoryVocabulary.runtimeTone(active())
     }
 
     function appendOperation(label, response) {

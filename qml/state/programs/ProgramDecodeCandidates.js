@@ -146,7 +146,10 @@ function programDecodeCandidatePayload(candidates) {
             programIdHex: String(entry.programIdHex || entry.program_id_hex || ""),
             json: json,
             accountType: String(candidate.accountType || entry.accountType || entry.account_type || ""),
-            source: String(entry.source || "")
+            source: String(entry.source || ""),
+            cached: candidate.cached === true,
+            shared: candidate.shared === true || String(entry.source || "") === "shared",
+            ownerMatched: candidate.ownerMatched === true
         })
     }
     return rows

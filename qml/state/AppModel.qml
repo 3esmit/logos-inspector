@@ -65,14 +65,18 @@ QtObject {
     readonly property var storageSource: sourceRouting.storageSourceView()
     readonly property var deliverySource: sourceRouting.deliverySourceView()
 
-    property string currentView: "overview"
-    property string statusText: qsTr("Ready")
-    property bool busy: false
-    property string resultTitle: qsTr("Output")
-    property string resultText: ""
-    property var resultValue: null
-    property bool resultIsError: false
-    property string resultOwner: ""
+    property AppShellState shell: AppShellState {
+        id: appShellState
+        model: root
+    }
+    property alias currentView: appShellState.currentView
+    property alias statusText: appShellState.statusText
+    property alias busy: appShellState.busy
+    property alias resultTitle: appShellState.resultTitle
+    property alias resultText: appShellState.resultText
+    property alias resultValue: appShellState.resultValue
+    property alias resultIsError: appShellState.resultIsError
+    property alias resultOwner: appShellState.resultOwner
     property Domains.NetworkInspectionState chainPages: Domains.NetworkInspectionState {
         id: chainPageState
 
@@ -222,9 +226,9 @@ QtObject {
     property string indexerTab: "status"
     property string localWalletTab: "profiles"
     property string localWalletLookupTarget: ""
-    property string settingsSection: "general"
-    property string settingsNetworkSection: "blockchain"
-    property string settingsUiSection: "footer"
+    property alias settingsSection: appShellState.settingsSection
+    property alias settingsNetworkSection: appShellState.settingsNetworkSection
+    property alias settingsUiSection: appShellState.settingsUiSection
     property int blockchainRefreshRate: 30
     property int indexerRefreshRate: 30
     property int executionRefreshRate: 30
@@ -549,13 +553,13 @@ QtObject {
     property alias transactionAutoDecodeSerial: programDecodeState.transactionAutoDecodeSerial
     property alias searchResolveSerial: programDecodeState.searchResolveSerial
     property alias programOpenSerial: programDecodeState.programOpenSerial
-    property var navExpanded: ({ l1: true, l2: true, network: true, diagnostics: false, local: true, system: true })
-    property int navRevision: 0
-    property var navigationBackStack: []
-    property var navigationForwardStack: []
-    property int navigationRevision: 0
-    property bool navigationRestoring: false
-    readonly property int navigationHistoryLimit: 80
+    property alias navExpanded: appShellState.navExpanded
+    property alias navRevision: appShellState.navRevision
+    property alias navigationBackStack: appShellState.navigationBackStack
+    property alias navigationForwardStack: appShellState.navigationForwardStack
+    property alias navigationRevision: appShellState.navigationRevision
+    property alias navigationRestoring: appShellState.navigationRestoring
+    readonly property alias navigationHistoryLimit: appShellState.navigationHistoryLimit
     property EntityNavigationSession entityNavigation: EntityNavigationSession {
         id: entityNavigationState
         model: root
@@ -613,61 +617,61 @@ QtObject {
 
     function handleStorageConfigurationChanged() { return AppModelCore.handleStorageConfigurationChanged(root) }
 
-    function navTreeItems() { return AppModelCore.navTreeItems(root) }
+    function navTreeItems() { return appShellState.navTreeItems() }
 
-    function navRows() { return AppModelCore.navRows(root) }
+    function navRows() { return appShellState.navRows() }
 
-    function navGroupExpanded(key) { return AppModelCore.navGroupExpanded(root, key) }
+    function navGroupExpanded(key) { return appShellState.navGroupExpanded(key) }
 
-    function toggleNavGroup(key) { return AppModelCore.toggleNavGroup(root, key) }
+    function toggleNavGroup(key) { return appShellState.toggleNavGroup(key) }
 
-    function expandNavGroupForView(view) { return AppModelCore.expandNavGroupForView(root, view) }
+    function expandNavGroupForView(view) { return appShellState.expandNavGroupForView(view) }
 
-    function parentNavKeyForView(view) { return AppModelCore.parentNavKeyForView(root, view) }
+    function parentNavKeyForView(view) { return appShellState.parentNavKeyForView(view) }
 
-    function navItemForView(view) { return AppModelCore.navItemForView(root, view) }
+    function navItemForView(view) { return appShellState.navItemForView(view) }
 
-    function layerForView(view) { return AppModelCore.layerForView(root, view) }
+    function layerForView(view) { return appShellState.layerForView(view) }
 
-    function navLabelForView(view) { return AppModelCore.navLabelForView(root, view) }
+    function navLabelForView(view) { return appShellState.navLabelForView(view) }
 
-    function navTokenForView(view) { return AppModelCore.navTokenForView(root, view) }
+    function navTokenForView(view) { return appShellState.navTokenForView(view) }
 
-    function navItemForQuery(query) { return AppModelCore.navItemForQuery(root, query) }
+    function navItemForQuery(query) { return appShellState.navItemForQuery(query) }
 
-    function navItemMatches(item, normalized) { return AppModelCore.navItemMatches(root, item, normalized) }
+    function navItemMatches(item, normalized) { return appShellState.navItemMatches(item, normalized) }
 
-    function viewTitle() { return AppModelCore.viewTitle(root) }
+    function viewTitle() { return appShellState.viewTitle() }
 
-    function normalizedNavigationView(view) { return AppModelCore.normalizedNavigationView(root, view) }
+    function normalizedNavigationView(view) { return appShellState.normalizedNavigationView(view) }
 
-    function navigationSnapshot() { return AppModelCore.navigationSnapshot(root) }
+    function navigationSnapshot() { return appShellState.navigationSnapshot() }
 
-    function pushNavigationHistory() { return AppModelCore.pushNavigationHistory(root) }
+    function pushNavigationHistory() { return appShellState.pushNavigationHistory() }
 
-    function restoreNavigationSnapshot(snapshot) { return AppModelCore.restoreNavigationSnapshot(root, snapshot) }
+    function restoreNavigationSnapshot(snapshot) { return appShellState.restoreNavigationSnapshot(snapshot) }
 
-    function canNavigateBack() { return AppModelCore.canNavigateBack(root) }
+    function canNavigateBack() { return appShellState.canNavigateBack() }
 
-    function canNavigateForward() { return AppModelCore.canNavigateForward(root) }
+    function canNavigateForward() { return appShellState.canNavigateForward() }
 
-    function navigateBack() { return AppModelCore.navigateBack(root) }
+    function navigateBack() { return appShellState.navigateBack() }
 
-    function navigateForward() { return AppModelCore.navigateForward(root) }
+    function navigateForward() { return appShellState.navigateForward() }
 
-    function navigationBackLabel() { return AppModelCore.navigationBackLabel(root) }
+    function navigationBackLabel() { return appShellState.navigationBackLabel() }
 
-    function navigationForwardLabel() { return AppModelCore.navigationForwardLabel(root) }
+    function navigationForwardLabel() { return appShellState.navigationForwardLabel() }
 
-    function selectView(view, recordHistory) { return AppModelCore.selectView(root, view, recordHistory) }
+    function selectView(view, recordHistory) { return appShellState.selectView(view, recordHistory) }
 
-    function openSettings(section, subsection, recordHistory) { return AppModelCore.openSettings(root, section, subsection, recordHistory) }
+    function openSettings(section, subsection, recordHistory) { return appShellState.openSettings(section, subsection, recordHistory) }
 
-    function clearResult() { return AppModelCore.clearResult(root) }
+    function clearResult() { return appShellState.clearResult() }
 
-    function setResult(title, text, isError, value, owner) { return AppModelCore.setResult(root, title, text, isError, value, owner) }
+    function setResult(title, text, isError, value, owner) { return appShellState.setResult(title, text, isError, value, owner) }
 
-    function pageHasOutput(view) { return AppModelCore.pageHasOutput(root, view) }
+    function pageHasOutput(view) { return appShellState.pageHasOutput(view) }
 
     function callInspector(method, args, label) { return AppModelCore.callInspector(root, method, args, label) }
 
@@ -747,7 +751,11 @@ QtObject {
 
     function resolveAccountDecodeSessionAsync(dataHex, accountId, candidates, callback) { return AppModelCore.resolveAccountDecodeSessionAsync(root, dataHex, accountId, candidates, callback) }
 
+    function selectAccountDecodeSessionAsync(dataHex, accountId, ownerProgramId, candidates, callback) { return AppModelCore.selectAccountDecodeSessionAsync(root, dataHex, accountId, ownerProgramId, candidates, callback) }
+
     function resolveTransactionDecodeSessionAsync(summary, candidates, callback) { return AppModelCore.resolveTransactionDecodeSessionAsync(root, summary, candidates, callback) }
+
+    function selectTransactionDecodeSessionAsync(summary, candidates, callback) { return AppModelCore.selectTransactionDecodeSessionAsync(root, summary, candidates, callback) }
 
     function loadIdlState() {
         const response = bridge.callModule(inspectorModule, "loadIdlState", [])

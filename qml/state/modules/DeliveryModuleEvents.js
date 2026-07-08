@@ -1,5 +1,5 @@
-function handle(root, eventName, args) {
-    const effect = root.deliveryApp.applyModuleEvent(eventName, args)
+function handle(root, event) {
+    const effect = root.deliveryApp.applyModuleEvent(event.eventName, event)
     if (!effect || effect.changed !== true) {
         return false
     }

@@ -1,6 +1,7 @@
 .import "../storage/StorageOperationContracts.js" as StorageOperationContracts
 .import "BlockchainModuleEvents.js" as BlockchainModuleEvents
 .import "DeliveryModuleEvents.js" as DeliveryModuleEvents
+.import "ModuleEventEnvelope.js" as ModuleEventEnvelope
 .import "StorageModuleEvents.js" as StorageModuleEvents
 
 function subscriptionCatalog(model) {
@@ -34,19 +35,23 @@ function subscriptionCatalog(model) {
 }
 
 function project(model, moduleName, eventName, args) {
+    return projectEnvelope(model, ModuleEventEnvelope.fromRaw(moduleName, eventName, args))
+}
+
+function projectEnvelope(model, event) {
     if (!model) {
         return false
     }
-    const moduleText = String(moduleName || "")
-    const eventText = String(eventName || "")
+    const moduleText = String(event && event.moduleName ? event.moduleName : "")
+    const eventText = String(event && event.eventName ? event.eventName : "")
     if (moduleText === model.deliveryModule) {
-        return DeliveryModuleEvents.handle(model, eventText, args)
+        return DeliveryModuleEvents.handle(model, event)
     }
     if (moduleText === model.storageModule) {
-        return StorageModuleEvents.handle(model, eventText, args)
+        return StorageModuleEvents.handle(model, event)
     }
     if (moduleText === model.blockchainModule && eventText === "newBlock") {
-        return BlockchainModuleEvents.handleNewBlock(model, args)
+        return BlockchainModuleEvents.handleNewBlock(model, event)
     }
     return false
 }

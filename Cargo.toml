@@ -35,6 +35,11 @@ tokio = "1"
 default = ["cli"]
 cli = ["dep:clap"]
 
+[[bin]]
+name = "logos-inspector"
+path = "src/main.rs"
+required-features = ["cli"]
+
 [dependencies]
 anyhow = { workspace = true }
 base64 = "0.22"

@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use serde_json::{Value, json};
 use tokio::runtime::Runtime;
 
@@ -6,12 +6,96 @@ use super::commands::{
     operations::{OperationBridgeCommand, RuntimeOperationInterface, operation_bridge_command},
     runtime_methods::{self, RuntimeMethodEntry},
 };
-use crate::source_routing::Args;
+use super::value::to_value;
+use crate::{modules::logos_core, source_routing::Args};
 
-pub(crate) struct DispatchContext<'a> {
-    pub(crate) runtime: &'a Runtime,
-    pub(crate) operations: &'a RuntimeOperationInterface,
-    pub(crate) call_core_module: &'a dyn Fn(&str, &str, Value) -> Result<Value>,
+pub(crate) const INSPECTOR_MODULE: &str = "logos_inspector";
+
+pub(crate) trait CoreModuleCaller {
+    fn call(&self, module: &str, method: &str, args: Value) -> Result<Value>;
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct LogosCoreModuleCaller;
+
+impl CoreModuleCaller for LogosCoreModuleCaller {
+    fn call(&self, module: &str, method: &str, args: Value) -> Result<Value> {
+        let args = Args::new(args)?
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(ToOwned::to_owned)
+                    .unwrap_or_else(|| value.to_string())
+            })
+            .collect::<Vec<_>>();
+        to_value(logos_core::call(module, method, &args)?)
+    }
+}
+
+pub(crate) struct InspectorCommandSurface<C = LogosCoreModuleCaller> {
+    runtime: Runtime,
+    operations: RuntimeOperationInterface,
+    core_modules: C,
+}
+
+impl InspectorCommandSurface<LogosCoreModuleCaller> {
+    pub(crate) fn new() -> Result<Self> {
+        Self::with_core_modules(LogosCoreModuleCaller)
+    }
+}
+
+impl<C> InspectorCommandSurface<C>
+where
+    C: CoreModuleCaller,
+{
+    pub(crate) fn with_core_modules(core_modules: C) -> Result<Self> {
+        Ok(Self {
+            runtime: Runtime::new().context("failed to create tokio runtime")?,
+            operations: RuntimeOperationInterface::default(),
+            core_modules,
+        })
+    }
+
+    pub(crate) fn call_module(&self, module: &str, method: &str, args: Value) -> Result<Value> {
+        if module == INSPECTOR_MODULE {
+            self.call_inspector(method, args)
+        } else {
+            self.core_modules.call(module, method, args)
+        }
+    }
+
+    pub(crate) fn call_inspector(&self, method: &str, args: Value) -> Result<Value> {
+        self.dispatch_inspector(method, args)?
+            .with_context(|| format!("unknown inspector method `{method}`"))
+    }
+
+    fn dispatch_inspector(&self, method: &str, args: Value) -> Result<Option<Value>> {
+        let Some(command) = inspector_command(method) else {
+            return Ok(None);
+        };
+        match command {
+            InspectorCommand::Operation(command) => self
+                .operations
+                .bridge_call(&self.runtime, command, &args)
+                .map(Some),
+            InspectorCommand::Runtime(method) => {
+                runtime_methods::handle(&self.runtime, method, args).map(Some)
+            }
+            InspectorCommand::CallModule => {
+                let args = Args::new(args)?;
+                let module = args.string(0, "module name")?;
+                let method = args.string(1, "method name")?;
+                let call_args = args.value(2).cloned().unwrap_or_else(|| json!([]));
+                self.core_modules.call(module, method, call_args).map(Some)
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn operations_for_test(&self) -> &RuntimeOperationInterface {
+        &self.operations
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,32 +103,6 @@ enum InspectorCommand {
     Operation(OperationBridgeCommand),
     Runtime(&'static RuntimeMethodEntry),
     CallModule,
-}
-
-pub(crate) fn dispatch_inspector_command(
-    context: &DispatchContext<'_>,
-    method: &str,
-    args: Value,
-) -> Result<Option<Value>> {
-    let Some(command) = inspector_command(method) else {
-        return Ok(None);
-    };
-    match command {
-        InspectorCommand::Operation(command) => context
-            .operations
-            .bridge_call(context.runtime, command, &args)
-            .map(Some),
-        InspectorCommand::Runtime(method) => {
-            runtime_methods::handle(context.runtime, method, args).map(Some)
-        }
-        InspectorCommand::CallModule => {
-            let args = Args::new(args)?;
-            let module = args.string(0, "module name")?;
-            let method = args.string(1, "method name")?;
-            let call_args = args.value(2).cloned().unwrap_or_else(|| json!([]));
-            (context.call_core_module)(module, method, call_args).map(Some)
-        }
-    }
 }
 
 fn inspector_command(method: &str) -> Option<InspectorCommand> {
@@ -66,10 +124,22 @@ mod tests {
 
     use anyhow::{Context as _, Result, bail};
     use serde_json::json;
-    use tokio::runtime::Runtime;
 
     use super::*;
     use crate::inspector::commands::{operations, runtime_methods};
+
+    #[derive(Debug, Default)]
+    struct FakeCoreModules;
+
+    impl CoreModuleCaller for FakeCoreModules {
+        fn call(&self, module: &str, method: &str, args: Value) -> Result<Value> {
+            Ok(json!({
+                "module": module,
+                "method": method,
+                "args": args,
+            }))
+        }
+    }
 
     #[test]
     fn surface_owns_operation_names() -> Result<()> {
@@ -111,27 +181,11 @@ mod tests {
 
     #[test]
     fn surface_dispatches_call_module_special() -> Result<()> {
-        let runtime = Runtime::new().context("runtime")?;
-        let operations = RuntimeOperationInterface::default();
-        let call_core_module = |module: &str, method: &str, args: Value| {
-            Ok(json!({
-                "module": module,
-                "method": method,
-                "args": args,
-            }))
-        };
-        let context = DispatchContext {
-            runtime: &runtime,
-            operations: &operations,
-            call_core_module: &call_core_module,
-        };
+        let surface =
+            InspectorCommandSurface::with_core_modules(FakeCoreModules).context("surface")?;
 
-        let value = dispatch_inspector_command(
-            &context,
-            "callModule",
-            json!(["module_a", "method_b", ["arg"]]),
-        )?
-        .context("callModule should dispatch")?;
+        let value =
+            surface.call_inspector("callModule", json!(["module_a", "method_b", ["arg"]]))?;
 
         if value
             != json!({
@@ -146,18 +200,38 @@ mod tests {
     }
 
     #[test]
-    fn surface_reports_unknown_methods_as_none() -> Result<()> {
-        let runtime = Runtime::new().context("runtime")?;
-        let operations = RuntimeOperationInterface::default();
-        let call_core_module = |_: &str, _: &str, _: Value| unreachable!();
-        let context = DispatchContext {
-            runtime: &runtime,
-            operations: &operations,
-            call_core_module: &call_core_module,
-        };
+    fn surface_dispatches_non_inspector_modules_to_core_adapter() -> Result<()> {
+        let surface =
+            InspectorCommandSurface::with_core_modules(FakeCoreModules).context("surface")?;
 
-        if dispatch_inspector_command(&context, "missingMethod", json!([]))?.is_some() {
-            bail!("unknown method should not dispatch");
+        let value = surface.call_module("other_module", "method_c", json!(["arg"]))?;
+
+        if value
+            != json!({
+                "module": "other_module",
+                "method": "method_c",
+                "args": ["arg"],
+            })
+        {
+            bail!("unexpected module dispatch value: {value}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn surface_reports_unknown_methods() -> Result<()> {
+        let surface =
+            InspectorCommandSurface::with_core_modules(FakeCoreModules).context("surface")?;
+
+        let result = surface.call_inspector("missingMethod", json!([]));
+        let Err(error) = result else {
+            bail!("unknown method should fail");
+        };
+        if !error
+            .to_string()
+            .contains("unknown inspector method `missingMethod`")
+        {
+            bail!("unexpected error: {error:#}");
         }
         Ok(())
     }

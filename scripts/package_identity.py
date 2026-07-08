@@ -13,6 +13,15 @@ PACKAGE_MANIFESTS = (
     Path("crates/core-ffi/Cargo.toml"),
     Path("crates/standalone-gui/Cargo.toml"),
 )
+PACKAGE_NAMES = {
+    Path("Cargo.toml"): "logos-inspector",
+    Path("crates/core-ffi/Cargo.toml"): "logos-inspector-core-ffi",
+    Path("crates/standalone-gui/Cargo.toml"): "logos-inspector-standalone-gui",
+}
+CORE_MODULE_NAME = "logos_inspector"
+UI_MODULE_NAME = "logos_inspector_ui"
+CORE_FFI_LIB_NAME = "logos_inspector_core"
+STANDALONE_PACKAGE_NAME = "logos-inspector-standalone-gui"
 CORE_FFI_HEADER = Path("crates/core-ffi/include/logos_inspector_core.h")
 LEGACY_CORE_HEADER = Path("core/lib/logos_inspector_core.h")
 
@@ -35,8 +44,10 @@ class PackageIdentity:
                 errors.append(f"Cargo.toml missing [workspace.package].{key}")
 
         errors.extend(self.package_manifest_errors(workspace_package))
+        errors.extend(self.package_identity_errors())
         errors.extend(self.metadata_errors(version))
         errors.extend(self.header_errors())
+        errors.extend(self.launch_errors())
         return errors
 
     def package_manifest_errors(self, workspace_package: dict[str, Any]) -> list[str]:
@@ -53,10 +64,28 @@ class PackageIdentity:
                     errors.append(f"{manifest}: package.{key} drifted from workspace value")
         return errors
 
+    def package_identity_errors(self) -> list[str]:
+        errors: list[str] = []
+        for manifest, expected in PACKAGE_NAMES.items():
+            package = self.load_toml(manifest).get("package", {})
+            if package.get("name") != expected:
+                errors.append(f"{manifest}: package.name must be {expected}")
+
+        core_ffi = self.load_toml(Path("crates/core-ffi/Cargo.toml"))
+        if core_ffi.get("lib", {}).get("name") != CORE_FFI_LIB_NAME:
+            errors.append(
+                "crates/core-ffi/Cargo.toml: lib.name must be logos_inspector_core"
+            )
+        return errors
+
     def metadata_errors(self, version: str) -> list[str]:
         errors: list[str] = []
         ui_metadata = self.load_json(Path("metadata.json"))
         core_metadata = self.load_json(Path("core/metadata.json"))
+        if ui_metadata.get("name") != UI_MODULE_NAME:
+            errors.append("metadata.json name must be logos_inspector_ui")
+        if core_metadata.get("name") != CORE_MODULE_NAME:
+            errors.append("core/metadata.json name must be logos_inspector")
         if ui_metadata.get("version") != version:
             errors.append("metadata.json version must match Cargo workspace version")
         if core_metadata.get("version") != version:
@@ -73,7 +102,7 @@ class PackageIdentity:
             for item in external_libraries
             if isinstance(item, dict)
         ]
-        if "logos_inspector_core" not in external_names:
+        if CORE_FFI_LIB_NAME not in external_names:
             errors.append("core/metadata.json must declare logos_inspector_core external library")
         return errors
 
@@ -85,6 +114,45 @@ class PackageIdentity:
             errors.append("FFI header must not live under core/lib")
         return errors
 
+    def launch_errors(self) -> list[str]:
+        checks = (
+            (
+                Path("src/gui/planner.rs"),
+                STANDALONE_PACKAGE_NAME,
+                "src/gui/planner.rs must launch the standalone GUI binary",
+            ),
+            (
+                Path("src/gui/planner.rs"),
+                "#standalone",
+                "src/gui/planner.rs must fall back to the standalone flake app",
+            ),
+            (
+                Path("crates/standalone-gui/build.rs"),
+                f"cargo:rustc-link-arg-bin={STANDALONE_PACKAGE_NAME}",
+                "standalone build script must target the standalone binary",
+            ),
+            (
+                Path("scripts/gui-visual-action-smoke.sh"),
+                f"cargo run -p {STANDALONE_PACKAGE_NAME}",
+                "GUI smoke script must run the standalone GUI package",
+            ),
+            (
+                Path("flake.nix"),
+                f'meta.mainProgram = "{STANDALONE_PACKAGE_NAME}"',
+                "flake.nix must expose the standalone GUI main program",
+            ),
+            (
+                Path("flake.nix"),
+                f"/bin/{STANDALONE_PACKAGE_NAME}",
+                "flake.nix apps must launch the standalone GUI binary",
+            ),
+        )
+        errors: list[str] = []
+        for relative, needle, message in checks:
+            if needle not in self.read_text(relative):
+                errors.append(message)
+        return errors
+
     def load_toml(self, relative: Path) -> dict[str, Any]:
         with self.path(relative).open("rb") as handle:
             return tomllib.load(handle)
@@ -92,6 +160,9 @@ class PackageIdentity:
     def load_json(self, relative: Path) -> dict[str, Any]:
         with self.path(relative).open("r", encoding="utf-8") as handle:
             return json.load(handle)
+
+    def read_text(self, relative: Path) -> str:
+        return self.path(relative).read_text(encoding="utf-8")
 
     def path(self, relative: Path) -> Path:
         return self.root / relative

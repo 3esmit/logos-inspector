@@ -21,6 +21,12 @@ pub struct ProgramDecodeCandidate {
     pub account_type: Option<String>,
     #[serde(default)]
     pub source: Option<String>,
+    #[serde(default)]
+    pub cached: bool,
+    #[serde(default)]
+    pub shared: bool,
+    #[serde(default, alias = "owner_matched")]
+    pub owner_matched: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -254,6 +260,9 @@ mod tests {
             json: json.to_owned(),
             account_type: None,
             source: None,
+            cached: false,
+            shared: false,
+            owner_matched: false,
         }
     }
 

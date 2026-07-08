@@ -3,6 +3,39 @@ function isRuntimeTerminalStatus(status) {
     return value === "completed" || value === "failed" || value === "canceled"
 }
 
+function runtimeStatusText(operation, defaultLabel) {
+    const value = operation || {}
+    const status = String(value.status || "")
+    switch (status) {
+    case "running":
+        return String(value.label || defaultLabel || qsTr("Running"))
+    case "canceling":
+        return qsTr("Canceling")
+    case "completed":
+        return qsTr("Complete")
+    case "failed":
+        return qsTr("Failed")
+    case "canceled":
+        return qsTr("Canceled")
+    default:
+        return qsTr("Idle")
+    }
+}
+
+function runtimeTone(operation) {
+    const status = String(operation && operation.status ? operation.status : "")
+    if (status === "completed") {
+        return "success"
+    }
+    if (status === "failed") {
+        return "error"
+    }
+    if (status === "running" || status === "canceling") {
+        return "warning"
+    }
+    return "neutral"
+}
+
 function syntheticHistoryStatus(status) {
     const value = String(status || "").toLowerCase()
     if (value === "down" || value === "failed" || value === "error") {

@@ -2,13 +2,12 @@ use serde::Serialize;
 
 use crate::ProbeReport;
 
-use crate::source_routing::{
-    DeliverySourceReportKind, SourceCapabilityFact, SourceFacts, SourceHealthFacts,
-    SourceProbeFact, SourceProbeKey, StorageSourceReportKind,
-};
+use crate::source_routing::{DeliverySourceReportKind, SourceProbeKey, StorageSourceReportKind};
 
 use super::evidence::SourceEvidence;
-use super::facts::source_facts_for_report;
+use super::facts::{
+    SourceCapabilityFact, SourceFacts, SourceHealthFacts, SourceProbeFact, source_facts_for_report,
+};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SourceReport {

@@ -1,6 +1,9 @@
 use serde::Serialize;
 use serde_json::Value;
 
+use super::shared::{
+    SourceCapabilityFact, SourceFacts, SourceHealthFacts, SourceHealthStatus, SourceProbeFact,
+};
 use super::{NetworkProfile, network_profiles};
 use crate::ProbeReport;
 
@@ -431,85 +434,6 @@ impl SourcePolicyCatalog {
             .iter()
             .find(|mode| mode.key == fallback_source_mode_key(family))
             .unwrap_or_else(|| fallback_source_mode(family))
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct SourceFacts {
-    pub health: SourceHealthFacts,
-    pub probe_facts: Vec<SourceProbeFact>,
-    pub capability_facts: Vec<SourceCapabilityFact>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct SourceProbeFact {
-    pub key: String,
-    pub label: String,
-    pub source: String,
-    pub ok: bool,
-    pub evidence: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub value: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct SourceHealthFacts {
-    pub reachable: bool,
-    pub ready: bool,
-    pub status: SourceHealthStatus,
-    pub summary: String,
-    pub detail: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SourceHealthStatus {
-    Healthy,
-    Degraded,
-    Unavailable,
-    Unsupported,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct SourceCapabilityFact {
-    pub key: String,
-    pub label: String,
-    pub available: bool,
-    pub evidence: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub value: Option<Value>,
-}
-
-impl SourceCapabilityFact {
-    fn available(
-        key: impl Into<String>,
-        label: impl Into<String>,
-        evidence: impl Into<String>,
-        value: Option<Value>,
-    ) -> Self {
-        Self {
-            key: key.into(),
-            label: label.into(),
-            available: true,
-            evidence: evidence.into(),
-            value,
-        }
-    }
-
-    fn unavailable(
-        key: impl Into<String>,
-        label: impl Into<String>,
-        evidence: impl Into<String>,
-    ) -> Self {
-        Self {
-            key: key.into(),
-            label: label.into(),
-            available: false,
-            evidence: evidence.into(),
-            value: None,
-        }
     }
 }
 

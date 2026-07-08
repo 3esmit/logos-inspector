@@ -151,5 +151,8 @@ fn program_decode_candidate_from_registered_entry(
         json: entry.json.clone(),
         account_type: None,
         source: entry.source.clone(),
+        cached: false,
+        shared: entry.source.as_deref() == Some("shared"),
+        owner_matched: false,
     }
 }

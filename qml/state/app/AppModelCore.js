@@ -817,11 +817,15 @@ function decodeTransactionSummaryAsync(root, summary, idlJson, callback) {
 }
 
 function resolveAccountDecodeSessionAsync(root, dataHex, accountId, candidates, callback) {
+    return selectAccountDecodeSessionAsync(root, dataHex, accountId, "", candidates, callback)
+}
+
+function selectAccountDecodeSessionAsync(root, dataHex, accountId, ownerProgramId, candidates, callback) {
     with (root) {
         return requestModuleAsync(
             inspectorModule,
-            "resolveAccountDecodeSession",
-            [String(dataHex || ""), String(accountId || ""), Array.isArray(candidates) ? candidates : []],
+            "selectAccountDecodeSession",
+            [String(dataHex || ""), String(accountId || ""), Array.isArray(candidates) ? candidates : [], String(ownerProgramId || "")],
             qsTr("Account decode"),
             false,
             callback
@@ -830,10 +834,14 @@ function resolveAccountDecodeSessionAsync(root, dataHex, accountId, candidates, 
 }
 
 function resolveTransactionDecodeSessionAsync(root, summary, candidates, callback) {
+    return selectTransactionDecodeSessionAsync(root, summary, candidates, callback)
+}
+
+function selectTransactionDecodeSessionAsync(root, summary, candidates, callback) {
     with (root) {
         return requestModuleAsync(
             inspectorModule,
-            "resolveTransactionDecodeSession",
+            "selectTransactionDecodeSession",
             [summary || {}, Array.isArray(candidates) ? candidates : []],
             qsTr("Transaction decode"),
             false,
