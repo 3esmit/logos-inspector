@@ -1,6 +1,7 @@
 use anyhow::Result;
 
 mod action_engine;
+mod action_workspace;
 mod commands;
 mod local_indexer;
 mod model;
@@ -42,8 +43,8 @@ mod tests {
     use std::{env, fs, path::Path};
 
     use super::{
-        action_engine, commands::command_spec_for, model::LocalNodesState, paths::path_is_inside,
-        workflow,
+        action_engine, action_workspace, commands::command_spec_for, model::LocalNodesState,
+        paths::path_is_inside, workflow,
     };
     use crate::support::time::now_millis;
 
@@ -275,6 +276,53 @@ mod tests {
         let loaded = store.load()?;
         if loaded.active_devnet.as_deref() != Some("devnet-a") {
             bail!("local node state did not round trip");
+        }
+        fs::remove_dir_all(&config)
+            .with_context(|| format!("failed to remove {}", config.display()))?;
+        Ok(())
+    }
+
+    #[test]
+    fn action_workspace_creates_local_devnet_manifest() -> Result<()> {
+        let config = env::temp_dir().join(format!(
+            "logos-inspector-local-nodes-action-{}",
+            now_millis()
+        ));
+        if config.exists() {
+            fs::remove_dir_all(&config)
+                .with_context(|| format!("failed to clear {}", config.display()))?;
+        }
+        let mut state = LocalNodesState::default_for_config_dir(&config);
+        let request = LocalNodeActionRequest {
+            action: NodeAction::NewNetwork,
+            node: None,
+            network_id: Some("Demo Net".to_owned()),
+            workspace_path: None,
+            label: Some("Demo Net".to_owned()),
+        };
+
+        let operation = action_workspace::LocalNodeActionWorkspace::system()
+            .apply(&mut state, "local", &request);
+
+        if operation.status != "created" {
+            bail!("unexpected operation status: {}", operation.status);
+        }
+        if state.active_devnet.as_deref() != Some("demo-net") {
+            bail!("unexpected active devnet: {:?}", state.active_devnet);
+        }
+        let Some(record) = state.active_devnet() else {
+            bail!("created devnet was not active");
+        };
+        if record.nodes.is_empty() {
+            bail!("created devnet has no node configs");
+        }
+        if !Path::new(&record.manifest_path).is_file() {
+            bail!("manifest was not written: {}", record.manifest_path);
+        }
+        let manifest = fs::read_to_string(&record.manifest_path)
+            .with_context(|| format!("failed to read {}", record.manifest_path))?;
+        if !manifest.contains("\"id\": \"demo-net\"") {
+            bail!("manifest did not contain sanitized devnet id: {manifest}");
         }
         fs::remove_dir_all(&config)
             .with_context(|| format!("failed to remove {}", config.display()))?;

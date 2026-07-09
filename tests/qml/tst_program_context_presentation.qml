@@ -1,12 +1,18 @@
 import QtQuick
 import QtTest
 import "../../qml/state/programs/ProgramContextPresentation.js" as ProgramContextPresentation
+import "../../qml/state/programs/ProgramResultPresentation.js" as ProgramResultPresentation
 
 TestCase {
     name: "ProgramContextPresentation"
 
     QtObject {
         id: page
+
+        property var model: programModel
+        property bool hasResponse: true
+        property var responseValue: null
+        property var theme: ({ textMuted: "muted", warning: "warning", success: "success" })
 
         function idlFieldCount(text) {
             const value = JSON.parse(String(text || "{}"))
@@ -28,6 +34,23 @@ TestCase {
 
         function valueText(value) {
             return value === undefined || value === null || value === "" ? "-" : String(value)
+        }
+    }
+
+    QtObject {
+        id: programModel
+
+        property string programTab: "programIds"
+        property bool resultIsError: false
+        property string resultTitle: "Program IDs"
+        property string sharedIdlPolicy: "preferLocal"
+
+        function canonicalProgramIdHex(value) {
+            return String(value || "").length ? "0xabc" : ""
+        }
+
+        function idlEntriesForProgram(programId) {
+            return String(programId || "") === "0xabc" ? [{ name: "Demo" }] : []
         }
     }
 
@@ -94,5 +117,36 @@ TestCase {
         compare(rows[1].linkKind, "")
         compare(rows[2].value, "0xabcdef")
         compare(rows[rows.length - 1].value, "rpc unavailable")
+    }
+
+    function test_program_result_presentation_wraps_tab_and_result_state() {
+        programModel.programTab = "binaries"
+        page.hasResponse = false
+
+        compare(ProgramResultPresentation.activeTabLabel(page), "Binaries")
+        compare(ProgramResultPresentation.activeTabDelta(page), "File inspection")
+        compare(ProgramResultPresentation.lastResultText(page), "Idle")
+        compare(ProgramResultPresentation.lastResultColor(page), "muted")
+        verify(ProgramResultPresentation.validProgramId(page, "program"))
+    }
+
+    function test_program_result_presentation_projects_rows() {
+        page.responseValue = [
+            { label: "Known", hex: "0xabc", base58: "Base58" }
+        ]
+        compare(ProgramResultPresentation.programTableRows(page)[0].knownIdl, "Demo")
+
+        page.responseValue = {
+            program_id_hex: "0xabc",
+            program_id_base58: "Base58",
+            deployment_tx_hash: "0x1111",
+            path: "/tmp/program.bin",
+            bytecode_len: 9
+        }
+        const rows = ProgramResultPresentation.programFileRows(page)
+        compare(rows.length, 5)
+        compare(rows[2].linkKind, "program")
+        compare(ProgramResultPresentation.responseProgramText(page), "0xabc")
+        compare(ProgramResultPresentation.responseProgramDelta(page), "9 bytes")
     }
 }
