@@ -57,6 +57,8 @@ Item {
         Qt.callLater(function () {
             appModel.loadSourcePolicy()
             appModel.loadSettingsState()
+            appModel.loadCapabilityRegistry()
+            appModel.loadBackupCatalog()
             root.schedulePageLoaderUpdate()
             if (appModel.currentView === "overview" && appModel.dashboardRefreshInterval() > 0 && appModel.bridgeSupportsAsync()) {
                 Qt.callLater(function () {
@@ -66,6 +68,7 @@ Item {
             Qt.callLater(function () {
                 appModel.loadIdlState()
                 appModel.loadWalletState()
+                appModel.loadCapabilityRegistry()
                 moduleEventIntake.install()
                 if (initialReference.length > 0) {
                     Qt.callLater(function () {

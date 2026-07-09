@@ -25,13 +25,6 @@ const MODULE_ADAPTER: SourceAdapterPolicy = SourceAdapterPolicy {
     supports_cid_probe: false,
     supports_mutating_diagnostics: true,
 };
-const NONE_ADAPTER: SourceAdapterPolicy = SourceAdapterPolicy {
-    target: "none",
-    uses_rest_endpoint: false,
-    uses_metrics_endpoint: false,
-    supports_cid_probe: false,
-    supports_mutating_diagnostics: false,
-};
 const DELIVERY_REST_ADAPTER: SourceAdapterPolicy = SourceAdapterPolicy {
     target: "rest_endpoint",
     uses_rest_endpoint: true,
@@ -75,31 +68,41 @@ const STORAGE_METRICS_ADAPTER: SourceAdapterPolicy = SourceAdapterPolicy {
     supports_mutating_diagnostics: false,
 };
 const FALLBACK_CORE_SOURCE_MODE: SourceModePolicy = SourceModePolicy {
-    key: "auto",
-    aliases: &["auto"],
+    key: "rpc",
+    aliases: &[],
     effective: "rpc",
-    label_key: "auto_rpc",
-    label: "Auto",
-    source_label: "Auto: Direct RPC",
-    summary: "Use configured direct RPC endpoint",
+    label_key: "direct_rpc",
+    label: "Direct RPC",
+    source_label: "Direct RPC",
+    summary: "Use configured standalone RPC endpoint",
     implemented: true,
     adapter: RPC_ADAPTER,
 };
-const FALLBACK_UNSUPPORTED_SOURCE_MODE: SourceModePolicy = SourceModePolicy {
-    key: "unsupported",
-    aliases: &["unsupported"],
-    effective: "unsupported",
-    label_key: "unsupported",
-    label: "Unsupported saved source",
-    source_label: "Unsupported source",
-    summary: "Select a supported source to replace this saved value",
-    implemented: false,
-    adapter: NONE_ADAPTER,
+const FALLBACK_DELIVERY_SOURCE_MODE: SourceModePolicy = SourceModePolicy {
+    key: "rest",
+    aliases: &[],
+    effective: "rest",
+    label_key: "delivery_rest",
+    label: "Direct Waku REST",
+    source_label: "Direct Waku REST",
+    summary: "Read-only health, info, version, and optional metrics",
+    implemented: true,
+    adapter: DELIVERY_REST_ADAPTER,
+};
+const FALLBACK_STORAGE_SOURCE_MODE: SourceModePolicy = SourceModePolicy {
+    key: "rest",
+    aliases: &[],
+    effective: "rest",
+    label_key: "storage_rest",
+    label: "Standalone REST",
+    source_label: "Standalone REST",
+    summary: "Read-only space, identity, local data, debug, and metrics",
+    implemented: true,
+    adapter: STORAGE_REST_ADAPTER,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CoreSourceMode {
-    Auto,
     Rpc,
     Module,
 }
@@ -112,7 +115,6 @@ pub enum CoreEndpointMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeliverySourceMode {
-    Auto,
     Module,
     Rest,
     Metrics,
@@ -122,7 +124,6 @@ pub enum DeliverySourceMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StorageSourceMode {
-    Auto,
     Module,
     Rest,
     Metrics,
@@ -433,17 +434,6 @@ impl SourcePolicyCatalog {
 
 const CORE_SOURCE_MODES: &[SourceModePolicy] = &[
     SourceModePolicy {
-        key: "auto",
-        aliases: &["auto"],
-        effective: "rpc",
-        label_key: "auto_rpc",
-        label: "Auto",
-        source_label: "Auto: Direct RPC",
-        summary: "Use configured direct RPC endpoint",
-        implemented: true,
-        adapter: RPC_ADAPTER,
-    },
-    SourceModePolicy {
         key: "rpc",
         aliases: &[
             "rpc",
@@ -475,17 +465,6 @@ const CORE_SOURCE_MODES: &[SourceModePolicy] = &[
 ];
 
 const DELIVERY_SOURCE_MODES: &[SourceModePolicy] = &[
-    SourceModePolicy {
-        key: "auto",
-        aliases: &["auto"],
-        effective: "rest",
-        label_key: "auto_delivery_rest",
-        label: "Auto",
-        source_label: "Auto: Direct Waku REST",
-        summary: "Use direct Waku REST",
-        implemented: true,
-        adapter: DELIVERY_REST_ADAPTER,
-    },
     SourceModePolicy {
         key: "module",
         aliases: &["module", "basecamp", "basecamp-module", "basecamp module"],
@@ -536,31 +515,9 @@ const DELIVERY_SOURCE_MODES: &[SourceModePolicy] = &[
         implemented: true,
         adapter: DELIVERY_MONITOR_ADAPTER,
     },
-    SourceModePolicy {
-        key: "unsupported",
-        aliases: &["unsupported"],
-        effective: "unsupported",
-        label_key: "unsupported",
-        label: "Unsupported saved source",
-        source_label: "Unsupported source",
-        summary: "Select a supported source to replace this saved value",
-        implemented: false,
-        adapter: NONE_ADAPTER,
-    },
 ];
 
 const STORAGE_SOURCE_MODES: &[SourceModePolicy] = &[
-    SourceModePolicy {
-        key: "auto",
-        aliases: &["auto"],
-        effective: "rest",
-        label_key: "auto_storage_rest",
-        label: "Auto",
-        source_label: "Auto: Standalone REST",
-        summary: "Use standalone REST",
-        implemented: true,
-        adapter: STORAGE_REST_ADAPTER,
-    },
     SourceModePolicy {
         key: "module",
         aliases: &["module", "basecamp", "basecamp-module", "basecamp module"],
@@ -601,32 +558,12 @@ const STORAGE_SOURCE_MODES: &[SourceModePolicy] = &[
         implemented: true,
         adapter: STORAGE_METRICS_ADAPTER,
     },
-    SourceModePolicy {
-        key: "unsupported",
-        aliases: &[
-            "c-library",
-            "c library",
-            "library",
-            "local-os",
-            "local os",
-            "local diagnostics",
-            "unsupported",
-        ],
-        effective: "unsupported",
-        label_key: "unsupported",
-        label: "Unsupported saved source",
-        source_label: "Unsupported source",
-        summary: "Select a supported source to replace this saved value",
-        implemented: false,
-        adapter: NONE_ADAPTER,
-    },
 ];
 
 impl CoreSourceMode {
     pub fn from_token(value: &str) -> Option<Self> {
         let policy = SourcePolicyCatalog::new().mode_policy_for_token(SourceFamily::Core, value)?;
         match policy.key {
-            "auto" => Some(Self::Auto),
             "rpc" => Some(Self::Rpc),
             "module" => Some(Self::Module),
             _ => None,
@@ -635,7 +572,6 @@ impl CoreSourceMode {
 
     pub fn normalized(self) -> &'static str {
         match self {
-            Self::Auto => "auto",
             Self::Rpc => "rpc",
             Self::Module => "module",
         }
@@ -644,7 +580,7 @@ impl CoreSourceMode {
     pub fn effective(self) -> CoreEndpointMode {
         match self {
             Self::Module => CoreEndpointMode::Module,
-            Self::Auto | Self::Rpc => CoreEndpointMode::Rpc,
+            Self::Rpc => CoreEndpointMode::Rpc,
         }
     }
 }
@@ -663,7 +599,6 @@ impl DeliverySourceMode {
         SourcePolicyCatalog::new()
             .mode_policy_for_token(SourceFamily::Delivery, value)
             .map(|policy| match policy.key {
-                "auto" => Self::Auto,
                 "module" => Self::Module,
                 "rest" => Self::Rest,
                 "metrics" => Self::Metrics,
@@ -674,15 +609,11 @@ impl DeliverySourceMode {
     }
 
     pub fn effective(self) -> Self {
-        match self {
-            Self::Auto => Self::Rest,
-            value => value,
-        }
+        self
     }
 
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Auto => "auto",
             Self::Module => "module",
             Self::Rest => "rest",
             Self::Metrics => "metrics",
@@ -701,7 +632,6 @@ impl StorageSourceMode {
         SourcePolicyCatalog::new()
             .mode_policy_for_token(SourceFamily::Storage, value)
             .map(|policy| match policy.key {
-                "auto" => Self::Auto,
                 "module" => Self::Module,
                 "rest" => Self::Rest,
                 "metrics" => Self::Metrics,
@@ -711,15 +641,11 @@ impl StorageSourceMode {
     }
 
     pub fn effective(self) -> Self {
-        match self {
-            Self::Auto => Self::Rest,
-            value => value,
-        }
+        self
     }
 
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Auto => "auto",
             Self::Module => "module",
             Self::Rest => "rest",
             Self::Metrics => "metrics",
@@ -754,7 +680,7 @@ impl SourceFamily {
 
 #[must_use]
 pub fn normalized_core_source_mode(value: &str) -> &'static str {
-    CoreSourceMode::from_token(value).map_or("auto", CoreSourceMode::normalized)
+    CoreSourceMode::from_token(value).map_or("rpc", CoreSourceMode::normalized)
 }
 
 #[must_use]
@@ -794,15 +720,16 @@ pub fn source_policy_report() -> SourcePolicyReport {
 
 fn fallback_source_mode_key(family: SourceFamily) -> &'static str {
     match family {
-        SourceFamily::Core => "auto",
-        SourceFamily::Delivery | SourceFamily::Storage => "unsupported",
+        SourceFamily::Core => "rpc",
+        SourceFamily::Delivery | SourceFamily::Storage => "rest",
     }
 }
 
 fn fallback_source_mode(family: SourceFamily) -> &'static SourceModePolicy {
     match family {
         SourceFamily::Core => &FALLBACK_CORE_SOURCE_MODE,
-        SourceFamily::Delivery | SourceFamily::Storage => &FALLBACK_UNSUPPORTED_SOURCE_MODE,
+        SourceFamily::Delivery => &FALLBACK_DELIVERY_SOURCE_MODE,
+        SourceFamily::Storage => &FALLBACK_STORAGE_SOURCE_MODE,
     }
 }
 
@@ -889,8 +816,9 @@ mod tests {
         );
         assert_eq!(
             catalog.normalized_source_mode(SourceFamily::Storage, "local diagnostics"),
-            "unsupported"
+            "rest"
         );
+        assert!(!catalog.source_mode_is_token(SourceFamily::Storage, "local diagnostics"));
         assert_eq!(
             catalog.effective_source_mode(SourceFamily::Core, "basecamp"),
             "module"
@@ -920,11 +848,11 @@ mod tests {
             .delivery
             .iter()
             .find(|mode| mode.key == "rest");
-        let storage_auto = policy
+        let storage_rest = policy
             .source_modes
             .storage
             .iter()
-            .find(|mode| mode.key == "auto");
+            .find(|mode| mode.key == "rest");
         let delivery_network_monitor = policy
             .source_modes
             .delivery
@@ -943,10 +871,10 @@ mod tests {
         assert!(delivery_rest.is_some_and(|mode| mode.adapter.uses_rest_endpoint));
         assert!(delivery_rest.is_some_and(|mode| mode.adapter.uses_metrics_endpoint));
         assert_eq!(
-            storage_auto.map(|mode| mode.source_label),
-            Some("Auto: Standalone REST")
+            storage_rest.map(|mode| mode.source_label),
+            Some("Standalone REST")
         );
-        assert!(storage_auto.is_some_and(|mode| mode.adapter.supports_cid_probe));
+        assert!(storage_rest.is_some_and(|mode| mode.adapter.supports_cid_probe));
         assert_eq!(
             delivery_network_monitor.map(|mode| mode.label),
             Some("Delivery Network Monitor")
@@ -958,6 +886,27 @@ mod tests {
         assert!(delivery_network_monitor.is_some_and(|mode| {
             !mode.aliases.contains(&"network monitor") && !mode.aliases.contains(&"crawler")
         }));
+        assert!(
+            !policy
+                .source_modes
+                .core
+                .iter()
+                .any(|mode| mode.key == "auto")
+        );
+        assert!(
+            !policy
+                .source_modes
+                .delivery
+                .iter()
+                .any(|mode| mode.key == "auto" || mode.label == "Unsupported saved source")
+        );
+        assert!(
+            !policy
+                .source_modes
+                .storage
+                .iter()
+                .any(|mode| mode.key == "auto" || mode.label == "Unsupported saved source")
+        );
     }
 
     #[test]
@@ -1025,8 +974,9 @@ mod tests {
         );
         assert_eq!(
             normalized_source_mode(SourceFamily::Storage, "local-os"),
-            "unsupported"
+            "rest"
         );
+        assert!(!source_mode_is_token(SourceFamily::Storage, "local-os"));
         assert!(source_mode_is_token(
             SourceFamily::Delivery,
             "direct waku rest"

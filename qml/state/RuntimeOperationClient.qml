@@ -40,8 +40,10 @@ QtObject {
             appendOperation(operationLabel, response)
             if (response && response.ok) {
                 terminalOperationId = ""
-                updateActiveOperation(response.value)
-                started(response.value)
+                const operation = operationWithRestartRequest(response.value, request)
+                response.value = operation
+                updateActiveOperation(operation)
+                started(operation)
             } else {
                 startFailed(response)
             }
@@ -139,7 +141,7 @@ QtObject {
     }
 
     function updateActiveOperation(value) {
-        activeOperation = value || null
+        activeOperation = operationWithRestartRequest(value || null, activeOperation && activeOperation.restartRequest)
         activeOperationRevision += 1
     }
 
@@ -151,6 +153,20 @@ QtObject {
     function active() {
         const revision = activeOperationRevision
         return activeOperation || null
+    }
+
+    function operationWithRestartRequest(operation, restartRequest) {
+        const value = operation || null
+        if (!value || !restartRequest || value.restartRequest !== undefined || value.restart_request !== undefined) {
+            return value
+        }
+        const next = ({})
+        const keys = Object.keys(value)
+        for (let i = 0; i < keys.length; ++i) {
+            next[keys[i]] = value[keys[i]]
+        }
+        next.restartRequest = restartRequest
+        return next
     }
 
     function known() {

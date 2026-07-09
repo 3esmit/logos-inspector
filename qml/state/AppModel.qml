@@ -8,6 +8,7 @@ import "metrics/AppModelMetrics.js" as AppModelMetrics
 import "programs" as Programs
 import "programs/AppModelRegistry.js" as AppModelRegistry
 import "social/AppModelSocial.js" as AppModelSocial
+import "source_routing/ConnectorConfigAdapter.js" as ConnectorConfigAdapter
 import "programs/ProgramDecodeSession.js" as ProgramDecodeSession
 
 QtObject {
@@ -46,6 +47,7 @@ QtObject {
         storageCidProbe: root.storageCidProbe
         storagePrivilegedDebugEnabled: root.storagePrivilegedDebugEnabled
         storageMutatingDiagnosticsEnabled: root.storageMutatingDiagnosticsEnabled
+        connectorConfig: root.networkConnectorConfig
         gateway: QtObject {
             function callInspector(method, args) {
                 return root.bridge.callModule(root.inspectorModule, method, Array.isArray(args) ? args : [])
@@ -100,6 +102,7 @@ QtObject {
         id: chainPageState
 
         inspectorModule: root.inspectorModule
+        capabilityFacade: root.capabilities
         gateway: QtObject {
             function requestModule(moduleName, method, args, label, showResult, cacheResult) {
                 return root.requestModule(moduleName, method, args, label, showResult, cacheResult)
@@ -135,6 +138,7 @@ QtObject {
     property alias dashboardL1Blocks: chainPageState.dashboardL1Blocks
     property alias dashboardBlocks: chainPageState.dashboardBlocks
     property alias dashboardSequencerBlocks: chainPageState.dashboardSequencerBlocks
+    property alias dashboardLezBlockRows: chainPageState.dashboardLezBlockRows
     property alias dashboardError: chainPageState.dashboardError
     property alias blockDetailValue: chainPageState.blockDetailValue
     property alias blockDetailError: chainPageState.blockDetailError
@@ -196,10 +200,11 @@ QtObject {
     property string sequencerUrl: "https://testnet.lez.logos.co/"
     property string indexerUrl: "http://127.0.0.1:8779/"
     property string nodeUrl: "http://127.0.0.1:8080/"
-    property string blockchainSourceMode: "auto"
-    property string indexerSourceMode: "auto"
+    property var networkConnectorConfig: defaultNetworkConnectorConfig()
+    property string blockchainSourceMode: "rpc"
+    property string indexerSourceMode: "rpc"
     property string executionSourceMode: "rpc"
-    property string messagingSourceMode: "auto"
+    property string messagingSourceMode: "rest"
     property string messagingRestUrl: "http://127.0.0.1:8645"
     property string messagingMetricsUrl: "http://127.0.0.1:8008/metrics"
     property string messagingNetworkPreset: "logos.test"
@@ -221,7 +226,7 @@ QtObject {
     property alias sharedIdlAutoShare: socialState.sharedIdlAutoShare
     property alias socialAutoSharedIdls: socialState.autoSharedIdls
     property alias sharedIdlRevision: socialState.sharedIdlRevision
-    property string storageSourceMode: "auto"
+    property string storageSourceMode: "rest"
     property string storageRestUrl: "http://127.0.0.1:8080/api/storage/v1"
     property string storageMetricsUrl: "http://127.0.0.1:8008/metrics"
     property string storageNetworkPreset: "logos.test"
@@ -230,14 +235,33 @@ QtObject {
     property bool storageLocalDiagnosticsEnabled: false
     property bool storagePrivilegedDebugEnabled: false
     property bool storageMutatingDiagnosticsEnabled: false
-    property var runtimeOperations: ({})
-    property var runtimeOperationEventSeq: ({})
-    property var runtimeOperationHistory: []
-    property int runtimeOperationsRevision: 0
+    property bool localNodesEnabled: false
+    property bool localDevnetEnabled: false
+    property Domains.OperationHistoryState operationHistory: Domains.OperationHistoryState {
+        id: operationHistoryState
+    }
+    property alias runtimeOperations: operationHistoryState.runtimeOperations
+    property alias runtimeOperationEventSeq: operationHistoryState.runtimeOperationEventSeq
+    property alias runtimeOperationHistory: operationHistoryState.runtimeOperationHistory
+    property alias runtimeOperationsRevision: operationHistoryState.runtimeOperationsRevision
     property string settingsBackupCid: ""
     property string settingsRestoreCid: ""
     property bool settingsBackupEncrypted: false
     property string settingsBackupStatus: ""
+    property var settingsBackupContents: defaultSettingsBackupContents()
+    property Domains.BackupCatalogState backupCatalog: Domains.BackupCatalogState {
+        id: backupCatalogState
+
+        gateway: QtObject {
+            function call(method, args, label) {
+                return root.callInspector(method, args || [], label)
+            }
+        }
+    }
+    property alias backupCatalogEntries: backupCatalogState.entries
+    property alias backupCatalogLoaded: backupCatalogState.loaded
+    property alias backupCatalogError: backupCatalogState.error
+    property alias backupCatalogRevision: backupCatalogState.revision
 
     property string sequencerTab: "blocks"
     property string accountTab: "lookup"
@@ -278,6 +302,7 @@ QtObject {
     property Domains.ProgramDecodeState programDecode: Domains.ProgramDecodeState {
         id: programDecodeState
 
+        capabilityFacade: root.capabilities
         registryGateway: QtObject {
             function canonicalProgramIdHex(value) {
                 return root.canonicalProgramIdHex(value)
@@ -332,6 +357,10 @@ QtObject {
                 return root.networkProfile
             }
 
+            function prefersBasecampModules() {
+                return root.prefersBasecampModules()
+            }
+
             function nodeUrl() {
                 return String(root.nodeUrl || "")
             }
@@ -380,6 +409,7 @@ QtObject {
     property alias walletSendToIdentifier: walletState.sendToIdentifier
     property alias walletSendAmount: walletState.sendAmount
     property alias walletAdvancedCommand: walletState.advancedCommand
+    property alias walletConnectorConfig: walletState.connectorConfig
     property alias bedrockWalletBalanceTip: walletState.bedrockBalanceTip
     property alias localWalletStatus: walletState.status
     property alias localWalletStatusError: walletState.statusError
@@ -436,6 +466,7 @@ QtObject {
         resultIsError: root.resultIsError
         resultOwner: root.resultOwner
         sourceReport: root.storageSourceReport
+        gateFacade: root.capabilities
     }
     property alias storageAppTab: storageAppState.currentTab
     property alias storageCidProbe: storageAppState.cidProbe
@@ -482,6 +513,36 @@ QtObject {
     property alias deliveryModuleEventRevision: deliveryAppState.deliveryModuleEventRevision
     property alias deliveryConnectionStatus: deliveryAppState.deliveryConnectionStatus
     property alias deliveryNodeStatus: deliveryAppState.deliveryNodeStatus
+    property Domains.CapabilityGateState capabilities: Domains.CapabilityGateState {
+        id: capabilityGateState
+
+        gateway: QtObject {
+            function callInspector(method, args) {
+                return root.bridge.callModule(root.inspectorModule, method, Array.isArray(args) ? args : [])
+            }
+        }
+        compatibilityAvailability: root.capabilityLocalAvailability()
+    }
+    property alias capabilityRegistryReport: capabilityGateState.registryReport
+    property alias capabilityRegistryLoaded: capabilityGateState.registryLoaded
+    property alias capabilityRegistryError: capabilityGateState.registryError
+    property Domains.StatusFacadeState statusFacade: Domains.StatusFacadeState {
+        id: statusFacadeState
+
+        capabilityFacade: root.capabilities
+        operationHistory: root.operationHistory
+        reports: ({
+            blockchain: root.blockchainModuleReport,
+            storage: root.storageModuleReport,
+            delivery: root.messagingModuleReport,
+            storage_source: root.storageSourceReport,
+            delivery_source: root.messagingSourceReport
+        })
+        events: ({
+            blockchain_revision: root.blockchainModuleEventRevision,
+            delivery_revision: root.deliveryModuleEventRevision
+        })
+    }
     property LocalNodesState localNodes: LocalNodesState {
         id: localNodesState
 
@@ -517,6 +578,7 @@ QtObject {
     property Programs.ProgramExecutionState programExecution: Programs.ProgramExecutionState {
         id: programExecutionState
 
+        capabilityFacade: root.capabilities
         gateway: QtObject {
             function request(method, args, label, showResult, callback) {
                 return root.requestModuleAsync(root.inspectorModule, method, args || [], label, showResult === true, callback)
@@ -595,6 +657,10 @@ QtObject {
     onSequencerUrlChanged: handleNetworkConfigurationChanged()
     onIndexerUrlChanged: handleNetworkConfigurationChanged()
     onNodeUrlChanged: handleNetworkConfigurationChanged()
+    onNetworkConnectorConfigChanged: {
+        syncSourceModesFromConnectorConfig()
+        refreshCapabilityRegistryIfLoaded()
+    }
     onBlockchainSourceModeChanged: handleNetworkConfigurationChanged()
     onIndexerSourceModeChanged: handleNetworkConfigurationChanged()
     onExecutionSourceModeChanged: handleNetworkConfigurationChanged()
@@ -604,7 +670,10 @@ QtObject {
     onMessagingNetworkPresetChanged: handleMessagingConfigurationChanged()
     onMessagingRollingWindowChanged: saveSettingsState()
     onMessagingAdminRestEnabledChanged: saveSettingsState()
-    onMessagingMutatingDiagnosticsEnabledChanged: saveSettingsState()
+    onMessagingMutatingDiagnosticsEnabledChanged: {
+        saveSettingsState()
+        refreshCapabilityRegistryIfLoaded()
+    }
     onSocialCommentPageSizeChanged: saveSettingsState()
     onSocialIdentityDefaultModeChanged: saveSettingsState()
     onSelectedSocialIdentityKeyChanged: saveSettingsState()
@@ -619,8 +688,21 @@ QtObject {
     onStorageRollingWindowChanged: saveSettingsState()
     onStorageLocalDiagnosticsEnabledChanged: handleStorageConfigurationChanged()
     onStoragePrivilegedDebugEnabledChanged: handleStorageConfigurationChanged()
-    onStorageMutatingDiagnosticsEnabledChanged: saveSettingsState()
-    onSettingsBackupCidChanged: saveSettingsState()
+    onStorageMutatingDiagnosticsEnabledChanged: {
+        saveSettingsState()
+        refreshCapabilityRegistryIfLoaded()
+    }
+    onLocalNodesEnabledChanged: {
+        if (!localNodesEnabled && localDevnetEnabled) {
+            localDevnetEnabled = false
+        }
+        saveSettingsState()
+        refreshCapabilityRegistryIfLoaded()
+    }
+    onLocalDevnetEnabledChanged: {
+        saveSettingsState()
+        refreshCapabilityRegistryIfLoaded()
+    }
     onSettingsBackupEncryptedChanged: saveSettingsState()
     onBlockchainRefreshRateChanged: saveSettingsState()
     onIndexerRefreshRateChanged: saveSettingsState()
@@ -837,7 +919,25 @@ QtObject {
 
     function socialStoreAvailable() { return AppModelSocial.socialStoreAvailable(root) }
 
+    function socialStoreGate() { return AppModelSocial.socialStoreGate(root) }
+
+    function socialGateDetailText(gate, fallback) { return AppModelSocial.socialGateDetailText(root, gate, fallback || "") }
+
+    function socialCommentReadGate(topic) { return AppModelSocial.socialCommentReadGate(root, topic) }
+
+    function socialCommentReadAvailable(topic) { return AppModelSocial.socialCommentReadAvailable(root, topic) }
+
+    function socialCommentWriteGate(topic) { return AppModelSocial.socialCommentWriteGate(root, topic) }
+
     function socialCommentSendAvailable(topic) { return AppModelSocial.socialCommentSendAvailable(root, topic) }
+
+    function socialSharedIdlReadGate() { return AppModelSocial.socialSharedIdlReadGate(root) }
+
+    function socialSharedIdlReadAvailable() { return AppModelSocial.socialSharedIdlReadAvailable(root) }
+
+    function socialSharedIdlWriteGate(topic) { return AppModelSocial.socialSharedIdlWriteGate(root, topic) }
+
+    function socialSharedIdlWriteAvailable(topic) { return AppModelSocial.socialSharedIdlWriteAvailable(root, topic) }
 
     function validSocialTopic(topic) { return AppModelSocial.validSocialTopic(root, topic) }
 
@@ -881,11 +981,787 @@ QtObject {
 
     function maybeAutoShareAccountIdl(accountId, ownerProgramId, idlEntry) { return AppModelSocial.maybeAutoShareAccountIdl(root, accountId, ownerProgramId, idlEntry) }
 
-    function backupSettingsToStorage(encrypted) { return AppModelIdentity.backupSettingsToStorage(root, encrypted) }
+    function backupSettingsToStorage(encrypted, contents) { return AppModelIdentity.backupSettingsToStorage(root, encrypted, contents || settingsBackupContents) }
 
     function restoreSettingsFromStorage(cid, useWallet) { return AppModelIdentity.restoreSettingsFromStorage(root, cid, useWallet) }
 
     function settingsBackupAvailable() { return AppModelIdentity.settingsBackupAvailable(root) }
+
+    function settingsBackupDownloadAvailable() { return AppModelIdentity.settingsBackupDownloadAvailable(root) }
+
+    function defaultSettingsBackupContents() {
+        return {
+            settings: true,
+            favorites: true,
+            idl_registry: true,
+            wallet_profile: true
+        }
+    }
+
+    function normalizedBackupContents(contents) {
+        const value = contents && typeof contents === "object" ? contents : defaultSettingsBackupContents()
+        return {
+            settings: value.settings === true,
+            favorites: value.favorites === true,
+            idl_registry: value.idl_registry === true || value.idls === true || value.idl === true,
+            wallet_profile: value.wallet_profile === true || value.wallet === true
+        }
+    }
+
+    function backupContentsSelected(contents) {
+        const value = normalizedBackupContents(contents || settingsBackupContents)
+        return value.settings || value.favorites || value.idl_registry || value.wallet_profile
+    }
+
+    function setSettingsBackupContent(area, enabled) {
+        const next = normalizedBackupContents(settingsBackupContents)
+        const key = String(area || "")
+        if (key === "settings" || key === "favorites" || key === "idl_registry" || key === "wallet_profile") {
+            next[key] = enabled === true
+        }
+        settingsBackupContents = next
+    }
+
+    function loadBackupCatalog() { return backupCatalogState.load() }
+
+    function createLocalSettingsBackup(label, encrypted, contents) { return backupCatalogState.createLocal(label, encrypted === true, walletProfile(), normalizedBackupContents(contents || settingsBackupContents)) }
+
+    function attachBackupRemote(backupCatalogId, cid, provider) { return backupCatalogState.attachRemote(backupCatalogId, cid, provider) }
+
+    function previewLocalSettingsRestore(backupCatalogId, options) { return backupCatalogState.previewLocalRestore(backupCatalogId, walletProfile(), options || {}) }
+
+    function previewLocalSettingsImportPlan(backupCatalogId, options) {
+        const importOptions = options && typeof options === "object" ? options : ({})
+        const preview = previewLocalSettingsRestore(backupCatalogId, importOptions)
+        if (!preview) {
+            return null
+        }
+        return backupImportPlan(importOptions, preview, backupCatalogId)
+    }
+
+    function restoreLocalSettingsBackup(backupCatalogId, options) {
+        const importOptions = options && typeof options === "object" ? options : ({})
+        const preview = backupCatalogState.previewLocalRestore(backupCatalogId, walletProfile(), importOptions)
+        if (!preview) {
+            settingsBackupStatus = backupCatalogError
+            return null
+        }
+        const plan = backupImportPlan(importOptions, preview, backupCatalogId)
+        if (plan.selectedAreas.length === 0) {
+            settingsBackupStatus = qsTr("Select at least one backup section to import.")
+            return null
+        }
+        if (plan.blocked) {
+            for (let i = 0; i < plan.decisions.length; ++i) {
+                if (plan.decisions[i].action === "block") {
+                    recordBackupImportDecision(plan.decisions[i], qsTr("Blocked backup import while affected operation is running."))
+                }
+            }
+            settingsBackupStatus = qsTr("Backup import blocked by running operation %1.")
+                .arg(plan.blockedOperationLabel)
+            return null
+        }
+        if (!stopBackupImportOperations(plan)) {
+            return null
+        }
+        const summary = backupCatalogState.restoreLocal(backupCatalogId, walletProfile(), importOptions)
+        if (!summary) {
+            settingsBackupStatus = backupCatalogError.length ? backupCatalogError : qsTr("Local backup restore failed.")
+            return null
+        }
+        const touchesLocalSettings = backupImportTouchesLocalSettings(plan.selectedAreas)
+        if (touchesLocalSettings) {
+            loadSettingsState()
+            settingsBackupEncrypted = summary.encrypted === true
+        }
+        if (plan.selectedAreas.indexOf("idl_registry") >= 0) {
+            loadIdlState()
+        }
+        if (plan.selectedAreas.indexOf("wallet_profile") >= 0) {
+            loadWalletState()
+        }
+        if (touchesLocalSettings || plan.selectedAreas.indexOf("wallet_profile") >= 0) {
+            loadCapabilityRegistry()
+        }
+        settingsBackupStatus = summary.encrypted === true
+            ? qsTr("Imported encrypted backup: %1 IDLs and %2 favorites.")
+                .arg(Number(summary.idl_count || 0))
+                .arg(Number(summary.favorites || 0))
+            : qsTr("Imported %1 IDLs and %2 favorites from local backup.")
+                .arg(Number(summary.idl_count || 0))
+                .arg(Number(summary.favorites || 0))
+	        AppModelCore.appendOperationHistory(root, {
+	            domain: "backup",
+	            method: "restoreLocalSettingsBackup",
+	            status: "applied_for_import",
+	            label: qsTr("Settings backup import"),
+	            operationClass: "backup",
+	            affectedInputs: backupImportAffectedInputs(plan.selectedAreas),
+	            restartPolicy: "safe_read_poll_only",
+	            confirmationRequired: true,
+	            importId: plan.importId,
+	            backupCatalogId: plan.backupCatalogId,
+	            reason: "backup_import_applied_for_import",
+	            provenance: ["backup_import_policy", "local_backup_catalog"],
+	            result: summary
+	        }, qsTr("Local backup import applied."))
+        restartBackupImportOperations(plan)
+        if (touchesLocalSettings) {
+            saveSettingsState()
+        }
+        return summary
+    }
+
+    function backupImportPlan(options, summary, backupCatalogId) {
+        const selectedAreas = selectedBackupImportAreas(options, summary)
+        const decisions = []
+        const operations = runningBackupImportOperations()
+        let blocked = false
+        let blockedLabel = ""
+        const catalogId = String((summary && summary.backup_catalog_id) || backupCatalogId || "")
+        const importId = backupImportId(catalogId)
+        for (let i = 0; i < operations.length; ++i) {
+            const decision = backupImportOperationDecision(operations[i], selectedAreas)
+            if (!decision.affected) {
+                continue
+            }
+            decision.importId = importId
+            decision.backupCatalogId = catalogId
+            decisions.push(decision)
+            if (decision.action === "block") {
+                blocked = true
+                if (!blockedLabel.length) {
+                    blockedLabel = decision.label
+                }
+            }
+        }
+        const result = backupImportPlanBase(summary)
+        result.selectedAreas = selectedAreas
+        result.decisions = decisions
+        result.operation_decisions = decisions
+        result.blocked = blocked
+        result.blockedOperationLabel = blockedLabel
+        result.importId = importId
+        result.backupCatalogId = catalogId
+        result.summary = summary || {}
+        result.import_plan = true
+        return result
+    }
+
+    function backupImportId(backupCatalogId) {
+        const catalogId = String(backupCatalogId || "unknown")
+        return "backup_import:" + catalogId
+    }
+
+    function backupImportPlanBase(summary) {
+        const result = ({})
+        const source = summary && typeof summary === "object" ? summary : ({})
+        const keys = Object.keys(source)
+        for (let i = 0; i < keys.length; ++i) {
+            result[keys[i]] = source[keys[i]]
+        }
+        return result
+    }
+
+    function backupImportEnabledGate(provenance) {
+        return {
+            enabled: true,
+            status: "enabled",
+            missing: [],
+            warnings: [],
+            provenance: [String(provenance || "backup_import_policy")]
+        }
+    }
+
+    function backupImportDisabledGate(status, dependency, label, provenance) {
+        return {
+            enabled: false,
+            status: String(status || "disabled"),
+            missing: [{
+                dependency: String(dependency || ""),
+                label: String(label || dependency || ""),
+                status: String(status || "disabled"),
+                provenance: String(provenance || "backup_import_policy")
+            }],
+            warnings: [],
+            provenance: [String(provenance || "backup_import_policy")]
+        }
+    }
+
+    function backupImportGateSummary(gate) {
+        const value = gate && typeof gate === "object" ? gate : backupImportEnabledGate("backup_import_policy")
+        const missing = Array.isArray(value.missing) ? value.missing : []
+        return {
+            enabled: value.enabled === true,
+            status: String(value.status || (value.enabled === true ? "enabled" : "disabled")),
+            missing: missing,
+            warnings: Array.isArray(value.warnings) ? value.warnings : [],
+            provenance: Array.isArray(value.provenance) ? value.provenance : []
+        }
+    }
+
+    function backupImportSafeReadOperation(metadata) {
+        const operationClass = String(metadata && metadata.operationClass ? metadata.operationClass : "")
+        const restartPolicy = String(metadata && metadata.restartPolicy ? metadata.restartPolicy : "")
+        return operationClass === "read_poll" || restartPolicy === "safe_read_polling"
+    }
+
+    function backupImportRestartRequest(operation) {
+        const request = operation && operation.restartRequest
+        return request && typeof request === "object" ? request : null
+    }
+
+    function backupImportOperationGate(operation, metadata) {
+        const value = operation || {}
+        const domain = String(value.domain || "").toLowerCase()
+        const method = String(value.method || value.label || "").toLowerCase()
+        if (domain === "storage" || method.indexOf("storage") >= 0) {
+            if (method.indexOf("manifest") >= 0 || method.indexOf("list") >= 0) {
+                return root.storageGate("manifests")
+            }
+            if (method.indexOf("exists") >= 0 || method.indexOf("probe") >= 0) {
+                return root.storageGate("exists")
+            }
+            if (method.indexOf("read") >= 0 || method.indexOf("cid") >= 0) {
+                return root.storageGate("read_by_cid")
+            }
+            return root.storageGate("")
+        }
+        if (domain === "delivery" || method.indexOf("delivery") >= 0) {
+            if (method.indexOf("store") >= 0 || method.indexOf("query") >= 0 || method.indexOf("read") >= 0) {
+                return root.deliveryGate("store_query")
+            }
+            if (method.indexOf("subscribe") >= 0) {
+                return root.deliveryGate("subscribe")
+            }
+            return root.deliveryGate("")
+        }
+        if (domain === "wallet" || method.indexOf("wallet") >= 0) {
+            return root.walletGate("")
+        }
+        if (domain === "program" || method.indexOf("decode") >= 0 || method.indexOf("idl") >= 0) {
+            return root.programDecodeGate()
+        }
+        if (domain === "backup") {
+            return backupImportDisabledGate("manual_required", "backup", qsTr("Backup operation"), "operation_history")
+        }
+        return backupImportEnabledGate("operation_history")
+    }
+
+    function backupImportCanRestartOperation(operation, metadata) {
+        const gate = backupImportOperationGate(operation, metadata)
+        return backupImportRestartRequest(operation) !== null
+            && backupImportSafeReadOperation(metadata)
+            && gate.enabled === true
+    }
+
+    function backupImportDecisionWithAction(decision, action, restart) {
+        const source = decision || {}
+        return {
+            operation: source.operation || {},
+            operationId: String(source.operationId || ""),
+            label: String(source.label || ""),
+            operationClass: String(source.operationClass || ""),
+            affectedInputs: source.affectedInputs || [],
+	            restartPolicy: String(source.restartPolicy || ""),
+	            action: String(action || source.action || ""),
+	            affected: source.affected === true,
+	            restart: restart === undefined ? source.restart === true : restart === true,
+	            restartEligible: source.restartEligible === true,
+	            restartGate: source.restartGate || null,
+	            safeToLetFinish: source.safeToLetFinish === true,
+	            previousOperationId: String(source.previousOperationId || source.previous_operation_id || ""),
+	            restartOperationId: String(source.restartOperationId || source.restart_operation_id || ""),
+	            importId: String(source.importId || ""),
+	            backupCatalogId: String(source.backupCatalogId || "")
+	        }
+    }
+
+    function backupImportDecisionActionLabel(decision) {
+        const value = decision || {}
+        switch (String(value.action || "")) {
+        case "stop":
+            return value.restart === true
+                ? qsTr("will stop and restart if gates still pass")
+                : qsTr("will stop; manual rerun required")
+        case "let_finish":
+            return qsTr("safe to let finish")
+        case "restart":
+            return qsTr("restarted")
+        case "block":
+            return qsTr("blocks import")
+        case "skip_restart":
+            return qsTr("manual rerun required")
+        case "restart_failed":
+            return qsTr("restart failed")
+        default:
+            return qsTr("not affected")
+        }
+    }
+
+    function backupImportDecisionGateText(decision) {
+        const gate = decision && decision.restartGate ? decision.restartGate : null
+        if (!gate || gate.enabled === true) {
+            return ""
+        }
+        const missing = Array.isArray(gate.missing) ? gate.missing : []
+        if (missing.length > 0) {
+            return String(missing[0].label || missing[0].dependency || gate.status || "")
+        }
+        return String(gate.status || "")
+    }
+
+    function backupImportDecisionSummaryText(decision) {
+        const value = decision || {}
+        const gateText = backupImportDecisionGateText(value)
+        const base = qsTr("%1: %2").arg(String(value.label || value.operationId || qsTr("operation"))).arg(backupImportDecisionActionLabel(value))
+        return gateText.length ? qsTr("%1 (%2)").arg(base).arg(gateText) : base
+    }
+
+    function backupImportOperationDecision(operation, selectedAreas) {
+        const metadata = operationHistory.operationMetadata(operation || {})
+        const operationClass = String(metadata.operationClass || "unknown")
+        const restartPolicy = String(metadata.restartPolicy || "")
+        const affected = backupImportOperationAffected(operation, selectedAreas)
+        const operationId = String(operation && operation.operationId ? operation.operationId : "")
+        const status = String(operation && operation.status ? operation.status : "")
+        const canCancel = operation && operation.cancellable === true && status === "running"
+        const safeToLetFinish = backupImportSafeReadOperation(metadata)
+        const restartEligible = canCancel && backupImportRestartRequest(operation) !== null && safeToLetFinish
+        const restartGate = restartEligible ? backupImportGateSummary(backupImportOperationGate(operation, metadata)) : null
+        let action = "ignore"
+        if (affected) {
+            action = backupImportOperationConflictsWithImport(operation, metadata)
+                ? "block"
+                : (canCancel ? "stop" : (safeToLetFinish ? "let_finish" : "block"))
+        }
+        return {
+            selectedAreas: selectedAreas,
+            operation: operation || {},
+            operationId: operationId,
+            label: String(operation && (operation.label || operation.method) ? (operation.label || operation.method) : operationId),
+            operationClass: operationClass,
+            affectedInputs: metadata.affectedInputs || [],
+            restartPolicy: restartPolicy,
+            action: action,
+            affected: affected,
+            restart: restartEligible,
+            restartEligible: restartEligible,
+            restartGate: restartGate,
+            safeToLetFinish: safeToLetFinish
+        }
+    }
+
+    function selectedBackupImportAreas(options, summary) {
+        const selected = []
+        const value = options && typeof options === "object" ? options : ({})
+        const areas = ["settings", "favorites", "idl_registry", "wallet_profile"]
+        for (let i = 0; i < areas.length; ++i) {
+            const area = areas[i]
+            const mode = String(value[area] || "").trim().toLowerCase()
+            if (mode.length && mode !== "skip" && mode !== "none" && mode !== "not_import" && mode !== "not import") {
+                selected.push(area)
+            }
+        }
+        if (selected.length > 0 || !summary || typeof summary !== "object") {
+            return selected
+        }
+        const applied = Array.isArray(summary.applied_areas) ? summary.applied_areas : []
+        for (let i = 0; i < applied.length; ++i) {
+            selected.push(String(applied[i] || ""))
+        }
+        return selected
+    }
+
+    function backupImportTouchesLocalSettings(selectedAreas) {
+        const areas = Array.isArray(selectedAreas) ? selectedAreas : []
+        return areas.indexOf("settings") >= 0 || areas.indexOf("favorites") >= 0
+    }
+
+    function runningBackupImportOperations() {
+        const revision = runtimeOperationsRevision
+        const values = runtimeOperations && typeof runtimeOperations === "object" ? runtimeOperations : ({})
+        const keys = Object.keys(values)
+        const rows = []
+        for (let i = 0; i < keys.length; ++i) {
+            const operation = values[keys[i]] || {}
+            const status = String(operation.status || "")
+            if (status === "running" || status === "canceling") {
+                rows.push(operation)
+            }
+        }
+        return rows
+    }
+
+    function backupImportOperationAffected(operation, selectedAreas) {
+        const areas = Array.isArray(selectedAreas) ? selectedAreas : []
+        const metadata = operationHistory.operationMetadata(operation || {})
+        if (areas.length > 0 && backupImportOperationConflictsWithImport(operation, metadata)) {
+            return true
+        }
+        for (let i = 0; i < areas.length; ++i) {
+            if (backupImportOperationAffectsArea(operation, areas[i], metadata)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    function backupImportOperationConflictsWithImport(operation, metadata) {
+        const value = operation || {}
+        const domain = String(value.domain || "").toLowerCase()
+        const method = String(value.method || value.label || "").toLowerCase()
+        const info = metadata || operationHistory.operationMetadata(value)
+        const operationClass = String(info.operationClass || "").toLowerCase()
+        return domain === "backup"
+            || operationClass === "backup"
+            || method.indexOf("backup") >= 0
+            || method.indexOf("restore") >= 0
+            || method.indexOf("import") >= 0
+            || method.indexOf("export") >= 0
+            || method.indexOf("decrypt") >= 0
+    }
+
+	    function backupImportOperationAffectsArea(operation, area, metadata) {
+            if (backupImportMetadataAffectsArea(metadata, area)) {
+                return true
+            }
+	        const domain = String(operation && operation.domain ? operation.domain : "").toLowerCase()
+	        const method = String(operation && operation.method ? operation.method : "").toLowerCase()
+        switch (String(area || "")) {
+        case "settings":
+            return domain !== "backup"
+        case "favorites":
+            return domain === "favorites" || method.indexOf("favorite") >= 0
+        case "idl_registry":
+            return method.indexOf("idl") >= 0
+                || method.indexOf("decode") >= 0
+                || method.indexOf("instruction") >= 0
+                || method.indexOf("account") >= 0
+                || domain === "program"
+        case "wallet_profile":
+            return domain === "wallet"
+                || method.indexOf("wallet") >= 0
+                || method.indexOf("sign") >= 0
+                || method.indexOf("submit") >= 0
+                || method.indexOf("deploy") >= 0
+        default:
+            return false
+		        }
+		    }
+
+    function backupImportMetadataAffectsArea(metadata, area) {
+        const wanted = backupImportCanonicalArea(area)
+        if (!wanted.length) {
+            return false
+        }
+        const inputs = metadata && Array.isArray(metadata.affectedInputs) ? metadata.affectedInputs : []
+        for (let i = 0; i < inputs.length; ++i) {
+            const input = inputs[i] || {}
+            const key = backupImportCanonicalArea(input.key)
+            const value = backupImportCanonicalArea(input.value)
+            if (key === wanted || value === wanted) {
+                return true
+            }
+        }
+        return false
+    }
+
+    function backupImportCanonicalArea(value) {
+        const text = String(value || "").trim().toLowerCase().replace(/[- ]/g, "_")
+        switch (text) {
+        case "favorite":
+            return "favorites"
+        case "idl":
+        case "idls":
+            return "idl_registry"
+        case "wallet":
+        case "wallet_profile_state":
+            return "wallet_profile"
+        case "app_settings":
+        case "local_settings":
+        case "settings_profile":
+            return "settings"
+        default:
+            return text
+        }
+    }
+
+	    function backupImportStoppedStatus(status) {
+	        const value = String(status || "").toLowerCase()
+	        return value === "canceled" || value === "cancelled" || value === "stopped"
+	    }
+
+	    function backupImportTerminalStatus(status) {
+	        const value = String(status || "").toLowerCase()
+	        return backupImportStoppedStatus(value) || value === "completed" || value === "failed"
+	    }
+
+	    function backupImportOperationWithRestart(decision, operation) {
+	        const value = operation || (decision ? decision.operation : null)
+	        const restartRequest = decision && decision.operation ? decision.operation.restartRequest : undefined
+	        if (!value || typeof value !== "object" || restartRequest === undefined || value.restartRequest !== undefined || value.restart_request !== undefined) {
+	            return value
+	        }
+	        const next = {}
+	        for (const key in value) {
+	            next[key] = value[key]
+	        }
+	        next.restartRequest = restartRequest
+	        return next
+	    }
+
+	    function backupImportMarkLetFinish(decision) {
+	        if (decision && typeof decision === "object") {
+	            decision.action = "let_finish"
+	            decision.restart = false
+	            decision.restartEligible = false
+	            decision.restartGate = null
+	        }
+	        return backupImportDecisionWithAction(decision, "let_finish", false)
+	    }
+
+	    function backupImportStopState(decision, operation) {
+	        const value = backupImportOperationWithRestart(decision, operation)
+	        if (value && typeof value === "object") {
+	            updateRuntimeOperation(value)
+	        }
+	        const status = String(value && value.status ? value.status : "").toLowerCase()
+	        if (backupImportStoppedStatus(status)) {
+	            return { ok: true, operation: value }
+	        }
+	        if (backupImportTerminalStatus(status)) {
+	            return {
+	                ok: false,
+	                operation: value,
+	                terminal: true,
+	                error: qsTr("Affected operation finished instead of stopping before backup import.")
+	            }
+	        }
+	        return null
+	    }
+
+	    function awaitBackupImportStoppedOperation(decision, initialOperation) {
+	        const operationId = String(decision && decision.operationId ? decision.operationId : "")
+	        let latest = backupImportOperationWithRestart(decision, initialOperation)
+	        let state = backupImportStopState(decision, latest)
+	        if (state !== null) {
+	            return state
+	        }
+	        if (!operationId.length) {
+	            return {
+	                ok: false,
+	                operation: latest,
+	                error: qsTr("Backup import could not identify an affected operation to stop.")
+	            }
+	        }
+	        for (let attempt = 0; attempt < 6; ++attempt) {
+	            const response = root.requestModule(root.inspectorModule, "runtimeOperationStatus", [operationId], qsTr("Runtime operation"), false, false)
+	            if (!response || !response.ok) {
+	                return {
+	                    ok: false,
+	                    operation: latest,
+	                    error: response && response.error ? response.error : qsTr("Backup import could not check whether an affected operation stopped.")
+	                }
+	            }
+	            latest = backupImportOperationWithRestart(decision, response.value)
+	            state = backupImportStopState(decision, latest)
+	            if (state !== null) {
+	                return state
+	            }
+	        }
+	        return {
+	            ok: false,
+	            operation: latest,
+	            timeout: true,
+	            error: qsTr("Backup import timed out waiting for an affected operation to stop.")
+	        }
+	    }
+
+	    function stopBackupImportOperations(plan) {
+	        const decisions = plan && Array.isArray(plan.decisions) ? plan.decisions : []
+	        for (let i = 0; i < decisions.length; ++i) {
+	            const decision = decisions[i]
+	            if (decision.action === "let_finish") {
+                recordBackupImportDecision(decision, qsTr("Left safe affected operation running during backup import."))
+                continue
+            }
+            if (decision.action !== "stop") {
+                continue
+            }
+            const response = root.callInspector("runtimeOperationCancel", [decision.operationId], qsTr("Cancel operation"))
+	            if (!response.ok) {
+	                if (decision.safeToLetFinish === true) {
+	                    recordBackupImportDecision(backupImportMarkLetFinish(decision), qsTr("Stop failed; safe operation was left to finish."))
+	                    continue
+	                }
+	                settingsBackupStatus = response.error || qsTr("Backup import could not stop a running operation.")
+	                recordBackupImportDecision(backupImportDecisionWithAction(decision, "block", false), qsTr("Failed to stop affected operation before backup import."))
+	                return false
+	            }
+	            const stopped = awaitBackupImportStoppedOperation(decision, response.value || decision.operation)
+	            if (!stopped.ok) {
+	                if (stopped.operation && typeof stopped.operation === "object") {
+	                    updateRuntimeOperation(stopped.operation)
+	                }
+	                if (decision.safeToLetFinish === true) {
+	                    recordBackupImportDecision(backupImportMarkLetFinish(decision), stopped.error || qsTr("Safe operation was left to finish before backup import."))
+	                    continue
+	                }
+	                settingsBackupStatus = stopped.error || qsTr("Backup import could not stop a running operation.")
+	                recordBackupImportDecision(backupImportDecisionWithAction(decision, "block", false), stopped.error || qsTr("Affected operation did not stop before backup import."))
+	                return false
+	            }
+	            recordBackupImportDecision(decision, qsTr("Stopped affected operation before backup import."))
+	        }
+	        return true
+	    }
+
+    function restartBackupImportOperations(plan) {
+        const decisions = plan && Array.isArray(plan.decisions) ? plan.decisions : []
+        for (let i = 0; i < decisions.length; ++i) {
+            const decision = decisions[i]
+            if (decision.action !== "stop") {
+                continue
+            }
+            const request = decision.operation && decision.operation.restartRequest
+            if (!request || typeof request !== "object" || decision.restartEligible !== true) {
+                recordBackupImportDecision(backupImportDecisionWithAction(decision, "skip_restart", false), qsTr("Manual rerun required after backup import."))
+                continue
+            }
+	            const metadata = operationHistory.operationMetadata(decision.operation || {})
+	            if (!backupImportCanRestartOperation(decision.operation, metadata)) {
+	                const skipped = backupImportDecisionWithAction(decision, "skip_restart", false)
+	                skipped.restartGate = backupImportGateSummary(backupImportOperationGate(decision.operation, metadata))
+	                recordBackupImportDecision(skipped, qsTr("Skipped automatic restart because gates do not pass after import."))
+                continue
+            }
+	            runtimeOperationStart(request, false, function (response) {
+	                if (!response || !response.ok) {
+	                    const failed = backupImportDecisionWithAction(decision, "restart_failed", false)
+	                    failed.previousOperationId = decision.operationId
+	                    recordBackupImportDecision(failed, response && response.error ? response.error : qsTr("Safe read operation restart failed."))
+	                    return
+	                }
+	                const restarted = backupImportDecisionWithAction(decision, "restart", true)
+	                restarted.previousOperationId = decision.operationId
+	                restarted.restartOperationId = String(response.value && response.value.operationId ? response.value.operationId : "")
+	                if (restarted.restartOperationId.length) {
+	                    restarted.operationId = restarted.restartOperationId
+	                }
+	                recordBackupImportDecision(restarted, qsTr("Restarted safe read operation after backup import."))
+	            })
+	        }
+	    }
+
+    function recordBackupImportDecision(decision, detail) {
+        const value = decision || {}
+        const action = String(value.action || "")
+        const status = backupImportActionStatus(action)
+        const reason = backupImportActionReason(action)
+        AppModelCore.appendOperationHistory(root, {
+            domain: "backup",
+            method: "settingsBackupImportPolicy",
+	            status: status,
+	            label: qsTr("Backup import policy"),
+	            operationId: value.operationId,
+	            previousOperationId: value.previousOperationId,
+	            restartOperationId: value.restartOperationId,
+	            operationClass: value.operationClass,
+	            affectedInputs: value.affectedInputs || [],
+            restartPolicy: value.restartPolicy,
+            confirmationRequired: false,
+            importId: value.importId,
+            backupCatalogId: value.backupCatalogId,
+            reason: reason,
+            provenance: ["backup_import_policy", "operation_history"],
+            result: {
+                action: action,
+                status: status,
+                reason: reason,
+                import_id: value.importId,
+                backup_catalog_id: value.backupCatalogId,
+	                operation_id: value.operationId,
+	                previous_operation_id: value.previousOperationId || null,
+	                restart_operation_id: value.restartOperationId || null,
+	                operation_class: value.operationClass,
+	                restart: value.restart === true,
+	                restart_eligible: value.restartEligible === true,
+                restart_gate: value.restartGate || null,
+                safe_to_let_finish: value.safeToLetFinish === true,
+                provenance: ["backup_import_policy", "operation_history"]
+            }
+        }, detail)
+    }
+
+	    function backupImportActionStatus(action) {
+	        switch (String(action || "")) {
+	        case "stop":
+	            return "stopped_for_import"
+	        case "let_finish":
+	            return "let_finish_for_import"
+	        case "block":
+	            return "blocked_for_import"
+	        case "skip_restart":
+	            return "restart_skipped_for_import"
+	        case "restart":
+	            return "restarted_after_import"
+	        case "restart_failed":
+	            return "restart_failed_after_import"
+	        default:
+	            return "ignored"
+	        }
+    }
+
+    function backupImportActionReason(action) {
+	        switch (String(action || "")) {
+	        case "stop":
+	            return "affected_operation_stopped_for_import"
+	        case "let_finish":
+	            return "safe_operation_left_running_for_import"
+	        case "block":
+	            return "affected_operation_blocked_for_import"
+	        case "skip_restart":
+	            return "restart_not_safe_for_import"
+	        case "restart":
+	            return "safe_operation_restarted_after_import"
+	        case "restart_failed":
+	            return "safe_operation_restart_failed_after_import"
+	        default:
+	            return "not_applicable"
+	        }
+    }
+
+    function backupImportAffectedInputs(selectedAreas) {
+        const rows = []
+        const areas = Array.isArray(selectedAreas) ? selectedAreas : []
+        for (let i = 0; i < areas.length; ++i) {
+            rows.push({ key: "backup_area", value: String(areas[i] || "") })
+        }
+        return rows
+    }
+
+    function uploadBackupCatalogEntry(backupCatalogId) {
+        if (!root.settingsBackupAvailable()) {
+            settingsBackupStatus = qsTr("Storage upload capability is required.")
+            return null
+        }
+        return backupCatalogState.uploadLocal(backupCatalogId, [
+            root.effectiveStorageSourceMode(storageSourceMode),
+            root.configuredStorageRestUrl(),
+            storageMutatingDiagnosticsEnabled === true
+        ])
+    }
+
+    function backupCatalogRows() { return backupCatalogState.rows() }
+
+    function recordSettingsBackupCatalogEntry(encrypted, cid) {
+        const entry = createLocalSettingsBackup(settingsBackupEncrypted ? qsTr("Encrypted settings backup") : qsTr("Settings backup"), encrypted === true, settingsBackupContents)
+        if (!entry || !String(entry.backup_catalog_id || "").length || !String(cid || "").length) {
+            return entry
+        }
+        return attachBackupRemote(entry.backup_catalog_id, cid, "logos_storage") || entry
+    }
 
     function loadWalletState() {
         const response = bridge.callModule(inspectorModule, "loadWalletState", [])
@@ -894,11 +1770,13 @@ QtObject {
 
     function detectWalletProfile(saveDetected) { return wallet.detectProfile(saveDetected) }
 
-    function saveWalletState() { return wallet.savePersisted(networkProfile) }
+    function saveWalletState() { return wallet.savePersisted(networkProfile, prefersBasecampModules()) }
 
-    function walletStatePayload() { return wallet.payload(networkProfile) }
+    function walletStatePayload() { return wallet.payload(networkProfile, prefersBasecampModules()) }
 
-    function walletProfile() { return wallet.profile(networkProfile) }
+    function walletProfile() { return wallet.profile(networkProfile, prefersBasecampModules()) }
+
+    function walletConnectorConfigPayload() { return wallet.connectorConfigPayload(prefersBasecampModules()) }
 
     function walletProfileConfigured() { return wallet.profileConfigured() }
 
@@ -1080,6 +1958,123 @@ QtObject {
 
     function loadSourcePolicy() { return sourceRouting.loadSourcePolicy() }
 
+    function loadCapabilityRegistry() { return capabilityGateState.loadRegistry(root.prefersBasecampModules(), capabilityRegistryRuntimeInputs()) }
+
+    function refreshCapabilityRegistryIfLoaded() {
+        if (capabilityRegistryLoaded) {
+            loadCapabilityRegistry()
+        }
+    }
+
+    function gateState(expression, options) { return capabilityGateState.gateFor(expression, options || {}) }
+
+    function storageGate(action, options) { return capabilityGateState.storageGate(action, options || {}) }
+
+    function deliveryGate(action, options) { return capabilityGateState.deliveryGate(action, options || {}) }
+
+    function socialGate(action, options) { return capabilityGateState.socialGate(action, options || {}) }
+
+    function walletGate(action, options) { return capabilityGateState.walletGate(action, options || {}) }
+
+    function diagnosticsGate(action, options) { return capabilityGateState.diagnosticsGate(action, options || {}) }
+
+    function programDecodeGate(options) { return capabilityGateState.programDecodeGate(options || {}) }
+
+    function statusFacts() { return statusFacadeState.facts() }
+
+    function dashboardGate(key) { return statusFacadeState.dashboardGate(key) }
+
+    function capabilityRegistryRuntimeInputs() {
+        return {
+            network_connector_config: networkConnectorConfigPayload(),
+            wallet_connector_config: walletConnectorConfigPayload(),
+            node_url: String(nodeUrl || ""),
+            indexer_url: String(indexerUrl || ""),
+            sequencer_url: String(sequencerUrl || ""),
+            storage_rest_url: configuredStorageRestUrl(),
+            messaging_rest_url: configuredMessagingRestUrl(),
+	            storage_mutating_diagnostics_enabled: storageMutatingDiagnosticsEnabled === true,
+            messaging_mutating_diagnostics_enabled: messagingMutatingDiagnosticsEnabled === true,
+            wallet_profile_configured: walletProfileConfigured(),
+            wallet_home_configured: walletHomeConfigured(),
+            local_nodes_enabled: localNodesEnabled === true,
+            local_devnet_enabled: localNodesEnabled === true && localDevnetEnabled === true,
+            source_reports: {
+                l1: capabilityNetworkSourceReport("blockchain", qsTr("L1 RPC")),
+                "lez.indexer": capabilityNetworkSourceReport("indexer", qsTr("LEZ indexer RPC")),
+                "lez.sequencer": capabilityNetworkSourceReport("execution", qsTr("LEZ sequencer RPC")),
+                storage: storageSourceReport || null,
+                delivery: messagingSourceReport || null
+            },
+            diagnostics_reports: capabilityDiagnosticsReports()
+        }
+    }
+
+    function capabilityDiagnosticsReports() {
+        return {
+            module_reports: {
+                blockchain: blockchainModuleReport || null,
+                storage: storageModuleReport || null,
+                delivery: messagingModuleReport || null
+            },
+            source_reports: {
+                l1: capabilityNetworkSourceReport("blockchain", qsTr("L1 RPC")),
+                storage: storageSourceReport || null,
+                delivery: messagingSourceReport || null
+            },
+            last_known: {
+                local_nodes: localNodesError || "",
+                wallet: localWalletStatusError || ""
+            }
+        }
+    }
+
+    function capabilityNetworkSourceReport(kind, label) {
+        const key = String(kind || "")
+        const status = networkConnectionStatus && typeof networkConnectionStatus === "object"
+            ? networkConnectionStatus[key]
+            : null
+        if (!status || status.known !== true) {
+            return null
+        }
+        const ok = status.ok === true
+        const detail = String(status.detail || (ok ? qsTr("%1 reachable").arg(label) : qsTr("%1 unavailable").arg(label)))
+        return {
+            health: {
+                ready: ok,
+                reachable: ok,
+                status: ok ? "ready" : "unavailable",
+                detail: detail,
+                summary: detail
+            },
+            probe_facts: [{
+                key: key + ".connection",
+                ok: ok,
+                value: status.value !== undefined ? status.value : null,
+                error: ok ? "" : detail
+            }],
+            probes: []
+        }
+    }
+
+	    function capabilityLocalAvailability() {
+	        const localIdentityReady = socialIdentities.count > 0 || selectedSocialIdentityKey.length > 0 || socialIdentityDefaultMode !== "manual"
+	        const storageSyncRest = root.effectiveStorageSourceMode(storageSourceMode) === "rest"
+	        return {
+	            "social.identity.local": { status: localIdentityReady ? "available" : "input_required", provenance: "local_identity" },
+	            "storage.shared_idl.sync_read": {
+	                status: storageSyncRest ? "available" : "unavailable",
+	                label: qsTr("Storage synchronous CID read"),
+	                provenance: "source_routing"
+	            },
+	            "storage.shared_idl.sync_upload": {
+	                status: storageSyncRest ? "available" : "unavailable",
+	                label: qsTr("Storage synchronous payload upload"),
+	                provenance: "source_routing"
+	            }
+	        }
+	    }
+
     function sourcePolicyDefault(key, fallback) { return sourceRouting.sourcePolicyDefault(key, fallback) }
 
     function sourceModePolicy(family, value) { return sourceRouting.sourceModePolicy(family, value) }
@@ -1113,6 +2108,113 @@ QtObject {
     function deliveryReportView(report) { return sourceRouting.deliveryReportView(report) }
 
     function storageReportView(report) { return sourceRouting.storageReportView(report) }
+
+    function defaultNetworkConnectorConfig() {
+        return {
+            scopes: {
+                "l1": {
+                    connector_id: prefersBasecampModules() ? "blockchain_module" : "direct_l1_rpc",
+                    provenance: "build_default"
+                },
+                "lez.indexer": {
+                    connector_id: prefersBasecampModules() ? "lez_indexer_module" : "direct_indexer_rpc",
+                    provenance: "build_default"
+                },
+                "lez.sequencer": {
+                    connector_id: "direct_sequencer_rpc",
+                    provenance: "build_default"
+                },
+                "delivery": {
+                    connector_id: prefersBasecampModules() ? "delivery_module" : "direct_delivery_rest",
+                    provenance: "build_default"
+                },
+                "storage": {
+                    connector_id: prefersBasecampModules() ? "storage_module" : "direct_storage_rest",
+                    provenance: "build_default"
+                }
+            }
+        }
+    }
+
+    function loadNetworkConnectorConfig(value) {
+        const raw = value && value.network_connector_config && typeof value.network_connector_config === "object"
+            ? value.network_connector_config
+            : defaultNetworkConnectorConfig()
+        networkConnectorConfig = normalizedNetworkConnectorConfig(raw)
+        syncSourceModesFromConnectorConfig()
+    }
+
+    function normalizedNetworkConnectorConfig(value) {
+        const defaults = defaultNetworkConnectorConfig().scopes
+        const source = value && typeof value === "object" ? value : ({})
+        const scopes = source.scopes && typeof source.scopes === "object" ? source.scopes : source
+        const result = { scopes: ({}) }
+        const keys = ["l1", "lez.indexer", "lez.sequencer", "delivery", "storage"]
+        for (let i = 0; i < keys.length; ++i) {
+            const key = keys[i]
+            const fallback = defaults[key] || {}
+            const entry = scopes[key] && typeof scopes[key] === "object" ? scopes[key] : fallback
+            result.scopes[key] = {
+                connector_id: String(entry.connector_id || entry.connectorId || entry.id || fallback.connector_id || ""),
+                endpoint: String(entry.endpoint || entry.url || entry.rest_endpoint || entry.rpc_endpoint || ""),
+                provenance: String(entry.provenance || entry.connector_provenance || (entry === fallback ? "build_default" : "network_profile"))
+            }
+        }
+        return result
+    }
+
+    function networkConnectorConfigPayload() {
+        return normalizedNetworkConnectorConfig(networkConnectorConfig)
+    }
+
+    function setNetworkConnectorMode(scope, mode) {
+        const key = String(scope || "")
+        const connectorId = ConnectorConfigAdapter.connectorIdForMode(key, mode)
+        if (!connectorId.length) {
+            return
+        }
+        const next = normalizedNetworkConnectorConfig(networkConnectorConfig)
+        next.scopes[key] = {
+            connector_id: connectorId,
+            endpoint: "",
+            provenance: "network_profile"
+        }
+        networkConnectorConfig = next
+        setSourceModeProperty(key, ConnectorConfigAdapter.sourceModeForConnector(connectorId))
+    }
+
+    function setSourceModeProperty(scope, mode) {
+        const value = String(mode || "")
+        switch (String(scope || "")) {
+        case "l1":
+            blockchainSourceMode = value
+            break
+        case "lez.indexer":
+            indexerSourceMode = value
+            break
+        case "lez.sequencer":
+            executionSourceMode = value
+            break
+        case "delivery":
+            messagingSourceMode = value
+            break
+        case "storage":
+            storageSourceMode = value
+            break
+        }
+    }
+
+    function syncSourceModesFromConnectorConfig() {
+        blockchainSourceMode = sourceRouting.connectorSourceMode("l1", "rpc")
+        indexerSourceMode = sourceRouting.connectorSourceMode("lez.indexer", "rpc")
+        executionSourceMode = sourceRouting.connectorSourceMode("lez.sequencer", "rpc")
+        messagingSourceMode = sourceRouting.connectorSourceMode("delivery", "rest")
+        storageSourceMode = sourceRouting.connectorSourceMode("storage", "rest")
+    }
+
+    function currentConnectorSourceMode(scope, fallback) {
+        return sourceRouting.connectorSourceMode(scope, fallback)
+    }
 
     function networkConnectionRate(kind) { return AppModelNetwork.networkConnectionRate(root, kind) }
 

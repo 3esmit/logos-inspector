@@ -6,9 +6,8 @@ mod shared_idl;
 mod topic;
 
 pub use collaboration::{
-    SharedAccountIdlQuery, SocialCommentQuery, accepted_shared_account_idls, build_comment_topic,
-    build_lez_account_idl_topic, decode_comment_page, decode_social_messages,
-    project_comment_event, validate_topic,
+    SocialCommentQuery, build_comment_topic, build_lez_account_idl_topic, decode_comment_page,
+    decode_social_messages, project_comment_event, validate_topic,
 };
 pub use comments::{
     SocialCommentPage, SocialCommentRow, social_comment_page_from_store,
@@ -18,7 +17,7 @@ pub use delivery_store::{
     SocialMessage, last_social_message_cursor, social_messages_from_store, social_store_cursor,
 };
 pub use payload::{SocialPayload, parse_social_payload};
-pub use shared_idl::{AcceptedSharedIdlEntry, accepted_shared_idl_entries_from_store};
+pub use shared_idl::{AcceptedSharedIdlEntry, accepted_shared_idl_entries_from_messages};
 pub use topic::{
     SocialEntity, SocialLayer, comment_topic, comment_topic_from_parts, lez_account_idl_topic,
     social_topic_is_valid,
@@ -152,7 +151,7 @@ mod tests {
     }
 
     #[test]
-    fn idl_payload_rejects_missing_idl_and_account_mismatch() {
+    fn idl_payload_requires_storage_cid_and_account_match() {
         let payload = json!({
             "kind": "lez_account_idl",
             "version": 1,
@@ -160,13 +159,35 @@ mod tests {
             "account_id": "account-1",
             "program_id": "program-1",
             "idl_name": "Sample",
-            "idl_json": "{\"name\":\"Sample\",\"accounts\":[]}",
+            "idl_cid": "cid-idl",
+            "storage": {
+                "cid": "cid-idl",
+                "provider": "logos_storage",
+                "endpoint": "http://storage.example"
+            },
             "created_at": "2026-07-05T00:00:00.000Z"
         });
 
         let parsed = parse_social_payload(&payload.to_string(), Some("account-1"));
 
         assert!(matches!(parsed, Ok(SocialPayload::LezAccountIdl { .. })));
+        assert!(
+            parse_social_payload(
+                &json!({
+                    "kind": "lez_account_idl",
+                    "version": 1,
+                    "identity": { "display_name": "Ada" },
+                    "account_id": "account-1",
+                    "program_id": "program-1",
+                    "idl_name": "Sample",
+                    "idl_json": "{\"name\":\"Sample\",\"accounts\":[]}",
+                    "created_at": "2026-07-05T00:00:00.000Z"
+                })
+                .to_string(),
+                Some("account-1"),
+            )
+            .is_err()
+        );
         assert!(parse_social_payload(&payload.to_string(), Some("account-2")).is_err());
         assert!(
             parse_social_payload(
@@ -177,7 +198,7 @@ mod tests {
                     "account_id": "account-1",
                     "program_id": "program-1",
                     "idl_name": "Sample",
-                    "idl_json": "",
+                    "idl_cid": "cid-idl",
                     "created_at": "2026-07-05T00:00:00.000Z"
                 })
                 .to_string(),
@@ -322,27 +343,26 @@ mod tests {
                 }
             ]
         }"#;
-        let payload = json!({
-            "kind": "lez_account_idl",
-            "version": 1,
-            "identity": { "display_name": "Ada" },
-            "account_id": "account-1",
-            "program_id": program_id,
-            "idl_name": "SharedProgram",
-            "idl_json": idl,
-            "created_at": "2026-07-05T00:00:00.000Z"
-        });
-        let store = json!({
-            "messages": [{
-                "contentTopic": topic,
-                "payload": BASE64_STANDARD.encode(payload.to_string()),
-                "cursor": "cursor-1"
-            }]
-        });
+        let messages = vec![SocialMessage {
+            topic: topic.to_owned(),
+            cursor: "cursor-1".to_owned(),
+            timestamp: "2026-07-05T00:00:00.000Z".to_owned(),
+            payload: SocialPayload::LezAccountIdl {
+                version: 1,
+                identity: json!({ "display_name": "Ada" }),
+                account_id: "account-1".to_owned(),
+                program_id: program_id.to_owned(),
+                idl_name: "SharedProgram".to_owned(),
+                idl_json: idl.to_owned(),
+                idl_cid: "cid-idl".to_owned(),
+                storage: Some(json!({ "cid": "cid-idl", "provider": "logos_storage" })),
+                created_at: "2026-07-05T00:00:00.000Z".to_owned(),
+            },
+        }];
 
-        let accepted = accepted_shared_idl_entries_from_store(
+        let accepted = accepted_shared_idl_entries_from_messages(
             topic,
-            &store,
+            messages.clone(),
             "account-1",
             "01",
             Some(program_id),
@@ -362,9 +382,9 @@ mod tests {
         assert_eq!(first.shared_account_id, "account-1");
 
         assert!(
-            accepted_shared_idl_entries_from_store(
+            accepted_shared_idl_entries_from_messages(
                 topic,
-                &store,
+                messages.clone(),
                 "account-1",
                 "0102",
                 Some(program_id),
@@ -372,9 +392,9 @@ mod tests {
             .is_empty()
         );
         assert!(
-            accepted_shared_idl_entries_from_store(
+            accepted_shared_idl_entries_from_messages(
                 topic,
-                &store,
+                messages,
                 "account-1",
                 "01",
                 Some(other_program_id),

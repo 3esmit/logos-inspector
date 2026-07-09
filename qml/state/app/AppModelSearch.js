@@ -44,6 +44,7 @@ function refreshDashboard(root) {
                 }
                 remaining -= 1
                 if (remaining === 0) {
+                    dashboardLezBlockRows = root.chainPages.lezBlockListReportRows(dashboardSequencerBlocks || [], dashboardBlocks || [], 5)
                     dashboardRefreshing = false
                     dashboardError = errors.join("\n")
                     root.recordDashboardSnapshot()

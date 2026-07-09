@@ -6,9 +6,10 @@ QtObject {
     id: root
 
     required property var gateway
+    property var gateFacade: null
 
     property bool busy: false
-    property string sourceMode: "auto"
+    property string sourceMode: "rest"
     property string effectiveSourceMode: "rest"
     property string sourceLabel: ""
     property string sourceTarget: ""
@@ -97,6 +98,31 @@ QtObject {
         return usesRestEndpoint || effectiveSourceMode === "module"
     }
 
+    function storageActionGate(action, requiredInputs) {
+        const options = {
+            required_inputs: Array.isArray(requiredInputs) ? requiredInputs : []
+        }
+        if (gateFacade && typeof gateFacade.storageGate === "function") {
+            return gateFacade.storageGate(action, options)
+        }
+        return {
+            enabled: false,
+            status: "disabled",
+            missing: [{ dependency: "storage", label: qsTr("Storage capability"), status: "unavailable", capability: "storage", provenance: "capability_registry" }],
+            warnings: [],
+            provenance: ["capability_registry"]
+        }
+    }
+
+    function storageActionEnabled(action, requiredInputs) {
+        return storageActionGate(action, requiredInputs).enabled === true
+    }
+
+    function storageActionProblem(action, requiredInputs) {
+        const gate = storageActionGate(action, requiredInputs)
+        return gate.enabled ? "" : gateDetailText(gate)
+    }
+
     function storageArgs(extra) {
         return storageOperations.sourceArgs(extra)
     }
@@ -106,8 +132,12 @@ QtObject {
     }
 
     function refreshManifests(showLog) {
-        if (busy || !storageDataSource()) {
+        if (busy) {
             return null
+        }
+        const gate = storageActionGate("manifests", [])
+        if (!gate.enabled) {
+            return blockedStorageResponse(qsTr("List files"), gate, showLog === true)
         }
         const response = gateway.call("storageManifests", storageArgs([]), qsTr("Storage manifests"))
         if (showLog) {
@@ -123,6 +153,11 @@ QtObject {
     }
 
     function runStorage(method, args, label) {
+        const action = storageActionForMethod(method)
+        const gate = storageActionGate(action, requiredInputsForStorageAction(action, args))
+        if (!gate.enabled) {
+            return blockedStorageResponse(label, gate, true)
+        }
         if (String(method || "") !== "storageExists") {
             return startStorageOperation(method, args, label)
         }
@@ -147,6 +182,11 @@ QtObject {
     }
 
     function startStorageOperation(method, args, label) {
+        const action = storageActionForMethod(method)
+        const gate = storageActionGate(action, requiredInputsForStorageAction(action, args))
+        if (!gate.enabled) {
+            return blockedStorageResponse(label, gate, true)
+        }
         lastOperation = qsTr("Starting")
         const started = storageOperations.startOperation(method, args, label, function (response) {
             if (response && response.ok) {
@@ -202,6 +242,73 @@ QtObject {
 
     function appendOperation(label, response) {
         storageOperations.appendOperation(label, response)
+    }
+
+    function blockedStorageResponse(label, gate, logResponse) {
+        const response = {
+            ok: false,
+            value: null,
+            text: "",
+            error: gateDetailText(gate)
+        }
+        lastOperation = qsTr("Blocked")
+        if (logResponse) {
+            appendOperation(String(label || qsTr("Storage operation")), response)
+        }
+        return response
+    }
+
+    function gateDetailText(gate) {
+        const value = gate || {}
+        const missing = Array.isArray(value.missing) ? value.missing : []
+        if (missing.length > 0) {
+            const first = missing[0] || {}
+            const dependency = String(first.dependency || first.capability || "")
+            const label = String(first.label || dependency || qsTr("Storage capability"))
+            return dependency.length ? qsTr("%1 unavailable: %2").arg(label).arg(dependency) : qsTr("%1 unavailable").arg(label)
+        }
+        return qsTr("Storage capability unavailable.")
+    }
+
+    function storageActionForMethod(method) {
+        switch (String(method || "")) {
+        case "storageManifests":
+            return "manifests"
+        case "storageExists":
+            return "exists"
+        case "storageDownloadManifest":
+            return "read_by_cid"
+        case "storageFetch":
+            return "cache"
+        case "storageUploadUrl":
+            return "upload"
+        case "storageDownloadToUrl":
+            return "download"
+        case "storageRemove":
+            return "remove"
+        default:
+            return "storage"
+        }
+    }
+
+    function requiredInputsForStorageAction(action, args) {
+        const values = Array.isArray(args) ? args : []
+        switch (String(action || "")) {
+        case "exists":
+        case "read_by_cid":
+        case "cache":
+        case "remove":
+            return [{ key: "cid", label: qsTr("CID"), value: values[0] }]
+        case "download":
+            return [
+                { key: "cid", label: qsTr("CID"), value: values[0] },
+                { key: "path", label: qsTr("Save path"), value: values[1] }
+            ]
+        case "upload":
+            return [{ key: "path", label: qsTr("File path"), value: values[0] }]
+        default:
+            return []
+        }
     }
 
     function updateActiveOperation(value) {

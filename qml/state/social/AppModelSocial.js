@@ -35,7 +35,7 @@ function socialCommentState(root, topic) {
 function loadSocialComments(root, topic, reset, pageSize, expectedAccountId) {
     with (root) {
         const key = String(topic || "").trim()
-        if (!key.length) {
+        if (!key.length || !root.socialCommentReadAvailable(key)) {
             return false
         }
         const current = root.socialCommentStateForTopic(key)
@@ -352,15 +352,110 @@ function socialMessageSourceAvailable(root) {
     return mode === "rest" || mode === "module"
 }
 
+function normalizedSocialGate(gate) {
+    const state = gate && typeof gate === "object" ? gate : ({})
+    return {
+        enabled: state.enabled === true,
+        status: String(state.status || (state.enabled === true ? "enabled" : "disabled")),
+        missing: Array.isArray(state.missing) ? state.missing.slice(0) : [],
+        warnings: Array.isArray(state.warnings) ? state.warnings.slice(0) : [],
+        provenance: Array.isArray(state.provenance) ? state.provenance.slice(0) : []
+    }
+}
+
+function socialGateWithInputMissing(gate, dependency, label) {
+    const state = normalizedSocialGate(gate)
+    const provenance = state.provenance.slice(0)
+    provenance.push("input")
+    return {
+        enabled: false,
+        status: state.enabled ? "input_required" : state.status,
+        missing: state.missing.concat([{
+            dependency: String(dependency || ""),
+            label: String(label || dependency || qsTr("Input")),
+            status: "input_required",
+            capability: String(dependency || ""),
+            provenance: "input"
+        }]),
+        warnings: state.warnings,
+        provenance: provenance
+    }
+}
+
+function socialGateWithTopic(root, gate, topic) {
+    const state = normalizedSocialGate(gate)
+    const key = String(topic || "").trim()
+    if (!key.length) {
+        return socialGateWithInputMissing(state, "social.topic", qsTr("Social topic"))
+    }
+    if (!state.enabled) {
+        return state
+    }
+    if (!root.validSocialTopic(key)) {
+        return socialGateWithInputMissing(state, "social.topic.valid", qsTr("Valid social topic"))
+    }
+    return state
+}
+
+function socialStoreGate(root) {
+    return normalizedSocialGate(root.socialGate("comments.read"))
+}
+
+function socialCommentReadGate(root, topic) {
+    return socialGateWithTopic(root, socialStoreGate(root), topic)
+}
+
+function socialCommentWriteGate(root, topic) {
+    return socialGateWithTopic(root, root.socialGate("comments.write"), topic)
+}
+
+function socialSharedIdlReadGate(root) {
+    return normalizedSocialGate(root.socialGate("shared_idl.read"))
+}
+
+function socialSharedIdlWriteGate(root, topic) {
+    return socialGateWithTopic(root, root.socialGate("shared_idl.write"), topic)
+}
+
+function socialMissingDependencyText(row) {
+    const dependency = String(row && row.dependency !== undefined ? row.dependency : "")
+    const label = String(row && row.label !== undefined ? row.label : "")
+    const status = String(row && row.status !== undefined ? row.status : "")
+    const name = label.length && label !== dependency && dependency.length
+        ? qsTr("%1: %2").arg(label).arg(dependency)
+        : String(dependency || label || qsTr("Required Social capability"))
+    if (status.length && status !== "unavailable") {
+        return qsTr("%1 (%2)").arg(name).arg(status)
+    }
+    return name
+}
+
+function socialGateDetailText(root, gate, fallback) {
+    const state = normalizedSocialGate(gate)
+    if (state.enabled) {
+        return String(fallback || "")
+    }
+    const missing = Array.isArray(state.missing) ? state.missing : []
+    if (!missing.length) {
+        return String(fallback || qsTr("Required Social capability is unavailable."))
+    }
+    const details = []
+    for (let i = 0; i < missing.length; ++i) {
+        details.push(socialMissingDependencyText(missing[i]))
+    }
+    return qsTr("Missing %1").arg(details.join(", "))
+}
+
 function socialStoreAvailable(root) {
-    return String(root.effectiveMessagingSourceMode(root.messagingSourceMode) || "").toLowerCase() === "rest"
+    return socialStoreGate(root).enabled === true
 }
 
 function querySocialStore(root, topic, cursor, pageSize, label) {
-    if (!root.socialStoreAvailable()) {
+    const gate = socialStoreGate(root)
+    if (!gate.enabled) {
         return {
             ok: false,
-            error: qsTr("Delivery Store requires Direct Waku REST source."),
+            error: socialGateDetailText(root, gate, qsTr("Delivery Store capability is unavailable.")),
             storeUnavailable: true
         }
     }
@@ -376,9 +471,19 @@ function querySocialStore(root, topic, cursor, pageSize, label) {
 
 function socialCommentSendAvailable(root, topic) {
     return !root.busy
-        && root.socialMessageSourceAvailable()
-        && root.messagingMutatingDiagnosticsEnabled === true
-        && root.validSocialTopic(topic)
+        && socialCommentWriteGate(root, topic).enabled === true
+}
+
+function socialCommentReadAvailable(root, topic) {
+    return socialCommentReadGate(root, topic).enabled === true
+}
+
+function socialSharedIdlReadAvailable(root) {
+    return socialSharedIdlReadGate(root).enabled === true
+}
+
+function socialSharedIdlWriteAvailable(root, topic) {
+    return socialSharedIdlWriteGate(root, topic).enabled === true
 }
 
 function validSocialTopic(root, topic) {
@@ -587,7 +692,7 @@ function refreshSharedIdlsForAccount(root, accountId, dataHex, ownerProgramId) {
         const account = String(accountId || "").trim()
         const data = String(dataHex || "").trim()
         const topic = root.socialLezAccountIdlTopic(account)
-        if (policy === "disabled" || !topic.length || !data.length) {
+        if (policy === "disabled" || !topic.length || !data.length || !root.socialSharedIdlReadAvailable()) {
             return false
         }
         const response = querySocialStore(root, topic, "", 20, qsTr("Shared IDLs"))
@@ -596,8 +701,17 @@ function refreshSharedIdlsForAccount(root, accountId, dataHex, ownerProgramId) {
         }
         const acceptedResponse = root.requestModule(
             inspectorModule,
-            "acceptedSharedIdlEntriesFromStore",
-            [topic, response.value, account, data, String(ownerProgramId || "")],
+            "acceptedSharedIdlEntriesFromStoreWithStorage",
+            [
+                topic,
+                response.value,
+                account,
+                data,
+                String(ownerProgramId || ""),
+                root.effectiveStorageSourceMode(storageSourceMode),
+                root.configuredStorageRestUrl(),
+                false
+            ],
             qsTr("Shared IDLs"),
             false,
             false
@@ -708,20 +822,52 @@ function publishAccountIdl(root, accountId, ownerProgramId, idlEntry) {
         const topic = root.socialLezAccountIdlTopic(account)
         const entry = idlEntry || {}
         const idlJson = String(entry.json || "")
-        if (!topic.length || !idlJson.length || !root.socialCommentSendAvailable(topic)) {
+        if (!topic.length || !idlJson.length || !root.socialSharedIdlWriteAvailable(topic)) {
             return false
         }
         const identity = root.socialIdentityForConversation(topic, "")
         const programId = String(ownerProgramId || entry.programIdHex || entry.programId || "")
+        const createdAt = new Date().toISOString()
+        const idlName = String(entry.name || root.idlNameFromJson(idlJson) || qsTr("IDL"))
+        const artifact = {
+            kind: "lez_account_idl_artifact",
+            version: 1,
+            account_id: account,
+            program_id: programId,
+            idl_name: idlName,
+            idl_json: idlJson,
+            created_at: createdAt
+        }
+        const upload = root.callInspector(
+            "storageUploadPayload",
+            [
+                root.effectiveStorageSourceMode(storageSourceMode),
+                root.configuredStorageRestUrl(),
+                storageMutatingDiagnosticsEnabled === true,
+                "logos-inspector-shared-idl.json",
+                artifact,
+                65536
+            ],
+            qsTr("Upload shared IDL")
+        )
+        if (!upload.ok || !upload.value || !String(upload.value.cid || "").length) {
+            return false
+        }
+        const cid = String(upload.value.cid || "")
         const payload = {
             kind: "lez_account_idl",
             version: 1,
             identity: root.socialIdentityPayload(identity),
             account_id: account,
             program_id: programId,
-            idl_name: String(entry.name || root.idlNameFromJson(idlJson) || qsTr("IDL")),
-            idl_json: idlJson,
-            created_at: new Date().toISOString()
+            idl_name: idlName,
+            idl_cid: cid,
+            storage: {
+                cid: cid,
+                provider: "logos_storage",
+                endpoint: root.configuredStorageRestUrl()
+            },
+            created_at: createdAt
         }
         const response = root.callInspector(
             "deliverySend",

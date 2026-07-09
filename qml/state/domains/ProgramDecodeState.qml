@@ -5,6 +5,7 @@ QtObject {
     id: root
 
     required property QtObject registryGateway
+    property var capabilityFacade: null
 
     property IdlRegistryState idlRegistry: IdlRegistryState {
         id: idlRegistryState
@@ -22,4 +23,19 @@ QtObject {
     property int transactionAutoDecodeSerial: 0
     property int searchResolveSerial: 0
     property int programOpenSerial: 0
+
+    function decodeGate(requiredInputs) {
+        if (capabilityFacade && typeof capabilityFacade.programDecodeGate === "function") {
+            return capabilityFacade.programDecodeGate({
+                required_inputs: Array.isArray(requiredInputs) ? requiredInputs : []
+            })
+        }
+        return {
+            enabled: true,
+            status: "enabled",
+            missing: [],
+            warnings: [],
+            provenance: ["program_decode_static"]
+        }
+    }
 }

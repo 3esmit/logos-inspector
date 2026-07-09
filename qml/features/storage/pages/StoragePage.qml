@@ -363,10 +363,11 @@ ColumnLayout {
             refreshActions: [
                 { text: qsTr("Refresh status"), width: 140, accessibleName: qsTr("Refresh Storage status") }
             ]
-            pending: root.pending()
-            statusText: root.statusLine()
+            pending: root.pending() || !root.diagnosticsGateEnabled("storage")
+            statusText: root.diagnosticsStatusText("storage", root.statusLine(), qsTr("Storage diagnostics"))
             guardedTitle: qsTr("Guarded diagnostics")
-            permissionEnabled: root.model.storageMutatingDiagnosticsEnabled
+            permissionEnabled: root.model.storageMutatingDiagnosticsEnabled && root.diagnosticsGateEnabled("storage")
+            permissionDisabledTitle: root.diagnosticsGateEnabled("storage") ? qsTr("Permission disabled") : qsTr("Diagnostics unavailable")
             guardedMessage: qsTr("Manifest fetch, provider lookup, download, connect, remove, upload, and lifecycle controls are not background-polled. They need backend adapters and per-action confirmation.")
             guardedActions: [
                 { text: qsTr("Manifest fetch"), width: 142 },
@@ -409,6 +410,33 @@ ColumnLayout {
 
     function report() {
         return sourceSession.report()
+    }
+
+    function diagnosticsGate(action) {
+        return root.model.diagnosticsGate(action)
+    }
+
+    function diagnosticsGateEnabled(action) {
+        return diagnosticsGate(action).enabled === true
+    }
+
+    function diagnosticsStatusText(action, currentStatus, fallbackLabel) {
+        const gate = diagnosticsGate(action)
+        if (gate.enabled === true) {
+            return currentStatus
+        }
+        return diagnosticsGateDetailText(gate, fallbackLabel)
+    }
+
+    function diagnosticsGateDetailText(gate, fallbackLabel) {
+        const missing = gate && Array.isArray(gate.missing) ? gate.missing : []
+        if (missing.length > 0) {
+            const first = missing[0] || {}
+            const dependency = String(first.dependency || first.capability || "")
+            const label = String(first.label || fallbackLabel || qsTr("Diagnostics"))
+            return dependency.length ? qsTr("%1 unavailable: %2").arg(label).arg(dependency) : qsTr("%1 unavailable").arg(label)
+        }
+        return qsTr("%1 unavailable").arg(String(fallbackLabel || qsTr("Diagnostics")))
     }
 
     function status() {

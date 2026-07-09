@@ -670,18 +670,14 @@ function finishLezBlocksPage(root, before, sequencerResponse, indexerResponse) {
     with (root) {
         const sequencerBlocks = responseBlockArray(root, sequencerResponse)
         const indexerBlocks = responseBlockArray(root, indexerResponse)
-        if (sequencerBlocks !== null) {
-            const blocks = root.mergedLezBlocks(sequencerBlocks, indexerBlocks || [], lezBlocksPageLimit)
-            lezBlocksPageBeforeBlock = before
-            lezBlocksPageRows = blocks
-            lezBlocksPageNextBeforeBlock = root.nextIndexerBlocksCursor(blocks)
-            lezBlocksPageError = ""
-            setResult(qsTr("L2 blocks"), BridgeHelpers.formatValue(lezBlocksPageRows), false, lezBlocksPageRows)
-            return
-        }
-
-        if (indexerBlocks !== null) {
-            const blocks = root.sortedIndexerBlocks(indexerBlocks)
+        if (sequencerBlocks !== null || indexerBlocks !== null) {
+            const report = root.lezBlockListReport(sequencerBlocks || [], indexerBlocks || [], lezBlocksPageLimit)
+            if (!report.ok) {
+                lezBlocksPageError = report.error
+                setResult(qsTr("L2 blocks"), lezBlocksPageError, true)
+                return
+            }
+            const blocks = root.lezBlockListRows(report.value)
             lezBlocksPageBeforeBlock = before
             lezBlocksPageRows = blocks
             lezBlocksPageNextBeforeBlock = root.nextIndexerBlocksCursor(blocks)
@@ -809,63 +805,30 @@ function setLezTransactionsPageLimit(root, limit) {
 
 function sortedIndexerBlocks(root, blocks) {
     with (root) {
-        const copy = Array.isArray(blocks) ? blocks.slice(0) : []
-        copy.sort(function (left, right) {
+        const rows = Array.isArray(blocks) ? blocks.slice(0) : []
+        rows.sort(function (left, right) {
             return root.indexerBlockId(right) - root.indexerBlockId(left)
         })
-        return copy
+        return rows
     }
 }
 
-function mergedLezBlocks(root, sequencerBlocks, indexerBlocks, limit) {
+function lezBlockListReport(root, sequencerBlocks, indexerBlocks, limit) {
     with (root) {
-        const rows = []
-        const seen = ({})
-        const indexedById = ({})
-        const indexed = root.sortedIndexerBlocks(indexerBlocks)
-        for (let i = 0; i < indexed.length; ++i) {
-            const block = sourceLezBlock(root, indexed[i], "indexer")
-            const id = root.indexerBlockId(block)
-            if (id > 0) {
-                indexedById[String(id)] = block
-            }
-        }
-
-        const sequenced = root.sortedIndexerBlocks(sequencerBlocks)
-        for (let j = 0; j < sequenced.length; ++j) {
-            const block = sourceLezBlock(root, sequenced[j], "sequencer")
-            const id = root.indexerBlockId(block)
-            appendLezBlock(root, rows, seen, id > 0 && indexedById[String(id)] ? indexedById[String(id)] : block)
-        }
-
-        for (let k = 0; k < indexed.length; ++k) {
-            appendLezBlock(root, rows, seen, sourceLezBlock(root, indexed[k], "indexer"))
-        }
-
-        return root.sortedIndexerBlocks(rows).slice(0, Math.max(1, Number(limit || rows.length || 1)))
+        return requestModule(
+            inspectorModule,
+            "lezBlockListReport",
+            [Array.isArray(sequencerBlocks) ? sequencerBlocks : [], Array.isArray(indexerBlocks) ? indexerBlocks : [], Math.max(1, Number(limit || 1))],
+            qsTr("L2 block report"),
+            false,
+            false
+        )
     }
 }
 
-function sourceLezBlock(root, block, source) {
+function lezBlockListRows(root, report) {
     with (root) {
-        const copy = Object.assign({}, block || {})
-        copy.source = source
-        return copy
-    }
-}
-
-function appendLezBlock(root, rows, seen, block) {
-    with (root) {
-        const id = root.indexerBlockId(block)
-        const hash = root.indexerBlockHash(block)
-        const key = id > 0 ? "id:" + id : (hash.length ? "hash:" + hash : "")
-        if (key.length && seen[key] === true) {
-            return
-        }
-        if (key.length) {
-            seen[key] = true
-        }
-        rows.push(block)
+        return report && Array.isArray(report.rows) ? report.rows : []
     }
 }
 

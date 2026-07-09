@@ -335,6 +335,13 @@ function updateNetworkConnectionStatus(root, kind, response) {
         }
         networkConnectionStatus = next
         networkConnectionStatusRevision += 1
+        if (typeof root.refreshCapabilityRegistryIfLoaded === "function"
+                && typeof Qt !== "undefined"
+                && typeof Qt.callLater === "function") {
+            Qt.callLater(function () { root.refreshCapabilityRegistryIfLoaded() })
+        } else if (typeof root.refreshCapabilityRegistryIfLoaded === "function") {
+            root.refreshCapabilityRegistryIfLoaded()
+        }
     }
 }
 
@@ -382,15 +389,17 @@ function cacheNetworkConnectionResult(root, kind, response) {
             dashboardOverview = overview
             return
         }
-        if (target === "messaging") {
-            messagingSourceReport = value || null
-            return
-        }
-        if (target === "storage") {
-            storageSourceReport = value || null
-        }
-    }
-}
+	        if (target === "messaging") {
+	            messagingSourceReport = value || null
+	            root.refreshCapabilityRegistryIfLoaded()
+	            return
+	        }
+	        if (target === "storage") {
+	            storageSourceReport = value || null
+	            root.refreshCapabilityRegistryIfLoaded()
+	        }
+	    }
+	}
 
 function networkConnectionSummary(root, kind, value) {
     return SourceHealthProjection.networkConnectionSummary(root, kind, value)

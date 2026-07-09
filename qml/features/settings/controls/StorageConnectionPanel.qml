@@ -21,11 +21,11 @@ SourceSettingsPanel {
 
         ComboField {
             theme: root.theme
-            label: qsTr("Source mode")
-            accessibleName: qsTr("Storage source mode")
+            label: qsTr("Connector")
+            accessibleName: qsTr("Storage connector")
             options: root.sourceOptions
-            currentIndex: root.sourceIndexFor(root.modelRef.storageSourceMode)
-            onActivated: index => root.modelRef.storageSourceMode = root.sourceModeAt(index)
+            currentIndex: root.sourceIndexFor(root.modelRef.currentConnectorSourceMode("storage", "rest"))
+            onActivated: index => root.modelRef.setNetworkConnectorMode("storage", root.sourceModeAt(index))
         }
 
         FieldRow {
@@ -137,7 +137,7 @@ SourceSettingsPanel {
         theme: root.theme
         tone: "warning"
         title: qsTr("Source unavailable")
-        message: qsTr("The saved source mode no longer has an adapter. Select Auto, Storage module, Standalone REST, or Metrics only.")
+        message: qsTr("The configured connector no longer has an adapter. Select Storage module, Standalone REST, or Metrics only.")
         Layout.fillWidth: true
     }
 

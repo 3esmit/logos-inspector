@@ -11,11 +11,11 @@ WalletState {
         load(value)
     }
 
-    function savePersisted(networkProfile) {
+    function savePersisted(networkProfile, prefersBasecamp) {
         if (!loaded || !gateway) {
             return
         }
-        gateway.call("saveWalletState", [payload(networkProfile)])
+        gateway.call("saveWalletState", [payload(networkProfile, prefersBasecamp === true)])
     }
 
     function detectProfile(saveDetected) {
@@ -38,7 +38,7 @@ WalletState {
         }
         clearStatus()
         if (saveDetected !== false) {
-            savePersisted(gateway.networkProfile())
+            savePersisted(gateway.networkProfile(), gateway.prefersBasecampModules())
         }
         return detectedBinary.length > 0 || detectedHome.length > 0
     }
@@ -49,7 +49,7 @@ WalletState {
         }
         statusError = ""
         gateway.setStatus(qsTr("Local wallet"))
-        return gateway.request("localWalletProfileStatus", [profile(gateway.networkProfile())], qsTr("Local wallet"), showResult === true, function (response) {
+        return gateway.request("localWalletProfileStatus", [profile(gateway.networkProfile(), gateway.prefersBasecampModules())], qsTr("Local wallet"), showResult === true, function (response) {
             if (response.ok) {
                 status = response.value || null
                 statusError = ""
@@ -66,7 +66,7 @@ WalletState {
         if (!gateway) {
             return { ok: false, detail: qsTr("Wallet gateway is not available.") }
         }
-        const response = gateway.requestBlocking("localWalletProfileStatus", [profile(gateway.networkProfile())], qsTr("Local wallet"), false)
+        const response = gateway.requestBlocking("localWalletProfileStatus", [profile(gateway.networkProfile(), gateway.prefersBasecampModules())], qsTr("Local wallet"), false)
         if (response.ok) {
             status = response.value || null
             statusError = ""
@@ -94,7 +94,7 @@ WalletState {
         const privacy = String(createPrivacy || "public").toLowerCase() === "private" ? "private" : "public"
         const label = String(createLabel || "").trim()
 
-        return runRequest(qsTr("Wallet account"), "localWalletCreateAccount", [profile(gateway.networkProfile()), privacy, label, ConfirmationPolicy.token("wallet-create-account")], true, function (response) {
+        return runRequest(qsTr("Wallet account"), "localWalletCreateAccount", [currentProfile(), privacy, label, ConfirmationPolicy.token("wallet-create-account")], true, function (response) {
             if (response.ok) {
                 appendHistory(qsTr("Create account"), "created", operationDetail(response.value, "command"))
                 createLabel = ""
@@ -129,7 +129,7 @@ WalletState {
             return null
         }
 
-        return runRequest(qsTr("Wallet send"), "localWalletSendTransaction", [profile(gateway.networkProfile()), request, ConfirmationPolicy.token("wallet-send-transaction")], true, function (response) {
+        return runRequest(qsTr("Wallet send"), "localWalletSendTransaction", [currentProfile(), request, ConfirmationPolicy.token("wallet-send-transaction")], true, function (response) {
             if (response.ok) {
                 appendHistory(qsTr("Send transaction"), "submitted", operationDetail(response.value, "command"))
             } else {
@@ -146,7 +146,7 @@ WalletState {
             return null
         }
 
-        return runRequest(qsTr("Read incoming"), "localWalletSyncPrivate", [profile(gateway.networkProfile()), ConfirmationPolicy.token("wallet-sync-private")], true, function (response) {
+        return runRequest(qsTr("Read incoming"), "localWalletSyncPrivate", [currentProfile(), ConfirmationPolicy.token("wallet-sync-private")], true, function (response) {
             if (response.ok) {
                 appendHistory(qsTr("Read incoming"), "submitted", operationDetail(response.value, "privateSync"))
             } else {
@@ -168,7 +168,7 @@ WalletState {
             return null
         }
 
-        return runRequest(qsTr("Wallet command"), "localWalletCommand", [profile(gateway.networkProfile()), args, ConfirmationPolicy.token("wallet-command")], true, function (response) {
+        return runRequest(qsTr("Wallet command"), "localWalletCommand", [currentProfile(), args, ConfirmationPolicy.token("wallet-command")], true, function (response) {
             if (response.ok) {
                 appendHistory(qsTr("Wallet command"), "completed", operationDetail(response.value, "command"))
             } else {
@@ -185,7 +185,7 @@ WalletState {
             return null
         }
 
-        return runRequest(qsTr("Private sync"), "localWalletSyncPrivate", [profile(gateway.networkProfile()), ConfirmationPolicy.token("wallet-sync-private")], true, function (response) {
+        return runRequest(qsTr("Private sync"), "localWalletSyncPrivate", [currentProfile(), ConfirmationPolicy.token("wallet-sync-private")], true, function (response) {
             if (response.ok) {
                 appendHistory(qsTr("Private sync"), "submitted", operationDetail(response.value, "privateSync"))
             } else {
@@ -204,7 +204,7 @@ WalletState {
             return null
         }
 
-        return runRequest(qsTr("Wallet accounts"), "localWalletAccounts", [profile(gateway.networkProfile())], showResult === true, function (response) {
+        return runRequest(qsTr("Wallet accounts"), "localWalletAccounts", [currentProfile()], showResult === true, function (response) {
             if (response.ok) {
                 accountsValue = response.value || null
                 accountsError = ""
@@ -361,9 +361,13 @@ WalletState {
                     error: historyStatus === "failed" ? detailText : ""
                 }, detailText)
             }
-            savePersisted(gateway.networkProfile())
+            savePersisted(gateway.networkProfile(), gateway.prefersBasecampModules())
         }
         return record
+    }
+
+    function currentProfile() {
+        return profile(gateway.networkProfile(), gateway.prefersBasecampModules())
     }
 
     function homeFallbackLabel() {

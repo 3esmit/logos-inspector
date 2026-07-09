@@ -3,7 +3,8 @@ use serde_json::Value;
 
 use super::{
     AccountTransactionSummary, TransactionIdlInspectionReport, TransactionSummary,
-    TransactionTraceReport, trace_transaction_summary_with_idl,
+    TransactionTraceReport, inspect_transaction_summary_with_optional_idl_decode,
+    trace_transaction_summary_with_idl, transaction_decode_input_from_summary,
 };
 use crate::{
     normalize_program_id_hex,
@@ -76,6 +77,7 @@ impl<'a> RegisteredIdlResolver<'a> {
             let Some(report) = self.transaction_inspection(&summary) else {
                 continue;
             };
+            let decode_enrichment = report.decode_enrichment.clone();
             let Some(decoded) = report.decoded_instruction else {
                 continue;
             };
@@ -85,6 +87,13 @@ impl<'a> RegisteredIdlResolver<'a> {
                     serde_json::to_value(decoded)
                         .context("failed to serialize transaction decode")?,
                 );
+                if let Some(enrichment) = decode_enrichment {
+                    object.insert(
+                        "decode_enrichment".to_owned(),
+                        serde_json::to_value(enrichment)
+                            .context("failed to serialize transaction decode enrichment")?,
+                    );
+                }
             }
         }
         Ok(())
@@ -118,13 +127,21 @@ impl<'a> RegisteredIdlResolver<'a> {
             .iter()
             .map(|(_, candidate)| candidate.clone())
             .collect::<Vec<_>>();
-        let session = resolve_transaction_decode_session(summary, &candidates);
+        let input = transaction_decode_input_from_summary(summary);
+        let session = resolve_transaction_decode_session(&input, &candidates);
         let selection = session.selected.or(session.partial)?;
         let entry = candidate_entries
             .iter()
             .find(|(_, candidate)| candidate_matches_evidence(candidate, &selection.evidence))
             .map(|(entry, _)| *entry)?;
-        Some((entry, selection.report))
+        Some((
+            entry,
+            inspect_transaction_summary_with_optional_idl_decode(
+                summary,
+                &entry.json,
+                "registered_idl",
+            ),
+        ))
     }
 }
 

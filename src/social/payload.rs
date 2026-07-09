@@ -21,6 +21,8 @@ pub enum SocialPayload {
         program_id: String,
         idl_name: String,
         idl_json: String,
+        idl_cid: String,
+        storage: Option<Value>,
         created_at: String,
     },
 }
@@ -69,9 +71,18 @@ pub(crate) fn parse_social_payload_value(
             {
                 bail!("shared IDL account does not match requested account");
             }
-            let idl_json = required_string(value, "idl_json")?.to_owned();
-            let _idl_value: Value =
-                serde_json::from_str(&idl_json).context("shared IDL JSON is not valid JSON")?;
+            let idl_json = optional_string(value, "idl_json")
+                .unwrap_or_default()
+                .to_owned();
+            if !idl_json.is_empty() {
+                bail!("shared IDL inline JSON is not supported; use storage CID");
+            }
+            let idl_cid = required_string(value, "idl_cid")?.to_owned();
+            let storage = value
+                .get("storage")
+                .filter(|value| value.as_object().is_some())
+                .cloned()
+                .context("shared IDL storage metadata is required")?;
             Ok(SocialPayload::LezAccountIdl {
                 version,
                 identity,
@@ -79,6 +90,8 @@ pub(crate) fn parse_social_payload_value(
                 program_id: required_string(value, "program_id")?.to_owned(),
                 idl_name: required_string(value, "idl_name")?.to_owned(),
                 idl_json,
+                idl_cid,
+                storage: Some(storage),
                 created_at: required_string(value, "created_at")?.to_owned(),
             })
         }
@@ -93,6 +106,14 @@ fn required_string<'a>(value: &'a Value, key: &str) -> Result<&'a str> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .with_context(|| format!("social payload {key} is required"))
+}
+
+fn optional_string<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
 }
 
 fn ids_match(left: &str, right: &str) -> bool {

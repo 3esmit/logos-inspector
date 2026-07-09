@@ -1,7 +1,7 @@
 use serde::Serialize;
 use serde_json::Value;
 
-use super::{SocialPayload, social_messages_from_store};
+use super::{SocialMessage, SocialPayload};
 use crate::{
     normalize_program_id_hex,
     program_decode::{ProgramDecodeCandidate, resolve_account_decode_session},
@@ -24,14 +24,14 @@ pub struct AcceptedSharedIdlEntry {
 }
 
 #[must_use]
-pub fn accepted_shared_idl_entries_from_store(
+pub fn accepted_shared_idl_entries_from_messages(
     topic: &str,
-    store_value: &Value,
+    messages: Vec<SocialMessage>,
     account_id: &str,
     data_hex: &str,
     owner_program_id: Option<&str>,
 ) -> Vec<AcceptedSharedIdlEntry> {
-    social_messages_from_store(topic, store_value, Some(account_id))
+    messages
         .into_iter()
         .filter_map(|message| match message.payload {
             SocialPayload::LezAccountIdl {

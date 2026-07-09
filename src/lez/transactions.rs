@@ -6,7 +6,13 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 use super::programs::{program_id_base58_from_hex, program_id_hex};
-use crate::{InstructionDecodeReport, decode_instruction_words_with_idl};
+use crate::{
+    InstructionDecodeReport,
+    program_decode::{
+        DecodeEnrichmentReport, TransactionDecodeInput, TransactionDecodeReport,
+        decode_transaction_input_with_idl,
+    },
+};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TransactionSummary {
@@ -34,6 +40,8 @@ pub struct TransactionInspectionReport {
 pub struct TransactionIdlInspectionReport {
     pub inspection: TransactionInspectionReport,
     pub decoded_instruction: Option<InstructionDecodeReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decode_enrichment: Option<DecodeEnrichmentReport>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -276,28 +284,85 @@ pub fn inspect_transaction_summary_with_idl(
     summary: &TransactionSummary,
     idl_json: &str,
 ) -> Result<TransactionIdlInspectionReport> {
-    let inspection = inspect_transaction_summary(summary);
-    let decoded_instruction = if summary.kind == "Public" && !summary.instruction_data.is_empty() {
-        summary
-            .program_id_hex
-            .as_deref()
-            .map(|program_id| {
-                decode_instruction_words_with_idl(
-                    idl_json,
-                    program_id,
-                    &summary.instruction_data,
-                    &summary.account_ids,
-                )
-            })
-            .transpose()?
-    } else {
-        None
-    };
+    LezTransactionDecodeAdapter::new(summary).inspect_with_idl(idl_json)
+}
 
-    Ok(TransactionIdlInspectionReport {
-        inspection,
-        decoded_instruction,
-    })
+pub(crate) fn inspect_transaction_summary_with_optional_idl_decode(
+    summary: &TransactionSummary,
+    idl_json: &str,
+    source: &str,
+) -> TransactionIdlInspectionReport {
+    LezTransactionDecodeAdapter::new(summary).inspect_with_optional_idl_decode(idl_json, source)
+}
+
+pub(crate) fn transaction_decode_input_from_summary(
+    summary: &TransactionSummary,
+) -> TransactionDecodeInput {
+    LezTransactionDecodeAdapter::new(summary).decode_input()
+}
+
+pub(crate) struct LezTransactionDecodeAdapter<'a> {
+    summary: &'a TransactionSummary,
+}
+
+impl<'a> LezTransactionDecodeAdapter<'a> {
+    fn new(summary: &'a TransactionSummary) -> Self {
+        Self { summary }
+    }
+
+    fn decode_input(&self) -> TransactionDecodeInput {
+        TransactionDecodeInput {
+            hash: self.summary.hash.clone(),
+            kind: self.summary.kind.clone(),
+            program_id_hex: self.summary.program_id_hex.clone(),
+            account_ids: self.summary.account_ids.clone(),
+            nonces: self.summary.nonces.clone(),
+            instruction_data: self.summary.instruction_data.clone(),
+            bytecode_len: self.summary.bytecode_len,
+            raw_signature_valid: self.summary.raw_signature_valid,
+            message_prehash: self.summary.message_prehash.clone(),
+            prehash_signature_valid: self.summary.prehash_signature_valid,
+        }
+    }
+
+    fn inspect_with_idl(&self, idl_json: &str) -> Result<TransactionIdlInspectionReport> {
+        let decode_report = decode_transaction_input_with_idl(&self.decode_input(), idl_json)?;
+        Ok(self.report_from_decode(decode_report))
+    }
+
+    fn inspect_with_optional_idl_decode(
+        &self,
+        idl_json: &str,
+        source: &str,
+    ) -> TransactionIdlInspectionReport {
+        match decode_transaction_input_with_idl(&self.decode_input(), idl_json) {
+            Ok(mut report) => {
+                report.decode_enrichment.source = Some(source.to_owned());
+                self.report_from_decode(report)
+            }
+            Err(error) => TransactionIdlInspectionReport {
+                inspection: inspect_transaction_summary(self.summary),
+                decoded_instruction: None,
+                decode_enrichment: Some(DecodeEnrichmentReport {
+                    status: "failed".to_owned(),
+                    provenance: "program_decode_static".to_owned(),
+                    source: Some(source.to_owned()),
+                    error: Some(format!("{error:#}")),
+                }),
+            },
+        }
+    }
+
+    fn report_from_decode(
+        &self,
+        report: TransactionDecodeReport,
+    ) -> TransactionIdlInspectionReport {
+        TransactionIdlInspectionReport {
+            inspection: inspect_transaction_summary(self.summary),
+            decoded_instruction: report.decoded_instruction,
+            decode_enrichment: Some(report.decode_enrichment),
+        }
+    }
 }
 
 #[must_use]
@@ -896,6 +961,32 @@ mod tests {
         };
         assert_eq!(raw_signature_row.value, "valid");
         assert_eq!(prehash_signature_row.value, "invalid");
+    }
+
+    #[test]
+    fn optional_idl_decode_preserves_transaction_report_on_decode_failure() {
+        let summary = public_summary();
+
+        let report =
+            inspect_transaction_summary_with_optional_idl_decode(&summary, "{", "registered_idl");
+
+        assert_eq!(report.inspection.hash, summary.hash);
+        assert!(report.decoded_instruction.is_none());
+        let enrichment = report.decode_enrichment.as_ref();
+        assert!(enrichment.is_some(), "missing decode enrichment state");
+        let Some(enrichment) = enrichment else {
+            return;
+        };
+        assert_eq!(enrichment.status, "failed");
+        assert_eq!(enrichment.provenance, "program_decode_static");
+        assert_eq!(enrichment.source.as_deref(), Some("registered_idl"));
+        assert!(
+            enrichment
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("failed to parse IDL JSON")),
+            "{enrichment:?}"
+        );
     }
 
     #[test]

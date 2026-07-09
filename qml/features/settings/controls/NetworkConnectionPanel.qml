@@ -46,8 +46,8 @@ SourceSettingsPanel {
         ComboField {
             visible: root.sourceSelectorVisible
             theme: root.theme
-            label: qsTr("Source")
-            accessibleName: qsTr("%1 source mode").arg(root.title)
+            label: qsTr("Connector")
+            accessibleName: qsTr("%1 connector").arg(root.title)
             options: root.sourceOptions || emptySourceOptions
             currentIndex: root.sourceIndex
             onActivated: index => root.sourceActivated(index)

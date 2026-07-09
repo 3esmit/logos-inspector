@@ -8,8 +8,9 @@ use super::report::{
 };
 use crate::source_routing::{
     DEFAULT_DELIVERY_METRICS_ENDPOINT, DEFAULT_DELIVERY_REST_ENDPOINT,
-    DEFAULT_STORAGE_METRICS_ENDPOINT, DEFAULT_STORAGE_REST_ENDPOINT, DeliverySourceReportKind,
-    SourceFamily, SourceProbeKey, SourceReport, StorageSourceReportKind, effective_source_mode,
+    DEFAULT_STORAGE_METRICS_ENDPOINT, DEFAULT_STORAGE_REST_ENDPOINT, DeliverySourceMode,
+    DeliverySourceReportKind, SourceProbeKey, SourceReport, StorageSourceMode,
+    StorageSourceReportKind,
 };
 use crate::{
     ProbeReport,
@@ -25,7 +26,10 @@ pub async fn storage_source_report(
     cid: Option<&str>,
     privileged_debug_enabled: bool,
 ) -> SourceReport {
-    match effective_source_mode(SourceFamily::Storage, source_mode) {
+    match StorageSourceMode::from_token(source_mode)
+        .effective()
+        .as_str()
+    {
         "module" => module_source_report(
             SourceReportKind::Storage(StorageSourceReportKind::Module),
             storage_report(cid, privileged_debug_enabled),
@@ -49,7 +53,10 @@ pub async fn delivery_source_report(
     rest_endpoint: Option<&str>,
     metrics_endpoint: Option<&str>,
 ) -> SourceReport {
-    match effective_source_mode(SourceFamily::Delivery, source_mode) {
+    match DeliverySourceMode::from_token(source_mode)
+        .effective()
+        .as_str()
+    {
         "module" => module_source_report(
             SourceReportKind::Delivery(DeliverySourceReportKind::Module),
             delivery_report(None),

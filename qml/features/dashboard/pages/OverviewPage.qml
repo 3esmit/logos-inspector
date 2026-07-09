@@ -550,7 +550,7 @@ ColumnLayout {
         if (loaded.length > 0) {
             return loaded
         }
-        return root.model.chainPages.mergedLezBlocks(root.model.dashboardSequencerBlocks || [], model.dashboardBlocks || [], 5)
+        return root.model.dashboardLezBlockRows || []
     }
 
     function l1TransactionRows() {

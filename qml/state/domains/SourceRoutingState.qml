@@ -1,4 +1,5 @@
 import QtQuick
+import "../source_routing/ConnectorConfigAdapter.js" as ConnectorConfigAdapter
 import "../source_routing/SourcePolicyCatalog.js" as SourcePolicyCatalog
 import "../source_routing/SourcePolicyProjection.js" as SourcePolicyProjection
 import "../source_routing/SourceRoutingUi.js" as SourceRoutingUi
@@ -14,11 +15,11 @@ QtObject {
     property string indexerModule: ""
     property string deliveryModule: ""
     property string storageModule: ""
-    property string blockchainSourceMode: "auto"
-    property string indexerSourceMode: "auto"
+    property string blockchainSourceMode: "rpc"
+    property string indexerSourceMode: "rpc"
     property string executionSourceMode: "rpc"
-    property string messagingSourceMode: "auto"
-    property string storageSourceMode: "auto"
+    property string messagingSourceMode: "rest"
+    property string storageSourceMode: "rest"
     property string nodeUrl: ""
     property string indexerUrl: ""
     property string sequencerUrl: ""
@@ -32,6 +33,7 @@ QtObject {
     property string storageCidProbe: ""
     property bool storagePrivilegedDebugEnabled: false
     property bool storageMutatingDiagnosticsEnabled: false
+    property var connectorConfig: ({})
 
     function loadSourcePolicy() {
         const response = gateway.callInspector("sourcePolicy", [])
@@ -102,15 +104,15 @@ QtObject {
     }
 
     function blockchainArgs(extra) {
-        return coreSourceArgs(blockchainSourceMode, nodeUrl, extra)
+        return coreSourceArgs(connectorSourceMode("l1", blockchainSourceMode), connectorEndpoint("l1", nodeUrl), extra)
     }
 
     function indexerArgs(extra) {
-        return coreSourceArgs(indexerSourceMode, indexerUrl, extra)
+        return coreSourceArgs(connectorSourceMode("lez.indexer", indexerSourceMode), connectorEndpoint("lez.indexer", indexerUrl), extra)
     }
 
     function executionArgs(extra) {
-        return coreSourceArgs(executionSourceMode, sequencerUrl, extra)
+        return coreSourceArgs(connectorSourceMode("lez.sequencer", executionSourceMode), connectorEndpoint("lez.sequencer", sequencerUrl), extra)
     }
 
     function accountLookupArgs(executionSourceMode, sequencerEndpoint, indexerSourceMode, indexerEndpoint, account, idlJson, accountType) {
@@ -127,7 +129,15 @@ QtObject {
     }
 
     function accountArgs(account, idlJson, accountType) {
-        return accountLookupArgs(executionSourceMode, sequencerUrl, indexerSourceMode, indexerUrl, account, idlJson, accountType)
+        return accountLookupArgs(
+            connectorSourceMode("lez.sequencer", executionSourceMode),
+            connectorEndpoint("lez.sequencer", sequencerUrl),
+            connectorSourceMode("lez.indexer", indexerSourceMode),
+            connectorEndpoint("lez.indexer", indexerUrl),
+            account,
+            idlJson,
+            accountType
+        )
     }
 
     function lezLookupArgs(executionSourceMode, sequencerEndpoint, indexerSourceMode, indexerEndpoint, target) {
@@ -142,7 +152,13 @@ QtObject {
     }
 
     function lezArgs(target) {
-        return lezLookupArgs(executionSourceMode, sequencerUrl, indexerSourceMode, indexerUrl, target)
+        return lezLookupArgs(
+            connectorSourceMode("lez.sequencer", executionSourceMode),
+            connectorEndpoint("lez.sequencer", sequencerUrl),
+            connectorSourceMode("lez.indexer", indexerSourceMode),
+            connectorEndpoint("lez.indexer", indexerUrl),
+            target
+        )
     }
 
     function deliverySourceReportArgs(sourceMode, restEndpoint, metricsEndpoint) {
@@ -180,59 +196,59 @@ QtObject {
     }
 
     function configuredMessagingRestUrl(value) {
-        const endpoint = String(value === undefined ? messagingRestUrl : (value || "")).trim()
+        const endpoint = String(value === undefined ? connectorEndpoint("delivery", messagingRestUrl) : (value || "")).trim()
         return endpoint.length ? endpoint : sourcePolicyDefault("delivery_rest_endpoint", "http://127.0.0.1:8645")
     }
 
     function configuredStorageRestUrl(value) {
-        const endpoint = String(value === undefined ? storageRestUrl : (value || "")).trim()
+        const endpoint = String(value === undefined ? connectorEndpoint("storage", storageRestUrl) : (value || "")).trim()
         return endpoint.length ? endpoint : sourcePolicyDefault("storage_rest_endpoint", "http://127.0.0.1:8080/api/storage/v1")
     }
 
     function normalizedCoreSourceMode(value) {
         const source = sourceModePolicy("core", value)
-        return String(source.key || "auto")
+        return String(source.key || "rpc")
     }
 
     function effectiveCoreSourceMode(value) {
-        const source = sourceModePolicy("core", resolvedSourceModeKey("core", value))
+        const source = sourceModePolicy("core", resolvedSourceModeKey("core", connectorSourceMode("l1", value)))
         return String(source.effective || "rpc")
     }
 
     function normalizedMessagingSourceMode(value) {
         const source = sourceModePolicy("delivery", value)
-        return String(source.key || "auto")
+        return String(source.key || "rest")
     }
 
     function effectiveMessagingSourceMode(value) {
-        const source = sourceModePolicy("delivery", resolvedSourceModeKey("delivery", value))
+        const source = sourceModePolicy("delivery", resolvedSourceModeKey("delivery", connectorSourceMode("delivery", value)))
         return String(source.effective || "rest")
     }
 
     function normalizedStorageSourceMode(value) {
         const source = sourceModePolicy("storage", value)
-        return String(source.key || "auto")
+        return String(source.key || "rest")
     }
 
     function effectiveStorageSourceMode(value) {
-        const source = sourceModePolicy("storage", resolvedSourceModeKey("storage", value))
+        const source = sourceModePolicy("storage", resolvedSourceModeKey("storage", connectorSourceMode("storage", value)))
         return String(source.effective || "rest")
     }
 
     function blockchainSourceLabel() {
-        return coreSourceLabel(blockchainSourceMode, qsTr("Bedrock RPC"))
+        return coreSourceLabel(connectorSourceMode("l1", blockchainSourceMode), qsTr("Bedrock RPC"))
     }
 
     function blockchainSourceTarget() {
-        return effectiveCoreSourceMode(blockchainSourceMode) === "module" ? blockchainModule : String(nodeUrl || "")
+        return effectiveCoreSourceMode(blockchainSourceMode) === "module" ? blockchainModule : connectorEndpoint("l1", nodeUrl)
     }
 
     function indexerSourceLabel() {
-        return coreSourceLabel(indexerSourceMode, qsTr("Indexer RPC"))
+        return coreSourceLabel(connectorSourceMode("lez.indexer", indexerSourceMode), qsTr("Indexer RPC"))
     }
 
     function indexerSourceTarget() {
-        return effectiveCoreSourceMode(indexerSourceMode) === "module" ? indexerModule : String(indexerUrl || "")
+        return effectiveCoreSourceMode(indexerSourceMode) === "module" ? indexerModule : connectorEndpoint("lez.indexer", indexerUrl)
     }
 
     function executionSourceLabel() {
@@ -240,15 +256,15 @@ QtObject {
     }
 
     function executionSourceTarget() {
-        return effectiveCoreSourceMode(executionSourceMode) === "module" ? "lez_core" : String(sequencerUrl || "")
+        return effectiveCoreSourceMode(executionSourceMode) === "module" ? "lez_core" : connectorEndpoint("lez.sequencer", sequencerUrl)
     }
 
     function deliverySourceLabel() {
-        return sourceLabel("delivery", messagingSourceMode, qsTr("Direct Waku REST"))
+        return sourceLabel("delivery", connectorSourceMode("delivery", messagingSourceMode), qsTr("Direct Waku REST"))
     }
 
     function deliverySourceTarget() {
-        return sourceTarget("delivery", messagingSourceMode, {
+        return sourceTarget("delivery", connectorSourceMode("delivery", messagingSourceMode), {
             module: deliveryModule,
             rest: configuredMessagingRestUrl(),
             metrics: messagingMetricsUrl
@@ -256,15 +272,27 @@ QtObject {
     }
 
     function storageSourceLabel() {
-        return sourceLabel("storage", storageSourceMode, qsTr("Standalone REST"))
+        return sourceLabel("storage", connectorSourceMode("storage", storageSourceMode), qsTr("Standalone REST"))
     }
 
     function storageSourceTarget() {
-        return sourceTarget("storage", storageSourceMode, {
+        return sourceTarget("storage", connectorSourceMode("storage", storageSourceMode), {
             module: storageModule,
             rest: configuredStorageRestUrl(),
             metrics: storageMetricsUrl
         })
+    }
+
+    function connectorScope(scope) {
+        return ConnectorConfigAdapter.connectorScope(connectorConfig, scope)
+    }
+
+    function connectorSourceMode(scope, fallbackMode) {
+        return ConnectorConfigAdapter.connectorSourceMode(connectorConfig, scope, fallbackMode)
+    }
+
+    function connectorEndpoint(scope, fallbackEndpoint) {
+        return ConnectorConfigAdapter.connectorEndpoint(connectorConfig, scope, fallbackEndpoint)
     }
 
     function coreSourceView(role) {

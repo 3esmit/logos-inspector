@@ -1,4 +1,5 @@
 pub mod blockchain;
+pub mod capabilities;
 #[cfg(feature = "cli")]
 pub mod cli;
 pub mod decode;

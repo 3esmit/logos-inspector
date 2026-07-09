@@ -5,8 +5,8 @@ use crate::support::args::Args;
 
 use super::{
     CoreEndpointMode, CoreSourceMode, DEFAULT_DELIVERY_REST_ENDPOINT,
-    DEFAULT_STORAGE_REST_ENDPOINT, SourceFamily, core, default_endpoint_for_domain,
-    default_source_mode_for_domain, effective_source_mode, source_mode_is_token,
+    DEFAULT_STORAGE_REST_ENDPOINT, DeliverySourceMode, SourceFamily, StorageSourceMode, core,
+    default_endpoint_for_domain, default_source_mode_for_domain, source_mode_is_token,
 };
 
 pub(crate) struct SourceEndpoint<'a> {
@@ -200,8 +200,8 @@ fn rest_source<'a>(
 ) -> Result<RestSource<'a>> {
     let mode = args.optional_string(0).unwrap_or("rest");
     let normalized = match source_name {
-        "storage" => effective_source_mode(SourceFamily::Storage, mode),
-        "delivery" => effective_source_mode(SourceFamily::Delivery, mode),
+        "storage" => StorageSourceMode::from_token(mode).effective().as_str(),
+        "delivery" => DeliverySourceMode::from_token(mode).effective().as_str(),
         _ => "unsupported",
     };
     match normalized {

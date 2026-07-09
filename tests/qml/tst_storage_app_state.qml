@@ -12,8 +12,67 @@ TestCase {
         id: gateway
     }
 
+    QtObject {
+        id: gate
+
+        property var blocked: ({})
+
+        function storageGate(action, options) {
+            const inputs = options && Array.isArray(options.required_inputs) ? options.required_inputs : []
+            for (let i = 0; i < inputs.length; ++i) {
+                const input = inputs[i] || {}
+                const value = input.value
+                if (input.present !== true && (value === undefined || value === null || String(value).trim().length === 0)) {
+                    return {
+                        enabled: false,
+                        status: "input_required",
+                        missing: [{ dependency: String(input.key || ""), label: String(input.label || input.key || ""), status: "input_required", capability: String(input.key || ""), provenance: "input" }],
+                        warnings: [],
+                        provenance: ["input"]
+                    }
+                }
+            }
+            const dependency = String(blocked[String(action || "")] || "")
+            if (dependency.length > 0) {
+                return {
+                    enabled: false,
+                    status: "disabled",
+                    missing: [{ dependency: dependency, label: dependency, status: "unavailable", capability: "storage", provenance: "test" }],
+                    warnings: [],
+                    provenance: ["test"]
+                }
+            }
+            return {
+                enabled: true,
+                status: "enabled",
+                missing: [],
+                warnings: [],
+                provenance: ["test"]
+            }
+        }
+    }
+
     StorageAppState {
         id: state
+
+        gateway: gateway
+        gateFacade: gate
+        busy: false
+        effectiveSourceMode: "rest"
+        sourceLabel: "Direct REST"
+        sourceTarget: "http://storage"
+        sourceTargetKind: "rest_endpoint"
+        usesRestEndpoint: true
+        supportsMutatingDiagnostics: true
+        restEndpoint: "http://storage"
+        moduleName: "storage_module"
+        networkPreset: "logos.test"
+        mutatingDiagnosticsEnabled: true
+        currentView: "storage"
+    }
+
+    StorageAppState {
+        id: stateWithoutGate
 
         gateway: gateway
         busy: false
@@ -32,6 +91,7 @@ TestCase {
 
     function init() {
         gateway.reset()
+        gate.blocked = ({})
 
         state.busy = false
         state.effectiveSourceMode = "rest"
@@ -62,6 +122,15 @@ TestCase {
         state.activeOperationRevision = 0
         state.operationLog = []
         state.operationLogRevision = 0
+
+        stateWithoutGate.busy = false
+        stateWithoutGate.effectiveSourceMode = "rest"
+        stateWithoutGate.sourceTargetKind = "rest_endpoint"
+        stateWithoutGate.usesRestEndpoint = true
+        stateWithoutGate.supportsMutatingDiagnostics = true
+        stateWithoutGate.mutatingDiagnosticsEnabled = true
+        stateWithoutGate.manifests = []
+        stateWithoutGate.lastOperation = "None"
     }
 
     function test_refresh_manifests_updates_local_state() {
@@ -299,6 +368,55 @@ TestCase {
         state.openStorageSettings()
         compare(gateway.openedSection, "network")
         compare(gateway.openedSubSection, "storage")
+    }
+
+    function test_gate_blocks_manifest_refresh_without_clearing_stale_rows() {
+        state.manifests = [
+            { cid: "z-old", filename: "old.bin", datasetSize: 4 }
+        ]
+        gate.blocked = ({
+            manifests: "storage.manifests.read"
+        })
+
+        const response = state.refreshManifests(true)
+
+        verify(!response.ok)
+        compare(gateway.callCount, 0)
+        compare(state.lastOperation, "Blocked")
+        compare(state.manifestRows()[0].cid, "z-old")
+        compare(state.operationRows()[0].status, "error")
+        verify(response.error.indexOf("storage.manifests.read") >= 0)
+    }
+
+    function test_gate_rechecks_before_starting_mutating_operation() {
+        gate.blocked = ({
+            upload: "storage.content.upload"
+        })
+
+        const response = state.startStorageOperation("storageUploadUrl", ["/tmp/file.bin", 65536], "Upload file")
+
+        verify(!response.ok)
+        compare(gateway.requestCount, 0)
+        compare(state.lastOperation, "Blocked")
+        verify(response.error.indexOf("storage.content.upload") >= 0)
+    }
+
+    function test_gate_reports_input_required_before_sync_call() {
+        const response = state.runStorage("storageExists", [""], "Storage exists")
+
+        verify(!response.ok)
+        compare(gateway.callCount, 0)
+        compare(response.error.indexOf("CID") >= 0, true)
+        compare(state.lastOperation, "Blocked")
+    }
+
+    function test_missing_gate_facade_fails_closed() {
+        const response = stateWithoutGate.refreshManifests(true)
+
+        verify(!response.ok)
+        compare(gateway.callCount, 0)
+        compare(stateWithoutGate.lastOperation, "Blocked")
+        verify(response.error.indexOf("storage") >= 0)
     }
 
     function test_module_source_can_refresh_manifests() {

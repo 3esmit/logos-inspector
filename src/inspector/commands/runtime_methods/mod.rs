@@ -136,4 +136,10 @@ mod tests {
             assert_eq!(lookup(entry.name()), Some(entry));
         }
     }
+
+    #[test]
+    fn remote_settings_backup_upload_uses_catalog_method_only() {
+        assert!(lookup("storageBackupSettings").is_none());
+        assert!(lookup("storageUploadBackupCatalogEntry").is_some());
+    }
 }
