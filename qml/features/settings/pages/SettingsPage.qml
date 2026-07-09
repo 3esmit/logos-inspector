@@ -8,6 +8,7 @@ import "../../../components"
 import "../../../components/common"
 import "../controls"
 import "../../../state"
+import "../../../state/backup" as Backup
 import "../../../theme"
 
 ColumnLayout {
@@ -16,15 +17,10 @@ ColumnLayout {
     required property Theme theme
     required property AppModel model
     property string pendingSettingsRestoreCid: ""
-    property string pendingSettingsRestoreBackupId: ""
-    property var pendingSettingsRestoreOptions: ({
-        settings: "replace",
-        favorites: "merge",
-        idl_registry: "merge",
-        wallet_profile: "skip"
-    })
-    property var pendingSettingsRestorePlan: null
-    property string pendingSettingsRestorePlanError: ""
+    property alias pendingSettingsRestoreBackupId: backupRestoreDialog.backupId
+    property alias pendingSettingsRestoreOptions: backupRestoreDialog.options
+    property alias pendingSettingsRestorePlan: backupRestoreDialog.plan
+    property alias pendingSettingsRestorePlanError: backupRestoreDialog.planError
 
     width: parent ? parent.width : 900
     spacing: 16
@@ -145,6 +141,12 @@ ColumnLayout {
     Component.onCompleted: {
         settingsRoot.refreshProfileOptions()
         settingsRoot.refreshSourceOptions()
+    }
+
+    Backup.BackupImportDialogState {
+        id: backupRestoreDialog
+
+        model: settingsRoot.model
     }
 
     Connections {
@@ -1362,333 +1364,99 @@ ColumnLayout {
     }
 
     function resetPendingSettingsRestoreOptions() {
-        pendingSettingsRestoreOptions = {
-            settings: "replace",
-            favorites: "merge",
-            idl_registry: "merge",
-            wallet_profile: "skip"
-        }
-        pendingSettingsRestorePlan = null
-        pendingSettingsRestorePlanError = ""
+        backupRestoreDialog.reset()
     }
 
     function copyPendingSettingsRestoreOptions() {
-        const source = pendingSettingsRestoreOptions || {}
-        const result = {
-            settings: String(source.settings || "skip"),
-            favorites: String(source.favorites || "skip"),
-            idl_registry: String(source.idl_registry || "skip"),
-            wallet_profile: String(source.wallet_profile || "skip")
-        }
-        if (source.items && typeof source.items === "object") {
-            result.items = settingsRoot.copyNestedOptionMap(source.items)
-        }
-        if (source.conflicts && typeof source.conflicts === "object") {
-            result.conflicts = settingsRoot.copyNestedOptionMap(source.conflicts)
-        }
-        return result
+        return backupRestoreDialog.copyOptions()
     }
 
     function copyNestedOptionMap(source) {
-        const result = {}
-        const value = source && typeof source === "object" ? source : ({})
-        const areas = Object.keys(value)
-        for (let i = 0; i < areas.length; ++i) {
-            const area = areas[i]
-            result[area] = settingsRoot.copyFlatOptionMap(value[area])
-        }
-        return result
+        return backupRestoreDialog.copyNestedOptionMap(source)
     }
 
     function copyFlatOptionMap(source) {
-        const result = {}
-        const value = source && typeof source === "object" ? source : ({})
-        const keys = Object.keys(value)
-        for (let i = 0; i < keys.length; ++i) {
-            result[keys[i]] = value[keys[i]]
-        }
-        return result
+        return backupRestoreDialog.copyFlatOptionMap(source)
     }
 
     function setPendingImportMode(area, mode) {
-        const next = copyPendingSettingsRestoreOptions()
-        next[String(area || "")] = String(mode || "skip")
-        pendingSettingsRestoreOptions = next
-        previewPendingLocalRestore()
+        backupRestoreDialog.setMode(area, mode)
     }
 
     function pendingImportItemRows(area) {
-        const areaKey = String(area || "")
-        const mode = String((pendingSettingsRestoreOptions || {})[areaKey] || "skip")
-        if (mode !== "merge") {
-            return []
-        }
-        const plan = pendingSettingsRestorePlan || null
-        const items = plan && plan.items && Array.isArray(plan.items[areaKey]) ? plan.items[areaKey] : []
-        return items
+        return backupRestoreDialog.itemRows(area)
     }
 
     function pendingImportItemSelected(area, key) {
-        const areaKey = String(area || "")
-        const itemKey = String(key || "")
-        const items = pendingSettingsRestoreOptions && pendingSettingsRestoreOptions.items && pendingSettingsRestoreOptions.items[areaKey]
-        if (!items || typeof items !== "object" || !(itemKey in items)) {
-            return true
-        }
-        return items[itemKey] === true
+        return backupRestoreDialog.itemSelected(area, key)
     }
 
     function setPendingImportItemSelected(area, key, selected) {
-        const areaKey = String(area || "")
-        const itemKey = String(key || "")
-        const next = copyPendingSettingsRestoreOptions()
-        if (!next.items) {
-            next.items = {}
-        }
-        const map = {}
-        const rows = pendingImportItemRows(areaKey)
-        for (let i = 0; i < rows.length; ++i) {
-            const rowKey = String(rows[i] && rows[i].key ? rows[i].key : "")
-            if (rowKey.length) {
-                map[rowKey] = pendingImportItemSelected(areaKey, rowKey)
-            }
-        }
-        map[itemKey] = selected === true
-        next.items[areaKey] = map
-        pendingSettingsRestoreOptions = next
-        previewPendingLocalRestore()
+        backupRestoreDialog.setItemSelected(area, key, selected)
     }
 
     function pendingImportConflictRows() {
-        const plan = pendingSettingsRestorePlan || null
-        const conflicts = plan && plan.conflicts && typeof plan.conflicts === "object" ? plan.conflicts : ({})
-        const rows = []
-        const areas = ["favorites", "idl_registry"]
-        for (let i = 0; i < areas.length; ++i) {
-            const area = areas[i]
-            const areaRows = Array.isArray(conflicts[area]) ? conflicts[area] : []
-            for (let j = 0; j < areaRows.length; ++j) {
-                rows.push(areaRows[j])
-            }
-        }
-        return rows
+        return backupRestoreDialog.conflictRows()
     }
 
     function pendingImportConflictDecision(area, key) {
-        const areaKey = String(area || "")
-        const itemKey = String(key || "")
-        const conflicts = pendingSettingsRestoreOptions && pendingSettingsRestoreOptions.conflicts && pendingSettingsRestoreOptions.conflicts[areaKey]
-        if (!conflicts || typeof conflicts !== "object") {
-            return "required"
-        }
-        return String(conflicts[itemKey] || "required")
+        return backupRestoreDialog.conflictDecision(area, key)
     }
 
     function conflictDecisionIndexFor(area, key) {
-        const selected = pendingImportConflictDecision(area, key)
-        for (let i = 0; i < conflictDecisionOptions.count; ++i) {
-            if (String(conflictDecisionOptions.get(i).key || "") === selected) {
-                return i
-            }
-        }
-        return 0
+        return backupRestoreDialog.conflictDecisionIndexFor(area, key, conflictDecisionOptions)
     }
 
     function setPendingImportConflictDecision(area, key, decision) {
-        const areaKey = String(area || "")
-        const itemKey = String(key || "")
-        const next = copyPendingSettingsRestoreOptions()
-        if (!next.conflicts) {
-            next.conflicts = {}
-        }
-        const areaMap = next.conflicts[areaKey] && typeof next.conflicts[areaKey] === "object"
-            ? next.conflicts[areaKey]
-            : ({})
-        if (String(decision || "") === "required") {
-            delete areaMap[itemKey]
-        } else {
-            areaMap[itemKey] = String(decision || "required")
-        }
-        next.conflicts[areaKey] = areaMap
-        pendingSettingsRestoreOptions = next
-        previewPendingLocalRestore()
+        backupRestoreDialog.setConflictDecision(area, key, decision)
     }
 
     function pendingImportHasRequiredConflicts() {
-        const rows = pendingImportConflictRows()
-        for (let i = 0; i < rows.length; ++i) {
-            const row = rows[i] || {}
-            if (pendingImportConflictDecision(String(row.area || ""), String(row.key || "")) === "required") {
-                return true
-            }
-        }
-        return false
+        return backupRestoreDialog.hasRequiredConflicts()
     }
 
     function importModeIndexFor(area, optionsModel) {
-        const selected = String((pendingSettingsRestoreOptions || {})[String(area || "")] || "skip")
-        for (let i = 0; i < optionsModel.count; ++i) {
-            if (String(optionsModel.get(i).key || "") === selected) {
-                return i
-            }
-        }
-        return 0
+        return backupRestoreDialog.modeIndexFor(area, optionsModel)
     }
 
     function importModeAt(index, optionsModel) {
-        const row = optionsModel.get(Math.max(0, Math.min(optionsModel.count - 1, Number(index || 0)))) || {}
-        return String(row.key || "skip")
+        return backupRestoreDialog.modeAt(index, optionsModel)
     }
 
     function previewPendingLocalRestore() {
-        if (!pendingSettingsRestoreBackupId.length) {
-            pendingSettingsRestorePlan = null
-            pendingSettingsRestorePlanError = qsTr("Backup id is required.")
-            return null
-        }
-        pendingSettingsRestorePlanError = ""
-        const plan = settingsRoot.model.previewLocalSettingsImportPlan(
-            pendingSettingsRestoreBackupId,
-            copyPendingSettingsRestoreOptions()
-        )
-        pendingSettingsRestorePlan = plan
-        if (!plan) {
-            pendingSettingsRestorePlanError = settingsRoot.model.backupCatalogError.length
-                ? settingsRoot.model.backupCatalogError
-                : qsTr("Import plan is unavailable.")
-        }
-        return plan
+        return backupRestoreDialog.preview()
     }
 
     function pendingImportPlanText() {
-        if (pendingSettingsRestorePlanError.length) {
-            return pendingSettingsRestorePlanError
-        }
-        const plan = pendingSettingsRestorePlan || null
-        if (!plan) {
-            return ""
-        }
-        const selected = pendingImportSelectedAreas()
-        if (selected.length === 0) {
-            return qsTr("No sections selected.")
-        }
-        const parts = []
-        if (plan.settings === true) {
-            parts.push(qsTr("settings"))
-        }
-        if (Number(plan.favorites || 0) > 0) {
-            parts.push(qsTr("%1 favorites").arg(Number(plan.favorites || 0)))
-        }
-        if (plan.idls === true) {
-            parts.push(qsTr("%1 IDLs").arg(Number(plan.idl_count || 0)))
-        }
-        if (plan.wallet === true) {
-            parts.push(qsTr("wallet profile"))
-        }
-        const lines = []
-        lines.push(parts.length
-            ? qsTr("Will import %1.").arg(parts.join(", "))
-            : qsTr("Selected sections have no importable data."))
-        const modeText = pendingImportModeText()
-        if (modeText.length > 0) {
-            lines.push(modeText)
-        }
-        const operationText = pendingImportOperationText(plan)
-        if (operationText.length > 0) {
-            lines.push(operationText)
-        }
-        const warningText = pendingImportWarningText(plan)
-        if (warningText.length > 0) {
-            lines.push(warningText)
-        }
-        if (pendingImportHasRequiredConflicts()) {
-            lines.push(qsTr("Resolve import conflicts before applying."))
-        }
-        if (plan.blocked === true) {
-            lines.push(qsTr("Import is blocked until affected operations finish or sections change."))
-        }
-        return lines.join("\n")
+        return backupRestoreDialog.planText()
     }
 
     function pendingImportConfirmEnabled() {
-        return pendingSettingsRestoreBackupId.length > 0
-            && pendingSettingsRestorePlan !== null
-            && pendingSettingsRestorePlanError.length === 0
-            && pendingSettingsRestorePlan.blocked !== true
-            && !pendingImportHasRequiredConflicts()
-            && pendingImportSelectedAreas().length > 0
+        return backupRestoreDialog.confirmEnabled()
     }
 
     function pendingImportModeText() {
-        const options = copyPendingSettingsRestoreOptions()
-        const rows = []
-        appendPendingImportMode(rows, qsTr("Settings"), options.settings)
-        appendPendingImportMode(rows, qsTr("Favorites"), options.favorites)
-        appendPendingImportMode(rows, qsTr("IDL Registry"), options.idl_registry)
-        appendPendingImportMode(rows, qsTr("Wallet Profile"), options.wallet_profile)
-        return rows.length ? qsTr("Modes: %1.").arg(rows.join("; ")) : ""
+        return backupRestoreDialog.modeText()
     }
 
     function appendPendingImportMode(rows, label, mode) {
-        const value = importModeLabel(mode)
-        if (value.length > 0) {
-            rows.push(qsTr("%1 %2").arg(label).arg(value))
-        }
+        backupRestoreDialog.appendMode(rows, label, mode)
     }
 
     function importModeLabel(mode) {
-        switch (String(mode || "skip")) {
-        case "replace":
-            return qsTr("replace")
-        case "merge":
-            return qsTr("merge")
-        default:
-            return qsTr("not import")
-        }
+        return backupRestoreDialog.modeLabel(mode)
     }
 
     function pendingImportOperationText(plan) {
-        const decisions = plan && Array.isArray(plan.operation_decisions) ? plan.operation_decisions : []
-        if (decisions.length === 0) {
-            return qsTr("Affected operations: none.")
-        }
-        const rows = []
-        for (let i = 0; i < decisions.length; ++i) {
-            if (settingsRoot.model && typeof settingsRoot.model.backupImportDecisionSummaryText === "function") {
-                rows.push(settingsRoot.model.backupImportDecisionSummaryText(decisions[i]))
-            }
-        }
-        return rows.length ? qsTr("Affected operations:\n%1").arg(rows.join("\n")) : ""
+        return backupRestoreDialog.operationText(plan)
     }
 
     function pendingImportWarningText(plan) {
-        const warnings = plan && Array.isArray(plan.warnings) ? plan.warnings : []
-        if (warnings.length === 0) {
-            return ""
-        }
-        const rows = []
-        for (let i = 0; i < warnings.length; ++i) {
-            const warning = warnings[i] && typeof warnings[i] === "object" ? warnings[i] : ({})
-            const message = String(warning.message || warning.detail || "")
-            if (message.length > 0) {
-                rows.push(message)
-            }
-        }
-        return rows.length ? qsTr("Warnings:\n%1").arg(rows.join("\n")) : ""
+        return backupRestoreDialog.warningText(plan)
     }
 
     function pendingImportSelectedAreas() {
-        const options = copyPendingSettingsRestoreOptions()
-        const areas = ["settings", "favorites", "idl_registry", "wallet_profile"]
-        const selected = []
-        for (let i = 0; i < areas.length; ++i) {
-            const area = areas[i]
-            const mode = String(options[area] || "skip")
-            if (mode !== "skip" && mode !== "none" && mode !== "not_import" && mode !== "not import") {
-                selected.push(area)
-            }
-        }
-        return selected
+        return backupRestoreDialog.selectedAreas()
     }
 
     function updateSequencerUrl(value) {
