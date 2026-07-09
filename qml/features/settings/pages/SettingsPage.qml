@@ -8,6 +8,7 @@ import "../../../components"
 import "../../../components/common"
 import "../controls"
 import "../../../state"
+import "../../../state/status/StatusFieldCatalog.js" as StatusFieldCatalog
 import "../../../state/backup" as Backup
 import "../../../theme"
 
@@ -1561,133 +1562,11 @@ ColumnLayout {
     }
 
     function footerFieldGroups() {
-        return [
-            { title: qsTr("Network"), fields: [
-                { key: "network.network", label: qsTr("network"), detail: qsTr("testnet, mainnet, local, or custom") },
-                { key: "network.chain_id", label: qsTr("chain_id"), detail: qsTr("Bedrock chain identifier") },
-                { key: "network.zone_id", label: qsTr("zone_id"), detail: qsTr("Execution zone identifier") },
-                { key: "network.channel_id", label: qsTr("channel_id"), detail: qsTr("Active delivery channel identifier") },
-                { key: "network.report_time", label: qsTr("report_time"), detail: qsTr("Last local report timestamp") }
-            ] },
-            { title: qsTr("Bedrock Blockchain"), fields: [
-                { key: "bedrock.node_health", label: qsTr("node_health"), detail: qsTr("ok, degraded, or down") },
-                { key: "bedrock.peer_count", label: qsTr("peer_count"), detail: qsTr("Connected Bedrock peers") },
-                { key: "bedrock.sync_state", label: qsTr("sync_state"), detail: qsTr("synced, syncing, or stalled") },
-                { key: "bedrock.tip_height", label: qsTr("tip_height"), detail: qsTr("Current tip height") },
-                { key: "bedrock.tip_hash", label: qsTr("tip_hash"), detail: qsTr("Current tip hash") },
-                { key: "bedrock.lib_height", label: qsTr("lib_height"), detail: qsTr("Last irreversible block height") },
-                { key: "bedrock.lib_hash", label: qsTr("lib_hash"), detail: qsTr("Last irreversible block hash") },
-                { key: "bedrock.tip_minus_lib", label: qsTr("tip_minus_lib"), detail: qsTr("Distance from tip to LIB") },
-                { key: "bedrock.last_tip_time", label: qsTr("last_tip_time"), detail: qsTr("Last tip observation time") },
-                { key: "bedrock.last_lib_time", label: qsTr("last_lib_time"), detail: qsTr("Last LIB observation time") },
-                { key: "bedrock.finality_lag_seconds", label: qsTr("finality_lag_seconds"), detail: qsTr("Approximate finality lag") }
-            ] },
-            { title: qsTr("LEZ Sequencer"), fields: [
-                { key: "lez.rpc_health", label: qsTr("rpc_health"), detail: qsTr("Sequencer RPC availability") },
-                { key: "lez.sequencer_version", label: qsTr("sequencer_version"), detail: qsTr("Sequencer version") },
-                { key: "lez.last_lez_block_id", label: qsTr("last_lez_block_id"), detail: qsTr("Latest LEZ block id") },
-                { key: "lez.last_lez_block_hash", label: qsTr("last_lez_block_hash"), detail: qsTr("Latest LEZ block hash") },
-                { key: "lez.last_lez_block_time", label: qsTr("last_lez_block_time"), detail: qsTr("Latest LEZ block time") },
-                { key: "lez.pending_tx_count", label: qsTr("pending_tx_count"), detail: qsTr("Pending sequencer transactions") },
-                { key: "lez.mempool_tx_count", label: qsTr("mempool_tx_count"), detail: qsTr("Mempool transaction count") },
-                { key: "lez.rejected_tx_count_recent", label: qsTr("rejected_tx_count_recent"), detail: qsTr("Recent rejected transactions") },
-                { key: "lez.blocks_produced_recent", label: qsTr("blocks_produced_recent"), detail: qsTr("Recent LEZ blocks produced") },
-                { key: "lez.publish_to_bedrock_status", label: qsTr("publish_to_bedrock_status"), detail: qsTr("Bedrock publish state") },
-                { key: "lez.last_published_channel_update", label: qsTr("last_published_channel_update"), detail: qsTr("Last channel update publication") },
-                { key: "lez.last_finalized_callback_height", label: qsTr("last_finalized_callback_height"), detail: qsTr("Last finalized callback height") },
-                { key: "lez.pending_blocks_count", label: qsTr("pending_blocks_count"), detail: qsTr("Pending LEZ blocks") }
-            ] },
-            { title: qsTr("Indexer"), fields: [
-                { key: "indexer.rpc_health", label: qsTr("rpc_health"), detail: qsTr("Indexer RPC availability") },
-                { key: "indexer.indexer_version", label: qsTr("indexer_version"), detail: qsTr("Indexer version") },
-                { key: "indexer.indexed_finalized_height", label: qsTr("indexed_finalized_height"), detail: qsTr("Indexed finalized height") },
-                { key: "indexer.indexed_finalized_hash", label: qsTr("indexed_finalized_hash"), detail: qsTr("Indexed finalized hash") },
-                { key: "indexer.indexed_channel_message", label: qsTr("indexed_channel_message"), detail: qsTr("Indexed channel message") },
-                { key: "indexer.indexer_lag_vs_sequencer_head", label: qsTr("indexer_lag_vs_sequencer_head"), detail: qsTr("Indexer lag versus sequencer") },
-                { key: "indexer.last_indexed_time", label: qsTr("last_indexed_time"), detail: qsTr("Last indexed timestamp") },
-                { key: "indexer.db_health", label: qsTr("db_health"), detail: qsTr("Database health") },
-                { key: "indexer.ingestion_status", label: qsTr("ingestion_status"), detail: qsTr("running, stalled, or backfilling") }
-            ] },
-            { title: qsTr("Storage"), fields: [
-                { key: "storage.module", label: qsTr("source"), detail: qsTr("REST or metrics source status") },
-                { key: "storage.network", label: qsTr("network"), detail: qsTr("Storage preset or network name") },
-                { key: "storage.node_reachable", label: qsTr("node_reachable"), detail: qsTr("Storage node reachability") },
-                { key: "storage.nat_mode", label: qsTr("nat_mode"), detail: qsTr("upnp, port-forward, or manual") },
-                { key: "storage.udp_discovery_port", label: qsTr("udp_discovery_port"), detail: qsTr("UDP discovery port state") },
-                { key: "storage.tcp_transfer_port", label: qsTr("tcp_transfer_port"), detail: qsTr("TCP transfer port state") },
-                { key: "storage.peer_count", label: qsTr("peer_count"), detail: qsTr("Storage peers") },
-                { key: "storage.dht_connected", label: qsTr("dht_connected"), detail: qsTr("DHT connectivity") },
-                { key: "storage.shared_files_count", label: qsTr("shared_files_count"), detail: qsTr("Shared files") },
-                { key: "storage.manifest_count", label: qsTr("manifest_count"), detail: qsTr("Manifest count") },
-                { key: "storage.local_storage_used", label: qsTr("local_storage_used"), detail: qsTr("Local storage usage") },
-                { key: "storage.active_uploads", label: qsTr("upload_requests_total"), detail: qsTr("Upload request counter total") },
-                { key: "storage.active_downloads", label: qsTr("download_requests_total"), detail: qsTr("Download request counter total") },
-                { key: "storage.failed_transfers_recent", label: qsTr("failed_transfers_recent"), detail: qsTr("Recent transfer failures") },
-                { key: "storage.cid_fetch_test", label: qsTr("cid_fetch_test"), detail: qsTr("CID fetch probe result") },
-                { key: "storage.last_error", label: qsTr("last_error"), detail: qsTr("Latest storage error") }
-            ] },
-            { title: qsTr("Messaging / Delivery"), fields: [
-                { key: "messaging.module", label: qsTr("source"), detail: qsTr("REST or metrics source status") },
-                { key: "messaging.connection_state", label: qsTr("connection_state"), detail: qsTr("connected, disconnected, or connecting") },
-                { key: "messaging.peer_count", label: qsTr("peer_count"), detail: qsTr("Delivery peers") },
-                { key: "messaging.active_subscriptions", label: qsTr("active_subscriptions"), detail: qsTr("Not exposed by current Delivery metrics") },
-                { key: "messaging.content_topics", label: qsTr("content_topics"), detail: qsTr("Subscribed content topics") },
-                { key: "messaging.outbound_queue", label: qsTr("outbound_queue"), detail: qsTr("Outbound message queue") },
-                { key: "messaging.message_sent_events_recent", label: qsTr("message_sent_events_recent"), detail: qsTr("Not exposed by current Delivery metrics") },
-                { key: "messaging.message_propagated_events_recent", label: qsTr("message_propagated_events_recent"), detail: qsTr("Not exposed by current Delivery metrics") },
-                { key: "messaging.message_received_events_recent", label: qsTr("waku_node_messages_total"), detail: qsTr("Delivery message counter total") },
-                { key: "messaging.message_error_events_recent", label: qsTr("waku_node_errors_total"), detail: qsTr("Delivery error counter total") },
-                { key: "messaging.publish_latency_ms", label: qsTr("publish_latency_ms"), detail: qsTr("Not exposed by current Delivery metrics") },
-                { key: "messaging.receive_latency_ms", label: qsTr("receive_latency_ms"), detail: qsTr("Not exposed by current Delivery metrics") },
-                { key: "messaging.last_error", label: qsTr("last_error"), detail: qsTr("Latest Delivery error") }
-            ] },
-            { title: qsTr("Overall"), fields: [
-                { key: "overall.status", label: qsTr("status"), detail: qsTr("healthy, degraded, or down") },
-                { key: "overall.main_risk", label: qsTr("main_risk"), detail: qsTr("Most important current risk") },
-                { key: "overall.operator_action", label: qsTr("operator_action"), detail: qsTr("Suggested operator action") }
-            ] }
-        ]
+        return StatusFieldCatalog.footerSelectorGroups()
     }
 
     function dashboardGraphGroups() {
-        return [
-            { title: qsTr("Bedrock Blockchain"), fields: [
-                { key: "bedrock.peer_count", label: qsTr("peer_count"), detail: qsTr("Connected Bedrock peers") },
-                { key: "bedrock.tip_minus_lib", label: qsTr("tip_minus_lib"), detail: qsTr("Tip to LIB distance") },
-                { key: "bedrock.finality_lag_seconds", label: qsTr("finality_lag_seconds"), detail: qsTr("Finality lag in seconds") }
-            ] },
-            { title: qsTr("LEZ Sequencer"), fields: [
-                { key: "lez.pending_tx_count", label: qsTr("pending_tx_count"), detail: qsTr("Pending sequencer transactions") },
-                { key: "lez.mempool_tx_count", label: qsTr("mempool_tx_count"), detail: qsTr("Mempool transaction count") },
-                { key: "lez.rejected_tx_count_recent", label: qsTr("rejected_tx_count_recent"), detail: qsTr("Recent rejected transactions") },
-                { key: "lez.blocks_produced_recent", label: qsTr("blocks_produced_recent"), detail: qsTr("Recent produced blocks") },
-                { key: "lez.pending_blocks_count", label: qsTr("pending_blocks_count"), detail: qsTr("Pending LEZ blocks") }
-            ] },
-            { title: qsTr("Indexer"), fields: [
-                { key: "indexer.indexer_lag_vs_sequencer_head", label: qsTr("indexer_lag_vs_sequencer_head"), detail: qsTr("Indexer lag versus sequencer head") }
-            ] },
-            { title: qsTr("Storage"), fields: [
-                { key: "storage.peer_count", label: qsTr("peer_count"), detail: qsTr("Storage peers") },
-                { key: "storage.shared_files_count", label: qsTr("shared_files_count"), detail: qsTr("Shared files") },
-                { key: "storage.manifest_count", label: qsTr("manifest_count"), detail: qsTr("Manifests") },
-                { key: "storage.local_storage_used", label: qsTr("local_storage_used"), detail: qsTr("Local storage usage") },
-                { key: "storage.active_uploads", label: qsTr("upload_requests_total"), detail: qsTr("Upload request counter total") },
-                { key: "storage.active_downloads", label: qsTr("download_requests_total"), detail: qsTr("Download request counter total") },
-                { key: "storage.failed_transfers_total", label: qsTr("transfer_failures_total"), detail: qsTr("Historical transfer failure counter total") }
-            ] },
-            { title: qsTr("Messaging / Delivery"), fields: [
-                { key: "messaging.peer_count", label: qsTr("peer_count"), detail: qsTr("Delivery peers") },
-                { key: "messaging.active_subscriptions", label: qsTr("active_subscriptions"), detail: qsTr("Not exposed by current Delivery metrics") },
-                { key: "messaging.content_topics", label: qsTr("content_topics"), detail: qsTr("Content topics") },
-                { key: "messaging.outbound_queue", label: qsTr("outbound_queue"), detail: qsTr("Outbound queue") },
-                { key: "messaging.message_sent_events_recent", label: qsTr("message_sent_events_recent"), detail: qsTr("Not exposed by current Delivery metrics") },
-                { key: "messaging.message_propagated_events_recent", label: qsTr("message_propagated_events_recent"), detail: qsTr("Not exposed by current Delivery metrics") },
-                { key: "messaging.message_received_events_recent", label: qsTr("waku_node_messages_total"), detail: qsTr("Delivery message counter total") },
-                { key: "messaging.message_error_events_recent", label: qsTr("waku_node_errors_total"), detail: qsTr("Delivery error counter total") },
-                { key: "messaging.publish_latency_ms", label: qsTr("publish_latency_ms"), detail: qsTr("Not exposed by current Delivery metrics") },
-                { key: "messaging.receive_latency_ms", label: qsTr("receive_latency_ms"), detail: qsTr("Not exposed by current Delivery metrics") }
-            ] }
-        ]
+        return StatusFieldCatalog.dashboardGraphGroups()
     }
 
 }

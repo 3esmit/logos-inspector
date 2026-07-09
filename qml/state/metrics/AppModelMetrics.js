@@ -1,6 +1,7 @@
 .import "../../services/BridgeHelpers.js" as BridgeHelpers
 
 .import "../status/StatusFactsProjection.js" as StatusFactsProjection
+.import "../status/StatusFieldCatalog.js" as StatusFieldCatalog
 
 function valueText(root, value) {
     with (root) {
@@ -833,39 +834,13 @@ function windowDeltaFromSamples(root, samples, timestamp, windowMs) {
 
 function defaultFooterFieldSelections(root) {
     with (root) {
-        return {
-            "network.network": true,
-            "bedrock.node_health": true,
-            "bedrock.sync_state": true,
-            "bedrock.tip_height": true,
-            "bedrock.tip_minus_lib": true,
-            "lez.rpc_health": true,
-            "lez.last_lez_block_id": true,
-            "indexer.rpc_health": true,
-            "indexer.indexed_finalized_height": true,
-            "messaging.connection_state": true,
-            "messaging.peer_count": true,
-            "messaging.message_error_events_recent": true,
-            "storage.module": true,
-            "storage.node_reachable": true,
-            "storage.peer_count": true,
-            "storage.failed_transfers_recent": true,
-            "overall.status": true,
-            "overall.main_risk": true,
-            "overall.operator_action": true
-        }
+        return StatusFieldCatalog.defaultFooterFieldSelections()
     }
 }
 
 function defaultDashboardGraphSelections(root) {
     with (root) {
-        return {
-            "bedrock.peer_count": true,
-            "bedrock.tip_minus_lib": true,
-            "bedrock.finality_lag_seconds": true,
-            "lez.blocks_produced_recent": true,
-            "indexer.indexer_lag_vs_sequencer_head": true
-        }
+        return StatusFieldCatalog.defaultDashboardGraphSelections()
     }
 }
 
