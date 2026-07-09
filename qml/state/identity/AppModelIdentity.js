@@ -1,3 +1,5 @@
+.import "../settings/SettingsProfile.js" as SettingsProfile
+
 function saveIdlState(root) {
     with (root) {
         if (!idlStateLoaded) {
@@ -16,44 +18,7 @@ function loadSettingsState(root) {
             return
         }
 
-        settingsStateError = ""
-        const value = response.value
-        root.loadNetworkProfileSettings(value)
-        root.loadNetworkConnectorConfig(value)
-        messagingRestUrl = root.stringSetting(value, "messaging_rest_url", messagingRestUrl)
-        messagingMetricsUrl = root.stringSetting(value, "messaging_metrics_url", messagingMetricsUrl)
-        messagingNetworkPreset = root.normalizedMessagingNetworkPreset(root.stringSetting(value, "messaging_network_preset", messagingNetworkPreset))
-        messagingRollingWindow = root.numberSetting(value, "messaging_rolling_window", messagingRollingWindow)
-        messagingAdminRestEnabled = root.boolSetting(value, "messaging_admin_rest_enabled", messagingAdminRestEnabled)
-        messagingMutatingDiagnosticsEnabled = root.boolSetting(value, "messaging_mutating_diagnostics_enabled", messagingMutatingDiagnosticsEnabled)
-        storageRestUrl = root.stringSetting(value, "storage_rest_url", storageRestUrl)
-        storageMetricsUrl = root.stringSetting(value, "storage_metrics_url", storageMetricsUrl)
-        storageNetworkPreset = root.stringSetting(value, "storage_network_preset", storageNetworkPreset)
-        storageDataDir = root.stringSetting(value, "storage_data_dir", storageDataDir)
-        storageCidProbe = root.stringSetting(value, "storage_cid_probe", storageCidProbe)
-        storageRollingWindow = root.numberSetting(value, "storage_rolling_window", storageRollingWindow)
-        storageLocalDiagnosticsEnabled = root.boolSetting(value, "storage_local_diagnostics_enabled", storageLocalDiagnosticsEnabled)
-        storagePrivilegedDebugEnabled = root.boolSetting(value, "storage_privileged_debug_enabled", storagePrivilegedDebugEnabled)
-        storageMutatingDiagnosticsEnabled = root.boolSetting(value, "storage_mutating_diagnostics_enabled", storageMutatingDiagnosticsEnabled)
-        localNodesEnabled = root.boolSetting(value, "local_nodes_enabled", localNodesEnabled)
-        localDevnetEnabled = localNodesEnabled && root.boolSetting(value, "local_devnet_enabled", localDevnetEnabled)
-        settingsBackupEncrypted = root.boolSetting(value, "settings_backup_encrypted", settingsBackupEncrypted)
-        blockchainRefreshRate = root.canonicalRefreshRate(root.numberSetting(value, "blockchain_refresh_rate", blockchainRefreshRate))
-        indexerRefreshRate = root.canonicalRefreshRate(root.numberSetting(value, "indexer_refresh_rate", indexerRefreshRate))
-        executionRefreshRate = root.canonicalRefreshRate(root.numberSetting(value, "execution_refresh_rate", executionRefreshRate))
-        messagingRefreshRate = root.canonicalRefreshRate(root.numberSetting(value, "messaging_refresh_rate", messagingRefreshRate))
-        storageRefreshRate = root.canonicalRefreshRate(root.numberSetting(value, "storage_refresh_rate", storageRefreshRate))
-        if (value.footer_fields && typeof value.footer_fields === "object" && !Array.isArray(value.footer_fields)) {
-            footerFieldSelections = root.mergeMap(root.defaultFooterFieldSelections(), value.footer_fields)
-            footerFieldRevision += 1
-        }
-        if (value.dashboard_graphs && typeof value.dashboard_graphs === "object" && !Array.isArray(value.dashboard_graphs)) {
-            dashboardGraphSelections = root.mergeMap(root.defaultDashboardGraphSelections(), value.dashboard_graphs)
-            dashboardGraphRevision += 1
-        }
-        root.loadSocialSettings(value)
-        root.favoriteStore.load(value.favorites)
-        settingsStateLoaded = true
+        SettingsProfile.applySettingsState(root, response.value)
     }
 }
 
@@ -67,44 +32,23 @@ function saveSettingsState(root) {
 }
 
 function settingsStatePayload(root) {
-    with (root) {
-        const social = root.socialSettingsPayload()
-        const network = root.networkProfileSettingsPayload()
-        return Object.assign({
-            version: 1,
-            network_profile: network.network_profile,
-            sequencer_url: network.sequencer_url,
-            indexer_url: network.indexer_url,
-            node_url: network.node_url,
-            network_connector_config: root.networkConnectorConfigPayload(),
-            messaging_rest_url: String(messagingRestUrl || ""),
-            messaging_metrics_url: String(messagingMetricsUrl || ""),
-            messaging_network_preset: root.normalizedMessagingNetworkPreset(messagingNetworkPreset),
-            messaging_rolling_window: Number(messagingRollingWindow || 0),
-            messaging_admin_rest_enabled: messagingAdminRestEnabled === true,
-            messaging_mutating_diagnostics_enabled: messagingMutatingDiagnosticsEnabled === true,
-            storage_rest_url: String(storageRestUrl || ""),
-            storage_metrics_url: String(storageMetricsUrl || ""),
-            storage_network_preset: String(storageNetworkPreset || ""),
-            storage_data_dir: String(storageDataDir || ""),
-            storage_cid_probe: String(storageCidProbe || ""),
-            storage_rolling_window: Number(storageRollingWindow || 0),
-            storage_local_diagnostics_enabled: storageLocalDiagnosticsEnabled === true,
-            storage_privileged_debug_enabled: storagePrivilegedDebugEnabled === true,
-            storage_mutating_diagnostics_enabled: storageMutatingDiagnosticsEnabled === true,
-            local_nodes_enabled: localNodesEnabled === true,
-            local_devnet_enabled: localNodesEnabled === true && localDevnetEnabled === true,
-            settings_backup_encrypted: settingsBackupEncrypted === true,
-            blockchain_refresh_rate: root.canonicalRefreshRate(blockchainRefreshRate),
-            indexer_refresh_rate: root.canonicalRefreshRate(indexerRefreshRate),
-            execution_refresh_rate: root.canonicalRefreshRate(executionRefreshRate),
-            messaging_refresh_rate: root.canonicalRefreshRate(messagingRefreshRate),
-            storage_refresh_rate: root.canonicalRefreshRate(storageRefreshRate),
-            footer_fields: footerFieldSelections || {},
-            dashboard_graphs: dashboardGraphSelections || {},
-            favorites: root.favoriteStore.payload()
-        }, social)
-    }
+    return SettingsProfile.settingsStatePayload(root)
+}
+
+function defaultSettingsBackupContents(root) {
+    return SettingsProfile.defaultBackupContents()
+}
+
+function normalizedBackupContents(root, contents) {
+    return SettingsProfile.normalizedBackupContents(contents)
+}
+
+function backupContentsSelected(root, contents) {
+    return SettingsProfile.backupContentsSelected(contents)
+}
+
+function updatedBackupContents(root, contents, area, enabled) {
+    return SettingsProfile.updatedBackupContents(contents, area, enabled)
 }
 
 function backupSettingsToStorage(root, encrypted, contents) {
@@ -119,15 +63,7 @@ function backupSettingsToStorage(root, encrypted, contents) {
             return false
         }
         settingsBackupEncrypted = encrypted === true
-        if (selectedContents.settings || selectedContents.favorites) {
-            saveSettingsState()
-        }
-        if (selectedContents.idl_registry) {
-            saveIdlState()
-        }
-        if (selectedContents.wallet_profile) {
-            saveWalletState()
-        }
+        SettingsProfile.saveSelectedBackupContents(root, selectedContents)
         const entry = root.createLocalSettingsBackup(
             settingsBackupEncrypted ? qsTr("Encrypted settings backup") : qsTr("Settings backup"),
             settingsBackupEncrypted,

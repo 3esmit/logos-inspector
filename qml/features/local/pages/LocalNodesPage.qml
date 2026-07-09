@@ -17,10 +17,6 @@ ColumnLayout {
 
     property string newNetworkId: ""
     property string loadWorkspace: ""
-    property string pendingAction: ""
-    property string pendingNode: ""
-    property string pendingNetworkId: ""
-    property string pendingWorkspace: ""
 
     width: parent ? parent.width : 900
     spacing: 16
@@ -330,8 +326,8 @@ ColumnLayout {
         theme: root.theme
         title: root.confirmTitle()
         message: root.confirmMessage()
-        confirmText: root.model.actionLabel(root.pendingAction)
-        confirmEnabled: !root.model.busy && root.pendingAction.length > 0
+        confirmText: root.model.actionLabel(root.model.pendingAction)
+        confirmEnabled: !root.model.busy && root.model.pendingAction.length > 0
         onAccepted: root.acceptPendingAction()
     }
 
@@ -436,73 +432,30 @@ ColumnLayout {
     }
 
     function openNodeConfirm(action, node) {
-        root.pendingAction = String(action || "")
-        root.pendingNode = String(node || "")
-        root.pendingNetworkId = ""
-        root.pendingWorkspace = ""
+        root.model.beginNodeAction(action, node)
         confirmPopup.open()
     }
 
     function openNetworkConfirm(action) {
-        root.pendingAction = String(action || "")
-        root.pendingNode = ""
-        root.pendingNetworkId = root.pendingAction === "new_network" ? root.newNetworkId.trim() : root.activeNetworkId()
-        root.pendingWorkspace = root.pendingAction === "load_network" ? root.loadWorkspace.trim() : ""
+        const actionKey = String(action || "")
+        root.model.beginNetworkAction(
+            actionKey,
+            actionKey === "new_network" ? root.newNetworkId.trim() : root.activeNetworkId(),
+            actionKey === "load_network" ? root.loadWorkspace.trim() : ""
+        )
         confirmPopup.open()
     }
 
     function acceptPendingAction() {
-        root.model.runAction(
-            root.pendingAction,
-            root.pendingNode,
-            root.pendingNetworkId,
-            root.pendingWorkspace,
-            root.confirmTitle()
-        )
+        root.model.runPendingAction()
     }
 
     function confirmTitle() {
-        if (!root.pendingAction.length) {
-            return qsTr("Confirm")
-        }
-        if (root.pendingNode.length) {
-            return qsTr("%1 %2").arg(root.model.actionLabel(root.pendingAction)).arg(root.nodeLabel(root.pendingNode))
-        }
-        return root.model.actionLabel(root.pendingAction)
+        return root.model.actionDraftTitle()
     }
 
     function confirmMessage() {
-        const action = root.pendingAction
-        if (action === "delete_network") {
-            return qsTr("This stops all local nodes in Local Devnet %1 and removes the managed workspace plus node data.").arg(root.activeNetworkId())
-        }
-        if (action === "reset_network") {
-            return qsTr("This stops all local nodes in Local Devnet %1, deletes node databases, and regenerates configs in the same workspace.").arg(root.activeNetworkId())
-        }
-        if (action === "new_network") {
-            const target = root.pendingNetworkId.length ? root.pendingNetworkId : qsTr("a generated Local Devnet")
-            return qsTr("This creates %1 under the Managed Workspace Root and sets it as Active Devnet.").arg(target)
-        }
-        if (action === "load_network") {
-            return qsTr("This loads the Local Devnet manifest from %1 and sets it as Active Devnet.").arg(root.pendingWorkspace)
-        }
-        const node = root.model.nodeByKind(root.pendingNode) || {}
-        if (action === "purge") {
-            return qsTr("This stops %1 and deletes data directory %2. Config and install record remain.").arg(root.nodeLabel(root.pendingNode)).arg(String(node.data_dir || "-"))
-        }
-        if (action === "uninstall") {
-            return qsTr("This stops %1 and removes its install registration. Node databases remain.").arg(root.nodeLabel(root.pendingNode))
-        }
-        if (action === "start") {
-            return qsTr("This starts %1 using config %2.").arg(root.nodeLabel(root.pendingNode)).arg(String(node.config_path || "-"))
-        }
-        if (action === "stop") {
-            return qsTr("This stops %1 and keeps its data and config.").arg(root.nodeLabel(root.pendingNode))
-        }
-        if (action === "install") {
-            return qsTr("This verifies %1 control tooling and records the resolved install path. It does not start the node.").arg(root.nodeLabel(root.pendingNode))
-        }
-        return qsTr("Run local node action.")
+        return root.model.actionDraftMessage()
     }
 
     function stateLabel(value) {
@@ -533,20 +486,7 @@ ColumnLayout {
     }
 
     function nodeLabel(kind) {
-        switch (String(kind || "")) {
-        case "bedrock":
-            return qsTr("Bedrock")
-        case "sequencer":
-            return qsTr("Local Sequencer")
-        case "indexer":
-            return qsTr("Indexer")
-        case "storage":
-            return qsTr("Storage")
-        case "messaging":
-            return qsTr("Messaging")
-        default:
-            return String(kind || "-")
-        }
+        return root.model.nodeLabel(kind)
     }
 
     function shortText(value, limit) {

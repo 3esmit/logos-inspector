@@ -1,4 +1,5 @@
 .import "../../services/BridgeHelpers.js" as BridgeHelpers
+.import "ChainPageQuery.js" as ChainPageQuery
 
 function refreshBlocksPage(root, anchorSlot) {
     with (root) {
@@ -9,12 +10,9 @@ function refreshBlocksPage(root, anchorSlot) {
             return
         }
 
-        const infoProbe = node.value ? node.value.cryptarchia_info : null
-        const info = infoProbe && infoProbe.value ? infoProbe.value.cryptarchia_info : null
-        const fallbackSlot = info ? (info.slot || info.lib_slot || 0) : 0
-        const requestedSlot = Math.max(0, Number(anchorSlot === undefined || anchorSlot === null ? fallbackSlot : anchorSlot))
-        const slotTo = fallbackSlot > 0 ? Math.min(requestedSlot, Number(fallbackSlot)) : requestedSlot
-        const slotFrom = Math.max(0, slotTo - blocksPageWindow)
+        const window = ChainPageQuery.slotWindow(anchorSlot, ChainPageQuery.slotTip(node.value, false), blocksPageWindow)
+        const slotFrom = window.slotFrom
+        const slotTo = window.slotTo
         const blockLimit = Math.max(5, Number(blocksPageLimit || 5))
         const blocks = requestModule(inspectorModule, "blockchainBlocks", root.blockchainArgs([slotFrom, slotTo, blockLimit]), qsTr("Blocks"), false)
         if (!blocks.ok) {
@@ -70,16 +68,13 @@ function refreshBlocksLivePage(root) {
             return
         }
         dashboardNode = node.value
-        const infoProbe = node.value ? node.value.cryptarchia_info : null
-        const info = infoProbe && infoProbe.value ? infoProbe.value.cryptarchia_info : null
-        const tip = Number(info ? (info.slot || info.lib_slot || 0) : 0)
-        const slotTo = tip > 0 ? tip : Math.max(0, Number(blocksPageSlotTo || 0))
+        const window = ChainPageQuery.liveSlotWindow(ChainPageQuery.slotTip(node.value, false), blocksPageSlotTo, blocksPageWindow)
+        const slotTo = window.slotTo
         if (slotTo <= 0) {
             blocksLiveError = qsTr("No L1 tip available.")
             return
         }
-        const existingTo = Math.max(0, Number(blocksPageSlotTo || 0))
-        const slotFrom = existingTo > 0 ? Math.min(existingTo, slotTo) : Math.max(0, slotTo - blocksPageWindow)
+        const slotFrom = window.slotFrom
         const limit = Math.max(5, Number(blocksPageLimit || 5))
         const response = requestModule(inspectorModule, "blockchainLiveBlocks", root.blockchainArgs([slotFrom, slotTo, limit]), qsTr("Live blocks"), false)
         if (!response.ok) {
@@ -575,12 +570,9 @@ function refreshTransactionsPage(root, beforeBlock) {
             return
         }
 
-        const infoProbe = node.value ? node.value.cryptarchia_info : null
-        const info = infoProbe && infoProbe.value ? infoProbe.value.cryptarchia_info : null
-        const fallbackSlot = info ? (info.lib_slot || info.slot || 0) : 0
-        const requestedSlot = Math.max(0, Number(beforeBlock === undefined || beforeBlock === null ? fallbackSlot : beforeBlock))
-        const slotTo = fallbackSlot > 0 ? Math.min(requestedSlot, Number(fallbackSlot)) : requestedSlot
-        const slotFrom = Math.max(0, slotTo - transactionsPageBlockBatch)
+        const window = ChainPageQuery.slotWindow(beforeBlock, ChainPageQuery.slotTip(node.value, true), transactionsPageBlockBatch)
+        const slotFrom = window.slotFrom
+        const slotTo = window.slotTo
         const blocks = requestModule(inspectorModule, "blockchainBlocks", root.blockchainArgs([slotFrom, slotTo]), qsTr("Transactions"), false)
         if (!blocks.ok) {
             transactionsPageError = blocks.error
@@ -1172,12 +1164,9 @@ function refreshChannelsPage(root, anchorSlot) {
             return
         }
 
-        const infoProbe = node.value ? node.value.cryptarchia_info : null
-        const info = infoProbe && infoProbe.value ? infoProbe.value.cryptarchia_info : null
-        const fallbackSlot = info ? (info.slot || info.lib_slot || 0) : 0
-        const requestedSlot = Math.max(0, Number(anchorSlot === undefined || anchorSlot === null ? fallbackSlot : anchorSlot))
-        const slotTo = fallbackSlot > 0 ? Math.min(requestedSlot, Number(fallbackSlot)) : requestedSlot
-        const slotFrom = Math.max(0, slotTo - channelsPageWindow)
+        const window = ChainPageQuery.slotWindow(anchorSlot, ChainPageQuery.slotTip(node.value, false), channelsPageWindow)
+        const slotFrom = window.slotFrom
+        const slotTo = window.slotTo
         const report = requestModule(inspectorModule, "channelScan", root.blockchainRpcArgs([slotFrom, slotTo]), qsTr("Channels"), false)
         if (!report.ok) {
             channelsPageError = report.error

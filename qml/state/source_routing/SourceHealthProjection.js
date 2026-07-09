@@ -1,3 +1,5 @@
+.import "InspectionFacts.js" as InspectionFacts
+
 function networkConnectionSummary(root, kind, value) {
     if (kind === "blockchain") {
         const probe = value && value.cryptarchia_info ? value.cryptarchia_info : null
@@ -72,125 +74,59 @@ function storageReportReady(root, report) {
 }
 
 function moduleReportReachable(root, report) {
-    if (!report || typeof report !== "object") {
-        return false
-    }
-    const health = sourceHealth(report)
-    if (health && health.reachable !== undefined) {
-        return health.reachable === true
-    }
-    if (report.module_info && report.module_info.ok === true) {
-        return true
-    }
-    const probes = Array.isArray(report.probes) ? report.probes : []
-    for (let i = 0; i < probes.length; ++i) {
-        if (probes[i] && probes[i].ok === true) {
-            return true
-        }
-    }
-    return false
+    return InspectionFacts.reachable(report)
 }
 
 function sourceHealth(report) {
-    const health = report && report.health && typeof report.health === "object" && !Array.isArray(report.health)
-        ? report.health
-        : null
-    return health
+    return InspectionFacts.health(report)
 }
 
 function sourceHealthReady(report) {
-    const health = sourceHealth(report)
-    if (health && health.ready !== undefined) {
-        return health.ready === true
-    }
-    return null
+    return InspectionFacts.healthReady(report)
 }
 
 function sourceCapability(report, key) {
-    return sourceFact(report, "capability_facts", key)
+    return InspectionFacts.capability(report, key)
 }
 
 function sourceCapabilityAvailable(report, key) {
-    const fact = sourceCapability(report, key)
-    return fact !== null ? fact.available === true : null
+    return InspectionFacts.capabilityAvailable(report, key)
 }
 
 function sourceCapabilityEvidence(report, key) {
-    const fact = sourceCapability(report, key)
-    return fact && fact.evidence !== undefined ? String(fact.evidence) : ""
+    return InspectionFacts.capabilityEvidence(report, key)
 }
 
 function sourceCapabilityValue(report, key) {
-    const fact = sourceCapability(report, key)
-    return fact && fact.value !== undefined ? fact.value : null
+    return InspectionFacts.capabilityValue(report, key)
 }
 
 function sourceProbeFact(report, key) {
-    return sourceFact(report, "probe_facts", key)
+    return InspectionFacts.probeFact(report, key)
 }
 
 function sourceFact(report, fieldName, key) {
-    const wanted = String(key || "")
-    const facts = report && Array.isArray(report[fieldName]) ? report[fieldName] : []
-    for (let i = 0; i < facts.length; ++i) {
-        const fact = facts[i] || {}
-        if (String(fact.key || "") === wanted) {
-            return fact
-        }
-    }
-    return null
+    return InspectionFacts.fact(report, fieldName, key)
 }
 
 function sourceProbeValue(report, key) {
-    const fact = sourceProbeFact(report, key)
-    return fact && fact.ok === true && fact.value !== undefined && fact.value !== null ? fact.value : null
+    return InspectionFacts.probeValue(report, key)
 }
 
 function reportProbeValue(report, method) {
-    const probe = reportProbe(report, method)
-    if (!probe || probe.ok !== true || probe.value === undefined || probe.value === null) {
-        return null
-    }
-    return probe.value
+    return InspectionFacts.reportProbeValue(report, method)
 }
 
 function reportProbeOk(report, method) {
-    const probe = reportProbe(report, method)
-    return probe !== null && probe.ok === true
+    return InspectionFacts.reportProbeOk(report, method)
 }
 
 function reportProbe(report, method) {
-    if (!report || typeof report !== "object") {
-        return null
-    }
-    const wanted = String(method || "")
-    const fact = sourceProbeFact(report, wanted)
-    if (fact) {
-        return fact
-    }
-    const moduleInfo = report.module_info || null
-    if (moduleInfo) {
-        if (probeMatchesKey(moduleInfo, wanted)) {
-            return moduleInfo
-        }
-    }
-    const probes = Array.isArray(report.probes) ? report.probes : []
-    for (let i = 0; i < probes.length; ++i) {
-        const probe = probes[i] || {}
-        if (probeMatchesKey(probe, wanted)) {
-            return probe
-        }
-    }
-    return null
+    return InspectionFacts.reportProbe(report, method)
 }
 
 function probeMatchesKey(probe, wanted) {
-    if (String(probe.probe_key || "") === wanted) {
-        return true
-    }
-    const label = String(probe.label || "")
-    const source = String(probe.source || "")
-    return label.indexOf("." + wanted) >= 0 || source.indexOf(" " + wanted) >= 0
+    return InspectionFacts.probeMatchesKey(probe, wanted)
 }
 
 function deliveryReportHealthy(root, report) {
@@ -229,17 +165,5 @@ function deliveryHealthValueOk(root, value, unknownOk) {
 }
 
 function moduleReportError(report) {
-    if (!report || typeof report !== "object") {
-        return ""
-    }
-    if (report.module_info && report.module_info.ok === false && report.module_info.error) {
-        return String(report.module_info.error)
-    }
-    const probes = Array.isArray(report.probes) ? report.probes : []
-    for (let i = 0; i < probes.length; ++i) {
-        if (probes[i] && probes[i].ok === false && probes[i].error) {
-            return String(probes[i].error)
-        }
-    }
-    return ""
+    return InspectionFacts.error(report)
 }

@@ -1,4 +1,6 @@
 import QtQml
+import "../backup/BackupImportPolicy.js" as BackupImportPolicy
+import "../settings/SettingsProfile.js" as SettingsProfile
 
 QtObject {
     id: root
@@ -8,36 +10,26 @@ QtObject {
     required property var operationHistory
 
     function defaultSettingsBackupContents() {
-        return {
-            settings: true,
-            favorites: true,
-            idl_registry: true,
-            wallet_profile: true
-        }
+        return SettingsProfile.defaultBackupContents()
     }
 
     function normalizedBackupContents(contents) {
-        const value = contents && typeof contents === "object" ? contents : defaultSettingsBackupContents()
-        return {
-            settings: value.settings === true,
-            favorites: value.favorites === true,
-            idl_registry: value.idl_registry === true || value.idls === true || value.idl === true,
-            wallet_profile: value.wallet_profile === true || value.wallet === true
-        }
+        return SettingsProfile.normalizedBackupContents(contents)
     }
 
     function backupContentsSelected(contents) {
-        const value = normalizedBackupContents(contents || model.settingsBackupContents)
-        return value.settings || value.favorites || value.idl_registry || value.wallet_profile
+        return SettingsProfile.backupContentsSelected(contents || model.settingsBackupContents)
     }
 
     function setSettingsBackupContent(area, enabled) {
-        const next = normalizedBackupContents(model.settingsBackupContents)
-        const key = String(area || "")
-        if (key === "settings" || key === "favorites" || key === "idl_registry" || key === "wallet_profile") {
-            next[key] = enabled === true
+        model.settingsBackupContents = SettingsProfile.updatedBackupContents(model.settingsBackupContents, area, enabled)
+    }
+
+    function policyContext() {
+        return {
+            model: model,
+            operationHistory: operationHistory
         }
-        model.settingsBackupContents = next
     }
 
     function previewLocalSettingsImportPlan(backupCatalogId, options) {
@@ -174,218 +166,59 @@ QtObject {
     }
 
     function backupImportEnabledGate(provenance) {
-        return {
-            enabled: true,
-            status: "enabled",
-            missing: [],
-            warnings: [],
-            provenance: [String(provenance || "backup_import_policy")]
-        }
+        return BackupImportPolicy.enabledGate(provenance)
     }
 
     function backupImportDisabledGate(status, dependency, label, provenance) {
-        return {
-            enabled: false,
-            status: String(status || "disabled"),
-            missing: [{
-                dependency: String(dependency || ""),
-                label: String(label || dependency || ""),
-                status: String(status || "disabled"),
-                provenance: String(provenance || "backup_import_policy")
-            }],
-            warnings: [],
-            provenance: [String(provenance || "backup_import_policy")]
-        }
+        return BackupImportPolicy.disabledGate(status, dependency, label, provenance)
     }
 
     function backupImportGateSummary(gate) {
-        const value = gate && typeof gate === "object" ? gate : backupImportEnabledGate("backup_import_policy")
-        const missing = Array.isArray(value.missing) ? value.missing : []
-        return {
-            enabled: value.enabled === true,
-            status: String(value.status || (value.enabled === true ? "enabled" : "disabled")),
-            missing: missing,
-            warnings: Array.isArray(value.warnings) ? value.warnings : [],
-            provenance: Array.isArray(value.provenance) ? value.provenance : []
-        }
+        return BackupImportPolicy.gateSummary(gate)
     }
 
     function backupImportSafeReadOperation(metadata) {
-        const operationClass = String(metadata && metadata.operationClass ? metadata.operationClass : "")
-        const restartPolicy = String(metadata && metadata.restartPolicy ? metadata.restartPolicy : "")
-        return operationClass === "read_poll" || restartPolicy === "safe_read_polling"
+        return BackupImportPolicy.safeReadOperation(metadata)
     }
 
     function backupImportRestartRequest(operation) {
-        const request = operation && operation.restartRequest
-        return request && typeof request === "object" ? request : null
+        return BackupImportPolicy.restartRequest(operation)
     }
 
     function backupImportOperationGate(operation, metadata) {
-        const value = operation || {}
-        const domain = String(value.domain || "").toLowerCase()
-        const method = String(value.method || value.label || "").toLowerCase()
-        if (domain === "storage" || method.indexOf("storage") >= 0) {
-            if (method.indexOf("manifest") >= 0 || method.indexOf("list") >= 0) {
-                return model.storageGate("manifests")
-            }
-            if (method.indexOf("exists") >= 0 || method.indexOf("probe") >= 0) {
-                return model.storageGate("exists")
-            }
-            if (method.indexOf("read") >= 0 || method.indexOf("cid") >= 0) {
-                return model.storageGate("read_by_cid")
-            }
-            return model.storageGate("")
-        }
-        if (domain === "delivery" || method.indexOf("delivery") >= 0) {
-            if (method.indexOf("store") >= 0 || method.indexOf("query") >= 0 || method.indexOf("read") >= 0) {
-                return model.deliveryGate("store_query")
-            }
-            if (method.indexOf("subscribe") >= 0) {
-                return model.deliveryGate("subscribe")
-            }
-            return model.deliveryGate("")
-        }
-        if (domain === "wallet" || method.indexOf("wallet") >= 0) {
-            return model.walletGate("")
-        }
-        if (domain === "program" || method.indexOf("decode") >= 0 || method.indexOf("idl") >= 0) {
-            return model.programDecodeGate()
-        }
-        if (domain === "backup") {
-            return backupImportDisabledGate("manual_required", "backup", qsTr("Backup operation"), "operation_history")
-        }
-        return backupImportEnabledGate("operation_history")
+        return BackupImportPolicy.operationGate(policyContext(), operation, metadata)
     }
 
     function backupImportCanRestartOperation(operation, metadata) {
-        const gate = backupImportOperationGate(operation, metadata)
-        return backupImportRestartRequest(operation) !== null
-            && backupImportSafeReadOperation(metadata)
-            && gate.enabled === true
+        return BackupImportPolicy.canRestartOperation(policyContext(), operation, metadata)
     }
 
     function backupImportDecisionWithAction(decision, action, restart) {
-        const source = decision || {}
-        return {
-            operation: source.operation || {},
-            operationId: String(source.operationId || ""),
-            label: String(source.label || ""),
-            operationClass: String(source.operationClass || ""),
-            affectedInputs: source.affectedInputs || [],
-            restartPolicy: String(source.restartPolicy || ""),
-            action: String(action || source.action || ""),
-            affected: source.affected === true,
-            restart: restart === undefined ? source.restart === true : restart === true,
-            restartEligible: source.restartEligible === true,
-            restartGate: source.restartGate || null,
-            safeToLetFinish: source.safeToLetFinish === true,
-            previousOperationId: String(source.previousOperationId || source.previous_operation_id || ""),
-            restartOperationId: String(source.restartOperationId || source.restart_operation_id || ""),
-            importId: String(source.importId || ""),
-            backupCatalogId: String(source.backupCatalogId || "")
-        }
+        return BackupImportPolicy.decisionWithAction(decision, action, restart)
     }
 
     function backupImportDecisionActionLabel(decision) {
-        const value = decision || {}
-        switch (String(value.action || "")) {
-        case "stop":
-            return value.restart === true
-                ? qsTr("will stop and restart if gates still pass")
-                : qsTr("will stop; manual rerun required")
-        case "let_finish":
-            return qsTr("safe to let finish")
-        case "restart":
-            return qsTr("restarted")
-        case "block":
-            return qsTr("blocks import")
-        case "skip_restart":
-            return qsTr("manual rerun required")
-        case "restart_failed":
-            return qsTr("restart failed")
-        default:
-            return qsTr("not affected")
-        }
+        return BackupImportPolicy.decisionActionLabel(decision)
     }
 
     function backupImportDecisionGateText(decision) {
-        const gate = decision && decision.restartGate ? decision.restartGate : null
-        if (!gate || gate.enabled === true) {
-            return ""
-        }
-        const missing = Array.isArray(gate.missing) ? gate.missing : []
-        if (missing.length > 0) {
-            return String(missing[0].label || missing[0].dependency || gate.status || "")
-        }
-        return String(gate.status || "")
+        return BackupImportPolicy.decisionGateText(decision)
     }
 
     function backupImportDecisionSummaryText(decision) {
-        const value = decision || {}
-        const gateText = backupImportDecisionGateText(value)
-        const base = qsTr("%1: %2").arg(String(value.label || value.operationId || qsTr("operation"))).arg(backupImportDecisionActionLabel(value))
-        return gateText.length ? qsTr("%1 (%2)").arg(base).arg(gateText) : base
+        return BackupImportPolicy.decisionSummaryText(decision)
     }
 
     function backupImportOperationDecision(operation, selectedAreas) {
-        const metadata = operationHistory.operationMetadata(operation || {})
-        const operationClass = String(metadata.operationClass || "unknown")
-        const restartPolicy = String(metadata.restartPolicy || "")
-        const affected = backupImportOperationAffected(operation, selectedAreas)
-        const operationId = String(operation && operation.operationId ? operation.operationId : "")
-        const status = String(operation && operation.status ? operation.status : "")
-        const canCancel = operation && operation.cancellable === true && status === "running"
-        const safeToLetFinish = backupImportSafeReadOperation(metadata)
-        const restartEligible = canCancel && backupImportRestartRequest(operation) !== null && safeToLetFinish
-        const restartGate = restartEligible ? backupImportGateSummary(backupImportOperationGate(operation, metadata)) : null
-        let action = "ignore"
-        if (affected) {
-            action = backupImportOperationConflictsWithImport(operation, metadata)
-                ? "block"
-                : (canCancel ? "stop" : (safeToLetFinish ? "let_finish" : "block"))
-        }
-        return {
-            selectedAreas: selectedAreas,
-            operation: operation || {},
-            operationId: operationId,
-            label: String(operation && (operation.label || operation.method) ? (operation.label || operation.method) : operationId),
-            operationClass: operationClass,
-            affectedInputs: metadata.affectedInputs || [],
-            restartPolicy: restartPolicy,
-            action: action,
-            affected: affected,
-            restart: restartEligible,
-            restartEligible: restartEligible,
-            restartGate: restartGate,
-            safeToLetFinish: safeToLetFinish
-        }
+        return BackupImportPolicy.operationDecision(policyContext(), operation, selectedAreas)
     }
 
     function selectedBackupImportAreas(options, summary) {
-        const selected = []
-        const value = options && typeof options === "object" ? options : ({})
-        const areas = ["settings", "favorites", "idl_registry", "wallet_profile"]
-        for (let i = 0; i < areas.length; ++i) {
-            const area = areas[i]
-            const mode = String(value[area] || "").trim().toLowerCase()
-            if (mode.length && mode !== "skip" && mode !== "none" && mode !== "not_import" && mode !== "not import") {
-                selected.push(area)
-            }
-        }
-        if (selected.length > 0 || !summary || typeof summary !== "object") {
-            return selected
-        }
-        const applied = Array.isArray(summary.applied_areas) ? summary.applied_areas : []
-        for (let i = 0; i < applied.length; ++i) {
-            selected.push(String(applied[i] || ""))
-        }
-        return selected
+        return BackupImportPolicy.selectedAreas(options, summary)
     }
 
     function backupImportTouchesLocalSettings(selectedAreas) {
-        const areas = Array.isArray(selectedAreas) ? selectedAreas : []
-        return areas.indexOf("settings") >= 0 || areas.indexOf("favorites") >= 0
+        return BackupImportPolicy.touchesLocalSettings(selectedAreas)
     }
 
     function runningBackupImportOperations() {
@@ -404,131 +237,39 @@ QtObject {
     }
 
     function backupImportOperationAffected(operation, selectedAreas) {
-        const areas = Array.isArray(selectedAreas) ? selectedAreas : []
-        const metadata = operationHistory.operationMetadata(operation || {})
-        if (areas.length > 0 && backupImportOperationConflictsWithImport(operation, metadata)) {
-            return true
-        }
-        for (let i = 0; i < areas.length; ++i) {
-            if (backupImportOperationAffectsArea(operation, areas[i], metadata)) {
-                return true
-            }
-        }
-        return false
+        return BackupImportPolicy.operationAffected(policyContext(), operation, selectedAreas)
     }
 
     function backupImportOperationConflictsWithImport(operation, metadata) {
-        const value = operation || {}
-        const domain = String(value.domain || "").toLowerCase()
-        const method = String(value.method || value.label || "").toLowerCase()
-        const info = metadata || operationHistory.operationMetadata(value)
-        const operationClass = String(info.operationClass || "").toLowerCase()
-        return domain === "backup"
-            || operationClass === "backup"
-            || method.indexOf("backup") >= 0
-            || method.indexOf("restore") >= 0
-            || method.indexOf("import") >= 0
-            || method.indexOf("export") >= 0
-            || method.indexOf("decrypt") >= 0
+        return BackupImportPolicy.operationConflictsWithImport(policyContext(), operation, metadata)
     }
 
     function backupImportOperationAffectsArea(operation, area, metadata) {
-        if (backupImportMetadataAffectsArea(metadata, area)) {
-            return true
-        }
-        const domain = String(operation && operation.domain ? operation.domain : "").toLowerCase()
-        const method = String(operation && operation.method ? operation.method : "").toLowerCase()
-        switch (String(area || "")) {
-        case "settings":
-            return domain !== "backup"
-        case "favorites":
-            return domain === "favorites" || method.indexOf("favorite") >= 0
-        case "idl_registry":
-            return method.indexOf("idl") >= 0
-                || method.indexOf("decode") >= 0
-                || method.indexOf("instruction") >= 0
-                || method.indexOf("account") >= 0
-                || domain === "program"
-        case "wallet_profile":
-            return domain === "wallet"
-                || method.indexOf("wallet") >= 0
-                || method.indexOf("sign") >= 0
-                || method.indexOf("submit") >= 0
-                || method.indexOf("deploy") >= 0
-        default:
-            return false
-        }
+        return BackupImportPolicy.operationAffectsArea(policyContext(), operation, area, metadata)
     }
 
     function backupImportMetadataAffectsArea(metadata, area) {
-        const wanted = backupImportCanonicalArea(area)
-        if (!wanted.length) {
-            return false
-        }
-        const inputs = metadata && Array.isArray(metadata.affectedInputs) ? metadata.affectedInputs : []
-        for (let i = 0; i < inputs.length; ++i) {
-            const input = inputs[i] || {}
-            const key = backupImportCanonicalArea(input.key)
-            const value = backupImportCanonicalArea(input.value)
-            if (key === wanted || value === wanted) {
-                return true
-            }
-        }
-        return false
+        return BackupImportPolicy.metadataAffectsArea(metadata, area)
     }
 
     function backupImportCanonicalArea(value) {
-        const text = String(value || "").trim().toLowerCase().replace(/[- ]/g, "_")
-        switch (text) {
-        case "favorite":
-            return "favorites"
-        case "idl":
-        case "idls":
-            return "idl_registry"
-        case "wallet":
-        case "wallet_profile_state":
-            return "wallet_profile"
-        case "app_settings":
-        case "local_settings":
-        case "settings_profile":
-            return "settings"
-        default:
-            return text
-        }
+        return BackupImportPolicy.canonicalArea(value)
     }
 
     function backupImportStoppedStatus(status) {
-        const value = String(status || "").toLowerCase()
-        return value === "canceled" || value === "cancelled" || value === "stopped"
+        return BackupImportPolicy.stoppedStatus(status)
     }
 
     function backupImportTerminalStatus(status) {
-        const value = String(status || "").toLowerCase()
-        return backupImportStoppedStatus(value) || value === "completed" || value === "failed"
+        return BackupImportPolicy.terminalStatus(status)
     }
 
     function backupImportOperationWithRestart(decision, operation) {
-        const value = operation || (decision ? decision.operation : null)
-        const restartRequest = decision && decision.operation ? decision.operation.restartRequest : undefined
-        if (!value || typeof value !== "object" || restartRequest === undefined || value.restartRequest !== undefined || value.restart_request !== undefined) {
-            return value
-        }
-        const next = {}
-        for (const key in value) {
-            next[key] = value[key]
-        }
-        next.restartRequest = restartRequest
-        return next
+        return BackupImportPolicy.operationWithRestart(decision, operation)
     }
 
     function backupImportMarkLetFinish(decision) {
-        if (decision && typeof decision === "object") {
-            decision.action = "let_finish"
-            decision.restart = false
-            decision.restartEligible = false
-            decision.restartGate = null
-        }
-        return backupImportDecisionWithAction(decision, "let_finish", false)
+        return BackupImportPolicy.markLetFinish(decision)
     }
 
     function backupImportStopState(decision, operation) {
@@ -705,50 +446,15 @@ QtObject {
     }
 
     function backupImportActionStatus(action) {
-        switch (String(action || "")) {
-        case "stop":
-            return "stopped_for_import"
-        case "let_finish":
-            return "let_finish_for_import"
-        case "block":
-            return "blocked_for_import"
-        case "skip_restart":
-            return "restart_skipped_for_import"
-        case "restart":
-            return "restarted_after_import"
-        case "restart_failed":
-            return "restart_failed_after_import"
-        default:
-            return "ignored"
-        }
+        return BackupImportPolicy.actionStatus(action)
     }
 
     function backupImportActionReason(action) {
-        switch (String(action || "")) {
-        case "stop":
-            return "affected_operation_stopped_for_import"
-        case "let_finish":
-            return "safe_operation_left_running_for_import"
-        case "block":
-            return "affected_operation_blocked_for_import"
-        case "skip_restart":
-            return "restart_not_safe_for_import"
-        case "restart":
-            return "safe_operation_restarted_after_import"
-        case "restart_failed":
-            return "safe_operation_restart_failed_after_import"
-        default:
-            return "not_applicable"
-        }
+        return BackupImportPolicy.actionReason(action)
     }
 
     function backupImportAffectedInputs(selectedAreas) {
-        const rows = []
-        const areas = Array.isArray(selectedAreas) ? selectedAreas : []
-        for (let i = 0; i < areas.length; ++i) {
-            rows.push({ key: "backup_area", value: String(areas[i] || "") })
-        }
-        return rows
+        return BackupImportPolicy.affectedInputs(selectedAreas)
     }
 
     function uploadBackupCatalogEntry(backupCatalogId) {

@@ -14,6 +14,10 @@ QtObject {
     property var operations: []
     property int revision: 0
     property var devnets: []
+    property string pendingAction: ""
+    property string pendingNode: ""
+    property string pendingNetworkId: ""
+    property string pendingWorkspace: ""
 
     function clearStatus() {
         report = null
@@ -166,6 +170,106 @@ QtObject {
             return qsTr("Purge")
         default:
             return qsTr("Local node action")
+        }
+    }
+
+    function beginNodeAction(action, node) {
+        pendingAction = String(action || "")
+        pendingNode = String(node || "")
+        pendingNetworkId = ""
+        pendingWorkspace = ""
+    }
+
+    function beginNetworkAction(action, networkId, workspacePath) {
+        pendingAction = String(action || "")
+        pendingNode = ""
+        pendingNetworkId = String(networkId || "").trim()
+        pendingWorkspace = String(workspacePath || "").trim()
+    }
+
+    function clearActionDraft() {
+        pendingAction = ""
+        pendingNode = ""
+        pendingNetworkId = ""
+        pendingWorkspace = ""
+    }
+
+    function runPendingAction() {
+        if (!pendingAction.length) {
+            return null
+        }
+        const action = pendingAction
+        const node = pendingNode
+        const networkId = pendingNetworkId
+        const workspacePath = pendingWorkspace
+        const label = actionDraftTitle()
+        clearActionDraft()
+        return runAction(action, node, networkId, workspacePath, label)
+    }
+
+    function actionDraftTitle() {
+        if (!pendingAction.length) {
+            return qsTr("Confirm")
+        }
+        if (pendingNode.length) {
+            return qsTr("%1 %2").arg(actionLabel(pendingAction)).arg(nodeLabel(pendingNode))
+        }
+        return actionLabel(pendingAction)
+    }
+
+    function actionDraftMessage() {
+        const action = pendingAction
+        if (action === "delete_network") {
+            return qsTr("This stops all local nodes in Local Devnet %1 and removes the managed workspace plus node data.").arg(pendingNetworkId.length ? pendingNetworkId : activeNetworkId())
+        }
+        if (action === "reset_network") {
+            return qsTr("This stops all local nodes in Local Devnet %1, deletes node databases, and regenerates configs in the same workspace.").arg(pendingNetworkId.length ? pendingNetworkId : activeNetworkId())
+        }
+        if (action === "new_network") {
+            const target = pendingNetworkId.length ? pendingNetworkId : qsTr("a generated Local Devnet")
+            return qsTr("This creates %1 under the Managed Workspace Root and sets it as Active Devnet.").arg(target)
+        }
+        if (action === "load_network") {
+            return qsTr("This loads the Local Devnet manifest from %1 and sets it as Active Devnet.").arg(pendingWorkspace)
+        }
+        const node = nodeByKind(pendingNode) || {}
+        if (action === "purge") {
+            return qsTr("This stops %1 and deletes data directory %2. Config and install record remain.").arg(nodeLabel(pendingNode)).arg(String(node.data_dir || "-"))
+        }
+        if (action === "uninstall") {
+            return qsTr("This stops %1 and removes its install registration. Node databases remain.").arg(nodeLabel(pendingNode))
+        }
+        if (action === "start") {
+            return qsTr("This starts %1 using config %2.").arg(nodeLabel(pendingNode)).arg(String(node.config_path || "-"))
+        }
+        if (action === "stop") {
+            return qsTr("This stops %1 and keeps its data and config.").arg(nodeLabel(pendingNode))
+        }
+        if (action === "install") {
+            return qsTr("This verifies %1 control tooling and records the resolved install path. It does not start the node.").arg(nodeLabel(pendingNode))
+        }
+        return qsTr("Run local node action.")
+    }
+
+    function activeNetworkId() {
+        const reportValue = report || null
+        return String(reportValue && reportValue.active_devnet ? reportValue.active_devnet : "")
+    }
+
+    function nodeLabel(kind) {
+        switch (String(kind || "")) {
+        case "bedrock":
+            return qsTr("Bedrock")
+        case "sequencer":
+            return qsTr("Local Sequencer")
+        case "indexer":
+            return qsTr("Indexer")
+        case "storage":
+            return qsTr("Storage")
+        case "messaging":
+            return qsTr("Messaging")
+        default:
+            return String(kind || "-")
         }
     }
 

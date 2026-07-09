@@ -1,3 +1,5 @@
+.import "InspectionFacts.js" as InspectionFacts
+
 function probe(model, family, report, method) {
     return model.sourceProbeFact(report, method) || model.moduleProbe(family, method)
 }
@@ -42,29 +44,7 @@ function metricTone(theme, model, key) {
 }
 
 function failedProbeCount(report) {
-    let failed = 0
-    if (!report) {
-        return failed
-    }
-    const facts = Array.isArray(report.probe_facts) ? report.probe_facts : []
-    if (facts.length > 0) {
-        for (let i = 0; i < facts.length; ++i) {
-            if (facts[i] && facts[i].ok === false) {
-                failed += 1
-            }
-        }
-        return failed
-    }
-    if (report.module_info && report.module_info.ok === false) {
-        failed += 1
-    }
-    const probes = Array.isArray(report.probes) ? report.probes : []
-    for (let i = 0; i < probes.length; ++i) {
-        if (probes[i] && probes[i].ok === false) {
-            failed += 1
-        }
-    }
-    return failed
+    return InspectionFacts.failedProbeCount(report)
 }
 
 function sourceFactAvailable(model, report, key) {
