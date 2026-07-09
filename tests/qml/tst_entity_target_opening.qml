@@ -1,6 +1,7 @@
 import QtQuick
 import QtTest
 import "../../qml/state/chain/EntityTargetOpening.js" as EntityTargetOpening
+import "../../qml/state/chain/LezTargetPresentation.js" as LezTargetPresentation
 
 TestCase {
     id: testRoot
@@ -41,5 +42,31 @@ TestCase {
     function test_blank_without_payload_is_noop() {
         compare(EntityTargetOpening.referenceTarget(session, "account", "").command, "")
         compare(EntityTargetOpening.referenceTarget(session, "channel", "", { channel_id: "c" }).command, "channel")
+    }
+
+    function test_lez_target_presentation_classifies_backend_result() {
+        const block = LezTargetPresentation.targetCommand({
+            ok: true,
+            value: { kind: "block", payload: { block_id: 7 } }
+        }, "Lookup")
+        const tx = LezTargetPresentation.targetCommand({
+            ok: true,
+            value: { kind: "transaction", payload: { hash: "abc" } }
+        }, "Lookup")
+        const missing = LezTargetPresentation.targetCommand({
+            ok: true,
+            value: { kind: "unknown", payload: null }
+        }, "Lookup")
+
+        compare(block.kind, "block")
+        compare(block.view, "l2BlockDetail")
+        compare(tx.kind, "transaction")
+        compare(tx.autoDecode, true)
+        compare(missing.kind, "not_found")
+        compare(missing.error, true)
+    }
+
+    function test_lez_target_presentation_ignores_failed_response() {
+        compare(LezTargetPresentation.targetCommand({ ok: false, error: "missing" }).handled, false)
     }
 }

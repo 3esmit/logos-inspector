@@ -1,5 +1,6 @@
 import QtQml
 import "../OperationHistoryVocabulary.js" as OperationHistoryVocabulary
+import "../runtime/RuntimeOperationPolicy.js" as RuntimeOperationPolicy
 
 QtObject {
     id: root
@@ -86,82 +87,27 @@ QtObject {
     }
 
     function operationMetadata(operation) {
-        const value = operation || {}
-        const explicitClass = String(value.operationClass || value.operation_class || "")
-        const explicitRestart = String(value.restartPolicy || value.restart_policy || "")
-        const affected = explicitAffectedInputs(value)
-        const classification = classifyOperation(value)
-        return {
-            operationClass: explicitClass.length ? explicitClass : classification.operationClass,
-            affectedInputs: affected.length ? affected : classification.affectedInputs,
-            restartPolicy: explicitRestart.length ? explicitRestart : classification.restartPolicy,
-            confirmationRequired: value.confirmationRequired !== undefined
-                ? value.confirmationRequired === true
-                : (value.confirmation_required !== undefined ? value.confirmation_required === true : classification.confirmationRequired)
-        }
+        return RuntimeOperationPolicy.operationMetadata(operation || {})
     }
 
     function explicitAffectedInputs(operation) {
-        if (Array.isArray(operation.affectedInputs)) {
-            return operation.affectedInputs.slice(0)
-        }
-        if (Array.isArray(operation.affected_inputs)) {
-            return operation.affected_inputs.slice(0)
-        }
-        return []
+        return RuntimeOperationPolicy.explicitAffectedInputs(operation || {})
     }
 
     function classifyOperation(operation) {
-        const domain = String(operation.domain || "")
-        const method = String(operation.method || operation.label || "").toLowerCase()
-        const inputs = affectedInputs(operation)
-        if (domain === "backup" || method.indexOf("backup") >= 0 || method.indexOf("restore") >= 0 || method.indexOf("import") >= 0) {
-            return metadata("backup", inputs, "manual_required", true)
-        }
-        if (domain === "wallet" || method.indexOf("wallet") >= 0 || method.indexOf("sign") >= 0 || method.indexOf("submit") >= 0 || method.indexOf("deploy") >= 0) {
-            return metadata("signing_submission", inputs, "manual_required", true)
-        }
-        if (domain === "local_nodes" || method.indexOf("node.start") >= 0 || method.indexOf("node.stop") >= 0 || method.indexOf("delete") >= 0 || method.indexOf("purge") >= 0) {
-            return metadata("lifecycle", inputs, "manual_required", true)
-        }
-        if (method.indexOf("remove") >= 0 || method.indexOf("delete") >= 0) {
-            return metadata("destructive", inputs, "manual_required", true)
-        }
-        if (method.indexOf("upload") >= 0 || method.indexOf("download") >= 0 || method.indexOf("fetch") >= 0 || method.indexOf("send") >= 0) {
-            return metadata("mutating", inputs, "manual_required", true)
-        }
-        if (method.indexOf("status") >= 0 || method.indexOf("query") >= 0 || method.indexOf("read") >= 0 || method.indexOf("list") >= 0 || method.indexOf("manifests") >= 0 || method.indexOf("exists") >= 0 || method.indexOf("health") >= 0 || method.indexOf("probe") >= 0) {
-            return metadata("read_poll", inputs, "safe_read_polling", false)
-        }
-        return metadata("unknown", inputs, "manual_required", true)
+        return RuntimeOperationPolicy.classifyOperation(operation || {})
     }
 
     function metadata(operationClass, affectedInputs, restartPolicy, confirmationRequired) {
-        return {
-            operationClass: operationClass,
-            affectedInputs: Array.isArray(affectedInputs) ? affectedInputs : [],
-            restartPolicy: restartPolicy,
-            confirmationRequired: confirmationRequired === true
-        }
+        return RuntimeOperationPolicy.metadata(operationClass, affectedInputs, restartPolicy, confirmationRequired)
     }
 
     function affectedInputs(operation) {
-        const inputs = []
-        pushInput(inputs, "domain", operation.domain)
-        pushInput(inputs, "method", operation.method)
-        pushInput(inputs, "sourceMode", operation.sourceMode)
-        pushInput(inputs, "endpoint", operation.endpoint)
-        pushInput(inputs, "module", operation.module)
-        pushInput(inputs, "cid", operation.cid)
-        pushInput(inputs, "path", operation.path)
-        return inputs
+        return RuntimeOperationPolicy.affectedInputs(operation || {})
     }
 
     function pushInput(inputs, key, value) {
-        const text = String(value || "")
-        if (text.length > 0) {
-            inputs.push({ key: key, value: text })
-        }
+        return RuntimeOperationPolicy.pushInput(inputs, key, value)
     }
 
     function copyObject(value) {
