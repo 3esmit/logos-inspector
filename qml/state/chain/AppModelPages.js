@@ -1,5 +1,6 @@
 .import "../../services/BridgeHelpers.js" as BridgeHelpers
 .import "ChainPageQuery.js" as ChainPageQuery
+.import "ChainPageQuerySession.js" as ChainPageQuerySession
 
 function refreshBlocksPage(root, anchorSlot) {
     with (root) {
@@ -562,137 +563,27 @@ function normalizedHashOrValue(root, value) {
 }
 
 function refreshTransactionsPage(root, beforeBlock) {
-    with (root) {
-        const node = requestModule(inspectorModule, "blockchainNode", root.blockchainArgs([]), qsTr("Transactions node state"), false)
-        if (!node.ok) {
-            transactionsPageError = node.error
-            setResult(qsTr("Transactions"), transactionsPageError, true)
-            return
-        }
-
-        const window = ChainPageQuery.slotWindow(beforeBlock, ChainPageQuery.slotTip(node.value, true), transactionsPageBlockBatch)
-        const slotFrom = window.slotFrom
-        const slotTo = window.slotTo
-        const blocks = requestModule(inspectorModule, "blockchainBlocks", root.blockchainArgs([slotFrom, slotTo]), qsTr("Transactions"), false)
-        if (!blocks.ok) {
-            transactionsPageError = blocks.error
-            setResult(qsTr("Transactions"), transactionsPageError, true)
-            return
-        }
-
-        transactionsPageBeforeBlock = slotTo
-        if (!Array.isArray(blocks.value)) {
-            transactionsPageRows = []
-            transactionsPageNextBeforeBlock = 0
-            transactionsPageError = qsTr("Response shape unknown. Raw JSON remains available.")
-            setResult(qsTr("Transactions"), BridgeHelpers.formatValue(blocks.value), false, blocks.value)
-            return
-        }
-        transactionsPageRows = transactionRowsFromBlocks(blocks.value).slice(0, transactionsPageLimit)
-        transactionsPageNextBeforeBlock = slotFrom > 0 ? slotFrom - 1 : 0
-        transactionsPageError = ""
-        setResult(qsTr("Transactions"), BridgeHelpers.formatValue(transactionsPageRows), false, transactionsPageRows)
-    }
+    ChainPageQuerySession.refreshTransactionsPage(root, beforeBlock)
 }
 
 function olderTransactionsPage(root) {
-    with (root) {
-        refreshTransactionsPage(transactionsPageNextBeforeBlock)
-    }
+    ChainPageQuerySession.olderTransactionsPage(root)
 }
 
 function newerTransactionsPage(root) {
-    with (root) {
-        refreshTransactionsPage(transactionsPageBeforeBlock + transactionsPageBlockBatch + 1)
-    }
+    ChainPageQuerySession.newerTransactionsPage(root)
 }
 
 function setTransactionsPageLimit(root, limit) {
-    with (root) {
-        const value = Math.max(1, Number(limit || transactionsPageLimit))
-        if (transactionsPageLimit === value) {
-            return
-        }
-        transactionsPageLimit = value
-        refreshTransactionsPage(transactionsPageBeforeBlock > 0 ? transactionsPageBeforeBlock : null)
-    }
+    ChainPageQuerySession.setTransactionsPageLimit(root, limit)
 }
 
 function refreshLezBlocksPage(root, beforeBlock) {
-    with (root) {
-        const before = root.normalizedPositiveInteger(beforeBlock)
-        const beforeArg = before > 0 ? before : null
-        const limit = Math.max(1, Number(lezBlocksPageLimit || 1))
-        const serial = lezBlocksPageRequestSerial + 1
-        lezBlocksPageRequestSerial = serial
-        lezBlocksPageLoading = true
-
-        let sequencerDone = false
-        let indexerDone = false
-        let sequencerResponse = null
-        let indexerResponse = null
-
-        function completeIfReady() {
-            if (serial !== lezBlocksPageRequestSerial) {
-                return
-            }
-            const hasUsableRows = responseBlockArray(root, sequencerResponse) !== null
-                || responseBlockArray(root, indexerResponse) !== null
-            if (!hasUsableRows && (!sequencerDone || !indexerDone)) {
-                return
-            }
-            lezBlocksPageLoading = false
-            root.finishLezBlocksPage(before, sequencerResponse, indexerResponse)
-        }
-
-        requestModuleAsync(inspectorModule, "sequencerBlocks", root.executionArgs([beforeArg, limit]), qsTr("L2 blocks"), false, function (response) {
-            sequencerDone = true
-            sequencerResponse = response
-            completeIfReady()
-        })
-        requestModuleAsync(inspectorModule, "indexerBlocks", root.indexerArgs([beforeArg, limit]), qsTr("L2 indexed blocks"), false, function (response) {
-            indexerDone = true
-            indexerResponse = response
-            completeIfReady()
-        })
-    }
+    ChainPageQuerySession.refreshLezBlocksPage(root, beforeBlock)
 }
 
 function finishLezBlocksPage(root, before, sequencerResponse, indexerResponse) {
-    with (root) {
-        const sequencerBlocks = responseBlockArray(root, sequencerResponse)
-        const indexerBlocks = responseBlockArray(root, indexerResponse)
-        if (sequencerBlocks !== null || indexerBlocks !== null) {
-            const report = root.lezBlockListReport(sequencerBlocks || [], indexerBlocks || [], lezBlocksPageLimit)
-            if (!report.ok) {
-                lezBlocksPageError = report.error
-                setResult(qsTr("L2 blocks"), lezBlocksPageError, true)
-                return
-            }
-            const blocks = root.lezBlockListRows(report.value)
-            lezBlocksPageBeforeBlock = before
-            lezBlocksPageRows = blocks
-            lezBlocksPageNextBeforeBlock = root.nextIndexerBlocksCursor(blocks)
-            lezBlocksPageError = ""
-            setResult(qsTr("L2 blocks"), BridgeHelpers.formatValue(lezBlocksPageRows), false, lezBlocksPageRows)
-            return
-        }
-
-        const unknownShapeResponse = (sequencerResponse && sequencerResponse.ok)
-            ? sequencerResponse
-            : ((indexerResponse && indexerResponse.ok) ? indexerResponse : null)
-        if (unknownShapeResponse !== null) {
-            lezBlocksPageBeforeBlock = before
-            lezBlocksPageRows = []
-            lezBlocksPageNextBeforeBlock = 0
-            lezBlocksPageError = qsTr("Response shape unknown. Raw JSON remains available.")
-            setResult(qsTr("L2 blocks"), BridgeHelpers.formatValue(unknownShapeResponse.value), false, unknownShapeResponse.value)
-            return
-        }
-
-        lezBlocksPageError = (sequencerResponse && sequencerResponse.error) || (indexerResponse && indexerResponse.error) || qsTr("L2 blocks unavailable")
-        setResult(qsTr("L2 blocks"), lezBlocksPageError, true)
-    }
+    ChainPageQuerySession.finishLezBlocksPage(root, before, sequencerResponse, indexerResponse)
 }
 
 function responseBlockArray(root, response) {
@@ -702,97 +593,31 @@ function responseBlockArray(root, response) {
 }
 
 function olderLezBlocksPage(root) {
-    with (root) {
-        if (!lezBlocksPageLoading && lezBlocksPageNextBeforeBlock > 0) {
-            refreshLezBlocksPage(lezBlocksPageNextBeforeBlock)
-        }
-    }
+    ChainPageQuerySession.olderLezBlocksPage(root)
 }
 
 function newerLezBlocksPage(root) {
-    with (root) {
-        if (!lezBlocksPageLoading) {
-            refreshLezBlocksPage(null)
-        }
-    }
+    ChainPageQuerySession.newerLezBlocksPage(root)
 }
 
 function setLezBlocksPageLimit(root, limit) {
-    with (root) {
-        const value = Math.max(1, Number(limit || lezBlocksPageLimit))
-        if (lezBlocksPageLimit === value) {
-            return
-        }
-        lezBlocksPageLimit = value
-        refreshLezBlocksPage(lezBlocksPageBeforeBlock > 0 ? lezBlocksPageBeforeBlock : null)
-    }
+    ChainPageQuerySession.setLezBlocksPageLimit(root, limit)
 }
 
 function refreshLezTransactionsPage(root, beforeBlock) {
-    with (root) {
-        const before = root.normalizedPositiveInteger(beforeBlock)
-        const blockLimit = Math.max(lezTransactionsBlockBatch, lezTransactionsPageLimit)
-        const response = requestModule(inspectorModule, "indexerBlocks", root.indexerArgs([before > 0 ? before : null, blockLimit]), qsTr("L2 transactions"), false, false)
-        if (!response.ok) {
-            lezTransactionsPageError = response.error
-            setResult(qsTr("L2 transactions"), lezTransactionsPageError, true)
-            return
-        }
-
-        if (!Array.isArray(response.value)) {
-            lezTransactionsPageBeforeBlock = before
-            lezTransactionsPageRows = []
-            lezTransactionsPageNextBeforeBlock = 0
-            lezTransactionsPageOverflowRows = []
-            lezTransactionsPageOverflowNextBeforeBlock = 0
-            lezTransactionsPageError = qsTr("Response shape unknown. Raw JSON remains available.")
-            setResult(qsTr("L2 transactions"), BridgeHelpers.formatValue(response.value), false, response.value)
-            return
-        }
-
-        const blocks = root.sortedIndexerBlocks(response.value)
-        const rows = root.lezTransactionRowsFromBlocks(blocks)
-        const cursor = root.nextIndexerBlocksCursor(blocks)
-        lezTransactionsPageBeforeBlock = before
-        lezTransactionsPageRows = rows.slice(0, lezTransactionsPageLimit)
-        lezTransactionsPageOverflowRows = rows.slice(lezTransactionsPageLimit)
-        lezTransactionsPageOverflowNextBeforeBlock = cursor
-        lezTransactionsPageNextBeforeBlock = cursor
-        lezTransactionsPageError = ""
-        setResult(qsTr("L2 transactions"), BridgeHelpers.formatValue(lezTransactionsPageRows), false, lezTransactionsPageRows)
-    }
+    ChainPageQuerySession.refreshLezTransactionsPage(root, beforeBlock)
 }
 
 function olderLezTransactionsPage(root) {
-    with (root) {
-        if (Array.isArray(lezTransactionsPageOverflowRows) && lezTransactionsPageOverflowRows.length > 0) {
-            lezTransactionsPageRows = lezTransactionsPageOverflowRows.slice(0, lezTransactionsPageLimit)
-            lezTransactionsPageOverflowRows = lezTransactionsPageOverflowRows.slice(lezTransactionsPageLimit)
-            lezTransactionsPageNextBeforeBlock = lezTransactionsPageOverflowRows.length > 0 ? lezTransactionsPageNextBeforeBlock : lezTransactionsPageOverflowNextBeforeBlock
-            setResult(qsTr("L2 transactions"), BridgeHelpers.formatValue(lezTransactionsPageRows), false, lezTransactionsPageRows)
-            return
-        }
-        if (lezTransactionsPageNextBeforeBlock > 0) {
-            refreshLezTransactionsPage(lezTransactionsPageNextBeforeBlock)
-        }
-    }
+    ChainPageQuerySession.olderLezTransactionsPage(root)
 }
 
 function newerLezTransactionsPage(root) {
-    with (root) {
-        refreshLezTransactionsPage(null)
-    }
+    ChainPageQuerySession.newerLezTransactionsPage(root)
 }
 
 function setLezTransactionsPageLimit(root, limit) {
-    with (root) {
-        const value = Math.max(1, Number(limit || lezTransactionsPageLimit))
-        if (lezTransactionsPageLimit === value) {
-            return
-        }
-        lezTransactionsPageLimit = value
-        refreshLezTransactionsPage(lezTransactionsPageBeforeBlock > 0 ? lezTransactionsPageBeforeBlock : null)
-    }
+    ChainPageQuerySession.setLezTransactionsPageLimit(root, limit)
 }
 
 function sortedIndexerBlocks(root, blocks) {

@@ -8,7 +8,7 @@ import "../../../components"
 import "../../../components/common"
 import "../controls"
 import "../../../state"
-import "../../../state/status/StatusFieldCatalog.js" as StatusFieldCatalog
+import "../../../state/settings/SettingsProfileWorkspace.js" as SettingsProfileWorkspace
 import "../../../state/backup" as Backup
 import "../../../theme"
 
@@ -1287,286 +1287,60 @@ ColumnLayout {
         return section === "dashboard" ? dashboardSettings : footerSettings
     }
 
-    function connectionStatus(kind) {
-        return settingsRoot.model.networkConnectionState(kind)
-    }
-
-    function connectionStatusText(kind) {
-        const status = settingsRoot.connectionStatus(kind)
-        if (!status.known) {
-            return qsTr("Unknown")
-        }
-        return status.ok ? qsTr("OK") : qsTr("Error")
-    }
-
-    function connectionStatusDetail(kind) {
-        const status = settingsRoot.connectionStatus(kind)
-        if (!status.known) {
-            const rate = settingsRoot.model.networkConnectionRate(kind)
-            return rate > 0
-                ? qsTr("Not queried. Auto refresh runs every %1 seconds.").arg(rate)
-                : qsTr("Not queried. Auto refresh is off.")
-        }
-        const checked = status.checkedAt && status.checkedAt.length ? qsTr(" at %1").arg(status.checkedAt) : ""
-        return qsTr("%1%2").arg(status.detail || "").arg(checked)
-    }
-
-    function connectionStatusColor(kind) {
-        const status = settingsRoot.connectionStatus(kind)
-        if (!status.known) {
-            return settingsRoot.theme.textMuted
-        }
-        return status.ok ? settingsRoot.theme.success : settingsRoot.theme.warning
-    }
-
-    function walletSourceStatusText() {
-        const status = settingsRoot.model.localWalletStatus || null
-        if (!status) {
-            return settingsRoot.model.localWalletStatusError.length ? qsTr("Down") : qsTr("Unknown")
-        }
-        const value = String(status.status || "unknown")
-        return value.length ? value[0].toUpperCase() + value.slice(1) : qsTr("Unknown")
-    }
-
-    function walletSourceStatusDetail() {
-        const status = settingsRoot.model.localWalletStatus || null
-        if (settingsRoot.model.localWalletStatusError.length) {
-            return settingsRoot.model.localWalletStatusError
-        }
-        if (status && status.detail) {
-            return String(status.detail)
-        }
-        return qsTr("Not checked")
-    }
-
-    function walletSourceStatusColor() {
-        const status = settingsRoot.model.localWalletStatus || null
-        const value = status && status.status ? String(status.status) : ""
-        if (settingsRoot.model.localWalletStatusError.length || value === "down") {
-            return settingsRoot.theme.error
-        }
-        if (!value.length || value === "degraded" || value === "unknown") {
-            return settingsRoot.theme.warning
-        }
-        if (value === "ok") {
-            return settingsRoot.theme.success
-        }
-        return settingsRoot.theme.textMuted
-    }
-
-    function walletBackupHint() {
-        if (!settingsRoot.model.settingsBackupEncrypted) {
-            return qsTr("Plain backup. Use wallet encryption for private or portable profiles.")
-        }
-        if (!settingsRoot.model.walletHomeConfigured()) {
-            return qsTr("Configure Wallet home before encrypted backup or restore.")
-        }
-        return qsTr("Encrypted restore requires the same wallet config.")
-    }
-
-    function resetPendingSettingsRestoreOptions() {
-        backupRestoreDialog.reset()
-    }
-
-    function copyPendingSettingsRestoreOptions() {
-        return backupRestoreDialog.copyOptions()
-    }
-
-    function copyNestedOptionMap(source) {
-        return backupRestoreDialog.copyNestedOptionMap(source)
-    }
-
-    function copyFlatOptionMap(source) {
-        return backupRestoreDialog.copyFlatOptionMap(source)
-    }
-
-    function setPendingImportMode(area, mode) {
-        backupRestoreDialog.setMode(area, mode)
-    }
-
-    function pendingImportItemRows(area) {
-        return backupRestoreDialog.itemRows(area)
-    }
-
-    function pendingImportItemSelected(area, key) {
-        return backupRestoreDialog.itemSelected(area, key)
-    }
-
-    function setPendingImportItemSelected(area, key, selected) {
-        backupRestoreDialog.setItemSelected(area, key, selected)
-    }
-
-    function pendingImportConflictRows() {
-        return backupRestoreDialog.conflictRows()
-    }
-
-    function pendingImportConflictDecision(area, key) {
-        return backupRestoreDialog.conflictDecision(area, key)
-    }
-
-    function conflictDecisionIndexFor(area, key) {
-        return backupRestoreDialog.conflictDecisionIndexFor(area, key, conflictDecisionOptions)
-    }
-
-    function setPendingImportConflictDecision(area, key, decision) {
-        backupRestoreDialog.setConflictDecision(area, key, decision)
-    }
-
-    function pendingImportHasRequiredConflicts() {
-        return backupRestoreDialog.hasRequiredConflicts()
-    }
-
-    function importModeIndexFor(area, optionsModel) {
-        return backupRestoreDialog.modeIndexFor(area, optionsModel)
-    }
-
-    function importModeAt(index, optionsModel) {
-        return backupRestoreDialog.modeAt(index, optionsModel)
-    }
-
-    function previewPendingLocalRestore() {
-        return backupRestoreDialog.preview()
-    }
-
-    function pendingImportPlanText() {
-        return backupRestoreDialog.planText()
-    }
-
-    function pendingImportConfirmEnabled() {
-        return backupRestoreDialog.confirmEnabled()
-    }
-
-    function pendingImportModeText() {
-        return backupRestoreDialog.modeText()
-    }
-
-    function appendPendingImportMode(rows, label, mode) {
-        backupRestoreDialog.appendMode(rows, label, mode)
-    }
-
-    function importModeLabel(mode) {
-        return backupRestoreDialog.modeLabel(mode)
-    }
-
-    function pendingImportOperationText(plan) {
-        return backupRestoreDialog.operationText(plan)
-    }
-
-    function pendingImportWarningText(plan) {
-        return backupRestoreDialog.warningText(plan)
-    }
-
-    function pendingImportSelectedAreas() {
-        return backupRestoreDialog.selectedAreas()
-    }
-
-    function updateSequencerUrl(value) {
-        settingsRoot.model.sequencerUrl = String(value || "").trim()
-        settingsRoot.syncProfileFromEndpoints()
-    }
-
-    function updateIndexerUrl(value) {
-        settingsRoot.model.indexerUrl = String(value || "").trim()
-        settingsRoot.syncProfileFromEndpoints()
-    }
-
-    function updateNodeUrl(value) {
-        settingsRoot.model.nodeUrl = String(value || "").trim()
-        settingsRoot.syncProfileFromEndpoints()
-    }
-
-    function syncProfileFromEndpoints() {
-        settingsRoot.model.networkProfile = settingsRoot.inferProfile(settingsRoot.model.sequencerUrl, settingsRoot.model.indexerUrl, settingsRoot.model.nodeUrl)
-    }
-
-    function applyProfileIndex(index) {
-        settingsRoot.model.applyProfileIndex(index)
-    }
-
-    function deliverySourceIndexFor(value) {
-        return settingsRoot.model.sourceModeIndexFor("delivery", value, deliverySourceOptions)
-    }
-
-    function deliverySourceModeAt(index) {
-        return settingsRoot.model.sourceModeAt(index, deliverySourceOptions)
-    }
-
-    function storageSourceIndexFor(value) {
-        return settingsRoot.model.sourceModeIndexFor("storage", value, storageSourceOptions)
-    }
-
-    function storageSourceModeAt(index) {
-        return settingsRoot.model.sourceModeAt(index, storageSourceOptions)
-    }
-
-    function coreSourceIndexFor(value) {
-        return settingsRoot.model.sourceModeIndexFor("core", value, coreSourceOptions)
-    }
-
-    function coreSourceModeAt(index) {
-        return settingsRoot.model.sourceModeAt(index, coreSourceOptions)
-    }
-
-    function refreshSourceOptions() {
-        settingsRoot.populateSourceOptions(coreSourceOptions, "core")
-        settingsRoot.populateSourceOptions(deliverySourceOptions, "delivery")
-        settingsRoot.populateSourceOptions(storageSourceOptions, "storage")
-    }
-
-    function refreshProfileOptions() {
-        profileOptions.clear()
-        const options = settingsRoot.model.networkProfileOptions()
-        for (let i = 0; i < options.length; ++i) {
-            profileOptions.append(options[i])
-        }
-    }
-
-    function populateSourceOptions(targetModel, family) {
-        targetModel.clear()
-        const options = settingsRoot.model.sourceRouting.sourceModeOptions(family)
-        for (let i = 0; i < options.length; ++i) {
-            targetModel.append(options[i])
-        }
-    }
-
-    function profileIndexFor(value) {
-        return settingsRoot.model.profileIndexFor(value)
-    }
-
-    function inferProfile(sequencer, indexer, node) {
-        return settingsRoot.model.inferNetworkProfileFromEndpoints(sequencer, indexer, node)
-    }
-
-    function profileLabel(value) {
-        return settingsRoot.model.networkProfileLabel(value)
-    }
-
-    function profileSummary(value) {
-        return settingsRoot.model.networkProfileSummary(value)
-    }
-
-    function profileDetail() {
-        return settingsRoot.model.networkProfileDetail()
-    }
-
-    function normalizeEndpoint(value) {
-        return settingsRoot.model.normalizeEndpoint(value)
-    }
-
-    function shortEndpoint(value) {
-        const text = String(value || "")
-        if (!text.length) {
-            return qsTr("Not configured")
-        }
-        return text.replace(/^https?:\/\//, "").replace(/\/$/, "")
-    }
-
-    function footerFieldGroups() {
-        return StatusFieldCatalog.footerSelectorGroups()
-    }
-
-    function dashboardGraphGroups() {
-        return StatusFieldCatalog.dashboardGraphGroups()
-    }
+    function connectionStatus(kind) { return SettingsProfileWorkspace.connectionStatus(settingsRoot, kind) }
+    function connectionStatusText(kind) { return SettingsProfileWorkspace.connectionStatusText(settingsRoot, kind) }
+    function connectionStatusDetail(kind) { return SettingsProfileWorkspace.connectionStatusDetail(settingsRoot, kind) }
+    function connectionStatusColor(kind) { return SettingsProfileWorkspace.connectionStatusColor(settingsRoot, kind) }
+    function walletSourceStatusText() { return SettingsProfileWorkspace.walletSourceStatusText(settingsRoot) }
+    function walletSourceStatusDetail() { return SettingsProfileWorkspace.walletSourceStatusDetail(settingsRoot) }
+    function walletSourceStatusColor() { return SettingsProfileWorkspace.walletSourceStatusColor(settingsRoot) }
+    function walletBackupHint() { return SettingsProfileWorkspace.walletBackupHint(settingsRoot) }
+    function resetPendingSettingsRestoreOptions() { SettingsProfileWorkspace.resetPendingSettingsRestoreOptions(backupRestoreDialog) }
+    function copyPendingSettingsRestoreOptions() { return SettingsProfileWorkspace.copyPendingSettingsRestoreOptions(backupRestoreDialog) }
+    function copyNestedOptionMap(source) { return SettingsProfileWorkspace.copyNestedOptionMap(backupRestoreDialog, source) }
+    function copyFlatOptionMap(source) { return SettingsProfileWorkspace.copyFlatOptionMap(backupRestoreDialog, source) }
+    function setPendingImportMode(area, mode) { SettingsProfileWorkspace.setPendingImportMode(backupRestoreDialog, area, mode) }
+    function pendingImportItemRows(area) { return SettingsProfileWorkspace.pendingImportItemRows(backupRestoreDialog, area) }
+    function pendingImportItemSelected(area, key) { return SettingsProfileWorkspace.pendingImportItemSelected(backupRestoreDialog, area, key) }
+    function setPendingImportItemSelected(area, key, selected) { SettingsProfileWorkspace.setPendingImportItemSelected(backupRestoreDialog, area, key, selected) }
+    function pendingImportConflictRows() { return SettingsProfileWorkspace.pendingImportConflictRows(backupRestoreDialog) }
+    function pendingImportConflictDecision(area, key) { return SettingsProfileWorkspace.pendingImportConflictDecision(backupRestoreDialog, area, key) }
+    function conflictDecisionIndexFor(area, key) { return SettingsProfileWorkspace.conflictDecisionIndexFor(backupRestoreDialog, area, key, conflictDecisionOptions) }
+    function setPendingImportConflictDecision(area, key, decision) { SettingsProfileWorkspace.setPendingImportConflictDecision(backupRestoreDialog, area, key, decision) }
+    function pendingImportHasRequiredConflicts() { return SettingsProfileWorkspace.pendingImportHasRequiredConflicts(backupRestoreDialog) }
+    function importModeIndexFor(area, optionsModel) { return SettingsProfileWorkspace.importModeIndexFor(backupRestoreDialog, area, optionsModel) }
+    function importModeAt(index, optionsModel) { return SettingsProfileWorkspace.importModeAt(backupRestoreDialog, index, optionsModel) }
+    function previewPendingLocalRestore() { return SettingsProfileWorkspace.previewPendingLocalRestore(backupRestoreDialog) }
+    function pendingImportPlanText() { return SettingsProfileWorkspace.pendingImportPlanText(backupRestoreDialog) }
+    function pendingImportConfirmEnabled() { return SettingsProfileWorkspace.pendingImportConfirmEnabled(backupRestoreDialog) }
+    function pendingImportModeText() { return SettingsProfileWorkspace.pendingImportModeText(backupRestoreDialog) }
+    function appendPendingImportMode(rows, label, mode) { SettingsProfileWorkspace.appendPendingImportMode(backupRestoreDialog, rows, label, mode) }
+    function importModeLabel(mode) { return SettingsProfileWorkspace.importModeLabel(backupRestoreDialog, mode) }
+    function pendingImportOperationText(plan) { return SettingsProfileWorkspace.pendingImportOperationText(backupRestoreDialog, plan) }
+    function pendingImportWarningText(plan) { return SettingsProfileWorkspace.pendingImportWarningText(backupRestoreDialog, plan) }
+    function pendingImportSelectedAreas() { return SettingsProfileWorkspace.pendingImportSelectedAreas(backupRestoreDialog) }
+    function updateSequencerUrl(value) { SettingsProfileWorkspace.updateEndpoint(settingsRoot, "sequencerUrl", value) }
+    function updateIndexerUrl(value) { SettingsProfileWorkspace.updateEndpoint(settingsRoot, "indexerUrl", value) }
+    function updateNodeUrl(value) { SettingsProfileWorkspace.updateEndpoint(settingsRoot, "nodeUrl", value) }
+    function syncProfileFromEndpoints() { SettingsProfileWorkspace.syncProfileFromEndpoints(settingsRoot) }
+    function applyProfileIndex(index) { SettingsProfileWorkspace.applyProfileIndex(settingsRoot, index) }
+    function deliverySourceIndexFor(value) { return SettingsProfileWorkspace.sourceIndexFor(settingsRoot, "delivery", value, deliverySourceOptions) }
+    function deliverySourceModeAt(index) { return SettingsProfileWorkspace.sourceModeAt(settingsRoot, index, deliverySourceOptions) }
+    function storageSourceIndexFor(value) { return SettingsProfileWorkspace.sourceIndexFor(settingsRoot, "storage", value, storageSourceOptions) }
+    function storageSourceModeAt(index) { return SettingsProfileWorkspace.sourceModeAt(settingsRoot, index, storageSourceOptions) }
+    function coreSourceIndexFor(value) { return SettingsProfileWorkspace.sourceIndexFor(settingsRoot, "core", value, coreSourceOptions) }
+    function coreSourceModeAt(index) { return SettingsProfileWorkspace.sourceModeAt(settingsRoot, index, coreSourceOptions) }
+    function refreshSourceOptions() { SettingsProfileWorkspace.refreshSourceOptions(settingsRoot, coreSourceOptions, deliverySourceOptions, storageSourceOptions) }
+    function refreshProfileOptions() { SettingsProfileWorkspace.refreshProfileOptions(settingsRoot, profileOptions) }
+    function populateSourceOptions(targetModel, family) { SettingsProfileWorkspace.populateSourceOptions(settingsRoot, targetModel, family) }
+    function profileIndexFor(value) { return SettingsProfileWorkspace.profileIndexFor(settingsRoot, value) }
+    function inferProfile(sequencer, indexer, node) { return SettingsProfileWorkspace.inferProfile(settingsRoot, sequencer, indexer, node) }
+    function profileLabel(value) { return SettingsProfileWorkspace.profileLabel(settingsRoot, value) }
+    function profileSummary(value) { return SettingsProfileWorkspace.profileSummary(settingsRoot, value) }
+    function profileDetail() { return SettingsProfileWorkspace.profileDetail(settingsRoot) }
+    function normalizeEndpoint(value) { return SettingsProfileWorkspace.normalizeEndpoint(settingsRoot, value) }
+    function shortEndpoint(value) { return SettingsProfileWorkspace.shortEndpoint(value) }
+    function footerFieldGroups() { return SettingsProfileWorkspace.footerFieldGroups() }
+    function dashboardGraphGroups() { return SettingsProfileWorkspace.dashboardGraphGroups() }
 
 }
