@@ -7,6 +7,7 @@ import QtQuick.Layouts
 import "../../../components"
 import "../../../components/common"
 import "../../../state"
+import "../../../state/wallet/LocalWalletCommandWorkspace.js" as LocalWalletCommandWorkspace
 import "../../../theme"
 import "../../../utils/UiFormat.js" as UiFormat
 
@@ -958,12 +959,7 @@ ColumnLayout {
     }
 
     function operationRows() {
-        const rows = Array.isArray(root.model.localWalletOperations) ? root.model.localWalletOperations.slice() : []
-        if (!rows.length) {
-            return [{ time: "-", label: qsTr("No operations"), status: "-", detail: "-" }]
-        }
-        rows.reverse()
-        return rows
+        return LocalWalletCommandWorkspace.operationRows(root.model)
     }
 
     function shortText(value, limit) {
@@ -984,98 +980,31 @@ ColumnLayout {
     }
 
     function sendReady() {
-        if (root.model.busy || !root.model.walletProfileConfigured()) {
-            return false
-        }
-        const from = String(root.model.walletSendFrom || "").trim()
-        const amount = String(root.model.walletSendAmount || "").trim()
-        const to = String(root.model.walletSendTo || "").trim()
-        const keys = String(root.model.walletSendToKeys || "").trim()
-        const npk = String(root.model.walletSendToNpk || "").trim()
-        const vpk = String(root.model.walletSendToVpk || "").trim()
-        return from.length > 0 && amount.length > 0 && (to.length > 0 || keys.length > 0 || (npk.length > 0 && vpk.length > 0))
+        return LocalWalletCommandWorkspace.sendReady(root.model)
     }
 
     function walletCommandArgs() {
-        const parsed = root.parseWalletCommandLine(root.model.walletAdvancedCommand)
-        return parsed === null ? [] : parsed
+        return LocalWalletCommandWorkspace.walletCommandArgs(root.model)
     }
 
     function openAdvancedWalletConfirm() {
-        const parsed = root.parseWalletCommandLine(root.model.walletAdvancedCommand)
-        if (parsed === null) {
-            root.model.setResult(qsTr("Wallet command"), qsTr("Close quoted argument before running."), true)
-            return
-        }
-        if (!parsed.length) {
-            root.model.setResult(qsTr("Wallet command"), qsTr("Wallet command arguments are required."), true)
+        const error = LocalWalletCommandWorkspace.advancedCommandError(root.model)
+        if (error.length) {
+            root.model.setResult(qsTr("Wallet command"), error, true)
             return
         }
         advancedWalletConfirm.open()
     }
 
     function acceptAdvancedWalletCommand() {
-        const parsed = root.parseWalletCommandLine(root.model.walletAdvancedCommand)
+        const parsed = root.walletCommandArgs()
         if (parsed !== null && parsed.length > 0) {
             root.model.runWalletCommand(parsed)
         }
     }
 
     function parseWalletCommandLine(value) {
-        const text = String(value || "")
-        const args = []
-        let current = ""
-        let quote = ""
-        for (let i = 0; i < text.length; ++i) {
-            const ch = text.charAt(i)
-            if (ch === "\\") {
-                const next = i + 1 < text.length ? text.charAt(i + 1) : ""
-                if (next.length > 0) {
-                    if (quote.length > 0 && next === quote) {
-                        current += next
-                        ++i
-                        continue
-                    }
-                    if (quote.length === 0 && (next === "\"" || next === "'" || /\s/.test(next))) {
-                        current += next
-                        ++i
-                        continue
-                    }
-                }
-                current += ch
-                continue
-            }
-            if (quote.length > 0) {
-                if (ch === quote) {
-                    quote = ""
-                } else {
-                    current += ch
-                }
-                continue
-            }
-            if (ch === "\"" || ch === "'") {
-                quote = ch
-                continue
-            }
-            if (/\s/.test(ch)) {
-                if (current.length > 0) {
-                    args.push(current)
-                    current = ""
-                }
-                continue
-            }
-            current += ch
-        }
-        if (quote.length > 0) {
-            return null
-        }
-        if (current.length > 0) {
-            args.push(current)
-        }
-        if (args.length > 0 && args[0] === "wallet") {
-            args.shift()
-        }
-        return args
+        return LocalWalletCommandWorkspace.parseWalletCommandLine(value)
     }
 
     component CopyRow: GridLayout {
