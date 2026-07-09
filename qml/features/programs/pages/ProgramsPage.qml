@@ -11,6 +11,7 @@ import "../../lez/controls/programs"
 import "../../../state"
 import "../../../theme"
 import "../../../utils/UiFormat.js" as UiFormat
+import "../../../state/programs/ProgramContextPresentation.js" as ProgramContextPresentation
 
 ColumnLayout {
     id: root
@@ -768,30 +769,12 @@ ColumnLayout {
 
     function responseProgramText() {
         const value = root.responseValue
-        if (Array.isArray(value)) {
-            return root.numberText(value.length)
-        }
-        if (root.isProgramContext(value)) {
-            return root.shortHash(value.program_id_base58 || value.program_id_hex || value.program_id)
-        }
-        if (root.isProgramFile(value)) {
-            return root.shortHash(value.program_id_hex)
-        }
-        return "-"
+        return ProgramContextPresentation.responseProgramText(root, value)
     }
 
     function responseProgramDelta() {
         const value = root.responseValue
-        if (Array.isArray(value)) {
-            return qsTr("Known program IDs")
-        }
-        if (root.isProgramContext(value)) {
-            return value.in_chain ? qsTr("verified in chain") : qsTr("not verified")
-        }
-        if (root.isProgramFile(value)) {
-            return qsTr("%1 bytes").arg(root.numberText(value.bytecode_len))
-        }
-        return qsTr("Sequencer")
+        return ProgramContextPresentation.responseProgramDelta(root, value)
     }
 
     function programRows() {
@@ -813,78 +796,35 @@ ColumnLayout {
     }
 
     function isProgramContext(value) {
-        return value && typeof value === "object" && !Array.isArray(value)
-            && value.type === "program"
-            && value.program_id !== undefined
+        return ProgramContextPresentation.isProgramContext(value)
     }
 
     function programContextRows() {
         const value = root.responseValue || {}
-        if (!root.isProgramContext(value)) {
-            return []
-        }
-        const programId = root.valueText(value.program_id)
-        const programHex = root.programHexText(value.program_id_hex)
-        const programBase58 = root.valueText(value.program_id_base58)
-        const accountLookup = programBase58 !== "-" ? programBase58 : programHex
-        const verified = value.in_chain === true
-        const rows = [
-            { label: qsTr("Known program"), value: root.programVerificationText(value), linkKind: "" },
-            { label: qsTr("Program ID"), value: programBase58 !== "-" ? programBase58 : programId, linkKind: verified ? "program" : "" },
-            { label: qsTr("Program ID (0x)"), value: programHex, linkKind: verified ? "program" : "" },
-            { label: qsTr("Inspect as account"), value: accountLookup, linkKind: accountLookup !== "-" ? "account" : "" },
-            { label: qsTr("Sequencer label"), value: root.valueText(value.known_label), linkKind: "" }
-        ]
-        if (value.verification_detail !== undefined && String(value.verification_detail || "").length > 0) {
-            rows.push({ label: qsTr("Verification error"), value: String(value.verification_detail || ""), linkKind: "" })
-        }
-        return rows
+        return ProgramContextPresentation.rows(root, value)
     }
 
     function programVerificationText(value) {
-        if (!root.isProgramContext(value)) {
-            return "-"
-        }
-        if (value.in_chain === true) {
-            return qsTr("yes")
-        }
-        if (String(value.verification || "") === "unavailable") {
-            return qsTr("verification unavailable")
-        }
-        return qsTr("not in getProgramIds")
+        return ProgramContextPresentation.verificationText(value)
     }
 
     function programHexText(value) {
-        const text = String(value || "").replace(/^0x/i, "")
-        return text.length ? "0x" + text : "-"
+        return ProgramContextPresentation.programHexText(value)
     }
 
     function programContextIdlRows() {
         const value = root.responseValue || {}
-        const entries = root.isProgramContext(value) && Array.isArray(value.idls) ? value.idls : []
-        return entries.map(function (entry) {
-            const json = String(entry.json || "")
-            return {
-                title: root.valueText(entry.name || entry.programId || entry.programIdHex),
-                detail: qsTr("%1 field(s), program %2").arg(root.numberText(root.idlFieldCount(json))).arg(root.shortHash(entry.programId || entry.programIdHex))
-            }
-        })
+        return ProgramContextPresentation.idlRows(root, value)
     }
 
     function programContextTransactionRows() {
         const value = root.responseValue || {}
-        const rows = root.isProgramContext(value) && Array.isArray(value.recent_transactions) ? value.recent_transactions : []
-        return rows.slice(0, 8).map(function (tx) {
-            return {
-                title: root.shortHash(tx.hash),
-                detail: qsTr("block %1, %2, %3 word(s)").arg(root.valueText(tx.block_id)).arg(root.valueText(tx.kind)).arg(root.numberText(tx.ops))
-            }
-        })
+        return ProgramContextPresentation.transactionRows(root, value)
     }
 
     function programContextAccount() {
         const value = root.responseValue || {}
-        return root.isProgramContext(value) && value.account && typeof value.account === "object" ? value.account : null
+        return ProgramContextPresentation.account(value)
     }
 
     function knownIdlText(programId) {

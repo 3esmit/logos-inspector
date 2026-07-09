@@ -1937,4 +1937,6 @@ QtObject {
     function appModelCompatibilityGroup(key) { return AppModelCompatibility.groupFor(key) }
 
     function appModelCompatibilityMemberGroup(member) { return AppModelCompatibility.memberGroup(member) }
+
+    function appModelCompatibilityReport() { return AppModelCompatibility.report(root) }
 }
