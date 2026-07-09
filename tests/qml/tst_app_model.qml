@@ -332,6 +332,13 @@ TestCase {
         verify(report.groupCount > 0)
         verify(report.memberCount > 0)
         compare(report.missing.length, 0)
+        verify(report.ownerCount > 0)
+        compare(report.missingOwners.length, 0)
+        verify(report.migrations.some(function (row) {
+            return row.key === "settings_backup"
+                && row.owner === "backupImport"
+                && row.migration === "active"
+        }))
         verify(report.provenance.indexOf("app_model_compatibility_manifest") >= 0)
     }
 

@@ -23,6 +23,7 @@ mod dispatch;
 mod entrypoint;
 mod lez;
 mod local_nodes;
+mod policy;
 mod record;
 mod request;
 mod spec;
@@ -35,6 +36,7 @@ use dispatch::execute_runtime_operation;
 pub(crate) use entrypoint::operation_bridge_command_names;
 pub(crate) use entrypoint::{OperationBridgeCommand, operation_bridge_command};
 use entrypoint::{OperationRunner, handle_operation_command};
+use policy::RuntimeOperationPolicy;
 use record::{
     RuntimeOperation, RuntimeOperationRecord, RuntimeOperationRegistry, RuntimeOperationStatus,
     active_operation_in_exclusive_group, finish_runtime_operation,
@@ -118,6 +120,7 @@ impl RuntimeOperations {
             method: request.method_name().to_owned(),
             status: RuntimeOperationStatus::Running,
             label: request.label().to_owned(),
+            policy: RuntimeOperationPolicy::from_request(&request),
             context: runtime_operation_context(&request),
             external_session_id: None,
             progress: None,

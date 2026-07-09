@@ -118,6 +118,29 @@ TestCase {
         compare(row.affectedInputs[0].value, "favorites")
     }
 
+    function test_backend_policy_facts_drive_history_metadata() {
+        history.append({
+            domain: "storage",
+            method: "storageUploadUrl",
+            status: "running",
+            policyFacts: {
+                operationClass: "mutating",
+                restartPolicy: "manual_required",
+                confirmationRequired: true,
+                affectedInputs: [{ key: "path", value: "/tmp/upload.bin" }],
+                provenance: ["runtime_operation_policy"]
+            }
+        }, "upload")
+
+        const row = history.rows("storage")[0]
+
+        compare(row.operationClass, "mutating")
+        compare(row.restartPolicy, "manual_required")
+        compare(row.confirmationRequired, true)
+        compare(row.affectedInputs[0].key, "path")
+        compare(row.affectedInputs[0].value, "/tmp/upload.bin")
+    }
+
     function test_history_preserves_result_payload_for_status_facades() {
         history.append({
             domain: "backup",

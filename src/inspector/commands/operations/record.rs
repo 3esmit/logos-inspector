@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 
 use crate::support::time::now_millis;
 
+use super::policy::RuntimeOperationPolicy;
 use super::spec::OperationExclusiveGroup;
 
 pub(super) type RuntimeOperationRegistry = Arc<Mutex<HashMap<String, RuntimeOperationRecord>>>;
@@ -23,6 +24,7 @@ pub(super) struct RuntimeOperation {
     pub(super) method: String,
     pub(super) status: RuntimeOperationStatus,
     pub(super) label: String,
+    pub(super) policy: RuntimeOperationPolicy,
     pub(super) context: Value,
     pub(super) external_session_id: Option<String>,
     pub(super) progress: Option<f64>,
@@ -247,6 +249,7 @@ pub(super) fn runtime_operation_value(operation: &RuntimeOperation) -> Value {
         "method": operation.method,
         "status": operation.status.as_str(),
         "label": operation.label,
+        "policyFacts": operation.policy.as_value(),
         "externalSessionId": operation.external_session_id,
         "progress": operation.progress,
         "bytesWritten": operation.bytes_written,
@@ -318,6 +321,7 @@ pub(super) fn test_runtime_operation_record(
             method: method.to_owned(),
             status,
             label: "Test operation".to_owned(),
+            policy: RuntimeOperationPolicy::from_method(domain, method),
             context: Value::Null,
             external_session_id: None,
             progress: None,

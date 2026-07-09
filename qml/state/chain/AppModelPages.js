@@ -1,6 +1,7 @@
 .import "../../services/BridgeHelpers.js" as BridgeHelpers
 .import "ChainPageQuery.js" as ChainPageQuery
 .import "ChainPageQuerySession.js" as ChainPageQuerySession
+.import "InspectionReportRows.js" as InspectionReportRows
 
 function refreshBlocksPage(root, anchorSlot) {
     with (root) {
@@ -683,59 +684,19 @@ function normalizedPositiveInteger(root, value) {
 }
 
 function lezTransactionRowsFromBlocks(root, blocks) {
-    with (root) {
-        const rows = []
-        const sorted = root.sortedIndexerBlocks(blocks)
-        for (let i = 0; i < sorted.length; ++i) {
-            const block = sorted[i]
-            const transactions = Array.isArray(block.transactions) ? block.transactions : []
-            for (let j = 0; j < transactions.length; ++j) {
-                const tx = transactions[j]
-                rows.push({
-                    block_id: root.indexerBlockId(block),
-                    block_hash: root.indexerBlockHash(block),
-                    hash: root.lezTransactionHash(tx),
-                    index: tx && tx.index !== undefined ? tx.index : j,
-                    kind: String(tx && tx.kind ? tx.kind : ""),
-                    program_id_hex: root.transactionProgramIdHex(tx),
-                    ops: root.lezTransactionOpCount(tx),
-                    raw: tx
-                })
-            }
-        }
-        return rows
-    }
+    return InspectionReportRows.lezTransactionRowsFromBlocks(root, blocks)
 }
 
 function lezTransactionHash(root, tx) {
-    with (root) {
-        return String((tx && (tx.hash || tx.tx_hash || tx.transaction_hash)) || "")
-    }
+    return InspectionReportRows.lezTransactionHash(root, tx)
 }
 
 function transactionProgramIdHex(root, tx) {
-    with (root) {
-        const value = tx || {}
-        const message = value.message && typeof value.message === "object" ? value.message : {}
-        const programId = String(value.program_id_hex || value.programIdHex || value.program_id || value.programId
-            || message.program_id_hex || message.programIdHex || message.program_id || message.programId || "")
-        return root.canonicalProgramIdHex(programId) || root.normalizedHexText(programId)
-    }
+    return InspectionReportRows.transactionProgramIdHex(root, tx)
 }
 
 function lezTransactionOpCount(root, tx) {
-    with (root) {
-        if (tx && Array.isArray(tx.instruction_data)) {
-            return tx.instruction_data.length
-        }
-        if (tx && Array.isArray(tx.ops)) {
-            return tx.ops.length
-        }
-        if (tx && tx.bytecode_len !== undefined && tx.bytecode_len !== null) {
-            return tx.bytecode_len
-        }
-        return 0
-    }
+    return InspectionReportRows.lezTransactionOpCount(root, tx)
 }
 
 function transactionRowsFromBlocks(root, blocks) {
@@ -946,38 +907,11 @@ function nextTransferActivityBlock(root, recipients) {
 }
 
 function transferRecipientDetail(root, row) {
-    with (root) {
-        const recipient = row || {}
-        return {
-            type: "transfer_recipient",
-            address: String(recipient.account_ref || recipient.recipient || recipient.address || ""),
-            total_received: recipient.received,
-            txs: recipient.txs || 0,
-            outputs: recipient.outputs || 0,
-            references: recipient.references || recipient.outputs || 0,
-            last_slot: recipient.last_slot,
-            source: String(recipient.source || ""),
-            transfers: Array.isArray(recipient.transfers) ? recipient.transfers : [],
-            raw: recipient
-        }
-    }
+    return InspectionReportRows.transferRecipientDetail(root, row)
 }
 
 function transferRecipientDetailById(root, value) {
-    with (root) {
-        const wanted = normalizedHashOrValue(value)
-        if (!wanted.length) {
-            return null
-        }
-        const rows = (transferActivityRows || []).concat(transferActivityOverflowRows || [])
-        for (let i = 0; i < rows.length; ++i) {
-            const row = rows[i]
-            if (normalizedHashOrValue(row.recipient || row.address) === wanted) {
-                return transferRecipientDetail(row)
-            }
-        }
-        return null
-    }
+    return InspectionReportRows.transferRecipientDetailById(root, value)
 }
 
 function refreshChannelsPage(root, anchorSlot) {
@@ -1040,59 +974,9 @@ function setChannelsPageLimit(root, limit) {
 }
 
 function channelDetail(root, row) {
-    with (root) {
-        const channel = row || {}
-        const channelId = String(channel.channel || channel.channel_id || "")
-        const lastTxHash = String(channel.last_tx_hash || channel.tx_hash || "")
-        const lastBlockHash = String(channel.last_block_hash || channel.header || channel.block_hash || "")
-        const keyValues = Array.isArray(channel.key_values)
-            ? channel.key_values
-            : (Array.isArray(channel.accredited_keys) ? channel.accredited_keys.map(function (key) { return String(key) }) : [])
-        return {
-            type: "channel",
-            channel: channelId,
-            channel_id: channelId,
-            operation_type: String(channel.operation_type || channel.last_operation_type || ""),
-            l1_slot: channel.last_slot || channel.l1_slot,
-            header: lastBlockHash,
-            l1_header_hash: lastBlockHash,
-            tx_hash: lastTxHash,
-            transaction_hash: lastTxHash,
-            parent: String(channel.parent || channel.parent_hash || ""),
-            signer: String(channel.signer || channel.author || ""),
-            source_confidence: String(channel.source_confidence || channel.source || "scan"),
-            label: channel.label,
-            first_slot: channel.first_slot,
-            first_tx_hash: channel.first_tx_hash,
-            first_block_hash: channel.first_block_hash,
-            last_slot: channel.last_slot || channel.tip_slot,
-            last_tx_hash: lastTxHash,
-            last_block_hash: lastBlockHash,
-            tip: channel.tip || channel.tip_message,
-            balance: channel.balance,
-            withdraw_threshold: channel.withdraw_threshold,
-            keys: channel.keys !== undefined && channel.keys !== null ? channel.keys : keyValues.length,
-            key_values: keyValues,
-            operations: channel.operations || 0,
-            raw_json: channel.raw || channel,
-            raw: channel
-        }
-    }
+    return InspectionReportRows.channelDetail(root, row)
 }
 
 function channelDetailById(root, value) {
-    with (root) {
-        const wanted = normalizedHashOrValue(value)
-        if (!wanted.length) {
-            return null
-        }
-        const rows = channelsPageRows || []
-        for (let i = 0; i < rows.length; ++i) {
-            const row = rows[i]
-            if (normalizedHashOrValue(row.channel || row.channel_id) === wanted) {
-                return channelDetail(row)
-            }
-        }
-        return null
-    }
+    return InspectionReportRows.channelDetailById(root, value)
 }
