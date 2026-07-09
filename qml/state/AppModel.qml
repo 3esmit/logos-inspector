@@ -10,6 +10,7 @@ import "programs/AppModelRegistry.js" as AppModelRegistry
 import "social/AppModelSocial.js" as AppModelSocial
 import "source_routing/ConnectorConfigAdapter.js" as ConnectorConfigAdapter
 import "programs/ProgramDecodeSession.js" as ProgramDecodeSession
+import "wallet" as Wallet
 
 QtObject {
     id: root
@@ -533,6 +534,19 @@ QtObject {
     property alias capabilityRegistryReport: capabilityGateState.registryReport
     property alias capabilityRegistryLoaded: capabilityGateState.registryLoaded
     property alias capabilityRegistryError: capabilityGateState.registryError
+    property Wallet.WalletCapabilityFacade walletCapability: Wallet.WalletCapabilityFacade {
+        id: walletCapabilityFacade
+
+        wallet: root.wallet
+        capabilityFacade: root.capabilities
+        networkProfile: root.networkProfile
+        prefersBasecampModules: root.prefersBasecampModules() === true
+        gateway: QtObject {
+            function openLocalWallet(tab) {
+                return root.openLocalWallet("", tab)
+            }
+        }
+    }
     property Domains.StatusFacadeState statusFacade: Domains.StatusFacadeState {
         id: statusFacadeState
 
@@ -586,6 +600,7 @@ QtObject {
         id: programExecutionState
 
         capabilityFacade: root.capabilities
+        walletCapability: root.walletCapability
         gateway: QtObject {
             function request(method, args, label, showResult, callback) {
                 return root.requestModuleAsync(root.inspectorModule, method, args || [], label, showResult === true, callback)
@@ -1440,6 +1455,8 @@ QtObject {
     function deliverySourceView() { return sourceRouting.deliverySourceView() }
 
     function storageSourceView() { return sourceRouting.storageSourceView() }
+
+    function sourceFamilyView(family, role, report) { return sourceRouting.sourceFamilyView(family, role, report) }
 
     function deliveryReportView(report) { return sourceRouting.deliveryReportView(report) }
 

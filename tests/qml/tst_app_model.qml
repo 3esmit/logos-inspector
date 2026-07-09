@@ -983,6 +983,20 @@ TestCase {
         verify(model.walletProfileConfigured())
     }
 
+    function test_program_execution_reads_wallet_capability_facade() {
+        model.networkProfile = "wallet-test"
+        model.walletBinary = "/usr/bin/lee-wallet"
+        model.walletHome = "/tmp/wallet-home"
+
+        const profile = model.programExecution.walletProfile()
+
+        compare(profile.wallet_binary, "/usr/bin/lee-wallet")
+        compare(profile.wallet_home, "/tmp/wallet-home")
+        compare(profile.network_profile, "wallet-test")
+        verify(model.programExecution.walletProfileConfigured())
+        verify(model.programExecution.walletHomeConfigured())
+    }
+
     function test_transfer_recipient_lookup_uses_overflow_rows() {
         model.transferActivityRows = [
             { recipient: "visible", account_ref: "visible", source: "transfer_outputs", transfers: [] }

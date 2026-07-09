@@ -307,6 +307,10 @@ QtObject {
         return SourceRoutingUi.storageSourceView(root)
     }
 
+    function sourceFamilyView(family, role, report) {
+        return SourceRoutingUi.sourceFamilyView(root, family, role, report)
+    }
+
     function deliveryReportView(report) {
         return SourceRoutingUi.deliveryReportView(root, report)
     }
