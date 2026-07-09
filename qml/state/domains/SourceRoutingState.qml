@@ -79,6 +79,10 @@ QtObject {
         return SourcePolicyProjection.sourceModeAdapter(root, family, value)
     }
 
+    function sourceModeDescriptor(family, value) {
+        return SourcePolicyProjection.sourceModeDescriptor(root, family, value)
+    }
+
     function resolvedSourceModeKey(family, value) {
         return SourcePolicyProjection.resolvedSourceModeKey(root, family, value)
     }
