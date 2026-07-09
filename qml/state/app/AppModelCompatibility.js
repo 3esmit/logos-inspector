@@ -88,14 +88,67 @@ function groupFor(key) {
     return null
 }
 
-function memberGroup(member) {
+function memberRecord(member) {
     const groups = contract()
     const wanted = String(member || "")
     for (let i = 0; i < groups.length; ++i) {
         const members = groups[i].members || []
         if (members.indexOf(wanted) >= 0) {
-            return groups[i]
+            return {
+                member: wanted,
+                key: groups[i].key,
+                facade: groups[i].facade,
+                status: groups[i].status
+            }
         }
     }
     return null
+}
+
+function memberGroup(member) {
+    const record = memberRecord(member)
+    return record ? groupFor(record.key) : null
+}
+
+function allMembers() {
+    const groups = contract()
+    const rows = []
+    for (let i = 0; i < groups.length; ++i) {
+        const members = groups[i].members || []
+        for (let j = 0; j < members.length; ++j) {
+            rows.push({
+                member: members[j],
+                key: groups[i].key,
+                facade: groups[i].facade,
+                status: groups[i].status
+            })
+        }
+    }
+    return rows
+}
+
+function missingMembers(target) {
+    const rows = allMembers()
+    const missing = []
+    for (let i = 0; i < rows.length; ++i) {
+        const member = rows[i].member
+        if (!target || target[member] === undefined) {
+            missing.push(rows[i])
+        }
+    }
+    return missing
+}
+
+function report(target) {
+    const groups = contract()
+    const missing = missingMembers(target)
+    return {
+        ok: missing.length === 0,
+        groups: groups,
+        members: allMembers(),
+        missing: missing,
+        groupCount: groups.length,
+        memberCount: allMembers().length,
+        provenance: ["app_model_compatibility_manifest"]
+    }
 }

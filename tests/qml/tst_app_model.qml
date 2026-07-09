@@ -321,12 +321,18 @@ TestCase {
     function test_appmodel_compatibility_contract_groups_root_facade_aliases() {
         const sourceGroup = model.appModelCompatibilityGroup("source_routing")
         const walletGroup = model.appModelCompatibilityMemberGroup("sendWalletTransaction")
+        const report = model.appModelCompatibilityReport()
 
         verify(sourceGroup !== null)
         verify(sourceGroup.members.indexOf("storageSourceReportArgs") >= 0)
         verify(walletGroup !== null)
         compare(walletGroup.key, "wallet")
         compare(walletGroup.status, "compatibility")
+        verify(report.ok)
+        verify(report.groupCount > 0)
+        verify(report.memberCount > 0)
+        compare(report.missing.length, 0)
+        verify(report.provenance.indexOf("app_model_compatibility_manifest") >= 0)
     }
 
     function test_basecamp_bridge_decodes_json_serialized_inspector_response() {

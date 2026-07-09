@@ -1,6 +1,7 @@
 import QtQml
 import "../services/BridgeHelpers.js" as BridgeHelpers
 import "modules/ModuleEventUtils.js" as ModuleEventUtils
+import "source_operations/SourceOperationCommandCatalog.js" as SourceOperationCommandCatalog
 
 QtObject {
     id: root
@@ -91,7 +92,8 @@ QtObject {
     }
 
     function runDelivery(method, args, label) {
-        if (String(method || "") !== "deliveryStoreQuery") {
+        const command = SourceOperationCommandCatalog.deliveryCommand(method, args)
+        if (command.runtime) {
             return startDeliveryOperation(method, args, label)
         }
         const response = gateway.call(method, deliveryArgs(args), label)

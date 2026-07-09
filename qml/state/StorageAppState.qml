@@ -1,6 +1,7 @@
 import QtQml
 import "../services/BridgeHelpers.js" as BridgeHelpers
 import "storage/StorageTransfer.js" as StorageTransfer
+import "source_operations/SourceOperationCommandCatalog.js" as SourceOperationCommandCatalog
 
 QtObject {
     id: root
@@ -153,12 +154,12 @@ QtObject {
     }
 
     function runStorage(method, args, label) {
-        const action = storageActionForMethod(method)
-        const gate = storageActionGate(action, requiredInputsForStorageAction(action, args))
+        const command = SourceOperationCommandCatalog.storageCommand(method, args)
+        const gate = storageActionGate(command.action, command.requiredInputs)
         if (!gate.enabled) {
             return blockedStorageResponse(label, gate, true)
         }
-        if (String(method || "") !== "storageExists") {
+        if (command.runtime) {
             return startStorageOperation(method, args, label)
         }
         const response = gateway.call(method, storageArgs(args), label)
@@ -182,8 +183,8 @@ QtObject {
     }
 
     function startStorageOperation(method, args, label) {
-        const action = storageActionForMethod(method)
-        const gate = storageActionGate(action, requiredInputsForStorageAction(action, args))
+        const command = SourceOperationCommandCatalog.storageCommand(method, args)
+        const gate = storageActionGate(command.action, command.requiredInputs)
         if (!gate.enabled) {
             return blockedStorageResponse(label, gate, true)
         }
@@ -259,56 +260,15 @@ QtObject {
     }
 
     function gateDetailText(gate) {
-        const value = gate || {}
-        const missing = Array.isArray(value.missing) ? value.missing : []
-        if (missing.length > 0) {
-            const first = missing[0] || {}
-            const dependency = String(first.dependency || first.capability || "")
-            const label = String(first.label || dependency || qsTr("Storage capability"))
-            return dependency.length ? qsTr("%1 unavailable: %2").arg(label).arg(dependency) : qsTr("%1 unavailable").arg(label)
-        }
-        return qsTr("Storage capability unavailable.")
+        return SourceOperationCommandCatalog.gateDetailText(gate, qsTr("Storage capability"))
     }
 
     function storageActionForMethod(method) {
-        switch (String(method || "")) {
-        case "storageManifests":
-            return "manifests"
-        case "storageExists":
-            return "exists"
-        case "storageDownloadManifest":
-            return "read_by_cid"
-        case "storageFetch":
-            return "cache"
-        case "storageUploadUrl":
-            return "upload"
-        case "storageDownloadToUrl":
-            return "download"
-        case "storageRemove":
-            return "remove"
-        default:
-            return "storage"
-        }
+        return SourceOperationCommandCatalog.storageActionForMethod(method)
     }
 
     function requiredInputsForStorageAction(action, args) {
-        const values = Array.isArray(args) ? args : []
-        switch (String(action || "")) {
-        case "exists":
-        case "read_by_cid":
-        case "cache":
-        case "remove":
-            return [{ key: "cid", label: qsTr("CID"), value: values[0] }]
-        case "download":
-            return [
-                { key: "cid", label: qsTr("CID"), value: values[0] },
-                { key: "path", label: qsTr("Save path"), value: values[1] }
-            ]
-        case "upload":
-            return [{ key: "path", label: qsTr("File path"), value: values[0] }]
-        default:
-            return []
-        }
+        return SourceOperationCommandCatalog.storageRequiredInputs(action, args)
     }
 
     function updateActiveOperation(value) {
