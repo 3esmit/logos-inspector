@@ -2,17 +2,15 @@ use anyhow::{Result, bail};
 use serde::Serialize;
 use serde_json::{Value, json};
 
+use super::target_decode::LezTargetDecodeCoordinator;
 use crate::{
     account_lookup, account_lookup_with_idl, indexer_block_by_hash,
     lez::{
-        IndexerBlockReport, RegisteredIdlResolver, TransactionIdlInspectionReport,
-        TransactionSummary, TransactionTraceReport,
-        inspect_transaction_summary_with_optional_idl_decode, sequencer_account,
-        sequencer_transaction_inspection, sequencer_transaction_trace,
+        IndexerBlockReport, inspect_transaction_summary_with_optional_idl_decode,
+        sequencer_account, sequencer_transaction_inspection, sequencer_transaction_trace,
         sequencer_transaction_trace_with_idl,
     },
     source_routing::{self, AccountSources, CoreEndpointMode, SourceEndpoint},
-    support::state_store::registered_idl_entries,
 };
 
 #[derive(Debug, Serialize)]
@@ -81,7 +79,10 @@ impl<'a> LezTargetResolver<'a> {
         let transaction_resolver = self.transaction_resolver();
         if let Some(transaction) = transaction_resolver.inspect(target, None).await? {
             return Ok(Some(LezResolvedTarget::Transaction {
-                decode_source: decode_source_for_payload(&transaction, "registered_or_raw"),
+                decode_source: LezTargetDecodeCoordinator::decode_source_for_payload(
+                    &transaction,
+                    "registered_or_raw",
+                ),
                 payload: transaction,
                 source_path: transaction_resolver.source_path(),
                 source_provenance: transaction_resolver.source_path(),
@@ -198,7 +199,7 @@ impl LezTransactionTargetResolver<'_> {
             )));
         }
         if let Some(report) =
-            LezDecodeEnrichmentResolver::registered_decode(&inspection.raw_summary)?
+            LezTargetDecodeCoordinator::registered_transaction_inspection(&inspection.raw_summary)?
         {
             return Ok(Some(json!(report)));
         }
@@ -216,7 +217,7 @@ impl LezTransactionTargetResolver<'_> {
             return Ok(None);
         };
         if let Some(report) =
-            LezDecodeEnrichmentResolver::registered_trace(&trace.inspection.raw_summary)?
+            LezTargetDecodeCoordinator::registered_transaction_trace(&trace.inspection.raw_summary)?
         {
             return Ok(Some(json!(report)));
         }
@@ -287,9 +288,7 @@ impl LezAccountTargetResolver<'_> {
         } else {
             json!(account_lookup(self.sequencer_endpoint, self.indexer_endpoint, account,).await?)
         };
-        let idl_entries = registered_idl_entries()?;
-        RegisteredIdlResolver::new(&idl_entries)
-            .enrich_account_related_transaction_decodes(&mut value)?;
+        LezTargetDecodeCoordinator::enrich_account_related_transaction_decodes(&mut value)?;
         Ok(value)
     }
 
@@ -303,27 +302,4 @@ impl LezAccountTargetResolver<'_> {
             (CoreEndpointMode::Module, CoreEndpointMode::Rpc) => "execution_module+indexer_rpc",
         }
     }
-}
-
-struct LezDecodeEnrichmentResolver;
-
-impl LezDecodeEnrichmentResolver {
-    fn registered_decode(
-        summary: &TransactionSummary,
-    ) -> Result<Option<TransactionIdlInspectionReport>> {
-        let idl_entries = registered_idl_entries()?;
-        Ok(RegisteredIdlResolver::new(&idl_entries).transaction_inspection(summary))
-    }
-
-    fn registered_trace(summary: &TransactionSummary) -> Result<Option<TransactionTraceReport>> {
-        let idl_entries = registered_idl_entries()?;
-        Ok(RegisteredIdlResolver::new(&idl_entries).transaction_trace(summary))
-    }
-}
-
-fn decode_source_for_payload(payload: &Value, fallback: &'static str) -> &'static str {
-    if payload.get("decode_enrichment").is_some() || payload.get("decoded_instruction").is_some() {
-        return "registered_idl";
-    }
-    fallback
 }

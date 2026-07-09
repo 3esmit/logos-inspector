@@ -5,6 +5,7 @@ mod idl_resolver;
 mod indexer;
 mod programs;
 mod sequencer;
+mod target_decode;
 mod target_resolution;
 mod transactions;
 mod transfers;
