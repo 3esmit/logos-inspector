@@ -5,6 +5,7 @@ QtObject {
     id: root
 
     required property var gateway
+    property var capabilityFacade: null
     property string inspectorModule: "logos_inspector"
 
     property var dashboardOverview: null
@@ -12,6 +13,7 @@ QtObject {
     property var dashboardL1Blocks: []
     property var dashboardBlocks: []
     property var dashboardSequencerBlocks: []
+    property var dashboardLezBlockRows: []
     property string dashboardError: ""
     property var blockDetailValue: null
     property string blockDetailError: ""
@@ -92,6 +94,29 @@ QtObject {
     function indexerArgs(extra) { return gateway.indexerArgs(extra) }
 
     function executionArgs(extra) { return gateway.executionArgs(extra) }
+
+    function l1Gate() { return capabilityGate("l1") }
+
+    function indexerGate() { return capabilityGate("lez.indexer") }
+
+    function sequencerGate() { return capabilityGate("lez.sequencer") }
+
+    function targetResolutionGate() {
+        return capabilityGate({ any_of: ["lez.indexer", "lez.sequencer"] })
+    }
+
+    function capabilityGate(expression) {
+        if (capabilityFacade && typeof capabilityFacade.gateFor === "function") {
+            return capabilityFacade.gateFor(expression)
+        }
+        return {
+            enabled: true,
+            status: "enabled",
+            missing: [],
+            warnings: [],
+            provenance: ["network_inspection_compatibility"]
+        }
+    }
 
     function blockchainRpcArgs(extra) { return gateway.blockchainRpcArgs(extra) }
 
@@ -189,7 +214,14 @@ QtObject {
 
     function sortedIndexerBlocks(blocks) { return AppModelPages.sortedIndexerBlocks(root, blocks) }
 
-    function mergedLezBlocks(sequencerBlocks, indexerBlocks, limit) { return AppModelPages.mergedLezBlocks(root, sequencerBlocks, indexerBlocks, limit) }
+    function lezBlockListReport(sequencerBlocks, indexerBlocks, limit) { return AppModelPages.lezBlockListReport(root, sequencerBlocks, indexerBlocks, limit) }
+
+    function lezBlockListRows(report) { return AppModelPages.lezBlockListRows(root, report) }
+
+    function lezBlockListReportRows(sequencerBlocks, indexerBlocks, limit) {
+        const report = lezBlockListReport(sequencerBlocks, indexerBlocks, limit)
+        return report.ok ? lezBlockListRows(report.value) : []
+    }
 
     function indexerBlockId(block) { return AppModelPages.indexerBlockId(root, block) }
 

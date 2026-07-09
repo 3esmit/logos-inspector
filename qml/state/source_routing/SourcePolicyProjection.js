@@ -10,7 +10,7 @@ function sourcePolicyDefault(root, key, fallback) {
 }
 
 function sourceModePolicy(root, family, value) {
-    const token = String(value || "auto").trim().toLowerCase()
+    const token = String(value || defaultSourceMode(family)).trim().toLowerCase()
     const modes = sourceModePolicies(root, family)
     for (let i = 0; i < modes.length; ++i) {
         const mode = modes[i] || {}
@@ -24,14 +24,14 @@ function sourceModePolicy(root, family, value) {
             }
         }
     }
-    const fallbackKey = family === "core" ? "auto" : "unsupported"
+    const fallbackKey = defaultSourceMode(family)
     for (let k = 0; k < modes.length; ++k) {
         const mode = modes[k] || {}
         if (String(mode.key || "") === fallbackKey) {
             return mode
         }
     }
-    return modes.length > 0 ? modes[0] : ({ key: "auto", effective: family === "core" ? "rpc" : "rest" })
+    return modes.length > 0 ? modes[0] : ({ key: defaultSourceMode(family), effective: family === "core" ? "rpc" : "rest" })
 }
 
 function sourceModePolicies(root, family) {
@@ -60,7 +60,7 @@ function sourceModeOptions(root, family) {
 }
 
 function sourceModeIndexFor(root, family, value, options) {
-    const source = String(sourceModePolicy(root, family, value).key || "auto")
+    const source = String(sourceModePolicy(root, family, value).key || defaultSourceMode(family))
     const count = sourceModeOptionCount(options)
     for (let i = 0; i < count; ++i) {
         const option = sourceModeOptionAt(options, i)
@@ -73,7 +73,11 @@ function sourceModeIndexFor(root, family, value, options) {
 
 function sourceModeAt(index, options) {
     const option = sourceModeOptionAt(options, index)
-    return option && option.key !== undefined ? String(option.key || "auto") : "auto"
+    if (option && option.key !== undefined) {
+        return String(option.key || "")
+    }
+    const first = sourceModeOptionAt(options, 0)
+    return first && first.key !== undefined ? String(first.key || "") : "rest"
 }
 
 function sourceModeAdapter(root, family, value) {
@@ -83,12 +87,7 @@ function sourceModeAdapter(root, family, value) {
 
 function resolvedSourceModeKey(root, family, value) {
     const policy = sourceModePolicy(root, family, value)
-    const key = String(policy.key || "auto")
-    if (key === "auto" && root.prefersBasecampModules()
-            && (family === "core" || family === "delivery" || family === "storage")) {
-        return "module"
-    }
-    return key
+    return String(policy.key || defaultSourceMode(family))
 }
 
 function sourceModeTargetKind(root, family, value) {
@@ -178,23 +177,22 @@ function sourceTarget(root, family, sourceMode, targets) {
 
 function sourceLabel(root, family, sourceMode, fallbackLabel) {
     const source = sourceModePolicy(root, family, resolvedSourceModeKey(root, family, sourceMode))
-    const label = String(source.source_label || source.label || fallbackLabel || "")
-    return String(sourceModePolicy(root, family, sourceMode).key || "auto") === "auto" && root.prefersBasecampModules()
-        ? qsTr("Auto: %1").arg(label)
-        : label
+    return String(source.source_label || source.label || fallbackLabel || "")
 }
 
 function coreSourceLabel(root, sourceMode, rpcLabel) {
     const source = resolvedSourceModeKey(root, "core", sourceMode)
     if (source === "module") {
-        return String(sourceModePolicy(root, "core", sourceMode).key || "auto") === "auto"
-            ? qsTr("Auto: Basecamp module")
-            : qsTr("Basecamp module")
+        return qsTr("Basecamp module")
     }
     if (source === "rpc") {
         return rpcLabel
     }
-    return qsTr("Auto: %1").arg(rpcLabel)
+    return rpcLabel
+}
+
+function defaultSourceMode(family) {
+    return family === "core" ? "rpc" : "rest"
 }
 
 function sourceModeOptionCount(options) {

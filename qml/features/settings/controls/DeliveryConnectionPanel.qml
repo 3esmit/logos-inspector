@@ -21,11 +21,11 @@ SourceSettingsPanel {
 
         ComboField {
             theme: root.theme
-            label: qsTr("Source mode")
-            accessibleName: qsTr("Delivery source mode")
+            label: qsTr("Connector")
+            accessibleName: qsTr("Delivery connector")
             options: root.sourceOptions
-            currentIndex: root.sourceIndexFor(root.modelRef.messagingSourceMode)
-            onActivated: index => root.modelRef.messagingSourceMode = root.sourceModeAt(index)
+            currentIndex: root.sourceIndexFor(root.modelRef.currentConnectorSourceMode("delivery", "rest"))
+            onActivated: index => root.modelRef.setNetworkConnectorMode("delivery", root.sourceModeAt(index))
         }
 
         FieldRow {

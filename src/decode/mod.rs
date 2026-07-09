@@ -13,8 +13,11 @@ pub use reports::{
 };
 pub(crate) use selection::{select_account_decode_session, select_transaction_decode_session};
 pub use session::{
-    AccountDecodeSelection, ProgramDecodeCandidate, ResolvedAccountDecodeSession,
-    ResolvedTransactionDecodeSession, SelectedDecodeEvidence, TransactionDecodeSelection,
+    AccountDecodeSelection, DecodeEnrichmentReport, ProgramDecodeCandidate,
+    ResolvedAccountDecodeSession, ResolvedTransactionDecodeSession, SelectedDecodeEvidence,
+    TransactionDecodeInput, TransactionDecodeInspectionReport, TransactionDecodeInspectionRow,
+    TransactionDecodeInspectionSection, TransactionDecodeReport, TransactionDecodeSelection,
+    decode_transaction_input_with_idl, inspect_transaction_decode_input,
     resolve_account_decode_session, resolve_transaction_decode_session,
 };
 pub use spel::{

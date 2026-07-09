@@ -507,7 +507,7 @@ ColumnLayout {
             ActionButton {
                 theme: root.theme
                 text: qsTr("Find")
-                enabled: root.detail !== null && root.model.socialStoreAvailable() && root.model.sharedIdlPolicy !== "disabled"
+                enabled: root.detail !== null && root.model.socialSharedIdlReadAvailable() && root.model.sharedIdlPolicy !== "disabled"
                 Layout.preferredWidth: 92
                 onClicked: root.model.refreshSharedIdlsForAccount(root.accountCacheId(), root.detail ? root.detail.data_hex : "", root.ownerProgramId())
             }
@@ -1207,7 +1207,7 @@ ColumnLayout {
             && entry !== null
             && String(entry.json || "").length > 0
             && String(entry.source || "") !== "shared"
-            && root.model.socialCommentSendAvailable(root.model.socialLezAccountIdlTopic(root.accountCacheId()))
+            && root.model.socialSharedIdlWriteAvailable(root.model.socialLezAccountIdlTopic(root.accountCacheId()))
     }
 
     function sharedIdlSuggestionRows() {

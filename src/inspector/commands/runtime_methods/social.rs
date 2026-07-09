@@ -1,14 +1,16 @@
-use anyhow::{Context as _, Result};
-use serde_json::Value;
+use anyhow::{Context as _, Result, bail};
+use serde_json::{Value, json};
+use tokio::runtime::Runtime;
 
 use crate::{
     social::{
-        SharedAccountIdlQuery, SocialCommentQuery,
-        accepted_shared_account_idls as decode_accepted_shared_idls,
+        SocialCommentQuery, SocialPayload,
+        accepted_shared_idl_entries_from_messages as decode_accepted_shared_idls_from_messages,
         build_comment_topic as build_social_comment_topic, build_lez_account_idl_topic,
         decode_comment_page as decode_social_comment_page, decode_social_messages,
         project_comment_event as decode_social_comment_row, validate_topic,
     },
+    source_routing::{storage_rest_download_bytes, storage_rest_source},
     support::args::Args,
 };
 
@@ -22,9 +24,9 @@ pub(super) const METHOD_CATALOG: &[RuntimeMethodEntry] = &[
     RuntimeMethodEntry::sync("socialCommentPageFromStore", social_comment_page_from_store),
     RuntimeMethodEntry::sync("socialCommentRowFromEvent", social_comment_row_from_event),
     RuntimeMethodEntry::sync("socialTopicValid", social_topic_valid),
-    RuntimeMethodEntry::sync(
-        "acceptedSharedIdlEntriesFromStore",
-        accepted_shared_idl_entries_from_store,
+    RuntimeMethodEntry::with_runtime(
+        "acceptedSharedIdlEntriesFromStoreWithStorage",
+        accepted_shared_idl_entries_from_store_with_storage,
     ),
 ];
 
@@ -88,19 +90,76 @@ pub(super) fn social_topic_valid(args: Value) -> Result<Value> {
     to_value(validate_topic(args.string(0, "social topic")?))
 }
 
-pub(super) fn accepted_shared_idl_entries_from_store(args: Value) -> Result<Value> {
+pub(super) fn accepted_shared_idl_entries_from_store_with_storage(
+    runtime: &Runtime,
+    args: Value,
+) -> Result<Value> {
     let args = Args::new(args)?;
     let topic = args.string(0, "social topic")?;
     let value = args
         .value(1)
         .context("Delivery Store response is required")?;
-    to_value(decode_accepted_shared_idls(
-        SharedAccountIdlQuery {
+    let account_id = args.string(2, "account id")?;
+    let account_data_hex = args.string(3, "account data hex")?;
+    let owner_program_id = args.optional_string(4);
+    let storage_args = Args::new(json!([
+        args.string(5, "storage source mode")?,
+        args.string(6, "storage REST endpoint")?
+    ]))?;
+    if crate::source_routing::is_storage_module_source(&storage_args) {
+        bail!(
+            "shared IDL CID fetch through storage_module needs storageDownloadDone correlation; use Direct REST source for synchronous shared IDL fetch"
+        )
+    }
+    let source = storage_rest_source(&storage_args)?;
+    let local_only = args.optional_bool(7);
+    let mut messages = decode_social_messages(
+        SocialCommentQuery {
             topic,
-            account_id: args.string(2, "account id")?,
-            account_data_hex: args.string(3, "account data hex")?,
-            owner_program_id: args.optional_string(4),
+            expected_account_id: Some(account_id),
         },
         value,
+    );
+    for message in &mut messages {
+        hydrate_shared_idl_payload(runtime, source.endpoint, local_only, &mut message.payload)?;
+    }
+    to_value(decode_accepted_shared_idls_from_messages(
+        topic,
+        messages,
+        account_id,
+        account_data_hex,
+        owner_program_id,
     ))
+}
+
+fn hydrate_shared_idl_payload(
+    runtime: &Runtime,
+    endpoint: &str,
+    local_only: bool,
+    payload: &mut SocialPayload,
+) -> Result<()> {
+    let SocialPayload::LezAccountIdl {
+        idl_json, idl_cid, ..
+    } = payload
+    else {
+        return Ok(());
+    };
+    if !idl_json.is_empty() || idl_cid.is_empty() {
+        return Ok(());
+    }
+    let bytes = runtime
+        .block_on(storage_rest_download_bytes(endpoint, idl_cid, local_only))
+        .with_context(|| format!("failed to fetch shared IDL CID {idl_cid}"))?;
+    let text = String::from_utf8(bytes).context("shared IDL CID payload is not UTF-8")?;
+    let value: Value = serde_json::from_str(&text).context("shared IDL CID payload is not JSON")?;
+    *idl_json = value
+        .get("idl_json")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or(text);
+    let _idl_value: Value =
+        serde_json::from_str(idl_json.as_str()).context("shared IDL JSON is not valid JSON")?;
+    Ok(())
 }

@@ -65,6 +65,15 @@ ColumnLayout {
         Layout.fillWidth: true
     }
 
+    StatusMessage {
+        visible: !root.storeAvailable() && !root.panelState().loading && !root.panelState().error.length
+        theme: root.theme
+        tone: "warning"
+        title: qsTr("Comments unavailable")
+        message: root.storeUnavailableText()
+        Layout.fillWidth: true
+    }
+
     ColumnLayout {
         visible: root.comments().length > 0
         spacing: root.theme.gapSmall
@@ -128,7 +137,7 @@ ColumnLayout {
     }
 
     StatusMessage {
-        visible: root.comments().length === 0 && !root.panelState().loading && !root.panelState().error.length
+        visible: root.comments().length === 0 && root.storeAvailable() && !root.panelState().loading && !root.panelState().error.length
         theme: root.theme
         tone: "info"
         title: qsTr("No comments")
@@ -143,7 +152,7 @@ ColumnLayout {
         ActionButton {
             theme: root.theme
             text: qsTr("Refresh")
-            enabled: !root.panelState().loading && root.model.socialStoreAvailable()
+            enabled: !root.panelState().loading && root.storeAvailable()
             Layout.preferredWidth: 104
             onClicked: root.reload()
         }
@@ -151,7 +160,7 @@ ColumnLayout {
         ActionButton {
             theme: root.theme
             text: qsTr("Next page")
-            enabled: !root.panelState().loading && !root.panelState().exhausted && root.model.socialStoreAvailable()
+            enabled: !root.panelState().loading && !root.panelState().exhausted && root.storeAvailable()
             Layout.preferredWidth: 122
             onClicked: root.model.loadSocialComments(root.topic, false, root.model.socialCommentPageSize, root.expectedAccountId)
         }
@@ -262,7 +271,7 @@ ColumnLayout {
 
         Text {
             text: root.sendHint()
-            color: root.model.socialCommentSendAvailable(root.topic) ? root.theme.textDim : root.theme.warning
+            color: root.writeAvailable() ? root.theme.textDim : root.theme.warning
             textFormat: Text.PlainText
             elide: Text.ElideRight
             font.pixelSize: root.theme.secondaryText
@@ -274,7 +283,7 @@ ColumnLayout {
             theme: root.theme
             text: qsTr("Post")
             primary: true
-            enabled: root.model.socialCommentSendAvailable(root.topic) && commentBody.text.trim().length > 0
+            enabled: root.writeAvailable() && commentBody.text.trim().length > 0
             Layout.preferredWidth: 104
             onClicked: postConfirm.open()
         }
@@ -287,7 +296,7 @@ ColumnLayout {
         title: qsTr("Post comment")
         message: qsTr("This sends a public Delivery message on %1.").arg(root.topic)
         confirmText: qsTr("Post")
-        confirmEnabled: root.model.socialCommentSendAvailable(root.topic) && commentBody.text.trim().length > 0
+        confirmEnabled: root.writeAvailable() && commentBody.text.trim().length > 0
         onAccepted: {
             if (root.model.postSocialComment(root.topic, commentBody.text, root.composerIdentityKey)) {
                 commentBody.text = ""
@@ -296,10 +305,38 @@ ColumnLayout {
     }
 
     function reload() {
-        if (!root.topic.length || !root.model.socialStoreAvailable()) {
+        if (!root.topic.length || !root.storeAvailable()) {
             return
         }
         root.model.loadSocialComments(root.topic, true, root.model.socialCommentPageSize, root.expectedAccountId)
+    }
+
+    function storeGate() {
+        return root.model.socialStoreGate()
+    }
+
+    function storeAvailable() {
+        return root.storeGate().enabled === true
+    }
+
+    function writeGate() {
+        return root.model.socialCommentWriteGate(root.topic)
+    }
+
+    function writeAvailable() {
+        return root.writeGate().enabled === true
+    }
+
+    function gateDetailText(gate, fallback) {
+        return root.model.socialGateDetailText(gate, fallback)
+    }
+
+    function storeUnavailableText() {
+        return root.gateDetailText(root.storeGate(), qsTr("Delivery Store capability is unavailable."))
+    }
+
+    function writeUnavailableText() {
+        return root.gateDetailText(root.writeGate(), qsTr("Delivery send capability is unavailable."))
     }
 
     function panelState() {
@@ -349,22 +386,22 @@ ColumnLayout {
         if (root.panelState().loading) {
             return qsTr("Loading")
         }
-        if (!root.model.socialStoreAvailable()) {
-            return qsTr("Store unavailable")
+        if (!root.storeAvailable()) {
+            return root.storeUnavailableText()
         }
         return qsTr("%1 comments").arg(root.comments().length)
     }
 
     function statusColor() {
-        if (root.panelState().error.length > 0 || !root.model.socialStoreAvailable()) {
+        if (root.panelState().error.length > 0 || !root.storeAvailable()) {
             return root.theme.warning
         }
         return root.theme.textDim
     }
 
     function sendHint() {
-        if (!root.model.socialMessageSourceAvailable()) {
-            return qsTr("Delivery source unavailable")
+        if (!root.writeAvailable()) {
+            return root.writeUnavailableText()
         }
         if (!root.model.messagingMutatingDiagnosticsEnabled) {
             return qsTr("Mutating diagnostics off")

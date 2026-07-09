@@ -19,17 +19,13 @@ function loadSettingsState(root) {
         settingsStateError = ""
         const value = response.value
         root.loadNetworkProfileSettings(value)
-        blockchainSourceMode = root.normalizedCoreSourceMode(root.stringSetting(value, "blockchain_source_mode", blockchainSourceMode))
-        indexerSourceMode = root.normalizedCoreSourceMode(root.stringSetting(value, "indexer_source_mode", indexerSourceMode))
-        executionSourceMode = "rpc"
-        messagingSourceMode = root.normalizedMessagingSourceMode(root.stringSetting(value, "messaging_source_mode", messagingSourceMode))
+        root.loadNetworkConnectorConfig(value)
         messagingRestUrl = root.stringSetting(value, "messaging_rest_url", messagingRestUrl)
         messagingMetricsUrl = root.stringSetting(value, "messaging_metrics_url", messagingMetricsUrl)
         messagingNetworkPreset = root.normalizedMessagingNetworkPreset(root.stringSetting(value, "messaging_network_preset", messagingNetworkPreset))
         messagingRollingWindow = root.numberSetting(value, "messaging_rolling_window", messagingRollingWindow)
         messagingAdminRestEnabled = root.boolSetting(value, "messaging_admin_rest_enabled", messagingAdminRestEnabled)
         messagingMutatingDiagnosticsEnabled = root.boolSetting(value, "messaging_mutating_diagnostics_enabled", messagingMutatingDiagnosticsEnabled)
-        storageSourceMode = root.normalizedStorageSourceMode(root.stringSetting(value, "storage_source_mode", storageSourceMode))
         storageRestUrl = root.stringSetting(value, "storage_rest_url", storageRestUrl)
         storageMetricsUrl = root.stringSetting(value, "storage_metrics_url", storageMetricsUrl)
         storageNetworkPreset = root.stringSetting(value, "storage_network_preset", storageNetworkPreset)
@@ -39,8 +35,8 @@ function loadSettingsState(root) {
         storageLocalDiagnosticsEnabled = root.boolSetting(value, "storage_local_diagnostics_enabled", storageLocalDiagnosticsEnabled)
         storagePrivilegedDebugEnabled = root.boolSetting(value, "storage_privileged_debug_enabled", storagePrivilegedDebugEnabled)
         storageMutatingDiagnosticsEnabled = root.boolSetting(value, "storage_mutating_diagnostics_enabled", storageMutatingDiagnosticsEnabled)
-        settingsBackupCid = root.stringSetting(value, "settings_backup_cid", settingsBackupCid)
-        settingsRestoreCid = settingsBackupCid
+        localNodesEnabled = root.boolSetting(value, "local_nodes_enabled", localNodesEnabled)
+        localDevnetEnabled = localNodesEnabled && root.boolSetting(value, "local_devnet_enabled", localDevnetEnabled)
         settingsBackupEncrypted = root.boolSetting(value, "settings_backup_encrypted", settingsBackupEncrypted)
         blockchainRefreshRate = root.canonicalRefreshRate(root.numberSetting(value, "blockchain_refresh_rate", blockchainRefreshRate))
         indexerRefreshRate = root.canonicalRefreshRate(root.numberSetting(value, "indexer_refresh_rate", indexerRefreshRate))
@@ -80,17 +76,13 @@ function settingsStatePayload(root) {
             sequencer_url: network.sequencer_url,
             indexer_url: network.indexer_url,
             node_url: network.node_url,
-            blockchain_source_mode: root.normalizedCoreSourceMode(blockchainSourceMode),
-            indexer_source_mode: root.normalizedCoreSourceMode(indexerSourceMode),
-            execution_source_mode: "rpc",
-            messaging_source_mode: root.normalizedMessagingSourceMode(messagingSourceMode),
+            network_connector_config: root.networkConnectorConfigPayload(),
             messaging_rest_url: String(messagingRestUrl || ""),
             messaging_metrics_url: String(messagingMetricsUrl || ""),
             messaging_network_preset: root.normalizedMessagingNetworkPreset(messagingNetworkPreset),
             messaging_rolling_window: Number(messagingRollingWindow || 0),
             messaging_admin_rest_enabled: messagingAdminRestEnabled === true,
             messaging_mutating_diagnostics_enabled: messagingMutatingDiagnosticsEnabled === true,
-            storage_source_mode: root.normalizedStorageSourceMode(storageSourceMode),
             storage_rest_url: String(storageRestUrl || ""),
             storage_metrics_url: String(storageMetricsUrl || ""),
             storage_network_preset: String(storageNetworkPreset || ""),
@@ -100,7 +92,8 @@ function settingsStatePayload(root) {
             storage_local_diagnostics_enabled: storageLocalDiagnosticsEnabled === true,
             storage_privileged_debug_enabled: storagePrivilegedDebugEnabled === true,
             storage_mutating_diagnostics_enabled: storageMutatingDiagnosticsEnabled === true,
-            settings_backup_cid: String(settingsBackupCid || ""),
+            local_nodes_enabled: localNodesEnabled === true,
+            local_devnet_enabled: localNodesEnabled === true && localDevnetEnabled === true,
             settings_backup_encrypted: settingsBackupEncrypted === true,
             blockchain_refresh_rate: root.canonicalRefreshRate(blockchainRefreshRate),
             indexer_refresh_rate: root.canonicalRefreshRate(indexerRefreshRate),
@@ -114,35 +107,49 @@ function settingsStatePayload(root) {
     }
 }
 
-function backupSettingsToStorage(root, encrypted) {
+function backupSettingsToStorage(root, encrypted, contents) {
     with (root) {
         if (!root.settingsBackupAvailable()) {
-            settingsBackupStatus = qsTr("Storage REST with mutating diagnostics is required.")
+            settingsBackupStatus = qsTr("Storage upload capability is required.")
+            return false
+        }
+        const selectedContents = root.normalizedBackupContents(contents || root.settingsBackupContents)
+        if (!root.backupContentsSelected(selectedContents)) {
+            settingsBackupStatus = qsTr("Select at least one backup content area.")
             return false
         }
         settingsBackupEncrypted = encrypted === true
-        saveSettingsState()
-        saveIdlState()
-        saveWalletState()
-        const response = root.callInspector("storageBackupSettings", [
-            root.effectiveStorageSourceMode(storageSourceMode),
-            root.configuredStorageRestUrl(),
-            storageMutatingDiagnosticsEnabled === true,
+        if (selectedContents.settings || selectedContents.favorites) {
+            saveSettingsState()
+        }
+        if (selectedContents.idl_registry) {
+            saveIdlState()
+        }
+        if (selectedContents.wallet_profile) {
+            saveWalletState()
+        }
+        const entry = root.createLocalSettingsBackup(
+            settingsBackupEncrypted ? qsTr("Encrypted settings backup") : qsTr("Settings backup"),
             settingsBackupEncrypted,
-            walletProfile(),
-            65536
-        ], qsTr("Settings backup"))
-        if (!response.ok) {
-            settingsBackupStatus = response.error || qsTr("Settings backup failed.")
+            selectedContents
+        )
+        if (!entry || !String(entry.backup_catalog_id || "").length) {
+            settingsBackupStatus = root.backupCatalogError.length ? root.backupCatalogError : qsTr("Local backup failed.")
             return false
         }
-        const cid = String(response.value && response.value.cid ? response.value.cid : "")
+        const upload = root.uploadBackupCatalogEntry(entry.backup_catalog_id)
+        if (!upload) {
+            settingsBackupStatus = root.backupCatalogError.length
+                ? qsTr("Local backup created. Storage upload failed: %1").arg(root.backupCatalogError)
+                : qsTr("Local backup created. Storage upload failed.")
+            return false
+        }
+        const cid = String(upload && upload.cid ? upload.cid : "")
         settingsBackupCid = cid
         settingsRestoreCid = cid
         settingsBackupStatus = settingsBackupEncrypted
             ? qsTr("Encrypted backup stored as %1.").arg(cid)
             : qsTr("Backup stored as %1.").arg(cid)
-        saveSettingsState()
         return true
     }
 }
@@ -154,41 +161,42 @@ function restoreSettingsFromStorage(root, cid, useWallet) {
             settingsBackupStatus = qsTr("Backup CID is required.")
             return false
         }
-        if (!root.settingsBackupAvailable()) {
-            settingsBackupStatus = qsTr("Storage REST with mutating diagnostics is required.")
+        if (!root.settingsBackupDownloadAvailable()) {
+            settingsBackupStatus = qsTr("Storage read-by-CID capability is required.")
             return false
         }
         const response = root.callInspector("storageRestoreSettings", [
             root.effectiveStorageSourceMode(storageSourceMode),
             root.configuredStorageRestUrl(),
-            storageMutatingDiagnosticsEnabled === true,
             backupCid,
-            useWallet === true ? walletProfile() : ({}),
             false
-        ], qsTr("Settings restore"))
+        ], qsTr("Settings backup download"))
         if (!response.ok) {
-            settingsBackupStatus = response.error || qsTr("Settings restore failed.")
+            settingsBackupStatus = response.error || qsTr("Settings backup download failed.")
             return false
         }
-        root.loadSettingsState()
-        root.loadIdlState()
-        root.loadWalletState()
-        settingsBackupCid = backupCid
-        settingsRestoreCid = backupCid
-        settingsBackupEncrypted = response.value && response.value.encrypted === true
-        settingsBackupStatus = qsTr("Restored %1 IDLs and %2 favorites from %3.")
-            .arg(Number(response.value && response.value.idl_count ? response.value.idl_count : 0))
-            .arg(Number(response.value && response.value.favorites ? response.value.favorites : 0))
-            .arg(backupCid)
-        saveSettingsState()
+        if (root.backupCatalog && typeof root.loadBackupCatalog === "function") {
+            root.loadBackupCatalog()
+        }
+        const catalogId = String(response.value && response.value.backup_catalog_id ? response.value.backup_catalog_id : "")
+        settingsBackupStatus = catalogId.length
+            ? qsTr("Downloaded backup %1 into local catalog as %2.").arg(backupCid).arg(catalogId)
+            : qsTr("Downloaded backup %1 into local catalog.").arg(backupCid)
         return true
     }
 }
 
 function settingsBackupAvailable(root) {
     with (root) {
-        return root.effectiveStorageSourceMode(storageSourceMode) === "rest"
-            && storageMutatingDiagnosticsEnabled === true
+        const gate = root.storageGate("backup_upload")
+        return gate.enabled === true
+    }
+}
+
+function settingsBackupDownloadAvailable(root) {
+    with (root) {
+        const gate = root.storageGate("backup_read_by_cid")
+        return gate.enabled === true
     }
 }
 
@@ -259,7 +267,8 @@ function walletProfile(root) {
             wallet_binary: String(walletBinary || ""),
             wallet_home: String(walletHome || ""),
             network_profile: String(networkProfile || ""),
-            public_key_probe: String(walletPublicKeyProbe || "")
+            public_key_probe: String(walletPublicKeyProbe || ""),
+            wallet_connector_config: root.walletConnectorConfigPayload()
         }
     }
 }

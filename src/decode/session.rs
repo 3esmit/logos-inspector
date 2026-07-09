@@ -2,9 +2,9 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
-use super::{AccountIdlDecodeReport, decode_account_data_hex_with_idl};
-use crate::lez::{
-    TransactionIdlInspectionReport, TransactionSummary, inspect_transaction_summary_with_idl,
+use super::{
+    AccountIdlDecodeReport, InstructionDecodeReport, decode_account_data_hex_with_idl,
+    decode_instruction_words_with_idl,
 };
 
 #[derive(Debug, Clone, Deserialize)]
@@ -41,6 +41,71 @@ pub struct SelectedDecodeEvidence {
     pub source: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct TransactionDecodeInput {
+    #[serde(default)]
+    pub hash: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub program_id_hex: Option<String>,
+    #[serde(default)]
+    pub account_ids: Vec<String>,
+    #[serde(default)]
+    pub nonces: Vec<String>,
+    #[serde(default)]
+    pub instruction_data: Vec<u32>,
+    #[serde(default)]
+    pub bytecode_len: Option<usize>,
+    #[serde(default)]
+    pub raw_signature_valid: Option<bool>,
+    #[serde(default)]
+    pub message_prehash: Option<String>,
+    #[serde(default)]
+    pub prehash_signature_valid: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TransactionDecodeInspectionReport {
+    pub hash: String,
+    pub kind: String,
+    pub sections: Vec<TransactionDecodeInspectionSection>,
+    pub raw_summary: TransactionDecodeInput,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TransactionDecodeInspectionSection {
+    pub title: String,
+    pub rows: Vec<TransactionDecodeInspectionRow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TransactionDecodeInspectionRow {
+    pub label: String,
+    pub index: Option<usize>,
+    pub value: String,
+    pub decimal: Option<String>,
+    pub hex: Option<String>,
+    pub base58: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DecodeEnrichmentReport {
+    pub status: String,
+    pub provenance: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TransactionDecodeReport {
+    pub inspection: TransactionDecodeInspectionReport,
+    pub decoded_instruction: Option<InstructionDecodeReport>,
+    pub decode_enrichment: DecodeEnrichmentReport,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountDecodeSelection {
@@ -63,7 +128,7 @@ pub struct ResolvedAccountDecodeSession {
 #[serde(rename_all = "camelCase")]
 pub struct TransactionDecodeSelection {
     pub evidence: SelectedDecodeEvidence,
-    pub report: TransactionIdlInspectionReport,
+    pub report: TransactionDecodeReport,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -96,10 +161,128 @@ pub fn resolve_account_decode_session(
 }
 
 pub fn resolve_transaction_decode_session(
-    summary: &TransactionSummary,
+    input: &TransactionDecodeInput,
     candidates: &[ProgramDecodeCandidate],
 ) -> ResolvedTransactionDecodeSession {
-    ProgramDecodeSession::new(candidates).resolve_transaction(summary)
+    ProgramDecodeSession::new(candidates).resolve_transaction(input)
+}
+
+pub fn decode_transaction_input_with_idl(
+    input: &TransactionDecodeInput,
+    idl_json: &str,
+) -> anyhow::Result<TransactionDecodeReport> {
+    let inspection = inspect_transaction_decode_input(input);
+    let decoded_instruction = if input.kind == "Public" && !input.instruction_data.is_empty() {
+        input
+            .program_id_hex
+            .as_deref()
+            .map(|program_id| {
+                decode_instruction_words_with_idl(
+                    idl_json,
+                    program_id,
+                    &input.instruction_data,
+                    &input.account_ids,
+                )
+            })
+            .transpose()?
+    } else {
+        None
+    };
+    let status = if decoded_instruction.is_some() {
+        "applied"
+    } else {
+        "skipped"
+    };
+    Ok(TransactionDecodeReport {
+        inspection,
+        decoded_instruction,
+        decode_enrichment: DecodeEnrichmentReport {
+            status: status.to_owned(),
+            provenance: "program_decode_static".to_owned(),
+            source: Some("explicit_idl".to_owned()),
+            error: None,
+        },
+    })
+}
+
+#[must_use]
+pub fn inspect_transaction_decode_input(
+    input: &TransactionDecodeInput,
+) -> TransactionDecodeInspectionReport {
+    let mut sections = Vec::new();
+    if let Some(program_id) = input
+        .program_id_hex
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        sections.push(TransactionDecodeInspectionSection {
+            title: "Program".to_owned(),
+            rows: vec![TransactionDecodeInspectionRow {
+                label: "program_id".to_owned(),
+                index: None,
+                value: program_id.to_owned(),
+                decimal: None,
+                hex: Some(program_id.to_owned()),
+                base58: None,
+            }],
+        });
+    }
+    if !input.account_ids.is_empty() {
+        sections.push(TransactionDecodeInspectionSection {
+            title: "Accounts".to_owned(),
+            rows: input
+                .account_ids
+                .iter()
+                .enumerate()
+                .map(|(index, account)| TransactionDecodeInspectionRow {
+                    label: "account".to_owned(),
+                    index: Some(index),
+                    value: account.clone(),
+                    decimal: None,
+                    hex: None,
+                    base58: None,
+                })
+                .collect(),
+        });
+    }
+    if !input.instruction_data.is_empty() {
+        sections.push(TransactionDecodeInspectionSection {
+            title: "Instruction words".to_owned(),
+            rows: input
+                .instruction_data
+                .iter()
+                .enumerate()
+                .map(|(index, word)| TransactionDecodeInspectionRow {
+                    label: "instruction_word".to_owned(),
+                    index: Some(index),
+                    value: word.to_string(),
+                    decimal: Some(word.to_string()),
+                    hex: Some(format!("0x{word:08x}")),
+                    base58: None,
+                })
+                .collect(),
+        });
+    }
+    if let Some(bytecode_len) = input.bytecode_len {
+        sections.push(TransactionDecodeInspectionSection {
+            title: "Program deployment".to_owned(),
+            rows: vec![TransactionDecodeInspectionRow {
+                label: "bytecode_len".to_owned(),
+                index: None,
+                value: bytecode_len.to_string(),
+                decimal: Some(bytecode_len.to_string()),
+                hex: None,
+                base58: None,
+            }],
+        });
+    }
+    TransactionDecodeInspectionReport {
+        hash: input.hash.clone(),
+        kind: input.kind.clone(),
+        sections,
+        raw_summary: input.clone(),
+    }
 }
 
 struct ProgramDecodeSession {
@@ -164,11 +347,11 @@ impl ProgramDecodeSession {
 
     fn resolve_transaction(
         &self,
-        summary: &TransactionSummary,
+        input: &TransactionDecodeInput,
     ) -> ResolvedTransactionDecodeSession {
         let mut partial = None;
         for candidate in &self.candidates {
-            let Ok(report) = inspect_transaction_summary_with_idl(summary, &candidate.json) else {
+            let Ok(report) = decode_transaction_input_with_idl(input, &candidate.json) else {
                 continue;
             };
             if report.decoded_instruction.is_none() {
@@ -205,7 +388,7 @@ fn account_decode_is_full(report: &AccountIdlDecodeReport) -> bool {
     report.consumed_bytes == report.total_bytes && report.remaining_bytes == 0
 }
 
-fn transaction_decode_is_full(report: &TransactionIdlInspectionReport) -> bool {
+fn transaction_decode_is_full(report: &TransactionDecodeReport) -> bool {
     report
         .decoded_instruction
         .as_ref()
@@ -241,11 +424,6 @@ fn candidate_identity(candidate: &ProgramDecodeCandidate) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
-
-    use crate::{
-        InstructionDecodeReport,
-        lez::{TransactionInspectionReport, TransactionInspectionSection},
-    };
 
     fn candidate(
         key: &str,
@@ -302,6 +480,51 @@ mod tests {
         assert!(!transaction_decode_is_full(&transaction_report(None)));
     }
 
+    #[test]
+    fn transaction_decode_input_with_idl_decodes_without_runtime_context() {
+        let input = TransactionDecodeInput {
+            hash: "tx".to_owned(),
+            kind: "Public".to_owned(),
+            program_id_hex: Some("program".to_owned()),
+            account_ids: vec!["acct-a".to_owned()],
+            nonces: Vec::new(),
+            instruction_data: vec![0, 9],
+            bytecode_len: None,
+            raw_signature_valid: None,
+            message_prehash: None,
+            prehash_signature_valid: None,
+        };
+        let idl = r#"{
+            "name": "test_program",
+            "instructions": [
+                {
+                    "name": "set_value",
+                    "accounts": [{ "name": "target" }],
+                    "args": [{ "name": "value", "type": "u32" }]
+                }
+            ]
+        }"#;
+
+        let report = decode_transaction_input_with_idl(&input, idl);
+
+        assert!(report.is_ok(), "{report:?}");
+        let Ok(report) = report else {
+            return;
+        };
+        assert_eq!(report.inspection.raw_summary, input);
+        assert_eq!(report.decode_enrichment.status, "applied");
+        let decoded = report.decoded_instruction.as_ref();
+        assert!(decoded.is_some(), "missing instruction decode");
+        let Some(decoded) = decoded else {
+            return;
+        };
+        assert_eq!(decoded.instruction, "set_value");
+        assert_eq!(
+            decoded.accounts.first().map(|row| row.path.as_str()),
+            Some("target")
+        );
+    }
+
     fn account_report(
         consumed_bytes: usize,
         total_bytes: usize,
@@ -321,13 +544,13 @@ mod tests {
 
     fn transaction_report(
         decoded_instruction: Option<InstructionDecodeReport>,
-    ) -> TransactionIdlInspectionReport {
-        TransactionIdlInspectionReport {
-            inspection: TransactionInspectionReport {
+    ) -> TransactionDecodeReport {
+        TransactionDecodeReport {
+            inspection: TransactionDecodeInspectionReport {
                 hash: "tx".to_owned(),
                 kind: "Public".to_owned(),
-                sections: Vec::<TransactionInspectionSection>::new(),
-                raw_summary: TransactionSummary {
+                sections: Vec::<TransactionDecodeInspectionSection>::new(),
+                raw_summary: TransactionDecodeInput {
                     hash: "tx".to_owned(),
                     kind: "Public".to_owned(),
                     program_id_hex: None,
@@ -341,6 +564,12 @@ mod tests {
                 },
             },
             decoded_instruction,
+            decode_enrichment: DecodeEnrichmentReport {
+                status: "applied".to_owned(),
+                provenance: "program_decode_static".to_owned(),
+                source: Some("test".to_owned()),
+                error: None,
+            },
         }
     }
 

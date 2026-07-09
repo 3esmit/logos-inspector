@@ -1,5 +1,6 @@
 mod accounts;
 mod block;
+mod block_list_report;
 mod idl_resolver;
 mod indexer;
 mod programs;
@@ -7,6 +8,9 @@ mod sequencer;
 mod target_resolution;
 mod transactions;
 mod transfers;
+
+#[cfg(test)]
+mod transaction_decode_tests;
 
 pub(crate) use accounts::account_report_with_optional_idl_decode;
 pub(crate) use accounts::summarize_account_transaction;
@@ -16,6 +20,7 @@ pub use accounts::{
 };
 pub(crate) use block::decode_sequencer_block;
 pub use block::{BlockSummary, summarize_block};
+pub(crate) use block_list_report::block_list_report;
 pub(crate) use idl_resolver::RegisteredIdlResolver;
 pub use indexer::{
     AccountTransactionSummary, IndexerBlockReport, IndexerStatusReport,
@@ -41,6 +46,9 @@ pub use transactions::{
     TransactionInspectionSection, TransactionSummary, TransactionTraceRefs, TransactionTraceReport,
     TransactionTraceStep, inspect_transaction_summary, inspect_transaction_summary_with_idl,
     summarize_transaction, trace_transaction_summary, trace_transaction_summary_with_idl,
+};
+pub(crate) use transactions::{
+    inspect_transaction_summary_with_optional_idl_decode, transaction_decode_input_from_summary,
 };
 pub(crate) use transfers::transfer_recipient_summaries_from_blocks;
 pub use transfers::{RecipientTransferSummary, TransferActivityPage, TransferRecipientSummary};

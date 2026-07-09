@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
+import QtQuick.Controls.Basic
 import QtQml.Models
 import QtQuick.Layouts
 import "../../../components"
@@ -15,6 +16,15 @@ ColumnLayout {
     required property Theme theme
     required property AppModel model
     property string pendingSettingsRestoreCid: ""
+    property string pendingSettingsRestoreBackupId: ""
+    property var pendingSettingsRestoreOptions: ({
+        settings: "replace",
+        favorites: "merge",
+        idl_registry: "merge",
+        wallet_profile: "skip"
+    })
+    property var pendingSettingsRestorePlan: null
+    property string pendingSettingsRestorePlanError: ""
 
     width: parent ? parent.width : 900
     spacing: 16
@@ -75,6 +85,61 @@ ColumnLayout {
 
     ListModel {
         id: storageSourceOptions
+    }
+
+    ListModel {
+        id: replaceSkipImportOptions
+
+        ListElement {
+            key: "replace"
+            label: "Replace"
+            summary: "Use backup values"
+        }
+        ListElement {
+            key: "skip"
+            label: "Skip"
+            summary: "Leave current values"
+        }
+    }
+
+    ListModel {
+        id: mergeImportOptions
+
+        ListElement {
+            key: "merge"
+            label: "Merge"
+            summary: "Keep local rows and add backup rows"
+        }
+        ListElement {
+            key: "replace"
+            label: "Replace"
+            summary: "Use backup rows"
+        }
+        ListElement {
+            key: "skip"
+            label: "Skip"
+            summary: "Leave current rows"
+        }
+    }
+
+    ListModel {
+        id: conflictDecisionOptions
+
+        ListElement {
+            key: "required"
+            label: "Choose"
+            summary: "Decision required"
+        }
+        ListElement {
+            key: "replace_existing"
+            label: "Replace"
+            summary: "Use backup item"
+        }
+        ListElement {
+            key: "skip_backup_item"
+            label: "Skip"
+            summary: "Keep current item"
+        }
     }
 
     Component.onCompleted: {
@@ -206,6 +271,37 @@ ColumnLayout {
                         message: settingsRoot.profileDetail()
                         Layout.fillWidth: true
                     }
+
+                    GridLayout {
+                        columns: settingsRoot.width < 520 ? 1 : 2
+                        columnSpacing: settingsRoot.theme.gapSmall
+                        rowSpacing: settingsRoot.theme.gapTiny
+                        Layout.fillWidth: true
+
+                        FieldToggle {
+                            theme: settingsRoot.theme
+                            label: qsTr("Local Nodes")
+                            detail: qsTr("Enable local node control capabilities.")
+                            checked: settingsRoot.model.localNodesEnabled
+                            Layout.fillWidth: true
+                            onToggled: {
+                                settingsRoot.model.localNodesEnabled = checked
+                                if (!checked) {
+                                    settingsRoot.model.localDevnetEnabled = false
+                                }
+                            }
+                        }
+
+                        FieldToggle {
+                            theme: settingsRoot.theme
+                            label: qsTr("Local Devnet")
+                            detail: qsTr("Enable local devnet sequencer capabilities.")
+                            enabled: settingsRoot.model.localNodesEnabled
+                            checked: settingsRoot.model.localDevnetEnabled
+                            Layout.fillWidth: true
+                            onToggled: settingsRoot.model.localDevnetEnabled = checked
+                        }
+                    }
                 }
             }
 
@@ -218,7 +314,7 @@ ColumnLayout {
                     Layout.fillWidth: true
 
                     Text {
-                        text: qsTr("Back up local settings, registered IDLs, wallet profile, and favorites to Logos Storage.")
+                        text: qsTr("Back up local settings, registered IDLs, wallet profile, and favorites to the local catalog. Upload selected catalog entries to Logos Storage when needed.")
                         color: settingsRoot.theme.textMuted
                         textFormat: Text.PlainText
                         wrapMode: Text.Wrap
@@ -228,8 +324,8 @@ ColumnLayout {
 
                     StatusPill {
                         theme: settingsRoot.theme
-                        text: settingsRoot.model.settingsBackupAvailable() ? qsTr("Ready") : qsTr("Blocked")
-                        colorToken: settingsRoot.model.settingsBackupAvailable() ? settingsRoot.theme.success : settingsRoot.theme.warning
+                        text: settingsRoot.model.backupCatalogLoaded ? qsTr("Catalog") : qsTr("Loading")
+                        colorToken: settingsRoot.model.backupCatalogLoaded ? settingsRoot.theme.success : settingsRoot.theme.warning
                     }
                 }
 
@@ -237,8 +333,8 @@ ColumnLayout {
                     visible: !settingsRoot.model.settingsBackupAvailable()
                     theme: settingsRoot.theme
                     tone: "warning"
-                    title: qsTr("Storage backup unavailable")
-                    message: qsTr("Select Standalone REST storage and enable mutating diagnostics in Network / Storage.")
+                    title: qsTr("Storage upload unavailable")
+                    message: qsTr("Storage backup upload capability is required before uploading catalog entries.")
                     Layout.fillWidth: true
                 }
 
@@ -290,28 +386,92 @@ ColumnLayout {
                     }
                 }
 
+                Text {
+                    text: qsTr("Backup Contents")
+                    color: settingsRoot.theme.text
+                    textFormat: Text.PlainText
+                    font.pixelSize: settingsRoot.theme.secondaryText
+                    font.weight: Font.Medium
+                    Layout.fillWidth: true
+                }
+
+                GridLayout {
+                    columns: settingsRoot.width < 700 ? 1 : 4
+                    columnSpacing: settingsRoot.theme.gapSmall
+                    rowSpacing: settingsRoot.theme.gapTiny
+                    Layout.fillWidth: true
+
+                    FieldToggle {
+                        theme: settingsRoot.theme
+                        label: qsTr("Settings")
+                        checked: settingsRoot.model.normalizedBackupContents(settingsRoot.model.settingsBackupContents).settings
+                        Layout.fillWidth: true
+                        onToggled: settingsRoot.model.setSettingsBackupContent("settings", checked)
+                    }
+
+                    FieldToggle {
+                        theme: settingsRoot.theme
+                        label: qsTr("Favorites")
+                        checked: settingsRoot.model.normalizedBackupContents(settingsRoot.model.settingsBackupContents).favorites
+                        Layout.fillWidth: true
+                        onToggled: settingsRoot.model.setSettingsBackupContent("favorites", checked)
+                    }
+
+                    FieldToggle {
+                        theme: settingsRoot.theme
+                        label: qsTr("IDL Registry")
+                        checked: settingsRoot.model.normalizedBackupContents(settingsRoot.model.settingsBackupContents).idl_registry
+                        Layout.fillWidth: true
+                        onToggled: settingsRoot.model.setSettingsBackupContent("idl_registry", checked)
+                    }
+
+                    FieldToggle {
+                        theme: settingsRoot.theme
+                        label: qsTr("Wallet Profile")
+                        checked: settingsRoot.model.normalizedBackupContents(settingsRoot.model.settingsBackupContents).wallet_profile
+                        Layout.fillWidth: true
+                        onToggled: settingsRoot.model.setSettingsBackupContent("wallet_profile", checked)
+                    }
+                }
+
                 RowLayout {
                     spacing: settingsRoot.theme.gapSmall
                     Layout.fillWidth: true
 
                     ActionButton {
                         theme: settingsRoot.theme
-                        text: qsTr("Back Up")
+                        text: qsTr("Create Local")
                         primary: true
                         enabled: !settingsRoot.model.busy
-                            && settingsRoot.model.settingsBackupAvailable()
+                            && settingsRoot.model.backupContentsSelected(settingsRoot.model.settingsBackupContents)
                             && (!settingsRoot.model.settingsBackupEncrypted || settingsRoot.model.walletHomeConfigured())
-                        Layout.preferredWidth: 112
-                        onClicked: settingsRoot.model.backupSettingsToStorage(settingsRoot.model.settingsBackupEncrypted)
+                        Layout.preferredWidth: 128
+                        onClicked: {
+                            const entry = settingsRoot.model.createLocalSettingsBackup(settingsRoot.model.settingsBackupEncrypted ? qsTr("Encrypted settings backup") : qsTr("Settings backup"), settingsRoot.model.settingsBackupEncrypted, settingsRoot.model.settingsBackupContents)
+                            settingsRoot.model.settingsBackupStatus = entry
+                                ? qsTr("Local backup %1 created.").arg(entry.backup_version_label || entry.backup_catalog_id)
+                                : settingsRoot.model.backupCatalogError
+                        }
                     }
 
                     ActionButton {
                         theme: settingsRoot.theme
-                        text: qsTr("Restore")
+                        text: qsTr("Upload")
                         enabled: !settingsRoot.model.busy
                             && settingsRoot.model.settingsBackupAvailable()
-                            && settingsBackupCidField.text.trim().length > 0
+                            && settingsRoot.model.backupContentsSelected(settingsRoot.model.settingsBackupContents)
+                            && (!settingsRoot.model.settingsBackupEncrypted || settingsRoot.model.walletHomeConfigured())
                         Layout.preferredWidth: 112
+                        onClicked: settingsRoot.model.backupSettingsToStorage(settingsRoot.model.settingsBackupEncrypted, settingsRoot.model.settingsBackupContents)
+                    }
+
+                    ActionButton {
+                        theme: settingsRoot.theme
+                        text: qsTr("Download")
+                        enabled: !settingsRoot.model.busy
+                            && settingsRoot.model.settingsBackupDownloadAvailable()
+                            && settingsBackupCidField.text.trim().length > 0
+                        Layout.preferredWidth: 116
                         onClicked: {
                             settingsRoot.pendingSettingsRestoreCid = settingsBackupCidField.text.trim()
                             settingsRestoreConfirm.open()
@@ -339,6 +499,84 @@ ColumnLayout {
                     message: settingsRoot.model.settingsBackupStatus
                     Layout.fillWidth: true
                 }
+
+                ColumnLayout {
+                    spacing: settingsRoot.theme.gapSmall
+                    Layout.fillWidth: true
+
+                    Text {
+                        text: qsTr("Local Backup Catalog")
+                        color: settingsRoot.theme.text
+                        textFormat: Text.PlainText
+                        font.pixelSize: settingsRoot.theme.primaryText
+                        font.weight: Font.Medium
+                        Layout.fillWidth: true
+                    }
+
+                    Repeater {
+                        model: settingsRoot.model.backupCatalogRows()
+
+                        delegate: RowLayout {
+                            id: backupCatalogRow
+
+                            required property var modelData
+
+                            spacing: settingsRoot.theme.gapSmall
+                            Layout.fillWidth: true
+
+                            Text {
+                                text: String(backupCatalogRow.modelData.backup_version_label || backupCatalogRow.modelData.backup_catalog_id || "")
+                                color: settingsRoot.theme.text
+                                textFormat: Text.PlainText
+                                elide: Text.ElideRight
+                                Layout.fillWidth: true
+                            }
+
+                            Text {
+                                text: String(backupCatalogRow.modelData.remote && backupCatalogRow.modelData.remote.cid ? backupCatalogRow.modelData.remote.cid : backupCatalogRow.modelData.encrypted ? qsTr("Encrypted local") : qsTr("Local"))
+                                color: settingsRoot.theme.textMuted
+                                textFormat: Text.PlainText
+                                elide: Text.ElideMiddle
+                                Layout.preferredWidth: 160
+                            }
+
+                            ActionButton {
+                                theme: settingsRoot.theme
+                                text: qsTr("Restore")
+                                enabled: !settingsRoot.model.busy
+                                Layout.preferredWidth: 96
+                                onClicked: {
+                                    settingsRoot.pendingSettingsRestoreBackupId = String(backupCatalogRow.modelData.backup_catalog_id || "")
+                                    settingsRoot.resetPendingSettingsRestoreOptions()
+                                    settingsRoot.previewPendingLocalRestore()
+                                    localSettingsRestoreConfirm.open()
+                                }
+                            }
+
+                            ActionButton {
+                                theme: settingsRoot.theme
+                                text: qsTr("Upload")
+                                enabled: !settingsRoot.model.busy && settingsRoot.model.settingsBackupAvailable()
+                                Layout.preferredWidth: 88
+                                onClicked: {
+                                    const result = settingsRoot.model.uploadBackupCatalogEntry(String(backupCatalogRow.modelData.backup_catalog_id || ""))
+                                    settingsRoot.model.settingsBackupStatus = result && result.cid
+                                        ? qsTr("Backup uploaded as %1.").arg(result.cid)
+                                        : settingsRoot.model.backupCatalogError
+                                }
+                            }
+                        }
+                    }
+
+                    StatusMessage {
+                        visible: settingsRoot.model.backupCatalogLoaded && settingsRoot.model.backupCatalogRows().length === 0
+                        theme: settingsRoot.theme
+                        tone: "info"
+                        title: qsTr("No local backups")
+                        message: qsTr("Create a local backup before uploading or restoring.")
+                        Layout.fillWidth: true
+                    }
+                }
             }
         }
     }
@@ -347,11 +585,299 @@ ColumnLayout {
         id: settingsRestoreConfirm
 
         theme: settingsRoot.theme
-        title: qsTr("Restore settings")
-        message: qsTr("This replaces local settings, registered IDLs, wallet profile, and favorites with the selected backup.")
-        confirmText: qsTr("Restore")
+        title: qsTr("Download backup")
+        message: qsTr("This downloads the CID into the Local Backup Catalog. Import is done from the catalog.")
+        confirmText: qsTr("Download")
         confirmEnabled: settingsRoot.pendingSettingsRestoreCid.length > 0
         onAccepted: settingsRoot.model.restoreSettingsFromStorage(settingsRoot.pendingSettingsRestoreCid, settingsRoot.model.settingsBackupEncrypted)
+    }
+
+    Item {
+        visible: false
+        implicitWidth: 0
+        implicitHeight: 0
+
+        Popup {
+            id: localSettingsRestoreConfirm
+
+            parent: Overlay.overlay
+            modal: true
+            focus: true
+            padding: settingsRoot.theme.gap
+            width: Math.min(620, parent ? Math.max(0, parent.width - 24) : 620)
+            x: parent ? Math.max(0, (parent.width - width) / 2) : 0
+            y: 72
+            closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+
+            background: Rectangle {
+                color: settingsRoot.theme.surface
+                radius: settingsRoot.theme.radius
+                border.width: 1
+                border.color: settingsRoot.theme.outline
+            }
+
+            contentItem: ColumnLayout {
+                spacing: settingsRoot.theme.gapSmall
+
+                Text {
+                    text: qsTr("Import local backup")
+                    color: settingsRoot.theme.text
+                    textFormat: Text.PlainText
+                    font.pixelSize: settingsRoot.theme.primaryText
+                    font.weight: Font.DemiBold
+                    Layout.fillWidth: true
+                }
+
+                Text {
+                    text: settingsRoot.pendingSettingsRestoreBackupId
+                    color: settingsRoot.theme.textMuted
+                    textFormat: Text.PlainText
+                    elide: Text.ElideMiddle
+                    font.pixelSize: settingsRoot.theme.secondaryText
+                    Layout.fillWidth: true
+                }
+
+                GridLayout {
+                    columns: settingsRoot.width < 700 ? 1 : 2
+                    columnSpacing: settingsRoot.theme.gap
+                    rowSpacing: settingsRoot.theme.gapSmall
+                    Layout.fillWidth: true
+
+                    ColumnLayout {
+                        spacing: settingsRoot.theme.gapTiny
+                        Layout.fillWidth: true
+
+                        Text {
+                            text: qsTr("Settings")
+                            color: settingsRoot.theme.textMuted
+                            textFormat: Text.PlainText
+                            font.pixelSize: settingsRoot.theme.secondaryText
+                            font.weight: Font.Medium
+                            Layout.fillWidth: true
+                        }
+
+                        ProfileComboBox {
+                            theme: settingsRoot.theme
+                            accessibleName: qsTr("Settings import mode")
+                            options: replaceSkipImportOptions
+                            currentIndex: settingsRoot.importModeIndexFor("settings", replaceSkipImportOptions)
+                            Layout.fillWidth: true
+                            onProfileActivated: index => settingsRoot.setPendingImportMode("settings", settingsRoot.importModeAt(index, replaceSkipImportOptions))
+                        }
+                    }
+
+                    ColumnLayout {
+                        spacing: settingsRoot.theme.gapTiny
+                        Layout.fillWidth: true
+
+                        Text {
+                            text: qsTr("Favorites")
+                            color: settingsRoot.theme.textMuted
+                            textFormat: Text.PlainText
+                            font.pixelSize: settingsRoot.theme.secondaryText
+                            font.weight: Font.Medium
+                            Layout.fillWidth: true
+                        }
+
+                        ProfileComboBox {
+                            theme: settingsRoot.theme
+                            accessibleName: qsTr("Favorites import mode")
+                            options: mergeImportOptions
+                            currentIndex: settingsRoot.importModeIndexFor("favorites", mergeImportOptions)
+                            Layout.fillWidth: true
+                            onProfileActivated: index => settingsRoot.setPendingImportMode("favorites", settingsRoot.importModeAt(index, mergeImportOptions))
+                        }
+                    }
+
+                    ColumnLayout {
+                        spacing: settingsRoot.theme.gapTiny
+                        Layout.fillWidth: true
+
+                        Text {
+                            text: qsTr("IDL Registry")
+                            color: settingsRoot.theme.textMuted
+                            textFormat: Text.PlainText
+                            font.pixelSize: settingsRoot.theme.secondaryText
+                            font.weight: Font.Medium
+                            Layout.fillWidth: true
+                        }
+
+                        ProfileComboBox {
+                            theme: settingsRoot.theme
+                            accessibleName: qsTr("IDL registry import mode")
+                            options: mergeImportOptions
+                            currentIndex: settingsRoot.importModeIndexFor("idl_registry", mergeImportOptions)
+                            Layout.fillWidth: true
+                            onProfileActivated: index => settingsRoot.setPendingImportMode("idl_registry", settingsRoot.importModeAt(index, mergeImportOptions))
+                        }
+                    }
+
+                    ColumnLayout {
+                        spacing: settingsRoot.theme.gapTiny
+                        Layout.fillWidth: true
+
+                        Text {
+                            text: qsTr("Wallet Profile")
+                            color: settingsRoot.theme.textMuted
+                            textFormat: Text.PlainText
+                            font.pixelSize: settingsRoot.theme.secondaryText
+                            font.weight: Font.Medium
+                            Layout.fillWidth: true
+                        }
+
+                        ProfileComboBox {
+                            theme: settingsRoot.theme
+                            accessibleName: qsTr("Wallet profile import mode")
+                            options: replaceSkipImportOptions
+                            currentIndex: settingsRoot.importModeIndexFor("wallet_profile", replaceSkipImportOptions)
+                            Layout.fillWidth: true
+                            onProfileActivated: index => settingsRoot.setPendingImportMode("wallet_profile", settingsRoot.importModeAt(index, replaceSkipImportOptions))
+                        }
+                    }
+                }
+
+                ColumnLayout {
+                    visible: settingsRoot.pendingImportItemRows("favorites").length > 0
+                    spacing: settingsRoot.theme.gapTiny
+                    Layout.fillWidth: true
+
+                    Text {
+                        text: qsTr("Favorite Items")
+                        color: settingsRoot.theme.textMuted
+                        textFormat: Text.PlainText
+                        font.pixelSize: settingsRoot.theme.secondaryText
+                        font.weight: Font.Medium
+                        Layout.fillWidth: true
+                    }
+
+                    Repeater {
+                        model: settingsRoot.pendingImportItemRows("favorites")
+
+                        delegate: FieldToggle {
+                            required property var modelData
+
+                            theme: settingsRoot.theme
+                            label: String(modelData.label || modelData.key || "")
+                            checked: settingsRoot.pendingImportItemSelected("favorites", String(modelData.key || ""))
+                            detail: String(modelData.key || "")
+                            Layout.fillWidth: true
+                            onToggled: settingsRoot.setPendingImportItemSelected("favorites", String(modelData.key || ""), checked)
+                        }
+                    }
+                }
+
+                ColumnLayout {
+                    visible: settingsRoot.pendingImportItemRows("idl_registry").length > 0
+                    spacing: settingsRoot.theme.gapTiny
+                    Layout.fillWidth: true
+
+                    Text {
+                        text: qsTr("IDL Items")
+                        color: settingsRoot.theme.textMuted
+                        textFormat: Text.PlainText
+                        font.pixelSize: settingsRoot.theme.secondaryText
+                        font.weight: Font.Medium
+                        Layout.fillWidth: true
+                    }
+
+                    Repeater {
+                        model: settingsRoot.pendingImportItemRows("idl_registry")
+
+                        delegate: FieldToggle {
+                            required property var modelData
+
+                            theme: settingsRoot.theme
+                            label: String(modelData.label || modelData.key || "")
+                            checked: settingsRoot.pendingImportItemSelected("idl_registry", String(modelData.key || ""))
+                            detail: String(modelData.key || "")
+                            Layout.fillWidth: true
+                            onToggled: settingsRoot.setPendingImportItemSelected("idl_registry", String(modelData.key || ""), checked)
+                        }
+                    }
+                }
+
+                ColumnLayout {
+                    visible: settingsRoot.pendingImportConflictRows().length > 0
+                    spacing: settingsRoot.theme.gapTiny
+                    Layout.fillWidth: true
+
+                    Text {
+                        text: qsTr("Import Conflicts")
+                        color: settingsRoot.theme.textMuted
+                        textFormat: Text.PlainText
+                        font.pixelSize: settingsRoot.theme.secondaryText
+                        font.weight: Font.Medium
+                        Layout.fillWidth: true
+                    }
+
+                    Repeater {
+                        model: settingsRoot.pendingImportConflictRows()
+
+                        delegate: RowLayout {
+                            id: conflictDelegate
+
+                            required property var modelData
+
+                            spacing: settingsRoot.theme.gapSmall
+                            Layout.fillWidth: true
+
+                            Text {
+                                text: String(conflictDelegate.modelData.label || conflictDelegate.modelData.key || "")
+                                color: settingsRoot.theme.text
+                                textFormat: Text.PlainText
+                                elide: Text.ElideRight
+                                Layout.fillWidth: true
+                            }
+
+                            ProfileComboBox {
+                                theme: settingsRoot.theme
+                                accessibleName: qsTr("Import conflict decision")
+                                options: conflictDecisionOptions
+                                currentIndex: settingsRoot.conflictDecisionIndexFor(String(conflictDelegate.modelData.area || ""), String(conflictDelegate.modelData.key || ""))
+                                Layout.preferredWidth: 180
+                                onProfileActivated: index => settingsRoot.setPendingImportConflictDecision(String(conflictDelegate.modelData.area || ""), String(conflictDelegate.modelData.key || ""), settingsRoot.importModeAt(index, conflictDecisionOptions))
+                            }
+                        }
+                    }
+                }
+
+                StatusMessage {
+                    visible: settingsRoot.pendingImportPlanText().length > 0
+                    theme: settingsRoot.theme
+                    tone: settingsRoot.pendingSettingsRestorePlanError.length ? "error" : "info"
+                    title: settingsRoot.pendingSettingsRestorePlanError.length ? qsTr("Import plan failed") : qsTr("Import plan")
+                    message: settingsRoot.pendingImportPlanText()
+                    Layout.fillWidth: true
+                }
+
+                RowLayout {
+                    spacing: settingsRoot.theme.gapSmall
+                    Layout.fillWidth: true
+
+                    Item {
+                        Layout.fillWidth: true
+                    }
+
+                    ActionButton {
+                        theme: settingsRoot.theme
+                        text: qsTr("Cancel")
+                        onClicked: localSettingsRestoreConfirm.close()
+                    }
+
+                    ActionButton {
+                        theme: settingsRoot.theme
+                        text: qsTr("Import")
+                        primary: true
+                        enabled: settingsRoot.pendingImportConfirmEnabled()
+                        onClicked: {
+                            const options = settingsRoot.copyPendingSettingsRestoreOptions()
+                            localSettingsRestoreConfirm.close()
+                            settingsRoot.model.restoreLocalSettingsBackup(settingsRoot.pendingSettingsRestoreBackupId, options)
+                        }
+                    }
+                }
+            }
+        }
     }
 
     Component {
@@ -574,12 +1100,12 @@ ColumnLayout {
             moduleFieldVisible: false
             sourceSelectorVisible: true
             sourceOptions: coreSourceOptions
-            sourceIndex: settingsRoot.coreSourceIndexFor(settingsRoot.model.blockchainSourceMode)
+            sourceIndex: settingsRoot.coreSourceIndexFor(settingsRoot.model.currentConnectorSourceMode("l1", "rpc"))
             refreshRate: settingsRoot.model.blockchainRefreshRate
             statusText: settingsRoot.connectionStatusText("blockchain")
             statusDetail: settingsRoot.connectionStatusDetail("blockchain")
             statusColor: settingsRoot.connectionStatusColor("blockchain")
-            onSourceActivated: index => settingsRoot.model.blockchainSourceMode = settingsRoot.coreSourceModeAt(index)
+            onSourceActivated: index => settingsRoot.model.setNetworkConnectorMode("l1", settingsRoot.coreSourceModeAt(index))
             onEndpointEdited: value => settingsRoot.updateNodeUrl(value)
             onRefreshRateEdited: value => settingsRoot.model.setNetworkConnectionRate("blockchain", value)
             onQueryClicked: settingsRoot.model.queryNetworkConnection("blockchain", true)
@@ -604,12 +1130,12 @@ ColumnLayout {
             moduleFieldVisible: false
             sourceSelectorVisible: true
             sourceOptions: coreSourceOptions
-            sourceIndex: settingsRoot.coreSourceIndexFor(settingsRoot.model.indexerSourceMode)
+            sourceIndex: settingsRoot.coreSourceIndexFor(settingsRoot.model.currentConnectorSourceMode("lez.indexer", "rpc"))
             refreshRate: settingsRoot.model.indexerRefreshRate
             statusText: settingsRoot.connectionStatusText("indexer")
             statusDetail: settingsRoot.connectionStatusDetail("indexer")
             statusColor: settingsRoot.connectionStatusColor("indexer")
-            onSourceActivated: index => settingsRoot.model.indexerSourceMode = settingsRoot.coreSourceModeAt(index)
+            onSourceActivated: index => settingsRoot.model.setNetworkConnectorMode("lez.indexer", settingsRoot.coreSourceModeAt(index))
             onEndpointEdited: value => settingsRoot.updateIndexerUrl(value)
             onRefreshRateEdited: value => settingsRoot.model.setNetworkConnectionRate("indexer", value)
             onQueryClicked: settingsRoot.model.queryNetworkConnection("indexer", true)
@@ -833,6 +1359,336 @@ ColumnLayout {
             return qsTr("Configure Wallet home before encrypted backup or restore.")
         }
         return qsTr("Encrypted restore requires the same wallet config.")
+    }
+
+    function resetPendingSettingsRestoreOptions() {
+        pendingSettingsRestoreOptions = {
+            settings: "replace",
+            favorites: "merge",
+            idl_registry: "merge",
+            wallet_profile: "skip"
+        }
+        pendingSettingsRestorePlan = null
+        pendingSettingsRestorePlanError = ""
+    }
+
+    function copyPendingSettingsRestoreOptions() {
+        const source = pendingSettingsRestoreOptions || {}
+        const result = {
+            settings: String(source.settings || "skip"),
+            favorites: String(source.favorites || "skip"),
+            idl_registry: String(source.idl_registry || "skip"),
+            wallet_profile: String(source.wallet_profile || "skip")
+        }
+        if (source.items && typeof source.items === "object") {
+            result.items = settingsRoot.copyNestedOptionMap(source.items)
+        }
+        if (source.conflicts && typeof source.conflicts === "object") {
+            result.conflicts = settingsRoot.copyNestedOptionMap(source.conflicts)
+        }
+        return result
+    }
+
+    function copyNestedOptionMap(source) {
+        const result = {}
+        const value = source && typeof source === "object" ? source : ({})
+        const areas = Object.keys(value)
+        for (let i = 0; i < areas.length; ++i) {
+            const area = areas[i]
+            result[area] = settingsRoot.copyFlatOptionMap(value[area])
+        }
+        return result
+    }
+
+    function copyFlatOptionMap(source) {
+        const result = {}
+        const value = source && typeof source === "object" ? source : ({})
+        const keys = Object.keys(value)
+        for (let i = 0; i < keys.length; ++i) {
+            result[keys[i]] = value[keys[i]]
+        }
+        return result
+    }
+
+    function setPendingImportMode(area, mode) {
+        const next = copyPendingSettingsRestoreOptions()
+        next[String(area || "")] = String(mode || "skip")
+        pendingSettingsRestoreOptions = next
+        previewPendingLocalRestore()
+    }
+
+    function pendingImportItemRows(area) {
+        const areaKey = String(area || "")
+        const mode = String((pendingSettingsRestoreOptions || {})[areaKey] || "skip")
+        if (mode !== "merge") {
+            return []
+        }
+        const plan = pendingSettingsRestorePlan || null
+        const items = plan && plan.items && Array.isArray(plan.items[areaKey]) ? plan.items[areaKey] : []
+        return items
+    }
+
+    function pendingImportItemSelected(area, key) {
+        const areaKey = String(area || "")
+        const itemKey = String(key || "")
+        const items = pendingSettingsRestoreOptions && pendingSettingsRestoreOptions.items && pendingSettingsRestoreOptions.items[areaKey]
+        if (!items || typeof items !== "object" || !(itemKey in items)) {
+            return true
+        }
+        return items[itemKey] === true
+    }
+
+    function setPendingImportItemSelected(area, key, selected) {
+        const areaKey = String(area || "")
+        const itemKey = String(key || "")
+        const next = copyPendingSettingsRestoreOptions()
+        if (!next.items) {
+            next.items = {}
+        }
+        const map = {}
+        const rows = pendingImportItemRows(areaKey)
+        for (let i = 0; i < rows.length; ++i) {
+            const rowKey = String(rows[i] && rows[i].key ? rows[i].key : "")
+            if (rowKey.length) {
+                map[rowKey] = pendingImportItemSelected(areaKey, rowKey)
+            }
+        }
+        map[itemKey] = selected === true
+        next.items[areaKey] = map
+        pendingSettingsRestoreOptions = next
+        previewPendingLocalRestore()
+    }
+
+    function pendingImportConflictRows() {
+        const plan = pendingSettingsRestorePlan || null
+        const conflicts = plan && plan.conflicts && typeof plan.conflicts === "object" ? plan.conflicts : ({})
+        const rows = []
+        const areas = ["favorites", "idl_registry"]
+        for (let i = 0; i < areas.length; ++i) {
+            const area = areas[i]
+            const areaRows = Array.isArray(conflicts[area]) ? conflicts[area] : []
+            for (let j = 0; j < areaRows.length; ++j) {
+                rows.push(areaRows[j])
+            }
+        }
+        return rows
+    }
+
+    function pendingImportConflictDecision(area, key) {
+        const areaKey = String(area || "")
+        const itemKey = String(key || "")
+        const conflicts = pendingSettingsRestoreOptions && pendingSettingsRestoreOptions.conflicts && pendingSettingsRestoreOptions.conflicts[areaKey]
+        if (!conflicts || typeof conflicts !== "object") {
+            return "required"
+        }
+        return String(conflicts[itemKey] || "required")
+    }
+
+    function conflictDecisionIndexFor(area, key) {
+        const selected = pendingImportConflictDecision(area, key)
+        for (let i = 0; i < conflictDecisionOptions.count; ++i) {
+            if (String(conflictDecisionOptions.get(i).key || "") === selected) {
+                return i
+            }
+        }
+        return 0
+    }
+
+    function setPendingImportConflictDecision(area, key, decision) {
+        const areaKey = String(area || "")
+        const itemKey = String(key || "")
+        const next = copyPendingSettingsRestoreOptions()
+        if (!next.conflicts) {
+            next.conflicts = {}
+        }
+        const areaMap = next.conflicts[areaKey] && typeof next.conflicts[areaKey] === "object"
+            ? next.conflicts[areaKey]
+            : ({})
+        if (String(decision || "") === "required") {
+            delete areaMap[itemKey]
+        } else {
+            areaMap[itemKey] = String(decision || "required")
+        }
+        next.conflicts[areaKey] = areaMap
+        pendingSettingsRestoreOptions = next
+        previewPendingLocalRestore()
+    }
+
+    function pendingImportHasRequiredConflicts() {
+        const rows = pendingImportConflictRows()
+        for (let i = 0; i < rows.length; ++i) {
+            const row = rows[i] || {}
+            if (pendingImportConflictDecision(String(row.area || ""), String(row.key || "")) === "required") {
+                return true
+            }
+        }
+        return false
+    }
+
+    function importModeIndexFor(area, optionsModel) {
+        const selected = String((pendingSettingsRestoreOptions || {})[String(area || "")] || "skip")
+        for (let i = 0; i < optionsModel.count; ++i) {
+            if (String(optionsModel.get(i).key || "") === selected) {
+                return i
+            }
+        }
+        return 0
+    }
+
+    function importModeAt(index, optionsModel) {
+        const row = optionsModel.get(Math.max(0, Math.min(optionsModel.count - 1, Number(index || 0)))) || {}
+        return String(row.key || "skip")
+    }
+
+    function previewPendingLocalRestore() {
+        if (!pendingSettingsRestoreBackupId.length) {
+            pendingSettingsRestorePlan = null
+            pendingSettingsRestorePlanError = qsTr("Backup id is required.")
+            return null
+        }
+        pendingSettingsRestorePlanError = ""
+        const plan = settingsRoot.model.previewLocalSettingsImportPlan(
+            pendingSettingsRestoreBackupId,
+            copyPendingSettingsRestoreOptions()
+        )
+        pendingSettingsRestorePlan = plan
+        if (!plan) {
+            pendingSettingsRestorePlanError = settingsRoot.model.backupCatalogError.length
+                ? settingsRoot.model.backupCatalogError
+                : qsTr("Import plan is unavailable.")
+        }
+        return plan
+    }
+
+    function pendingImportPlanText() {
+        if (pendingSettingsRestorePlanError.length) {
+            return pendingSettingsRestorePlanError
+        }
+        const plan = pendingSettingsRestorePlan || null
+        if (!plan) {
+            return ""
+        }
+        const selected = pendingImportSelectedAreas()
+        if (selected.length === 0) {
+            return qsTr("No sections selected.")
+        }
+        const parts = []
+        if (plan.settings === true) {
+            parts.push(qsTr("settings"))
+        }
+        if (Number(plan.favorites || 0) > 0) {
+            parts.push(qsTr("%1 favorites").arg(Number(plan.favorites || 0)))
+        }
+        if (plan.idls === true) {
+            parts.push(qsTr("%1 IDLs").arg(Number(plan.idl_count || 0)))
+        }
+        if (plan.wallet === true) {
+            parts.push(qsTr("wallet profile"))
+        }
+        const lines = []
+        lines.push(parts.length
+            ? qsTr("Will import %1.").arg(parts.join(", "))
+            : qsTr("Selected sections have no importable data."))
+        const modeText = pendingImportModeText()
+        if (modeText.length > 0) {
+            lines.push(modeText)
+        }
+        const operationText = pendingImportOperationText(plan)
+        if (operationText.length > 0) {
+            lines.push(operationText)
+        }
+        const warningText = pendingImportWarningText(plan)
+        if (warningText.length > 0) {
+            lines.push(warningText)
+        }
+        if (pendingImportHasRequiredConflicts()) {
+            lines.push(qsTr("Resolve import conflicts before applying."))
+        }
+        if (plan.blocked === true) {
+            lines.push(qsTr("Import is blocked until affected operations finish or sections change."))
+        }
+        return lines.join("\n")
+    }
+
+    function pendingImportConfirmEnabled() {
+        return pendingSettingsRestoreBackupId.length > 0
+            && pendingSettingsRestorePlan !== null
+            && pendingSettingsRestorePlanError.length === 0
+            && pendingSettingsRestorePlan.blocked !== true
+            && !pendingImportHasRequiredConflicts()
+            && pendingImportSelectedAreas().length > 0
+    }
+
+    function pendingImportModeText() {
+        const options = copyPendingSettingsRestoreOptions()
+        const rows = []
+        appendPendingImportMode(rows, qsTr("Settings"), options.settings)
+        appendPendingImportMode(rows, qsTr("Favorites"), options.favorites)
+        appendPendingImportMode(rows, qsTr("IDL Registry"), options.idl_registry)
+        appendPendingImportMode(rows, qsTr("Wallet Profile"), options.wallet_profile)
+        return rows.length ? qsTr("Modes: %1.").arg(rows.join("; ")) : ""
+    }
+
+    function appendPendingImportMode(rows, label, mode) {
+        const value = importModeLabel(mode)
+        if (value.length > 0) {
+            rows.push(qsTr("%1 %2").arg(label).arg(value))
+        }
+    }
+
+    function importModeLabel(mode) {
+        switch (String(mode || "skip")) {
+        case "replace":
+            return qsTr("replace")
+        case "merge":
+            return qsTr("merge")
+        default:
+            return qsTr("not import")
+        }
+    }
+
+    function pendingImportOperationText(plan) {
+        const decisions = plan && Array.isArray(plan.operation_decisions) ? plan.operation_decisions : []
+        if (decisions.length === 0) {
+            return qsTr("Affected operations: none.")
+        }
+        const rows = []
+        for (let i = 0; i < decisions.length; ++i) {
+            if (settingsRoot.model && typeof settingsRoot.model.backupImportDecisionSummaryText === "function") {
+                rows.push(settingsRoot.model.backupImportDecisionSummaryText(decisions[i]))
+            }
+        }
+        return rows.length ? qsTr("Affected operations:\n%1").arg(rows.join("\n")) : ""
+    }
+
+    function pendingImportWarningText(plan) {
+        const warnings = plan && Array.isArray(plan.warnings) ? plan.warnings : []
+        if (warnings.length === 0) {
+            return ""
+        }
+        const rows = []
+        for (let i = 0; i < warnings.length; ++i) {
+            const warning = warnings[i] && typeof warnings[i] === "object" ? warnings[i] : ({})
+            const message = String(warning.message || warning.detail || "")
+            if (message.length > 0) {
+                rows.push(message)
+            }
+        }
+        return rows.length ? qsTr("Warnings:\n%1").arg(rows.join("\n")) : ""
+    }
+
+    function pendingImportSelectedAreas() {
+        const options = copyPendingSettingsRestoreOptions()
+        const areas = ["settings", "favorites", "idl_registry", "wallet_profile"]
+        const selected = []
+        for (let i = 0; i < areas.length; ++i) {
+            const area = areas[i]
+            const mode = String(options[area] || "skip")
+            if (mode !== "skip" && mode !== "none" && mode !== "not_import" && mode !== "not import") {
+                selected.push(area)
+            }
+        }
+        return selected
     }
 
     function updateSequencerUrl(value) {

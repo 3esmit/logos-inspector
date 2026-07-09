@@ -6,6 +6,7 @@ QtObject {
     id: root
 
     required property var gateway
+    property var capabilityFacade: null
 
     property var idlInstructionPreviewValue: null
     property string idlInstructionError: ""
@@ -23,6 +24,10 @@ QtObject {
         if (!walletProfileConfigured()) {
             openLocalWallet("profiles")
             setResult(qsTr("Program deploy"), qsTr("Configure wallet binary and wallet home before deploying a program."), true, null)
+            return null
+        }
+        if (!walletActionEnabled("program.deploy", [{ key: "path", label: qsTr("Program binary path"), value: path }])) {
+            setResult(qsTr("Program deploy"), walletGateProblem("program.deploy"), true, null)
             return null
         }
 
@@ -50,6 +55,11 @@ QtObject {
         }
         idlInstructionPreviewValue = null
         idlInstructionError = ""
+        if (!walletActionEnabled("l2.preview", [])) {
+            idlInstructionError = walletGateProblem("l2.preview")
+            setResult(qsTr("IDL instruction"), idlInstructionError, true, null)
+            return null
+        }
         setBusy(true)
         setStatus(qsTr("IDL instruction"))
         return request("localWalletInstructionPreview", [requestPayload || {}], qsTr("IDL instruction"), false, function (response) {
@@ -72,6 +82,10 @@ QtObject {
         if (!walletHomeConfigured()) {
             openLocalWallet("profiles")
             setResult(qsTr("IDL instruction"), qsTr("Configure wallet home before sending an IDL instruction."), true, null)
+            return null
+        }
+        if (!walletActionEnabled("l2.submit", [])) {
+            setResult(qsTr("IDL instruction"), walletGateProblem("l2.submit"), true, null)
             return null
         }
 
@@ -160,5 +174,33 @@ QtObject {
         if (gateway && typeof gateway.appendOperationHistory === "function") {
             gateway.appendOperationHistory(operation, detail)
         }
+    }
+
+    function walletActionGate(action, requiredInputs) {
+        if (capabilityFacade && typeof capabilityFacade.walletGate === "function") {
+            return capabilityFacade.walletGate(action, {
+                required_inputs: Array.isArray(requiredInputs) ? requiredInputs : []
+            })
+        }
+        return {
+            enabled: true,
+            status: "enabled",
+            missing: [],
+            warnings: [],
+            provenance: ["program_execution_compatibility"]
+        }
+    }
+
+    function walletActionEnabled(action, requiredInputs) {
+        return walletActionGate(action, requiredInputs).enabled === true
+    }
+
+    function walletGateProblem(action) {
+        const gate = walletActionGate(action, [])
+        const missing = Array.isArray(gate.missing) ? gate.missing : []
+        if (missing.length > 0) {
+            return String(missing[0].label || missing[0].dependency || qsTr("Wallet capability unavailable."))
+        }
+        return qsTr("Wallet capability unavailable.")
     }
 }

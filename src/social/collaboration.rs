@@ -6,7 +6,6 @@ use super::{
         social_comment_row_from_event,
     },
     delivery_store::{SocialMessage, social_messages_from_store},
-    shared_idl::{AcceptedSharedIdlEntry, accepted_shared_idl_entries_from_store},
     topic::{comment_topic_from_parts, lez_account_idl_topic, social_topic_is_valid},
 };
 
@@ -14,14 +13,6 @@ use super::{
 pub struct SocialCommentQuery<'a> {
     pub topic: &'a str,
     pub expected_account_id: Option<&'a str>,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct SharedAccountIdlQuery<'a> {
-    pub topic: &'a str,
-    pub account_id: &'a str,
-    pub account_data_hex: &'a str,
-    pub owner_program_id: Option<&'a str>,
 }
 
 #[must_use]
@@ -58,20 +49,6 @@ pub fn decode_comment_page(
 #[must_use]
 pub fn project_comment_event(event: &Value) -> Option<SocialCommentRow> {
     social_comment_row_from_event(event)
-}
-
-#[must_use]
-pub fn accepted_shared_account_idls(
-    query: SharedAccountIdlQuery<'_>,
-    store_value: &Value,
-) -> Vec<AcceptedSharedIdlEntry> {
-    accepted_shared_idl_entries_from_store(
-        query.topic,
-        store_value,
-        query.account_id,
-        query.account_data_hex,
-        query.owner_program_id,
-    )
 }
 
 #[cfg(test)]

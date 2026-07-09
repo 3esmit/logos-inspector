@@ -2,11 +2,10 @@ use anyhow::{Context as _, Result};
 use serde_json::Value;
 
 use crate::{
-    TransactionSummary, decode_account_data_hex_with_idl, decode_event_data_hex_with_idl,
-    decode_instruction_words_with_idl, inspect_transaction_summary_with_idl,
-    normalize_program_id_hex,
+    decode_account_data_hex_with_idl, decode_event_data_hex_with_idl,
+    decode_instruction_words_with_idl, normalize_program_id_hex,
     program_decode::{
-        ProgramDecodeCandidate,
+        ProgramDecodeCandidate, TransactionDecodeInput, decode_transaction_input_with_idl,
         select_account_decode_session as select_account_decode_session_report,
         select_transaction_decode_session as select_transaction_decode_session_report,
         spel_idl_report,
@@ -43,13 +42,13 @@ pub(super) const METHOD_CATALOG: &[RuntimeMethodEntry] = &[
 
 pub(super) fn decode_transaction_summary(args: Value) -> Result<Value> {
     let args = Args::new(args)?;
-    let summary: TransactionSummary = serde_json::from_value(
+    let summary: TransactionDecodeInput = serde_json::from_value(
         args.value(0)
             .cloned()
             .context("transaction summary is required")?,
     )
     .context("failed to parse transaction summary")?;
-    to_value(inspect_transaction_summary_with_idl(
+    to_value(decode_transaction_input_with_idl(
         &summary,
         args.string(1, "IDL JSON")?,
     )?)
@@ -91,7 +90,7 @@ pub(super) fn resolve_transaction_decode_session(args: Value) -> Result<Value> {
 
 pub(super) fn select_transaction_decode_session(args: Value) -> Result<Value> {
     let args = Args::new(args)?;
-    let summary: TransactionSummary = serde_json::from_value(
+    let summary: TransactionDecodeInput = serde_json::from_value(
         args.value(0)
             .cloned()
             .context("transaction summary is required")?,

@@ -183,7 +183,7 @@ ColumnLayout {
                     theme: root.theme
                     text: qsTr("List")
                     primary: true
-                    enabled: !root.model.busy
+                    enabled: !root.model.busy && root.model.storageActionEnabled("manifests")
                     Layout.preferredWidth: 96
                     onClicked: root.model.refreshManifests(true)
                 }
@@ -273,7 +273,7 @@ ColumnLayout {
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Check")
-                    enabled: !root.model.busy && cidField.text.trim().length > 0 && root.model.storageDataSource()
+                    enabled: !root.model.busy && root.model.storageActionEnabled("exists", [{ key: "cid", label: qsTr("CID"), value: cidField.text.trim() }])
                     Layout.preferredWidth: 104
                     onClicked: root.model.runStorage("storageExists", [cidField.text.trim()], qsTr("Storage exists"))
                 }
@@ -281,7 +281,7 @@ ColumnLayout {
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Fetch")
-                    enabled: !root.model.busy && cidField.text.trim().length > 0 && root.model.storageDataSource()
+                    enabled: !root.model.busy && root.model.storageActionEnabled("read_by_cid", [{ key: "cid", label: qsTr("CID"), value: cidField.text.trim() }])
                     Layout.preferredWidth: 104
                     onClicked: root.model.runStorage("storageDownloadManifest", [cidField.text.trim()], qsTr("Fetch manifest"))
                 }
@@ -289,7 +289,7 @@ ColumnLayout {
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Cache")
-                    enabled: !root.model.busy && !root.model.storageOperationBusy() && cidField.text.trim().length > 0 && root.model.storageMutatingSource()
+                    enabled: !root.model.busy && !root.model.storageOperationBusy() && root.model.storageActionEnabled("cache", [{ key: "cid", label: qsTr("CID"), value: cidField.text.trim() }])
                     Layout.preferredWidth: 104
                     onClicked: {
                         root.model.confirmStorage("storageFetch", [cidField.text.trim()], qsTr("Cache CID"))
@@ -301,7 +301,7 @@ ColumnLayout {
                     theme: root.theme
                     text: qsTr("Download")
                     primary: true
-                    enabled: !root.model.busy && !root.model.storageOperationBusy() && cidField.text.trim().length > 0 && cidDestination.text.trim().length > 0 && root.model.storageMutatingSource()
+                    enabled: !root.model.busy && !root.model.storageOperationBusy() && root.model.storageActionEnabled("download", [{ key: "cid", label: qsTr("CID"), value: cidField.text.trim() }, { key: "path", label: qsTr("Save path"), value: cidDestination.text.trim() }])
                     Layout.preferredWidth: 124
                     onClicked: {
                         root.model.confirmStorage("storageDownloadToUrl", [cidField.text.trim(), cidDestination.text.trim(), localOnly.checked], qsTr("Download CID"))
@@ -323,7 +323,7 @@ ColumnLayout {
 
                     text: qsTr("Local only")
                     checked: false
-                    enabled: root.model.storageMutatingSource()
+                    enabled: root.model.storageActionEnabled("download")
                     palette.text: root.theme.text
                     Layout.preferredWidth: 132
                 }
@@ -415,7 +415,7 @@ ColumnLayout {
                     theme: root.theme
                     text: qsTr("Upload")
                     primary: true
-                    enabled: !root.model.busy && !root.model.storageOperationBusy() && root.model.storageMutatingSource() && uploadPath.text.trim().length > 0
+                    enabled: !root.model.busy && !root.model.storageOperationBusy() && root.model.storageActionEnabled("upload", [{ key: "path", label: qsTr("File path"), value: uploadPath.text.trim() }])
                     Layout.preferredWidth: 112
                     onClicked: {
                         root.model.confirmStorage("storageUploadUrl", [uploadPath.text.trim(), root.model.chunkSizeValue(transferChunkSize.text)], qsTr("Upload file"))
@@ -426,7 +426,7 @@ ColumnLayout {
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Download")
-                    enabled: !root.model.busy && !root.model.storageOperationBusy() && root.model.storageMutatingSource() && downloadCid.text.trim().length > 0 && downloadPath.text.trim().length > 0
+                    enabled: !root.model.busy && !root.model.storageOperationBusy() && root.model.storageActionEnabled("download", [{ key: "cid", label: qsTr("CID"), value: downloadCid.text.trim() }, { key: "path", label: qsTr("Download path"), value: downloadPath.text.trim() }])
                     Layout.preferredWidth: 124
                     onClicked: {
                         root.model.confirmStorage("storageDownloadToUrl", [downloadCid.text.trim(), downloadPath.text.trim(), false], qsTr("Download file"))
@@ -437,7 +437,7 @@ ColumnLayout {
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Remove")
-                    enabled: !root.model.busy && !root.model.storageOperationBusy() && root.model.storageMutatingSource() && downloadCid.text.trim().length > 0
+                    enabled: !root.model.busy && !root.model.storageOperationBusy() && root.model.storageActionEnabled("remove", [{ key: "cid", label: qsTr("CID"), value: downloadCid.text.trim() }])
                     Layout.preferredWidth: 112
                     onClicked: {
                         root.model.confirmStorage("storageRemove", [downloadCid.text.trim()], qsTr("Remove CID"))

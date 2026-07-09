@@ -158,6 +158,53 @@ mod tests {
     }
 
     #[test]
+    fn capability_registry_bridge_exposes_registry_report_shape() -> Result<()> {
+        let bridge = InspectorBridge::new()?;
+
+        let value = bridge.call_module_value(
+            INSPECTOR_MODULE,
+            "capabilityRegistryReport",
+            json!([true, {}]),
+        )?;
+
+        if value.get("schema_version").and_then(Value::as_u64) != Some(1)
+            || value.get("build_mode").and_then(Value::as_str) != Some("basecamp")
+            || !value.get("capabilities").is_some_and(Value::is_array)
+            || !value.get("provider_instances").is_some_and(Value::is_array)
+        {
+            bail!("unexpected capability registry report shape: {value}");
+        }
+        let Some(capabilities) = value.get("capabilities").and_then(Value::as_array) else {
+            bail!("capabilities missing from registry report: {value}");
+        };
+        if !capabilities
+            .iter()
+            .any(|capability| capability.get("key").and_then(Value::as_str) == Some("storage"))
+        {
+            bail!("storage capability missing from registry report: {value}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn capability_registry_bridge_requires_runtime_inputs() -> Result<()> {
+        let bridge = InspectorBridge::new()?;
+
+        let result =
+            bridge.call_module_value(INSPECTOR_MODULE, "capabilityRegistryReport", json!([true]));
+        let Err(error) = result else {
+            bail!("capability registry accepted missing runtime inputs");
+        };
+        if !error
+            .to_string()
+            .contains("capability runtime inputs are required")
+        {
+            bail!("unexpected capability registry error: {error}");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn source_endpoint_accepts_existing_rpc_shape() -> Result<()> {
         let args = Args::new(json!(["http://127.0.0.1:8080", 1, 2]))?;
         let source = args.source_endpoint(0, "node endpoint")?;

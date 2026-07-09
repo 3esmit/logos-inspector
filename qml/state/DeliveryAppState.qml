@@ -8,7 +8,7 @@ QtObject {
     required property var gateway
 
     property bool busy: false
-    property string sourceMode: "auto"
+    property string sourceMode: "rest"
     property string effectiveSourceMode: "rest"
     property string sourceLabel: ""
     property string sourceTarget: ""

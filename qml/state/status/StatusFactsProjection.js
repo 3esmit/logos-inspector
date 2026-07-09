@@ -59,14 +59,24 @@ function selectedDashboardGraphItems(model) {
 function dashboardGraphItem(model, key) {
     const raw = model.dashboardMetricValue(key)
     const numeric = Number(raw)
+    const gate = model.dashboardGate ? model.dashboardGate(key) : null
+    const blocked = gate && gate.enabled === false
     return {
         key: key,
         title: dashboardMetricLabel(key),
         group: dashboardMetricGroup(key),
-        value: dashboardMetricText(model, raw),
+        value: blocked ? String(gate.status || qsTr("unavailable")) : dashboardMetricText(model, raw),
         numericValue: numeric,
-        tone: dashboardMetricTone(key, numeric),
-        samples: model.dashboardMetricSamples(key)
+        tone: blocked ? "warning" : dashboardMetricTone(key, numeric),
+        samples: blocked ? [] : model.dashboardMetricSamples(key),
+        gate: gate || {
+            enabled: true,
+            status: "enabled",
+            missing: [],
+            warnings: [],
+            provenance: ["status_projection"]
+        },
+        provenance: ["status_projection", "dashboard_metric"]
     }
 }
 

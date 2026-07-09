@@ -3,14 +3,20 @@
 
 function coreSourceView(root, role) {
     const key = String(role || "execution")
-    const mode = key === "indexer" ? root.indexerSourceMode : (key === "blockchain" ? root.blockchainSourceMode : root.executionSourceMode)
-    const endpoint = key === "indexer" ? root.indexerUrl : (key === "blockchain" ? root.nodeUrl : root.sequencerUrl)
+    const scope = key === "indexer" ? "lez.indexer" : (key === "blockchain" ? "l1" : "lez.sequencer")
+    const configuredMode = key === "indexer" ? root.indexerSourceMode : (key === "blockchain" ? root.blockchainSourceMode : root.executionSourceMode)
+    const configuredEndpoint = key === "indexer" ? root.indexerUrl : (key === "blockchain" ? root.nodeUrl : root.sequencerUrl)
+    const mode = root.connectorSourceMode(scope, configuredMode)
+    const endpoint = root.connectorEndpoint(scope, configuredEndpoint)
     const label = key === "indexer"
         ? root.indexerSourceLabel()
         : (key === "blockchain" ? root.blockchainSourceLabel() : root.executionSourceLabel())
+    const connector = root.connectorScope(scope)
     return {
         role: key,
-        mode: String(mode || "auto"),
+        mode: String(mode || "rpc"),
+        configuredMode: String(configuredMode || "rpc"),
+        connector: connector,
         resolvedMode: SourcePolicyProjection.resolvedSourceModeKey(root, "core", mode),
         effectiveMode: String(SourcePolicyProjection.sourceModePolicy(root, "core", SourcePolicyProjection.resolvedSourceModeKey(root, "core", mode)).effective || "rpc"),
         label: label,
@@ -23,7 +29,7 @@ function coreSourceView(root, role) {
 }
 
 function deliverySourceView(root) {
-    const mode = root.messagingSourceMode
+    const mode = root.connectorSourceMode("delivery", root.messagingSourceMode)
     const options = SourcePolicyProjection.sourceModeOptions(root, "delivery")
     return sourceView(root, "delivery", mode, options, {
         label: root.deliverySourceLabel(),
@@ -45,7 +51,7 @@ function deliverySourceView(root) {
 }
 
 function storageSourceView(root) {
-    const mode = root.storageSourceMode
+    const mode = root.connectorSourceMode("storage", root.storageSourceMode)
     const options = SourcePolicyProjection.sourceModeOptions(root, "storage")
     return sourceView(root, "storage", mode, options, {
         label: root.storageSourceLabel(),
@@ -82,7 +88,9 @@ function sourceView(root, family, mode, options, details) {
     const adapter = SourcePolicyProjection.sourceModeAdapter(root, family, mode)
     return {
         family: family,
-        mode: String(mode || "auto"),
+        mode: String(mode || "rest"),
+        configuredMode: String(root[family === "delivery" ? "messagingSourceMode" : "storageSourceMode"] || mode || "rest"),
+        connector: root.connectorScope(family),
         resolvedMode: resolvedMode,
         effectiveMode: String(policy.effective || resolvedMode),
         label: String(details.label || ""),

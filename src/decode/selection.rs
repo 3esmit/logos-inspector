@@ -1,8 +1,7 @@
 use crate::{
-    TransactionSummary,
     program_decode::{
         ProgramDecodeCandidate, ResolvedAccountDecodeSession, ResolvedTransactionDecodeSession,
-        resolve_account_decode_session, resolve_transaction_decode_session,
+        TransactionDecodeInput, resolve_account_decode_session, resolve_transaction_decode_session,
     },
     support::entity_id::normalize_program_id_hex,
 };
@@ -18,11 +17,11 @@ pub(crate) fn select_account_decode_session(
 }
 
 pub(crate) fn select_transaction_decode_session(
-    summary: &TransactionSummary,
+    input: &TransactionDecodeInput,
     candidates: &[ProgramDecodeCandidate],
 ) -> ResolvedTransactionDecodeSession {
-    let plan = ProgramDecodePlan::for_transaction(summary, candidates);
-    resolve_transaction_decode_session(summary, plan.candidates())
+    let plan = ProgramDecodePlan::for_transaction(input, candidates);
+    resolve_transaction_decode_session(input, plan.candidates())
 }
 
 #[derive(Debug, Clone)]
@@ -44,10 +43,10 @@ impl ProgramDecodePlan {
     }
 
     fn for_transaction(
-        summary: &TransactionSummary,
+        input: &TransactionDecodeInput,
         candidates: &[ProgramDecodeCandidate],
     ) -> Self {
-        let program = normalized_program_id(summary.program_id_hex.as_deref());
+        let program = normalized_program_id(input.program_id_hex.as_deref());
         Self::new(
             candidates,
             |candidate| candidate_matches_owner(candidate, program.as_deref()),
@@ -211,7 +210,7 @@ mod tests {
     fn transaction_selection_prefers_cached_account_bound_candidate() {
         let program = "0100000000000000000000000000000000000000000000000000000000000000";
         let other = "0200000000000000000000000000000000000000000000000000000000000000";
-        let summary = TransactionSummary {
+        let summary = TransactionDecodeInput {
             hash: "tx".to_owned(),
             kind: "Public".to_owned(),
             program_id_hex: Some(program.to_owned()),

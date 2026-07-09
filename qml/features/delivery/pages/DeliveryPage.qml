@@ -303,10 +303,11 @@ ColumnLayout {
             refreshActions: [
                 { text: qsTr("Refresh status"), width: 140, accessibleName: qsTr("Refresh Delivery status") }
             ]
-            pending: root.pending()
-            statusText: root.statusLine()
+            pending: root.pending() || !root.diagnosticsGateEnabled("delivery")
+            statusText: root.diagnosticsStatusText("delivery", root.statusLine(), qsTr("Delivery diagnostics"))
             guardedTitle: qsTr("Mutating diagnostics")
-            permissionEnabled: root.model.messagingMutatingDiagnosticsEnabled
+            permissionEnabled: root.model.messagingMutatingDiagnosticsEnabled && root.diagnosticsGateEnabled("delivery")
+            permissionDisabledTitle: root.diagnosticsGateEnabled("delivery") ? qsTr("Permission disabled") : qsTr("Diagnostics unavailable")
             guardedMessage: qsTr("Dial, publish, subscribe, and lightpush probes are not auto-run. They need backend adapters and per-action confirmation.")
             guardedActions: [
                 { text: qsTr("Ping peer"), width: 118 },
@@ -349,6 +350,33 @@ ColumnLayout {
 
     function report() {
         return sourceSession.report()
+    }
+
+    function diagnosticsGate(action) {
+        return root.model.diagnosticsGate(action)
+    }
+
+    function diagnosticsGateEnabled(action) {
+        return diagnosticsGate(action).enabled === true
+    }
+
+    function diagnosticsStatusText(action, currentStatus, fallbackLabel) {
+        const gate = diagnosticsGate(action)
+        if (gate.enabled === true) {
+            return currentStatus
+        }
+        return diagnosticsGateDetailText(gate, fallbackLabel)
+    }
+
+    function diagnosticsGateDetailText(gate, fallbackLabel) {
+        const missing = gate && Array.isArray(gate.missing) ? gate.missing : []
+        if (missing.length > 0) {
+            const first = missing[0] || {}
+            const dependency = String(first.dependency || first.capability || "")
+            const label = String(first.label || fallbackLabel || qsTr("Diagnostics"))
+            return dependency.length ? qsTr("%1 unavailable: %2").arg(label).arg(dependency) : qsTr("%1 unavailable").arg(label)
+        }
+        return qsTr("%1 unavailable").arg(String(fallbackLabel || qsTr("Diagnostics")))
     }
 
     function status() {
