@@ -6,7 +6,6 @@ import QtQuick.Layouts
 import "../state"
 import "../state/accounts" as AccountState
 import "../theme"
-import "../utils/UiFormat.js" as UiFormat
 import "accounts"
 import "common"
 
@@ -16,36 +15,36 @@ ColumnLayout {
     required property Theme theme
     required property AppModel model
     property var value: null
-    readonly property var detail: normalize(value)
-    property alias dataView: accountDecodeSession.dataView
-    property alias idlTypeOptions: accountDecodeSession.idlTypeOptions
-    property alias idlTypeLabels: accountDecodeSession.idlTypeLabels
-    property alias selectedIdlTypeIndex: accountDecodeSession.selectedIdlTypeIndex
-    property alias activeDecode: accountDecodeSession.activeDecode
-    property alias activeDecodeError: accountDecodeSession.activeDecodeError
-    property alias activeIdlLabel: accountDecodeSession.activeIdlLabel
-    property alias decodeRequestSerial: accountDecodeSession.decodeRequestSerial
-    property alias relatedTransactionDecodeMap: accountDecodeSession.relatedTransactionDecodeMap
-    property alias relatedTransactionDecodeRevision: accountDecodeSession.relatedTransactionDecodeRevision
-    property alias relatedTransactionDecodeSerial: accountDecodeSession.relatedTransactionDecodeSerial
-    property alias interactionInstructionIndex: accountDecodeSession.interactionInstructionIndex
-    property alias interactionAccountValues: accountDecodeSession.interactionAccountValues
-    property alias interactionArgValues: accountDecodeSession.interactionArgValues
-    property alias interactionProgramBinary: accountDecodeSession.interactionProgramBinary
-    property alias interactionRevision: accountDecodeSession.interactionRevision
-    property alias pendingInstructionRequest: accountDecodeSession.pendingInstructionRequest
-    readonly property string nullAddressBase58: accountDecodeSession.nullAddressBase58
-    readonly property var favoriteEntry: root.detail ? root.model.favoriteStore.accountEntry(root.detail) : null
+    readonly property var detail: accountWorkspace.detail
+    property alias dataView: accountWorkspace.dataView
+    property alias idlTypeOptions: accountWorkspace.idlTypeOptions
+    property alias idlTypeLabels: accountWorkspace.idlTypeLabels
+    property alias selectedIdlTypeIndex: accountWorkspace.selectedIdlTypeIndex
+    property alias activeDecode: accountWorkspace.activeDecode
+    property alias activeDecodeError: accountWorkspace.activeDecodeError
+    property alias activeIdlLabel: accountWorkspace.activeIdlLabel
+    property alias decodeRequestSerial: accountWorkspace.decodeRequestSerial
+    property alias relatedTransactionDecodeMap: accountWorkspace.relatedTransactionDecodeMap
+    property alias relatedTransactionDecodeRevision: accountWorkspace.relatedTransactionDecodeRevision
+    property alias relatedTransactionDecodeSerial: accountWorkspace.relatedTransactionDecodeSerial
+    property alias interactionInstructionIndex: accountWorkspace.interactionInstructionIndex
+    property alias interactionAccountValues: accountWorkspace.interactionAccountValues
+    property alias interactionArgValues: accountWorkspace.interactionArgValues
+    property alias interactionProgramBinary: accountWorkspace.interactionProgramBinary
+    property alias interactionRevision: accountWorkspace.interactionRevision
+    property alias pendingInstructionRequest: accountWorkspace.pendingInstructionRequest
+    readonly property string nullAddressBase58: accountWorkspace.nullAddressBase58
+    readonly property var favoriteEntry: accountWorkspace.favoriteEntry
 
     visible: detail !== null
     spacing: 14
     Layout.fillWidth: true
 
-    AccountState.AccountDetailDecodeSession {
-        id: accountDecodeSession
+    AccountState.AccountDetailInspectionWorkspace {
+        id: accountWorkspace
 
         model: root.model
-        detail: root.detail
+        value: root.value
     }
 
     AccountHeaderBlock {
@@ -278,7 +277,7 @@ ColumnLayout {
                         sourceText: root.interactionProgramBinary
                         syncSourceText: true
                         Layout.fillWidth: true
-                        onTextEdited: text => accountDecodeSession.setInteractionProgramBinary(text)
+                            onTextEdited: text => accountWorkspace.setInteractionProgramBinary(text)
                     }
                 }
 
@@ -539,471 +538,287 @@ ColumnLayout {
     }
 
     function normalize(value) {
-        if (!value || typeof value !== "object" || Array.isArray(value)) {
-            return null
-        }
-
-        let account = null
-        let decode = null
-        let decodeError = ""
-        let decodeOnly = false
-        let privateReference = false
-
-        if (value.type === "private_account_reference") {
-            privateReference = true
-            account = {
-                account_id: String(value.account_id || "")
-            }
-        } else if (value.account && value.account.account_id !== undefined) {
-            account = value.account
-            decode = value.decode || null
-            decodeError = String(value.decode_error || "")
-        } else if (value.account_id !== undefined && value.account !== undefined && value.data_hex !== undefined) {
-            account = value
-        } else if (value.account_type !== undefined && value.rows !== undefined && value.decoded !== undefined) {
-            decode = value
-            decodeOnly = true
-        } else {
-            return null
-        }
-
-        const report = account || {}
-        if (!decodeError.length && report.decode_error !== undefined) {
-            decodeError = String(report.decode_error || "")
-        }
-        return {
-            account_id: String(report.account_id || (decode && decode.account_id) || ""),
-            account_id_base58: String(report.account_id_base58 || report.account_id || (decode && decode.account_id) || ""),
-            account_id_hex: String(report.account_id_hex || ""),
-            account: report.account || null,
-            balance: String(report.balance || (report.account && report.account.balance !== undefined ? report.account.balance : "")),
-            nonce: String(report.nonce || (report.account && report.account.nonce !== undefined ? report.account.nonce : "")),
-            owner_base58: String(report.owner_base58 || ""),
-            owner_hex: String(report.owner_hex || ""),
-            data_hex: String(report.data_hex || ""),
-            related_transactions: Array.isArray(report.related_transactions) ? report.related_transactions : [],
-            related_transactions_error: String(report.related_transactions_error || ""),
-            decode: decode,
-            decode_error: decodeError,
-            decode_only: decodeOnly,
-            private_reference: privateReference,
-            raw: value
-        }
+        return accountWorkspace.normalize(value)
     }
 
     function accountHeader(detail) {
-        if (detail && detail.private_reference) {
-            return qsTr("Private account reference")
-        }
-        if (detail && (detail.account_id_base58.length || detail.account_id_hex.length)) {
-            return root.addressLabel(detail.account_id_base58, detail.account_id_hex)
-        }
-        return detail && detail.decode_only ? qsTr("Account data decode") : qsTr("Account")
+        return accountWorkspace.accountHeader(detail)
     }
 
     function accountAlternate(detail) {
-        if (!detail) {
-            return ""
-        }
-        if (detail.private_reference) {
-            return detail.account_id
-        }
-        if (detail.account_id_hex.length) {
-            return root.hexAddressText(detail.account_id_hex)
-        }
-        if (detail.account_id.length && detail.account_id !== detail.account_id_base58) {
-            return qsTr("input %1").arg(detail.account_id)
-        }
-        return ""
+        return accountWorkspace.accountAlternate(detail)
     }
 
     function accountCopyValue(detail) {
-        if (!detail) {
-            return ""
-        }
-        if (root.isNullAddress(detail.account_id_base58, detail.account_id_hex)) {
-            return root.nullAddressBase58
-        }
-        if (detail.account_id_base58.length) {
-            return detail.account_id_base58
-        }
-        return detail.account_id.length ? detail.account_id : ""
+        return accountWorkspace.accountCopyValue(detail)
     }
 
     function accountHeaderTooltip(detail) {
-        if (!detail || !root.isNullAddress(detail.account_id_base58, detail.account_id_hex)) {
-            return ""
-        }
-        return root.accountCopyValue(detail)
+        return accountWorkspace.accountHeaderTooltip(detail)
     }
 
     function favoriteButtonText() {
-        return root.model.favoriteStore.isFavoriteEntry(root.favoriteEntry) ? qsTr("Favorited") : qsTr("Favorite")
+        return accountWorkspace.favoriteButtonText()
     }
 
     function favoriteButtonAccessibleName() {
-        return root.model.favoriteStore.isFavoriteEntry(root.favoriteEntry) ? qsTr("Remove account from favorites") : qsTr("Add account to favorites")
+        return accountWorkspace.favoriteButtonAccessibleName()
     }
 
     function resetDecodeState() {
-        accountDecodeSession.resetDecodeState()
+        accountWorkspace.resetDecodeState()
     }
 
     function sourceItems() {
-        return accountDecodeSession.sourceItems()
+        return accountWorkspace.sourceItems()
     }
 
     function rebuildIdlTypeOptions() {
-        accountDecodeSession.rebuildIdlTypeOptions()
+        accountWorkspace.rebuildIdlTypeOptions()
     }
 
     function idlAccountTypes(json) {
-        return accountDecodeSession.idlAccountTypes(json)
+        return accountWorkspace.idlAccountTypes(json)
     }
 
     function autoSelectDecode() {
-        accountDecodeSession.autoSelectDecode()
+        accountWorkspace.autoSelectDecode()
     }
 
     function selectIdlType(index) {
-        accountDecodeSession.selectIdlType(index)
+        accountWorkspace.selectIdlType(index)
     }
 
     function selectTypedIdlType(text) {
-        accountDecodeSession.selectTypedIdlType(text)
+        accountWorkspace.selectTypedIdlType(text)
     }
 
     function resetInteractionState() {
-        accountDecodeSession.resetInteractionState()
+        accountWorkspace.resetInteractionState()
     }
 
     function interactionIdlEntry() {
-        return accountDecodeSession.interactionIdlEntry()
+        return accountWorkspace.interactionIdlEntry()
     }
 
     function interactionIdlObject() {
-        return accountDecodeSession.interactionIdlObject()
+        return accountWorkspace.interactionIdlObject()
     }
 
     function canInteractWithIdl() {
-        return accountDecodeSession.canInteractWithIdl()
+        return accountWorkspace.canInteractWithIdl()
     }
 
     function interactionInstructions() {
-        return accountDecodeSession.interactionInstructions()
+        return accountWorkspace.interactionInstructions()
     }
 
     function interactionInstructionLabels() {
-        return accountDecodeSession.interactionInstructionLabels()
+        return accountWorkspace.interactionInstructionLabels()
     }
 
     function interactionInstruction() {
-        return accountDecodeSession.interactionInstruction()
+        return accountWorkspace.interactionInstruction()
     }
 
     function selectInteractionInstruction(index) {
-        accountDecodeSession.selectInteractionInstruction(index)
+        accountWorkspace.selectInteractionInstruction(index)
     }
 
     function prefillInteractionAccounts() {
-        accountDecodeSession.prefillInteractionAccounts()
+        accountWorkspace.prefillInteractionAccounts()
     }
 
     function interactionAccountFields() {
-        return accountDecodeSession.interactionAccountFields()
+        return accountWorkspace.interactionAccountFields()
     }
 
     function interactionArgFields() {
-        return accountDecodeSession.interactionArgFields()
+        return accountWorkspace.interactionArgFields()
     }
 
     function interactionTypeLabel(typeValue) {
-        return accountDecodeSession.interactionTypeLabel(typeValue)
+        return accountWorkspace.interactionTypeLabel(typeValue)
     }
 
     function interactionPlaceholder(typeValue) {
-        return accountDecodeSession.interactionPlaceholder(typeValue)
+        return accountWorkspace.interactionPlaceholder(typeValue)
     }
 
     function interactionFieldValue(kind, name) {
-        return accountDecodeSession.interactionFieldValue(kind, name)
+        return accountWorkspace.interactionFieldValue(kind, name)
     }
 
     function setInteractionFieldValue(kind, name, text) {
-        accountDecodeSession.setInteractionFieldValue(kind, name, text)
+        accountWorkspace.setInteractionFieldValue(kind, name, text)
     }
 
     function copyInteractionMap(source) {
-        return accountDecodeSession.copyInteractionMap(source)
+        return accountWorkspace.copyInteractionMap(source)
     }
 
     function interactionPrivateMode() {
-        return accountDecodeSession.interactionPrivateMode()
+        return accountWorkspace.interactionPrivateMode()
     }
 
     function interactionInputsComplete() {
-        return accountDecodeSession.interactionInputsComplete()
+        return accountWorkspace.interactionInputsComplete()
     }
 
     function interactionRequest() {
-        return accountDecodeSession.interactionRequest()
+        return accountWorkspace.interactionRequest()
     }
 
     function interactionPreviewText() {
-        return accountDecodeSession.interactionPreviewText()
+        return accountWorkspace.interactionPreviewText()
     }
 
     function interactionConfirmMessage() {
-        return accountDecodeSession.interactionConfirmMessage()
+        return accountWorkspace.interactionConfirmMessage()
     }
 
     function indexForType(accountType) {
-        return accountDecodeSession.indexForType(accountType)
+        return accountWorkspace.indexForType(accountType)
     }
 
     function indexForTypeInIdl(idlIndex, accountType) {
-        return accountDecodeSession.indexForTypeInIdl(idlIndex, accountType)
+        return accountWorkspace.indexForTypeInIdl(idlIndex, accountType)
     }
 
     function indexForTypeInIdlKey(idlKey, accountType) {
-        return accountDecodeSession.indexForTypeInIdlKey(idlKey, accountType)
+        return accountWorkspace.indexForTypeInIdlKey(idlKey, accountType)
     }
 
     function accountCacheId() {
-        return accountDecodeSession.accountCacheId()
+        return accountWorkspace.accountCacheId()
     }
 
     function ownerProgramId() {
-        return accountDecodeSession.ownerProgramId()
+        return accountWorkspace.ownerProgramId()
     }
 
     function activeIdlTypeLabel() {
-        return accountDecodeSession.activeIdlTypeLabel()
+        return accountWorkspace.activeIdlTypeLabel()
     }
 
     function decodeMessage() {
-        return accountDecodeSession.decodeMessage()
+        return accountWorkspace.decodeMessage()
     }
 
     function accountSocialTopic() {
-        return accountDecodeSession.accountSocialTopic()
+        return accountWorkspace.accountSocialTopic()
     }
 
     function shareIdlEntry() {
-        return accountDecodeSession.shareIdlEntry()
+        return accountWorkspace.shareIdlEntry()
     }
 
     function canShareActiveIdl() {
-        return accountDecodeSession.canShareActiveIdl()
+        return accountWorkspace.canShareActiveIdl()
     }
 
     function sharedIdlSuggestionRows() {
-        return accountDecodeSession.sharedIdlSuggestionRows()
+        return accountWorkspace.sharedIdlSuggestionRows()
     }
 
     function sharedIdlSuggestionText() {
-        return accountDecodeSession.sharedIdlSuggestionText()
+        return accountWorkspace.sharedIdlSuggestionText()
     }
 
     function accountRows() {
-        if (!root.detail) {
-            return []
-        }
-
-        const rows = []
-        if (root.detail.private_reference) {
-            rows.push({
-                label: qsTr("Reference"),
-                value: root.detail.account_id.length ? root.detail.account_id : qsTr("Private/<id>"),
-                monospace: true
-            })
-            return rows
-        }
-        if (root.detail.balance.length) {
-            rows.push({
-                label: qsTr("Balance"),
-                value: root.numberText(root.detail.balance),
-                monospace: true
-            })
-        }
-        if (root.detail.nonce.length) {
-            rows.push({
-                label: qsTr("Nonce"),
-                value: root.numberText(root.detail.nonce),
-                monospace: true
-            })
-        }
-        if (root.detail.owner_base58.length || root.detail.owner_hex.length) {
-            const ownerValue = root.addressCopyValue(root.detail.owner_base58, root.detail.owner_hex)
-            rows.push({
-                label: qsTr("Owner"),
-                value: root.addressLabel(root.detail.owner_base58, root.detail.owner_hex),
-                subvalue: root.detail.owner_hex.length ? root.hexAddressText(root.detail.owner_hex) : "",
-                subvalueCopyText: root.detail.owner_hex.length ? root.hexAddressText(root.detail.owner_hex) : "",
-                monospace: true,
-                linkKind: "program",
-                linkValue: ownerValue,
-                tooltipText: root.isNullAddress(root.detail.owner_base58, root.detail.owner_hex) ? ownerValue : ""
-            })
-        }
-        return rows
+        return accountWorkspace.accountRows()
     }
 
     function decodedRows() {
-        return accountDecodeSession.decodedRows()
+        return accountWorkspace.decodedRows()
     }
 
     function relatedRows() {
-        return accountDecodeSession.relatedRows()
+        return accountWorkspace.relatedRows()
     }
 
     function resetRelatedTransactionDecodes() {
-        accountDecodeSession.resetRelatedTransactionDecodes()
+        accountWorkspace.resetRelatedTransactionDecodes()
     }
 
     function decodeRelatedTransactions(serial) {
-        accountDecodeSession.decodeRelatedTransactions(serial)
+        accountWorkspace.decodeRelatedTransactions(serial)
     }
 
     function tryRelatedTransactionDecodeCandidate(serial, txHash, summary, candidates, index, partialDecoded) {
-        accountDecodeSession.tryRelatedTransactionDecodeCandidate(serial, txHash, summary, candidates, index, partialDecoded)
+        accountWorkspace.tryRelatedTransactionDecodeCandidate(serial, txHash, summary, candidates, index, partialDecoded)
     }
 
     function storeRelatedTransactionDecode(txHash, decoded) {
-        accountDecodeSession.storeRelatedTransactionDecode(txHash, decoded)
+        accountWorkspace.storeRelatedTransactionDecode(txHash, decoded)
     }
 
     function relatedTransactionDecode(txHash) {
-        return accountDecodeSession.relatedTransactionDecode(txHash)
+        return accountWorkspace.relatedTransactionDecode(txHash)
     }
 
     function copyRelatedTransactionDecodeMap() {
-        return accountDecodeSession.copyRelatedTransactionDecodeMap()
+        return accountWorkspace.copyRelatedTransactionDecodeMap()
     }
 
     function relatedTransactionSummary(tx) {
-        return accountDecodeSession.relatedTransactionSummary(tx)
+        return accountWorkspace.relatedTransactionSummary(tx)
     }
 
     function directionText(direction) {
-        const value = String(direction || "").toLowerCase()
-        if (value === "incoming") {
-            return qsTr("Incoming")
-        }
-        if (value === "outgoing") {
-            return qsTr("Outgoing")
-        }
-        return "-"
+        return accountWorkspace.directionText(direction)
     }
 
     function referenceKind(label, value) {
-        const text = root.valueText(value)
-        const lowered = String(label || "").toLowerCase()
-        if (!text.length || text === "-") {
-            return ""
-        }
-        if (lowered.indexOf("channel") >= 0 && root.isLongHex(text)) {
-            return "channel"
-        }
-        if (lowered.indexOf("transaction") >= 0 || lowered.indexOf("tx") >= 0) {
-            return root.isLongHex(text) ? "transaction" : ""
-        }
-        if (lowered.indexOf("hash") >= 0 && root.isLongHex(text)) {
-            return "transaction"
-        }
-        if (lowered.indexOf("program") >= 0) {
-            return "program"
-        }
-        if (lowered.indexOf("account") >= 0 || lowered.indexOf("owner") >= 0 || lowered.indexOf("authority") >= 0 || lowered.indexOf("signer") >= 0) {
-            return "account"
-        }
-        if (root.isLikelyAccount(text)) {
-            return "account"
-        }
-        return ""
+        return accountWorkspace.referenceKind(label, value)
     }
 
     function isLongHex(value) {
-        return /^(0x)?[0-9a-fA-F]{64}$/.test(String(value || ""))
+        return accountWorkspace.isLongHex(value)
     }
 
     function isLikelyAccount(value) {
-        const text = String(value || "")
-        return text.length >= 32 && text.length <= 128 && /^[1-9A-HJ-NP-Za-km-z]+$/.test(text)
+        return accountWorkspace.isLikelyAccount(value)
     }
 
     function dataBytes(hex) {
-        const text = String(hex || "").replace(/^0x/, "")
-        return Math.floor(text.length / 2)
+        return accountWorkspace.dataBytes(hex)
     }
 
     function hexAddressText(hex) {
-        const text = String(hex || "").replace(/^0x/, "")
-        return text.length ? "0x" + text : ""
+        return accountWorkspace.hexAddressText(hex)
     }
 
     function addressLabel(baseValue, hexValue) {
-        const base = String(baseValue || "")
-        const hex = String(hexValue || "")
-        if (root.isNullAddress(base, hex)) {
-            return qsTr("Null")
-        }
-        if (base.length) {
-            return base
-        }
-        return hex.length ? root.hexAddressText(hex) : "-"
+        return accountWorkspace.addressLabel(baseValue, hexValue)
     }
 
     function addressCopyValue(baseValue, hexValue) {
-        const base = String(baseValue || "")
-        if (root.isNullAddress(base, hexValue)) {
-            return root.nullAddressBase58
-        }
-        return base.length ? base : root.hexAddressText(hexValue)
+        return accountWorkspace.addressCopyValue(baseValue, hexValue)
     }
 
     function isNullAddress(baseValue, hexValue) {
-        const base = String(baseValue || "")
-        const explicitHex = String(hexValue || "").replace(/^0x/, "")
-        const inferredHex = explicitHex.length > 0
-            ? explicitHex
-            : (/^(0x)?[0-9a-fA-F]{32,}$/.test(base) ? base.replace(/^0x/, "") : "")
-        return base === root.nullAddressBase58 || (inferredHex.length > 0 && /^[0]+$/.test(inferredHex))
+        return accountWorkspace.isNullAddress(baseValue, hexValue)
     }
 
     function valueText(value) {
-        return UiFormat.valueText(value, {
-            emptyText: "-",
-            objectMode: "json"
-        })
+        return accountWorkspace.valueText(value)
     }
 
     function displayLabel(value) {
-        const text = String(value || "").replace(/[._-]+/g, " ").trim()
-        return text.length ? text : qsTr("Field")
+        return accountWorkspace.displayLabel(value)
     }
 
     function numberText(value) {
-        return UiFormat.numberText(value, {
-            emptyText: "-",
-            coerceNumericStrings: true
-        })
+        return accountWorkspace.numberText(value)
     }
 
     function shortId(value) {
-        const text = String(value || "")
-        if (text.length <= 18) {
-            return text.length ? text : "-"
-        }
-        return text.slice(0, 10) + "..." + text.slice(-6)
+        return accountWorkspace.shortId(value)
     }
 
     function shortLong(value) {
-        const text = String(value || "")
-        if (text.length <= 160) {
-            return text.length ? text : "-"
-        }
-        return text.slice(0, 120) + "..." + text.slice(-24)
+        return accountWorkspace.shortLong(value)
     }
 
 }

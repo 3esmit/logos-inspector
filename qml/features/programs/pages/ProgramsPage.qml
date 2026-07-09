@@ -10,8 +10,7 @@ import "../../../components/common"
 import "../../lez/controls/programs"
 import "../../../state"
 import "../../../theme"
-import "../../../utils/UiFormat.js" as UiFormat
-import "../../../state/programs/ProgramContextPresentation.js" as ProgramContextPresentation
+import "../../../state/programs/ProgramResultPresentation.js" as ProgramResultPresentation
 
 ColumnLayout {
     id: root
@@ -648,353 +647,154 @@ ColumnLayout {
     }
 
     function activeTabLabel() {
-        if (root.model.programTab === "programIds") {
-            return qsTr("Known IDs")
-        }
-        if (root.model.programTab === "binaries") {
-            return qsTr("Binaries")
-        }
-        if (root.model.programTab === "sharing") {
-            return qsTr("Sharing")
-        }
-        if (root.model.programTab === "events") {
-            return qsTr("Events")
-        }
-        return qsTr("IDLs")
+        return ProgramResultPresentation.activeTabLabel(root)
     }
 
     function activeTabDelta() {
-        if (root.model.programTab === "programIds") {
-            return qsTr("Static table")
-        }
-        if (root.model.programTab === "binaries") {
-            return qsTr("File inspection")
-        }
-        if (root.model.programTab === "sharing") {
-            return qsTr("Shared IDLs")
-        }
-        if (root.model.programTab === "events") {
-            return qsTr("Event decode")
-        }
-        return qsTr("Registry")
+        return ProgramResultPresentation.activeTabDelta(root)
     }
 
     function activeTabMessage() {
-        if (root.model.programTab === "programIds") {
-            return qsTr("Load the sequencer known-program table before binding local IDLs or binaries.")
-        }
-        if (root.model.programTab === "binaries") {
-            return qsTr("Inspect compiled program bytecode, then deploy it with the configured local wallet.")
-        }
-        if (root.model.programTab === "sharing") {
-            return root.sharedPolicyText()
-        }
-        if (root.model.programTab === "events") {
-            return qsTr("Decode event payloads with a user-provided IDL. Program-specific decoding stays local to the supplied IDL.")
-        }
-        return qsTr("Save local IDLs, summarize their instruction/account shape, or load program IDs from the sequencer.")
+        return ProgramResultPresentation.activeTabMessage(root)
     }
 
     function sharedPolicyText() {
-        if (root.model.sharedIdlPolicy === "disabled") {
-            return qsTr("Shared account IDLs are ignored.")
-        }
-        if (root.model.sharedIdlPolicy === "autoRegister") {
-            return qsTr("Verified shared IDLs are saved to the local registry with shared source metadata.")
-        }
-        if (root.model.sharedIdlPolicy === "sessionOnly") {
-            return qsTr("Verified shared IDLs are usable for this session without saving them.")
-        }
-        return qsTr("Verified shared IDLs are shown as suggestions; local IDLs stay preferred.")
+        return ProgramResultPresentation.sharedPolicyText(root)
     }
 
     function validProgramId(value) {
-        const text = String(value || "").trim()
-        return text.length > 0 && root.model.canonicalProgramIdHex(text).length > 0
+        return ProgramResultPresentation.validProgramId(root, value)
     }
 
     function lastResultText() {
-        if (!root.hasResponse) {
-            return qsTr("Idle")
-        }
-        return root.model.resultIsError ? qsTr("Error") : qsTr("OK")
+        return ProgramResultPresentation.lastResultText(root)
     }
 
     function lastResultDelta() {
-        if (!root.hasResponse) {
-            return qsTr("No output")
-        }
-        return root.model.resultTitle.length ? root.model.resultTitle : qsTr("Program call")
+        return ProgramResultPresentation.lastResultDelta(root)
     }
 
     function lastResultColor() {
-        if (!root.hasResponse) {
-            return root.theme.textMuted
-        }
-        return root.model.resultIsError ? root.theme.warning : root.theme.success
+        return ProgramResultPresentation.lastResultColor(root)
     }
 
     function responsePayloadText() {
-        const value = root.responseValue
-        if (value === null || value === undefined) {
-            return "-"
-        }
-        if (Array.isArray(value)) {
-            return root.numberText(value.length)
-        }
-        if (typeof value === "object") {
-            return root.numberText(Object.keys(value).length)
-        }
-        return root.valueText(value)
+        return ProgramResultPresentation.responsePayloadText(root)
     }
 
     function responseKindText() {
-        const value = root.responseValue
-        if (Array.isArray(value)) {
-            return qsTr("Array items")
-        }
-        if (value && typeof value === "object") {
-            return qsTr("Object fields")
-        }
-        return qsTr("Scalar value")
+        return ProgramResultPresentation.responseKindText(root)
     }
 
     function responseIdlName() {
-        const value = root.responseValue
-        if (value && typeof value === "object" && value.name !== undefined) {
-            return root.valueText(value.name)
-        }
-        return qsTr("IDL summary")
+        return ProgramResultPresentation.responseIdlName(root)
     }
 
     function responseProgramText() {
-        const value = root.responseValue
-        return ProgramContextPresentation.responseProgramText(root, value)
+        return ProgramResultPresentation.responseProgramText(root)
     }
 
     function responseProgramDelta() {
-        const value = root.responseValue
-        return ProgramContextPresentation.responseProgramDelta(root, value)
+        return ProgramResultPresentation.responseProgramDelta(root)
     }
 
     function programRows() {
-        return Array.isArray(root.responseValue) ? root.responseValue : []
+        return ProgramResultPresentation.programRows(root)
     }
 
     function programTableRows() {
-        return root.programRows().map(function (row) {
-            const hex = String(row.hex || "")
-            const base58 = String(row.base58 || "")
-            return {
-                label: String(row.label || "-"),
-                hex: hex,
-                base58: base58,
-                programIdText: base58.length ? base58 : hex,
-                knownIdl: root.knownIdlText(hex)
-            }
-        })
+        return ProgramResultPresentation.programTableRows(root)
     }
 
     function isProgramContext(value) {
-        return ProgramContextPresentation.isProgramContext(value)
+        return ProgramResultPresentation.isProgramContext(value)
     }
 
     function programContextRows() {
-        const value = root.responseValue || {}
-        return ProgramContextPresentation.rows(root, value)
+        return ProgramResultPresentation.programContextRows(root)
     }
 
     function programVerificationText(value) {
-        return ProgramContextPresentation.verificationText(value)
+        return ProgramResultPresentation.programVerificationText(value)
     }
 
     function programHexText(value) {
-        return ProgramContextPresentation.programHexText(value)
+        return ProgramResultPresentation.programHexText(value)
     }
 
     function programContextIdlRows() {
-        const value = root.responseValue || {}
-        return ProgramContextPresentation.idlRows(root, value)
+        return ProgramResultPresentation.programContextIdlRows(root)
     }
 
     function programContextTransactionRows() {
-        const value = root.responseValue || {}
-        return ProgramContextPresentation.transactionRows(root, value)
+        return ProgramResultPresentation.programContextTransactionRows(root)
     }
 
     function programContextAccount() {
-        const value = root.responseValue || {}
-        return ProgramContextPresentation.account(value)
+        return ProgramResultPresentation.programContextAccount(root)
     }
 
     function knownIdlText(programId) {
-        const entries = root.model.idlEntriesForProgram(programId)
-        if (entries.length > 0) {
-            return entries[0].name || qsTr("registered")
-        }
-        return qsTr("none")
+        return ProgramResultPresentation.knownIdlText(root, programId)
     }
 
     function isIdlReport(value) {
-        return value && typeof value === "object" && !Array.isArray(value)
-            && value.instructions !== undefined
-            && value.accounts !== undefined
-            && value.counts !== undefined
+        return ProgramResultPresentation.isIdlReport(value)
     }
 
     function isProgramFile(value) {
-        return value && typeof value === "object" && !Array.isArray(value)
-            && value.program_id_hex !== undefined
-            && value.deployment_tx_hash !== undefined
+        return ProgramResultPresentation.isProgramFile(value)
     }
 
     function idlCount(key) {
-        const value = root.responseValue
-        if (root.isIdlReport(value) && value.counts && value.counts[key] !== undefined) {
-            return Number(value.counts[key] || 0)
-        }
-        return 0
+        return ProgramResultPresentation.idlCount(root, key)
     }
 
     function idlInstructionRows() {
-        const value = root.responseValue
-        const instructions = root.isIdlReport(value) && Array.isArray(value.instructions) ? value.instructions : []
-        return instructions.slice(0, 6).map(function (item) {
-            const args = Array.isArray(item.args) ? item.args.length : 0
-            const accounts = Array.isArray(item.accounts) ? item.accounts.length : 0
-            return {
-                title: root.valueText(item.name),
-                detail: qsTr("%1 instruction account role(s), %2 arg(s)").arg(root.numberText(accounts)).arg(root.numberText(args))
-            }
-        })
+        return ProgramResultPresentation.idlInstructionRows(root)
     }
 
     function idlAccountRows() {
-        const value = root.responseValue
-        const accounts = root.isIdlReport(value) && Array.isArray(value.accounts) ? value.accounts : []
-        return accounts.slice(0, 6).map(function (item) {
-            return {
-                title: root.valueText(item.name),
-                detail: root.valueText(item.type_label)
-            }
-        })
+        return ProgramResultPresentation.idlAccountRows(root)
     }
 
     function idlWarningRows() {
-        const value = root.responseValue
-        const warnings = root.isIdlReport(value) && Array.isArray(value.warnings) ? value.warnings : []
-        return warnings.slice(0, 4).map(function (item) {
-            return {
-                title: qsTr("Warning"),
-                detail: root.valueText(item)
-            }
-        })
+        return ProgramResultPresentation.idlWarningRows(root)
     }
 
     function programFileRows() {
-        const value = root.responseValue || {}
-        if (!root.isProgramFile(value)) {
-            return []
-        }
-        const rows = [
-            { label: qsTr("Path"), value: root.valueText(value.path), linkKind: "" },
-            { label: qsTr("Bytecode"), value: qsTr("%1 bytes").arg(root.numberText(value.bytecode_len)), linkKind: "" },
-            { label: qsTr("Program ID (0x)"), value: root.valueText(value.program_id_hex), linkKind: "program" },
-            { label: qsTr("Program ID"), value: root.valueText(value.program_id_base58), linkKind: "" },
-            { label: qsTr("Deployment tx"), value: root.valueText(value.deployment_tx_hash), linkKind: "transaction" }
-        ]
-        if (String(value.source || "") === "local_wallet_cli") {
-            rows.unshift({ label: qsTr("Deploy status"), value: root.valueText(value.status), linkKind: "" })
-            rows.push({ label: qsTr("Wallet command"), value: root.valueText(value.command), linkKind: "" })
-            rows.push({ label: qsTr("Wallet home"), value: root.valueText(value.wallet_home_source), linkKind: "" })
-            rows.push({ label: qsTr("Submitted at"), value: root.valueText(value.submitted_at), linkKind: "" })
-            rows.push({ label: qsTr("Exit status"), value: root.valueText(value.exit_status), linkKind: "" })
-            if (String(value.stdout || "").length > 0) {
-                rows.push({ label: qsTr("stdout"), value: String(value.stdout || ""), linkKind: "" })
-            }
-            if (String(value.stderr || "").length > 0) {
-                rows.push({ label: qsTr("stderr"), value: String(value.stderr || ""), linkKind: "" })
-            }
-        }
-        return rows
+        return ProgramResultPresentation.programFileRows(root)
     }
 
     function idlFieldCount(json) {
-        try {
-            const parsed = JSON.parse(json || "{}")
-            return parsed && typeof parsed === "object" ? Object.keys(parsed).length : 0
-        } catch (error) {
-            return 0
-        }
+        return ProgramResultPresentation.idlFieldCount(json)
     }
 
     function endpointLabel(value) {
-        const text = String(value || "")
-        if (!text.length) {
-            return "-"
-        }
-        if (text.indexOf("127.0.0.1") >= 0 || text.indexOf("localhost") >= 0) {
-            return qsTr("Local")
-        }
-        if (text.indexOf("testnet") >= 0) {
-            return qsTr("Testnet")
-        }
-        return qsTr("Custom")
+        return ProgramResultPresentation.endpointLabel(value)
     }
 
     function shortEndpoint(value) {
-        const text = String(value || "")
-        if (!text.length) {
-            return qsTr("Not configured")
-        }
-        return text.replace(/^https?:\/\//, "").replace(/\/$/, "")
+        return ProgramResultPresentation.shortEndpoint(value)
     }
 
     function shortHash(value) {
-        const text = String(value || "")
-        if (text.length <= 16) {
-            return text.length ? text : "-"
-        }
-        return text.slice(0, 8) + "..." + text.slice(-6)
+        return ProgramResultPresentation.shortHash(value)
     }
 
     function shortPath(value) {
-        const text = String(value || "").trim()
-        if (!text.length) {
-            return qsTr("the selected binary")
-        }
-        if (text.length <= 48) {
-            return text
-        }
-        return "..." + text.slice(-45)
+        return ProgramResultPresentation.shortPath(value)
     }
 
     function localPathFromFileUrl(fileUrl) {
-        const text = String(fileUrl || "")
-        if (!text.length) {
-            return ""
-        }
-        if (text.indexOf("file://") === 0) {
-            let path = decodeURIComponent(text.slice(7))
-            if (/^\/[A-Za-z]:\//.test(path)) {
-                path = path.slice(1)
-            }
-            return path
-        }
-        return text
+        return ProgramResultPresentation.localPathFromFileUrl(fileUrl)
     }
 
     function valueText(value) {
-        return UiFormat.valueText(value, {
-            emptyText: "-",
-            objectMode: "json"
-        })
+        return ProgramResultPresentation.valueText(value)
     }
 
     function numberText(value) {
-        return UiFormat.numberText(value, {
-            emptyText: "-",
-            coerceNumericStrings: true
-        })
+        return ProgramResultPresentation.numberText(value)
     }
 }

@@ -15,6 +15,7 @@ TestCase {
         id: model
 
         property var registeredIdls: registeredIdls
+        property var favoriteStore: favoriteStoreFixture
         property var idlInstructionPreviewValue: null
         property string idlInstructionError: ""
         property int sharedIdlRevision: 0
@@ -33,8 +34,26 @@ TestCase {
         function transactionDecodeSessionInstruction(response) { return response && response.instruction ? response : null }
     }
 
+    QtObject {
+        id: favoriteStoreFixture
+
+        function accountEntry(detail) {
+            return { kind: "account", value: String(detail && detail.account_id_base58 ? detail.account_id_base58 : "") }
+        }
+
+        function isFavoriteEntry(entry) {
+            return false
+        }
+    }
+
     Accounts.AccountDetailDecodeSession {
         id: session
+
+        model: model
+    }
+
+    Accounts.AccountDetailInspectionWorkspace {
+        id: workspace
 
         model: model
     }
@@ -72,6 +91,7 @@ TestCase {
         }
         session.resetDecodeState()
         session.resetInteractionState()
+        workspace.value = null
     }
 
     function test_rebuilds_idl_options_and_active_label() {
@@ -126,5 +146,37 @@ TestCase {
         compare(rows.length, 1)
         compare(rows[0].instruction, "settle")
         compare(rows[0].programText, "Demo")
+    }
+
+    function test_workspace_projects_detail_and_delegates_decode_session() {
+        workspace.value = {
+            account: {
+                account_id: "Public/account",
+                account_id_base58: "Public/account",
+                account_id_hex: "",
+                balance: "1200",
+                nonce: "7",
+                owner_hex: "0xabc",
+                data_hex: "0x0102",
+                related_transactions: []
+            },
+            decode: { account_type: "Position", rows: [], remaining_data_hex: "" },
+            decode_error: ""
+        }
+        workspace.resetDecodeState()
+        workspace.resetInteractionState()
+
+        compare(workspace.accountHeader(workspace.detail), "Public/account")
+        compare(workspace.accountRows()[0].label, "Balance")
+        compare(workspace.accountRows()[0].value, "1200")
+        verify(workspace.canInteractWithIdl())
+
+        workspace.setInteractionFieldValue("account", "owner", "Public/owner")
+        workspace.setInteractionFieldValue("arg", "amount", "42")
+        const request = workspace.interactionRequest()
+
+        compare(request.instruction, "settle")
+        compare(request.program_binary, "demo.bin")
+        compare(workspace.favoriteButtonText(), "Favorite")
     }
 }
