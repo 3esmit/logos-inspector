@@ -1,5 +1,6 @@
 import QtQml
 import "chain/AppModelOpeners.js" as AppModelOpeners
+import "chain/EntityTargetOpening.js" as EntityTargetOpening
 import "app/AppModelSearch.js" as AppModelSearch
 
 QtObject {
@@ -39,7 +40,9 @@ QtObject {
 
     function settingsTargetForQuery(query) { return AppModelSearch.settingsTargetForQuery(model, query) }
 
-    function openReference(kind, value, payload) { return AppModelOpeners.openReference(model, kind, value, payload) }
+    function referenceTarget(kind, value, payload) { return EntityTargetOpening.referenceTarget(root, kind, value, payload) }
+
+    function openReference(kind, value, payload) { return EntityTargetOpening.openReference(root, kind, value, payload) }
 
     function openMantleTransaction(hash) { return AppModelOpeners.openMantleTransaction(model, hash) }
 

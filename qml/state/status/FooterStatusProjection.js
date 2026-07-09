@@ -1,4 +1,4 @@
-.import "../../components/status/FooterFieldGroups.js" as FooterFieldGroups
+.import "StatusFieldCatalog.js" as StatusFieldCatalog
 
 function footerGroups(root, region) {
     const revision = root.model.footerFieldRevision
@@ -53,7 +53,7 @@ function footerGroupVisible(root, keys) {
 }
 
 function footerSourceGroups() {
-    return FooterFieldGroups.sourceGroups()
+    return StatusFieldCatalog.footerSourceGroups()
 }
 
 function footerFieldItem(root, key) {
@@ -72,81 +72,7 @@ function footerFieldItem(root, key) {
 }
 
 function footerFieldLabel(key) {
-    const lookup = {
-        "network.network": qsTr("Net"),
-        "network.chain_id": qsTr("Chain"),
-        "network.zone_id": qsTr("Zone"),
-        "network.channel_id": qsTr("Chan"),
-        "network.report_time": qsTr("Report"),
-        "bedrock.node_health": qsTr("Bedrock"),
-        "bedrock.peer_count": qsTr("Peers"),
-        "bedrock.sync_state": qsTr("Sync"),
-        "bedrock.tip_height": qsTr("TIP"),
-        "bedrock.tip_hash": qsTr("Tip hash"),
-        "bedrock.lib_height": qsTr("LIB"),
-        "bedrock.lib_hash": qsTr("LIB hash"),
-        "bedrock.tip_minus_lib": qsTr("Gap"),
-        "bedrock.last_tip_time": qsTr("Tip time"),
-        "bedrock.last_lib_time": qsTr("LIB time"),
-        "bedrock.finality_lag_seconds": qsTr("Final lag"),
-        "lez.rpc_health": qsTr("LEZ"),
-        "lez.sequencer_version": qsTr("Seq ver"),
-        "lez.last_lez_block_id": qsTr("LEZ block"),
-        "lez.last_lez_block_hash": qsTr("LEZ hash"),
-        "lez.last_lez_block_time": qsTr("LEZ time"),
-        "lez.pending_tx_count": qsTr("Pending"),
-        "lez.mempool_tx_count": qsTr("Mempool"),
-        "lez.rejected_tx_count_recent": qsTr("Rejects"),
-        "lez.blocks_produced_recent": qsTr("Blocks"),
-        "lez.publish_to_bedrock_status": qsTr("Publish"),
-        "lez.last_published_channel_update": qsTr("Channel"),
-        "lez.last_finalized_callback_height": qsTr("Final"),
-        "lez.pending_blocks_count": qsTr("Blk pend"),
-        "indexer.rpc_health": qsTr("Indexer"),
-        "indexer.indexer_version": qsTr("Idx ver"),
-        "indexer.indexed_finalized_height": qsTr("Idx final"),
-        "indexer.indexed_finalized_hash": qsTr("Idx hash"),
-        "indexer.indexed_channel_message": qsTr("Idx chan"),
-        "indexer.indexer_lag_vs_sequencer_head": qsTr("Idx lag"),
-        "indexer.last_indexed_time": qsTr("Idx time"),
-        "indexer.db_health": qsTr("DB"),
-        "indexer.ingestion_status": qsTr("Ingest"),
-        "storage.module": qsTr("Storage"),
-        "storage.network": qsTr("ST net"),
-        "storage.node_reachable": qsTr("ST node"),
-        "storage.nat_mode": qsTr("NAT"),
-        "storage.udp_discovery_port": qsTr("UDP"),
-        "storage.tcp_transfer_port": qsTr("TCP"),
-        "storage.peer_count": qsTr("ST peers"),
-        "storage.dht_connected": qsTr("DHT"),
-        "storage.shared_files_count": qsTr("Files"),
-        "storage.manifest_count": qsTr("Manifests"),
-        "storage.local_storage_used": qsTr("Storage"),
-        "storage.active_uploads": qsTr("Uploads total"),
-        "storage.active_downloads": qsTr("Downloads total"),
-        "storage.failed_transfers_recent": qsTr("Failures win"),
-        "storage.failed_transfers_total": qsTr("Failures total"),
-        "storage.cid_fetch_test": qsTr("CID"),
-        "storage.last_error": qsTr("ST error"),
-        "messaging.module": qsTr("Delivery"),
-        "messaging.connection_state": qsTr("Conn"),
-        "messaging.bootstrap_connected": qsTr("Bootstrap"),
-        "messaging.peer_count": qsTr("DLV peers"),
-        "messaging.active_subscriptions": qsTr("Subs"),
-        "messaging.content_topics": qsTr("Topics"),
-        "messaging.outbound_queue": qsTr("Queue"),
-        "messaging.message_sent_events_recent": qsTr("Sent n/a"),
-        "messaging.message_propagated_events_recent": qsTr("Prop n/a"),
-        "messaging.message_received_events_recent": qsTr("Msgs win"),
-        "messaging.message_error_events_recent": qsTr("Errors win"),
-        "messaging.publish_latency_ms": qsTr("Pub n/a"),
-        "messaging.receive_latency_ms": qsTr("Recv n/a"),
-        "messaging.last_error": qsTr("Delivery error"),
-        "overall.status": qsTr("Overall"),
-        "overall.main_risk": qsTr("Risk"),
-        "overall.operator_action": qsTr("Action")
-    }
-    return lookup[key] || key
+    return StatusFieldCatalog.shortLabel(key)
 }
 
 function footerFieldName(key) {
@@ -362,45 +288,19 @@ function footerFieldTone(root, key) {
 }
 
 function footerFieldWidth(key) {
-    if (key.indexOf("hash") >= 0 || key.indexOf("error") >= 0 || key === "overall.operator_action" || key === "overall.main_risk") {
-        return 190
-    }
-    return 150
+    return StatusFieldCatalog.fieldWidth(key)
 }
 
 function footerFieldPriority(key) {
-    return key.indexOf("_hash") >= 0
-            || key.indexOf("_time") >= 0
-            || key.indexOf("version") >= 0
-            || key.indexOf("last_error") >= 0
-            || key === "network.report_time"
-            || key === "overall.operator_action" ? "low" : "normal"
+    return StatusFieldCatalog.fieldPriority(key)
 }
 
 function footerFieldUsesColorOnly(key) {
-    const lookup = {
-        "bedrock.node_health": true,
-        "bedrock.sync_state": true,
-        "lez.rpc_health": true,
-        "lez.publish_to_bedrock_status": true,
-        "indexer.rpc_health": true,
-        "indexer.db_health": true,
-        "indexer.ingestion_status": true,
-        "storage.module": true,
-        "storage.node_reachable": true,
-        "storage.udp_discovery_port": true,
-        "storage.tcp_transfer_port": true,
-        "storage.dht_connected": true,
-        "storage.cid_fetch_test": true,
-        "messaging.module": true,
-        "messaging.connection_state": true,
-        "overall.status": true
-    }
-    return lookup[key] === true
+    return StatusFieldCatalog.usesColorOnly(key)
 }
 
 function footerFieldShowsDot(key) {
-    return key === "network.network" || footerFieldUsesColorOnly(key)
+    return StatusFieldCatalog.showsDot(key)
 }
 
 function footerFieldHidden(root, key) {
