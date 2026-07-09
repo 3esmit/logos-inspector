@@ -106,6 +106,42 @@ TestCase {
         compare(state.configuredStorageRestUrl(), "http://configured-storage")
     }
 
+    function test_source_family_view_combines_route_and_report_facts() {
+        state.connectorConfig = ({
+            scopes: {
+                storage: {
+                    connector_id: "direct_storage_rest",
+                    endpoint: "http://configured-storage",
+                    provenance: "network_profile"
+                }
+            }
+        })
+
+        const view = state.sourceFamilyView("storage", "", {
+            health: {
+                status: "ready",
+                ready: true,
+                reachable: true,
+                summary: "storage ready"
+            },
+            capability_facts: [{
+                key: "storage.content.read_by_cid",
+                available: true,
+                evidence: "probe"
+            }]
+        })
+
+        compare(view.family, "storage")
+        compare(view.route.connector.connector_id, "direct_storage_rest")
+        compare(view.connector.connector_id, "direct_storage_rest")
+        compare(view.effectiveMode, "rest")
+        compare(view.ready, true)
+        compare(view.report.ready, true)
+        compare(view.capabilityAvailable("storage.content.read_by_cid"), true)
+        compare(view.capabilityEvidence("storage.content.read_by_cid"), "probe")
+        compare(state.connectorScope("storage").connector_id, "direct_storage_rest")
+    }
+
     function test_lez_indexer_and_sequencer_routes_use_split_connectors() {
         state.connectorConfig = ({
             scopes: {

@@ -82,6 +82,81 @@ function storageSourceView(root) {
     })
 }
 
+function sourceFamilyView(root, family, role, report) {
+    const key = sourceFamilyKey(family, role)
+    const route = sourceFamilyRouteView(root, key)
+    const reportFacts = reportView(root, key, report)
+    return {
+        family: key,
+        role: String(route.role || key),
+        route: route,
+        report: reportFacts,
+        connector: route.connector,
+        mode: route.mode,
+        configuredMode: route.configuredMode,
+        resolvedMode: route.resolvedMode,
+        effectiveMode: route.effectiveMode,
+        label: route.label,
+        target: route.target,
+        ready: reportFacts.ready,
+        reachable: reportFacts.reachable,
+        health: reportFacts.health,
+        summary: reportFacts.summary,
+        error: reportFacts.error,
+        capability: function (capabilityKey) { return reportFacts.capability(capabilityKey) },
+        capabilityAvailable: function (capabilityKey) { return reportFacts.capabilityAvailable(capabilityKey) },
+        capabilityEvidence: function (capabilityKey) { return reportFacts.capabilityEvidence(capabilityKey) },
+        capabilityValue: function (capabilityKey) { return reportFacts.capabilityValue(capabilityKey) },
+        probe: function (probeKey) { return reportFacts.probe(probeKey) },
+        probeOk: function (probeKey) { return reportFacts.probeOk(probeKey) },
+        probeValue: function (probeKey) { return reportFacts.probeValue(probeKey) }
+    }
+}
+
+function sourceFamilyRouteView(root, family) {
+    switch (family) {
+    case "l1":
+        return coreSourceView(root, "blockchain")
+    case "lez.indexer":
+        return coreSourceView(root, "indexer")
+    case "lez.sequencer":
+        return coreSourceView(root, "execution")
+    case "delivery":
+        return deliverySourceView(root)
+    case "storage":
+        return storageSourceView(root)
+    default:
+        return coreSourceView(root, "execution")
+    }
+}
+
+function sourceFamilyKey(family, role) {
+    const key = String(family || "").trim()
+    switch (key) {
+    case "blockchain":
+    case "node":
+    case "l1":
+        return "l1"
+    case "indexer":
+    case "lez_indexer":
+    case "lez.indexer":
+        return "lez.indexer"
+    case "execution":
+    case "sequencer":
+    case "lez_sequencer":
+    case "lez.sequencer":
+        return "lez.sequencer"
+    case "messaging":
+    case "delivery":
+        return "delivery"
+    case "storage_source":
+    case "storage":
+        return "storage"
+    default:
+        return sourceFamilyKey(role || "execution", "")
+    }
+}
+
 function sourceView(root, family, mode, options, details) {
     const resolvedMode = SourcePolicyProjection.resolvedSourceModeKey(root, family, mode)
     const policy = SourcePolicyProjection.sourceModePolicy(root, family, resolvedMode)
@@ -126,6 +201,7 @@ function deliveryReportView(root, report) {
 }
 
 function reportView(root, family, report) {
+    const reportKind = sourceFamilyReportKind(family)
     const health = SourceHealthProjection.sourceHealth(report)
     const ready = SourceHealthProjection.sourceHealthReady(report)
     const reachable = health && health.reachable !== undefined
@@ -137,7 +213,7 @@ function reportView(root, family, report) {
         reachable: reachable,
         ready: ready !== null ? ready : reachable,
         health: health,
-        summary: SourceHealthProjection.networkConnectionSummary(root, family === "storage" ? "storage" : "messaging", report),
+        summary: SourceHealthProjection.networkConnectionSummary(root, reportKind, report),
         error: SourceHealthProjection.moduleReportError(report),
         capability: function (key) { return SourceHealthProjection.sourceCapability(report, key) },
         capabilityAvailable: function (key) { return SourceHealthProjection.sourceCapabilityAvailable(report, key) },
@@ -146,5 +222,22 @@ function reportView(root, family, report) {
         probe: function (key) { return SourceHealthProjection.reportProbe(report, key) },
         probeOk: function (key) { return SourceHealthProjection.reportProbeOk(report, key) },
         probeValue: function (key) { return SourceHealthProjection.reportProbeValue(report, key) }
+    }
+}
+
+function sourceFamilyReportKind(family) {
+    switch (String(family || "")) {
+    case "l1":
+        return "blockchain"
+    case "lez.indexer":
+        return "indexer"
+    case "lez.sequencer":
+        return "execution"
+    case "storage":
+        return "storage"
+    case "delivery":
+        return "messaging"
+    default:
+        return "messaging"
     }
 }

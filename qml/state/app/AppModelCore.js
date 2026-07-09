@@ -1,5 +1,5 @@
 .import "../../services/BridgeHelpers.js" as BridgeHelpers
-.import "../OperationHistoryVocabulary.js" as OperationHistoryVocabulary
+.import "../runtime/RuntimeOperationLifecycle.js" as RuntimeOperationLifecycle
 .import "PageRegistry.js" as PageRegistry
 
 function handleNetworkConfigurationChanged(root) {
@@ -518,165 +518,55 @@ function pageHasOutput(root, view) {
 }
 
 function runtimeOperationStart(root, request, showResult, callback) {
-    with (root) {
-        const operationRequest = request && typeof request === "object" ? request : ({})
-        const label = String(operationRequest.label || operationRequest.method || qsTr("Runtime operation"))
-        return requestModuleAsync(inspectorModule, "runtimeOperationStart", [operationRequest], label, showResult === true, function (response) {
-            if (response && response.ok) {
-                response.value = operationWithRestartRequest(response.value, operationRequest)
-                coreUpdateRuntimeOperation(root, response.value)
-            }
-            if (callback) {
-                callback(response)
-            }
-        })
-    }
+    return RuntimeOperationLifecycle.runtimeOperationStart(root, request, showResult, callback)
 }
 
 function runtimeOperationStatus(root, operationId, showResult, callback) {
-    with (root) {
-        const id = String(operationId || "")
-        if (!id.length) {
-            return null
-        }
-        return requestModuleAsync(inspectorModule, "runtimeOperationStatus", [id], qsTr("Runtime operation"), showResult === true, function (response) {
-            if (response && response.ok) {
-                response.value = operationWithPreviousRestartRequest(root, id, response.value)
-                coreUpdateRuntimeOperation(root, response.value)
-            }
-            if (callback) {
-                callback(response)
-            }
-        })
-    }
+    return RuntimeOperationLifecycle.runtimeOperationStatus(root, operationId, showResult, callback)
 }
 
 function runtimeOperationEvents(root, operationId, afterSeq, showResult, callback) {
-    with (root) {
-        const id = String(operationId || "")
-        if (!id.length) {
-            return null
-        }
-        return requestModuleAsync(inspectorModule, "runtimeOperationEvents", [id, Number(afterSeq || 0)], qsTr("Runtime operation events"), showResult === true, function (response) {
-            if (response && response.ok && response.value) {
-                coreUpdateRuntimeOperation(root, response.value.operation)
-                if (root.operationHistory && typeof root.operationHistory.setEventSeq === "function") {
-                    root.operationHistory.setEventSeq(id, response.value.nextSeq || 0)
-                } else {
-                    const next = copyObject(runtimeOperationEventSeq)
-                    next[id] = response.value.nextSeq || 0
-                    runtimeOperationEventSeq = next
-                }
-            }
-            if (callback) {
-                callback(response)
-            }
-        })
-    }
+    return RuntimeOperationLifecycle.runtimeOperationEvents(root, operationId, afterSeq, showResult, callback)
 }
 
 function runtimeOperationCancel(root, operationId, showResult, callback) {
-    with (root) {
-        const id = String(operationId || "")
-        if (!id.length) {
-            return null
-        }
-        return requestModuleAsync(inspectorModule, "runtimeOperationCancel", [id], qsTr("Cancel operation"), showResult === true, function (response) {
-            if (response && response.ok) {
-                response.value = operationWithPreviousRestartRequest(root, id, response.value)
-                coreUpdateRuntimeOperation(root, response.value)
-            }
-            if (callback) {
-                callback(response)
-            }
-        })
-    }
+    return RuntimeOperationLifecycle.runtimeOperationCancel(root, operationId, showResult, callback)
 }
 
 function updateRuntimeOperation(root, operation) {
-    coreUpdateRuntimeOperation(root, operation)
+    return RuntimeOperationLifecycle.updateRuntimeOperation(root, operation)
 }
 
 function coreUpdateRuntimeOperation(root, operation) {
-    with (root) {
-        const value = operationWithPreviousRestartRequest(root, "", operation || null)
-        const operationId = String(value && value.operationId ? value.operationId : "")
-        if (!operationId.length) {
-            return
-        }
-        if (root.operationHistory && typeof root.operationHistory.updateOperation === "function") {
-            root.operationHistory.updateOperation(value)
-            return
-        }
-        const next = copyObject(runtimeOperations)
-        next[operationId] = value
-        runtimeOperations = next
-        runtimeOperationsRevision += 1
-    }
+    return RuntimeOperationLifecycle.coreUpdateRuntimeOperation(root, operation)
 }
 
 function operationWithPreviousRestartRequest(root, operationId, operation) {
-    const value = operation || null
-    if (!value || value.restartRequest !== undefined || value.restart_request !== undefined) {
-        return value
-    }
-    const id = String(operationId || value.operationId || "")
-    const previous = id.length && root.runtimeOperations ? root.runtimeOperations[id] : null
-    if (!previous || previous.restartRequest === undefined) {
-        return value
-    }
-    return operationWithRestartRequest(value, previous.restartRequest)
+    return RuntimeOperationLifecycle.operationWithPreviousRestartRequest(root, operationId, operation)
 }
 
 function operationWithRestartRequest(operation, restartRequest) {
-    const value = operation || null
-    if (!value || !restartRequest || value.restartRequest !== undefined || value.restart_request !== undefined) {
-        return value
-    }
-    const next = copyObject(value)
-    next.restartRequest = copyObject(restartRequest)
-    return next
+    return RuntimeOperationLifecycle.operationWithRestartRequest(operation, restartRequest)
 }
 
 function runtimeOperationTerminal(root, operation) {
-    return OperationHistoryVocabulary.isRuntimeTerminalStatus(operation && operation.status)
+    return RuntimeOperationLifecycle.runtimeOperationTerminal(root, operation)
 }
 
 function runtimeOperationResponse(root, operation) {
-    const status = String(operation && operation.status ? operation.status : "")
-    const ok = status === "completed"
-    return {
-        ok: ok,
-        value: operation && operation.result !== undefined && operation.result !== null ? operation.result : operation,
-        text: "",
-        error: ok ? "" : String(operation && operation.error ? operation.error : "")
-    }
+    return RuntimeOperationLifecycle.runtimeOperationResponse(root, operation)
 }
 
 function appendRuntimeOperationHistory(root, operation, detail) {
-    appendOperationHistory(root, operation, detail)
+    return RuntimeOperationLifecycle.appendRuntimeOperationHistory(root, operation, detail)
 }
 
 function appendOperationHistory(root, operation, detail) {
-    with (root) {
-        if (root.operationHistory && typeof root.operationHistory.append === "function") {
-            root.operationHistory.append(operation || {}, detail)
-            return
-        }
-        const value = operation || {}
-        const rows = Array.isArray(runtimeOperationHistory) ? runtimeOperationHistory.slice(-99) : []
-        rows.push(OperationHistoryVocabulary.historyRecord(
-            value,
-            detail,
-            new Date().toLocaleTimeString(Qt.locale(), "hh:mm:ss")
-        ))
-        runtimeOperationHistory = rows
-        runtimeOperationsRevision += 1
-    }
+    return RuntimeOperationLifecycle.appendOperationHistory(root, operation, detail)
 }
 
 function runtimeOperationHistoryRows(root, domain) {
-    return operationHistoryRows(root, domain)
+    return RuntimeOperationLifecycle.runtimeOperationHistoryRows(root, domain)
 }
 
 function nodeOperationStart(root, request, showResult, callback) {
@@ -716,30 +606,11 @@ function nodeOperationHistoryRows(root, domain) {
 }
 
 function operationHistoryRows(root, domain) {
-    with (root) {
-        if (root.operationHistory && typeof root.operationHistory.rows === "function") {
-            return root.operationHistory.rows(domain)
-        }
-        const revision = runtimeOperationsRevision
-        const wanted = String(domain || "")
-        const rows = Array.isArray(runtimeOperationHistory) ? runtimeOperationHistory.slice(0) : []
-        const filtered = wanted.length ? rows.filter(row => String(row.domain || "") === wanted) : rows
-        return filtered.reverse()
-    }
+    return RuntimeOperationLifecycle.operationHistoryRows(root, domain)
 }
 
 function runtimeOperationDetail(root, operation) {
-    return OperationHistoryVocabulary.historyDetail(operation)
-}
-
-function copyObject(value) {
-    const next = ({})
-    const source = value && typeof value === "object" && !Array.isArray(value) ? value : ({})
-    const keys = Object.keys(source)
-    for (let i = 0; i < keys.length; ++i) {
-        next[keys[i]] = source[keys[i]]
-    }
-    return next
+    return RuntimeOperationLifecycle.runtimeOperationDetail(root, operation)
 }
 
 function decodeAccountData(root, dataHex, idlJson, accountType) {

@@ -7,6 +7,7 @@ QtObject {
 
     required property var gateway
     property var capabilityFacade: null
+    property var walletCapability: null
 
     property var idlInstructionPreviewValue: null
     property string idlInstructionError: ""
@@ -153,18 +154,31 @@ QtObject {
     }
 
     function walletProfile() {
+        if (walletCapability && typeof walletCapability.profile === "function") {
+            return walletCapability.profile()
+        }
         return gateway && typeof gateway.walletProfile === "function" ? gateway.walletProfile() : ({})
     }
 
     function walletProfileConfigured() {
+        if (walletCapability && typeof walletCapability.profileConfigured === "function") {
+            return walletCapability.profileConfigured()
+        }
         return gateway && typeof gateway.walletProfileConfigured === "function" && gateway.walletProfileConfigured()
     }
 
     function walletHomeConfigured() {
+        if (walletCapability && typeof walletCapability.homeConfigured === "function") {
+            return walletCapability.homeConfigured()
+        }
         return gateway && typeof gateway.walletHomeConfigured === "function" && gateway.walletHomeConfigured()
     }
 
     function openLocalWallet(tab) {
+        if (walletCapability && typeof walletCapability.openLocalWallet === "function") {
+            walletCapability.openLocalWallet(tab)
+            return
+        }
         if (gateway && typeof gateway.openLocalWallet === "function") {
             gateway.openLocalWallet(tab)
         }
@@ -177,6 +191,9 @@ QtObject {
     }
 
     function walletActionGate(action, requiredInputs) {
+        if (walletCapability && typeof walletCapability.gate === "function") {
+            return walletCapability.gate(action, requiredInputs)
+        }
         if (capabilityFacade && typeof capabilityFacade.walletGate === "function") {
             return capabilityFacade.walletGate(action, {
                 required_inputs: Array.isArray(requiredInputs) ? requiredInputs : []
@@ -196,6 +213,9 @@ QtObject {
     }
 
     function walletGateProblem(action) {
+        if (walletCapability && typeof walletCapability.problem === "function") {
+            return walletCapability.problem(action, [])
+        }
         const gate = walletActionGate(action, [])
         const missing = Array.isArray(gate.missing) ? gate.missing : []
         if (missing.length > 0) {
