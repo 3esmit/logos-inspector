@@ -1011,14 +1011,7 @@ QtObject {
 
     function settingsBackupDownloadAvailable() { return AppModelIdentity.settingsBackupDownloadAvailable(root) }
 
-    function defaultSettingsBackupContents() {
-        return {
-            settings: true,
-            favorites: true,
-            idl_registry: true,
-            wallet_profile: true
-        }
-    }
+    function defaultSettingsBackupContents() { return AppModelIdentity.defaultSettingsBackupContents(root) }
 
     function normalizedBackupContents(contents) { return backupImportState.normalizedBackupContents(contents) }
 

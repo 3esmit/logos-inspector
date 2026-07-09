@@ -1,8 +1,12 @@
 use serde_json::Value;
 
 use super::{
-    CapabilityRuntimeInputs, CapabilityState, all_sub_capabilities, dedup_strings, loading_state,
-    state_from_unavailable, string_list, unavailable_state,
+    CapabilityRuntimeInputs,
+    availability::{
+        CapabilityState, all_sub_capabilities, dedup_strings, loading_state,
+        state_from_unavailable, unavailable_state,
+    },
+    string_list,
 };
 
 pub(super) fn source_report_state(

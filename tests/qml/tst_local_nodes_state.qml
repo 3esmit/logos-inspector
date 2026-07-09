@@ -29,6 +29,7 @@ TestCase {
         state.operations = []
         state.revision = 0
         state.devnets = []
+        state.clearActionDraft()
     }
 
     function sampleReport() {
@@ -233,5 +234,50 @@ TestCase {
         compare(state.actionLabel("reset_network"), "Reset Local Devnet")
         compare(state.nodeByKind("sequencer").label, "Sequencer")
         compare(state.toolProblem(), "sequencer_service not found. Local sequencer start requires a configured binary.")
+    }
+
+    function test_node_action_draft_owns_confirmation_facts() {
+        state.report = sampleReport()
+        state.revision += 1
+
+        state.beginNodeAction("start", "bedrock")
+
+        compare(state.pendingAction, "start")
+        compare(state.pendingNode, "bedrock")
+        compare(state.pendingNetworkId, "")
+        compare(state.pendingWorkspace, "")
+        compare(state.actionDraftTitle(), "Start Bedrock")
+        verify(state.actionDraftMessage().indexOf("This starts Bedrock") === 0)
+    }
+
+    function test_network_action_draft_runs_pending_request() {
+        state.networkProfile = "local"
+        state.beginNetworkAction("load_network", "", "/tmp/local-devnet")
+        gateway.responses = ({
+            localNodesAction: {
+                ok: true,
+                value: sampleReport(),
+                text: "OK",
+                error: ""
+            },
+            localDevnetList: {
+                ok: true,
+                value: {
+                    devnets: ["devnet"]
+                },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        compare(state.actionDraftTitle(), "Load Local Devnet")
+        compare(state.actionDraftMessage(), "This loads the Local Devnet manifest from /tmp/local-devnet and sets it as Active Devnet.")
+
+        state.runPendingAction()
+
+        compare(state.pendingAction, "")
+        compare(gateway.calls[0].args[1].action, "load_network")
+        compare(gateway.calls[0].args[1].workspace_path, "/tmp/local-devnet")
+        compare(gateway.history[0].operation.label, "Load Local Devnet")
     }
 }

@@ -1,9 +1,15 @@
 use serde::Serialize;
 use serde_json::Value;
 
+mod availability;
 mod catalog;
 mod runtime_evidence;
 
+use availability::{
+    CapabilityState, all_sub_capabilities, append_unique, available_state, capability_state_usable,
+    dedup_strings, input_required_state, loading_state, merge_state_constraints,
+    remove_unavailable, state_from_unavailable, state_marks_unavailable, unavailable_state,
+};
 use catalog::{
     CapabilitySpec, capability_specs, connector_scopes, default_connector, provider_instance_known,
     provider_instance_supports, provider_instances, provider_types,
@@ -288,14 +294,6 @@ impl ResolvedConnector {
     }
 }
 
-#[derive(Debug, Clone)]
-struct CapabilityState {
-    status: &'static str,
-    unavailable_sub_capabilities: Vec<String>,
-    warnings: Vec<String>,
-    compact_errors: Vec<String>,
-}
-
 fn capabilities(
     build_mode: CapabilityBuildMode,
     inputs: &CapabilityRuntimeInputs,
@@ -389,24 +387,6 @@ fn capability_state(
     }
 }
 
-fn available_state() -> CapabilityState {
-    CapabilityState {
-        status: "available",
-        unavailable_sub_capabilities: Vec::new(),
-        warnings: Vec::new(),
-        compact_errors: Vec::new(),
-    }
-}
-
-fn loading_state(sub_capabilities: &[&str], detail: String) -> CapabilityState {
-    CapabilityState {
-        status: "loading",
-        unavailable_sub_capabilities: all_sub_capabilities(sub_capabilities),
-        warnings: Vec::new(),
-        compact_errors: vec![detail],
-    }
-}
-
 fn source_report_state(
     inputs: &CapabilityRuntimeInputs,
     scope: &str,
@@ -430,21 +410,6 @@ fn source_report_error(report: &Value) -> Vec<String> {
 
 fn push_error_text(errors: &mut Vec<String>, value: Option<&Value>) {
     runtime_evidence::push_error_text(errors, value)
-}
-
-fn merge_state_constraints(
-    mut state: CapabilityState,
-    unavailable: Vec<String>,
-    warnings: Vec<String>,
-    compact_errors: Vec<String>,
-) -> CapabilityState {
-    append_unique(&mut state.unavailable_sub_capabilities, unavailable);
-    append_unique(&mut state.warnings, warnings);
-    append_unique(&mut state.compact_errors, compact_errors);
-    if state.status == "available" && !state.unavailable_sub_capabilities.is_empty() {
-        state.status = "degraded";
-    }
-    state
 }
 
 fn endpoint_backed_state(
@@ -874,63 +839,6 @@ fn prefixed_sub_capabilities<'a>(sub_capabilities: &[&'a str], prefix: &str) -> 
         .collect()
 }
 
-fn capability_state_usable(state: &CapabilityState) -> bool {
-    matches!(state.status, "available" | "degraded")
-}
-
-fn state_marks_unavailable(state: &CapabilityState, capability: &str) -> bool {
-    state
-        .unavailable_sub_capabilities
-        .iter()
-        .any(|unavailable| unavailable == capability)
-}
-
-fn state_from_unavailable(
-    sub_capabilities: &[&str],
-    unavailable_sub_capabilities: Vec<String>,
-    warnings: Vec<String>,
-    compact_errors: Vec<String>,
-) -> CapabilityState {
-    let status = if unavailable_sub_capabilities.is_empty() {
-        "available"
-    } else if unavailable_sub_capabilities.len() >= sub_capabilities.len() {
-        "unavailable"
-    } else {
-        "degraded"
-    };
-    CapabilityState {
-        status,
-        unavailable_sub_capabilities,
-        warnings,
-        compact_errors,
-    }
-}
-
-fn input_required_state(sub_capabilities: &[&str], error: String) -> CapabilityState {
-    CapabilityState {
-        status: "input_required",
-        unavailable_sub_capabilities: all_sub_capabilities(sub_capabilities),
-        warnings: Vec::new(),
-        compact_errors: vec![error],
-    }
-}
-
-fn unavailable_state(sub_capabilities: &[&str], error: String) -> CapabilityState {
-    CapabilityState {
-        status: "unavailable",
-        unavailable_sub_capabilities: all_sub_capabilities(sub_capabilities),
-        warnings: Vec::new(),
-        compact_errors: vec![error],
-    }
-}
-
-fn all_sub_capabilities(sub_capabilities: &[&str]) -> Vec<String> {
-    sub_capabilities
-        .iter()
-        .map(|capability| (*capability).to_owned())
-        .collect()
-}
-
 fn connector_capability_precheck(
     connector: &ResolvedConnector,
     capability_key: &str,
@@ -958,10 +866,6 @@ fn connector_capability_precheck(
         ));
     }
     None
-}
-
-fn remove_unavailable(target: &mut Vec<String>, key: &str) {
-    target.retain(|value| value != key);
 }
 
 fn scope_label(scope: &str) -> &'static str {
@@ -1007,20 +911,6 @@ fn string_list(value: Option<&Value>) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
-}
-
-fn append_unique(target: &mut Vec<String>, incoming: Vec<String>) {
-    for value in incoming {
-        if !value.is_empty() && !target.iter().any(|current| current == &value) {
-            target.push(value);
-        }
-    }
-}
-
-fn dedup_strings(values: Vec<String>) -> Vec<String> {
-    let mut result = Vec::new();
-    append_unique(&mut result, values);
-    result
 }
 
 fn first_string(value: &Value, keys: &[&str]) -> Option<String> {
