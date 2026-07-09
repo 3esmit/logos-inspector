@@ -7,7 +7,6 @@ import "../../../components"
 import "../../modules/controls"
 import "../../../state"
 import "../../../theme"
-import "../../../utils/UiFormat.js" as UiFormat
 
 ColumnLayout {
     id: root
@@ -429,14 +428,7 @@ ColumnLayout {
     }
 
     function diagnosticsGateDetailText(gate, fallbackLabel) {
-        const missing = gate && Array.isArray(gate.missing) ? gate.missing : []
-        if (missing.length > 0) {
-            const first = missing[0] || {}
-            const dependency = String(first.dependency || first.capability || "")
-            const label = String(first.label || fallbackLabel || qsTr("Diagnostics"))
-            return dependency.length ? qsTr("%1 unavailable: %2").arg(label).arg(dependency) : qsTr("%1 unavailable").arg(label)
-        }
-        return qsTr("%1 unavailable").arg(String(fallbackLabel || qsTr("Diagnostics")))
+        return sourceSession.diagnosticsGateDetailText(gate, fallbackLabel)
     }
 
     function status() {
@@ -444,14 +436,7 @@ ColumnLayout {
     }
 
     function statusLine() {
-        if (root.pending()) {
-            return qsTr("Refreshing %1").arg(root.model.storageSourceLabel())
-        }
-        const status = root.status()
-        if (!status.known) {
-            return qsTr("Not queried")
-        }
-        return qsTr("%1, checked %2").arg(status.detail || status.text).arg(status.checkedAt || qsTr("now"))
+        return sourceSession.statusLine()
     }
 
     function statusColor() {
@@ -502,37 +487,19 @@ ColumnLayout {
     }
 
     function freshnessText() {
-        const status = root.status()
-        if (!status.known) {
-            return qsTr("No source check")
-        }
-        return status.checkedAt && status.checkedAt.length ? qsTr("Updated %1").arg(status.checkedAt) : qsTr("Updated")
+        return sourceSession.freshnessText()
     }
 
     function freshnessCompactText() {
-        const status = root.status()
-        if (!status.known) {
-            return qsTr("not queried")
-        }
-        return status.checkedAt && status.checkedAt.length ? status.checkedAt : qsTr("updated")
+        return sourceSession.freshnessCompactText()
     }
 
     function sourceBadges() {
-        const rows = [
-            sourceSession.sourceLabel(),
-            root.shortText(sourceSession.sourceTarget(), 42),
-            root.model.storageNetworkPreset,
-            qsTr("%1 s window").arg(root.model.storageRollingWindow)
-        ]
-        const status = root.status()
-        rows.push(status.known ? root.freshnessText() : qsTr("not queried"))
-        rows.push(status.known ? (status.ok ? qsTr("reachable") : qsTr("problem")) : qsTr("unknown"))
-        return rows
+        return sourceSession.sourceBadges(root.model.storageNetworkPreset, qsTr("%1 s window").arg(root.model.storageRollingWindow))
     }
 
     function moduleInfoProbe() {
-        const report = root.report()
-        return report && report.module_info ? report.module_info : null
+        return sourceSession.moduleInfoProbe()
     }
 
     function probeValue(method) {
@@ -787,14 +754,7 @@ ColumnLayout {
     }
 
     function statusRow(label, state, evidence, tone) {
-        return {
-            label: label,
-            state: state,
-            evidence: evidence,
-            source: root.sourceName(),
-            freshness: root.freshnessCompactText(),
-            tone: tone
-        }
+        return sourceSession.statusRow(label, state, evidence, tone)
     }
 
     function metricRow(label, key) {
@@ -841,23 +801,11 @@ ColumnLayout {
     }
 
     function probeRow(probe, fallbackLabel) {
-        const ok = probe && probe.ok === true
-        return root.statusRow(
-            String(probe && probe.label ? probe.label : fallbackLabel),
-            ok ? qsTr("ok") : qsTr("problem"),
-            ok ? root.valueSummary(probe.value) : String(probe && probe.error ? probe.error : qsTr("No response")),
-            ok ? "success" : "error"
-        )
+        return sourceSession.probeRow(probe, fallbackLabel)
     }
 
     function detailRow(label, value) {
-        const text = root.valueSummary(value)
-        return {
-            label: label,
-            value: text,
-            copyText: text === "-" || text === qsTr("n/a") || text === qsTr("Not queried") || text === qsTr("Not fetched") || text === qsTr("Idle") ? "" : root.copyValue(value),
-            source: root.sourceName()
-        }
+        return sourceSession.detailRow(label, value, [qsTr("Not queried"), qsTr("Not fetched"), qsTr("Idle")])
     }
 
     function pathDetailRow(label, value) {
@@ -946,17 +894,11 @@ ColumnLayout {
     }
 
     function valueSummary(value) {
-        return UiFormat.valueSummary(value, {
-            emptyText: qsTr("n/a"),
-            emptyArrayText: qsTr("empty"),
-            shortArrayLimit: 3,
-            unwrapKeys: ["result", "value"],
-            objectSummary: "fields"
-        })
+        return sourceSession.valueSummary(value)
     }
 
     function copyValue(value) {
-        return UiFormat.copyValue(value)
+        return sourceSession.copyValue(value)
     }
 
     function objectField(value, keys) {
@@ -983,12 +925,7 @@ ColumnLayout {
     }
 
     function shortText(value, maxLength) {
-        return UiFormat.shortText(value, {
-            emptyText: qsTr("n/a"),
-            limit: maxLength || 32,
-            minimum: 12,
-            tailLength: 5
-        })
+        return sourceSession.shortText(value, maxLength)
     }
 
 }

@@ -72,6 +72,30 @@ QtObject {
         return SourceDiagnostics.failedProbeCount(report())
     }
 
+    function diagnosticsGateDetailText(gate, fallbackLabel) {
+        return SourceDiagnostics.diagnosticsGateDetailText(gate, fallbackLabel)
+    }
+
+    function statusLine() {
+        return SourceDiagnostics.statusLine(root)
+    }
+
+    function freshnessText() {
+        return SourceDiagnostics.freshnessText(root)
+    }
+
+    function freshnessCompactText() {
+        return SourceDiagnostics.freshnessCompactText(root)
+    }
+
+    function sourceBadges(preset, windowText) {
+        return SourceDiagnostics.sourceBadges(root, preset, windowText)
+    }
+
+    function moduleInfoProbe() {
+        return SourceDiagnostics.moduleInfoProbe(report())
+    }
+
     function sourceFactAvailable(key) {
         return SourceDiagnostics.sourceFactAvailable(model, report(), key)
     }
@@ -82,5 +106,29 @@ QtObject {
 
     function evidenceRows(page, emptyMessage) {
         return SourceDiagnostics.evidenceRows(page, emptyMessage)
+    }
+
+    function statusRow(label, state, evidence, tone) {
+        return SourceDiagnostics.statusRow(root, label, state, evidence, tone)
+    }
+
+    function probeRow(probe, fallbackLabel) {
+        return SourceDiagnostics.probeRow(root, probe, fallbackLabel)
+    }
+
+    function detailRow(label, value, extraCopySkips) {
+        return SourceDiagnostics.detailRow(root, label, value, extraCopySkips)
+    }
+
+    function valueSummary(value) {
+        return SourceDiagnostics.valueSummary(value)
+    }
+
+    function copyValue(value) {
+        return SourceDiagnostics.copyValue(value)
+    }
+
+    function shortText(value, maxLength) {
+        return SourceDiagnostics.shortText(value, maxLength)
     }
 }

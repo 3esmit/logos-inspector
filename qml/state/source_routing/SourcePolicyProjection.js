@@ -81,37 +81,54 @@ function sourceModeAt(index, options) {
 }
 
 function sourceModeAdapter(root, family, value) {
-    const adapter = sourceModePolicy(root, family, resolvedSourceModeKey(root, family, value)).adapter
-    return adapter && typeof adapter === "object" ? adapter : ({})
+    return sourceModeDescriptor(root, family, value).adapter
+}
+
+function sourceModeDescriptor(root, family, value) {
+    const policy = sourceModePolicy(root, family, value)
+    const adapter = policy.adapter && typeof policy.adapter === "object" ? policy.adapter : ({})
+    return {
+        key: String(policy.key || defaultSourceMode(family)),
+        effective: String(policy.effective || (family === "core" ? "rpc" : "rest")),
+        label: String(policy.label || policy.key || ""),
+        sourceLabel: String(policy.source_label || policy.label || ""),
+        summary: String(policy.summary || ""),
+        implemented: policy.implemented === true,
+        adapter: adapter,
+        target: String(adapter.target || "none"),
+        usesRestEndpoint: adapter.uses_rest_endpoint === true,
+        usesMetricsEndpoint: adapter.uses_metrics_endpoint === true,
+        supportsCidProbe: adapter.supports_cid_probe === true,
+        supportsMutatingDiagnostics: adapter.supports_mutating_diagnostics === true
+    }
 }
 
 function resolvedSourceModeKey(root, family, value) {
-    const policy = sourceModePolicy(root, family, value)
-    return String(policy.key || defaultSourceMode(family))
+    return sourceModeDescriptor(root, family, value).key
 }
 
 function sourceModeTargetKind(root, family, value) {
-    return String(sourceModeAdapter(root, family, value).target || "none")
+    return sourceModeDescriptor(root, family, value).target
 }
 
 function sourceModeUsesEndpoint(root, family, value, endpointKind) {
-    const adapter = sourceModeAdapter(root, family, value)
+    const descriptor = sourceModeDescriptor(root, family, value)
     switch (String(endpointKind || "")) {
     case "rest":
-        return adapter.uses_rest_endpoint === true
+        return descriptor.usesRestEndpoint
     case "metrics":
-        return adapter.uses_metrics_endpoint === true
+        return descriptor.usesMetricsEndpoint
     default:
         return false
     }
 }
 
 function sourceModeSupportsCidProbe(root, family, value) {
-    return sourceModeAdapter(root, family, value).supports_cid_probe === true
+    return sourceModeDescriptor(root, family, value).supportsCidProbe
 }
 
 function sourceModeSupportsMutatingDiagnostics(root, family, value) {
-    return sourceModeAdapter(root, family, value).supports_mutating_diagnostics === true
+    return sourceModeDescriptor(root, family, value).supportsMutatingDiagnostics
 }
 
 function coreSourceArgs(root, sourceMode, endpoint, extra) {
@@ -176,8 +193,8 @@ function sourceTarget(root, family, sourceMode, targets) {
 }
 
 function sourceLabel(root, family, sourceMode, fallbackLabel) {
-    const source = sourceModePolicy(root, family, resolvedSourceModeKey(root, family, sourceMode))
-    return String(source.source_label || source.label || fallbackLabel || "")
+    const descriptor = sourceModeDescriptor(root, family, sourceMode)
+    return String(descriptor.sourceLabel || descriptor.label || fallbackLabel || "")
 }
 
 function coreSourceLabel(root, sourceMode, rpcLabel) {

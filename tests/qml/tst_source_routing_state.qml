@@ -142,6 +142,23 @@ TestCase {
         compare(state.connectorScope("storage").connector_id, "direct_storage_rest")
     }
 
+    function test_source_mode_descriptor_reports_adapter_traits() {
+        const storageModule = state.sourceModeDescriptor("storage", "module")
+        compare(storageModule.key, "module")
+        compare(storageModule.effective, "module")
+        compare(storageModule.target, "module")
+        compare(storageModule.supportsCidProbe, true)
+        compare(storageModule.supportsMutatingDiagnostics, true)
+        compare(storageModule.usesRestEndpoint, false)
+
+        const deliveryMetrics = state.sourceModeDescriptor("delivery", "metrics")
+        compare(deliveryMetrics.key, "metrics")
+        compare(deliveryMetrics.effective, "metrics")
+        compare(deliveryMetrics.target, "metrics_endpoint")
+        compare(deliveryMetrics.usesMetricsEndpoint, true)
+        compare(deliveryMetrics.usesRestEndpoint, false)
+    }
+
     function test_lez_indexer_and_sequencer_routes_use_split_connectors() {
         state.connectorConfig = ({
             scopes: {
