@@ -318,6 +318,17 @@ TestCase {
         compare(response.value.args[1], 1)
     }
 
+    function test_appmodel_compatibility_contract_groups_root_facade_aliases() {
+        const sourceGroup = model.appModelCompatibilityGroup("source_routing")
+        const walletGroup = model.appModelCompatibilityMemberGroup("sendWalletTransaction")
+
+        verify(sourceGroup !== null)
+        verify(sourceGroup.members.indexOf("storageSourceReportArgs") >= 0)
+        verify(walletGroup !== null)
+        compare(walletGroup.key, "wallet")
+        compare(walletGroup.status, "compatibility")
+    }
+
     function test_basecamp_bridge_decodes_json_serialized_inspector_response() {
         basecampHost.serializeResults = true
 

@@ -1,5 +1,6 @@
 import QtQuick
 import "../services"
+import "app/AppModelCompatibility.js" as AppModelCompatibility
 import "app/AppModelCore.js" as AppModelCore
 import "domains" as Domains
 import "identity/AppModelIdentity.js" as AppModelIdentity
@@ -1930,4 +1931,10 @@ QtObject {
     function removeIdl(index) { return AppModelRegistry.removeIdl(root, index) }
 
     function clearDashboardMetricHistoryForPrefix(prefix) { return AppModelMetrics.clearDashboardMetricHistoryForPrefix(root, prefix) }
+
+    function appModelCompatibilityContract() { return AppModelCompatibility.contract() }
+
+    function appModelCompatibilityGroup(key) { return AppModelCompatibility.groupFor(key) }
+
+    function appModelCompatibilityMemberGroup(member) { return AppModelCompatibility.memberGroup(member) }
 }

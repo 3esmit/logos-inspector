@@ -2,6 +2,10 @@ use anyhow::Result;
 use serde_json::{Value, json};
 
 use super::evidence::SourceEvidence;
+use super::plan::{
+    HttpJsonProbeStep, HttpProbeNormalizer, delivery_network_monitor_probe_plan,
+    delivery_rest_probe_plan, storage_rest_probe_plan,
+};
 use super::report::{
     MetricsProbeSpec, SourceReportBuilder, SourceReportKind, keyed_probe_result,
     source_report_from_evidence, source_text_metrics_report, unsupported_source_report,
@@ -75,6 +79,43 @@ fn module_source_report(kind: SourceReportKind, report: ModuleReport) -> SourceR
     )
 }
 
+fn probe_step(plan: &[HttpJsonProbeStep], key: SourceProbeKey) -> Option<&HttpJsonProbeStep> {
+    plan.iter().find(|step| step.key == key)
+}
+
+fn optional_probe_steps<'a>(
+    plan: &'a [HttpJsonProbeStep],
+    handled: &[SourceProbeKey],
+) -> Vec<&'a HttpJsonProbeStep> {
+    plan.iter()
+        .filter(|step| !handled.contains(&step.key))
+        .collect()
+}
+
+async fn http_json_probe(endpoint: &str, step: &HttpJsonProbeStep) -> ProbeReport {
+    keyed_probe_result(
+        step.key,
+        step.label,
+        http_url(endpoint, &step.path),
+        raw_http_value(endpoint, &step.path)
+            .await
+            .map(|value| normalize_http_probe_value(value, &step.normalizer)),
+    )
+}
+
+fn normalize_http_probe_value(value: Value, normalizer: &HttpProbeNormalizer) -> Value {
+    match normalizer {
+        HttpProbeNormalizer::Identity => value,
+        HttpProbeNormalizer::StorageManifests => normalize_storage_manifests(value),
+        HttpProbeNormalizer::StorageSpr => normalize_storage_spr(value),
+        HttpProbeNormalizer::StoragePeerId => normalize_storage_peer_id(value),
+        HttpProbeNormalizer::StorageExists(cid) => normalize_storage_exists(value, cid),
+        HttpProbeNormalizer::DeliveryHealth => normalize_delivery_health(value),
+        HttpProbeNormalizer::DeliveryInfo => normalize_delivery_info(value),
+        HttpProbeNormalizer::DeliveryVersion => normalize_delivery_version(value),
+    }
+}
+
 async fn storage_rest_report(
     rest_endpoint: Option<&str>,
     metrics_endpoint: Option<&str>,
@@ -82,55 +123,32 @@ async fn storage_rest_report(
     privileged_debug_enabled: bool,
 ) -> SourceReport {
     let endpoint = optional(rest_endpoint).unwrap_or(DEFAULT_STORAGE_REST_ENDPOINT);
-    let space_source = http_url(endpoint, "/space");
-    let spr_source = http_url(endpoint, "/spr");
-    let peer_id_source = http_url(endpoint, "/peerid");
-    let data_source = http_url(endpoint, "/data");
-    let (space, spr, peer_id, data) = tokio::join!(
-        raw_http_value(endpoint, "/space"),
-        raw_http_value(endpoint, "/spr"),
-        raw_http_value(endpoint, "/peerid"),
-        raw_http_value(endpoint, "/data"),
-    );
-    let spr = spr.map(normalize_storage_spr);
-    let peer_id = peer_id.map(normalize_storage_peer_id);
-    let manifests = data.map(normalize_storage_manifests);
-    let space_probe = keyed_probe_result(
-        SourceProbeKey::StorageSpace,
-        "storage_rest.space",
-        space_source.clone(),
-        space,
+    let plan = storage_rest_probe_plan(cid, privileged_debug_enabled);
+    let Some(space_step) = probe_step(&plan, SourceProbeKey::StorageSpace) else {
+        return unsupported_storage_source_report("rest");
+    };
+    let Some(spr_step) = probe_step(&plan, SourceProbeKey::StorageSpr) else {
+        return unsupported_storage_source_report("rest");
+    };
+    let Some(peer_id_step) = probe_step(&plan, SourceProbeKey::StoragePeerId) else {
+        return unsupported_storage_source_report("rest");
+    };
+    let Some(manifests_step) = probe_step(&plan, SourceProbeKey::StorageManifests) else {
+        return unsupported_storage_source_report("rest");
+    };
+    let (space_probe, spr_probe, peer_id_probe, manifests_probe) = tokio::join!(
+        http_json_probe(endpoint, space_step),
+        http_json_probe(endpoint, spr_step),
+        http_json_probe(endpoint, peer_id_step),
+        http_json_probe(endpoint, manifests_step),
     );
     let mut report =
         SourceReportBuilder::storage("storage_rest", StorageSourceReportKind::Rest, space_probe)
             .include_module_info_probe();
-    report.push_result(
-        SourceProbeKey::StorageSpr,
-        "storage_rest.spr",
-        spr_source,
-        spr,
-    );
-    report.push_result(
-        SourceProbeKey::StoragePeerId,
-        "storage_rest.peerId",
-        peer_id_source,
-        peer_id,
-    );
-    report.push_result(
-        SourceProbeKey::StorageManifests,
-        "storage_rest.manifests",
-        data_source,
-        manifests,
-    );
-    if privileged_debug_enabled {
-        let debug_source = http_url(endpoint, "/debug/info");
-        report.push_result(
-            SourceProbeKey::StorageDebug,
-            "storage_rest.debug",
-            debug_source,
-            raw_http_value(endpoint, "/debug/info").await,
-        );
-    } else {
+    report.push_probe(spr_probe);
+    report.push_probe(peer_id_probe);
+    report.push_probe(manifests_probe);
+    if !privileged_debug_enabled {
         report.push_ok(
             SourceProbeKey::StoragePrivilegedProbe,
             "storage_rest.privilegedProbe",
@@ -138,16 +156,16 @@ async fn storage_rest_report(
             json!({ "skipped": true }),
         );
     }
-    if let Some(cid) = optional(cid) {
-        let path = format!("/data/{cid}/exists");
-        report.push_result(
-            SourceProbeKey::StorageExists,
-            "storage_rest.exists",
-            http_url(endpoint, &path),
-            raw_http_value(endpoint, &path)
-                .await
-                .map(|value| normalize_storage_exists(value, cid)),
-        );
+    for step in optional_probe_steps(
+        &plan,
+        &[
+            SourceProbeKey::StorageSpace,
+            SourceProbeKey::StorageSpr,
+            SourceProbeKey::StoragePeerId,
+            SourceProbeKey::StorageManifests,
+        ],
+    ) {
+        report.push_probe(http_json_probe(endpoint, step).await);
     }
     if let Some(metrics_endpoint) = optional(metrics_endpoint) {
         report.push_probe(storage_metrics_probe(metrics_endpoint).await);
@@ -222,31 +240,20 @@ async fn delivery_rest_report(
     metrics_endpoint: Option<&str>,
 ) -> SourceReport {
     let endpoint = optional(rest_endpoint).unwrap_or(DEFAULT_DELIVERY_REST_ENDPOINT);
-    let health_source = http_url(endpoint, "/health");
-    let info_source = http_url(endpoint, "/info");
-    let version_source = http_url(endpoint, "/version");
-    let (health, info, version) = tokio::join!(
-        raw_http_value(endpoint, "/health"),
-        raw_http_value(endpoint, "/info"),
-        raw_http_value(endpoint, "/version"),
-    );
-    let health_probe = keyed_probe_result(
-        SourceProbeKey::DeliveryHealth,
-        "delivery_rest.health",
-        health_source.clone(),
-        health.map(normalize_delivery_health),
-    );
-    let info_probe = keyed_probe_result(
-        SourceProbeKey::DeliveryInfo,
-        "delivery_rest.info",
-        info_source.clone(),
-        info.map(normalize_delivery_info),
-    );
-    let version_probe = keyed_probe_result(
-        SourceProbeKey::DeliveryVersion,
-        "delivery_rest.version",
-        version_source.clone(),
-        version.map(normalize_delivery_version),
+    let plan = delivery_rest_probe_plan();
+    let Some(health_step) = probe_step(&plan, SourceProbeKey::DeliveryHealth) else {
+        return unsupported_delivery_source_report("rest");
+    };
+    let Some(info_step) = probe_step(&plan, SourceProbeKey::DeliveryInfo) else {
+        return unsupported_delivery_source_report("rest");
+    };
+    let Some(version_step) = probe_step(&plan, SourceProbeKey::DeliveryVersion) else {
+        return unsupported_delivery_source_report("rest");
+    };
+    let (health_probe, info_probe, version_probe) = tokio::join!(
+        http_json_probe(endpoint, health_step),
+        http_json_probe(endpoint, info_step),
+        http_json_probe(endpoint, version_step),
     );
     let health_value = health_probe.value.clone();
     let info_value = info_probe.value.clone();
@@ -262,7 +269,7 @@ async fn delivery_rest_report(
             &mut report,
             SourceProbeKey::DeliveryNodeHealth,
             "nodeHealth",
-            &health_source,
+            &http_url(endpoint, &health_step.path),
             value,
             &["nodeHealth"],
         );
@@ -270,7 +277,7 @@ async fn delivery_rest_report(
             &mut report,
             SourceProbeKey::DeliveryConnectionStatus,
             "connectionStatus",
-            &health_source,
+            &http_url(endpoint, &health_step.path),
             value,
             &["connectionStatus"],
         );
@@ -278,7 +285,7 @@ async fn delivery_rest_report(
             &mut report,
             SourceProbeKey::DeliveryProtocolsHealth,
             "protocolsHealth",
-            &health_source,
+            &http_url(endpoint, &health_step.path),
             value,
             &["protocolsHealth"],
         );
@@ -288,7 +295,7 @@ async fn delivery_rest_report(
             &mut report,
             SourceProbeKey::DeliveryPeerId,
             "peerId",
-            &info_source,
+            &http_url(endpoint, &info_step.path),
             value,
             &["peerId", "peer_id"],
         );
@@ -296,7 +303,7 @@ async fn delivery_rest_report(
             &mut report,
             SourceProbeKey::DeliveryListenAddresses,
             "listenAddresses",
-            &info_source,
+            &http_url(endpoint, &info_step.path),
             value,
             &[
                 "listenAddresses",
@@ -309,7 +316,7 @@ async fn delivery_rest_report(
             &mut report,
             SourceProbeKey::DeliveryEnrUri,
             "enrUri",
-            &info_source,
+            &http_url(endpoint, &info_step.path),
             value,
             &["enrUri", "enr_uri"],
         );
@@ -317,7 +324,7 @@ async fn delivery_rest_report(
             &mut report,
             SourceProbeKey::DeliveryNodeInfoVersion,
             "Version",
-            &info_source,
+            &http_url(endpoint, &info_step.path),
             value,
             &["version", "Version"],
         );
@@ -404,17 +411,16 @@ async fn delivery_network_monitor_report(
     metrics_endpoint: Option<&str>,
 ) -> SourceReport {
     let endpoint = optional(rest_endpoint).unwrap_or(DEFAULT_DELIVERY_REST_ENDPOINT);
-    let all_peers_source = http_url(endpoint, "/allpeersinfo");
-    let content_topics_source = http_url(endpoint, "/contenttopics");
-    let (all_peers, content_topics) = tokio::join!(
-        raw_http_value(endpoint, "/allpeersinfo"),
-        raw_http_value(endpoint, "/contenttopics"),
-    );
-    let all_peers_probe = keyed_probe_result(
-        SourceProbeKey::DeliveryAllPeersInfo,
-        "delivery_network_monitor.allPeersInfo",
-        all_peers_source,
-        all_peers,
+    let plan = delivery_network_monitor_probe_plan();
+    let Some(all_peers_step) = probe_step(&plan, SourceProbeKey::DeliveryAllPeersInfo) else {
+        return unsupported_delivery_source_report("network-monitor");
+    };
+    let Some(content_topics_step) = probe_step(&plan, SourceProbeKey::DeliveryContentTopics) else {
+        return unsupported_delivery_source_report("network-monitor");
+    };
+    let (all_peers_probe, content_topics_probe) = tokio::join!(
+        http_json_probe(endpoint, all_peers_step),
+        http_json_probe(endpoint, content_topics_step),
     );
     let mut report = SourceReportBuilder::delivery(
         "delivery_network_monitor",
@@ -422,12 +428,7 @@ async fn delivery_network_monitor_report(
         all_peers_probe,
     )
     .include_module_info_probe();
-    report.push_result(
-        SourceProbeKey::DeliveryContentTopics,
-        "delivery_network_monitor.contentTopics",
-        content_topics_source,
-        content_topics,
-    );
+    report.push_probe(content_topics_probe);
     if let Some(metrics_endpoint) = optional(metrics_endpoint) {
         report.push_result(
             SourceProbeKey::DeliveryCollectOpenMetricsText,

@@ -1,6 +1,6 @@
 import QtQml
 import "../utils/UiFormat.js" as UiFormat
-import "ConfirmationPolicy.js" as ConfirmationPolicy
+import "wallet/LocalWalletOperationDrafts.js" as LocalWalletOperationDrafts
 
 WalletState {
     id: root
@@ -85,165 +85,56 @@ WalletState {
     }
 
     function createAccount() {
-        if (busyGuard(qsTr("Wallet account"))) {
-            return null
-        }
-        if (!profileGuard(qsTr("Wallet account"), qsTr("Configure wallet binary and wallet home before creating an account."), "profiles")) {
-            return null
-        }
-        const privacy = String(createPrivacy || "public").toLowerCase() === "private" ? "private" : "public"
-        const label = String(createLabel || "").trim()
-
-        return runRequest(qsTr("Wallet account"), "localWalletCreateAccount", [currentProfile(), privacy, label, ConfirmationPolicy.token("wallet-create-account")], true, function (response) {
+        return runOperationDraft(LocalWalletOperationDrafts.createAccount(root), function (response) {
             if (response.ok) {
-                appendHistory(qsTr("Create account"), "created", operationDetail(response.value, "command"))
                 createLabel = ""
-            } else {
-                appendHistory(qsTr("Create account"), "down", response.error || qsTr("Account creation failed."))
             }
         })
     }
 
     function sendTransaction() {
-        if (busyGuard(qsTr("Wallet send"))) {
-            return null
-        }
-        if (!profileGuard(qsTr("Wallet send"), qsTr("Configure wallet binary and wallet home before sending a transaction."), "profiles")) {
-            return null
-        }
-        const request = {
-            from: String(sendFrom || "").trim(),
-            to: String(sendTo || "").trim(),
-            to_keys: String(sendToKeys || "").trim(),
-            to_npk: String(sendToNpk || "").trim(),
-            to_vpk: String(sendToVpk || "").trim(),
-            to_identifier: String(sendToIdentifier || "").trim(),
-            amount: String(sendAmount || "").trim()
-        }
-        if (!request.from.length || !request.amount.length) {
-            gateway.setResult(qsTr("Wallet send"), qsTr("Sender and amount are required."), true, null)
-            return null
-        }
-        if (!request.to.length && !request.to_keys.length && (!request.to_npk.length || !request.to_vpk.length)) {
-            gateway.setResult(qsTr("Wallet send"), qsTr("Recipient account, keys file, or NPK/VPK pair is required."), true, null)
-            return null
-        }
-
-        return runRequest(qsTr("Wallet send"), "localWalletSendTransaction", [currentProfile(), request, ConfirmationPolicy.token("wallet-send-transaction")], true, function (response) {
-            if (response.ok) {
-                appendHistory(qsTr("Send transaction"), "submitted", operationDetail(response.value, "command"))
-            } else {
-                appendHistory(qsTr("Send transaction"), "down", response.error || qsTr("Wallet send failed."))
-            }
-        })
+        return runOperationDraft(LocalWalletOperationDrafts.sendTransaction(root))
     }
 
     function readIncomingTransactions() {
-        if (busyGuard(qsTr("Read incoming"))) {
-            return null
-        }
-        if (!profileGuard(qsTr("Read incoming"), qsTr("Configure wallet binary and wallet home before reading incoming transactions."), "profiles")) {
-            return null
-        }
-
-        return runRequest(qsTr("Read incoming"), "localWalletSyncPrivate", [currentProfile(), ConfirmationPolicy.token("wallet-sync-private")], true, function (response) {
-            if (response.ok) {
-                appendHistory(qsTr("Read incoming"), "submitted", operationDetail(response.value, "privateSync"))
-            } else {
-                appendHistory(qsTr("Read incoming"), "down", response.error || qsTr("Incoming transaction read failed."))
-            }
-        })
+        return runOperationDraft(LocalWalletOperationDrafts.readIncomingTransactions(root))
     }
 
     function runCommand(commandArgs) {
-        const args = Array.isArray(commandArgs) ? commandArgs : []
-        if (busyGuard(qsTr("Wallet command"))) {
-            return null
-        }
-        if (!profileGuard(qsTr("Wallet command"), qsTr("Configure wallet binary and wallet home before running wallet commands."), "profiles")) {
-            return null
-        }
-        if (!args.length) {
-            gateway.setResult(qsTr("Wallet command"), qsTr("Wallet command arguments are required."), true, null)
-            return null
-        }
-
-        return runRequest(qsTr("Wallet command"), "localWalletCommand", [currentProfile(), args, ConfirmationPolicy.token("wallet-command")], true, function (response) {
-            if (response.ok) {
-                appendHistory(qsTr("Wallet command"), "completed", operationDetail(response.value, "command"))
-            } else {
-                appendHistory(qsTr("Wallet command"), "down", response.error || qsTr("Wallet command failed."))
-            }
-        })
+        return runOperationDraft(LocalWalletOperationDrafts.runCommand(root, commandArgs))
     }
 
     function syncPrivate() {
-        if (busyGuard(qsTr("Private sync"))) {
-            return null
-        }
-        if (!profileGuard(qsTr("Private sync"), "", "profiles")) {
-            return null
-        }
-
-        return runRequest(qsTr("Private sync"), "localWalletSyncPrivate", [currentProfile(), ConfirmationPolicy.token("wallet-sync-private")], true, function (response) {
-            if (response.ok) {
-                appendHistory(qsTr("Private sync"), "submitted", operationDetail(response.value, "privateSync"))
-            } else {
-                appendHistory(qsTr("Private sync"), "down", response.error || qsTr("Private sync failed."))
-            }
-        })
+        return runOperationDraft(LocalWalletOperationDrafts.syncPrivate(root))
     }
 
     function queryAccounts(showResult) {
-        if (busyGuard(qsTr("Wallet accounts"))) {
-            return null
-        }
-        if (!profileConfigured()) {
-            accountsError = qsTr("Configure wallet binary and wallet home, or check a profile that resolves $LEE_WALLET_HOME_DIR.")
-            gateway.setResult(qsTr("Wallet accounts"), accountsError, true, null)
-            return null
-        }
-
-        return runRequest(qsTr("Wallet accounts"), "localWalletAccounts", [currentProfile()], showResult === true, function (response) {
+        return runOperationDraft(LocalWalletOperationDrafts.queryAccounts(root, showResult), function (response) {
             if (response.ok) {
                 accountsValue = response.value || null
                 accountsError = ""
-                appendHistory(qsTr("Wallet accounts"), "loaded", operationDetail(response.value, "accounts"))
             } else {
                 accountsValue = null
                 accountsError = response.error || qsTr("Wallet account list failed.")
-                appendHistory(qsTr("Wallet accounts"), "down", accountsError)
             }
         })
     }
 
     function queryBedrockBalance() {
-        const publicKey = String(publicKeyProbe || "").trim()
-        if (!publicKey.length) {
-            gateway.setBedrockWalletBalance(null, qsTr("Wallet public key is required."))
-            return null
-        }
-        if (!isBedrockHexId(publicKey)) {
-            gateway.setBedrockWalletBalance(null, qsTr("Wallet public key must be 64 hex characters."))
-            return null
-        }
-        const tip = String(bedrockBalanceTip || "").trim()
-        if (tip.length > 0 && !isBedrockHexId(tip)) {
-            gateway.setBedrockWalletBalance(null, qsTr("Balance tip must be a 64-hex header id."))
+        const draft = LocalWalletOperationDrafts.queryBedrockBalance(root)
+        if (!draft.ok) {
+            gateway.setBedrockWalletBalance(null, draft.balanceError)
             return null
         }
         gateway.setBedrockWalletBalance(null, "")
-        gateway.setStatus(qsTr("Bedrock wallet"))
-        return gateway.request("bedrockWalletBalance", [gateway.nodeUrl(), publicKey, tip], qsTr("Bedrock wallet"), false, function (response) {
+        return runOperationDraft(draft, function (response) {
             if (response.ok) {
                 gateway.setBedrockWalletBalance(response.value, "")
-                appendHistory(qsTr("Bedrock balance"), "ok", publicKey)
             } else {
                 const error = response.error || qsTr("Balance query failed.")
                 gateway.setBedrockWalletBalance(null, error)
-                appendHistory(qsTr("Bedrock balance"), "down", error)
             }
-        })
+        }, true)
     }
 
     function operationDetail(value, fallback) {
@@ -296,27 +187,6 @@ WalletState {
         return /^(0x)?[0-9a-fA-F]{64}$/.test(String(value || "").trim())
     }
 
-    function busyGuard(title) {
-        if (!gateway || gateway.busy() !== true) {
-            return false
-        }
-        gateway.setResult(title, qsTr("Another inspection is already running."), true, null)
-        return true
-    }
-
-    function profileGuard(title, message, tab) {
-        if (profileConfigured()) {
-            return true
-        }
-        if (gateway) {
-            gateway.openLocalWallet("", tab || "profiles")
-            if (String(message || "").length) {
-                gateway.setResult(title, message, true, null)
-            }
-        }
-        return false
-    }
-
     function runRequest(title, method, args, showResult, callback, beforeStart) {
         if (!gateway) {
             return null
@@ -330,6 +200,41 @@ WalletState {
             gateway.setBusy(false)
             callback(response)
         })
+    }
+
+    function runOperationDraft(draft, afterResponse, skipGenericResult) {
+        if (!draft || draft.ok !== true) {
+            applyInvalidDraft(draft)
+            return null
+        }
+        return runRequest(draft.title, draft.method, draft.args, draft.showResult === true, function (response) {
+            if (afterResponse) {
+                afterResponse(response)
+            }
+            if (skipGenericResult === true) {
+                appendHistory(draft.historyLabel, response.ok ? draft.successStatus : "down",
+                    response.ok ? draft.publicKey : (response.error || draft.failureMessage))
+                return
+            }
+            appendHistory(draft.historyLabel, response.ok ? draft.successStatus : "down",
+                response.ok ? operationDetail(response.value, draft.fallback) : (response.error || draft.failureMessage))
+        })
+    }
+
+    function applyInvalidDraft(draft) {
+        if (!draft || !gateway) {
+            return
+        }
+        if (draft.balanceError !== undefined) {
+            gateway.setBedrockWalletBalance(null, String(draft.balanceError || ""))
+            return
+        }
+        if (String(draft.tab || "").length > 0) {
+            gateway.openLocalWallet("", draft.tab)
+        }
+        if (String(draft.message || "").length > 0) {
+            gateway.setResult(draft.title, draft.message, true, null)
+        }
     }
 
     function appendHistory(label, statusText, detail) {
