@@ -315,6 +315,7 @@ ColumnLayout {
                         }
 
                         ActionButton {
+                            objectName: "createAccountButton"
                             theme: root.theme
                             text: qsTr("Create")
                             primary: true
@@ -417,6 +418,7 @@ ColumnLayout {
                         Layout.fillWidth: true
 
                         ActionButton {
+                            objectName: "sendTransactionButton"
                             theme: root.theme
                             text: qsTr("Send")
                             primary: true
@@ -449,6 +451,7 @@ ColumnLayout {
                     Layout.fillWidth: true
 
                     ActionButton {
+                        objectName: "readIncomingButton"
                         theme: root.theme
                         text: qsTr("Read incoming")
                         primary: true
@@ -498,6 +501,7 @@ ColumnLayout {
                         Layout.fillWidth: true
 
                         ActionButton {
+                            objectName: "advancedWalletButton"
                             theme: root.theme
                             text: qsTr("Run")
                             primary: true
@@ -632,6 +636,7 @@ ColumnLayout {
                         Layout.fillWidth: true
 
                         ActionButton {
+                            objectName: "privateSyncButton"
                             theme: root.theme
                             text: qsTr("Sync private")
                             primary: true
@@ -761,6 +766,7 @@ ColumnLayout {
 
     ConfirmActionPopup {
         id: privateSyncConfirm
+        objectName: "privateSyncConfirm"
 
         theme: root.theme
         title: qsTr("Sync private wallet")
@@ -772,6 +778,7 @@ ColumnLayout {
 
     ConfirmActionPopup {
         id: createAccountConfirm
+        objectName: "createAccountConfirm"
 
         theme: root.theme
         title: qsTr("Create account")
@@ -783,6 +790,7 @@ ColumnLayout {
 
     ConfirmActionPopup {
         id: sendTransactionConfirm
+        objectName: "sendTransactionConfirm"
 
         theme: root.theme
         title: qsTr("Send transaction")
@@ -794,6 +802,7 @@ ColumnLayout {
 
     ConfirmActionPopup {
         id: readIncomingConfirm
+        objectName: "readIncomingConfirm"
 
         theme: root.theme
         title: qsTr("Read incoming")
@@ -805,6 +814,7 @@ ColumnLayout {
 
     ConfirmActionPopup {
         id: advancedWalletConfirm
+        objectName: "advancedWalletConfirm"
 
         theme: root.theme
         title: qsTr("Run wallet command")

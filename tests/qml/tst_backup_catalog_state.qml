@@ -69,6 +69,30 @@ TestCase {
         compare(gateway.lastArgs[2].wallet_home, "/tmp/wallet")
         verify(gateway.lastArgs[3] !== undefined)
         compare(catalog.rows().length, 1)
+        compare(catalog.rows()[0].backup_version_label, "Manual")
+    }
+
+    function test_create_local_allows_backend_default_for_empty_label() {
+        gateway.callResponses = ({
+            createLocalSettingsBackup: {
+                ok: true,
+                value: {
+                    backup_catalog_id: "backup-default",
+                    payload_id: "sha256:def",
+                    backup_version_label: "1720000000",
+                    created_at: "1720000000"
+                },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        const entry = catalog.createLocal("", false, {}, {})
+
+        verify(entry !== null)
+        compare(gateway.lastArgs[0], "")
+        compare(catalog.rows().length, 1)
+        compare(catalog.rows()[0].backup_version_label, "1720000000")
     }
 
     function test_attach_remote_replaces_existing_entry_without_duplicate() {

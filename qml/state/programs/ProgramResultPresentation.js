@@ -129,7 +129,7 @@ function responseProgramText(page) {
         return page.numberText(value.length)
     }
     if (ProgramContextPresentation.isProgramContext(value)) {
-        return page.shortHash(value.program_id_base58 || value.program_id_hex || value.program_id)
+        return ProgramContextPresentation.responseProgramText(page, value)
     }
     if (isProgramFile(value)) {
         return page.shortHash(value.program_id_hex)
@@ -143,7 +143,7 @@ function responseProgramDelta(page) {
         return qsTr("Known program IDs")
     }
     if (ProgramContextPresentation.isProgramContext(value)) {
-        return value.in_chain ? qsTr("verified in chain") : qsTr("not verified")
+        return ProgramContextPresentation.responseProgramDelta(page, value)
     }
     if (isProgramFile(value)) {
         return qsTr("%1 bytes").arg(page.numberText(value.bytecode_len))
@@ -216,6 +216,29 @@ function isProgramFile(value) {
     return value && typeof value === "object" && !Array.isArray(value)
         && value.program_id_hex !== undefined
         && value.deployment_tx_hash !== undefined
+}
+
+function isEventDecodeReport(value) {
+    return value && typeof value === "object" && !Array.isArray(value)
+        && value.event !== undefined
+        && value.consumed_bytes !== undefined
+        && value.total_bytes !== undefined
+        && value.decoded !== undefined
+        && Array.isArray(value.rows)
+}
+
+function eventDecodeRows(page) {
+    const value = page.responseValue
+    const rows = isEventDecodeReport(value) ? value.rows : []
+    return rows.map(function (row) {
+        return {
+            label: String(row.path || qsTr("Value")),
+            value: page.valueText(row.value),
+            linkKind: "",
+            copyable: true,
+            monospace: true
+        }
+    })
 }
 
 function idlCount(page, key) {

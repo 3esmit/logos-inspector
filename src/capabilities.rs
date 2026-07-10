@@ -857,6 +857,64 @@ mod tests {
     }
 
     #[test]
+    fn diagnostics_lez_source_reports_drive_matching_sub_capabilities() -> Result<()> {
+        let inputs = serde_json::json!({
+            "diagnostics_reports": {
+                "source_reports": {
+                    "lez.indexer": {
+                        "health": {
+                            "ready": true,
+                            "reachable": true,
+                            "status": "ready",
+                            "detail": "indexer reachable"
+                        },
+                        "probe_facts": [{
+                            "key": "indexer.connection",
+                            "ok": true
+                        }]
+                    },
+                    "lez.sequencer": {
+                        "health": {
+                            "ready": false,
+                            "reachable": false,
+                            "status": "unavailable",
+                            "detail": "sequencer refused connection"
+                        },
+                        "probe_facts": [{
+                            "key": "execution.connection",
+                            "ok": false,
+                            "error": "sequencer refused connection"
+                        }]
+                    }
+                }
+            }
+        });
+        let value = serde_json::to_value(capability_registry_report_with_value(
+            CapabilityBuildMode::Standalone,
+            Some(&inputs),
+        ))?;
+        let Some(diagnostics) = capability_for(&value, "diagnostics") else {
+            bail!("diagnostics capability missing: {value}");
+        };
+
+        if diagnostics.get("status").and_then(Value::as_str) != Some("degraded") {
+            bail!("LEZ sequencer probe failure should degrade diagnostics: {diagnostics}");
+        }
+        if unavailable_contains(diagnostics, "diagnostics.lez.indexer.read") {
+            bail!(
+                "LEZ indexer diagnostics evidence should enable indexer diagnostics: {diagnostics}"
+            );
+        }
+        if !unavailable_contains(diagnostics, "diagnostics.lez.sequencer.read") {
+            bail!("LEZ sequencer probe failure should block sequencer diagnostics: {diagnostics}");
+        }
+        if !compact_errors_contain(diagnostics, "sequencer refused connection") {
+            bail!("LEZ sequencer probe error should be preserved: {diagnostics}");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn runtime_inputs_wait_for_provider_probe_before_availability() -> Result<()> {
         let inputs = serde_json::json!({
                 "network_connector_config": {

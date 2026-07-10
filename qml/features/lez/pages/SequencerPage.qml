@@ -7,6 +7,7 @@ import QtQuick.Layouts
 import "../../../components"
 import "../controls/sequencer"
 import "../../../state"
+import "../../../state/source_routing/SourceDiagnosticsProjection.js" as SourceDiagnostics
 import "../../../theme"
 
 ColumnLayout {
@@ -36,23 +37,35 @@ ColumnLayout {
         Layout.fillWidth: true
 
         ActionButton {
+            objectName: "sequencerHeaderHeadButton"
             theme: root.theme
             text: qsTr("Head")
             primary: true
-            enabled: !root.model.busy
+            enabled: !root.model.busy && root.diagnosticsGateEnabled()
             Layout.preferredWidth: 96
             accessibleName: qsTr("Fetch sequencer head")
-            onClicked: root.model.callInspector("head", root.model.executionArgs([]), qsTr("Sequencer head"))
+            onClicked: root.runSequencerInspector("head", root.model.executionArgs([]), qsTr("Sequencer head"))
         }
 
         ActionButton {
+            objectName: "sequencerProgramsButton"
             theme: root.theme
             text: qsTr("Programs")
-            enabled: !root.model.busy
+            enabled: !root.model.busy && root.diagnosticsGateEnabled()
             Layout.preferredWidth: 112
             accessibleName: qsTr("Fetch sequencer programs")
-            onClicked: root.model.callInspector("programs", root.model.executionRpcArgs([]), qsTr("Sequencer programs"))
+            onClicked: root.runSequencerInspector("programs", root.model.executionRpcArgs([]), qsTr("Sequencer programs"))
         }
+    }
+
+    StatusMessage {
+        objectName: "sequencerDiagnosticsGateMessage"
+        visible: root.diagnosticsGateNeedsAttention()
+        theme: root.theme
+        tone: root.diagnosticsGateEnabled() ? "warning" : "error"
+        title: root.diagnosticsGateEnabled() ? qsTr("Diagnostics degraded") : qsTr("Diagnostics unavailable")
+        message: root.diagnosticsGateMessage(qsTr("LEZ Sequencer diagnostics"))
+        Layout.fillWidth: true
     }
 
     GridLayout {
@@ -286,13 +299,14 @@ ColumnLayout {
                 Layout.fillWidth: true
 
                 ActionButton {
+                    objectName: "sequencerBlockFetchButton"
                     theme: root.theme
                     text: qsTr("Fetch block")
                     primary: true
-                    enabled: !root.model.busy && root.isUnsignedInteger(blockId.text)
+                    enabled: !root.model.busy && root.diagnosticsGateEnabled() && root.isUnsignedInteger(blockId.text)
                     Layout.fillWidth: true
                     accessibleName: qsTr("Fetch sequencer block")
-                    onClicked: root.model.callInspector("block", root.model.executionArgs([blockId.text]), qsTr("Sequencer block"))
+                    onClicked: root.runSequencerInspector("block", root.model.executionArgs([blockId.text]), qsTr("Sequencer block"))
                 }
 
                 ActionButton {
@@ -305,12 +319,13 @@ ColumnLayout {
                 }
 
                 ActionButton {
+                    objectName: "sequencerBlockHeadButton"
                     theme: root.theme
                     text: qsTr("Head")
-                    enabled: !root.model.busy
+                    enabled: !root.model.busy && root.diagnosticsGateEnabled()
                     Layout.fillWidth: true
                     accessibleName: qsTr("Fetch sequencer head")
-                    onClicked: root.model.callInspector("head", root.model.executionArgs([]), qsTr("Sequencer head"))
+                    onClicked: root.runSequencerInspector("head", root.model.executionArgs([]), qsTr("Sequencer head"))
                 }
             }
         }
@@ -344,31 +359,34 @@ ColumnLayout {
                 Layout.fillWidth: true
 
                 ActionButton {
+                    objectName: "sequencerTransactionSummaryButton"
                     theme: root.theme
                     text: qsTr("Summary")
                     primary: true
-                    enabled: !root.model.busy && txHash.text.trim().length > 0
+                    enabled: !root.model.busy && root.diagnosticsGateEnabled() && txHash.text.trim().length > 0
                     Layout.fillWidth: true
                     accessibleName: qsTr("Fetch transaction summary")
-                    onClicked: root.model.callInspector("transaction", root.model.executionArgs([txHash.text]), qsTr("Transaction summary"))
+                    onClicked: root.runSequencerInspector("transaction", root.model.executionArgs([txHash.text]), qsTr("Transaction summary"))
                 }
 
                 ActionButton {
+                    objectName: "sequencerTransactionDecodeButton"
                     theme: root.theme
                     text: qsTr("Decode")
-                    enabled: !root.model.busy && txHash.text.trim().length > 0
+                    enabled: !root.model.busy && root.diagnosticsGateEnabled() && txHash.text.trim().length > 0
                     Layout.fillWidth: true
                     accessibleName: qsTr("Decode transaction")
-                    onClicked: root.model.callInspector("inspectTransaction", root.transactionArgs(txHash.text, txIdl.text), qsTr("Transaction inspection"))
+                    onClicked: root.runSequencerInspector("inspectTransaction", root.transactionArgs(txHash.text, txIdl.text), qsTr("Transaction inspection"))
                 }
 
                 ActionButton {
+                    objectName: "sequencerTransactionTraceButton"
                     theme: root.theme
                     text: qsTr("Trace")
-                    enabled: !root.model.busy && txHash.text.trim().length > 0
+                    enabled: !root.model.busy && root.diagnosticsGateEnabled() && txHash.text.trim().length > 0
                     Layout.fillWidth: true
                     accessibleName: qsTr("Trace transaction")
-                    onClicked: root.model.callInspector("traceTransaction", root.transactionArgs(txHash.text, txIdl.text), qsTr("Transaction trace"))
+                    onClicked: root.runSequencerInspector("traceTransaction", root.transactionArgs(txHash.text, txIdl.text), qsTr("Transaction trace"))
                 }
 
                 ActionButton {
@@ -381,6 +399,48 @@ ColumnLayout {
                 }
             }
         }
+    }
+
+    function diagnosticsGate() {
+        return root.model.diagnosticsGate("lez.sequencer")
+    }
+
+    function diagnosticsGateEnabled() {
+        return root.diagnosticsGate().enabled === true
+    }
+
+    function diagnosticsGateNeedsAttention() {
+        const gate = root.diagnosticsGate()
+        return gate.enabled !== true || gate.status === "degraded" || (Array.isArray(gate.warnings) && gate.warnings.length > 0)
+    }
+
+    function diagnosticsGateMessage(fallbackLabel) {
+        const gate = root.diagnosticsGate()
+        const warnings = Array.isArray(gate.warnings) ? gate.warnings : []
+        if (warnings.length > 0) {
+            return warnings.map(function (warning) {
+                return String((warning && warning.label) || (warning && warning.dependency) || qsTr("Capability is degraded."))
+            }).join("\n")
+        }
+        if (gate.enabled === true && gate.status === "degraded") {
+            return qsTr("%1 degraded").arg(String(fallbackLabel || qsTr("Diagnostics")))
+        }
+        return SourceDiagnostics.diagnosticsGateDetailText(gate, fallbackLabel)
+    }
+
+    function guardDiagnostics(title) {
+        if (root.diagnosticsGateEnabled()) {
+            return true
+        }
+        root.model.statusText = root.diagnosticsGateMessage(title)
+        return false
+    }
+
+    function runSequencerInspector(method, args, title) {
+        if (!root.guardDiagnostics(title)) {
+            return null
+        }
+        return root.model.callInspector(method, args, title)
     }
 
     function activeTabLabel() {

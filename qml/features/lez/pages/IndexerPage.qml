@@ -6,6 +6,7 @@ import QtQml.Models
 import QtQuick.Layouts
 import "../../../components"
 import "../../../state"
+import "../../../state/source_routing/SourceDiagnosticsProjection.js" as SourceDiagnostics
 import "../../../theme"
 import "../../../utils/UiFormat.js" as UiFormat
 
@@ -31,6 +32,16 @@ ColumnLayout {
         title: qsTr("LEZ Indexer Diagnostics")
         layerLabel: qsTr("Diagnostics")
         subtitle: qsTr("Probe local or remote indexer sync status, health, finalized head, and raw JSON-RPC methods.")
+        Layout.fillWidth: true
+    }
+
+    StatusMessage {
+        objectName: "indexerDiagnosticsGateMessage"
+        visible: root.diagnosticsGateNeedsAttention()
+        theme: root.theme
+        tone: root.diagnosticsGateEnabled() ? "warning" : "error"
+        title: root.diagnosticsGateEnabled() ? qsTr("Diagnostics degraded") : qsTr("Diagnostics unavailable")
+        message: root.diagnosticsGateMessage(qsTr("LEZ Indexer diagnostics"))
         Layout.fillWidth: true
     }
 
@@ -226,40 +237,44 @@ ColumnLayout {
                 Layout.fillWidth: true
 
                 ActionButton {
+                    objectName: "indexerStatusButton"
                     theme: root.theme
                     text: qsTr("Status")
                     primary: true
-                    enabled: !root.model.busy
+                    enabled: !root.model.busy && root.diagnosticsGateEnabled()
                     Layout.preferredWidth: 104
                     accessibleName: qsTr("Fetch indexer status")
-                    onClicked: root.model.refreshIndexerStatus()
+                    onClicked: root.runIndexerStatus()
                 }
 
                 ActionButton {
+                    objectName: "indexerDeepHealthButton"
                     theme: root.theme
                     text: qsTr("Deep health")
-                    enabled: !root.model.busy
+                    enabled: !root.model.busy && root.diagnosticsGateEnabled()
                     Layout.preferredWidth: 132
                     accessibleName: qsTr("Run indexer deep health")
-                    onClicked: root.model.callInspector("indexerHealth", root.model.indexerArgs([]), qsTr("Indexer health"))
+                    onClicked: root.runIndexerInspector("indexerHealth", root.model.indexerArgs([]), qsTr("Indexer health"))
                 }
 
                 ActionButton {
+                    objectName: "indexerFinalizedHeadButton"
                     theme: root.theme
                     text: qsTr("Finalized head")
-                    enabled: !root.model.busy
+                    enabled: !root.model.busy && root.diagnosticsGateEnabled()
                     Layout.preferredWidth: 148
                     accessibleName: qsTr("Fetch indexer finalized head")
-                    onClicked: root.model.callInspector("indexerFinalizedHead", root.model.indexerArgs([]), qsTr("Indexer head"))
+                    onClicked: root.runIndexerInspector("indexerFinalizedHead", root.model.indexerArgs([]), qsTr("Indexer head"))
                 }
 
                 ActionButton {
+                    objectName: "indexerOverviewButton"
                     theme: root.theme
                     text: qsTr("Overview")
-                    enabled: !root.model.busy
+                    enabled: !root.model.busy && root.diagnosticsGateEnabled()
                     Layout.preferredWidth: 112
                     accessibleName: qsTr("Run indexer overview")
-                    onClicked: root.model.callInspector("overview", [root.model.sequencerUrl, root.model.indexerUrl, root.model.nodeUrl], qsTr("Indexer dashboard"))
+                    onClicked: root.runIndexerInspector("overview", [root.model.sequencerUrl, root.model.indexerUrl, root.model.nodeUrl], qsTr("Indexer dashboard"))
                 }
             }
         }
@@ -288,15 +303,65 @@ ColumnLayout {
             }
 
             ActionButton {
+                objectName: "indexerRpcButton"
                 theme: root.theme
                 text: qsTr("Call indexer")
                 primary: true
-                enabled: !root.model.busy && method.text.trim().length > 0 && params.text.trim().length > 0
+                enabled: !root.model.busy && root.diagnosticsGateEnabled() && method.text.trim().length > 0 && params.text.trim().length > 0
                 Layout.preferredWidth: 132
                 accessibleName: qsTr("Call indexer JSON-RPC")
-                onClicked: root.model.callInspector("rawRpc", [root.model.indexerUrl, method.text, params.text], qsTr("Indexer RPC"))
+                onClicked: root.runIndexerInspector("rawRpc", [root.model.indexerUrl, method.text, params.text], qsTr("Indexer RPC"))
             }
         }
+    }
+
+    function diagnosticsGate() {
+        return root.model.diagnosticsGate("lez.indexer")
+    }
+
+    function diagnosticsGateEnabled() {
+        return root.diagnosticsGate().enabled === true
+    }
+
+    function diagnosticsGateNeedsAttention() {
+        const gate = root.diagnosticsGate()
+        return gate.enabled !== true || gate.status === "degraded" || (Array.isArray(gate.warnings) && gate.warnings.length > 0)
+    }
+
+    function diagnosticsGateMessage(fallbackLabel) {
+        const gate = root.diagnosticsGate()
+        const warnings = Array.isArray(gate.warnings) ? gate.warnings : []
+        if (warnings.length > 0) {
+            return warnings.map(function (warning) {
+                return String((warning && warning.label) || (warning && warning.dependency) || qsTr("Capability is degraded."))
+            }).join("\n")
+        }
+        if (gate.enabled === true && gate.status === "degraded") {
+            return qsTr("%1 degraded").arg(String(fallbackLabel || qsTr("Diagnostics")))
+        }
+        return SourceDiagnostics.diagnosticsGateDetailText(gate, fallbackLabel)
+    }
+
+    function guardDiagnostics(title) {
+        if (root.diagnosticsGateEnabled()) {
+            return true
+        }
+        root.model.statusText = root.diagnosticsGateMessage(title)
+        return false
+    }
+
+    function runIndexerStatus() {
+        if (!root.guardDiagnostics(qsTr("Indexer status"))) {
+            return null
+        }
+        return root.model.refreshIndexerStatus()
+    }
+
+    function runIndexerInspector(method, args, title) {
+        if (!root.guardDiagnostics(title)) {
+            return null
+        }
+        return root.model.callInspector(method, args, title)
     }
 
     function activeValue() {

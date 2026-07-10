@@ -1225,6 +1225,36 @@ TestCase {
         compare(basecamp.scopes["wallet.l2"].connector_id, "lez_core")
     }
 
+    function test_capability_diagnostics_reports_include_lez_source_evidence() {
+        model.networkConnectionStatus = ({
+            indexer: {
+                known: true,
+                ok: true,
+                detail: "indexer reachable",
+                value: { height: 15 }
+            },
+            execution: {
+                known: true,
+                ok: false,
+                detail: "sequencer refused connection"
+            }
+        })
+
+        const reports = model.capabilityRegistryRuntimeInputs().diagnostics_reports.source_reports
+        const indexerReport = reports["lez.indexer"]
+        const sequencerReport = reports["lez.sequencer"]
+
+        verify(indexerReport !== undefined)
+        verify(indexerReport !== null)
+        compare(indexerReport.health.ready, true)
+        compare(indexerReport.probe_facts[0].ok, true)
+        verify(sequencerReport !== undefined)
+        verify(sequencerReport !== null)
+        compare(sequencerReport.health.ready, false)
+        compare(sequencerReport.probe_facts[0].ok, false)
+        compare(sequencerReport.probe_facts[0].error, "sequencer refused connection")
+    }
+
     function test_social_comment_topics_for_supported_detail_kinds() {
         fakeHost.responses = {
             socialCommentTopic: function(args) {
@@ -1897,10 +1927,36 @@ TestCase {
         const calls = fakeHost.calls.filter(function (item) { return item.method === "createLocalSettingsBackup" })
         compare(calls.length, 1)
         const call = calls[0]
+        compare(call.args[0], "Partial")
         compare(call.args[3].settings, false)
         compare(call.args[3].favorites, true)
         compare(call.args[3].idl_registry, false)
         compare(call.args[3].wallet_profile, false)
+        compare(entry.backup_version_label, "Partial")
+    }
+
+    function test_create_local_settings_backup_passes_empty_label_for_backend_default() {
+        fakeHost.responses = {
+            createLocalSettingsBackup: {
+                ok: true,
+                value: {
+                    backup_catalog_id: "backup-default",
+                    payload_id: "sha256:default",
+                    backup_version_label: "1720000000",
+                    created_at: "1720000000"
+                },
+                text: "OK",
+                error: ""
+            }
+        }
+
+        const entry = model.createLocalSettingsBackup("", false, model.defaultSettingsBackupContents())
+
+        verify(entry !== null)
+        const calls = fakeHost.calls.filter(function (item) { return item.method === "createLocalSettingsBackup" })
+        compare(calls.length, 1)
+        compare(calls[0].args[0], "")
+        compare(entry.backup_version_label, "1720000000")
     }
 
     function test_settings_restore_from_storage_downloads_catalog_only() {
@@ -2642,6 +2698,166 @@ TestCase {
 	                && row.reason === "affected_operation_blocked_for_import"
 	                && row.importId === "backup_import:backup-1"
 	        }))
+    }
+
+    function test_restore_local_settings_backup_blocks_when_cancel_fails() {
+        model.runtimeOperations = ({
+            "op-wallet": {
+                operationId: "op-wallet",
+                domain: "wallet",
+                method: "localWalletInstructionSubmit",
+                status: "running",
+                label: "Submit transaction",
+                cancellable: true
+            }
+        })
+        fakeHost.responses = {
+            previewLocalSettingsRestore: {
+                ok: true,
+                value: {
+                    restored: true,
+                    settings: false,
+                    idls: false,
+                    wallet: true,
+                    favorites: 0,
+                    idl_count: 0,
+                    applied_areas: ["wallet_profile"]
+                },
+                text: "OK",
+                error: ""
+            },
+            runtimeOperationCancel: {
+                ok: false,
+                value: null,
+                text: "",
+                error: "cancel rejected"
+            },
+            restoreLocalSettingsBackup: {
+                ok: true,
+                value: { restored: true },
+                text: "OK",
+                error: ""
+            }
+        }
+
+        const summary = model.restoreLocalSettingsBackup("backup-stop-failed", {
+            settings: "skip",
+            favorites: "skip",
+            idl_registry: "skip",
+            wallet_profile: "replace"
+        })
+
+        compare(summary, null)
+        verify(callIndexFor("runtimeOperationCancel") >= 0)
+        verify(!fakeHost.calls.some(function (call) { return call.method === "restoreLocalSettingsBackup" }))
+        compare(model.settingsBackupStatus, "cancel rejected")
+        const backupRows = model.runtimeOperationHistoryRows("backup")
+        verify(backupRows.some(function (row) {
+            return row.status === "blocked_for_import"
+                && row.reason === "affected_operation_blocked_for_import"
+                && row.importId === "backup_import:backup-stop-failed"
+                && row.backupCatalogId === "backup-stop-failed"
+                && row.result
+                && row.result.action === "block"
+                && row.result.operation_id === "op-wallet"
+        }))
+    }
+
+    function test_restore_local_settings_backup_records_failed_restart() {
+        model.runtimeOperations = ({
+            "op-read": {
+                operationId: "op-read",
+                domain: "storage",
+                method: "storageExists",
+                status: "running",
+                label: "Check CID",
+                cancellable: true,
+                restartRequest: {
+                    domain: "storage",
+                    method: "storageExists",
+                    args: ["rest", "http://127.0.0.1:8080/api/storage/v1", "cid-a"],
+                    label: "Check CID"
+                }
+            }
+        })
+        fakeHost.responses = {
+            previewLocalSettingsRestore: {
+                ok: true,
+                value: {
+                    restored: true,
+                    settings: true,
+                    idls: false,
+                    wallet: false,
+                    favorites: 0,
+                    idl_count: 0,
+                    applied_areas: ["settings"]
+                },
+                text: "OK",
+                error: ""
+            },
+            runtimeOperationCancel: {
+                ok: true,
+                value: {
+                    operationId: "op-read",
+                    domain: "storage",
+                    method: "storageExists",
+                    status: "canceled",
+                    label: "Check CID"
+                },
+                text: "OK",
+                error: ""
+            },
+            restoreLocalSettingsBackup: {
+                ok: true,
+                value: {
+                    restored: true,
+                    encrypted: false,
+                    settings: true,
+                    idls: false,
+                    wallet: false,
+                    favorites: 0,
+                    idl_count: 0
+                },
+                text: "OK",
+                error: ""
+            },
+            runtimeOperationStart: {
+                ok: false,
+                value: null,
+                text: "",
+                error: "restart denied"
+            },
+            loadSettingsState: { ok: true, value: { favorites: [] }, text: "OK", error: "" },
+            loadIdlState: { ok: true, value: { idls: [], account_idl_selections: {} }, text: "OK", error: "" },
+            loadWalletState: { ok: true, value: { profile: { label: "Local wallet" }, operations: [] }, text: "OK", error: "" }
+        }
+
+        const summary = model.restoreLocalSettingsBackup("backup-restart-failed", {
+            settings: "replace",
+            favorites: "skip",
+            idl_registry: "skip",
+            wallet_profile: "skip"
+        })
+
+        verify(summary !== null)
+        const restoreIndex = callIndexFor("restoreLocalSettingsBackup")
+        tryVerify(function () {
+            return callIndexFor("runtimeOperationStart") > restoreIndex
+        })
+        tryVerify(function () {
+            const backupRows = model.runtimeOperationHistoryRows("backup")
+            return backupRows.some(function (row) {
+                return row.status === "restart_failed_after_import"
+                    && row.reason === "safe_operation_restart_failed_after_import"
+                    && row.previousOperationId === "op-read"
+                    && row.importId === "backup_import:backup-restart-failed"
+                    && row.backupCatalogId === "backup-restart-failed"
+                    && row.detail === "restart denied"
+                    && row.result
+                    && row.result.action === "restart_failed"
+                    && row.result.previous_operation_id === "op-read"
+            })
+        })
     }
 
     function test_restore_local_settings_backup_skips_restart_when_gate_fails_after_apply() {

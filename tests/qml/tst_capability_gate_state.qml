@@ -356,4 +356,25 @@ TestCase {
         verify(!wallet.enabled)
         compare(wallet.missing[0].dependency, "diagnostics.wallet.read")
     }
+
+    function test_diagnostics_gate_maps_lez_actions_to_runtime_subcapabilities() {
+        gates.registryLoaded = true
+        gates.registryReport = ({
+            schema_version: 1,
+            capabilities: [{
+                key: "diagnostics",
+                label: "Diagnostics",
+                status: "degraded",
+                sub_capabilities: ["diagnostics.lez.indexer.read", "diagnostics.lez.sequencer.read"],
+                unavailable_sub_capabilities: ["diagnostics.lez.sequencer.read"]
+            }]
+        })
+
+        const indexer = gates.diagnosticsGate("lez.indexer")
+        const sequencer = gates.diagnosticsGate("lez.sequencer")
+
+        verify(indexer.enabled)
+        verify(!sequencer.enabled)
+        compare(sequencer.missing[0].dependency, "diagnostics.lez.sequencer.read")
+    }
 }
