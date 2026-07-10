@@ -119,6 +119,26 @@ TestCase {
         compare(rows[rows.length - 1].value, "rpc unavailable")
     }
 
+    function test_not_found_context_uses_program_context_summary() {
+        const context = programContext()
+        context.in_chain = false
+        context.verification = "not_found"
+        context.known_label = ""
+        page.responseValue = context
+
+        const rows = ProgramContextPresentation.rows(page, context)
+
+        compare(ProgramContextPresentation.verificationText(context), "not in getProgramIds")
+        compare(ProgramContextPresentation.responseProgramText(page, context), "Base...amId")
+        compare(ProgramContextPresentation.responseProgramDelta(page, context), "not verified")
+        compare(ProgramResultPresentation.responseProgramText(page), "Base...amId")
+        compare(ProgramResultPresentation.responseProgramDelta(page), "not verified")
+        compare(rows.length, 5)
+        compare(rows[0].value, "not in getProgramIds")
+        compare(rows[1].linkKind, "")
+        compare(rows[2].linkKind, "")
+    }
+
     function test_program_result_presentation_wraps_tab_and_result_state() {
         programModel.programTab = "binaries"
         page.hasResponse = false
@@ -148,5 +168,28 @@ TestCase {
         compare(rows[2].linkKind, "program")
         compare(ProgramResultPresentation.responseProgramText(page), "0xabc")
         compare(ProgramResultPresentation.responseProgramDelta(page), "9 bytes")
+    }
+
+    function test_program_result_presentation_projects_event_decode_rows() {
+        page.responseValue = {
+            event: "Transfer",
+            consumed_bytes: 16,
+            total_bytes: 16,
+            decoded: ({ amount: 42, recipient: "Base58Recipient" }),
+            rows: [
+                { path: "amount", value: "42" },
+                { path: "recipient", value: "Base58Recipient" }
+            ]
+        }
+
+        verify(ProgramResultPresentation.isEventDecodeReport(page.responseValue))
+        const rows = ProgramResultPresentation.eventDecodeRows(page)
+        compare(rows.length, 2)
+        compare(rows[0].label, "amount")
+        compare(rows[0].value, "42")
+        compare(rows[0].monospace, true)
+        compare(rows[1].label, "recipient")
+        compare(rows[1].value, "Base58Recipient")
+        verify(!ProgramResultPresentation.isEventDecodeReport({ event: "Transfer", rows: [] }))
     }
 }

@@ -260,6 +260,13 @@ ColumnLayout {
             onLinkActivated: (kind, value) => root.model.entityNavigation.openReference(kind, value)
         }
 
+        LinkedDetailSection {
+            visible: root.isEventDecodeReport(root.responseValue)
+            theme: root.theme
+            title: qsTr("Event decode")
+            rows: root.eventDecodeRows()
+        }
+
         ProgramContextSummary {
             visible: root.isProgramContext(root.responseValue)
             theme: root.theme
@@ -746,6 +753,10 @@ ColumnLayout {
         return ProgramResultPresentation.isProgramFile(value)
     }
 
+    function isEventDecodeReport(value) {
+        return ProgramResultPresentation.isEventDecodeReport(value)
+    }
+
     function idlCount(key) {
         return ProgramResultPresentation.idlCount(root, key)
     }
@@ -764,6 +775,10 @@ ColumnLayout {
 
     function programFileRows() {
         return ProgramResultPresentation.programFileRows(root)
+    }
+
+    function eventDecodeRows() {
+        return ProgramResultPresentation.eventDecodeRows(root)
     }
 
     function idlFieldCount(json) {

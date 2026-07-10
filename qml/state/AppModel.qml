@@ -1364,6 +1364,8 @@ QtObject {
             },
             source_reports: {
                 l1: capabilityNetworkSourceReport("blockchain", qsTr("L1 RPC")),
+                "lez.indexer": capabilityNetworkSourceReport("indexer", qsTr("LEZ indexer RPC")),
+                "lez.sequencer": capabilityNetworkSourceReport("execution", qsTr("LEZ sequencer RPC")),
                 storage: storageSourceReport || null,
                 delivery: messagingSourceReport || null
             },

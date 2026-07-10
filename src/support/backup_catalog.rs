@@ -309,7 +309,7 @@ fn create_entry_from_payload(
         backup_version_label: label
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .unwrap_or("Manual backup")
+            .unwrap_or(created_at.as_str())
             .to_owned(),
         created_at,
         contents: backup_contents(payload),
@@ -478,6 +478,40 @@ mod tests {
                 bail!("backup entry missing content `{content}`: {entry:?}");
             }
         }
+        fs::remove_dir_all(&base)
+            .with_context(|| format!("failed to remove test directory {}", base.display()))?;
+        Ok(())
+    }
+
+    #[test]
+    fn local_backup_entry_defaults_blank_label_to_created_at_timestamp() -> Result<()> {
+        let base = unique_test_dir("catalog-default-label")?;
+        let mut catalog = BackupCatalog::default();
+        let payload = json!({
+            "encrypted": false,
+            "state": {
+                "settings": { "favorites": [] }
+            }
+        });
+
+        let entry = create_entry_from_payload(&base, &mut catalog, Some("   "), &payload, false)?;
+
+        if entry.backup_version_label.is_empty() {
+            bail!("backup label default must not be empty");
+        }
+        if entry.backup_version_label == "Manual backup" {
+            bail!("backup label default must not use the legacy manual label");
+        }
+        if entry.backup_version_label != entry.created_at {
+            bail!(
+                "backup label default should match created_at timestamp: {:?}",
+                entry
+            );
+        }
+        entry
+            .backup_version_label
+            .parse::<u64>()
+            .context("backup label default is not a unix timestamp")?;
         fs::remove_dir_all(&base)
             .with_context(|| format!("failed to remove test directory {}", base.display()))?;
         Ok(())
