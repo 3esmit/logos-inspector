@@ -3,6 +3,7 @@ pub mod capabilities;
 #[cfg(feature = "cli")]
 pub mod cli;
 pub mod decode;
+pub mod inspection;
 
 mod inspector {
     pub mod bridge;
@@ -23,9 +24,7 @@ pub mod source_routing;
 pub(crate) mod support;
 pub mod wallet;
 
-pub use public_surface::{
-    bridge, idl_decode, inspection, local_indexer, logoscore, network, program_decode,
-};
+pub use public_surface::{bridge, idl_decode, local_indexer, logoscore, network, program_decode};
 
 // Compatibility shims. First-party code should prefer the domain modules above.
 pub use public_surface::compat::*;
