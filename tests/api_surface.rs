@@ -22,6 +22,15 @@ fn source_routing_exposes_adapter_boundaries() {
 }
 
 #[test]
+fn network_inspection_exposes_legacy_and_zone_boundaries() {
+    let _ = logos_inspector::inspection::l1::channels::channel_scan;
+    let _ = logos_inspector::inspection::l2::lez::sequencer_health;
+    let _ = logos_inspector::inspection::zones::classify_zone;
+    let _ = logos_inspector::inspection::classify_zone;
+    let _ = logos_inspector::inspection::ZoneKind::Unknown;
+}
+
+#[test]
 fn legacy_root_and_network_shims_still_compile() {
     let _ = logos_inspector::decode::spel_idl_report;
     let _ = logos_inspector::idl_decode::spel_idl_report;
