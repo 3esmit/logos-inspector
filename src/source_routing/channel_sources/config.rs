@@ -140,8 +140,9 @@ pub enum ChannelSourceConfigMutation {
     RemoveIndexer,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ChannelSourceRole {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelSourceRole {
     Sequencer,
     Indexer,
 }

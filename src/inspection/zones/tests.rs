@@ -229,11 +229,14 @@ fn zone_detail_adds_compact_facts_without_repeating_summary_sections() -> Result
         source_observations: vec![ZoneSourceObservation {
             source_id: "seq-primary".to_owned(),
             role: ZoneSourceRole::Sequencer,
+            binding_state: Some(ZoneSourceBindingState::PersistedAttested),
             health: ZoneSourceHealth::Reachable,
             reported_channel_id: Some("8".repeat(64)),
             head_block_id: Some(1_099),
             head_block_hash: Some("b".repeat(64)),
+            head_parent_hash: Some("a".repeat(64)),
             observed_at_unix: Some(1_782_985_805),
+            latency_millis: Some(4),
             last_error: None,
         }],
         classification_evidence: ZoneClassificationEvidence {

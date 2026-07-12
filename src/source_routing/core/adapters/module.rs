@@ -123,6 +123,14 @@ pub(crate) fn indexer_block_by_hash(header_hash: &str) -> Result<Option<IndexerB
     Ok(Some(summarize_indexer_block(&value)))
 }
 
+pub(crate) fn indexer_block_by_id(block_id: u64) -> Result<Option<IndexerBlockReport>> {
+    let value = call_value(INDEXER_MODULE, "getBlockById", &[block_id.to_string()])?;
+    if empty_module_lookup(&value) {
+        return Ok(None);
+    }
+    Ok(Some(summarize_indexer_block(&value)))
+}
+
 pub(crate) fn indexer_transfer_recipients(
     before: Option<u64>,
     limit: u64,

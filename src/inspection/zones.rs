@@ -415,11 +415,14 @@ pub enum ZoneSourceTarget {
 pub struct ZoneSourceObservation {
     pub source_id: String,
     pub role: ZoneSourceRole,
+    pub binding_state: Option<ZoneSourceBindingState>,
     pub health: ZoneSourceHealth,
     pub reported_channel_id: Option<String>,
     pub head_block_id: Option<u64>,
     pub head_block_hash: Option<String>,
+    pub head_parent_hash: Option<String>,
     pub observed_at_unix: Option<u64>,
+    pub latency_millis: Option<u64>,
     pub last_error: Option<String>,
 }
 
@@ -428,6 +431,15 @@ pub struct ZoneSourceObservation {
 pub enum ZoneSourceRole {
     Sequencer,
     Indexer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ZoneSourceBindingState {
+    PersistedAttested,
+    Pending,
+    RuntimeAttested,
+    ChannelMismatch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
