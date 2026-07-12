@@ -2,7 +2,9 @@ use anyhow::{Result, bail};
 use serde_json::Value;
 
 use super::fixtures::{
-    data_channel, l1_only_sequencer_zone, linked_sequencer_zone, unknown_l1_channel,
+    complete_replay_catalog, data_channel, l1_only_sequencer_zone, linked_sequencer_zone,
+    partial_raw_catalog_with_connected_lifecycle, partial_raw_catalog_without_connected_lifecycle,
+    point_snapshot_catalog_across_gap, sequencer_source_config, unknown_l1_channel,
 };
 use super::*;
 
@@ -276,6 +278,190 @@ fn zone_detail_adds_compact_facts_without_repeating_summary_sections() -> Result
 
     let decoded: ZoneDetail = serde_json::from_value(value)?;
     require_equal(&decoded, &detail, "Zone detail round trip")?;
+    Ok(())
+}
+
+#[test]
+fn complete_catalog_projection_keeps_authoritative_replay_facts() -> Result<()> {
+    let snapshot = complete_replay_catalog();
+
+    let rows = project_catalog_zones(&snapshot, &[], CatalogVerificationState::Verified);
+
+    let Some(row) = rows.first() else {
+        bail!("catalog projection omitted Zone");
+    };
+    require_equal(&rows.len(), &1, "catalog row count")?;
+    require_equal(&row.kind(), &ZoneKind::SequencerZone, "catalog Zone kind")?;
+    require_equal(
+        &row.settlement_link.status,
+        &SettlementLinkStatus::L1Only,
+        "catalog settlement status",
+    )?;
+    require_equal(
+        &row.l1_channel.balance.as_deref(),
+        &Some("1000"),
+        "authoritative replay balance",
+    )?;
+    require_equal(
+        &row.sequencer_committee()
+            .map(|committee| committee.members.len()),
+        &Some(1),
+        "authoritative replay committee",
+    )?;
+    require_equal(
+        &row.provenance.coverage.status,
+        &CatalogCoverageStatus::Complete,
+        "catalog coverage projection",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn incomplete_lifecycle_suppresses_replay_state_and_data_channel_guess() -> Result<()> {
+    let snapshot = partial_raw_catalog_without_connected_lifecycle();
+
+    let rows = project_catalog_zones(&snapshot, &[], CatalogVerificationState::CachedUnverified);
+
+    let Some(row) = rows.first() else {
+        bail!("catalog projection omitted partial Zone");
+    };
+    require_equal(&row.kind(), &ZoneKind::Unknown, "partial Zone kind")?;
+    require_equal(&row.l1_channel.balance, &None, "uncovered replay balance")?;
+    require_equal(
+        &row.l1_channel.tip_hash,
+        &None,
+        "uncovered replay Channel tip",
+    )?;
+    require_equal(
+        &row.provenance.verification_state,
+        &CatalogVerificationState::CachedUnverified,
+        "cached verification state",
+    )?;
+    require_equal(
+        &row.provenance.coverage.status,
+        &CatalogCoverageStatus::Partial,
+        "partial coverage state",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn connected_partial_lifecycle_projects_data_channel_facts() -> Result<()> {
+    let snapshot = partial_raw_catalog_with_connected_lifecycle();
+
+    let rows = project_catalog_zones(&snapshot, &[], CatalogVerificationState::Verified);
+
+    let Some(row) = rows.first() else {
+        bail!("catalog projection omitted Data Channel");
+    };
+    require_equal(&row.kind(), &ZoneKind::DataChannel, "Data Channel kind")?;
+    require_equal(
+        &row.settlement_link.status,
+        &SettlementLinkStatus::RawData,
+        "Data Channel settlement state",
+    )?;
+    let Some(raw_activity) = row.raw_activity() else {
+        bail!("Data Channel projection omitted raw activity");
+    };
+    require_equal(&raw_activity.inscription_count, &1, "raw inscription count")?;
+    require_equal(&raw_activity.latest_slot, &Some(9), "latest raw slot")?;
+    Ok(())
+}
+
+#[test]
+fn point_snapshot_keeps_explicit_channel_state_across_gap() -> Result<()> {
+    let snapshot = point_snapshot_catalog_across_gap();
+
+    let rows = project_catalog_zones(&snapshot, &[], CatalogVerificationState::Verified);
+
+    let Some(row) = rows.first() else {
+        bail!("catalog projection omitted point-snapshot Zone");
+    };
+    require_equal(&row.kind(), &ZoneKind::SequencerZone, "point Zone kind")?;
+    require_equal(
+        &row.l1_channel.balance.as_deref(),
+        &Some("1000"),
+        "point-snapshot balance",
+    )?;
+    require_equal(
+        &row.sequencer_committee()
+            .map(|committee| committee.members.len()),
+        &Some(1),
+        "point-snapshot committee",
+    )?;
+    require_equal(
+        &row.provenance.coverage.status,
+        &CatalogCoverageStatus::Partial,
+        "point-snapshot global coverage",
+    )?;
+    Ok(())
+}
+
+#[test]
+fn configured_channels_overlay_catalog_and_materialize_before_discovery() -> Result<()> {
+    let snapshot = complete_replay_catalog();
+    let scope = &snapshot.metadata.network_scope;
+    let configured_only_id = "0".repeat(64);
+    let catalog_id = snapshot
+        .zones
+        .first()
+        .map(|record| record.channel_id.clone())
+        .ok_or_else(|| anyhow::anyhow!("catalog fixture omitted Zone"))?;
+    let configured_only = sequencer_source_config(scope, &configured_only_id);
+    let catalog_config = sequencer_source_config(scope, &catalog_id);
+    let mut other_network = sequencer_source_config(scope, &"f".repeat(64));
+    other_network.network_scope = NetworkScope::GenesisId {
+        genesis_id: "1".repeat(64),
+    };
+
+    let rows = project_catalog_zones(
+        &snapshot,
+        &[configured_only, catalog_config, other_network],
+        CatalogVerificationState::Verified,
+    );
+
+    require_equal(&rows.len(), &2, "configured catalog row count")?;
+    let Some(first) = rows.first() else {
+        bail!("configured projection omitted first row");
+    };
+    let Some(last) = rows.last() else {
+        bail!("configured projection omitted last row");
+    };
+    require_equal(
+        &first.channel_id,
+        &configured_only_id,
+        "canonical configured row order",
+    )?;
+    require_equal(
+        &first.kind(),
+        &ZoneKind::SequencerZone,
+        "configured-only Zone kind",
+    )?;
+    require_equal(
+        &first.settlement_link.status,
+        &SettlementLinkStatus::Linked,
+        "configured-only settlement state",
+    )?;
+    require_equal(
+        &first.l1_channel.balance,
+        &None,
+        "configured-only L1 balance",
+    )?;
+    require_equal(&last.channel_id, &catalog_id, "catalog overlay row")?;
+    require_equal(
+        &last.settlement_link.source,
+        &SettlementLinkSource::Configured,
+        "catalog source overlay",
+    )?;
+    require_equal(
+        &last.l2_zone().map(|l2| l2.configured_source_count),
+        &Some(1),
+        "configured source count",
+    )?;
+    let serialized = serde_json::to_string(&rows)?;
+    if serialized.contains("127.0.0.1") || serialized.contains("http://") {
+        bail!("Zone summary leaked Channel source target: {serialized}");
+    }
     Ok(())
 }
 

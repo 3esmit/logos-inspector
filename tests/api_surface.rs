@@ -31,7 +31,15 @@ fn network_inspection_exposes_legacy_and_zone_boundaries() {
     let _ = logos_inspector::inspection::l2::lez::sequencer_health;
     let _ = logos_inspector::inspection::zones::classify_zone;
     let _ = logos_inspector::inspection::classify_zone;
+    let _ = logos_inspector::inspection::classify_catalog_zone;
+    let _ = logos_inspector::inspection::project_catalog_zones;
     let _ = logos_inspector::inspection::ZoneKind::Unknown;
+    let _fact_gates = logos_inspector::inspection::ZoneFactGates {
+        presence_facts: false,
+        point_snapshot_facts: false,
+        replay_facts: false,
+        absence_facts: false,
+    };
     let _schema = logos_inspector::inspection::catalog::CatalogSchemaMetadata::current();
     let _ = logos_inspector::inspection::catalog::CatalogInvalidationReason::RecordDecode;
     fn accepts_catalog(_: Option<logos_inspector::inspection::catalog::ZoneCatalog>) {}

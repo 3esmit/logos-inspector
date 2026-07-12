@@ -1,4 +1,15 @@
 use super::*;
+use crate::inspection::catalog::{
+    CatalogBlockCheckpoint, CatalogBlockReference, CatalogEvidenceUse, CatalogFrontier,
+    CatalogIdentityAssurance, CatalogMetadata, CatalogSnapshot, CatalogSnapshotOrigin,
+    CatalogSnapshotProvenance, CatalogTraversal, CoverageGap, CoverageGapReason, CoverageGapStatus,
+    CoverageSegment, ZoneCatalogRecord, ZoneClassificationCounters, ZoneEvidenceKind,
+    ZoneEvidenceReference,
+};
+use crate::source_routing::channel_sources::{
+    ChannelSourceConfig, ChannelSourceTarget, ConfiguredIndexerSource, ConfiguredSequencerSource,
+    PersistedSequencerAttestation,
+};
 
 pub(super) fn linked_sequencer_zone() -> ZoneSummary {
     ZoneSummary {
@@ -245,4 +256,376 @@ fn partial_provenance() -> ZoneProvenance {
 
 fn repeated_id(character: char) -> String {
     character.to_string().repeat(64)
+}
+
+pub(super) fn complete_replay_catalog() -> CatalogSnapshot {
+    let channel_id = repeated_id('8');
+    let segment_id = "segment-main".to_owned();
+    let target = block_reference(10, 'a');
+    CatalogSnapshot {
+        metadata: catalog_metadata(),
+        frontier: Some(CatalogFrontier {
+            scanned_through_slot: Some(10),
+            checkpoint: Some(block_checkpoint(10, 'a', '9')),
+            observed_lib: Some(target.clone()),
+            coverage_floor: Some(0),
+            prefix_status: CoveragePrefixStatus::Complete,
+            coverage_status: CatalogCoverageStatus::Complete,
+        }),
+        traversal: Some(CatalogTraversal {
+            target_lib: Some(target.clone()),
+            ingestion_cursor: Some(target),
+        }),
+        zones: vec![catalog_record(CatalogRecordFixture {
+            channel_id: &channel_id,
+            observed_label: Some("Paradox Computer"),
+            segment_id: &segment_id,
+            origin: CatalogSnapshotOrigin::ReplayDerived,
+            first_seen_slot: 1,
+            last_seen_slot: 10,
+            observed_slot: 10,
+            evidence_count: 2,
+            recognized_l2_blocks: 1,
+            raw_inscriptions: 0,
+            sequencer_committee: Some(SequencerCommitteeSummary {
+                members: vec![repeated_id('c')],
+                active_member: Some(repeated_id('c')),
+                observed_at_slot: Some(10),
+            }),
+        })],
+        evidence: vec![
+            evidence_reference(
+                "evidence-created",
+                &channel_id,
+                &segment_id,
+                1,
+                '1',
+                ZoneEvidenceKind::ChannelCreated,
+                CatalogEvidenceUse::Presence,
+            ),
+            evidence_reference(
+                "evidence-l2",
+                &channel_id,
+                &segment_id,
+                10,
+                'a',
+                ZoneEvidenceKind::SequencerBlock,
+                CatalogEvidenceUse::ReplayContribution,
+            ),
+        ],
+        segments: vec![CoverageSegment {
+            segment_id,
+            floor: block_checkpoint(0, '0', 'f'),
+            frontier: block_reference(10, 'a'),
+            reaches_target_lib: true,
+        }],
+        gaps: Vec::new(),
+    }
+}
+
+pub(super) fn partial_raw_catalog_with_connected_lifecycle() -> CatalogSnapshot {
+    partial_raw_catalog(true)
+}
+
+pub(super) fn partial_raw_catalog_without_connected_lifecycle() -> CatalogSnapshot {
+    partial_raw_catalog(false)
+}
+
+pub(super) fn point_snapshot_catalog_across_gap() -> CatalogSnapshot {
+    let channel_id = repeated_id('1');
+    let upper_segment_id = "segment-upper".to_owned();
+    let target = block_reference(10, 'a');
+    CatalogSnapshot {
+        metadata: catalog_metadata(),
+        frontier: Some(CatalogFrontier {
+            scanned_through_slot: Some(3),
+            checkpoint: Some(block_checkpoint(3, '3', '2')),
+            observed_lib: Some(target.clone()),
+            coverage_floor: Some(0),
+            prefix_status: CoveragePrefixStatus::Complete,
+            coverage_status: CatalogCoverageStatus::Partial,
+        }),
+        traversal: Some(CatalogTraversal {
+            target_lib: Some(target.clone()),
+            ingestion_cursor: Some(target),
+        }),
+        zones: vec![catalog_record(CatalogRecordFixture {
+            channel_id: &channel_id,
+            observed_label: None,
+            segment_id: &upper_segment_id,
+            origin: CatalogSnapshotOrigin::PointSnapshot,
+            first_seen_slot: 1,
+            last_seen_slot: 8,
+            observed_slot: 8,
+            evidence_count: 2,
+            recognized_l2_blocks: 0,
+            raw_inscriptions: 0,
+            sequencer_committee: Some(SequencerCommitteeSummary {
+                members: vec![repeated_id('c')],
+                active_member: Some(repeated_id('c')),
+                observed_at_slot: Some(8),
+            }),
+        })],
+        evidence: vec![
+            evidence_reference(
+                "evidence-created",
+                &channel_id,
+                "segment-lower",
+                1,
+                '1',
+                ZoneEvidenceKind::ChannelCreated,
+                CatalogEvidenceUse::Presence,
+            ),
+            evidence_reference(
+                "evidence-snapshot",
+                &channel_id,
+                &upper_segment_id,
+                8,
+                '8',
+                ZoneEvidenceKind::ChannelConfiguration,
+                CatalogEvidenceUse::PointSnapshot,
+            ),
+        ],
+        segments: vec![
+            CoverageSegment {
+                segment_id: "segment-lower".to_owned(),
+                floor: block_checkpoint(0, '0', 'f'),
+                frontier: block_reference(3, '3'),
+                reaches_target_lib: false,
+            },
+            CoverageSegment {
+                segment_id: upper_segment_id,
+                floor: block_checkpoint(5, '5', '4'),
+                frontier: block_reference(10, 'a'),
+                reaches_target_lib: true,
+            },
+        ],
+        gaps: vec![CoverageGap {
+            gap_id: "gap-main".to_owned(),
+            lower_segment_id: "segment-lower".to_owned(),
+            lower_checkpoint: block_reference(3, '3'),
+            upper_segment_id: "segment-upper".to_owned(),
+            upper_block: block_reference(5, '5'),
+            required_parent_id: repeated_id('4'),
+            reason: CoverageGapReason::MissingParent,
+            status: CoverageGapStatus::Pending,
+            attempts: 1,
+            first_seen_at_unix: 100,
+            last_attempt_at_unix: None,
+        }],
+    }
+}
+
+pub(super) fn sequencer_catalog_across_gap() -> CatalogSnapshot {
+    let mut snapshot = point_snapshot_catalog_across_gap();
+    if let Some(record) = snapshot.zones.first_mut() {
+        record.snapshot_provenance.origin = CatalogSnapshotOrigin::ReplayDerived;
+        record.sequencer_committee = None;
+        record.classification.recognized_l2_blocks = 1;
+    }
+    if let Some(reference) = snapshot.evidence.last_mut() {
+        reference.evidence_kind = ZoneEvidenceKind::SequencerBlock;
+        reference.evidence_use = CatalogEvidenceUse::Presence;
+    }
+    snapshot
+}
+
+pub(super) fn sequencer_source_config(
+    network_scope: &NetworkScope,
+    channel_id: &str,
+) -> ChannelSourceConfig {
+    let sequencer_source_id = format!("src_{}", "a".repeat(32));
+    ChannelSourceConfig {
+        network_scope: network_scope.clone(),
+        channel_id: channel_id.to_owned(),
+        config_revision: 1,
+        sequencer_sources: vec![ConfiguredSequencerSource {
+            source_id: sequencer_source_id.clone(),
+            label: Some("Primary".to_owned()),
+            target: ChannelSourceTarget::Rpc {
+                endpoint: "http://127.0.0.1:3040/".to_owned(),
+            },
+            channel_attestation: PersistedSequencerAttestation::Pending,
+        }],
+        selected_sequencer_source_id: Some(sequencer_source_id),
+        indexer_source: Some(ConfiguredIndexerSource {
+            source_id: format!("src_{}", "b".repeat(32)),
+            label: Some("Indexer".to_owned()),
+            target: ChannelSourceTarget::Rpc {
+                endpoint: "http://127.0.0.1:3041/".to_owned(),
+            },
+        }),
+    }
+}
+
+fn partial_raw_catalog(include_creation: bool) -> CatalogSnapshot {
+    let channel_id = repeated_id('d');
+    let segment_id = "segment-partial".to_owned();
+    let target = block_reference(10, 'a');
+    let mut evidence = Vec::new();
+    if include_creation {
+        evidence.push(evidence_reference(
+            "evidence-created",
+            &channel_id,
+            &segment_id,
+            5,
+            '5',
+            ZoneEvidenceKind::ChannelCreated,
+            CatalogEvidenceUse::Presence,
+        ));
+    }
+    evidence.push(evidence_reference(
+        "evidence-raw",
+        &channel_id,
+        &segment_id,
+        9,
+        '9',
+        ZoneEvidenceKind::RawInscription,
+        CatalogEvidenceUse::ReplayContribution,
+    ));
+    let evidence_count = u64::try_from(evidence.len()).unwrap_or(u64::MAX);
+    CatalogSnapshot {
+        metadata: catalog_metadata(),
+        frontier: Some(CatalogFrontier {
+            scanned_through_slot: Some(10),
+            checkpoint: Some(block_checkpoint(10, 'a', '9')),
+            observed_lib: Some(target.clone()),
+            coverage_floor: Some(4),
+            prefix_status: CoveragePrefixStatus::Unavailable,
+            coverage_status: CatalogCoverageStatus::Partial,
+        }),
+        traversal: Some(CatalogTraversal {
+            target_lib: Some(target.clone()),
+            ingestion_cursor: Some(target),
+        }),
+        zones: vec![catalog_record(CatalogRecordFixture {
+            channel_id: &channel_id,
+            observed_label: Some("Raw Channel"),
+            segment_id: &segment_id,
+            origin: CatalogSnapshotOrigin::ReplayDerived,
+            first_seen_slot: if include_creation { 5 } else { 9 },
+            last_seen_slot: 9,
+            observed_slot: 10,
+            evidence_count,
+            recognized_l2_blocks: 0,
+            raw_inscriptions: 1,
+            sequencer_committee: None,
+        })],
+        evidence,
+        segments: vec![CoverageSegment {
+            segment_id,
+            floor: block_checkpoint(4, '4', '3'),
+            frontier: block_reference(10, 'a'),
+            reaches_target_lib: true,
+        }],
+        gaps: Vec::new(),
+    }
+}
+
+struct CatalogRecordFixture<'a> {
+    channel_id: &'a str,
+    observed_label: Option<&'a str>,
+    segment_id: &'a str,
+    origin: CatalogSnapshotOrigin,
+    first_seen_slot: u64,
+    last_seen_slot: u64,
+    observed_slot: u64,
+    evidence_count: u64,
+    recognized_l2_blocks: u64,
+    raw_inscriptions: u64,
+    sequencer_committee: Option<SequencerCommitteeSummary>,
+}
+
+fn catalog_record(fixture: CatalogRecordFixture<'_>) -> ZoneCatalogRecord {
+    ZoneCatalogRecord {
+        channel_id: fixture.channel_id.to_owned(),
+        observed_label: fixture.observed_label.map(str::to_owned),
+        l1_channel: L1ChannelSummary {
+            tip_slot: Some(fixture.last_seen_slot),
+            tip_hash: Some(repeated_id('b')),
+            lib_slot: Some(10),
+            balance: Some("1000".to_owned()),
+            key_count: Some(1),
+            withdraw_threshold: Some("1".to_owned()),
+            operation_count: fixture.evidence_count,
+            finality_state: L1FinalityState::Final,
+        },
+        sequencer_committee: fixture.sequencer_committee,
+        classification: ZoneClassificationCounters {
+            channel_operations: fixture.evidence_count,
+            recognized_l2_blocks: fixture.recognized_l2_blocks,
+            raw_inscriptions: fixture.raw_inscriptions,
+            conflicting_evidence: false,
+        },
+        first_seen_slot: fixture.first_seen_slot,
+        last_seen_slot: fixture.last_seen_slot,
+        latest_evidence_id: if fixture.raw_inscriptions > 0 {
+            "evidence-raw".to_owned()
+        } else if fixture.recognized_l2_blocks > 0 {
+            "evidence-l2".to_owned()
+        } else {
+            "evidence-snapshot".to_owned()
+        },
+        evidence_count: fixture.evidence_count,
+        snapshot_provenance: CatalogSnapshotProvenance {
+            origin: fixture.origin,
+            coverage_segment_id: fixture.segment_id.to_owned(),
+            observed_slot: fixture.observed_slot,
+            source_revision: 1,
+        },
+        updated_at_unix: 101,
+    }
+}
+
+fn evidence_reference(
+    evidence_id: &str,
+    channel_id: &str,
+    segment_id: &str,
+    l1_slot: u64,
+    block_character: char,
+    evidence_kind: ZoneEvidenceKind,
+    evidence_use: CatalogEvidenceUse,
+) -> ZoneEvidenceReference {
+    ZoneEvidenceReference {
+        evidence_id: evidence_id.to_owned(),
+        channel_id: channel_id.to_owned(),
+        coverage_segment_id: segment_id.to_owned(),
+        l1_slot,
+        block_id: repeated_id(block_character),
+        transaction_hash: Some(repeated_id('e')),
+        operation_index: 0,
+        message_id: None,
+        evidence_kind,
+        evidence_use,
+    }
+}
+
+fn catalog_metadata() -> CatalogMetadata {
+    CatalogMetadata {
+        catalog_file_id: "catalog_fixture".to_owned(),
+        network_scope: NetworkScope::GenesisId {
+            genesis_id: repeated_id('e'),
+        },
+        identity_aliases: Vec::new(),
+        identity_assurance: CatalogIdentityAssurance::SourceAttested,
+        identity_transition: None,
+        catalog_revision: 1,
+        created_at_unix: 100,
+        updated_at_unix: 101,
+    }
+}
+
+fn block_reference(slot: u64, character: char) -> CatalogBlockReference {
+    CatalogBlockReference {
+        slot,
+        block_id: repeated_id(character),
+    }
+}
+
+fn block_checkpoint(slot: u64, character: char, parent: char) -> CatalogBlockCheckpoint {
+    CatalogBlockCheckpoint {
+        slot,
+        block_id: repeated_id(character),
+        parent_id: repeated_id(parent),
+    }
 }
