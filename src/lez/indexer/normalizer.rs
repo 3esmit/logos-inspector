@@ -62,6 +62,39 @@ pub(crate) fn summarize_indexer_block(value: &Value) -> IndexerBlockReport {
     }
 }
 
+pub(crate) fn verified_indexer_block_report(value: &Value) -> anyhow::Result<IndexerBlockReport> {
+    let indexed = serde_json::from_value::<indexer_service_protocol::Block>(value.clone())
+        .map_err(|_| crate::lez::evidence_protocol_error("Indexer block has invalid layout"))?;
+    let block: common::block::Block = indexed
+        .try_into()
+        .map_err(|_| crate::lez::evidence_protocol_error("Indexer block conversion failed"))?;
+    crate::lez::block::verify_block_content_hash(&block)?;
+    let verified = crate::lez::summarize_block(&block);
+    let mut report = summarize_indexer_block(value);
+    if report.transactions.len() != verified.transactions.len()
+        || report
+            .transactions
+            .iter()
+            .zip(&verified.transactions)
+            .any(|(indexed, canonical)| {
+                crate::parse_hash(&indexed.hash, "indexed transaction hash")
+                    .map(|hash| hash.to_string() != canonical.hash)
+                    .unwrap_or(true)
+            })
+    {
+        return Err(crate::lez::evidence_protocol_error(
+            "Indexer block transaction evidence is inconsistent",
+        ));
+    }
+    report.block_id = Some(verified.block_id);
+    report.header_hash = Some(verified.header_hash);
+    report.parent_hash = Some(verified.parent_hash);
+    report.timestamp = Some(verified.timestamp);
+    report.bedrock_status = Some(verified.bedrock_status);
+    report.tx_count = verified.tx_count;
+    Ok(report)
+}
+
 pub(crate) fn next_indexer_blocks_cursor(blocks: &[IndexerBlockReport]) -> Option<u64> {
     blocks.iter().filter_map(|block| block.block_id).min()
 }

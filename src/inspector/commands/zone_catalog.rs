@@ -564,11 +564,14 @@ impl ZoneCatalogCommandInterface {
             .release_payload(&self.service.report(), request)
     }
 
-    pub(crate) fn context_snapshot(&self, runtime: &Runtime) -> Result<ZoneContextSnapshot> {
+    pub(crate) fn context_snapshot(
+        &self,
+        runtime: &Runtime,
+    ) -> Result<crate::inspection::l2::ZoneL2RuntimeFacts> {
         self.refresh(runtime)?;
         let service = self.service.report();
         let state = self.lock_state()?;
-        Ok(ZoneContextSnapshot {
+        Ok(crate::inspection::l2::ZoneL2RuntimeFacts {
             network_scope: service
                 .catalog
                 .as_deref()
@@ -595,15 +598,6 @@ impl ZoneCatalogCommandInterface {
             .lock()
             .map_err(|_| anyhow::anyhow!("Zone Catalog projection lock is poisoned"))
     }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct ZoneContextSnapshot {
-    pub network_scope: Option<NetworkScope>,
-    pub verification: CatalogVerificationState,
-    pub summaries: BTreeMap<String, ZoneSummary>,
-    pub configs: Vec<ChannelSourceConfig>,
-    pub observations: ChannelSourceMonitorSnapshot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

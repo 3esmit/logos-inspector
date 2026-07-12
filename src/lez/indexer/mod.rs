@@ -6,15 +6,19 @@ mod transactions;
 
 pub use normalizer::{IndexerBlockReport, IndexerStatusReport};
 pub(crate) use normalizer::{
-    next_indexer_blocks_cursor, summarize_indexer_block, summarize_indexer_status_response,
+    next_indexer_blocks_cursor, summarize_indexer_status_response, verified_indexer_block_report,
 };
 pub use transactions::{AccountTransactionSummary, TransactionTransferOutputSummary};
 pub(crate) use transactions::{
-    summarize_indexer_transaction, summarize_transfer_outputs, with_account_direction,
+    summarize_indexer_transaction, summarize_transfer_outputs,
+    verified_indexer_transaction_summary, with_account_direction,
 };
 
 use super::transfers::{TransferActivityPage, transfer_recipient_summaries_from_blocks};
-use crate::{raw_json_rpc, raw_json_rpc_optional_result};
+use crate::{
+    lez::{AccountReport, TransactionSummary, indexer_account_report},
+    raw_json_rpc, raw_json_rpc_optional_result,
+};
 
 pub async fn indexer_block_by_hash(
     endpoint: &str,
@@ -28,7 +32,7 @@ pub async fn indexer_block_by_hash(
     if result.is_null() {
         return Ok(None);
     }
-    Ok(Some(summarize_indexer_block(&result)))
+    Ok(Some(verified_indexer_block_report(&result)?))
 }
 
 pub async fn indexer_block_by_id(
@@ -41,7 +45,70 @@ pub async fn indexer_block_by_id(
     if result.is_null() {
         return Ok(None);
     }
-    Ok(Some(summarize_indexer_block(&result)))
+    Ok(Some(verified_indexer_block_report(&result)?))
+}
+
+pub async fn indexer_transaction(
+    endpoint: &str,
+    transaction_hash: &str,
+) -> Result<Option<TransactionSummary>> {
+    let parsed_hash = crate::parse_hash(transaction_hash, "transaction hash")?;
+    let result =
+        raw_json_rpc_optional_result(endpoint, "getTransaction", json!([parsed_hash.to_string()]))
+            .await
+            .with_context(|| format!("failed to fetch indexer transaction {parsed_hash}"))?;
+    if result.is_null() {
+        return Ok(None);
+    }
+    Ok(Some(verified_indexer_transaction_summary(
+        &result,
+        transaction_hash,
+    )?))
+}
+
+pub async fn indexer_account_at_block(
+    endpoint: &str,
+    account_id: &str,
+    block_id: u64,
+) -> Result<AccountReport> {
+    let account_id = crate::parse_account_id(account_id)?.to_string();
+    let response = raw_json_rpc(
+        endpoint,
+        "getAccountAtBlock",
+        json!([account_id.as_str(), block_id]),
+    )
+    .await
+    .with_context(|| format!("failed to fetch indexer account {account_id} at block {block_id}"))?;
+    if json_rpc_method_is_unavailable(&response) {
+        return Err(super::evidence_capability_error(
+            "Indexer does not expose historical account reads",
+        ));
+    }
+    if response.get("error").is_some() {
+        return Err(super::evidence_protocol_error(
+            "Indexer historical account read returned an RPC error",
+        ));
+    }
+    let result = response.get("result").cloned().ok_or_else(|| {
+        super::evidence_protocol_error("Indexer historical account read omitted its result")
+    })?;
+    if result.is_null() {
+        return Err(super::evidence_protocol_error(
+            "Indexer historical account read returned no account",
+        ));
+    }
+    indexer_account_report(&result, &account_id)
+}
+
+fn json_rpc_method_is_unavailable(response: &Value) -> bool {
+    response
+        .pointer("/error/code")
+        .and_then(Value::as_i64)
+        .is_some_and(|code| code == -32_601)
+        || response
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .is_some_and(|message| message.to_ascii_lowercase().contains("method not found"))
 }
 
 pub async fn indexer_finalized_block_id(endpoint: &str) -> Result<Option<u64>> {
@@ -74,7 +141,7 @@ pub async fn indexer_blocks(
     let blocks = result
         .as_array()
         .context("getBlocks result was not an array")?;
-    Ok(blocks.iter().map(summarize_indexer_block).collect())
+    blocks.iter().map(verified_indexer_block_report).collect()
 }
 
 pub async fn indexer_health(endpoint: &str) -> Result<Value> {
