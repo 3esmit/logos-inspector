@@ -355,8 +355,6 @@ impl Default for SettingsDocument {
     fn default() -> Self {
         let fields = json!({
             "blockchain_refresh_rate": 30,
-            "indexer_refresh_rate": 30,
-            "execution_refresh_rate": 30,
             "messaging_refresh_rate": 30,
             "storage_refresh_rate": 30,
             "social_identities": [],
@@ -669,6 +667,33 @@ mod tests {
 
     use super::*;
     use crate::source_routing::{INDEXER_MODULE, channel_sources::ChannelSourceTarget};
+
+    #[test]
+    fn fresh_settings_have_no_global_l2_configuration() -> Result<()> {
+        let (directory, store) = test_store("fresh-settings")?;
+
+        let settings = store.load()?;
+
+        if settings.get("version").and_then(Value::as_u64) != Some(SETTINGS_VERSION)
+            || settings
+                .get(CHANNEL_SOURCE_CONFIGS_KEY)
+                .and_then(Value::as_array)
+                .is_none_or(|configs| !configs.is_empty())
+        {
+            bail!("fresh settings shape is invalid: {settings}");
+        }
+        for legacy_key in [
+            "sequencer_url",
+            "indexer_url",
+            "execution_refresh_rate",
+            "indexer_refresh_rate",
+        ] {
+            if settings.get(legacy_key).is_some() {
+                bail!("fresh settings expose legacy key `{legacy_key}`: {settings}");
+            }
+        }
+        cleanup_test_dir(&directory)
+    }
 
     #[test]
     fn settings_v2_preserves_rust_owned_configs() -> Result<()> {

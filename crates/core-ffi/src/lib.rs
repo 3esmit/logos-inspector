@@ -235,6 +235,72 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn handles_keep_independent_command_surfaces() -> TestResult {
+        let module = CString::new("logos_inspector")?;
+        let method = CString::new("sourcePolicy")?;
+        let args = CString::new("[]")?;
+        let first = logos_inspector_core_new();
+        let second = logos_inspector_core_new();
+        if first.is_null() || second.is_null() || first == second {
+            // SAFETY: null is accepted; non-null handles were created above.
+            unsafe {
+                logos_inspector_core_free(first);
+                logos_inspector_core_free(second);
+            }
+            return err("failed to create independent core handles");
+        }
+
+        // SAFETY: both handles and C strings remain live for these calls.
+        let first_response = unsafe {
+            logos_inspector_core_call_module(first, module.as_ptr(), method.as_ptr(), args.as_ptr())
+        };
+        // SAFETY: both handles and C strings remain live for these calls.
+        let second_response = unsafe {
+            logos_inspector_core_call_module(
+                second,
+                module.as_ptr(),
+                method.as_ptr(),
+                args.as_ptr(),
+            )
+        };
+        let first_value = response_value(first_response)?;
+        let second_value = response_value(second_response)?;
+
+        // SAFETY: first was created above and has not been released.
+        unsafe {
+            logos_inspector_core_free(first);
+        }
+        // SAFETY: second remains live after first is released.
+        let surviving_response = unsafe {
+            logos_inspector_core_call_module(
+                second,
+                module.as_ptr(),
+                method.as_ptr(),
+                args.as_ptr(),
+            )
+        };
+        let surviving_value = response_value(surviving_response)?;
+        // SAFETY: second was created above and has not been released.
+        unsafe {
+            logos_inspector_core_free(second);
+        }
+
+        if first_value.get("ok").and_then(Value::as_bool) != Some(true)
+            || second_value.get("ok").and_then(Value::as_bool) != Some(true)
+            || surviving_value.get("ok").and_then(Value::as_bool) != Some(true)
+        {
+            return Err(std::io::Error::other(format!(
+                "independent core handle call failed: first={first_value}, second={second_value}, surviving={surviving_value}"
+            ))
+            .into());
+        }
+        if second_value.get("value") != surviving_value.get("value") {
+            return err("surviving core handle changed after sibling release");
+        }
+        Ok(())
+    }
+
     fn expect_error_envelope_shape(value: &Value) -> TestResult {
         if !value.get("value").is_some_and(Value::is_null) {
             return err("expected null envelope value");
