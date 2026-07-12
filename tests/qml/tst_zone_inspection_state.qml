@@ -248,6 +248,73 @@ TestCase {
         return report
     }
 
+    function evidenceRow(evidenceId, slot, kind) {
+        return {
+            reference: {
+                evidence_id: String(evidenceId),
+                channel_id: "zone-a",
+                coverage_segment_id: "segment-main",
+                l1_slot: Number(slot),
+                block_id: "b".repeat(64),
+                transaction_hash: "c".repeat(64),
+                operation_index: 0,
+                message_id: null,
+                evidence_kind: String(kind || "raw_inscription"),
+                evidence_use: "presence"
+            },
+            segment: {
+                segment_id: "segment-main",
+                floor_slot: 0,
+                frontier_slot: Number(slot),
+                reaches_target_lib: true
+            },
+            source: {
+                kind: "direct_http",
+                fingerprint: "sha256:test"
+            },
+            finality: "final"
+        }
+    }
+
+    function evidencePageReport(rows, nextCursor, filter) {
+        return {
+            report_kind: "zones.evidence_page",
+            schema_version: 1,
+            source_revision: 1,
+            network_scope: scope("network-a"),
+            catalog_revision: 1,
+            channel_id: "zone-a",
+            filter: String(filter || "all"),
+            rows: rows,
+            next_cursor: nextCursor || null
+        }
+    }
+
+    function evidenceDetailReport(row, sessionId) {
+        return {
+            report_kind: "zones.evidence_detail",
+            schema_version: 1,
+            source_revision: 1,
+            network_scope: scope("network-a"),
+            catalog_revision: 1,
+            channel_id: "zone-a",
+            row: row,
+            operation: { opcode: 17 },
+            payload: {
+                byte_length: 300000,
+                sha256: "sha256:test",
+                encoding: "utf8",
+                inline_text: null,
+                inline_base64: null,
+                preview: "payload preview",
+                preview_truncated: true,
+                inline_truncated: true,
+                session_id: sessionId || null,
+                warning: null
+            }
+        }
+    }
+
     function loadOneZone(row) {
         verify(zoneState.pollStatus())
         gateway.respondNext("zoneCatalogStatus", ok(statusReport({
@@ -480,7 +547,11 @@ TestCase {
         const initialConfig = {
             config_revision: 1,
             selected_sequencer_source_id: "src-a",
-            sequencer_sources: [{ source_id: "src-a", target: { kind: "rpc", endpoint: "https://seq-a" } }],
+            sequencer_sources: [{
+                source_id: "src-a",
+                target: { kind: "rpc", endpoint: "https://seq-a" },
+                channel_attestation: { state: "persisted_attested" }
+            }],
             indexer_source: { source_id: "idx-a", target: { kind: "rpc", endpoint: "https://idx-a" } }
         }
         gateway.respondNext("zoneDetail", ok(detailReport(row, initialConfig)))
@@ -525,6 +596,7 @@ TestCase {
         compare(zoneState.activeZoneContext.source_config_revision, 2)
         verify(zoneState.contextRevision > contextBeforeMutation)
         compare(zoneState.zoneDetail.channel_source_config.config_revision, 2)
+        compare(zoneState.zoneDetail.channel_source_config.sequencer_sources[0].binding_state, "persisted_attested")
         verify(zoneState.summaryStale)
 
         const contextAfterSuccess = zoneState.contextRevision
@@ -555,5 +627,60 @@ TestCase {
             source_revision: 1
         }))
         compare(statusRefreshSpy.count, 2)
+    }
+
+    function test_evidence_pages_detail_chunks_and_release_are_context_fenced() {
+        configure("https://l1.example", 1)
+        const row = zoneRow("zone-a", "data_channel", null, null)
+        loadOneZone(row)
+        verify(zoneState.activateZone("zone-a"))
+        gateway.respondNext("zoneDetail", ok(detailReport(row, null)))
+
+        verify(zoneState.loadEvidence("all"))
+        const firstRequest = gateway.lastRequest("zoneEvidencePage")
+        compare(firstRequest.args[0].channel_id, "zone-a")
+        compare(firstRequest.args[0].catalog_revision, 1)
+        compare(firstRequest.args[0].filter, "all")
+        const evidenceA = evidenceRow("evidence-a", 10, "channel_configuration")
+        const evidenceB = evidenceRow("evidence-b", 12, "raw_inscription")
+        gateway.respondNext("zoneEvidencePage", ok(evidencePageReport([evidenceA], "cursor-2", "all")))
+        compare(zoneState.evidenceRows.length, 1)
+        compare(zoneState.evidenceNextCursor, "cursor-2")
+
+        verify(zoneState.loadMoreEvidence())
+        compare(gateway.lastRequest("zoneEvidencePage").args[0].cursor, "cursor-2")
+        gateway.respondNext("zoneEvidencePage", ok(evidencePageReport([evidenceB], null, "all")))
+        compare(zoneState.evidenceRows.length, 2)
+        compare(zoneState.evidenceNextCursor, "")
+
+        verify(zoneState.openEvidence(evidenceB))
+        compare(gateway.lastRequest("zoneEvidenceDetail").args[0].reference.evidence_id, "evidence-b")
+        gateway.respondNext("zoneEvidenceDetail", ok(evidenceDetailReport(evidenceB, "session-b")))
+        compare(zoneState.evidenceDetail.row.reference.evidence_id, "evidence-b")
+        verify(!zoneState.evidencePayloadDone)
+
+        verify(zoneState.loadNextEvidencePayloadChunk())
+        compare(gateway.lastRequest("zoneEvidencePayloadChunk").args[0].offset, 0)
+        gateway.respondNext("zoneEvidencePayloadChunk", ok({
+            report_kind: "zones.evidence_payload_chunk",
+            schema_version: 1,
+            session_id: "session-b",
+            evidence_id: "evidence-b",
+            encoding: "utf8",
+            offset: 0,
+            next_offset: 5,
+            done: true,
+            text: "hello",
+            base64: null
+        }))
+        compare(zoneState.evidencePayloadChunks.length, 1)
+        compare(zoneState.evidencePayloadChunks[0].text, "hello")
+        compare(zoneState.evidencePayloadOffset, 5)
+        verify(zoneState.evidencePayloadDone)
+
+        zoneState.closeEvidenceDetail()
+        compare(zoneState.evidenceDetail, null)
+        compare(gateway.requestCount("zoneEvidencePayloadRelease"), 1)
+        compare(gateway.lastRequest("zoneEvidencePayloadRelease").args[0].session_id, "session-b")
     }
 }

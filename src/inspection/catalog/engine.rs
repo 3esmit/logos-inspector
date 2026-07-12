@@ -62,6 +62,19 @@ pub struct CatalogEngineContext {
     repair_block_limit: NonZeroUsize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CatalogEvidencePayloadFormat {
+    Json,
+    Bytes,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogEvidencePayload {
+    pub opcode: u8,
+    pub bytes: Vec<u8>,
+    pub format: CatalogEvidencePayloadFormat,
+}
+
 impl CatalogEngineContext {
     pub fn new(source_revision: u64, updated_at_unix: u64) -> CatalogEngineResult<Self> {
         Self::with_repair_block_limit(
@@ -1663,6 +1676,154 @@ fn extract_channel_observations(
         }
     }
     Ok(observations)
+}
+
+pub fn extract_catalog_evidence_payload(
+    block: &CatalogL1Block,
+    reference: &ZoneEvidenceReference,
+) -> CatalogEngineResult<CatalogEvidencePayload> {
+    if block.checkpoint.slot != reference.l1_slot || block.checkpoint.block_id != reference.block_id
+    {
+        return Err(CatalogEngineError::SourceInconsistent(
+            "refetched evidence block does not match its catalog reference".to_owned(),
+        ));
+    }
+    let transaction_hash = reference.transaction_hash.as_deref().ok_or_else(|| {
+        CatalogEngineError::InvalidState(
+            "catalog evidence reference has no transaction hash".to_owned(),
+        )
+    })?;
+    let transactions = block
+        .payload
+        .get("transactions")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            CatalogEngineError::InvalidBlock("block transactions are not an array".to_owned())
+        })?;
+    let mut matching_transaction = None;
+    for transaction in transactions {
+        let Some(mantle_tx) = transaction.get("mantle_tx") else {
+            continue;
+        };
+        let Some(candidate_hash) = mantle_tx.get("hash").and_then(Value::as_str) else {
+            continue;
+        };
+        if canonical_hex(candidate_hash, "transaction hash")? != transaction_hash {
+            continue;
+        }
+        if matching_transaction.replace(mantle_tx).is_some() {
+            return Err(CatalogEngineError::SourceInconsistent(
+                "refetched evidence block contains duplicate transaction hashes".to_owned(),
+            ));
+        }
+    }
+    let mantle_tx = matching_transaction.ok_or_else(|| {
+        CatalogEngineError::SourceInconsistent(
+            "refetched evidence transaction is missing".to_owned(),
+        )
+    })?;
+    let operations = mantle_tx
+        .get("ops")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            CatalogEngineError::SourceInconsistent(
+                "refetched evidence transaction operations are missing".to_owned(),
+            )
+        })?;
+    let operation_index = usize::try_from(reference.operation_index).map_err(|_| {
+        CatalogEngineError::Overflow("evidence operation index exceeds usize".to_owned())
+    })?;
+    let operation = operations.get(operation_index).ok_or_else(|| {
+        CatalogEngineError::SourceInconsistent("refetched evidence operation is missing".to_owned())
+    })?;
+    let opcode = operation
+        .get("opcode")
+        .and_then(parse_opcode)
+        .ok_or_else(|| {
+            CatalogEngineError::SourceInconsistent(
+                "refetched evidence opcode is missing".to_owned(),
+            )
+        })?;
+    let payload = operation.get("payload").ok_or_else(|| {
+        CatalogEngineError::SourceInconsistent("refetched evidence payload is missing".to_owned())
+    })?;
+    let observation = match opcode {
+        0x10 => parse_configuration(
+            payload,
+            transaction_hash.to_owned(),
+            reference.operation_index,
+        )?,
+        0x11 => parse_inscription(
+            payload,
+            transaction_hash.to_owned(),
+            reference.operation_index,
+        )?,
+        0x12 | 0x13 => parse_channel_operation(
+            payload,
+            transaction_hash.to_owned(),
+            reference.operation_index,
+        )?,
+        _ => {
+            return Err(CatalogEngineError::SourceInconsistent(format!(
+                "refetched evidence opcode {opcode:#x} is not a Channel operation"
+            )));
+        }
+    };
+    if observation.channel_id != reference.channel_id {
+        return Err(CatalogEngineError::SourceInconsistent(
+            "refetched evidence belongs to another Channel".to_owned(),
+        ));
+    }
+
+    let (matches_kind, expected_use, format, bytes) = match &observation.kind {
+        ChannelObservationKind::Configuration { .. } => (
+            reference.evidence_kind == ZoneEvidenceKind::ChannelConfiguration,
+            CatalogEvidenceUse::PointSnapshot,
+            CatalogEvidencePayloadFormat::Json,
+            serde_json::to_vec(payload).map_err(|error| {
+                CatalogEngineError::InvalidBlock(format!(
+                    "failed to encode Channel configuration evidence: {error}"
+                ))
+            })?,
+        ),
+        ChannelObservationKind::Inscription {
+            evidence_kind,
+            parent_is_root,
+            ..
+        } => (
+            reference.evidence_kind == *evidence_kind
+                || reference.evidence_kind == ZoneEvidenceKind::ChannelCreated && *parent_is_root,
+            CatalogEvidenceUse::Presence,
+            CatalogEvidencePayloadFormat::Bytes,
+            inscription_bytes(payload.get("inscription").ok_or_else(|| {
+                CatalogEngineError::SourceInconsistent(
+                    "refetched inscription payload is missing".to_owned(),
+                )
+            })?)?,
+        ),
+        ChannelObservationKind::Operation => (
+            reference.evidence_kind == ZoneEvidenceKind::ChannelOperation,
+            CatalogEvidenceUse::ReplayContribution,
+            CatalogEvidencePayloadFormat::Json,
+            serde_json::to_vec(payload).map_err(|error| {
+                CatalogEngineError::InvalidBlock(format!(
+                    "failed to encode Channel operation evidence: {error}"
+                ))
+            })?,
+        ),
+    };
+    if !matches_kind || reference.evidence_use != expected_use {
+        return Err(CatalogEngineError::SourceInconsistent(
+            "refetched evidence kind does not match its catalog reference".to_owned(),
+        ));
+    }
+    let opcode = u8::try_from(opcode)
+        .map_err(|_| CatalogEngineError::Overflow("evidence opcode exceeds u8".to_owned()))?;
+    Ok(CatalogEvidencePayload {
+        opcode,
+        bytes,
+        format,
+    })
 }
 
 fn parse_configuration(

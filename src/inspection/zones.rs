@@ -21,6 +21,7 @@ use crate::{
     inspection::sources::{ZoneSourceAgreement, project_zone_sources},
     source_routing::channel_sources::{
         ChannelSourceConfig, ChannelSourceMonitorSnapshot, ChannelSourceTarget,
+        PersistedSequencerAttestation,
     },
 };
 
@@ -513,6 +514,12 @@ fn project_source_config(config: Option<&ChannelSourceConfig>) -> ChannelSourceC
                 source_id: source.source_id.clone(),
                 label: source.label.clone(),
                 target: project_source_target(&source.target),
+                binding_state: Some(match &source.channel_attestation {
+                    PersistedSequencerAttestation::Pending => ZoneSourceBindingState::Pending,
+                    PersistedSequencerAttestation::PersistedAttested { .. } => {
+                        ZoneSourceBindingState::PersistedAttested
+                    }
+                }),
             })
             .collect(),
         indexer_source: config
@@ -522,6 +529,7 @@ fn project_source_config(config: Option<&ChannelSourceConfig>) -> ChannelSourceC
                 source_id: source.source_id.clone(),
                 label: source.label.clone(),
                 target: project_source_target(&source.target),
+                binding_state: None,
             }),
     }
 }
@@ -542,6 +550,7 @@ pub struct ConfiguredZoneSource {
     pub source_id: String,
     pub label: Option<String>,
     pub target: ZoneSourceTarget,
+    pub binding_state: Option<ZoneSourceBindingState>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

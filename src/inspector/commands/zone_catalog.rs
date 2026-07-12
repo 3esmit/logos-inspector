@@ -9,7 +9,10 @@ use anyhow::{Context as _, Result, bail};
 use serde_json::Value;
 use tokio::runtime::Runtime;
 
-use super::decode_object_request;
+use super::{
+    decode_object_request,
+    zone_evidence::{DirectEvidenceBlockReader, EvidenceBlockReader, ZoneEvidenceCommandInterface},
+};
 use crate::{
     inspection::{
         CatalogVerificationState, NetworkScope, ZoneSummary,
@@ -21,8 +24,10 @@ use crate::{
             ZoneCatalogControlReport, ZoneCatalogControlRequest, ZoneCatalogCoverageReport,
             ZoneCatalogIngestionReport, ZoneCatalogService, ZoneCatalogSourceDescriptor,
             ZoneCatalogSourceRequest, ZoneCatalogStatusReport, ZoneCatalogStatusRequest,
-            ZoneCatalogWorker, ZoneDetailReport, ZoneDetailRequest, ZoneSummaryChanges,
-            ZonesSummaryReport, ZonesSummaryRequest,
+            ZoneCatalogWorker, ZoneDetailReport, ZoneDetailRequest, ZoneEvidenceDetailRequest,
+            ZoneEvidencePageRequest, ZoneEvidencePayloadChunkRequest,
+            ZoneEvidencePayloadReleaseRequest, ZoneSummaryChanges, ZonesSummaryReport,
+            ZonesSummaryRequest,
         },
         project_catalog_zone_detail, project_catalog_zones_with_sources,
         sources::project_zone_sources,
@@ -52,9 +57,13 @@ pub(crate) enum ZoneCatalogCommand {
     Retry,
     Rebuild,
     ApplySourceConfig,
+    EvidencePage,
+    EvidenceDetail,
+    EvidencePayloadChunk,
+    EvidencePayloadRelease,
 }
 
-const COMMANDS: [(&str, ZoneCatalogCommand); 7] = [
+const COMMANDS: [(&str, ZoneCatalogCommand); 11] = [
     ("zoneCatalogConfigure", ZoneCatalogCommand::Configure),
     ("zoneCatalogStatus", ZoneCatalogCommand::Status),
     ("zonesSummary", ZoneCatalogCommand::Summaries),
@@ -64,6 +73,16 @@ const COMMANDS: [(&str, ZoneCatalogCommand); 7] = [
     (
         "channelSourceConfigApply",
         ZoneCatalogCommand::ApplySourceConfig,
+    ),
+    ("zoneEvidencePage", ZoneCatalogCommand::EvidencePage),
+    ("zoneEvidenceDetail", ZoneCatalogCommand::EvidenceDetail),
+    (
+        "zoneEvidencePayloadChunk",
+        ZoneCatalogCommand::EvidencePayloadChunk,
+    ),
+    (
+        "zoneEvidencePayloadRelease",
+        ZoneCatalogCommand::EvidencePayloadRelease,
     ),
 ];
 
@@ -155,6 +174,7 @@ pub(crate) struct ZoneCatalogCommandInterface {
     monitor: Arc<dyn ZoneSourceMonitor>,
     sequencer_attestor: Arc<dyn SequencerTargetAttestor>,
     source_store: Arc<dyn ChannelSourceConfigStore>,
+    evidence: ZoneEvidenceCommandInterface,
     state: Mutex<ProjectionState>,
 }
 
@@ -177,11 +197,30 @@ impl ZoneCatalogCommandInterface {
         monitor: Arc<dyn ZoneSourceMonitor>,
         sequencer_attestor: Arc<dyn SequencerTargetAttestor>,
     ) -> Self {
+        Self::with_all_dependencies(
+            runtime,
+            worker,
+            source_store,
+            monitor,
+            sequencer_attestor,
+            Arc::new(DirectEvidenceBlockReader),
+        )
+    }
+
+    fn with_all_dependencies(
+        runtime: &Runtime,
+        worker: Arc<dyn ZoneCatalogWorker>,
+        source_store: Arc<dyn ChannelSourceConfigStore>,
+        monitor: Arc<dyn ZoneSourceMonitor>,
+        sequencer_attestor: Arc<dyn SequencerTargetAttestor>,
+        evidence_reader: Arc<dyn EvidenceBlockReader>,
+    ) -> Self {
         Self {
             service: ZoneCatalogService::new(runtime.handle(), worker),
             monitor,
             sequencer_attestor,
             source_store,
+            evidence: ZoneEvidenceCommandInterface::new(evidence_reader),
             state: Mutex::new(ProjectionState::default()),
         }
     }
@@ -221,6 +260,22 @@ impl ZoneCatalogCommandInterface {
                 let request = decode_object_request(args, "channelSourceConfigApply")?;
                 to_value(self.apply_source_config(runtime, request)?)
             }
+            ZoneCatalogCommand::EvidencePage => {
+                let request = decode_object_request(args, "zoneEvidencePage")?;
+                to_value(self.evidence_page(runtime, request)?)
+            }
+            ZoneCatalogCommand::EvidenceDetail => {
+                let request = decode_object_request(args, "zoneEvidenceDetail")?;
+                to_value(self.evidence_detail(runtime, request)?)
+            }
+            ZoneCatalogCommand::EvidencePayloadChunk => {
+                let request = decode_object_request(args, "zoneEvidencePayloadChunk")?;
+                to_value(self.evidence_payload_chunk(runtime, request)?)
+            }
+            ZoneCatalogCommand::EvidencePayloadRelease => {
+                let request = decode_object_request(args, "zoneEvidencePayloadRelease")?;
+                to_value(self.evidence_payload_release(runtime, request)?)
+            }
         }
     }
 
@@ -234,7 +289,8 @@ impl ZoneCatalogCommandInterface {
                 ZoneCatalogSourceDescriptor::direct_http(endpoint)?
             }
         };
-        let source_revision = runtime.block_on(self.service.configure(source))?;
+        let source_revision = runtime.block_on(self.service.configure(source.clone()))?;
+        self.evidence.configure_source(source_revision, source)?;
         self.refresh(runtime)?;
         Ok(ZoneCatalogConfigureReport {
             report_kind: "zones.catalog_configured",
@@ -373,6 +429,7 @@ impl ZoneCatalogCommandInterface {
             ZoneCatalogControl::Retry => runtime.block_on(self.service.retry())?,
             ZoneCatalogControl::Rebuild => runtime.block_on(self.service.rebuild())?,
         };
+        self.evidence.rebind_source_revision(source_revision)?;
         self.refresh(runtime)?;
         Ok(ZoneCatalogControlReport {
             report_kind: "zones.catalog_control",
@@ -470,6 +527,43 @@ impl ZoneCatalogCommandInterface {
         })
     }
 
+    fn evidence_page(
+        &self,
+        runtime: &Runtime,
+        request: ZoneEvidencePageRequest,
+    ) -> Result<crate::inspection::catalog::ZoneEvidencePageReport> {
+        self.refresh(runtime)?;
+        self.evidence.page(&self.service.report(), request)
+    }
+
+    fn evidence_detail(
+        &self,
+        runtime: &Runtime,
+        request: ZoneEvidenceDetailRequest,
+    ) -> Result<crate::inspection::catalog::ZoneEvidenceDetailReport> {
+        self.refresh(runtime)?;
+        self.evidence.detail(runtime, &self.service, request)
+    }
+
+    fn evidence_payload_chunk(
+        &self,
+        runtime: &Runtime,
+        request: ZoneEvidencePayloadChunkRequest,
+    ) -> Result<crate::inspection::catalog::ZoneEvidencePayloadChunkReport> {
+        self.refresh(runtime)?;
+        self.evidence.payload_chunk(&self.service.report(), request)
+    }
+
+    fn evidence_payload_release(
+        &self,
+        runtime: &Runtime,
+        request: ZoneEvidencePayloadReleaseRequest,
+    ) -> Result<crate::inspection::catalog::ZoneEvidencePayloadReleaseReport> {
+        self.refresh(runtime)?;
+        self.evidence
+            .release_payload(&self.service.report(), request)
+    }
+
     pub(crate) fn context_snapshot(&self, runtime: &Runtime) -> Result<ZoneContextSnapshot> {
         self.refresh(runtime)?;
         let service = self.service.report();
@@ -488,6 +582,7 @@ impl ZoneCatalogCommandInterface {
 
     fn refresh(&self, runtime: &Runtime) -> Result<()> {
         let service = self.service.report();
+        self.evidence.reconcile(&service)?;
         let configs = self.source_store.load()?;
         synchronize_monitor(runtime, self.monitor.as_ref(), &service, &configs)?;
         let observations = self.monitor.snapshot();
@@ -1086,13 +1181,16 @@ mod tests {
     use super::*;
     use crate::{
         inspection::{
-            CatalogCoverageStatus, CoveragePrefixStatus,
+            CatalogCoverageStatus, CoveragePrefixStatus, L1ChannelSummary, L1FinalityState,
             catalog::{
-                CatalogFrontier, CatalogMetadata, CatalogSnapshot, ZoneCatalogPublication,
-                ZoneCatalogRunContext, ZoneCatalogRunMode, ZoneCatalogSourceDescriptor,
-                ZoneCatalogWorkerFuture,
+                CatalogBlockCheckpoint, CatalogBlockReference, CatalogEvidenceUse, CatalogFrontier,
+                CatalogMetadata, CatalogSnapshot, CatalogSnapshotOrigin, CoverageSegment,
+                ZoneCatalogPublication, ZoneCatalogRecord, ZoneCatalogRunContext,
+                ZoneCatalogRunMode, ZoneCatalogSourceDescriptor, ZoneCatalogWorkerFuture,
+                ZoneClassificationCounters, ZoneEvidenceKind, ZoneEvidenceReference,
             },
         },
+        inspector::commands::zone_evidence::EvidenceBlockFuture,
         source_routing::channel_sources::{
             ChannelSourceConfigMutation, ChannelSourceTarget, ConfiguredSequencerSource,
             PersistedSequencerAttestation,
@@ -1245,6 +1343,10 @@ mod tests {
                 .pointer("/detail/channel_source_config/sequencer_sources/0/target/endpoint")
                 .and_then(Value::as_str)
                 != Some("https://sequencer.example/")
+            || detail
+                .pointer("/detail/channel_source_config/sequencer_sources/0/binding_state")
+                .and_then(Value::as_str)
+                != Some("persisted_attested")
             || detail
                 .pointer("/detail/detail_revision")
                 .and_then(Value::as_u64)
@@ -1541,9 +1643,108 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn evidence_commands_page_and_refetch_exact_l1_payload() -> Result<()> {
+        let runtime = Runtime::new()?;
+        let network_scope = scope('6');
+        let channel_id = identity('a');
+        let block = evidence_block(&channel_id, b"plain evidence");
+        let snapshot = evidence_snapshot(network_scope.clone(), &channel_id, &block);
+        let (worker, mut started) = PublishingWorker::new(snapshot);
+        let interface = ZoneCatalogCommandInterface::with_all_dependencies(
+            &runtime,
+            Arc::new(worker),
+            Arc::new(FakeSourceStore::default()),
+            Arc::new(FakeMonitor::default()),
+            Arc::new(UnusedAttestor),
+            Arc::new(FakeEvidenceReader {
+                block: Mutex::new(Some(block)),
+            }),
+        );
+        interface.bridge_call(
+            &runtime,
+            ZoneCatalogCommand::Configure,
+            &json!([{ "source": { "kind": "direct_http", "endpoint": "https://l1.example" } }]),
+        )?;
+        runtime
+            .block_on(started.recv())
+            .context("catalog worker did not publish")?;
+        let status = interface.bridge_call(&runtime, ZoneCatalogCommand::Status, &json!([{}]))?;
+
+        let page = interface.bridge_call(
+            &runtime,
+            ZoneCatalogCommand::EvidencePage,
+            &json!([{
+                "source_revision": status.get("source_revision"),
+                "network_scope": status.get("network_scope"),
+                "catalog_revision": status.get("catalog_revision"),
+                "channel_id": channel_id,
+                "filter": "raw_inscription",
+                "cursor": null,
+                "limit": 25
+            }]),
+        )?;
+        let reference = page
+            .pointer("/rows/0/reference")
+            .cloned()
+            .context("evidence page has no reference")?;
+        if page.get("report_kind").and_then(Value::as_str) != Some("zones.evidence_page")
+            || page
+                .pointer("/rows/0/segment/segment_id")
+                .and_then(Value::as_str)
+                != Some("segment-main")
+            || page.to_string().contains("plain evidence")
+        {
+            bail!("evidence page is incomplete or embeds payload data: {page}");
+        }
+
+        let detail = interface.bridge_call(
+            &runtime,
+            ZoneCatalogCommand::EvidenceDetail,
+            &json!([{
+                "source_revision": status.get("source_revision"),
+                "network_scope": status.get("network_scope"),
+                "catalog_revision": status.get("catalog_revision"),
+                "channel_id": identity('a'),
+                "reference": reference
+            }]),
+        )?;
+        if detail.get("report_kind").and_then(Value::as_str) != Some("zones.evidence_detail")
+            || detail.pointer("/operation/opcode").and_then(Value::as_u64) != Some(0x11)
+            || detail
+                .pointer("/payload/inline_text")
+                .and_then(Value::as_str)
+                != Some("plain evidence")
+            || detail.pointer("/payload/encoding").and_then(Value::as_str) != Some("utf8")
+        {
+            bail!("unexpected exact evidence detail: {detail}");
+        }
+        Ok(())
+    }
+
     struct PublishingWorker {
         snapshot: Arc<CatalogSnapshot>,
         started: mpsc::UnboundedSender<ZoneCatalogRunMode>,
+    }
+
+    struct FakeEvidenceReader {
+        block: Mutex<Option<crate::inspection::catalog::CatalogL1Block>>,
+    }
+
+    impl EvidenceBlockReader for FakeEvidenceReader {
+        fn block<'a>(
+            &'a self,
+            _source: ZoneCatalogSourceDescriptor,
+            _block_id: String,
+        ) -> EvidenceBlockFuture<'a> {
+            Box::pin(async move {
+                Ok(self
+                    .block
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("fake evidence block lock poisoned"))?
+                    .clone())
+            })
+        }
     }
 
     impl PublishingWorker {
@@ -1767,6 +1968,119 @@ mod tests {
             evidence: Vec::new(),
             segments: Vec::new(),
             gaps: Vec::new(),
+        }
+    }
+
+    fn evidence_snapshot(
+        scope: NetworkScope,
+        channel_id: &str,
+        block: &crate::inspection::catalog::CatalogL1Block,
+    ) -> CatalogSnapshot {
+        let mut snapshot = snapshot(scope);
+        snapshot.frontier = Some(CatalogFrontier {
+            scanned_through_slot: Some(block.checkpoint.slot),
+            checkpoint: Some(block.checkpoint.clone()),
+            observed_lib: Some(CatalogBlockReference {
+                slot: block.checkpoint.slot,
+                block_id: block.checkpoint.block_id.clone(),
+            }),
+            coverage_floor: Some(0),
+            prefix_status: CoveragePrefixStatus::Complete,
+            coverage_status: CatalogCoverageStatus::Complete,
+        });
+        snapshot.segments = vec![CoverageSegment {
+            segment_id: "segment-main".to_owned(),
+            floor: CatalogBlockCheckpoint {
+                slot: 0,
+                block_id: identity('0'),
+                parent_id: identity('f'),
+            },
+            frontier: CatalogBlockReference {
+                slot: block.checkpoint.slot,
+                block_id: block.checkpoint.block_id.clone(),
+            },
+            reaches_target_lib: true,
+        }];
+        let evidence = ZoneEvidenceReference {
+            evidence_id: format!("evidence-{}-0-raw_inscription", identity('e')),
+            channel_id: channel_id.to_owned(),
+            coverage_segment_id: "segment-main".to_owned(),
+            l1_slot: block.checkpoint.slot,
+            block_id: block.checkpoint.block_id.clone(),
+            transaction_hash: Some(identity('e')),
+            operation_index: 0,
+            message_id: None,
+            evidence_kind: ZoneEvidenceKind::RawInscription,
+            evidence_use: CatalogEvidenceUse::Presence,
+        };
+        snapshot.evidence = vec![evidence.clone()];
+        snapshot.zones = vec![ZoneCatalogRecord {
+            channel_id: channel_id.to_owned(),
+            observed_label: Some("Evidence Zone".to_owned()),
+            l1_channel: L1ChannelSummary {
+                tip_slot: Some(block.checkpoint.slot),
+                tip_hash: Some(block.checkpoint.block_id.clone()),
+                lib_slot: Some(block.checkpoint.slot),
+                balance: None,
+                key_count: Some(1),
+                withdraw_threshold: Some("1".to_owned()),
+                operation_count: 1,
+                finality_state: L1FinalityState::Final,
+            },
+            sequencer_committee: None,
+            classification: ZoneClassificationCounters {
+                channel_operations: 1,
+                recognized_l2_blocks: 0,
+                raw_inscriptions: 1,
+                conflicting_evidence: false,
+            },
+            first_seen_slot: block.checkpoint.slot,
+            last_seen_slot: block.checkpoint.slot,
+            latest_evidence_id: evidence.evidence_id,
+            evidence_count: 1,
+            snapshot_provenance: crate::inspection::catalog::CatalogSnapshotProvenance {
+                origin: CatalogSnapshotOrigin::ReplayDerived,
+                coverage_segment_id: "segment-main".to_owned(),
+                observed_slot: block.checkpoint.slot,
+                source_revision: 1,
+            },
+            updated_at_unix: 1,
+        }];
+        snapshot
+    }
+
+    fn evidence_block(
+        channel_id: &str,
+        payload: &[u8],
+    ) -> crate::inspection::catalog::CatalogL1Block {
+        crate::inspection::catalog::CatalogL1Block {
+            checkpoint: CatalogBlockCheckpoint {
+                slot: 7,
+                block_id: identity('7'),
+                parent_id: identity('6'),
+            },
+            payload: json!({
+                "header": {
+                    "slot": 7,
+                    "id": identity('7'),
+                    "parent_block": identity('6')
+                },
+                "transactions": [{
+                    "mantle_tx": {
+                        "hash": identity('e'),
+                        "ops": [{
+                            "opcode": 17,
+                            "payload": {
+                                "channel_id": channel_id,
+                                "parent": identity('0'),
+                                "signer": identity('1'),
+                                "inscription": hex::encode(payload)
+                            }
+                        }]
+                    },
+                    "ops_proofs": []
+                }]
+            }),
         }
     }
 

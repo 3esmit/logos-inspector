@@ -487,6 +487,49 @@ fn inscription_decoder_distinguishes_valid_raw_and_hash_conflict() -> Result<()>
     Ok(())
 }
 
+#[test]
+fn exact_evidence_payload_revalidates_catalog_identity() -> Result<()> {
+    let channel_id = id('8');
+    let transaction_hash = id('c');
+    let source_block = block(
+        3,
+        '3',
+        '2',
+        vec![raw_inscription_transaction('c', &channel_id, &id('0'), '1')],
+    );
+    let reference = ZoneEvidenceReference {
+        evidence_id: format!("evidence-{transaction_hash}-0-raw_inscription"),
+        channel_id: channel_id.clone(),
+        coverage_segment_id: "segment-test".to_owned(),
+        l1_slot: 3,
+        block_id: id('3'),
+        transaction_hash: Some(transaction_hash),
+        operation_index: 0,
+        message_id: None,
+        evidence_kind: ZoneEvidenceKind::RawInscription,
+        evidence_use: CatalogEvidenceUse::Presence,
+    };
+
+    let payload = extract_catalog_evidence_payload(&source_block, &reference)?;
+    ensure!(
+        payload.opcode == 0x11
+            && payload.format == CatalogEvidencePayloadFormat::Bytes
+            && payload.bytes == b"plain data",
+        "unexpected exact evidence payload: {payload:?}"
+    );
+
+    let mut tampered = reference;
+    tampered.channel_id = id('9');
+    let error = extract_catalog_evidence_payload(&source_block, &tampered)
+        .err()
+        .context("tampered evidence reference should fail")?;
+    ensure!(
+        matches!(error, CatalogEngineError::SourceInconsistent(_)),
+        "tampered evidence returned wrong error: {error}"
+    );
+    Ok(())
+}
+
 fn complete_empty_catalog() -> Result<(tempfile::TempDir, ZoneCatalog)> {
     let (directory, catalog) = test_catalog(100)?;
     let target = reference(10, 'a');

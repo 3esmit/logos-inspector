@@ -13,6 +13,8 @@ Control {
     property bool copyInline: copyable
     property bool monospace: true
     property bool wrap: false
+    property bool fitSingleLine: false
+    property int minimumPixelSize: 8
     property string copyText: text
     property string tooltipText: ""
     property int textPixelSize: header ? theme.labelText : theme.dataText
@@ -23,8 +25,8 @@ Control {
     hoverEnabled: link || copyable || tooltipText.length > 0
     activeFocusOnTab: link
     padding: 0
-    implicitHeight: contentRow.implicitHeight
-    implicitWidth: contentRow.implicitWidth
+    implicitHeight: contentFrame.implicitHeight
+    implicitWidth: contentFrame.implicitWidth
 
     Keys.onPressed: function (event) {
         if (!root.link) {
@@ -43,14 +45,23 @@ Control {
         border.color: root.theme.accent
     }
 
-    contentItem: Row {
-        id: contentRow
+    contentItem: Item {
+        id: contentFrame
 
-        spacing: root.link || root.copyable ? root.theme.gapTiny : 0
+        readonly property int copyGap: copyButton.visible ? root.theme.gapTiny : 0
+
+        implicitWidth: content.implicitWidth
+            + (copyButton.visible ? copyButton.implicitWidth + copyGap : 0)
+        implicitHeight: Math.max(content.implicitHeight,
+            copyButton.visible ? copyButton.implicitHeight : 0)
 
         Text {
             id: content
 
+            anchors.left: parent.left
+            anchors.right: copyButton.visible ? copyButton.left : parent.right
+            anchors.rightMargin: contentFrame.copyGap
+            anchors.verticalCenter: parent.verticalCenter
             text: root.text
             color: root.link && root.hovered ? root.theme.accentHover : root.textColor
             textFormat: Text.PlainText
@@ -60,11 +71,12 @@ Control {
             font.capitalization: root.header ? Font.AllUppercase : Font.MixedCase
             font.underline: root.link && (root.hovered || root.activeFocus)
             wrapMode: root.wrap ? Text.WrapAnywhere : Text.NoWrap
-            elide: root.wrap ? Text.ElideNone : Text.ElideRight
+            fontSizeMode: root.fitSingleLine ? Text.HorizontalFit : Text.FixedSize
+            minimumPixelSize: root.minimumPixelSize
+            elide: root.wrap || root.fitSingleLine ? Text.ElideNone : Text.ElideRight
             verticalAlignment: Text.AlignVCenter
             leftPadding: root.link ? root.theme.gapTiny : 0
             rightPadding: root.link ? root.theme.gapTiny : 0
-            width: root.textWidth(content.implicitWidth, copyButton.visible ? copyButton.implicitWidth + contentRow.spacing : 0)
             height: Math.max(implicitHeight, copyButton.visible ? copyButton.implicitHeight : 0)
 
             MouseArea {
@@ -81,6 +93,8 @@ Control {
             visible: root.copyable && root.copyText.length > 0 && !root.header
             hoverEnabled: true
             focusPolicy: Qt.TabFocus
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
             width: 26
             height: 26
             padding: 0
@@ -148,11 +162,4 @@ Control {
         root.forceActiveFocus()
     }
 
-    function textWidth(implicitTextWidth, copyGap) {
-        const available = root.width > 0 ? Math.max(80, root.width - copyGap) : implicitTextWidth
-        if (root.copyInline) {
-            return Math.min(implicitTextWidth, available)
-        }
-        return root.width > 0 ? available : implicitTextWidth
-    }
 }

@@ -19,6 +19,7 @@ pub const MAX_CATALOG_L1_RANGE_BLOCKS: usize = 100;
 const CATALOG_L1_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const CATALOG_METADATA_RESPONSE_MAX_BYTES: usize = 64 * 1024;
 const CATALOG_BLOCK_RESPONSE_MAX_BYTES: usize = 8 * 1024 * 1024;
+const EVIDENCE_BLOCK_RESPONSE_MAX_BYTES: usize = 16 * 1024 * 1024;
 const CATALOG_RANGE_RESPONSE_MAX_BYTES: usize = 64 * 1024 * 1024;
 // Mirrors the upstream processed-block NDJSON codec bound.
 const CATALOG_NDJSON_LINE_MAX_BYTES: usize = 3 * 1024 * 1024;
@@ -189,6 +190,12 @@ impl DirectCatalogL1Source {
             client,
             limits: CatalogL1SourceLimits::default(),
         })
+    }
+
+    pub(crate) fn for_evidence(endpoint: impl AsRef<str>) -> CatalogL1SourceResult<Self> {
+        let mut source = Self::new(endpoint)?;
+        source.limits.block_response_bytes = EVIDENCE_BLOCK_RESPONSE_MAX_BYTES;
+        Ok(source)
     }
 
     #[must_use]
@@ -708,8 +715,15 @@ fn response_preview(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        io::{Read as _, Write as _},
+        net::TcpListener,
+        thread,
+    };
+
     use anyhow::{Context as _, Result, bail};
     use serde_json::json;
+    use tokio::runtime::Runtime;
 
     use super::*;
 
@@ -1037,6 +1051,38 @@ mod tests {
         }
         if DirectCatalogL1Source::new("http://user:secret@localhost:8080").is_ok() {
             bail!("credential-bearing endpoint should fail");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn evidence_source_rejects_response_declared_above_16_mib() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let address = listener.local_addr()?;
+        let server = thread::spawn(move || -> Result<()> {
+            let (mut stream, _) = listener.accept()?;
+            let mut request = [0_u8; 1];
+            stream.read_exact(&mut request)?;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                EVIDENCE_BLOCK_RESPONSE_MAX_BYTES + 1
+            );
+            stream.write_all(response.as_bytes())?;
+            Ok(())
+        });
+        let source = DirectCatalogL1Source::for_evidence(format!("http://{address}"))?;
+        let error = match Runtime::new()?.block_on(source.block(id('a'))) {
+            Ok(value) => bail!("oversized evidence response should fail, got {value:?}"),
+            Err(error) => error,
+        };
+        server
+            .join()
+            .map_err(|_| anyhow::anyhow!("evidence response server panicked"))??;
+        if !error
+            .to_string()
+            .contains("http response body exceeded 16777216 byte limit")
+        {
+            bail!("unexpected oversized evidence response error: {error}");
         }
         Ok(())
     }
