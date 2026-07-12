@@ -81,7 +81,7 @@ function navTreeItems(root) {
 
 function parentNavKeyForView(root, view) {
     const target = String(view || "")
-    if (target === "blockDetail" || target === "transactionDetail") {
+    if (target === "blockDetail" || target === "transactionDetail" || target === "zones") {
         return "l1"
     }
     if (target === "l2BlockDetail" || target === "l2TransactionDetail" || target === "sequencer") {
@@ -128,6 +128,9 @@ function navItemForView(root, view) {
         if (target === "l2TransactionDetail") {
             return { key: "l2TransactionDetail", view: "l2TransactionDetail", label: qsTr("LEZ Transaction"), token: "L2T", layer: "l2" }
         }
+        if (target === "zones") {
+            return { key: "zones", view: "zones", label: qsTr("Zones"), token: "ZON", layer: "l1" }
+        }
         return null
     }
 }
@@ -173,13 +176,11 @@ function navItemMatches(item, normalized) {
 }
 
 function viewTitle(root) {
-    with (root) {
-        const item = navItemForView(root, currentView)
-        if (item) {
-            return item.label
-        }
-        return qsTr("Dashboard")
+    const item = navItemForView(root, root.currentView)
+    if (item) {
+        return item.label
     }
+    return qsTr("Dashboard")
 }
 
 function normalizedNavigationView(requestedView) {

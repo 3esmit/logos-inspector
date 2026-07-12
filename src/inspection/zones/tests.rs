@@ -217,6 +217,7 @@ fn zone_detail_adds_compact_facts_without_repeating_summary_sections() -> Result
                 target: ZoneSourceTarget::Rpc {
                     endpoint: "http://127.0.0.1:3040/".to_owned(),
                 },
+                binding_state: Some(ZoneSourceBindingState::PersistedAttested),
             }],
             indexer_source: Some(ConfiguredZoneSource {
                 source_id: "indexer-main".to_owned(),
@@ -224,6 +225,7 @@ fn zone_detail_adds_compact_facts_without_repeating_summary_sections() -> Result
                 target: ZoneSourceTarget::Module {
                     module_id: "indexer".to_owned(),
                 },
+                binding_state: None,
             }),
         },
         source_observations: vec![ZoneSourceObservation {

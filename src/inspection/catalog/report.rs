@@ -1,3 +1,4 @@
+use super::{CoverageSegment, ZoneEvidenceReference};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -46,6 +47,61 @@ pub struct ZoneDetailRequest {
     pub summary_revision: u64,
     pub observation_revision: u64,
     pub channel_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ZoneEvidencePageRequest {
+    pub source_revision: u64,
+    pub network_scope: NetworkScope,
+    pub catalog_revision: u64,
+    pub channel_id: String,
+    #[serde(default)]
+    pub filter: ZoneEvidenceFilter,
+    pub cursor: Option<String>,
+    pub limit: Option<u16>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ZoneEvidenceDetailRequest {
+    pub source_revision: u64,
+    pub network_scope: NetworkScope,
+    pub catalog_revision: u64,
+    pub channel_id: String,
+    pub reference: ZoneEvidenceReference,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ZoneEvidencePayloadChunkRequest {
+    pub source_revision: u64,
+    pub network_scope: NetworkScope,
+    pub channel_id: String,
+    pub evidence_id: String,
+    pub session_id: String,
+    pub offset: u64,
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ZoneEvidencePayloadReleaseRequest {
+    pub source_revision: u64,
+    pub network_scope: NetworkScope,
+    pub channel_id: String,
+    pub evidence_id: String,
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ZoneEvidenceFilter {
+    #[default]
+    All,
+    ChannelConfiguration,
+    ChannelOperation,
+    RawInscription,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -164,6 +220,138 @@ pub struct ZoneDetailReport {
     pub observation_revision: u64,
     pub summary_revision: u64,
     pub detail: ZoneDetail,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ZoneEvidencePageReport {
+    pub report_kind: &'static str,
+    pub schema_version: u32,
+    pub source_revision: u64,
+    pub network_scope: NetworkScope,
+    pub catalog_revision: u64,
+    pub channel_id: String,
+    pub filter: ZoneEvidenceFilter,
+    pub rows: Vec<ZoneEvidenceRow>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ZoneEvidenceRow {
+    pub reference: ZoneEvidenceReference,
+    pub segment: ZoneEvidenceSegmentProvenance,
+    pub source: ZoneEvidenceSourceProvenance,
+    pub finality: ZoneEvidenceFinality,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ZoneEvidenceSegmentProvenance {
+    pub segment_id: String,
+    pub floor_slot: u64,
+    pub frontier_slot: u64,
+    pub reaches_target_lib: bool,
+}
+
+impl From<&CoverageSegment> for ZoneEvidenceSegmentProvenance {
+    fn from(segment: &CoverageSegment) -> Self {
+        Self {
+            segment_id: segment.segment_id.clone(),
+            floor_slot: segment.floor.slot,
+            frontier_slot: segment.frontier.slot,
+            reaches_target_lib: segment.reaches_target_lib,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ZoneEvidenceSourceProvenance {
+    pub kind: ZoneEvidenceSourceKind,
+    pub fingerprint: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ZoneEvidenceSourceKind {
+    DirectHttp,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ZoneEvidenceFinality {
+    Final,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ZoneEvidenceDetailReport {
+    pub report_kind: &'static str,
+    pub schema_version: u32,
+    pub source_revision: u64,
+    pub network_scope: NetworkScope,
+    pub catalog_revision: u64,
+    pub channel_id: String,
+    pub row: ZoneEvidenceRow,
+    pub operation: ZoneEvidenceOperation,
+    pub payload: ZoneEvidencePayloadReport,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ZoneEvidenceOperation {
+    pub opcode: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ZoneEvidencePayloadReport {
+    pub byte_length: u64,
+    pub sha256: String,
+    pub encoding: ZoneEvidencePayloadEncoding,
+    pub inline_text: Option<String>,
+    pub inline_base64: Option<String>,
+    pub preview: String,
+    pub preview_truncated: bool,
+    pub inline_truncated: bool,
+    pub session_id: Option<String>,
+    pub warning: Option<ZoneEvidencePayloadWarning>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ZoneEvidencePayloadEncoding {
+    Json,
+    Utf8,
+    Binary,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ZoneEvidencePayloadWarning {
+    pub code: ZoneEvidencePayloadWarningCode,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ZoneEvidencePayloadWarningCode {
+    EvidenceTooLarge,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ZoneEvidencePayloadChunkReport {
+    pub report_kind: &'static str,
+    pub schema_version: u32,
+    pub session_id: String,
+    pub evidence_id: String,
+    pub encoding: ZoneEvidencePayloadEncoding,
+    pub offset: u64,
+    pub next_offset: u64,
+    pub done: bool,
+    pub text: Option<String>,
+    pub base64: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ZoneEvidencePayloadReleaseReport {
+    pub report_kind: &'static str,
+    pub schema_version: u32,
+    pub session_id: String,
+    pub released: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

@@ -15,6 +15,7 @@ import "features/programs/pages" as ProgramPages
 import "features/settings/pages" as SettingsPages
 import "features/storage/pages" as StoragePages
 import "features/wallet/pages" as WalletPages
+import "features/zones/pages" as ZonePages
 import "services"
 import "state"
 import "theme"
@@ -213,6 +214,8 @@ Item {
             return blockchainPage
         case "channels":
             return channelsPage
+        case "zones":
+            return zonesPage
         case "storage":
             return storagePage
         case "messaging":
@@ -336,6 +339,14 @@ Item {
     Component {
         id: channelsPage
         BedrockPages.ChannelsPage {
+            theme: theme
+            model: appModel
+        }
+    }
+
+    Component {
+        id: zonesPage
+        ZonePages.ZonesPage {
             theme: theme
             model: appModel
         }

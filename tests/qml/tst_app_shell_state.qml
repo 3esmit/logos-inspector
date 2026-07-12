@@ -73,4 +73,16 @@ TestCase {
 
         compare(model.currentView, "storage")
     }
+
+    function test_hidden_zones_route_has_l1_metadata_without_nav_entry() {
+        model.shell.selectView("zones")
+
+        compare(model.currentView, "zones")
+        compare(model.viewTitle(), "Zones")
+        compare(model.parentNavKeyForView("zones"), "l1")
+        const rows = model.navRows()
+        verify(!rows.some(function (row) {
+            return String(row.view || "") === "zones"
+        }))
+    }
 }

@@ -18,6 +18,10 @@ run_qml_tests() {
     -import "$ROOT/qml/theme"
 }
 
+run_zone_visual_smoke() {
+  "$ROOT/scripts/zones-visual-smoke.sh"
+}
+
 run_gui_launcher_smoke() {
   if [[ -z "${LOGOS_BLOCKCHAIN_CIRCUITS:-}" ]]; then
     echo "RUN_GUI_BINARY_SMOKE=1 requires LOGOS_BLOCKCHAIN_CIRCUITS" >&2
@@ -34,6 +38,7 @@ run_standalone_gui_smoke() {
 
 run_qml_static_checks
 run_qml_tests
+run_zone_visual_smoke
 
 if [[ "${RUN_GUI_BINARY_SMOKE:-0}" == "1" ]]; then
   run_gui_launcher_smoke
