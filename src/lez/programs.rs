@@ -3,9 +3,9 @@ use std::{collections::BTreeMap, fs, path::Path};
 use anyhow::{Context as _, Result};
 use lee::{AccountId, ProgramDeploymentTransaction, program::Program};
 use lee_core::program::ProgramId;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ProgramIdEntry {
     pub label: String,
     pub base58: String,

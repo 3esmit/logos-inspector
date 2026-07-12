@@ -32,7 +32,7 @@ pub struct AccountTransactionSummary {
     pub raw: Value,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct TransactionTransferOutputSummary {
     pub recipient: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -111,6 +111,28 @@ pub(crate) fn summarize_indexer_transaction(
         bytecode_len,
         raw: value.clone(),
     }
+}
+
+pub(crate) fn verified_indexer_transaction_summary(
+    value: &Value,
+    expected_hash: &str,
+) -> anyhow::Result<TransactionSummary> {
+    let indexed = serde_json::from_value::<indexer_service_protocol::Transaction>(value.clone())
+        .map_err(|_| {
+            crate::lez::evidence_protocol_error("Indexer transaction has invalid layout")
+        })?;
+    let advertised_hash = indexed.hash().to_string();
+    let transaction: common::transaction::LeeTransaction = indexed.try_into().map_err(|_| {
+        crate::lez::evidence_protocol_error("Indexer transaction conversion failed")
+    })?;
+    let summary = super::super::transactions::summarize_transaction(&transaction);
+    let requested_hash = crate::parse_hash(expected_hash, "transaction hash")?.to_string();
+    if advertised_hash != summary.hash || requested_hash != summary.hash {
+        return Err(crate::lez::evidence_protocol_error(
+            "Indexer transaction content hash does not match requested hash",
+        ));
+    }
+    Ok(summary)
 }
 
 pub(crate) fn with_account_direction(

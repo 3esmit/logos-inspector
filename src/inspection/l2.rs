@@ -1,6 +1,21 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
-use super::{NetworkScope, ZoneKind, ZoneSourceRole};
+use super::{CatalogVerificationState, NetworkScope, ZoneKind, ZoneSourceRole, ZoneSummary};
+use crate::source_routing::channel_sources::{ChannelSourceConfig, ChannelSourceMonitorSnapshot};
+
+mod cache;
+mod model;
+mod normalization;
+mod router;
+mod source;
+
+pub(crate) use cache::*;
+pub use model::*;
+pub(crate) use normalization::*;
+pub(crate) use router::*;
+pub(crate) use source::*;
 
 pub mod lez {
     pub use crate::lez::*;
@@ -8,6 +23,15 @@ pub mod lez {
 
 pub const L2_READ_SCHEMA_VERSION: u32 = 1;
 pub const L2_READ_ERROR_REPORT_KIND: &str = "lez.read_error";
+
+#[derive(Debug, Clone)]
+pub(crate) struct ZoneL2RuntimeFacts {
+    pub network_scope: Option<NetworkScope>,
+    pub verification: CatalogVerificationState,
+    pub summaries: BTreeMap<String, ZoneSummary>,
+    pub configs: Vec<ChannelSourceConfig>,
+    pub observations: ChannelSourceMonitorSnapshot,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -106,7 +130,7 @@ pub struct ZoneL2ProgramsQuery {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ZoneL2CommitmentProofQuery {
-    pub transaction_id: String,
+    pub commitment_hex: String,
     pub exact_source_id: Option<String>,
 }
 
@@ -211,6 +235,15 @@ pub struct L2RouteAttempt {
     pub outcome: L2RouteAttemptOutcome,
     pub contribution: L2RouteContribution,
     pub finality: Option<L2RouteFinality>,
+    pub source_config_revision: u64,
+    pub retrieval: L2Retrieval,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum L2Retrieval {
+    Live,
+    MemoryCache,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -444,6 +477,8 @@ mod tests {
                 outcome: L2RouteAttemptOutcome::Failed,
                 contribution: L2RouteContribution::None,
                 finality: Some(L2RouteFinality::Provisional),
+                source_config_revision: 1,
+                retrieval: L2Retrieval::Live,
             }],
         });
         let value = serde_json::to_value(details)?;

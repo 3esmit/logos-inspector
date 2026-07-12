@@ -1,7 +1,8 @@
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use common::block::{BedrockStatus, Block, BlockBody, BlockHeader};
 use serde::Serialize;
+use sha2::{Digest as _, Sha256};
 
 use super::{TransactionSummary, summarize_transaction};
 
@@ -21,11 +22,30 @@ pub struct BlockSummary {
 pub(crate) fn decode_sequencer_block(encoded: &str) -> Result<BlockSummary> {
     let bytes = BASE64_STANDARD
         .decode(encoded)
-        .context("sequencer block result was not valid base64")?;
+        .map_err(|_| super::evidence_protocol_error("Sequencer block is not valid base64"))?;
 
     let block = borsh::from_slice::<Block>(&bytes)
-        .context("sequencer block result did not match LEZ block layout")?;
+        .map_err(|_| super::evidence_protocol_error("Sequencer block has invalid layout"))?;
+    verify_block_content_hash(&block)?;
     Ok(summarize_block(&block))
+}
+
+pub(crate) fn verify_block_content_hash(block: &Block) -> Result<()> {
+    const PREFIX: &[u8; 32] = b"/LEE/v0.3/Message/Block/\x00\x00\x00\x00\x00\x00\x00\x00";
+
+    let hashable = common::block::HashableBlockData::from(block.clone());
+    let encoded = borsh::to_vec(&hashable)
+        .map_err(|_| super::evidence_protocol_error("LEZ block content cannot be encoded"))?;
+    let mut digest = Sha256::new();
+    digest.update(PREFIX);
+    digest.update(encoded);
+    let computed: [u8; 32] = digest.finalize().into();
+    if computed != block.header.hash.0 {
+        return Err(super::evidence_protocol_error(
+            "LEZ block content hash does not match its header",
+        ));
+    }
+    Ok(())
 }
 
 #[must_use]
@@ -58,6 +78,8 @@ fn summarize_block_parts(
 
 #[cfg(test)]
 mod tests {
+    use anyhow::ensure;
+
     use super::*;
 
     const TESTNET_LEGACY_BLOCK_1234: &str = "0gQAAAAAAADgBr/57T2VP8TvanoE/U28V0Cdzfe66q1YCY203VHHaPZH+D0d+RhX4Qtz8m7atlbEG6J5XguGFqEPUWLQ8+1kb3u3+Z4BAADGt772EW9LB3inITN2BUfOdP8fHmTlcvpFP45NvGI01KYmibPzb/BkLygy6fTsHB4Oc4XoVVMp+k7Rp8xdjpgGAQAAAADiMVjm57Su7ujTA26v18dZ5R2KCU2Ce5JXELoh3v+PRgMAAAAvTEVaL0Nsb2NrUHJvZ3JhbUFjY291bnQvMDAwMDAwMS9MRVovQ2xvY2tQcm9ncmFtQWNjb3VudC8wMDAwMDEwL0xFWi9DbG9ja1Byb2dyYW1BY2NvdW50LzAwMDAwNTAAAAAAAgAAAG97t/meAQAAAAAAAAI=";
@@ -81,5 +103,24 @@ mod tests {
         );
         assert_eq!(summary.bedrock_status, "Finalized");
         assert!(summary.decode_warning.is_none());
+    }
+
+    #[test]
+    fn block_content_verification_rejects_tampering() -> Result<()> {
+        let bytes = BASE64_STANDARD.decode(TESTNET_LEGACY_BLOCK_1234)?;
+        let mut block = borsh::from_slice::<Block>(&bytes)?;
+        block.header.timestamp = block.header.timestamp.saturating_add(1);
+
+        let result = verify_block_content_hash(&block);
+        ensure!(
+            result.is_err(),
+            "tampered block passed content verification"
+        );
+        let error = result.err().map(|error| error.to_string());
+        ensure!(
+            error.as_deref() == Some("LEZ block content hash does not match its header"),
+            "tampered block returned unstable error"
+        );
+        Ok(())
     }
 }

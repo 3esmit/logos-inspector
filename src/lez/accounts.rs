@@ -45,6 +45,22 @@ pub async fn sequencer_account(endpoint: &str, account_id: &str) -> Result<Accou
         .get_account(parsed_account_id)
         .await
         .with_context(|| format!("failed to fetch sequencer account {account_id}"))?;
+    account_report(parsed_account_id, account)
+}
+
+pub(crate) fn indexer_account_report(value: &Value, account_id: &str) -> Result<AccountReport> {
+    let parsed_account_id = parse_account_id(account_id)?;
+    let account = serde_json::from_value::<indexer_service_protocol::Account>(value.clone())
+        .map_err(|_| crate::lez::evidence_protocol_error("Indexer account has invalid layout"))?
+        .try_into()
+        .map_err(|_| crate::lez::evidence_protocol_error("Indexer account conversion failed"))?;
+    account_report(parsed_account_id, account)
+}
+
+fn account_report(
+    parsed_account_id: lee::AccountId,
+    account: lee_core::account::Account,
+) -> Result<AccountReport> {
     let account_json = serde_json::to_value(&account).context("failed to serialize account")?;
     let data_hex = hex::encode(account.data.into_inner());
     let account_id_base58 = parsed_account_id.to_string();

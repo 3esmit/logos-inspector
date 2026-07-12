@@ -1,13 +1,15 @@
 use anyhow::{Context as _, Result};
+use borsh::BorshDeserialize as _;
 use common::transaction::LeeTransaction;
 use sequencer_service_rpc::{RpcClient as _, SequencerClientBuilder};
 use serde_json::{Value, json};
 
 use super::{
     BlockSummary, ProgramIdEntry, TransactionIdlInspectionReport, TransactionInspectionReport,
-    TransactionSummary, TransactionTraceReport, decode_sequencer_block, inspect_transaction,
-    inspect_transaction_summary_with_idl, programs::program_entries, summarize_block,
-    summarize_transaction, trace_transaction_summary, trace_transaction_summary_with_idl,
+    TransactionSummary, TransactionTraceReport, block::verify_block_content_hash,
+    decode_sequencer_block, inspect_transaction, inspect_transaction_summary_with_idl,
+    programs::program_entries, summarize_block, summarize_transaction, trace_transaction_summary,
+    trace_transaction_summary_with_idl,
 };
 use crate::{parse_hash, raw_json_rpc_optional_result};
 
@@ -41,6 +43,53 @@ pub async fn sequencer_program_ids(endpoint: &str) -> Result<Vec<ProgramIdEntry>
     Ok(program_entries(programs))
 }
 
+pub async fn sequencer_account_nonces(
+    endpoint: &str,
+    account_ids: &[String],
+) -> Result<Vec<String>> {
+    let parsed = account_ids
+        .iter()
+        .map(|account_id| crate::parse_account_id(account_id))
+        .collect::<Result<Vec<_>>>()?;
+    let nonces = sequencer_client(endpoint)?
+        .get_accounts_nonces(parsed)
+        .await
+        .context("failed to fetch Sequencer account nonces")?;
+    if nonces.len() != account_ids.len() {
+        return Err(super::evidence_protocol_error(
+            "Sequencer returned an invalid account nonce count",
+        ));
+    }
+    Ok(nonces
+        .into_iter()
+        .map(|nonce| nonce.0.to_string())
+        .collect())
+}
+
+pub async fn sequencer_commitment_proof(
+    endpoint: &str,
+    commitment_hex: &str,
+) -> Result<Option<(u64, Vec<String>)>> {
+    let bytes = hex::decode(commitment_hex).context("commitment must be hexadecimal")?;
+    if bytes.len() != 32 {
+        anyhow::bail!("commitment must contain 32 bytes");
+    }
+    let commitment = lee_core::Commitment::deserialize_reader(&mut bytes.as_slice())
+        .context("commitment did not match the LEZ commitment layout")?;
+    let proof = sequencer_client(endpoint)?
+        .get_proof_for_commitment(commitment)
+        .await
+        .context("failed to fetch Sequencer commitment proof")?;
+    proof
+        .map(|(leaf_index, siblings)| {
+            Ok((
+                u64::try_from(leaf_index).context("commitment proof index exceeds u64")?,
+                siblings.into_iter().map(hex::encode).collect(),
+            ))
+        })
+        .transpose()
+}
+
 pub async fn sequencer_block(endpoint: &str, block_id: u64) -> Result<Option<BlockSummary>> {
     let result =
         raw_json_rpc_optional_result(endpoint, "getBlock", Value::Array(vec![json!(block_id)]))
@@ -62,7 +111,7 @@ pub async fn sequencer_blocks(
     before: Option<u64>,
     limit: u64,
 ) -> Result<Vec<BlockSummary>> {
-    let limit = limit.min(50);
+    let limit = limit.min(51);
     if limit == 0 {
         return Ok(Vec::new());
     }
@@ -79,7 +128,14 @@ pub async fn sequencer_blocks(
         .with_context(|| {
             format!("failed to fetch sequencer block range {start_block_id}..={end_block_id}")
         })?;
-    Ok(blocks.iter().rev().map(summarize_block).collect())
+    blocks
+        .iter()
+        .rev()
+        .map(|block| {
+            verify_block_content_hash(block)?;
+            Ok(summarize_block(block))
+        })
+        .collect()
 }
 
 pub async fn sequencer_transaction(

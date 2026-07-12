@@ -3,12 +3,13 @@ use serde_json::{Value, json};
 
 use crate::{
     ACCOUNT_TRANSACTION_LIMIT, AccountReport, AccountTransactionSummary, IndexerBlockReport,
-    IndexerStatusReport, ProbeReport, TransferActivityPage,
+    IndexerStatusReport, ProbeReport, TransactionSummary, TransferActivityPage,
     blockchain::BlockchainLiveBlocksReport,
     blockchain::BlockchainNodeReport,
     lez::{
-        next_indexer_blocks_cursor, summarize_account_transaction, summarize_indexer_block,
+        indexer_account_report, next_indexer_blocks_cursor, summarize_account_transaction,
         summarize_indexer_status_response, transfer_recipient_summaries_from_blocks,
+        verified_indexer_block_report, verified_indexer_transaction_summary,
     },
     modules::logos_core,
     response_excerpt,
@@ -111,7 +112,7 @@ pub(crate) fn indexer_blocks(before: Option<u64>, limit: u64) -> Result<Vec<Inde
     let blocks = value
         .as_array()
         .context("getBlocks result was not an array")?;
-    Ok(blocks.iter().map(summarize_indexer_block).collect())
+    blocks.iter().map(verified_indexer_block_report).collect()
 }
 
 pub(crate) fn indexer_block_by_hash(header_hash: &str) -> Result<Option<IndexerBlockReport>> {
@@ -120,7 +121,7 @@ pub(crate) fn indexer_block_by_hash(header_hash: &str) -> Result<Option<IndexerB
     if empty_module_lookup(&value) {
         return Ok(None);
     }
-    Ok(Some(summarize_indexer_block(&value)))
+    Ok(Some(verified_indexer_block_report(&value)?))
 }
 
 pub(crate) fn indexer_block_by_id(block_id: u64) -> Result<Option<IndexerBlockReport>> {
@@ -128,7 +129,36 @@ pub(crate) fn indexer_block_by_id(block_id: u64) -> Result<Option<IndexerBlockRe
     if empty_module_lookup(&value) {
         return Ok(None);
     }
-    Ok(Some(summarize_indexer_block(&value)))
+    Ok(Some(verified_indexer_block_report(&value)?))
+}
+
+pub(crate) fn indexer_transaction(transaction_hash: &str) -> Result<Option<TransactionSummary>> {
+    let transaction_hash = required_text(transaction_hash, "transaction hash")?;
+    let value = call_value(
+        INDEXER_MODULE,
+        "getTransaction",
+        &[transaction_hash.to_owned()],
+    )?;
+    if empty_module_lookup(&value) {
+        return Ok(None);
+    }
+    Ok(Some(verified_indexer_transaction_summary(
+        &value,
+        transaction_hash,
+    )?))
+}
+
+pub(crate) fn indexer_account_at_block(account_id: &str, block_id: u64) -> Result<AccountReport> {
+    let account_id = required_text(account_id, "account id")?;
+    let value = call_value(
+        INDEXER_MODULE,
+        "getAccountAtBlock",
+        &[account_id.to_owned(), block_id.to_string()],
+    )?;
+    if empty_module_lookup(&value) {
+        bail!("getAccountAtBlock returned no account");
+    }
+    indexer_account_report(&value, account_id)
 }
 
 pub(crate) fn indexer_transfer_recipients(

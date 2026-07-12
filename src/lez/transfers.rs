@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::indexer::{AccountTransactionSummary, IndexerBlockReport, summarize_transfer_outputs};
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct TransferRecipientSummary {
     pub recipient: String,
     pub account_ref: String,
@@ -26,7 +26,7 @@ pub struct TransferActivityPage {
     pub next_before_block: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct RecipientTransferSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub slot: Option<u64>,
@@ -50,12 +50,11 @@ struct RecipientAggregate {
 pub(crate) fn transfer_recipient_summaries_from_blocks(
     blocks: &[IndexerBlockReport],
 ) -> Vec<TransferRecipientSummary> {
-    let mut account_refs = BTreeMap::new();
-    let mut output_refs = BTreeMap::new();
+    let mut aggregates = BTreeMap::new();
     for block in blocks {
         for tx in &block.transactions {
             for output in transaction_transfer_outputs(tx) {
-                let aggregate = output_refs
+                let aggregate = aggregates
                     .entry(output.recipient)
                     .or_insert_with(RecipientAggregate::default);
                 aggregate.tx_hashes.insert(tx.hash.clone());
@@ -70,7 +69,7 @@ pub(crate) fn transfer_recipient_summaries_from_blocks(
                 });
             }
             for account_id in &tx.account_ids {
-                let aggregate = account_refs
+                let aggregate = aggregates
                     .entry(account_id.clone())
                     .or_insert_with(RecipientAggregate::default);
                 aggregate.tx_hashes.insert(tx.hash.clone());
@@ -85,15 +84,11 @@ pub(crate) fn transfer_recipient_summaries_from_blocks(
             }
         }
     }
-    if !output_refs.is_empty() {
-        return transfer_recipient_summaries_from_aggregates(output_refs, "transfer_outputs");
-    }
-    transfer_recipient_summaries_from_aggregates(account_refs, "account_refs")
+    transfer_recipient_summaries_from_aggregates(aggregates)
 }
 
 fn transfer_recipient_summaries_from_aggregates(
     aggregates: BTreeMap<String, RecipientAggregate>,
-    source: &str,
 ) -> Vec<TransferRecipientSummary> {
     let mut rows = aggregates
         .into_iter()
@@ -114,7 +109,7 @@ fn transfer_recipient_summaries_from_aggregates(
                 outputs: aggregate.outputs,
                 references: aggregate.references,
                 last_slot: aggregate.last_slot,
-                source: source.to_owned(),
+                source: transfer_evidence_source(&aggregate),
                 transfers: aggregate.transfers,
             }
         })
@@ -125,6 +120,16 @@ fn transfer_recipient_summaries_from_aggregates(
             .then_with(|| left.recipient.cmp(&right.recipient))
     });
     rows
+}
+
+fn transfer_evidence_source(aggregate: &RecipientAggregate) -> String {
+    match (aggregate.outputs > 0, aggregate.references > 0) {
+        (true, true) => "transfer_outputs_and_account_refs",
+        (true, false) => "transfer_outputs",
+        (false, true) => "account_refs",
+        (false, false) => "none",
+    }
+    .to_owned()
 }
 
 #[derive(Debug)]
@@ -180,11 +185,13 @@ fn max_slot(left: Option<u64>, right: Option<u64>) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+    use anyhow::{Result, bail, ensure};
+
     use super::super::indexer::summarize_indexer_transaction;
     use super::*;
 
     #[test]
-    fn transfer_recipient_summaries_prefer_generic_transfer_outputs() {
+    fn transfer_recipient_summaries_keep_outputs_and_account_refs() {
         let raw = serde_json::json!({
             "Public": {
                 "hash": "tx-a",
@@ -210,58 +217,54 @@ mod tests {
 
         let recipients = transfer_recipient_summaries_from_blocks(&[block]);
 
-        assert_eq!(recipients.len(), 1);
+        assert_eq!(recipients.len(), 2);
+        let output_recipient = recipients.iter().find(|recipient| {
+            recipient.recipient
+                == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        });
         assert_eq!(
-            recipients
-                .first()
-                .map(|recipient| recipient.recipient.as_str()),
+            output_recipient.map(|recipient| recipient.recipient.as_str()),
             Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         );
         assert_eq!(
-            recipients
-                .first()
-                .and_then(|recipient| recipient.received.as_deref()),
+            output_recipient.and_then(|recipient| recipient.received.as_deref()),
             Some("12")
         );
-        assert_eq!(recipients.first().map(|recipient| recipient.txs), Some(1));
+        assert_eq!(output_recipient.map(|recipient| recipient.txs), Some(1));
+        assert_eq!(output_recipient.map(|recipient| recipient.outputs), Some(2));
         assert_eq!(
-            recipients.first().map(|recipient| recipient.outputs),
-            Some(2)
-        );
-        assert_eq!(
-            recipients.first().map(|recipient| recipient.references),
+            output_recipient.map(|recipient| recipient.references),
             Some(0)
         );
         assert_eq!(
-            recipients.first().and_then(|recipient| recipient.last_slot),
+            output_recipient.and_then(|recipient| recipient.last_slot),
             Some(9)
         );
         assert_eq!(
-            recipients
-                .first()
-                .map(|recipient| recipient.transfers.len()),
+            output_recipient.map(|recipient| recipient.transfers.len()),
             Some(2)
         );
         assert_eq!(
-            recipients
-                .first()
+            output_recipient
                 .and_then(|recipient| recipient.transfers.first())
                 .map(|transfer| transfer.tx_hash.as_str()),
             Some("tx-a")
         );
         assert_eq!(
-            recipients
-                .first()
+            output_recipient
                 .and_then(|recipient| recipient.transfers.first())
                 .and_then(|transfer| transfer.block_hash.as_deref()),
             Some("block-a")
         );
         assert_eq!(
-            recipients
-                .first()
-                .map(|recipient| recipient.source.as_str()),
+            output_recipient.map(|recipient| recipient.source.as_str()),
             Some("transfer_outputs")
         );
+        assert!(recipients.iter().any(|recipient| {
+            recipient.recipient == "account-111111111111"
+                && recipient.references == 1
+                && recipient.source == "account_refs"
+        }));
     }
 
     #[test]
@@ -317,5 +320,49 @@ mod tests {
                 .iter()
                 .all(|recipient| recipient.source == "account_refs")
         );
+    }
+
+    #[test]
+    fn transfer_recipient_summaries_merge_evidence_for_same_recipient() -> Result<()> {
+        let recipient = "aa".repeat(32);
+        let raw = serde_json::json!({
+            "Public": {
+                "hash": "tx-a",
+                "message": {
+                    "account_ids": [recipient.clone()],
+                    "outputs": [{ "recipient": recipient.clone(), "amount": 7 }]
+                }
+            }
+        });
+        let block = IndexerBlockReport {
+            block_id: Some(9),
+            header_hash: Some("block-a".to_owned()),
+            parent_hash: None,
+            timestamp: None,
+            bedrock_status: None,
+            tx_count: 1,
+            transactions: vec![summarize_indexer_transaction(&raw, 0)],
+            raw: serde_json::json!({}),
+        };
+
+        let recipients = transfer_recipient_summaries_from_blocks(&[block]);
+        let Some(row) = recipients.first() else {
+            bail!("recipient row is missing");
+        };
+        ensure!(recipients.len() == 1, "unexpected recipient count");
+        ensure!(row.recipient == recipient, "recipient identity changed");
+        ensure!(
+            row.received.as_deref() == Some("7"),
+            "amount was not summed"
+        );
+        ensure!(row.outputs == 1, "output count changed");
+        ensure!(row.references == 1, "reference count changed");
+        ensure!(row.txs == 1, "transaction was counted twice");
+        ensure!(row.transfers.len() == 2, "evidence rows were lost");
+        ensure!(
+            row.source == "transfer_outputs_and_account_refs",
+            "coexisting evidence label changed"
+        );
+        Ok(())
     }
 }
