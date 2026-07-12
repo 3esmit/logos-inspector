@@ -1103,7 +1103,12 @@ TestCase {
 
         compare(model.favoriteStore.entries.length, 1)
         compare(model.favoriteStore.entries[0].value, "account-1")
-        compare(model.settingsStatePayload().favorites.length, 1)
+        const settingsPayload = model.settingsStatePayload()
+        compare(settingsPayload.version, 2)
+        compare(settingsPayload.favorites.length, 1)
+        verify(settingsPayload.sequencer_url === undefined)
+        verify(settingsPayload.indexer_url === undefined)
+        verify(settingsPayload.channel_source_configs === undefined)
 
         fakeHost.callCount = 0
         fakeHost.lastMethod = ""

@@ -19,6 +19,10 @@ fn source_routing_exposes_adapter_boundaries() {
     let _ = logos_inspector::source_routing::source_policy_report;
     let _ = logos_inspector::source_routing::delivery_source_report;
     let _ = logos_inspector::source_routing::storage_source_report;
+    let _ = logos_inspector::source_routing::channel_sources::load_channel_source_configs;
+    let _ = logos_inspector::source_routing::channel_sources::ChannelSourceTarget::Module {
+        module_id: "lez_core".to_owned(),
+    };
 }
 
 #[test]

@@ -15,9 +15,9 @@ use serde_json::{Value, json};
 use sha2::Sha256;
 
 use crate::{
+    source_routing::channel_sources::restore_settings_state_from_backup,
     support::state_store::{
-        load_idl_state, load_settings_state, load_wallet_state, save_idl_state,
-        save_settings_state, save_wallet_state,
+        load_idl_state, load_settings_state, load_wallet_state, save_idl_state, save_wallet_state,
     },
     wallet::LOCAL_WALLET_HOME_ENV,
 };
@@ -86,7 +86,7 @@ pub(crate) fn restore_app_settings_backup_with_options(
     let state = restored_state_from_payload(payload, wallet_profile)?;
     let plan = build_import_plan(&state, options, true)?;
     if let Some(settings) = plan.settings.as_ref() {
-        save_settings_state(settings).context("failed to restore settings state")?;
+        restore_settings_state_from_backup(settings).context("failed to restore settings state")?;
     }
     if let Some(idl) = plan.idl.as_ref() {
         save_idl_state(idl).context("failed to restore IDL state")?;

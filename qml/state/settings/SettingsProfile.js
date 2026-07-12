@@ -78,10 +78,8 @@ function settingsStatePayload(root) {
         const social = root.socialSettingsPayload()
         const network = root.networkProfileSettingsPayload()
         return Object.assign({
-            version: 1,
+            version: 2,
             network_profile: network.network_profile,
-            sequencer_url: network.sequencer_url,
-            indexer_url: network.indexer_url,
             node_url: network.node_url,
             network_connector_config: root.networkConnectorConfigPayload(),
             messaging_rest_url: String(messagingRestUrl || ""),

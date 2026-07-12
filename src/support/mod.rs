@@ -2,6 +2,7 @@ pub(crate) mod args;
 pub(crate) mod backup_catalog;
 pub(crate) mod bridge_envelope;
 pub(crate) mod command_runner;
+pub(crate) mod config_path;
 pub(crate) mod confirmation;
 pub(crate) mod entity_id;
 pub(crate) mod http_response;
