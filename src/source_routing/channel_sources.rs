@@ -11,5 +11,6 @@ pub use store::{
 };
 
 pub(crate) use store::{
-    load_settings_state, restore_settings_state_from_backup, save_user_settings_state,
+    load_settings_state, rebind_channel_source_configs, restore_settings_state_from_backup,
+    save_user_settings_state,
 };

@@ -339,14 +339,67 @@ pub struct CatalogSnapshot {
 pub(crate) fn validate_metadata(metadata: &CatalogMetadata) -> CatalogResult<()> {
     validate_local_id(&metadata.catalog_file_id, "catalog file id")?;
     validate_network_scope(&metadata.network_scope)?;
-    for alias in &metadata.identity_aliases {
+    for (index, alias) in metadata.identity_aliases.iter().enumerate() {
         validate_network_scope(&alias.network_scope)?;
+        if alias.network_scope == metadata.network_scope {
+            return Err(CatalogError::invalid_input(
+                "catalog identity alias duplicates canonical scope",
+            ));
+        }
+        if metadata
+            .identity_aliases
+            .iter()
+            .take(index)
+            .any(|existing| existing.network_scope == alias.network_scope)
+        {
+            return Err(CatalogError::invalid_input(
+                "catalog identity aliases contain duplicates",
+            ));
+        }
     }
     if let Some(transition) = metadata.identity_transition.as_ref() {
         validate_network_scope(&transition.old_scope)?;
         validate_network_scope(&transition.new_scope)?;
         validate_checkpoint(&transition.anchor)?;
         validate_checkpoint(&transition.checkpoint)?;
+        if !matches!(transition.old_scope, NetworkScope::FinalizedAnchor { .. })
+            || !matches!(transition.new_scope, NetworkScope::GenesisId { .. })
+        {
+            return Err(CatalogError::invalid_input(
+                "catalog identity transition must strengthen an anchor to genesis",
+            ));
+        }
+        match transition.stage {
+            CatalogIdentityTransitionStage::Prepared
+            | CatalogIdentityTransitionStage::SettingsRebound
+                if metadata.network_scope != transition.old_scope =>
+            {
+                return Err(CatalogError::invalid_input(
+                    "pending identity transition changed canonical scope",
+                ));
+            }
+            CatalogIdentityTransitionStage::Committed
+                if metadata.network_scope != transition.new_scope
+                    || !metadata
+                        .identity_aliases
+                        .iter()
+                        .any(|alias| alias.network_scope == transition.old_scope) =>
+            {
+                return Err(CatalogError::invalid_input(
+                    "committed identity transition is missing canonical scope or alias",
+                ));
+            }
+            CatalogIdentityTransitionStage::Prepared
+            | CatalogIdentityTransitionStage::SettingsRebound
+            | CatalogIdentityTransitionStage::Committed => {}
+        }
+    }
+    if metadata.identity_assurance == CatalogIdentityAssurance::AncestryVerified
+        && !matches!(metadata.network_scope, NetworkScope::GenesisId { .. })
+    {
+        return Err(CatalogError::invalid_input(
+            "ancestry-verified identity requires genesis scope",
+        ));
     }
     Ok(())
 }

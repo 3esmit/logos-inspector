@@ -55,6 +55,13 @@ pub fn record_sequencer_attestation(
     )
 }
 
+pub(crate) fn rebind_channel_source_configs(
+    old_scope: NetworkScope,
+    new_scope: NetworkScope,
+) -> Result<()> {
+    SettingsStore::new(settings_state_path()?).rebind_network_scope(old_scope, new_scope)
+}
+
 pub(crate) fn load_settings_state() -> Result<Value> {
     SettingsStore::new(settings_state_path()?).load()
 }
@@ -197,6 +204,47 @@ impl SettingsStore {
         *config = updated.clone();
         self.write_document_unlocked(&document)?;
         Ok(updated)
+    }
+
+    fn rebind_network_scope(&self, old_scope: NetworkScope, new_scope: NetworkScope) -> Result<()> {
+        let _guard = settings_guard(&self.path)?;
+        let old_scope = normalize_network_scope(old_scope)?;
+        let new_scope = normalize_network_scope(new_scope)?;
+        if old_scope == new_scope {
+            return Ok(());
+        }
+        let mut document = self.load_document_unlocked()?;
+        let current = std::mem::take(&mut document.channel_source_configs);
+        let mut retained = Vec::with_capacity(current.len());
+        let mut moved = Vec::new();
+        for mut config in current {
+            if config.network_scope == old_scope {
+                config.network_scope = new_scope.clone();
+                moved.push(config);
+            } else {
+                retained.push(config);
+            }
+        }
+        if moved.is_empty() {
+            document.channel_source_configs = retained;
+            return Ok(());
+        }
+        for config in moved {
+            if let Some(existing) = retained.iter().find(|existing| {
+                existing.network_scope == new_scope && existing.channel_id == config.channel_id
+            }) {
+                if existing != &config {
+                    bail!(
+                        "Channel source configuration conflicts at promoted network scope for `{}`",
+                        config.channel_id
+                    );
+                }
+            } else {
+                retained.push(config);
+            }
+        }
+        document.channel_source_configs = retained;
+        self.write_document_unlocked(&document)
     }
 
     fn load_document_unlocked(&self) -> Result<SettingsDocument> {
@@ -688,6 +736,44 @@ mod tests {
             != indexer_id
         {
             bail!("Indexer endpoint edit changed stable source id");
+        }
+        cleanup_test_dir(&directory)
+    }
+
+    #[test]
+    fn identity_promotion_rebinds_channel_sources_once() -> Result<()> {
+        let (directory, store) = test_store("identity-rebind")?;
+        let old_scope = NetworkScope::FinalizedAnchor {
+            genesis_time: "1000".to_owned(),
+            block_slot: 5,
+            block_id: channel_id('5'),
+            parent_id: channel_id('4'),
+        };
+        let new_scope = network_scope('b');
+        let mut config = persisted_config('3', valid_source_id('c'));
+        config.network_scope = old_scope.clone();
+        let document = SettingsDocument {
+            channel_source_configs: vec![config.clone()],
+            ..SettingsDocument::default()
+        };
+        store.write_document_unlocked(&document)?;
+
+        store.rebind_network_scope(old_scope.clone(), new_scope.clone())?;
+        let rebound = store.load_document_unlocked()?.channel_source_configs;
+        let rebound_config = rebound.first().context("rebound config missing")?;
+        if rebound.len() != 1
+            || rebound_config.network_scope != new_scope
+            || rebound_config.channel_id != config.channel_id
+            || rebound_config.config_revision != config.config_revision
+            || first_sequencer_source(rebound_config)?.source_id
+                != first_sequencer_source(&config)?.source_id
+        {
+            bail!("identity rebind changed Channel source configuration: {rebound:?}");
+        }
+
+        store.rebind_network_scope(old_scope, new_scope)?;
+        if store.load_document_unlocked()?.channel_source_configs != rebound {
+            bail!("repeated identity rebind changed settings");
         }
         cleanup_test_dir(&directory)
     }
