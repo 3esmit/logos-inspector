@@ -130,6 +130,74 @@ impl ZoneCatalogStore {
         self.commit_batch_with_hook(batch, || Ok(()))
     }
 
+    pub(super) fn update_metadata<F>(
+        &self,
+        expected_catalog_revision: u64,
+        updated_at_unix: u64,
+        update: F,
+    ) -> CatalogResult<CatalogSnapshot>
+    where
+        F: FnOnce(&mut CatalogMetadata) -> CatalogResult<()>,
+    {
+        let CatalogDatabase::Writable(database) = &self.database else {
+            return Err(CatalogError::invalid_input(
+                "cannot update metadata through a read-only catalog",
+            ));
+        };
+        let mut transaction = database.begin_write().map_err(map_transaction_error)?;
+        transaction
+            .set_durability(Durability::Immediate)
+            .map_err(CatalogError::storage)?;
+        let mut metadata: CatalogMetadata = {
+            let table = transaction
+                .open_table(METADATA_TABLE)
+                .map_err(map_table_error)?;
+            validate_schema(&table)?;
+            read_required_versioned(&table, CATALOG_KEY, "catalog metadata")?
+        };
+        validate_persisted(validate_metadata(&metadata), "catalog metadata")?;
+        if metadata.catalog_revision != expected_catalog_revision {
+            return Err(CatalogError::RevisionConflict {
+                expected: expected_catalog_revision,
+                current: metadata.catalog_revision,
+            });
+        }
+        if updated_at_unix < metadata.updated_at_unix {
+            return Err(CatalogError::invalid_input(
+                "catalog update time moves backwards",
+            ));
+        }
+
+        let previous = metadata.clone();
+        update(&mut metadata)?;
+        if metadata == previous {
+            return snapshot_from_write_transaction(&transaction).map_err(map_staged_error);
+        }
+        if metadata.catalog_revision != previous.catalog_revision
+            || metadata.created_at_unix != previous.created_at_unix
+            || metadata.catalog_file_id != previous.catalog_file_id
+        {
+            return Err(CatalogError::invalid_input(
+                "metadata update changed store-owned fields",
+            ));
+        }
+        metadata.catalog_revision = metadata
+            .catalog_revision
+            .checked_add(1)
+            .ok_or_else(|| CatalogError::invalid_input("catalog revision exhausted"))?;
+        metadata.updated_at_unix = updated_at_unix;
+        validate_metadata(&metadata)?;
+        {
+            let mut table = transaction
+                .open_table(METADATA_TABLE)
+                .map_err(map_table_error)?;
+            insert_versioned(&mut table, CATALOG_KEY, &metadata)?;
+        }
+        let snapshot = snapshot_from_write_transaction(&transaction).map_err(map_staged_error)?;
+        transaction.commit().map_err(map_commit_error)?;
+        Ok(snapshot)
+    }
+
     fn commit_batch_with_hook<F>(
         &self,
         batch: CatalogBatch,
