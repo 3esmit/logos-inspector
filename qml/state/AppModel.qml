@@ -62,6 +62,21 @@ QtObject {
     }
     property alias sourcePolicy: sourceRoutingState.sourcePolicy
     property alias sourcePolicyLoaded: sourceRoutingState.sourcePolicyLoaded
+    property Domains.ZoneInspectionState zoneInspection: Domains.ZoneInspectionState {
+        id: zoneInspectionState
+
+        sourceDescriptor: root.zoneCatalogL1SourceDescriptor()
+        gateway: QtObject {
+            function request(method, args, callback) {
+                return root.bridge.callModuleAsync(
+                    root.inspectorModule,
+                    method,
+                    Array.isArray(args) ? args : [],
+                    callback
+                )
+            }
+        }
+    }
     property Domains.NetworkProfileState networkProfiles: Domains.NetworkProfileState {
         id: networkProfileState
         sourcePolicy: root.sourcePolicy
@@ -800,6 +815,22 @@ QtObject {
     function callInspector(method, args, label) { return appRequestState.callInspector(method, args, label) }
 
     function callModule(moduleName, method, args, label) { return appRequestState.callModule(moduleName, method, args, label) }
+
+    function startZoneInspection() { zoneInspection.start() }
+
+    function stopZoneInspection() { zoneInspection.stop() }
+
+    function zoneCatalogL1SourceDescriptor() {
+        const source = sourceRouting.coreSourceView("blockchain")
+        const endpoint = String(source && source.endpoint || "").trim()
+        if (!source || String(source.effectiveMode || "") !== "rpc" || endpoint.length === 0) {
+            return null
+        }
+        return {
+            kind: "direct_http",
+            endpoint: endpoint
+        }
+    }
 
     function blockchainArgs(extra) { return sourceRouting.blockchainArgs(extra) }
 

@@ -57,6 +57,7 @@ Item {
         Qt.callLater(function () {
             appModel.loadSourcePolicy()
             appModel.loadSettingsState()
+            appModel.startZoneInspection()
             appModel.loadCapabilityRegistry()
             appModel.loadBackupCatalog()
             root.schedulePageLoaderUpdate()
@@ -78,6 +79,8 @@ Item {
             })
         })
     }
+
+    Component.onDestruction: appModel.stopZoneInspection()
 
     Rectangle {
         anchors.fill: parent

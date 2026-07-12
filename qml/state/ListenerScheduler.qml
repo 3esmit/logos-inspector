@@ -1,4 +1,4 @@
-import QtQml
+import QtQuick
 
 QtObject {
     id: root
@@ -12,18 +12,6 @@ QtObject {
             repeat: true
             running: root.enabled("blockchain")
             onTriggered: root.tick("blockchain")
-        },
-        Timer {
-            interval: root.intervalFor("indexer")
-            repeat: true
-            running: root.enabled("indexer")
-            onTriggered: root.tick("indexer")
-        },
-        Timer {
-            interval: root.intervalFor("execution")
-            repeat: true
-            running: root.enabled("execution")
-            onTriggered: root.tick("execution")
         },
         Timer {
             interval: root.intervalFor("messaging")
@@ -60,8 +48,35 @@ QtObject {
             repeat: true
             running: root.enabled("liveBlocks")
             onTriggered: root.tick("liveBlocks")
+        },
+        Timer {
+            id: zonesStatusTimer
+
+            interval: root.intervalFor("zonesStatus")
+            repeat: true
+            running: root.enabled("zonesStatus")
+            onTriggered: root.tick("zonesStatus")
         }
     ]
+
+    property Connections zonesStatusConnections: Connections {
+        target: root.zoneState()
+        ignoreUnknownSignals: true
+
+        function onStatusRefreshRequested() {
+            root.triggerZonesStatus()
+        }
+    }
+
+    property Connections applicationStateConnections: Connections {
+        target: Application
+
+        function onActiveChanged() {
+            if (Application.active) {
+                root.applicationResumed()
+            }
+        }
+    }
 
     function intervalFor(kind) {
         if (!model) {
@@ -75,6 +90,8 @@ QtObject {
             return Math.max(1, Number(operationPollInterval || 500))
         case "liveBlocks":
             return Math.max(1, Number(model.refreshInterval ? model.refreshInterval(model.blockchainRefreshRate) : 0))
+        case "zonesStatus":
+            return Math.max(1, Number(root.zoneState() ? root.zoneState().statusPollInterval : 0))
         default:
             return Math.max(1, Number(model.refreshInterval ? model.refreshInterval(root.refreshRateFor(kind)) : 0))
         }
@@ -86,8 +103,6 @@ QtObject {
         }
         switch (String(kind || "")) {
         case "blockchain":
-        case "indexer":
-        case "execution":
         case "messaging":
         case "storage":
             return root.refreshRateFor(kind) > 0
@@ -100,6 +115,8 @@ QtObject {
             return root.deliveryApp() && root.deliveryApp().activeDeliveryOperationRunning()
         case "liveBlocks":
             return model.blocksLiveEnabled === true && model.currentView === "blocks"
+        case "zonesStatus":
+            return root.zoneState() && root.zoneState().statusPollingEnabled === true
         default:
             return false
         }
@@ -111,8 +128,6 @@ QtObject {
         }
         switch (String(kind || "")) {
         case "blockchain":
-        case "indexer":
-        case "execution":
         case "messaging":
         case "storage":
             return model.queryNetworkConnection(kind, false)
@@ -124,6 +139,8 @@ QtObject {
             return root.deliveryApp() ? root.deliveryApp().pollDeliveryOperation(false) : null
         case "liveBlocks":
             return model.chainPages ? model.chainPages.refreshBlocksLivePage() : model.refreshBlocksLivePage()
+        case "zonesStatus":
+            return root.zoneState() ? root.zoneState().pollStatus() : null
         default:
             return null
         }
@@ -155,5 +172,23 @@ QtObject {
 
     function deliveryApp() {
         return model && model.deliveryApp ? model.deliveryApp : null
+    }
+
+    function zoneState() {
+        return model && model.zoneInspection ? model.zoneInspection : null
+    }
+
+    function triggerZonesStatus() {
+        if (!root.enabled("zonesStatus")) {
+            return false
+        }
+        const result = root.tick("zonesStatus")
+        zonesStatusTimer.restart()
+        return result
+    }
+
+    function applicationResumed() {
+        const state = root.zoneState()
+        return state && typeof state.appResumed === "function" ? state.appResumed() : false
     }
 }
