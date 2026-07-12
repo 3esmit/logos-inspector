@@ -1,10 +1,12 @@
 mod store;
 
 pub mod model;
+pub mod source;
 
 use std::path::Path;
 
 pub use model::*;
+pub use source::*;
 
 use store::ZoneCatalogStore;
 

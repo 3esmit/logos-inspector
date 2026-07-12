@@ -3,7 +3,8 @@ use reqwest::Response;
 use serde_json::{Value, json};
 
 use super::http_response::{
-    expect_success_response, read_response_bytes, read_response_json, read_response_text,
+    expect_success_response, expect_success_response_bounded, read_response_bytes,
+    read_response_json, read_response_json_bounded, read_response_text,
 };
 
 pub(crate) fn rest_url(endpoint: &str, path: &str) -> String {
@@ -69,6 +70,27 @@ pub(crate) async fn request_json(
     .await
 }
 
+pub(crate) async fn request_json_bounded(
+    request: reqwest::RequestBuilder,
+    label: &str,
+    body_context: &'static str,
+    invalid_context: &'static str,
+    allow_no_content: bool,
+    empty_as_null: bool,
+    max_bytes: usize,
+) -> Result<Value> {
+    read_response_json_bounded(
+        request,
+        label,
+        body_context,
+        invalid_context,
+        allow_no_content,
+        empty_as_null,
+        max_bytes,
+    )
+    .await
+}
+
 pub(crate) async fn request_text(
     request: reqwest::RequestBuilder,
     label: &str,
@@ -97,6 +119,26 @@ pub(crate) async fn request_success(
         .await
         .with_context(|| format!("failed to call {call_label}"))?;
     expect_success_response(response, response_label, error_body_context).await
+}
+
+pub(crate) async fn request_success_bounded(
+    request: reqwest::RequestBuilder,
+    call_label: &str,
+    response_label: &str,
+    error_body_context: &'static str,
+    max_error_bytes: usize,
+) -> Result<Response> {
+    let response = request
+        .send()
+        .await
+        .with_context(|| format!("failed to call {call_label}"))?;
+    expect_success_response_bounded(
+        response,
+        response_label,
+        error_body_context,
+        max_error_bytes,
+    )
+    .await
 }
 
 #[cfg(test)]
