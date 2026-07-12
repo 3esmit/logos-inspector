@@ -1,12 +1,17 @@
 use std::{
-    env, fs,
+    fs,
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result};
 use serde_json::{Value, json};
 
-use crate::{support::entity_id::normalize_program_id_hex, wallet::default_wallet_state};
+use crate::{
+    source_routing::channel_sources::save_user_settings_state,
+    support::entity_id::normalize_program_id_hex, wallet::default_wallet_state,
+};
+
+pub(crate) use super::config_path::config_dir;
 
 #[derive(Debug, Clone)]
 pub(crate) struct RegisteredIdlEntry {
@@ -80,21 +85,10 @@ pub(crate) fn save_wallet_state(state: &Value) -> Result<Value> {
     write_state("wallet", &path, state)
 }
 
-pub(crate) fn load_settings_state() -> Result<Value> {
-    let path = settings_state_path()?;
-    if !path.is_file() {
-        return Ok(default_settings_state());
-    }
-
-    let text = fs::read_to_string(&path)
-        .with_context(|| format!("failed to read settings state from {}", path.display()))?;
-    serde_json::from_str(&text)
-        .with_context(|| format!("failed to parse settings state from {}", path.display()))
-}
+pub(crate) use crate::source_routing::channel_sources::load_settings_state;
 
 pub(crate) fn save_settings_state(state: &Value) -> Result<Value> {
-    let path = settings_state_path()?;
-    write_state("settings", &path, state)
+    save_user_settings_state(state)
 }
 
 fn write_state(label: &str, path: &Path, state: &Value) -> Result<Value> {
@@ -118,25 +112,6 @@ fn default_idl_state() -> Value {
         "version": 1,
         "idls": [],
         "account_idl_selections": {},
-    })
-}
-
-fn default_settings_state() -> Value {
-    json!({
-        "version": 1,
-        "blockchain_refresh_rate": 30,
-        "indexer_refresh_rate": 30,
-        "execution_refresh_rate": 30,
-        "messaging_refresh_rate": 30,
-        "storage_refresh_rate": 30,
-        "social_identities": [],
-        "social_identity_default_mode": "perConversation",
-        "social_selected_identity_key": "",
-        "social_conversation_identity_keys": {},
-        "shared_idl_policy": "suggestion",
-        "shared_idl_auto_share": false,
-        "social_auto_shared_idls": {},
-        "favorites": []
     })
 }
 
@@ -177,34 +152,4 @@ fn idl_state_path() -> Result<PathBuf> {
 
 fn wallet_state_path() -> Result<PathBuf> {
     Ok(config_dir()?.join("wallet.json"))
-}
-
-fn settings_state_path() -> Result<PathBuf> {
-    Ok(config_dir()?.join("settings.json"))
-}
-
-pub(crate) fn config_dir() -> Result<PathBuf> {
-    if let Some(value) = env::var_os("LOGOS_INSPECTOR_CONFIG_DIR") {
-        return Ok(PathBuf::from(value));
-    }
-    if let Some(value) = env::var_os("XDG_CONFIG_HOME") {
-        return Ok(PathBuf::from(value).join("logos-inspector"));
-    }
-    if cfg!(windows)
-        && let Some(value) = env::var_os("APPDATA")
-    {
-        return Ok(PathBuf::from(value).join("Logos Inspector"));
-    }
-    if cfg!(target_os = "macos")
-        && let Some(value) = env::var_os("HOME")
-    {
-        return Ok(PathBuf::from(value)
-            .join("Library")
-            .join("Application Support")
-            .join("Logos Inspector"));
-    }
-    if let Some(value) = env::var_os("HOME") {
-        return Ok(PathBuf::from(value).join(".config").join("logos-inspector"));
-    }
-    bail!("could not determine config directory")
 }

@@ -1,3 +1,4 @@
+pub mod channel_sources;
 mod core;
 mod delivery;
 mod network_profiles;
@@ -7,12 +8,12 @@ mod shared;
 mod storage;
 
 #[cfg(test)]
-pub(crate) use core::adapters::{BLOCKCHAIN_MODULE, INDEXER_MODULE};
+pub(crate) use core::adapters::BLOCKCHAIN_MODULE;
 pub(crate) use core::adapters::{
-    LEZ_CORE_MODULE, attach_module_account_transactions, blockchain_block, blockchain_blocks,
-    blockchain_live_blocks_snapshot, blockchain_node_report, blockchain_recent_blocks,
-    blockchain_transaction, indexer_block_by_hash, indexer_blocks, indexer_finalized_head,
-    indexer_health, indexer_status, indexer_transfer_recipients,
+    INDEXER_MODULE, LEZ_CORE_MODULE, attach_module_account_transactions, blockchain_block,
+    blockchain_blocks, blockchain_live_blocks_snapshot, blockchain_node_report,
+    blockchain_recent_blocks, blockchain_transaction, indexer_block_by_hash, indexer_blocks,
+    indexer_finalized_head, indexer_health, indexer_status, indexer_transfer_recipients,
 };
 pub(crate) use delivery::adapters::{
     DELIVERY_MODULE, delivery_lifecycle_args, delivery_message_args, delivery_store_query_url,
