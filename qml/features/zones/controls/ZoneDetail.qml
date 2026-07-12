@@ -29,6 +29,7 @@ ColumnLayout {
         id: detailTabs
 
         ListElement { value: "overview"; label: "Overview" }
+        ListElement { value: "l2"; label: "L2 Blocks" }
         ListElement { value: "sources"; label: "Sources" }
         ListElement { value: "evidence"; label: "L1 Evidence" }
     }
@@ -103,6 +104,17 @@ ColumnLayout {
         sourceComponent: ZoneOverview {
             theme: root.theme
             detail: root.detail
+        }
+    }
+
+    Loader {
+        active: root.currentTab === "l2"
+        asynchronous: false
+        Layout.fillWidth: true
+        sourceComponent: ZoneL2Inspector {
+            theme: root.theme
+            zoneState: root.zoneState
+            onConfigureSourcesRequested: root.requestTab("sources")
         }
     }
 
