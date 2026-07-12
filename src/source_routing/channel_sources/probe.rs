@@ -140,6 +140,19 @@ impl Default for DefaultChannelSourceProbe {
     }
 }
 
+pub(crate) async fn attest_sequencer_target(target: ChannelSourceTarget) -> anyhow::Result<String> {
+    match tokio::time::timeout(
+        SOURCE_PROBE_TIMEOUT,
+        Arc::new(DefaultChannelSourceProbeTransport).sequencer_channel_id(target),
+    )
+    .await
+    {
+        Ok(Ok(channel_id)) => Ok(channel_id),
+        Ok(Err(failure)) => Err(anyhow::Error::new(failure)),
+        Err(_) => Err(anyhow::Error::new(ChannelSourceProbeFailure::timeout())),
+    }
+}
+
 impl ChannelSourceProbe for DefaultChannelSourceProbe {
     fn probe(
         self: Arc<Self>,

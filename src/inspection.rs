@@ -12,11 +12,7 @@ pub mod l1 {
     }
 }
 
-pub mod l2 {
-    pub mod lez {
-        pub use crate::lez::*;
-    }
-}
+pub mod l2;
 
 pub mod overview {
     pub use crate::overview::*;

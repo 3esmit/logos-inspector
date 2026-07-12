@@ -413,6 +413,7 @@ fn test_run_context(source_revision: u64) -> ZoneCatalogRunContext {
     ZoneCatalogRunContext {
         source_revision,
         source_fingerprint: "test-source".to_owned(),
+        run_mode: ZoneCatalogRunMode::Resume,
         cancellation: CancellationToken::new(),
         publisher: CatalogRunPublisher {
             desired_revision,

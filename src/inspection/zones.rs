@@ -17,7 +17,12 @@ pub use classification::{
 use crate::inspection::catalog::{
     CatalogSnapshot, CatalogSnapshotOrigin, ZoneCatalogRecord, ZoneEvidenceKind,
 };
-use crate::source_routing::channel_sources::ChannelSourceConfig;
+use crate::{
+    inspection::sources::{ZoneSourceAgreement, project_zone_sources},
+    source_routing::channel_sources::{
+        ChannelSourceConfig, ChannelSourceMonitorSnapshot, ChannelSourceTarget,
+    },
+};
 
 #[must_use]
 pub fn project_catalog_zones(
@@ -62,6 +67,97 @@ pub fn project_catalog_zones(
     }
     zones.sort_by(|left, right| left.channel_id.cmp(&right.channel_id));
     zones
+}
+
+#[must_use]
+pub fn project_catalog_zones_with_sources(
+    snapshot: &CatalogSnapshot,
+    source_configs: &[ChannelSourceConfig],
+    source_observations: &ChannelSourceMonitorSnapshot,
+    verification_state: CatalogVerificationState,
+) -> Vec<ZoneSummary> {
+    let mut zones = project_catalog_zones(snapshot, source_configs, verification_state);
+    for zone in &mut zones {
+        let config = source_configs.iter().find(|config| {
+            config.network_scope == snapshot.metadata.network_scope
+                && config.channel_id == zone.channel_id
+        });
+        let projection =
+            project_zone_sources(zone.kind(), &zone.channel_id, config, source_observations);
+        if let ZoneFacts::SequencerZone { l2_zone, .. } = &mut zone.facts {
+            projection.apply_to_l2_zone(l2_zone);
+            zone.activity_detail.last_l2_block_id = l2_zone.latest_block_id;
+        }
+    }
+    zones
+}
+
+#[must_use]
+pub fn project_catalog_zone_detail(
+    snapshot: &CatalogSnapshot,
+    source_configs: &[ChannelSourceConfig],
+    source_observations: &ChannelSourceMonitorSnapshot,
+    verification_state: CatalogVerificationState,
+    channel_id: &str,
+    detail_revision: u64,
+) -> Option<ZoneDetail> {
+    let summary = project_catalog_zones_with_sources(
+        snapshot,
+        source_configs,
+        source_observations,
+        verification_state,
+    )
+    .into_iter()
+    .find(|summary| summary.channel_id == channel_id)?;
+    let record = snapshot
+        .zones
+        .iter()
+        .find(|record| record.channel_id == channel_id);
+    let config = source_configs.iter().find(|config| {
+        config.network_scope == snapshot.metadata.network_scope && config.channel_id == channel_id
+    });
+    let source_projection =
+        project_zone_sources(summary.kind(), channel_id, config, source_observations);
+    let l1_keys = summary
+        .sequencer_committee()
+        .map_or_else(Vec::new, |committee| committee.members.clone());
+    let classification_evidence = record.map_or(
+        ZoneClassificationEvidence {
+            recognized_l2_evidence: false,
+            configured_sequencer_link: config
+                .is_some_and(|config| !config.sequencer_sources.is_empty()),
+            raw_inscription_evidence: false,
+            l2_absence_is_covered: false,
+            conflicting_evidence: false,
+        },
+        |record| {
+            classify_catalog_zone(
+                snapshot,
+                record,
+                config.is_some_and(|config| !config.sequencer_sources.is_empty()),
+            )
+            .evidence
+        },
+    );
+    Some(ZoneDetail {
+        l1_channel_snapshot: L1ChannelSnapshot {
+            channel_tip: record.and_then(|record| record.l1_channel.tip_hash.clone()),
+            keys: l1_keys,
+            observed_at_slot: record.map(|record| record.snapshot_provenance.observed_slot),
+        },
+        channel_source_config: project_source_config(config),
+        source_observations: source_projection.observations,
+        source_agreement: source_projection.agreement,
+        classification_evidence,
+        activity_counts: ZoneActivityCounts {
+            l1_operations: record.map_or(0, |record| record.classification.channel_operations),
+            recognized_l2_blocks: record
+                .map_or(0, |record| record.classification.recognized_l2_blocks),
+            raw_inscriptions: record.map_or(0, |record| record.classification.raw_inscriptions),
+        },
+        summary,
+        detail_revision,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -377,6 +473,7 @@ pub struct ZoneDetail {
     pub l1_channel_snapshot: L1ChannelSnapshot,
     pub channel_source_config: ChannelSourceConfigSummary,
     pub source_observations: Vec<ZoneSourceObservation>,
+    pub source_agreement: ZoneSourceAgreement,
     pub classification_evidence: ZoneClassificationEvidence,
     pub activity_counts: ZoneActivityCounts,
     pub detail_revision: u64,
@@ -395,6 +492,49 @@ pub struct ChannelSourceConfigSummary {
     pub selected_sequencer_source_id: Option<String>,
     pub sequencer_sources: Vec<ConfiguredZoneSource>,
     pub indexer_source: Option<ConfiguredZoneSource>,
+}
+
+fn project_source_config(config: Option<&ChannelSourceConfig>) -> ChannelSourceConfigSummary {
+    let Some(config) = config else {
+        return ChannelSourceConfigSummary {
+            config_revision: 0,
+            selected_sequencer_source_id: None,
+            sequencer_sources: Vec::new(),
+            indexer_source: None,
+        };
+    };
+    ChannelSourceConfigSummary {
+        config_revision: config.config_revision,
+        selected_sequencer_source_id: config.selected_sequencer_source_id.clone(),
+        sequencer_sources: config
+            .sequencer_sources
+            .iter()
+            .map(|source| ConfiguredZoneSource {
+                source_id: source.source_id.clone(),
+                label: source.label.clone(),
+                target: project_source_target(&source.target),
+            })
+            .collect(),
+        indexer_source: config
+            .indexer_source
+            .as_ref()
+            .map(|source| ConfiguredZoneSource {
+                source_id: source.source_id.clone(),
+                label: source.label.clone(),
+                target: project_source_target(&source.target),
+            }),
+    }
+}
+
+fn project_source_target(target: &ChannelSourceTarget) -> ZoneSourceTarget {
+    match target {
+        ChannelSourceTarget::Rpc { endpoint } => ZoneSourceTarget::Rpc {
+            endpoint: endpoint.clone(),
+        },
+        ChannelSourceTarget::Module { module_id } => ZoneSourceTarget::Module {
+            module_id: module_id.clone(),
+        },
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
