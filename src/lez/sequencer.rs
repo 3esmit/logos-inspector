@@ -18,6 +18,14 @@ pub async fn sequencer_health(endpoint: &str) -> Result<()> {
         .context("sequencer health check failed")
 }
 
+pub async fn sequencer_channel_id(endpoint: &str) -> Result<String> {
+    sequencer_client(endpoint)?
+        .get_channel_id()
+        .await
+        .map(|channel_id| channel_id.to_string())
+        .context("failed to fetch Sequencer Channel id")
+}
+
 pub async fn last_sequencer_block_id(endpoint: &str) -> Result<u64> {
     sequencer_client(endpoint)?
         .get_last_block_id()

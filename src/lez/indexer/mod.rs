@@ -31,6 +31,34 @@ pub async fn indexer_block_by_hash(
     Ok(Some(summarize_indexer_block(&result)))
 }
 
+pub async fn indexer_block_by_id(
+    endpoint: &str,
+    block_id: u64,
+) -> Result<Option<IndexerBlockReport>> {
+    let result = raw_json_rpc_optional_result(endpoint, "getBlockById", json!([block_id]))
+        .await
+        .with_context(|| format!("failed to fetch indexer block {block_id}"))?;
+    if result.is_null() {
+        return Ok(None);
+    }
+    Ok(Some(summarize_indexer_block(&result)))
+}
+
+pub async fn indexer_finalized_block_id(endpoint: &str) -> Result<Option<u64>> {
+    let result =
+        raw_json_rpc_optional_result(endpoint, "getLastFinalizedBlockId", Value::Array(vec![]))
+            .await
+            .context("failed to fetch indexer finalized block id")?;
+    if result.is_null() {
+        return Ok(None);
+    }
+    result
+        .as_u64()
+        .or_else(|| result.as_str().and_then(|value| value.parse().ok()))
+        .map(Some)
+        .context("indexer finalized block id was not an unsigned integer")
+}
+
 pub async fn indexer_blocks(
     endpoint: &str,
     before: Option<u64>,

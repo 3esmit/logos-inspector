@@ -23,6 +23,11 @@ fn source_routing_exposes_adapter_boundaries() {
     let _ = logos_inspector::source_routing::channel_sources::ChannelSourceTarget::Module {
         module_id: "lez_core".to_owned(),
     };
+    fn accepts_channel_monitor(
+        _: Option<logos_inspector::source_routing::channel_sources::ChannelSourceMonitor>,
+    ) {
+    }
+    accepts_channel_monitor(None);
 }
 
 #[test]
@@ -33,6 +38,7 @@ fn network_inspection_exposes_legacy_and_zone_boundaries() {
     let _ = logos_inspector::inspection::classify_zone;
     let _ = logos_inspector::inspection::classify_catalog_zone;
     let _ = logos_inspector::inspection::project_catalog_zones;
+    let _ = logos_inspector::inspection::sources::project_zone_sources;
     let _ = logos_inspector::inspection::ZoneKind::Unknown;
     let _fact_gates = logos_inspector::inspection::ZoneFactGates {
         presence_facts: false,

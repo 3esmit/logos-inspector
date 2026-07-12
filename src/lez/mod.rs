@@ -25,8 +25,8 @@ pub(crate) use block_list_report::block_list_report;
 pub(crate) use idl_resolver::RegisteredIdlResolver;
 pub use indexer::{
     AccountTransactionSummary, IndexerBlockReport, IndexerStatusReport,
-    TransactionTransferOutputSummary, indexer_block_by_hash, indexer_blocks, indexer_health,
-    indexer_status, indexer_transfer_recipients,
+    TransactionTransferOutputSummary, indexer_block_by_hash, indexer_block_by_id, indexer_blocks,
+    indexer_finalized_block_id, indexer_health, indexer_status, indexer_transfer_recipients,
 };
 pub(crate) use indexer::{
     next_indexer_blocks_cursor, summarize_indexer_block, summarize_indexer_status_response,
@@ -35,10 +35,10 @@ pub use programs::{
     ProgramFileInfo, ProgramIdEntry, program_file_info, program_id_base58, program_id_hex,
 };
 pub use sequencer::{
-    last_sequencer_block_id, sequencer_block, sequencer_blocks, sequencer_health,
-    sequencer_program_ids, sequencer_transaction, sequencer_transaction_inspection,
-    sequencer_transaction_inspection_with_idl, sequencer_transaction_trace,
-    sequencer_transaction_trace_with_idl,
+    last_sequencer_block_id, sequencer_block, sequencer_blocks, sequencer_channel_id,
+    sequencer_health, sequencer_program_ids, sequencer_transaction,
+    sequencer_transaction_inspection, sequencer_transaction_inspection_with_idl,
+    sequencer_transaction_trace, sequencer_transaction_trace_with_idl,
 };
 pub(crate) use target_resolution::LezTargetResolver;
 pub(crate) use transactions::inspect_transaction;
