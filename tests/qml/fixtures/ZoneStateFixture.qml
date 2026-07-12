@@ -90,6 +90,102 @@ QtObject {
     property var l2TransactionTraceErrorDetails: null
     property bool l2TransactionTraceInFlight: false
 
+    property string l2AccountId: FixtureData.l2AccountId()
+    property var l2AccountFinalizedReport: FixtureData.l2RouteReport(
+        "lez.account", FixtureData.l2AccountSnapshot("finalized").source)
+    property var l2AccountFinalized: FixtureData.l2AccountSnapshot("finalized")
+    property string l2AccountFinalizedError: ""
+    property var l2AccountFinalizedErrorDetails: null
+    property bool l2AccountFinalizedInFlight: false
+    property var l2AccountProvisionalReport: FixtureData.l2RouteReport(
+        "lez.account", FixtureData.l2AccountSnapshot("provisional").source)
+    property var l2AccountProvisional: FixtureData.l2AccountSnapshot("provisional")
+    property string l2AccountProvisionalError: ""
+    property var l2AccountProvisionalErrorDetails: null
+    property bool l2AccountProvisionalInFlight: false
+    property var l2AccountHistoricalTarget: ({
+        block_id: 12790,
+        block_hash: FixtureData.identity("0")
+    })
+    property var l2AccountHistoricalReport: FixtureData.l2RouteReport(
+        "lez.account", FixtureData.l2AccountSnapshot("historical").source)
+    property var l2AccountHistorical: FixtureData.l2AccountSnapshot("historical")
+    property string l2AccountHistoricalError: ""
+    property var l2AccountHistoricalErrorDetails: null
+    property bool l2AccountHistoricalInFlight: false
+    property int l2AccountActivityLimit: 25
+    property var l2AccountActivityReport: FixtureData.l2FoundReport(
+        "lez.account_activity", {
+            account_id: FixtureData.l2AccountId(),
+            order: "oldest_first",
+            rows: FixtureData.l2AccountActivityRows(),
+            next_cursor: null,
+            has_more: false
+        }, FixtureData.l2AccountSnapshot("finalized").source)
+    property string l2AccountActivityCanonicalId: FixtureData.l2AccountId()
+    property var l2AccountActivityRows: FixtureData.l2AccountActivityRows()
+    property string l2AccountActivityNextCursor: ""
+    property bool l2AccountActivityHasMore: false
+    property bool l2AccountActivityLoaded: true
+    property string l2AccountActivityError: ""
+    property var l2AccountActivityErrorDetails: null
+    property bool l2AccountActivityInFlight: false
+
+    property var l2ProgramsReport: FixtureData.l2FoundReport(
+        "lez.programs", {
+            programs: FixtureData.l2Programs(),
+            source: FixtureData.l2AccountSnapshot("provisional").source
+        }, FixtureData.l2AccountSnapshot("provisional").source)
+    property var l2Programs: FixtureData.l2Programs()
+    property bool l2ProgramsLoaded: true
+    property string l2ProgramsError: ""
+    property var l2ProgramsErrorDetails: null
+    property bool l2ProgramsInFlight: false
+    property string l2CommitmentHex: FixtureData.identity("c")
+    property var l2CommitmentProofReport: FixtureData.l2FoundReport(
+        "lez.commitment_proof", FixtureData.l2CommitmentProof(),
+        FixtureData.l2CommitmentProof().source)
+    property var l2CommitmentProof: FixtureData.l2CommitmentProof()
+    property bool l2CommitmentProofLoaded: true
+    property string l2CommitmentProofError: ""
+    property var l2CommitmentProofErrorDetails: null
+    property bool l2CommitmentProofInFlight: false
+    property var l2NonceAccountIds: [FixtureData.l2AccountId(), FixtureData.identity("8")]
+    property var l2AccountNoncesReport: FixtureData.l2FoundReport(
+        "lez.account_nonces", {
+            rows: FixtureData.l2AccountNonces(),
+            source: FixtureData.l2AccountSnapshot("provisional").source
+        }, FixtureData.l2AccountSnapshot("provisional").source)
+    property var l2AccountNonces: FixtureData.l2AccountNonces()
+    property bool l2AccountNoncesLoaded: true
+    property string l2AccountNoncesError: ""
+    property var l2AccountNoncesErrorDetails: null
+    property bool l2AccountNoncesInFlight: false
+
+    property int l2TransfersLimit: 25
+    property var l2TransfersReport: FixtureData.l2FoundReport(
+        "lez.transfers", {
+            recipients: FixtureData.l2TransferRecipients(),
+            next_cursor: null,
+            has_more: false,
+            newest_block: 12840,
+            oldest_block: 12816,
+            scanned_blocks: 25,
+            finalized: true
+        }, FixtureData.l2AccountSnapshot("finalized").source)
+    property var l2TransferRecipients: FixtureData.l2TransferRecipients()
+    property string l2TransfersNextCursor: ""
+    property bool l2TransfersHasMore: false
+    property var l2TransfersNewestBlock: 12840
+    property var l2TransfersOldestBlock: 12816
+    property int l2TransfersScannedBlocks: 25
+    property bool l2TransfersFinalized: true
+    property bool l2TransfersLoaded: true
+    property var l2TransfersHistory: []
+    property string l2TransfersError: ""
+    property var l2TransfersErrorDetails: null
+    property bool l2TransfersInFlight: false
+
     readonly property bool l2Applicable: activeZoneContext !== null
         && activeZoneContext.zone_kind === "sequencer_zone"
     readonly property bool l2SourceConfigured: l2Applicable
@@ -97,6 +193,11 @@ QtObject {
             || String(activeZoneContext.selected_sequencer_source_id || "").length > 0)
     readonly property bool l2ReadEnabled: verification === "verified"
         && l2Applicable && l2SourceConfigured
+    readonly property bool l2IndexerReadEnabled: l2ReadEnabled
+        && String(activeZoneContext && activeZoneContext.indexer_source_id || "").length > 0
+    readonly property bool l2SequencerReadEnabled: l2ReadEnabled
+        && String(activeZoneContext
+            && activeZoneContext.selected_sequencer_source_id || "").length > 0
 
     property string evidenceFilter: "all"
     property var evidenceRows: []
@@ -148,6 +249,27 @@ QtObject {
         l2TransactionTraceReport = null
         l2BlockRows = l2Applicable ? FixtureData.l2BlockRows() : []
         l2BlocksLoaded = l2Applicable
+        l2AccountId = l2Applicable ? FixtureData.l2AccountId() : ""
+        l2AccountFinalized = l2Applicable
+            ? FixtureData.l2AccountSnapshot("finalized") : null
+        l2AccountProvisional = l2Applicable
+            ? FixtureData.l2AccountSnapshot("provisional") : null
+        l2AccountHistorical = l2Applicable
+            ? FixtureData.l2AccountSnapshot("historical") : null
+        l2AccountActivityRows = l2Applicable
+            ? FixtureData.l2AccountActivityRows() : []
+        l2AccountActivityLoaded = l2Applicable
+        l2Programs = l2Applicable ? FixtureData.l2Programs() : []
+        l2ProgramsLoaded = l2Applicable
+        l2CommitmentProof = l2Applicable ? FixtureData.l2CommitmentProof() : null
+        l2CommitmentProofLoaded = l2Applicable
+        l2AccountNonces = l2Applicable ? FixtureData.l2AccountNonces() : []
+        l2AccountNoncesLoaded = l2Applicable
+        l2TransferRecipients = l2Applicable
+            ? FixtureData.l2TransferRecipients() : []
+        l2TransfersLoaded = l2Applicable
+        l2TransfersFinalized = l2Applicable
+        l2TransfersHistory = []
     }
 
     function refreshL2Blocks() {
@@ -224,6 +346,95 @@ QtObject {
         l2TransactionDetailReport = null
         l2TransactionTrace = null
         l2TransactionTraceReport = null
+    }
+
+    function inspectL2Account(accountId) {
+        l2AccountId = String(accountId || "")
+        l2AccountFinalized = FixtureData.l2AccountSnapshot("finalized")
+        l2AccountProvisional = FixtureData.l2AccountSnapshot("provisional")
+        l2AccountActivityRows = FixtureData.l2AccountActivityRows()
+        l2AccountActivityLoaded = true
+        return true
+    }
+
+    function refreshL2AccountSnapshots() {
+        l2AccountFinalized = FixtureData.l2AccountSnapshot("finalized")
+        l2AccountProvisional = FixtureData.l2AccountSnapshot("provisional")
+        return true
+    }
+
+    function requestL2HistoricalAccount(blockId, blockHash) {
+        l2AccountHistoricalTarget = {
+            block_id: Number(blockId),
+            block_hash: String(blockHash || "")
+        }
+        l2AccountHistorical = FixtureData.l2AccountSnapshot("historical")
+        return 1
+    }
+
+    function refreshL2AccountActivity() {
+        l2AccountActivityRows = FixtureData.l2AccountActivityRows()
+        l2AccountActivityLoaded = true
+        return true
+    }
+
+    function loadMoreL2AccountActivity() {
+        return false
+    }
+
+    function setL2AccountActivityLimit(limit) {
+        l2AccountActivityLimit = Number(limit)
+        return true
+    }
+
+    function refreshL2Programs() {
+        l2Programs = FixtureData.l2Programs()
+        l2ProgramsLoaded = true
+        return 1
+    }
+
+    function requestL2CommitmentProof(commitmentHex) {
+        l2CommitmentHex = String(commitmentHex || "")
+        l2CommitmentProof = FixtureData.l2CommitmentProof()
+        l2CommitmentProofLoaded = true
+        return 1
+    }
+
+    function requestL2AccountNonces(accountIds) {
+        l2NonceAccountIds = accountIds
+        l2AccountNonces = FixtureData.l2AccountNonces()
+        l2AccountNoncesLoaded = true
+        return 1
+    }
+
+    function refreshL2Transfers() {
+        l2TransferRecipients = FixtureData.l2TransferRecipients()
+        l2TransfersLoaded = true
+        l2TransfersFinalized = true
+        l2TransfersHistory = []
+        return 1
+    }
+
+    function loadOlderL2Transfers() {
+        return null
+    }
+
+    function loadNewerL2Transfers() {
+        return false
+    }
+
+    function setL2TransfersLimit(limit) {
+        l2TransfersLimit = Number(limit)
+        return true
+    }
+
+    function l2IndexerSourceId() {
+        return String(activeZoneContext && activeZoneContext.indexer_source_id || "")
+    }
+
+    function l2SequencerSourceId() {
+        return String(activeZoneContext
+            && activeZoneContext.selected_sequencer_source_id || "")
     }
 
     function l2AvailabilityMessage() {

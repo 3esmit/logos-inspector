@@ -453,6 +453,149 @@ function l2TransactionTrace(hashValue, sourceId) {
     }
 }
 
+function l2AccountId() {
+    return identity("7")
+}
+
+function l2AccountSnapshot(kind) {
+    const provisional = kind === "provisional"
+    const historical = kind === "historical"
+    const source = l2Source(
+        provisional
+            ? "src_11111111111111111111111111111111"
+            : "src_33333333333333333333333333333333",
+        provisional ? "sequencer" : "indexer",
+        provisional ? "provisional" : "finalized",
+        historical ? "memory_cache" : "live"
+    )
+    const blockId = historical ? 12790 : (provisional ? 12844 : 12840)
+    return {
+        account: {
+            account_id: l2AccountId(),
+            account_id_base58: "9xQeWvG816bUx9EPjHmaT23yvVMf8bYh3F4",
+            account_id_hex: identity("7"),
+            balance: historical ? "1184000" : (provisional ? "1242750" : "1240000"),
+            nonce: historical ? "36" : (provisional ? "42" : "41"),
+            owner_program_base58: "LezSystem1111111111111111111111111111",
+            owner_program_hex: identity("6"),
+            data_hex: "01000000000000002a00000000000000",
+            existence: "unknown"
+        },
+        anchor: {
+            block_id: blockId,
+            block_hash: historical ? identity("0")
+                : (provisional ? identity("b") : identity("f"))
+        },
+        after_anchor: provisional ? {
+            block_id: 12845,
+            block_hash: identity("5")
+        } : null,
+        anchor_state: provisional ? "moving" : "exact",
+        source: source
+    }
+}
+
+function l2AccountActivityRows() {
+    return [l2AccountActivityRow(0, identity("2"), "incoming"),
+        l2AccountActivityRow(1, identity("3"), "outgoing"),
+        l2AccountActivityRow(2, identity("5"), "program")]
+}
+
+function l2AccountActivityRow(index, transactionId, direction) {
+    return {
+        index: index,
+        transaction_id: transactionId,
+        kind: "public",
+        direction: direction,
+        program_id_hex: identity("6"),
+        account_ids: [l2AccountId(), identity("8")],
+        signer_account_ids: [l2AccountId()],
+        nonces: [String(39 + index)],
+        instruction_data: [16, 32],
+        transfer_outputs: [],
+        bytecode_len: null
+    }
+}
+
+function l2Programs() {
+    return [{
+        label: "System Program",
+        base58: "LezSystem1111111111111111111111111111",
+        hex: identity("6")
+    }, {
+        label: "Token Program",
+        base58: "LezToken11111111111111111111111111111",
+        hex: identity("9")
+    }]
+}
+
+function l2CommitmentProof() {
+    return {
+        commitment_hex: identity("c"),
+        leaf_index: 42,
+        sibling_hashes: [identity("d"), identity("e"), identity("f")],
+        source: l2Source(
+            "src_11111111111111111111111111111111",
+            "sequencer",
+            "provisional",
+            "live"
+        )
+    }
+}
+
+function l2AccountNonces() {
+    return [{ account_id: l2AccountId(), nonce: "42" },
+        { account_id: identity("8"), nonce: "17" }]
+}
+
+function l2TransferRecipients() {
+    return [{
+        recipient: l2AccountId(),
+        account_ref: l2AccountId(),
+        received: "2750",
+        txs: 2,
+        outputs: 1,
+        references: 2,
+        last_slot: 12840,
+        source: "transfer_outputs_and_account_refs",
+        transfers: [{
+            slot: 12840,
+            tx_hash: identity("2"),
+            block_hash: identity("f"),
+            value: "2750"
+        }, {
+            slot: 12839,
+            tx_hash: identity("3"),
+            block_hash: identity("e"),
+            value: null
+        }]
+    }, {
+        recipient: identity("8"),
+        account_ref: identity("8"),
+        received: "500",
+        txs: 1,
+        outputs: 1,
+        references: 0,
+        last_slot: 12838,
+        source: "transfer_outputs",
+        transfers: [{
+            slot: 12838,
+            tx_hash: identity("5"),
+            block_hash: identity("d"),
+            value: "500"
+        }]
+    }]
+}
+
+function l2FoundReport(reportKind, value, source) {
+    const report = l2RouteReport(reportKind, source)
+    report.data = {
+        outcome: "found",
+        value: value
+    }
+    return report
+}
+
 function evidenceRows(channelId) {
     return [evidenceRow("evidence-config", channelId, 187070, "channel_configuration", 0),
         evidenceRow("evidence-operation", channelId, 187075, "channel_operation", 2),

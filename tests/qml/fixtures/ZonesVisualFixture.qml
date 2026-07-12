@@ -8,11 +8,12 @@ Window {
 
     readonly property string visualTab: argumentValue("--tab", "overview")
     readonly property string detailTab: visualTab.indexOf("l2-") === 0
-        ? "l2" : visualTab
+        ? "l2" : (visualTab === "transfers-detail" ? "transfers" : visualTab)
     readonly property string outputPath: argumentValue("--out", "")
     readonly property real scrollOffset: Number(argumentValue("--scroll",
         visualTab === "evidence" ? "400"
-            : (visualTab === "l2-trace" ? "640" : "0")))
+            : (visualTab === "l2-trace" ? "640"
+                : (visualTab === "transfers-detail" ? "420" : "0"))))
 
     width: Number(argumentValue("--width", "1440"))
     height: Number(argumentValue("--height", "900"))
@@ -86,6 +87,19 @@ Window {
     Timer {
         id: captureTimer
 
+        interval: 400
+        repeat: false
+        onTriggered: {
+            if (visualScroll.contentItem) {
+                visualScroll.contentItem.contentY = window.scrollOffset
+            }
+            grabTimer.start()
+        }
+    }
+
+    Timer {
+        id: grabTimer
+
         interval: 150
         repeat: false
         onTriggered: {
@@ -111,6 +125,13 @@ Window {
     }
 
     function prepareVisualState() {
+        if (window.visualTab === "transfers-detail") {
+            const transfers = window.findNamed(zonesPage, "zoneL2Transfers")
+            if (transfers && zoneState.l2TransferRecipients.length > 0) {
+                transfers.selectedRecipient = zoneState.l2TransferRecipients[0]
+            }
+            return
+        }
         if (window.visualTab !== "l2-block" && window.visualTab !== "l2-trace") {
             return
         }

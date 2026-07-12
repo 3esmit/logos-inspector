@@ -259,6 +259,83 @@ TestCase {
             zoneState.l2TransactionDetail.source.source_id))
     }
 
+    function test_l2_accounts_keep_snapshots_separate_and_activity_oldest_first() {
+        const detail = findChild(page, "zoneDetail")
+        verify(detail.requestTab("accounts"))
+        tryVerify(function () {
+            return findChild(detail, "zoneL2Accounts") !== null
+        })
+        const accounts = findChild(detail, "zoneL2Accounts")
+        const finalized = findChild(accounts, "zoneL2FinalizedAccountSnapshot")
+        const provisional = findChild(accounts, "zoneL2ProvisionalAccountSnapshot")
+        verify(finalized !== null && provisional !== null)
+        verify(finalized.snapshot !== provisional.snapshot)
+        compare(finalized.snapshot.account.balance, "1240000")
+        compare(provisional.snapshot.account.balance, "1242750")
+        verify(hasVisibleText(finalized, "Finalized Snapshot"))
+        verify(hasVisibleText(provisional, "Provisional Snapshot"))
+        verify(hasVisibleText(provisional, "Sequencer head moved"))
+        verify(hasVisibleText(finalized, "Indexer"))
+        verify(hasVisibleText(provisional, "Sequencer"))
+
+        const activityRows = accounts.activityRows()
+        compare(activityRows.length, 3)
+        compare(activityRows[0].transactionId, FixtureData.identity("2"))
+        compare(activityRows[2].transactionId, FixtureData.identity("5"))
+        verify(hasVisibleText(accounts, "3 rows / oldest first"))
+    }
+
+    function test_l2_program_tools_show_selected_source_provenance() {
+        const detail = findChild(page, "zoneDetail")
+        verify(detail.requestTab("programs"))
+        tryVerify(function () {
+            return findChild(detail, "zoneL2Programs") !== null
+        })
+        const programs = findChild(detail, "zoneL2Programs")
+        verify(hasVisibleText(programs, "System Program"))
+        verify(hasVisibleText(programs,
+            "src_11111111111111111111111111111111"))
+        compare(programs.programRows().length, 2)
+
+        programs.currentTool = "proof"
+        wait(0)
+        verify(hasVisibleText(programs, "Proof Identity"))
+        verify(hasVisibleText(programs, "42"))
+        compare(programs.siblingRows().length, 3)
+
+        programs.currentTool = "nonces"
+        wait(0)
+        compare(programs.nonceRows().length, 2)
+        verify(findChild(programs, "zoneL2AccountNoncesTable") !== null)
+    }
+
+    function test_l2_transfers_show_page_local_window_and_both_evidence_kinds() {
+        const detail = findChild(page, "zoneDetail")
+        verify(detail.requestTab("transfers"))
+        tryVerify(function () {
+            return findChild(detail, "zoneL2Transfers") !== null
+        })
+        const transfers = findChild(detail, "zoneL2Transfers")
+        verify(hasVisibleText(transfers, "Finalized Window"))
+        verify(hasVisibleText(transfers, transfers.windowLabel()))
+        compare(zoneState.l2TransfersNewestBlock, 12840)
+        compare(zoneState.l2TransfersOldestBlock, 12816)
+        const rows = transfers.recipientRows()
+        compare(rows.length, 2)
+        compare(rows[0].recipient.received, "2750")
+        compare(rows[0].recipient.outputs, 1)
+        compare(rows[0].recipient.references, 2)
+        compare(rows[0].recipient.source, "transfer_outputs_and_account_refs")
+
+        transfers.selectedRecipient = rows[0].recipient
+        wait(0)
+        const evidenceRows = transfers.transferEvidenceRows()
+        compare(evidenceRows.length, 2)
+        compare(evidenceRows[0].cells[2].text, "Transfer output")
+        compare(evidenceRows[1].cells[2].text, "Account reference")
+        verify(findChild(transfers, "zoneL2TransferEvidenceTable") !== null)
+    }
+
     function test_data_channel_l2_tab_is_explicitly_not_applicable() {
         verify(page.requestZoneActivation(FixtureData.identity("8")))
         const detail = findChild(page, "zoneDetail")

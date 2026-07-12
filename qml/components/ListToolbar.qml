@@ -15,6 +15,9 @@ Pane {
     property bool canGoNewer: false
     property bool canGoOlder: false
     property bool busy: false
+    property string refreshText: qsTr("Latest")
+    property string newerText: qsTr("Newer")
+    property string olderText: qsTr("Older")
 
     signal refresh()
     signal newer()
@@ -158,7 +161,7 @@ Pane {
 
             ActionButton {
                 theme: root.theme
-                text: qsTr("Latest")
+                text: root.refreshText
                 primary: true
                 enabled: !root.busy
                 Layout.preferredWidth: 90
@@ -167,7 +170,7 @@ Pane {
 
             ActionButton {
                 theme: root.theme
-                text: qsTr("Newer")
+                text: root.newerText
                 enabled: !root.busy && root.canGoNewer
                 Layout.preferredWidth: 90
                 onClicked: root.newer()
@@ -175,7 +178,7 @@ Pane {
 
             ActionButton {
                 theme: root.theme
-                text: qsTr("Older")
+                text: root.olderText
                 enabled: !root.busy && root.canGoOlder
                 Layout.preferredWidth: 90
                 onClicked: root.older()
