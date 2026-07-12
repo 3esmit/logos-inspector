@@ -72,32 +72,6 @@ function cachedAccountType(root, accountId, ownerProgramId) {
     return selection ? String(selection.accountType || "") : ""
 }
 
-function transactionDecodeCandidates(root, summary) {
-    const candidates = []
-    const accountIds = Array.isArray(summary.account_ids) ? summary.account_ids : []
-    for (let i = 0; i < accountIds.length; ++i) {
-        const cached = cachedIdlEntryForAccount(root, accountIds[i], summary.program_id_hex)
-        if (cached && !candidateListHasEntry(candidates, cached.key)) {
-            candidates.push({
-                entry: cached,
-                cached: true
-            })
-        }
-    }
-
-    const programEntries = root.idlEntriesForProgram(summary.program_id_hex)
-    for (let j = 0; j < programEntries.length; ++j) {
-        if (!candidateListHasEntry(candidates, programEntries[j].key)) {
-            candidates.push({
-                entry: programEntries[j],
-                cached: false
-            })
-        }
-    }
-
-    return uniqueCandidates(candidates)
-}
-
 function uniqueCandidates(candidates) {
     const rows = []
     const seen = ({})

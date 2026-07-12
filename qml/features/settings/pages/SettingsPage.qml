@@ -39,8 +39,6 @@ ColumnLayout {
         id: networkSections
 
         ListElement { value: "blockchain"; label: "Blockchain" }
-        ListElement { value: "indexer"; label: "Indexer" }
-        ListElement { value: "execution"; label: "Execution Zone" }
         ListElement { value: "messaging"; label: "Messaging / Delivery" }
         ListElement { value: "storage"; label: "Storage" }
     }
@@ -55,20 +53,11 @@ ColumnLayout {
     ListModel {
         id: profileOptions
 
-        ListElement {
-            key: "default"
-            label: "Testnet"
-            summary: "Public LEZ, local indexer and node defaults"
-        }
-        ListElement {
-            key: "local"
-            label: "Local sequencer"
-            summary: "Local sequencer, indexer, and node"
-        }
+        ListElement { key: "default"; label: "Default"; summary: "Bedrock node profile" }
         ListElement {
             key: "custom"
             label: "Custom"
-            summary: "Manual endpoint override"
+            summary: "Manual L1 endpoint"
         }
     }
 
@@ -200,7 +189,7 @@ ColumnLayout {
             Layout.fillWidth: true
 
             GridLayout {
-                columns: settingsRoot.width < 760 ? 2 : 4
+                columns: settingsRoot.width < 760 ? 1 : 2
                 columnSpacing: settingsRoot.theme.gap
                 rowSpacing: settingsRoot.theme.gap
                 Layout.fillWidth: true
@@ -223,23 +212,6 @@ ColumnLayout {
                     deltaColor: settingsRoot.connectionStatusColor("blockchain")
                 }
 
-                MetricCard {
-                    theme: settingsRoot.theme
-                    compact: true
-                    label: qsTr("Execution Zone")
-                    value: settingsRoot.connectionStatusText("execution")
-                    delta: settingsRoot.shortEndpoint(settingsRoot.model.sequencerUrl)
-                    deltaColor: settingsRoot.connectionStatusColor("execution")
-                }
-
-                MetricCard {
-                    theme: settingsRoot.theme
-                    compact: true
-                    label: qsTr("Indexer")
-                    value: settingsRoot.connectionStatusText("indexer")
-                    delta: settingsRoot.shortEndpoint(settingsRoot.model.indexerUrl)
-                    deltaColor: settingsRoot.connectionStatusColor("indexer")
-                }
             }
 
             Panel {
@@ -1025,18 +997,6 @@ ColumnLayout {
 
                     InfoField {
                         theme: settingsRoot.theme
-                        label: qsTr("Sequencer RPC")
-                        value: settingsRoot.shortEndpoint(settingsRoot.model.sequencerUrl)
-                    }
-
-                    InfoField {
-                        theme: settingsRoot.theme
-                        label: qsTr("Indexer RPC")
-                        value: settingsRoot.shortEndpoint(settingsRoot.model.indexerUrl)
-                    }
-
-                    InfoField {
-                        theme: settingsRoot.theme
                         label: qsTr("Bedrock node")
                         value: settingsRoot.shortEndpoint(settingsRoot.model.nodeUrl)
                     }
@@ -1112,62 +1072,6 @@ ColumnLayout {
             onEndpointEdited: value => settingsRoot.updateNodeUrl(value)
             onRefreshRateEdited: value => settingsRoot.model.setNetworkConnectionRate("blockchain", value)
             onQueryClicked: settingsRoot.model.queryNetworkConnection("blockchain", true)
-        }
-    }
-
-    Component {
-        id: indexerNetwork
-
-        NetworkConnectionPanel {
-            theme: settingsRoot.theme
-            title: qsTr("Indexer")
-            subtitle: qsTr("Source used for finalized head, block lookup, transfer activity, and transaction history over RPC.")
-            kind: "indexer"
-            pageWidth: settingsRoot.width
-            busy: settingsRoot.model.busy
-            connectionType: settingsRoot.model.indexerSourceLabel()
-            endpointLabel: qsTr("RPC URL")
-            endpoint: settingsRoot.model.indexerUrl
-            primaryFieldVisible: true
-            moduleName: settingsRoot.model.indexerModule
-            moduleFieldVisible: false
-            sourceSelectorVisible: true
-            sourceOptions: coreSourceOptions
-            sourceIndex: settingsRoot.coreSourceIndexFor(settingsRoot.model.currentConnectorSourceMode("lez.indexer", "rpc"))
-            refreshRate: settingsRoot.model.indexerRefreshRate
-            statusText: settingsRoot.connectionStatusText("indexer")
-            statusDetail: settingsRoot.connectionStatusDetail("indexer")
-            statusColor: settingsRoot.connectionStatusColor("indexer")
-            onSourceActivated: index => settingsRoot.model.setNetworkConnectorMode("lez.indexer", settingsRoot.coreSourceModeAt(index))
-            onEndpointEdited: value => settingsRoot.updateIndexerUrl(value)
-            onRefreshRateEdited: value => settingsRoot.model.setNetworkConnectionRate("indexer", value)
-            onQueryClicked: settingsRoot.model.queryNetworkConnection("indexer", true)
-        }
-    }
-
-    Component {
-        id: executionNetwork
-
-        NetworkConnectionPanel {
-            theme: settingsRoot.theme
-            title: qsTr("Logos Execution Zone")
-            subtitle: qsTr("Source used for LEZ head checks. Sequencer blocks, accounts, transactions, and SPEL inspection require RPC.")
-            kind: "execution"
-            pageWidth: settingsRoot.width
-            busy: settingsRoot.model.busy
-            connectionType: settingsRoot.model.executionSourceLabel()
-            endpointLabel: qsTr("RPC URL")
-            endpoint: settingsRoot.model.sequencerUrl
-            primaryFieldVisible: true
-            moduleFieldVisible: false
-            sourceSelectorVisible: false
-            refreshRate: settingsRoot.model.executionRefreshRate
-            statusText: settingsRoot.connectionStatusText("execution")
-            statusDetail: settingsRoot.connectionStatusDetail("execution")
-            statusColor: settingsRoot.connectionStatusColor("execution")
-            onEndpointEdited: value => settingsRoot.updateSequencerUrl(value)
-            onRefreshRateEdited: value => settingsRoot.model.setNetworkConnectionRate("execution", value)
-            onQueryClicked: settingsRoot.model.queryNetworkConnection("execution", true)
         }
     }
 
@@ -1270,10 +1174,6 @@ ColumnLayout {
 
     function networkComponent(section) {
         switch (section) {
-        case "indexer":
-            return indexerNetwork
-        case "execution":
-            return executionNetwork
         case "messaging":
             return messagingNetwork
         case "storage":
@@ -1319,8 +1219,6 @@ ColumnLayout {
     function pendingImportOperationText(plan) { return SettingsProfileWorkspace.pendingImportOperationText(backupRestoreDialog, plan) }
     function pendingImportWarningText(plan) { return SettingsProfileWorkspace.pendingImportWarningText(backupRestoreDialog, plan) }
     function pendingImportSelectedAreas() { return SettingsProfileWorkspace.pendingImportSelectedAreas(backupRestoreDialog) }
-    function updateSequencerUrl(value) { SettingsProfileWorkspace.updateEndpoint(settingsRoot, "sequencerUrl", value) }
-    function updateIndexerUrl(value) { SettingsProfileWorkspace.updateEndpoint(settingsRoot, "indexerUrl", value) }
     function updateNodeUrl(value) { SettingsProfileWorkspace.updateEndpoint(settingsRoot, "nodeUrl", value) }
     function syncProfileFromEndpoints() { SettingsProfileWorkspace.syncProfileFromEndpoints(settingsRoot) }
     function applyProfileIndex(index) { SettingsProfileWorkspace.applyProfileIndex(settingsRoot, index) }
@@ -1334,7 +1232,7 @@ ColumnLayout {
     function refreshProfileOptions() { SettingsProfileWorkspace.refreshProfileOptions(settingsRoot, profileOptions) }
     function populateSourceOptions(targetModel, family) { SettingsProfileWorkspace.populateSourceOptions(settingsRoot, targetModel, family) }
     function profileIndexFor(value) { return SettingsProfileWorkspace.profileIndexFor(settingsRoot, value) }
-    function inferProfile(sequencer, indexer, node) { return SettingsProfileWorkspace.inferProfile(settingsRoot, sequencer, indexer, node) }
+    function inferProfile(node) { return SettingsProfileWorkspace.inferProfile(settingsRoot, node) }
     function profileLabel(value) { return SettingsProfileWorkspace.profileLabel(settingsRoot, value) }
     function profileSummary(value) { return SettingsProfileWorkspace.profileSummary(settingsRoot, value) }
     function profileDetail() { return SettingsProfileWorkspace.profileDetail(settingsRoot) }

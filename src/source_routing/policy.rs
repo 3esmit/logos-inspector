@@ -1,10 +1,6 @@
 use super::{NetworkProfile, network_profiles};
 use serde::Serialize;
 
-pub const TESTNET_SEQUENCER_ENDPOINT: &str = "https://testnet.lez.logos.co/";
-pub const LOCAL_SEQUENCER_ENDPOINT: &str = "http://127.0.0.1:3040/";
-pub const DEFAULT_SEQUENCER_ENDPOINT: &str = TESTNET_SEQUENCER_ENDPOINT;
-pub const DEFAULT_INDEXER_ENDPOINT: &str = "http://127.0.0.1:8779/";
 pub const DEFAULT_NODE_ENDPOINT: &str = "http://127.0.0.1:8080/";
 pub const DEFAULT_DELIVERY_REST_ENDPOINT: &str = "http://127.0.0.1:8645";
 pub const DEFAULT_DELIVERY_METRICS_ENDPOINT: &str = "http://127.0.0.1:8008/metrics";
@@ -300,9 +296,6 @@ pub struct SourcePolicyReport {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SourcePolicyDefaults {
-    pub sequencer_endpoint: &'static str,
-    pub local_sequencer_endpoint: &'static str,
-    pub indexer_endpoint: &'static str,
     pub node_endpoint: &'static str,
     pub delivery_rest_endpoint: &'static str,
     pub delivery_metrics_endpoint: &'static str,
@@ -394,9 +387,6 @@ impl SourcePolicyCatalog {
         SourcePolicyReport {
             version: 2,
             defaults: SourcePolicyDefaults {
-                sequencer_endpoint: DEFAULT_SEQUENCER_ENDPOINT,
-                local_sequencer_endpoint: LOCAL_SEQUENCER_ENDPOINT,
-                indexer_endpoint: DEFAULT_INDEXER_ENDPOINT,
                 node_endpoint: DEFAULT_NODE_ENDPOINT,
                 delivery_rest_endpoint: DEFAULT_DELIVERY_REST_ENDPOINT,
                 delivery_metrics_endpoint: DEFAULT_DELIVERY_METRICS_ENDPOINT,

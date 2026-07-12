@@ -14,7 +14,7 @@ QtObject {
     property var resultValue: null
     property bool resultIsError: false
     property string resultOwner: ""
-    property var navExpanded: ({ l1: true, l2: true, network: true, diagnostics: false, local: true, system: true })
+    property var navExpanded: ({ l1: true, network: true, diagnostics: false, local: true, system: true })
     property int navRevision: 0
     property var navigationBackStack: []
     property var navigationForwardStack: []

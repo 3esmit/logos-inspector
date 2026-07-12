@@ -106,7 +106,7 @@ TestCase {
         model.zoneInspection.zoneSummaries = []
         model.zoneInspection.zoneDetail = null
         model.dashboardNode = null
-        model.dashboardSequencerBlocks = []
+        model.dashboardProvisionalBlocks = []
         model.blockchainModuleReport = null
         model.storageModuleReport = null
         model.messagingModuleReport = null
@@ -138,37 +138,12 @@ TestCase {
         model.blocksLiveSource = ""
         model.blocksLiveUnknownEvents = 0
         model.blocksLiveCheckedAt = ""
-        model.lezBlocksPageRows = []
-        model.lezBlocksPageBeforeBlock = 0
-        model.lezBlocksPageNextBeforeBlock = 0
-        model.lezBlocksPageError = ""
-        model.lezBlocksPageLoading = false
-        model.lezBlocksPageRequestSerial = 0
-        model.lezTransactionsPageRows = []
-        model.lezTransactionsPageBeforeBlock = 0
-        model.lezTransactionsPageNextBeforeBlock = 0
-        model.lezTransactionsPageOverflowRows = []
-        model.lezTransactionsPageOverflowNextBeforeBlock = 0
-        model.lezTransactionsPageError = ""
-        model.transferActivityRows = []
-        model.transferActivityBeforeBlock = 0
-        model.transferActivityNextBeforeBlock = 0
-        model.transferActivityOverflowRows = []
-        model.transferActivityOverflowNextBeforeBlock = 0
-        model.transferActivityHistory = []
-        model.transferActivityError = ""
         model.blockDetailValue = null
         model.blockDetailError = ""
         model.transactionDetailValue = null
         model.transactionDetailError = ""
-        model.accountDetailValue = null
-        model.transferRecipientDetailValue = null
-        model.channelDetailValue = null
-        model.channelDetailError = ""
         model.networkConnectorConfig = model.defaultNetworkConnectorConfig()
         model.blockchainSourceMode = "rpc"
-        model.indexerSourceMode = "rpc"
-        model.executionSourceMode = "rpc"
         model.messagingSourceMode = "rest"
         model.storageSourceMode = "rest"
         model.sourcePolicy = ({})
@@ -179,8 +154,6 @@ TestCase {
         model.settingsBackupEncrypted = false
         basecampModel.networkConnectorConfig = basecampModel.defaultNetworkConnectorConfig()
         basecampModel.blockchainSourceMode = "module"
-        basecampModel.indexerSourceMode = "module"
-        basecampModel.executionSourceMode = "rpc"
         basecampModel.messagingSourceMode = "module"
         basecampModel.storageSourceMode = "module"
         basecampModel.sourcePolicy = ({})
@@ -463,49 +436,6 @@ TestCase {
         compare(localNodeHistory[0].status, "completed")
     }
 
-    function test_core_source_args_use_module_shape_in_basecamp_connector() {
-        compare(basecampModel.effectiveCoreSourceMode(basecampModel.indexerSourceMode), "module")
-
-        const args = basecampModel.indexerArgs(["hash-1"])
-
-        compare(args.length, 3)
-        compare(args[0], "module")
-        compare(args[1], basecampModel.indexerUrl)
-        compare(args[2], "hash-1")
-    }
-
-    function test_rpc_only_helpers_keep_rpc_shape_in_basecamp() {
-        compare(basecampModel.effectiveCoreSourceMode(basecampModel.blockchainSourceMode), "module")
-
-        const channelArgs = basecampModel.blockchainRpcArgs([10, 20])
-        compare(channelArgs.length, 3)
-        compare(channelArgs[0], basecampModel.nodeUrl)
-        compare(channelArgs[1], 10)
-        compare(channelArgs[2], 20)
-
-        const programArgs = basecampModel.executionRpcArgs([])
-        compare(programArgs.length, 1)
-        compare(programArgs[0], basecampModel.sequencerUrl)
-
-        const executionArgs = basecampModel.executionArgs(["tx-1"])
-        compare(executionArgs.length, 2)
-        compare(executionArgs[0], basecampModel.sequencerUrl)
-        compare(executionArgs[1], "tx-1")
-    }
-
-    function test_account_lookup_args_use_module_indexer_for_history() {
-        basecampModel.setNetworkConnectorMode("lez.indexer", "module")
-
-        const args = basecampModel.accountLookupArgs("account-1")
-
-        compare(args.length, 5)
-        compare(args[0], "rpc")
-        compare(args[1], basecampModel.sequencerUrl)
-        compare(args[2], "module")
-        compare(args[3], basecampModel.indexerUrl)
-        compare(args[4], "account-1")
-    }
-
     function test_messaging_and_storage_use_standalone_connectors_without_basecamp() {
         compare(model.normalizedMessagingSourceMode(model.messagingSourceMode), "rest")
         compare(model.effectiveMessagingSourceMode(model.messagingSourceMode), "rest")
@@ -538,11 +468,6 @@ TestCase {
         compare(storage.reportArgs(false)[0], "rest")
         compare(storage.reportArgs(false)[1], model.configuredStorageRestUrl())
 
-        const execution = model.sourceRouting.coreSourceView("execution")
-        compare(execution.role, "execution")
-        compare(execution.effectiveMode, "rpc")
-        compare(execution.target, model.sequencerUrl)
-        compare(execution.args(["head"])[0], model.sequencerUrl)
     }
 
     function test_source_policy_catalog_fallback_supports_pending_modes_without_bridge_policy() {
@@ -592,9 +517,6 @@ TestCase {
                 ok: true,
                 value: {
                     defaults: {
-                        sequencer_endpoint: "https://policy-sequencer.invalid/",
-                        local_sequencer_endpoint: "http://policy-local.invalid/",
-                        indexer_endpoint: "http://policy-indexer.invalid/",
                         node_endpoint: "http://policy-node.invalid/",
                         delivery_rest_endpoint: "http://policy-delivery.invalid:8645",
                         delivery_metrics_endpoint: "http://policy-delivery.invalid:8008/metrics",
@@ -604,15 +526,11 @@ TestCase {
                     network_profiles: [
                         {
                             id: "default",
-                            sequencer_endpoint: "https://policy-sequencer.invalid/",
-                            indexer_endpoint: "http://policy-indexer.invalid/",
                             node_endpoint: "http://policy-node.invalid/"
                         },
                         {
                             id: "local",
-                            sequencer_endpoint: "http://policy-local.invalid/",
-                            indexer_endpoint: "http://policy-indexer.invalid/",
-                            node_endpoint: "http://policy-node.invalid/"
+                            node_endpoint: "http://policy-local-node.invalid/"
                         }
                     ],
                     source_modes: {
@@ -651,32 +569,12 @@ TestCase {
         compare(model.normalizedStorageSourceMode("standalone rest"), "rest")
 
         model.applyProfile(1)
-        compare(model.sequencerUrl, "http://policy-local.invalid/")
-        compare(model.indexerUrl, "http://policy-indexer.invalid/")
-        compare(model.nodeUrl, "http://policy-node.invalid/")
-        compare(model.inferNetworkProfileFromEndpoints(model.sequencerUrl, model.indexerUrl, model.nodeUrl), "local")
+        compare(model.nodeUrl, "http://policy-local-node.invalid/")
+        compare(model.inferNetworkProfileFromEndpoint(model.nodeUrl), "local")
 
         model.applyProfile(0)
-        compare(model.sequencerUrl, "https://policy-sequencer.invalid/")
-        compare(model.inferNetworkProfileFromEndpoints(model.sequencerUrl, model.indexerUrl, model.nodeUrl), "default")
-    }
-
-    function test_settings_execution_query_does_not_replace_active_zone_projection() {
-        fakeHost.responses = {
-            head: {
-                ok: true,
-                value: 42,
-                text: "42",
-                error: ""
-            }
-        }
-
-        model.queryNetworkConnection("execution", false)
-
-        tryVerify(function () { return model.networkConnectionIsPending("execution") === false })
-        compare(model.networkConnectionStatus.execution.value, 42)
-        compare(model.sequencerHeadValue(), null)
-        compare(model.dashboardOverview, null)
+        compare(model.nodeUrl, "http://policy-node.invalid/")
+        compare(model.inferNetworkProfileFromEndpoint(model.nodeUrl), "default")
     }
 
     function test_settings_query_caches_blockchain_node_for_footer_metrics() {
@@ -1066,20 +964,6 @@ TestCase {
         verify(model.programExecution.walletHomeConfigured())
     }
 
-    function test_transfer_recipient_lookup_uses_overflow_rows() {
-        model.transferActivityRows = [
-            { recipient: "visible", account_ref: "visible", source: "transfer_outputs", transfers: [] }
-        ]
-        model.transferActivityOverflowRows = [
-            { recipient: "overflow", account_ref: "overflow", source: "transfer_outputs", transfers: [] }
-        ]
-
-        const detail = model.chainPages.transferRecipientDetailById("overflow")
-
-        verify(detail !== null)
-        compare(detail.address, "overflow")
-    }
-
     function test_navigation_delegates() {
         compare(model.viewTitle(), "Dashboard")
         verify(model.navRows().length > 0)
@@ -1087,8 +971,8 @@ TestCase {
         model.selectView("programs")
 
         compare(model.currentView, "programs")
-        compare(model.parentNavKeyForView("programs"), "l2")
-        compare(model.navTokenForView("programs"), "PRG")
+        compare(model.parentNavKeyForView("programs"), "local")
+        compare(model.navTokenForView("programs"), "IDL")
     }
 
     function test_favorites_toggle_and_filter_rows() {
@@ -1287,43 +1171,13 @@ TestCase {
         compare(basecamp.scopes["wallet.l2"].connector_id, "lez_core")
     }
 
-    function test_capability_diagnostics_reports_include_lez_source_evidence() {
-        model.networkConnectionStatus = ({
-            indexer: {
-                known: true,
-                ok: true,
-                detail: "indexer reachable",
-                value: { height: 15 }
-            },
-            execution: {
-                known: true,
-                ok: false,
-                detail: "sequencer refused connection"
-            }
-        })
-
-        const reports = model.capabilityRegistryRuntimeInputs().diagnostics_reports.source_reports
-        const indexerReport = reports["lez.indexer"]
-        const sequencerReport = reports["lez.sequencer"]
-
-        verify(indexerReport !== undefined)
-        verify(indexerReport !== null)
-        compare(indexerReport.health.ready, true)
-        compare(indexerReport.probe_facts[0].ok, true)
-        verify(sequencerReport !== undefined)
-        verify(sequencerReport !== null)
-        compare(sequencerReport.health.ready, false)
-        compare(sequencerReport.probe_facts[0].ok, false)
-        compare(sequencerReport.probe_facts[0].error, "sequencer refused connection")
-    }
-
     function test_zone_scopes_isolate_programs_decode_choices_and_dashboard() {
         const firstZone = setActiveZone("22".repeat(32))
         const owner = "ab".repeat(32)
         model.updateKnownProgramIds([{ hex: owner, base58: "program-a", label: "A" }])
         model.cacheAccountIdlSelection("account-a", { key: "idl-a" }, "State", owner)
         model.dashboardLezBlockRows = [{ block_id: 7 }]
-        model.dashboardSequencerBlocks = [{ block_id: 7 }]
+        model.dashboardProvisionalBlocks = [{ block_id: 7 }]
         compare(model.knownProgramIdRows().length, 1)
         verify(model.accountIdlSelection("account-a", owner) !== null)
 
@@ -1346,7 +1200,7 @@ TestCase {
         compare(model.knownProgramIdRows().length, 0)
         compare(model.accountIdlSelection("account-a", owner), null)
         compare(model.dashboardLezBlockRows.length, 0)
-        compare(model.dashboardSequencerBlocks.length, 0)
+        compare(model.dashboardProvisionalBlocks.length, 0)
     }
 
     function test_chain_search_uses_typed_candidate_resolver_and_keeps_local_shortcuts() {
@@ -3794,215 +3648,6 @@ TestCase {
         compare(model.blocksPageRows[0].header.id, "slot-30")
     }
 
-    function test_lez_blocks_page_merges_sequencer_and_indexer_blocks() {
-        fakeHost.responses = {
-            sequencerBlocks: {
-                ok: true,
-                value: [
-                    { block_id: 102, header_hash: "seq-102", tx_count: 0, bedrock_status: "Submitted", transactions: [] },
-                    { block_id: 101, header_hash: "seq-101", tx_count: 1, bedrock_status: "Submitted", transactions: [{ hash: "tx-101", instruction_data: [1] }] }
-                ],
-                text: "OK",
-                error: ""
-            },
-            indexerBlocks: {
-                ok: true,
-                value: [
-                    { block_id: 100, header_hash: "idx-100", tx_count: 0, bedrock_status: "Finalized", transactions: [] }
-                ],
-                text: "OK",
-                error: ""
-            },
-            lezBlockListReport: function (args) {
-                const rows = []
-                for (let i = 0; i < args[0].length; ++i) {
-                    rows.push(Object.assign({}, args[0][i], { report_kind: "lez.block_list.row", source: "sequencer" }))
-                }
-                for (let j = 0; j < args[1].length; ++j) {
-                    rows.push(Object.assign({}, args[1][j], { report_kind: "lez.block_list.row", source: "indexer" }))
-                }
-                return {
-                    ok: true,
-                    value: {
-                        report_kind: "lez.block_list",
-                        rows: rows,
-                        raw: { sequencer: args[0], indexer: args[1] },
-                        provenance: ["typed_report", "raw_provider_payload"]
-                    },
-                    text: "OK",
-                    error: ""
-                }
-            }
-        }
-
-        model.chainPages.refreshLezBlocksPage()
-
-        tryCompare(model, "lezBlocksPageLoading", false)
-        compare(model.lezBlocksPageRows.length, 3)
-        compare(model.lezBlocksPageRows[0].block_id, 102)
-        compare(model.lezBlocksPageRows[0].source, "sequencer")
-        compare(model.lezBlocksPageRows[2].block_id, 100)
-        compare(model.lezBlocksPageRows[2].source, "indexer")
-        compare(model.lezBlocksPageNextBeforeBlock, 100)
-
-        model.openReference("indexerBlock", "seq-102", model.lezBlocksPageRows[0])
-
-        compare(model.currentView, "l2BlockDetail")
-        compare(model.blockDetailValue.type, "sequencer_block")
-        compare(model.blockDetailValue.status, "Submitted")
-    }
-
-    function test_lez_blocks_page_finishes_from_first_available_source() {
-        fakeHost.responses = {
-            lezBlockListReport: function (args) {
-                return {
-                    ok: true,
-                    value: {
-                        report_kind: "lez.block_list",
-                        rows: [
-                            Object.assign({}, args[0][0], { report_kind: "lez.block_list.row", source: "sequencer" })
-                        ],
-                        raw: { sequencer: args[0], indexer: args[1] },
-                        provenance: ["typed_report", "raw_provider_payload"]
-                    },
-                    text: "OK",
-                    error: ""
-                }
-            }
-        }
-
-        model.chainPages.finishLezBlocksPage(0, {
-            ok: true,
-            value: [
-                { block_id: 203, header_hash: "seq-203", tx_count: 0, bedrock_status: "Submitted", transactions: [] }
-            ],
-            text: "OK",
-            error: ""
-        }, null)
-
-        compare(model.lezBlocksPageRows.length, 1)
-        compare(model.lezBlocksPageRows[0].block_id, 203)
-        compare(model.lezBlocksPageRows[0].source, "sequencer")
-        compare(model.lezBlocksPageError, "")
-    }
-
-    function test_lez_transactions_older_consumes_overflow_rows_before_fetching_more_blocks() {
-        model.lezTransactionsPageLimit = 2
-        model.lezTransactionsBlockBatch = 2
-        fakeHost.responses = {
-            indexerBlocks: {
-                ok: true,
-                value: [
-                    {
-                        block_id: 12,
-                        header_hash: "block-12",
-                        transactions: [
-                            { hash: "tx-1", instruction_data: [1] },
-                            { hash: "tx-2", instruction_data: [2] },
-                            { hash: "tx-3", instruction_data: [3] }
-                        ]
-                    }
-                ],
-                text: "OK",
-                error: ""
-            }
-        }
-
-        model.chainPages.refreshLezTransactionsPage()
-        const callsAfterFirstPage = fakeHost.callCount
-
-        compare(model.lezTransactionsPageRows.length, 2)
-        compare(model.lezTransactionsPageRows[0].hash, "tx-1")
-        compare(model.lezTransactionsPageOverflowRows.length, 1)
-
-        model.chainPages.olderLezTransactionsPage()
-
-        compare(fakeHost.callCount, callsAfterFirstPage)
-        compare(model.lezTransactionsPageRows.length, 1)
-        compare(model.lezTransactionsPageRows[0].hash, "tx-3")
-        compare(model.lezTransactionsPageOverflowRows.length, 0)
-    }
-
-    function test_transfer_activity_older_consumes_overflow_rows_before_fetching_more_blocks() {
-        model.transferActivityLimit = 2
-        fakeHost.responses = {
-            indexerTransferRecipients: {
-                ok: true,
-                value: {
-                    recipients: [
-                        { recipient: "r1", last_slot: 12, transfer_count: 1 },
-                        { recipient: "r2", last_slot: 11, transfer_count: 1 },
-                        { recipient: "r3", last_slot: 10, transfer_count: 1 }
-                    ],
-                    next_before_block: 9
-                },
-                text: "OK",
-                error: ""
-            }
-        }
-
-        model.chainPages.refreshTransferActivityPage()
-        const callsAfterFirstPage = fakeHost.callCount
-
-        compare(model.transferActivityRows.length, 2)
-        compare(model.transferActivityRows[0].recipient, "r1")
-        compare(model.transferActivityOverflowRows.length, 1)
-
-        model.chainPages.nextTransferActivityPage()
-
-        compare(fakeHost.callCount, callsAfterFirstPage)
-        compare(model.transferActivityRows.length, 1)
-        compare(model.transferActivityRows[0].recipient, "r3")
-        compare(model.transferActivityOverflowRows.length, 0)
-        compare(model.transferActivityNextBeforeBlock, 9)
-    }
-
-    function test_indexer_status_falls_back_to_health_and_head() {
-        model.currentView = "indexer"
-        fakeHost.responses = {
-            indexerStatus: {
-                ok: true,
-                value: {
-                    state: "unavailable",
-                    lastError: "Method not found",
-                    raw: {
-                        error: {
-                            code: -32601,
-                            message: "Method not found"
-                        }
-                    }
-                },
-                text: "status unavailable",
-                error: ""
-            },
-            indexerHealth: {
-                ok: true,
-                value: {
-                    status: "healthy",
-                    health: "ok"
-                },
-                text: "healthy",
-                error: ""
-            },
-            indexerFinalizedHead: {
-                ok: true,
-                value: 42,
-                text: "42",
-                error: ""
-            }
-        }
-
-        model.refreshIndexerStatus()
-
-        compare(fakeHost.lastMethod, "indexerFinalizedHead")
-        compare(model.resultOwner, "indexer")
-        compare(model.resultIsError, false)
-        compare(model.resultValue.status.state, "unavailable")
-        compare(model.resultValue.status.indexedBlockId, 42)
-        compare(model.resultValue.indexer.health.ok, true)
-        compare(model.resultValue.indexer.head.value, 42)
-    }
-
     function test_blockchain_module_probe_value_reads_peer_id() {
         model.blockchainModuleReport = {
             module: model.blockchainModule,
@@ -4146,20 +3791,6 @@ TestCase {
         }).length, 0)
     }
 
-    function test_source_empty_text_uses_sync_and_shape_state() {
-        compare(model.chainPages.sourceEmptyText("indexer", "", "No indexed blocks"), "No indexed blocks")
-
-        model.updateNetworkConnectionStatus("indexer", {
-            ok: true,
-            value: { state: "syncing", indexedBlockId: 12 },
-            text: "syncing",
-            error: ""
-        })
-
-        compare(model.chainPages.sourceEmptyText("indexer", "", "No indexed blocks"), "Source reachable; syncing")
-        compare(model.chainPages.sourceProblemTitle("indexer", "Response shape unknown. Raw JSON remains available.", "L2 blocks unavailable"), "Response shape unknown")
-    }
-
     function test_bedrock_network_summary_unwraps_probe_slot() {
         const value = {
             cryptarchia_info: {
@@ -4175,7 +3806,7 @@ TestCase {
         compare(model.networkConnectionSummary("blockchain", value), "slot 42")
     }
 
-    function test_dashboard_refresh_loads_recent_blocks_for_both_chains() {
+    function test_dashboard_refresh_uses_active_zone_projection_and_l1_sources() {
         const channelId = setActiveZone("")
         model.zoneInspection.zoneDetail = {
             summary: {
@@ -4191,8 +3822,8 @@ TestCase {
                 activity_detail: { last_seen_unix: 1000 }
             }
         }
-        model.zoneInspection.l2BlockRows = [104, 103, 102, 101, 100].map(function (id) {
-            const sequencer = id >= 102
+        model.zoneInspection.l2BlockRows = [104, 101].map(function (id) {
+            const sequencer = id === 104
             return {
                 summary: {
                     block_id: id,
@@ -4200,7 +3831,7 @@ TestCase {
                     parent_hash: "0".repeat(64),
                     timestamp: id,
                     bedrock_status: sequencer ? "Submitted" : "Finalized",
-                    transaction_count: id === 102 ? 1 : 0
+                    transaction_count: 0
                 },
                 observations: [{
                     source_id: sequencer ? "seq-a" : "idx-a",
@@ -4211,90 +3842,48 @@ TestCase {
                 }]
             }
         })
+        fakeHost.strictUnexpectedCalls = true
         fakeHost.responses = {
             blockchainNode: {
                 ok: true,
                 value: {
                     cryptarchia_info: {
                         value: {
-                            cryptarchia_info: {
-                                slot: 30,
-                                lib_slot: 20
-                            }
+                            cryptarchia_info: { slot: 30, lib_slot: 20 }
                         }
                     }
                 },
                 text: "OK",
                 error: ""
             },
-            blockchainBlocks: {
+            blockchainLiveBlocks: {
                 ok: true,
-                value: [
-                    {
-                        header: { slot: 30, id: "l1-tip" },
-                        transactions: [{ mantle_tx: { hash: "l1-tx", ops: [{ opcode: 17 }] } }]
-                    },
-                    { header: { slot: 29, id: "l1-pending-2" }, transactions: [] },
-                    { header: { slot: 28, id: "l1-pending-3" }, transactions: [] },
-                    { header: { slot: 20, id: "l1-lib" }, transactions: [], _chain: { status: "finalized" } },
-                    { header: { slot: 19, id: "l1-finalized-2" }, transactions: [], _chain: { status: "finalized" } }
-                ],
+                value: {
+                    blocks: [
+                        { header: { slot: 30, id: "l1-tip" }, transactions: [] }
+                    ]
+                },
                 text: "OK",
                 error: ""
             },
-            sequencerBlocks: {
-                ok: true,
-                value: [
-                    { block_id: 104, header_hash: "seq-104", tx_count: 0, bedrock_status: "Submitted", transactions: [] },
-                    { block_id: 103, header_hash: "seq-103", tx_count: 0, bedrock_status: "Submitted", transactions: [] },
-                    { block_id: 102, header_hash: "seq-102", tx_count: 1, bedrock_status: "Submitted", transactions: [{ hash: "l2-tx", instruction_data: [1, 2] }] }
-                ],
-                text: "OK",
-                error: ""
-            },
-            indexerBlocks: {
-                ok: true,
-                value: [
-                    { block_id: 101, header_hash: "idx-101", tx_count: 0, bedrock_status: "Finalized", transactions: [] },
-                    { block_id: 100, header_hash: "idx-100", tx_count: 0, bedrock_status: "Finalized", transactions: [] }
-                ],
-                text: "OK",
-                error: ""
-            },
-            lezBlockListReport: function (args) {
-                return {
-                    ok: true,
-                    value: {
-                        report_kind: "lez.block_list",
-                        rows: [
-                            Object.assign({}, args[0][0], { report_kind: "lez.block_list.row", source: "sequencer" }),
-                            Object.assign({}, args[0][1], { report_kind: "lez.block_list.row", source: "sequencer" }),
-                            Object.assign({}, args[0][2], { report_kind: "lez.block_list.row", source: "sequencer" }),
-                            Object.assign({}, args[1][0], { report_kind: "lez.block_list.row", source: "indexer" }),
-                            Object.assign({}, args[1][1], { report_kind: "lez.block_list.row", source: "indexer" })
-                        ],
-                        raw: { sequencer: args[0], indexer: args[1] },
-                        provenance: ["typed_report", "raw_provider_payload"]
-                    },
-                    text: "OK",
-                    error: ""
-                }
-            }
+            storageSourceReport: { ok: true, value: {}, text: "OK", error: "" },
+            deliverySourceReport: { ok: true, value: {}, text: "OK", error: "" }
         }
 
         model.refreshDashboard()
 
         tryCompare(model, "dashboardRefreshing", false)
-        compare(model.dashboardSequencerBlocks.length, 3)
-        compare(model.dashboardSequencerBlocks[0].block_id, 104)
-        compare(model.dashboardBlocks.length, 2)
+        compare(model.dashboardProvisionalBlocks.length, 1)
+        compare(model.dashboardProvisionalBlocks[0].block_id, 104)
+        compare(model.dashboardBlocks.length, 1)
         compare(model.dashboardBlocks[0].block_id, 101)
-        compare(model.dashboardLezBlockRows.length, 5)
-        compare(model.dashboardLezBlockRows[0].source, "sequencer")
-        compare(model.lezBlocksPageRows.length, 0)
+        compare(model.dashboardLezBlockRows.length, 2)
+        compare(model.dashboardL1Blocks.length, 1)
+        compare(callCountFor("blockchainNode"), 1)
+        compare(callCountFor("blockchainLiveBlocks"), 1)
         compare(callCountFor("sequencerBlocks"), 0)
         compare(callCountFor("indexerBlocks"), 0)
-        compare(callCountFor("overview"), 0)
+        compare(callCountFor("lezBlockListReport"), 0)
     }
 
     function setTipMinusLib(value) {

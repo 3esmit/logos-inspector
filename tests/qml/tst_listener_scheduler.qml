@@ -64,8 +64,6 @@ TestCase {
         id: fakeModel
 
         property int blockchainRefreshRate: 30
-        property int indexerRefreshRate: 0
-        property int executionRefreshRate: 0
         property int messagingRefreshRate: 0
         property int storageRefreshRate: 0
         property string currentView: "overview"
@@ -110,8 +108,6 @@ TestCase {
 
     function init() {
         fakeModel.blockchainRefreshRate = 30
-        fakeModel.indexerRefreshRate = 0
-        fakeModel.executionRefreshRate = 0
         fakeModel.messagingRefreshRate = 0
         fakeModel.storageRefreshRate = 0
         fakeModel.currentView = "overview"
@@ -172,10 +168,7 @@ TestCase {
         compare(zoneState.resumes, 1)
     }
 
-    function test_legacy_l2_connection_probes_are_not_scheduled() {
-        fakeModel.indexerRefreshRate = 30
-        fakeModel.executionRefreshRate = 30
-
+    function test_channel_source_probes_are_not_scheduled_by_qml() {
         verify(!scheduler.enabled("indexer"))
         verify(!scheduler.enabled("execution"))
         compare(scheduler.tick("indexer"), null)

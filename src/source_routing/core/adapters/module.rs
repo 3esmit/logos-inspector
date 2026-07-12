@@ -2,13 +2,12 @@ use anyhow::{Context as _, Result, bail};
 use serde_json::{Value, json};
 
 use crate::{
-    ACCOUNT_TRANSACTION_LIMIT, AccountReport, AccountTransactionSummary, IndexerBlockReport,
-    IndexerStatusReport, ProbeReport, TransactionSummary, TransferActivityPage,
+    AccountReport, AccountTransactionSummary, IndexerBlockReport, IndexerStatusReport, ProbeReport,
+    TransactionSummary,
     blockchain::BlockchainLiveBlocksReport,
     blockchain::BlockchainNodeReport,
     lez::{
-        indexer_account_report, next_indexer_blocks_cursor, summarize_account_transaction,
-        summarize_indexer_status_response, transfer_recipient_summaries_from_blocks,
+        indexer_account_report, summarize_account_transaction, summarize_indexer_status_response,
         verified_indexer_block_report, verified_indexer_transaction_summary,
     },
     modules::logos_core,
@@ -95,7 +94,7 @@ pub(crate) fn indexer_health() -> Result<Value> {
     }))
 }
 
-pub(crate) fn indexer_status() -> Result<IndexerStatusReport> {
+fn indexer_status() -> Result<IndexerStatusReport> {
     let value = call_value(INDEXER_MODULE, "getStatus", &[])?;
     Ok(summarize_indexer_status_response(&json!({
         "result": value,
@@ -161,17 +160,6 @@ pub(crate) fn indexer_account_at_block(account_id: &str, block_id: u64) -> Resul
     indexer_account_report(&value, account_id)
 }
 
-pub(crate) fn indexer_transfer_recipients(
-    before: Option<u64>,
-    limit: u64,
-) -> Result<TransferActivityPage> {
-    let blocks = indexer_blocks(before, limit)?;
-    Ok(TransferActivityPage {
-        next_before_block: next_indexer_blocks_cursor(&blocks),
-        recipients: transfer_recipient_summaries_from_blocks(&blocks),
-    })
-}
-
 pub(crate) fn account_transactions_by_account(
     account_id: &str,
     offset: usize,
@@ -193,20 +181,6 @@ pub(crate) fn account_transactions_by_account(
             summarize_account_transaction(transaction, offset + index, account_id)
         })
         .collect())
-}
-
-pub(crate) fn attach_module_account_transactions(account: &mut AccountReport) {
-    match account_transactions_by_account(&account.account_id_base58, 0, ACCOUNT_TRANSACTION_LIMIT)
-    {
-        Ok(transactions) => {
-            account.related_transactions = Some(transactions);
-            account.related_transactions_error = None;
-        }
-        Err(error) => {
-            account.related_transactions = Some(Vec::new());
-            account.related_transactions_error = Some(format!("{error:#}"));
-        }
-    }
 }
 
 pub(crate) fn call_value(module: &str, method: &str, args: &[String]) -> Result<Value> {

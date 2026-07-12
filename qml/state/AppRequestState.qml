@@ -8,7 +8,6 @@ QtObject {
     required property string inspectorModule
 
     property var updateDashboardCache: null
-    property var clearAccountDetail: null
     property var updateNetworkConnectionStatus: null
 
     function callInspector(method, args, label) {
@@ -76,9 +75,6 @@ QtObject {
                 shell.setResult(label, response.text, false, response.value)
             }
         } else if (showResult) {
-            if (method === "account" && clearAccountDetail) {
-                clearAccountDetail()
-            }
             shell.setResult(label, response ? response.error : qsTr("Bridge call failed."), true, null)
         }
         if (updateNetworkConnectionStatus) {

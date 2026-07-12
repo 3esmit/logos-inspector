@@ -13,7 +13,7 @@ function handleNetworkConfigurationChanged(root) {
         dashboardNode = null
         dashboardL1Blocks = []
         dashboardBlocks = []
-        dashboardSequencerBlocks = []
+        dashboardProvisionalBlocks = []
         dashboardLezBlockRows = []
         dashboardError = ""
         dashboardRefreshing = false
@@ -204,16 +204,9 @@ function navigationSnapshot(root) {
         blockDetailError: String(root.blockDetailError || ""),
         transactionDetailValue: cloneNavigationValue(root, root.transactionDetailValue),
         transactionDetailError: String(root.transactionDetailError || ""),
-        accountDetailValue: cloneNavigationValue(root, root.accountDetailValue),
-        transferRecipientDetailValue: cloneNavigationValue(root, root.transferRecipientDetailValue),
-        channelDetailValue: cloneNavigationValue(root, root.channelDetailValue),
-        channelDetailError: String(root.channelDetailError || ""),
-        sequencerTab: String(root.sequencerTab || ""),
         storageAppTab: String(root.storageAppTab || ""),
         deliveryAppTab: String(root.deliveryAppTab || ""),
-        accountTab: String(root.accountTab || ""),
         programTab: String(root.programTab || ""),
-        indexerTab: String(root.indexerTab || ""),
         localWalletTab: String(root.localWalletTab || ""),
         localWalletLookupTarget: String(root.localWalletLookupTarget || ""),
         walletPublicKeyProbe: String(root.walletPublicKeyProbe || ""),
@@ -295,16 +288,9 @@ function restoreNavigationSnapshot(root, snapshot) {
         root.blockDetailError = String(values.blockDetailError || "")
         root.transactionDetailValue = cloneNavigationValue(root, values.transactionDetailValue)
         root.transactionDetailError = String(values.transactionDetailError || "")
-        root.accountDetailValue = cloneNavigationValue(root, values.accountDetailValue)
-        root.transferRecipientDetailValue = cloneNavigationValue(root, values.transferRecipientDetailValue)
-        root.channelDetailValue = cloneNavigationValue(root, values.channelDetailValue)
-        root.channelDetailError = String(values.channelDetailError || "")
-        root.sequencerTab = String(values.sequencerTab || root.sequencerTab)
         root.storageAppTab = String(values.storageAppTab || root.storageAppTab)
         root.deliveryAppTab = String(values.deliveryAppTab || root.deliveryAppTab)
-        root.accountTab = String(values.accountTab || root.accountTab)
         root.programTab = String(values.programTab || root.programTab)
-        root.indexerTab = String(values.indexerTab || root.indexerTab)
         root.localWalletTab = String(values.localWalletTab || root.localWalletTab)
         root.localWalletLookupTarget = String(values.localWalletLookupTarget || "")
         root.walletPublicKeyProbe = String(values.walletPublicKeyProbe || "")
@@ -312,9 +298,6 @@ function restoreNavigationSnapshot(root, snapshot) {
         root.settingsSection = String(values.settingsSection || root.settingsSection)
         root.settingsNetworkSection = String(values.settingsNetworkSection || root.settingsNetworkSection)
         root.settingsUiSection = String(values.settingsUiSection || root.settingsUiSection)
-        root.searchResolveSerial += 1
-        root.transactionAutoDecodeSerial += 1
-        root.programOpenSerial += 1
         expandNavGroupForView(root, targetView)
         root.currentView = targetView
         if (values.inspectionEntityRef) {
@@ -401,23 +384,11 @@ function navigationSnapshotLabel(root, snapshot) {
     const targetView = normalizedNavigationView(root, snapshot.view)
     const values = snapshot.values && typeof snapshot.values === "object" ? snapshot.values : ({})
     const base = navLabelForView(root, targetView) || qsTr("Dashboard")
-    if (targetView === "blockDetail" || targetView === "l2BlockDetail") {
+    if (targetView === "blockDetail") {
         return navigationLabelWithDetail(root, base, navigationObjectValue(values.blockDetailValue, ["hash", "block_id", "slot", "height"]))
     }
-    if (targetView === "transactionDetail" || targetView === "l2TransactionDetail") {
+    if (targetView === "transactionDetail") {
         return navigationLabelWithDetail(root, base, navigationObjectValue(values.transactionDetailValue, ["hash", "transaction_hash", "tx_hash"]))
-    }
-    if (targetView === "accounts") {
-        return navigationLabelWithDetail(root, base, navigationObjectValue(values.accountDetailValue, ["account_id_base58", "account_id", "account_id_hex"]))
-    }
-    if (targetView === "transferActivity") {
-        return navigationLabelWithDetail(root, base, navigationObjectValue(values.transferRecipientDetailValue, ["address", "recipient", "account_ref"]))
-    }
-    if (targetView === "channels") {
-        return navigationLabelWithDetail(root, base, navigationObjectValue(values.channelDetailValue, ["channel_id", "channel"]))
-    }
-    if (targetView === "programs") {
-        return navigationLabelWithDetail(root, base, navigationObjectValue(values.resultValue, ["program_id_base58", "program_id", "program_id_hex", "input"]))
     }
     if (targetView === "storage" && String(values.storageCidProbe || "").length) {
         return navigationLabelWithDetail(root, base, values.storageCidProbe)

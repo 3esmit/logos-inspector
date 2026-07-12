@@ -10,19 +10,10 @@ pub mod idl_decode {
     pub use crate::program_decode::*;
 }
 
-pub mod local_indexer {
-    pub use crate::local_nodes::{
-        bootstrap_default_local_indexer, bootstrap_default_local_indexer_for_saved_settings,
-        default_local_indexer_requested_by_saved_settings, is_default_local_indexer_endpoint,
-    };
-}
-
 pub mod network {
     pub use crate::source_routing::{
-        CUSTOM_NETWORK_PROFILE, DEFAULT_INDEXER_ENDPOINT, DEFAULT_NETWORK_PROFILE,
-        DEFAULT_NODE_ENDPOINT, DEFAULT_SEQUENCER_ENDPOINT, LOCAL_SEQUENCER_ENDPOINT,
-        NetworkEndpoints, NetworkProfile, TESTNET_SEQUENCER_ENDPOINT, infer_network_profile,
-        network_profiles, resolve_network_endpoints,
+        CUSTOM_NETWORK_PROFILE, DEFAULT_NETWORK_PROFILE, DEFAULT_NODE_ENDPOINT, NetworkEndpoints,
+        NetworkProfile, infer_network_profile, network_profiles, resolve_network_endpoints,
     };
 }
 
@@ -32,10 +23,8 @@ pub mod logoscore {
 
 pub mod compat {
     pub use super::network::{
-        CUSTOM_NETWORK_PROFILE, DEFAULT_INDEXER_ENDPOINT, DEFAULT_NETWORK_PROFILE,
-        DEFAULT_NODE_ENDPOINT, DEFAULT_SEQUENCER_ENDPOINT, LOCAL_SEQUENCER_ENDPOINT,
-        NetworkEndpoints, NetworkProfile, TESTNET_SEQUENCER_ENDPOINT, infer_network_profile,
-        network_profiles, resolve_network_endpoints,
+        CUSTOM_NETWORK_PROFILE, DEFAULT_NETWORK_PROFILE, DEFAULT_NODE_ENDPOINT, NetworkEndpoints,
+        NetworkProfile, infer_network_profile, network_profiles, resolve_network_endpoints,
     };
     pub use crate::blockchain::{
         ChannelOperationMatch, ChannelScanReport, ChannelSummary, channel_scan, channel_state,
@@ -68,10 +57,7 @@ pub mod compat {
         LocalNodeReport, LocalNodeStatus, NodeAction, NodeKind, local_devnet_list,
         local_nodes_action, local_nodes_status,
     };
-    pub use crate::overview::{
-        InspectorScope, NodeProbe, OverviewReport, ServiceProbe, inspector_scopes, overview,
-    };
-    pub use crate::probe::{ProbeField, ProbeReport};
+    pub use crate::probe::ProbeReport;
     pub use crate::rpc::{
         RawRpcReport, raw_http_json, raw_json_rpc, raw_json_rpc_optional_result,
         raw_json_rpc_result, raw_rpc_report,

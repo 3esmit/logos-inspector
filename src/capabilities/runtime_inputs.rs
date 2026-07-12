@@ -8,8 +8,6 @@ pub(super) struct CapabilityRuntimeInputs {
     network_connector_config: Option<Value>,
     wallet_connector_config: Option<Value>,
     node_url: String,
-    indexer_url: String,
-    sequencer_url: String,
     storage_rest_url: String,
     messaging_rest_url: String,
     pub(super) storage_mutating_diagnostics_enabled: bool,
@@ -39,8 +37,6 @@ impl CapabilityRuntimeInputs {
             network_connector_config: value.get("network_connector_config").cloned(),
             wallet_connector_config: value.get("wallet_connector_config").cloned(),
             node_url: string_input(value, "node_url"),
-            indexer_url: string_input(value, "indexer_url"),
-            sequencer_url: string_input(value, "sequencer_url"),
             storage_rest_url: string_input(value, "storage_rest_url"),
             messaging_rest_url: string_input(value, "messaging_rest_url"),
             storage_mutating_diagnostics_enabled: bool_input(
@@ -117,8 +113,6 @@ impl CapabilityRuntimeInputs {
         }
         match scope {
             "l1" => self.node_url.clone(),
-            "lez.indexer" => self.indexer_url.clone(),
-            "lez.sequencer" => self.sequencer_url.clone(),
             "storage" => self.storage_rest_url.clone(),
             "delivery" => self.messaging_rest_url.clone(),
             _ => String::new(),
@@ -129,8 +123,6 @@ impl CapabilityRuntimeInputs {
         let reports = self.source_reports.as_ref()?.as_object()?;
         let keys: &[&str] = match scope {
             "l1" => &["l1", "blockchain", "node"],
-            "lez.indexer" => &["lez.indexer", "indexer", "lez_indexer"],
-            "lez.sequencer" => &["lez.sequencer", "sequencer", "execution", "lez_sequencer"],
             "storage" => &["storage", "storage_source"],
             "delivery" => &[
                 "delivery",

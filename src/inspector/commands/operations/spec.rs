@@ -6,7 +6,6 @@ pub(crate) enum OperationDomain {
     Delivery,
     LocalNodes,
     Wallet,
-    Indexer,
     Blockchain,
     Execution,
 }
@@ -49,22 +48,6 @@ pub(crate) enum OperationMethod {
     BlockchainLiveBlocks,
     BlockchainBlock,
     BlockchainTransaction,
-    Health,
-    Head,
-    Programs,
-    Block,
-    SequencerBlocks,
-    Transaction,
-    InspectTransaction,
-    TraceTransaction,
-    Account,
-    ResolveLezTarget,
-    IndexerHealth,
-    IndexerStatus,
-    IndexerFinalizedHead,
-    IndexerBlocks,
-    IndexerBlockByHash,
-    IndexerTransferRecipients,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -191,7 +174,6 @@ impl OperationDomain {
             Self::Delivery => "delivery",
             Self::LocalNodes => "localNodes",
             Self::Wallet => "wallet",
-            Self::Indexer => "indexer",
             Self::Blockchain => "blockchain",
             Self::Execution => "execution",
         }
@@ -206,7 +188,7 @@ impl OperationExecutor {
             OperationDomain::LocalNodes => Self::LocalNodes,
             OperationDomain::Wallet => Self::Wallet,
             OperationDomain::Blockchain => Self::Blockchain,
-            OperationDomain::Execution | OperationDomain::Indexer => Self::Lez,
+            OperationDomain::Execution => Self::Lez,
         }
     }
 }
@@ -301,13 +283,6 @@ mod tests {
                 OperationDomain::Blockchain,
                 "Blockchain live blocks",
             ),
-            ("indexerStatus", OperationDomain::Indexer, "Indexer status"),
-            (
-                "inspectTransaction",
-                OperationDomain::Execution,
-                "Transaction inspection",
-            ),
-            ("resolveLezTarget", OperationDomain::Execution, "LEZ lookup"),
             (
                 "localWalletDeployProgram",
                 OperationDomain::Execution,
@@ -355,11 +330,6 @@ mod tests {
         if !delivery_send.uses_mutating_flag() {
             bail!("deliverySend should require mutating flag");
         }
-        let indexer_status =
-            OperationMethod::from_str("indexerStatus").context("indexerStatus should exist")?;
-        if indexer_status.uses_mutating_flag() {
-            bail!("indexerStatus should not require mutating flag");
-        }
         let storage_download = OperationMethod::from_str("storageDownloadToUrl")
             .context("storageDownloadToUrl should exist")?;
         if !storage_download.cancellable() {
@@ -387,8 +357,7 @@ mod tests {
             ("localNodesAction", OperationExecutor::LocalNodes),
             ("localWalletAccounts", OperationExecutor::Wallet),
             ("blockchainBlock", OperationExecutor::Blockchain),
-            ("indexerStatus", OperationExecutor::Lez),
-            ("resolveLezTarget", OperationExecutor::Lez),
+            ("localWalletDeployProgram", OperationExecutor::Lez),
         ];
 
         for (method, executor) in cases {

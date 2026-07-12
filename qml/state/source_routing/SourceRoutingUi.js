@@ -2,15 +2,13 @@
 .import "SourcePolicyProjection.js" as SourcePolicyProjection
 
 function coreSourceView(root, role) {
-    const key = String(role || "execution")
-    const scope = key === "indexer" ? "lez.indexer" : (key === "blockchain" ? "l1" : "lez.sequencer")
-    const configuredMode = key === "indexer" ? root.indexerSourceMode : (key === "blockchain" ? root.blockchainSourceMode : root.executionSourceMode)
-    const configuredEndpoint = key === "indexer" ? root.indexerUrl : (key === "blockchain" ? root.nodeUrl : root.sequencerUrl)
+    const key = "blockchain"
+    const scope = "l1"
+    const configuredMode = root.blockchainSourceMode
+    const configuredEndpoint = root.nodeUrl
     const mode = root.connectorSourceMode(scope, configuredMode)
     const endpoint = root.connectorEndpoint(scope, configuredEndpoint)
-    const label = key === "indexer"
-        ? root.indexerSourceLabel()
-        : (key === "blockchain" ? root.blockchainSourceLabel() : root.executionSourceLabel())
+    const label = root.blockchainSourceLabel()
     const connector = root.connectorScope(scope)
     return {
         role: key,
@@ -20,7 +18,7 @@ function coreSourceView(root, role) {
         resolvedMode: SourcePolicyProjection.resolvedSourceModeKey(root, "core", mode),
         effectiveMode: String(SourcePolicyProjection.sourceModePolicy(root, "core", SourcePolicyProjection.resolvedSourceModeKey(root, "core", mode)).effective || "rpc"),
         label: label,
-        target: key === "indexer" ? root.indexerSourceTarget() : (key === "blockchain" ? root.blockchainSourceTarget() : root.executionSourceTarget()),
+        target: root.blockchainSourceTarget(),
         endpoint: endpoint,
         args: function (extra) {
             return SourcePolicyProjection.coreSourceArgs(root, mode, endpoint, extra)
@@ -117,16 +115,12 @@ function sourceFamilyRouteView(root, family) {
     switch (family) {
     case "l1":
         return coreSourceView(root, "blockchain")
-    case "lez.indexer":
-        return coreSourceView(root, "indexer")
-    case "lez.sequencer":
-        return coreSourceView(root, "execution")
     case "delivery":
         return deliverySourceView(root)
     case "storage":
         return storageSourceView(root)
     default:
-        return coreSourceView(root, "execution")
+        return coreSourceView(root, "blockchain")
     }
 }
 
@@ -137,15 +131,6 @@ function sourceFamilyKey(family, role) {
     case "node":
     case "l1":
         return "l1"
-    case "indexer":
-    case "lez_indexer":
-    case "lez.indexer":
-        return "lez.indexer"
-    case "execution":
-    case "sequencer":
-    case "lez_sequencer":
-    case "lez.sequencer":
-        return "lez.sequencer"
     case "messaging":
     case "delivery":
         return "delivery"
@@ -153,7 +138,7 @@ function sourceFamilyKey(family, role) {
     case "storage":
         return "storage"
     default:
-        return sourceFamilyKey(role || "execution", "")
+        return sourceFamilyKey(role || "l1", "")
     }
 }
 
@@ -229,10 +214,6 @@ function sourceFamilyReportKind(family) {
     switch (String(family || "")) {
     case "l1":
         return "blockchain"
-    case "lez.indexer":
-        return "indexer"
-    case "lez.sequencer":
-        return "execution"
     case "storage":
         return "storage"
     case "delivery":

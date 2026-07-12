@@ -194,10 +194,6 @@ fn report_health_unavailable(report: &Value) -> bool {
 fn diagnostics_source_sub_capability(key: &str) -> Option<&'static str> {
     match key {
         "l1" | "blockchain" | "node" => Some("diagnostics.l1.read"),
-        "lez.indexer" | "indexer" | "lez_indexer" => Some("diagnostics.lez.indexer.read"),
-        "lez.sequencer" | "sequencer" | "execution" | "lez_sequencer" => {
-            Some("diagnostics.lez.sequencer.read")
-        }
         "storage" | "storage_source" => Some("diagnostics.storage.read"),
         "delivery" | "delivery_source" | "messaging" | "messaging_source" => {
             Some("diagnostics.delivery.read")
@@ -217,8 +213,6 @@ fn diagnostics_last_known_sub_capability(key: &str) -> Option<&'static str> {
 fn diagnostics_source_label(key: &str) -> &'static str {
     match key {
         "l1" | "blockchain" | "node" => "L1",
-        "lez.indexer" | "indexer" | "lez_indexer" => "LEZ Indexer",
-        "lez.sequencer" | "sequencer" | "execution" | "lez_sequencer" => "LEZ Sequencer",
         "storage" | "storage_source" => "Storage",
         "delivery" | "delivery_source" | "messaging" | "messaging_source" => "Delivery",
         "wallet" => "Wallet",

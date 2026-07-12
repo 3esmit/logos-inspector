@@ -145,19 +145,19 @@ TestCase {
     function test_basecamp_host_wraps_inspector_calls() {
         client.host = basecampHost
 
-        const response = client.callModule("logos_inspector", "overview", ["endpoint"])
+        const response = client.callModule("logos_inspector", "blockchainNode", ["endpoint"])
 
         verify(response.ok)
         compare(basecampHost.lastModule, "logos_inspector")
         compare(basecampHost.lastMethod, "call")
-        compare(basecampHost.lastArgs[0], "overview")
+        compare(basecampHost.lastArgs[0], "blockchainNode")
         compare(response.value.args[0], "endpoint")
     }
 
     function test_missing_host_returns_bridge_error() {
         client.host = null
 
-        const response = client.callModule("logos_inspector", "overview", [])
+        const response = client.callModule("logos_inspector", "blockchainNode", [])
 
         verify(!response.ok)
         verify(response.error.indexOf("Logos bridge not available") >= 0)
@@ -166,14 +166,14 @@ TestCase {
     function test_async_host_uses_request_id_and_finishes_callback() {
         client.host = asyncHost
 
-        const requestId = client.callModuleAsync("logos_inspector", "overview", ["a"], function (response) {
+        const requestId = client.callModuleAsync("logos_inspector", "blockchainNode", ["a"], function (response) {
             asyncResponse = response
         })
 
         compare(requestId, 1)
         compare(asyncHost.lastRequestId, 1)
         compare(asyncHost.lastModule, "logos_inspector")
-        compare(asyncHost.lastMethod, "overview")
+        compare(asyncHost.lastMethod, "blockchainNode")
         compare(asyncHost.lastArgsJson, "[\"a\"]")
 
         asyncHost.moduleCallFinished(1, JSON.stringify({

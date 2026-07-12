@@ -6,124 +6,21 @@ use serde_json::{Value, json};
 use super::args::{CliCommand, WalletCommand};
 use crate::support::confirmation::ConfirmationPolicy;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum CliOutput {
-    Json,
-    Text,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct CliInvocation {
     pub(super) method: &'static str,
     pub(super) args: Value,
-    pub(super) output: CliOutput,
-    pub(super) bootstrap_indexer_endpoint: Option<String>,
 }
 
 impl CliInvocation {
     fn json(method: &'static str, args: Value) -> Self {
-        Self {
-            method,
-            args,
-            output: CliOutput::Json,
-            bootstrap_indexer_endpoint: None,
-        }
-    }
-
-    fn text(method: &'static str, args: Value) -> Self {
-        Self {
-            output: CliOutput::Text,
-            ..Self::json(method, args)
-        }
-    }
-
-    fn with_indexer_bootstrap(mut self, endpoint: &str) -> Self {
-        self.bootstrap_indexer_endpoint = Some(endpoint.to_owned());
-        self
+        Self { method, args }
     }
 }
 
 impl CliCommand {
     pub(super) fn invocation(self) -> Result<CliInvocation> {
         match self {
-            CliCommand::Overview(endpoints) => {
-                let endpoints = endpoints.endpoints()?;
-                Ok(CliInvocation::json(
-                    "overview",
-                    json!([
-                        endpoints.sequencer_endpoint,
-                        endpoints.indexer_endpoint,
-                        endpoints.node_endpoint
-                    ]),
-                )
-                .with_indexer_bootstrap(&endpoints.indexer_endpoint))
-            }
-            CliCommand::Health(endpoints) => Ok(CliInvocation::text(
-                "health",
-                json!([endpoints.sequencer_url()?]),
-            )),
-            CliCommand::Head(endpoints) => Ok(CliInvocation::json(
-                "head",
-                json!([endpoints.sequencer_url()?]),
-            )),
-            CliCommand::Programs(endpoints) => Ok(CliInvocation::json(
-                "programs",
-                json!([endpoints.sequencer_url()?]),
-            )),
-            CliCommand::Block {
-                block_id,
-                endpoints,
-            } => Ok(CliInvocation::json(
-                "block",
-                json!([endpoints.sequencer_url()?, block_id]),
-            )),
-            CliCommand::Tx { hash, endpoints } => Ok(CliInvocation::json(
-                "transaction",
-                json!([endpoints.sequencer_url()?, hash]),
-            )),
-            CliCommand::InspectTx {
-                hash,
-                idl,
-                endpoints,
-            } => Ok(CliInvocation::json(
-                "inspectTransaction",
-                json!([
-                    endpoints.sequencer_url()?,
-                    hash,
-                    optional_idl_json(idl.as_deref())?
-                ]),
-            )),
-            CliCommand::TraceTx {
-                hash,
-                idl,
-                endpoints,
-            } => Ok(CliInvocation::json(
-                "traceTransaction",
-                json!([
-                    endpoints.sequencer_url()?,
-                    hash,
-                    optional_idl_json(idl.as_deref())?
-                ]),
-            )),
-            CliCommand::Account {
-                account_id,
-                idl,
-                idl_account,
-                endpoints,
-            } => {
-                let endpoints = endpoints.endpoints()?;
-                Ok(CliInvocation::json(
-                    "account",
-                    json!([
-                        endpoints.sequencer_endpoint,
-                        endpoints.indexer_endpoint,
-                        account_id,
-                        optional_idl_json(idl.as_deref())?,
-                        idl_account.unwrap_or_default()
-                    ]),
-                )
-                .with_indexer_bootstrap(&endpoints.indexer_endpoint))
-            }
             CliCommand::DecodeAccount {
                 data_hex,
                 idl,
@@ -316,13 +213,6 @@ impl WalletCommand {
     }
 }
 
-fn optional_idl_json(value: Option<&str>) -> Result<String> {
-    match value {
-        Some(value) => read_idl(value),
-        None => Ok(String::new()),
-    }
-}
-
 fn parse_rpc_params(params: Option<String>) -> Result<Value> {
     match params {
         Some(raw) => serde_json::from_str(&raw)
@@ -375,47 +265,7 @@ mod tests {
     use anyhow::{Result, ensure};
 
     use super::*;
-    use crate::cli::args::{EndpointArgs, WalletProfileArgs};
-
-    #[test]
-    fn account_command_plans_shared_account_operation_with_bootstrap() -> Result<()> {
-        let invocation = CliCommand::Account {
-            account_id: "account-1".to_owned(),
-            idl: None,
-            idl_account: Some("Vault".to_owned()),
-            endpoints: EndpointArgs {
-                profile: None,
-                sequencer_url: Some("https://sequencer.invalid".to_owned()),
-                indexer_url: Some("http://127.0.0.1:8779".to_owned()),
-                node_url: None,
-            },
-        }
-        .invocation()?;
-
-        ensure!(invocation.method == "account", "unexpected method");
-        ensure!(
-            invocation.output == CliOutput::Json,
-            "unexpected output mode: {:?}",
-            invocation.output
-        );
-        ensure!(
-            invocation.bootstrap_indexer_endpoint.as_deref() == Some("http://127.0.0.1:8779"),
-            "unexpected bootstrap endpoint"
-        );
-        ensure!(
-            invocation.args
-                == json!([
-                    "https://sequencer.invalid",
-                    "http://127.0.0.1:8779",
-                    "account-1",
-                    "",
-                    "Vault"
-                ]),
-            "unexpected args: {}",
-            invocation.args
-        );
-        Ok(())
-    }
+    use crate::cli::args::WalletProfileArgs;
 
     #[test]
     fn decode_instruction_command_plans_runtime_decode_method() -> Result<()> {

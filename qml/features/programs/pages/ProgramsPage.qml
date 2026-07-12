@@ -26,7 +26,6 @@ ColumnLayout {
     ListModel {
         id: programTabs
 
-        ListElement { value: "programIds"; label: "Known IDs" }
         ListElement { value: "idls"; label: "IDLs" }
         ListElement { value: "sharing"; label: "Sharing" }
         ListElement { value: "binaries"; label: "Binaries" }
@@ -35,15 +34,15 @@ ColumnLayout {
 
     PageHeader {
         theme: root.theme
-        breadcrumb: qsTr("Home / L2 LEZ / Programs")
-        title: qsTr("Known L2 Programs")
-        layerLabel: qsTr("L2 LEZ")
-        subtitle: qsTr("Sequencer known program IDs with local SPEL / IDL bindings and binary inspection.")
+        breadcrumb: qsTr("Home / Local / Program / IDL")
+        title: qsTr("Program / IDL Tools")
+        layerLabel: qsTr("LOCAL")
+        subtitle: qsTr("Manage local IDLs, inspect program binaries, decode events, and control sharing.")
         Layout.fillWidth: true
     }
 
     GridLayout {
-        columns: root.width < 760 ? 2 : 4
+        columns: root.width < 760 ? 1 : 3
         columnSpacing: root.theme.gap
         rowSpacing: root.theme.gap
         Layout.fillWidth: true
@@ -63,14 +62,6 @@ ColumnLayout {
             label: qsTr("Tool")
             value: root.activeTabLabel()
             delta: root.activeTabDelta()
-        }
-
-        MetricCard {
-            theme: root.theme
-            compact: true
-            label: qsTr("Sequencer")
-            value: root.endpointLabel(root.model.sequencerUrl)
-            delta: root.shortEndpoint(root.model.sequencerUrl)
         }
 
         MetricCard {
@@ -196,7 +187,7 @@ ColumnLayout {
         }
 
         GridLayout {
-            visible: !root.model.resultIsError && !root.isProgramContext(root.responseValue)
+            visible: !root.model.resultIsError
             columns: root.width < 760 ? 2 : 4
             columnSpacing: root.theme.gap
             rowSpacing: root.theme.gap
@@ -237,13 +228,6 @@ ColumnLayout {
             }
         }
 
-        ProgramIdList {
-            visible: root.programRows().length > 0
-            theme: root.theme
-            rows: root.programTableRows()
-            modelRef: root.model
-        }
-
         IdlSummary {
             visible: root.isIdlReport(root.responseValue)
             theme: root.theme
@@ -267,19 +251,8 @@ ColumnLayout {
             rows: root.eventDecodeRows()
         }
 
-        ProgramContextSummary {
-            visible: root.isProgramContext(root.responseValue)
-            theme: root.theme
-            rows: root.programContextRows()
-            idls: root.programContextIdlRows()
-            transactions: root.programContextTransactionRows()
-            account: root.programContextAccount()
-            rawText: root.model.resultText
-            modelRef: root.model
-        }
-
         TextArea {
-            visible: !root.isProgramContext(root.responseValue)
+            visible: true
             readOnly: true
             text: root.model.resultText.length ? root.model.resultText : qsTr("No response body.")
             wrapMode: TextArea.Wrap
@@ -316,30 +289,7 @@ ColumnLayout {
         case "events":
             return eventForm
         default:
-            return programIdsForm
-        }
-    }
-
-    Component {
-        id: programIdsForm
-
-        ColumnLayout {
-            spacing: 12
-
-            SourceStrip {
-                theme: root.theme
-                sources: [qsTr("L2 LEZ"), qsTr("sequencer known table"), qsTr("program id")]
-                Layout.fillWidth: true
-            }
-
-            ActionButton {
-                theme: root.theme
-                text: qsTr("Load known IDs")
-                primary: true
-                enabled: !root.model.busy
-                Layout.preferredWidth: 190
-                onClicked: root.model.callInspector("programs", root.model.executionRpcArgs([]), qsTr("Known program IDs"))
-            }
+            return idlForm
         }
     }
 
@@ -388,7 +338,7 @@ ColumnLayout {
             }
 
             GridLayout {
-                columns: root.width < 680 ? 1 : 3
+                columns: root.width < 680 ? 1 : 2
                 columnSpacing: root.theme.gapSmall
                 rowSpacing: root.theme.gapSmall
                 Layout.fillWidth: true
@@ -410,13 +360,6 @@ ColumnLayout {
                     onClicked: root.model.callInspector("spelIdl", [idlJson.text], qsTr("SPEL IDL"))
                 }
 
-                ActionButton {
-                    theme: root.theme
-                    text: qsTr("Load known IDs")
-                    enabled: !root.model.busy
-                    Layout.fillWidth: true
-                    onClicked: root.model.callInspector("programs", root.model.executionRpcArgs([]), qsTr("Known program IDs"))
-                }
             }
         }
     }
@@ -705,46 +648,6 @@ ColumnLayout {
         return ProgramResultPresentation.responseProgramDelta(root)
     }
 
-    function programRows() {
-        return ProgramResultPresentation.programRows(root)
-    }
-
-    function programTableRows() {
-        return ProgramResultPresentation.programTableRows(root)
-    }
-
-    function isProgramContext(value) {
-        return ProgramResultPresentation.isProgramContext(value)
-    }
-
-    function programContextRows() {
-        return ProgramResultPresentation.programContextRows(root)
-    }
-
-    function programVerificationText(value) {
-        return ProgramResultPresentation.programVerificationText(value)
-    }
-
-    function programHexText(value) {
-        return ProgramResultPresentation.programHexText(value)
-    }
-
-    function programContextIdlRows() {
-        return ProgramResultPresentation.programContextIdlRows(root)
-    }
-
-    function programContextTransactionRows() {
-        return ProgramResultPresentation.programContextTransactionRows(root)
-    }
-
-    function programContextAccount() {
-        return ProgramResultPresentation.programContextAccount(root)
-    }
-
-    function knownIdlText(programId) {
-        return ProgramResultPresentation.knownIdlText(root, programId)
-    }
-
     function isIdlReport(value) {
         return ProgramResultPresentation.isIdlReport(value)
     }
@@ -783,18 +686,6 @@ ColumnLayout {
 
     function idlFieldCount(json) {
         return ProgramResultPresentation.idlFieldCount(json)
-    }
-
-    function endpointLabel(value) {
-        return ProgramResultPresentation.endpointLabel(value)
-    }
-
-    function shortEndpoint(value) {
-        return ProgramResultPresentation.shortEndpoint(value)
-    }
-
-    function shortHash(value) {
-        return ProgramResultPresentation.shortHash(value)
     }
 
     function shortPath(value) {

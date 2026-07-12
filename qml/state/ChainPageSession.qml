@@ -12,17 +12,13 @@ QtObject {
     property var dashboardNode: null
     property var dashboardL1Blocks: []
     property var dashboardBlocks: []
-    property var dashboardSequencerBlocks: []
+    property var dashboardProvisionalBlocks: []
     property var dashboardLezBlockRows: []
     property string dashboardError: ""
     property var blockDetailValue: null
     property string blockDetailError: ""
     property var transactionDetailValue: null
     property string transactionDetailError: ""
-    property var accountDetailValue: null
-    property var transferRecipientDetailValue: null
-    property var channelDetailValue: null
-    property string channelDetailError: ""
 
     property var blocksPageRows: []
     property int blocksPageSlotFrom: 0
@@ -43,40 +39,6 @@ QtObject {
     property int transactionsPageLimit: 20
     property string transactionsPageError: ""
 
-    property var lezBlocksPageRows: []
-    property int lezBlocksPageBeforeBlock: 0
-    property int lezBlocksPageNextBeforeBlock: 0
-    property int lezBlocksPageLimit: 20
-    property string lezBlocksPageError: ""
-    property bool lezBlocksPageLoading: false
-    property int lezBlocksPageRequestSerial: 0
-
-    property var lezTransactionsPageRows: []
-    property int lezTransactionsPageBeforeBlock: 0
-    property int lezTransactionsPageNextBeforeBlock: 0
-    property var lezTransactionsPageOverflowRows: []
-    property int lezTransactionsPageOverflowNextBeforeBlock: 0
-    property int lezTransactionsBlockBatch: 50
-    property int lezTransactionsPageLimit: 20
-    property string lezTransactionsPageError: ""
-
-    property var transferActivityRows: []
-    property int transferActivityBeforeBlock: 0
-    property int transferActivityNextBeforeBlock: 0
-    property var transferActivityOverflowRows: []
-    property int transferActivityOverflowNextBeforeBlock: 0
-    property int transferActivityBlockBatch: 50
-    property int transferActivityLimit: 20
-    property var transferActivityHistory: []
-    property string transferActivityError: ""
-
-    property var channelsPageRows: []
-    property int channelsPageSlotFrom: 0
-    property int channelsPageSlotTo: 0
-    property int channelsPageWindow: 4000
-    property int channelsPageLimit: 20
-    property string channelsPageError: ""
-
     function requestModule(moduleName, method, args, label, showResult, cacheResult) {
         return gateway.requestModule(moduleName, method, args, label, showResult, cacheResult)
     }
@@ -91,19 +53,7 @@ QtObject {
 
     function blockchainArgs(extra) { return gateway.blockchainArgs(extra) }
 
-    function indexerArgs(extra) { return gateway.indexerArgs(extra) }
-
-    function executionArgs(extra) { return gateway.executionArgs(extra) }
-
     function l1Gate() { return capabilityGate("l1") }
-
-    function indexerGate() { return capabilityGate("lez.indexer") }
-
-    function sequencerGate() { return capabilityGate("lez.sequencer") }
-
-    function targetResolutionGate() {
-        return capabilityGate({ any_of: ["lez.indexer", "lez.sequencer"] })
-    }
 
     function capabilityGate(expression) {
         if (capabilityFacade && typeof capabilityFacade.gateFor === "function") {
@@ -194,51 +144,6 @@ QtObject {
 
     function setTransactionsPageLimit(limit) { return AppModelPages.setTransactionsPageLimit(root, limit) }
 
-    function refreshLezBlocksPage(beforeBlock) { return AppModelPages.refreshLezBlocksPage(root, beforeBlock) }
-
-    function finishLezBlocksPage(beforeBlock, sequencerResponse, indexerResponse) { return AppModelPages.finishLezBlocksPage(root, beforeBlock, sequencerResponse, indexerResponse) }
-
-    function olderLezBlocksPage() { return AppModelPages.olderLezBlocksPage(root) }
-
-    function newerLezBlocksPage() { return AppModelPages.newerLezBlocksPage(root) }
-
-    function setLezBlocksPageLimit(limit) { return AppModelPages.setLezBlocksPageLimit(root, limit) }
-
-    function refreshLezTransactionsPage(beforeBlock) { return AppModelPages.refreshLezTransactionsPage(root, beforeBlock) }
-
-    function olderLezTransactionsPage() { return AppModelPages.olderLezTransactionsPage(root) }
-
-    function newerLezTransactionsPage() { return AppModelPages.newerLezTransactionsPage(root) }
-
-    function setLezTransactionsPageLimit(limit) { return AppModelPages.setLezTransactionsPageLimit(root, limit) }
-
-    function sortedIndexerBlocks(blocks) { return AppModelPages.sortedIndexerBlocks(root, blocks) }
-
-    function lezBlockListReport(sequencerBlocks, indexerBlocks, limit) { return AppModelPages.lezBlockListReport(root, sequencerBlocks, indexerBlocks, limit) }
-
-    function lezBlockListRows(report) { return AppModelPages.lezBlockListRows(root, report) }
-
-    function lezBlockListReportRows(sequencerBlocks, indexerBlocks, limit) {
-        const report = lezBlockListReport(sequencerBlocks, indexerBlocks, limit)
-        return report.ok ? lezBlockListRows(report.value) : []
-    }
-
-    function indexerBlockId(block) { return AppModelPages.indexerBlockId(root, block) }
-
-    function indexerBlockHash(block) { return AppModelPages.indexerBlockHash(root, block) }
-
-    function nextIndexerBlocksCursor(blocks) { return AppModelPages.nextIndexerBlocksCursor(root, blocks) }
-
-    function normalizedPositiveInteger(value) { return AppModelPages.normalizedPositiveInteger(root, value) }
-
-    function lezTransactionRowsFromBlocks(blocks) { return AppModelPages.lezTransactionRowsFromBlocks(root, blocks) }
-
-    function lezTransactionHash(tx) { return AppModelPages.lezTransactionHash(root, tx) }
-
-    function transactionProgramIdHex(tx) { return AppModelPages.transactionProgramIdHex(root, tx) }
-
-    function lezTransactionOpCount(tx) { return AppModelPages.lezTransactionOpCount(root, tx) }
-
     function transactionRowsFromBlocks(blocks) { return AppModelPages.transactionRowsFromBlocks(root, blocks) }
 
     function sortedBlockchainBlocks(blocks) { return AppModelPages.sortedBlockchainBlocks(root, blocks) }
@@ -253,29 +158,4 @@ QtObject {
 
     function operationName(opcode) { return AppModelPages.operationName(root, opcode) }
 
-    function refreshTransferActivityPage(beforeBlock, preserveHistory) { return AppModelPages.refreshTransferActivityPage(root, beforeBlock, preserveHistory) }
-
-    function nextTransferActivityPage() { return AppModelPages.nextTransferActivityPage(root) }
-
-    function previousTransferActivityPage() { return AppModelPages.previousTransferActivityPage(root) }
-
-    function setTransferActivityPageLimit(limit) { return AppModelPages.setTransferActivityPageLimit(root, limit) }
-
-    function nextTransferActivityBlock(recipients) { return AppModelPages.nextTransferActivityBlock(root, recipients) }
-
-    function transferRecipientDetail(row) { return AppModelPages.transferRecipientDetail(root, row) }
-
-    function transferRecipientDetailById(value) { return AppModelPages.transferRecipientDetailById(root, value) }
-
-    function refreshChannelsPage(anchorSlot) { return AppModelPages.refreshChannelsPage(root, anchorSlot) }
-
-    function olderChannelsPage() { return AppModelPages.olderChannelsPage(root) }
-
-    function newerChannelsPage() { return AppModelPages.newerChannelsPage(root) }
-
-    function setChannelsPageLimit(limit) { return AppModelPages.setChannelsPageLimit(root, limit) }
-
-    function channelDetail(row) { return AppModelPages.channelDetail(root, row) }
-
-    function channelDetailById(value) { return AppModelPages.channelDetailById(root, value) }
 }

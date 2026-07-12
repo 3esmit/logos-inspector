@@ -202,20 +202,6 @@ ColumnLayout {
 
                     CopyRow {
                         theme: root.theme
-                        label: qsTr("Sequencer RPC")
-                        value: root.endpointLabel(root.model.sequencerUrl)
-                        copyText: root.model.sequencerUrl
-                    }
-
-                    CopyRow {
-                        theme: root.theme
-                        label: qsTr("Indexer RPC")
-                        value: root.endpointLabel(root.model.indexerUrl)
-                        copyText: root.model.indexerUrl
-                    }
-
-                    CopyRow {
-                        theme: root.theme
                         label: qsTr("Bedrock node")
                         value: root.endpointLabel(root.model.nodeUrl)
                         copyText: root.model.nodeUrl
@@ -585,7 +571,7 @@ ColumnLayout {
                         rows: root.walletAccountRows()
                         onCellActivated: function (row, column, cell, rowData) {
                             if (rowData.typedId.length > 0) {
-                                root.model.entityNavigation.openAccount(rowData.typedId)
+                                root.model.routeSearch("account:" + rowData.typedId)
                             }
                         }
                     }

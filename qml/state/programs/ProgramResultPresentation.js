@@ -1,12 +1,8 @@
 .pragma library
 
-.import "ProgramContextPresentation.js" as ProgramContextPresentation
 .import "../../utils/UiFormat.js" as UiFormat
 
 function activeTabLabel(page) {
-    if (page.model.programTab === "programIds") {
-        return qsTr("Known IDs")
-    }
     if (page.model.programTab === "binaries") {
         return qsTr("Binaries")
     }
@@ -20,9 +16,6 @@ function activeTabLabel(page) {
 }
 
 function activeTabDelta(page) {
-    if (page.model.programTab === "programIds") {
-        return qsTr("Static table")
-    }
     if (page.model.programTab === "binaries") {
         return qsTr("File inspection")
     }
@@ -36,9 +29,6 @@ function activeTabDelta(page) {
 }
 
 function activeTabMessage(page) {
-    if (page.model.programTab === "programIds") {
-        return qsTr("Load the sequencer known-program table before binding local IDLs or binaries.")
-    }
     if (page.model.programTab === "binaries") {
         return qsTr("Inspect compiled program bytecode, then deploy it with the configured local wallet.")
     }
@@ -48,7 +38,7 @@ function activeTabMessage(page) {
     if (page.model.programTab === "events") {
         return qsTr("Decode event payloads with a user-provided IDL. Program-specific decoding stays local to the supplied IDL.")
     }
-    return qsTr("Save local IDLs, summarize their instruction/account shape, or load program IDs from the sequencer.")
+    return qsTr("Save local IDLs and summarize their instruction and account shape.")
 }
 
 function sharedPolicyText(page) {
@@ -128,9 +118,6 @@ function responseProgramText(page) {
     if (Array.isArray(value)) {
         return page.numberText(value.length)
     }
-    if (ProgramContextPresentation.isProgramContext(value)) {
-        return ProgramContextPresentation.responseProgramText(page, value)
-    }
     if (isProgramFile(value)) {
         return page.shortHash(value.program_id_hex)
     }
@@ -140,69 +127,12 @@ function responseProgramText(page) {
 function responseProgramDelta(page) {
     const value = page.responseValue
     if (Array.isArray(value)) {
-        return qsTr("Known program IDs")
-    }
-    if (ProgramContextPresentation.isProgramContext(value)) {
-        return ProgramContextPresentation.responseProgramDelta(page, value)
+        return qsTr("Items")
     }
     if (isProgramFile(value)) {
         return qsTr("%1 bytes").arg(page.numberText(value.bytecode_len))
     }
-    return qsTr("Sequencer")
-}
-
-function programRows(page) {
-    return Array.isArray(page.responseValue) ? page.responseValue : []
-}
-
-function programTableRows(page) {
-    return programRows(page).map(function (row) {
-        const hex = String(row.hex || "")
-        const base58 = String(row.base58 || "")
-        return {
-            label: String(row.label || "-"),
-            hex: hex,
-            base58: base58,
-            programIdText: base58.length ? base58 : hex,
-            knownIdl: knownIdlText(page, hex)
-        }
-    })
-}
-
-function isProgramContext(value) {
-    return ProgramContextPresentation.isProgramContext(value)
-}
-
-function programContextRows(page) {
-    return ProgramContextPresentation.rows(page, page.responseValue || {})
-}
-
-function programVerificationText(value) {
-    return ProgramContextPresentation.verificationText(value)
-}
-
-function programHexText(value) {
-    return ProgramContextPresentation.programHexText(value)
-}
-
-function programContextIdlRows(page) {
-    return ProgramContextPresentation.idlRows(page, page.responseValue || {})
-}
-
-function programContextTransactionRows(page) {
-    return ProgramContextPresentation.transactionRows(page, page.responseValue || {})
-}
-
-function programContextAccount(page) {
-    return ProgramContextPresentation.account(page.responseValue || {})
-}
-
-function knownIdlText(page, programId) {
-    const entries = page.model.idlEntriesForProgram(programId)
-    if (entries.length > 0) {
-        return entries[0].name || qsTr("registered")
-    }
-    return qsTr("none")
+    return qsTr("Local result")
 }
 
 function isIdlReport(value) {

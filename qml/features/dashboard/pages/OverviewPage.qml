@@ -302,14 +302,14 @@ ColumnLayout {
 
     function chainLabel() {
         const profile = String(model.networkProfile || "").toLowerCase()
-        const sequencer = String(model.sequencerUrl || "").toLowerCase()
-        if (sequencer.indexOf("127.0.0.1") >= 0 || sequencer.indexOf("localhost") >= 0) {
+        const node = String(model.nodeUrl || "").toLowerCase()
+        if (node.indexOf("127.0.0.1") >= 0 || node.indexOf("localhost") >= 0) {
             return qsTr("Local");
         }
-        if (profile.indexOf("mainnet") >= 0 || sequencer.indexOf("mainnet") >= 0) {
+        if (profile.indexOf("mainnet") >= 0 || node.indexOf("mainnet") >= 0) {
             return qsTr("Mainnet")
         }
-        if (sequencer.indexOf("testnet") >= 0 || sequencer.indexOf("lez.logos.co") >= 0) {
+        if (profile.indexOf("testnet") >= 0 || node.indexOf("testnet") >= 0) {
             return qsTr("Testnet")
         }
         if (profile === "custom") {

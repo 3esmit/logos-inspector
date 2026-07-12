@@ -287,20 +287,6 @@ pub fn inspect_transaction_summary_with_idl(
     LezTransactionDecodeAdapter::new(summary).inspect_with_idl(idl_json)
 }
 
-pub(crate) fn inspect_transaction_summary_with_optional_idl_decode(
-    summary: &TransactionSummary,
-    idl_json: &str,
-    source: &str,
-) -> TransactionIdlInspectionReport {
-    LezTransactionDecodeAdapter::new(summary).inspect_with_optional_idl_decode(idl_json, source)
-}
-
-pub(crate) fn transaction_decode_input_from_summary(
-    summary: &TransactionSummary,
-) -> TransactionDecodeInput {
-    LezTransactionDecodeAdapter::new(summary).decode_input()
-}
-
 pub(crate) struct LezTransactionDecodeAdapter<'a> {
     summary: &'a TransactionSummary,
 }
@@ -328,29 +314,6 @@ impl<'a> LezTransactionDecodeAdapter<'a> {
     fn inspect_with_idl(&self, idl_json: &str) -> Result<TransactionIdlInspectionReport> {
         let decode_report = decode_transaction_input_with_idl(&self.decode_input(), idl_json)?;
         Ok(self.report_from_decode(decode_report))
-    }
-
-    fn inspect_with_optional_idl_decode(
-        &self,
-        idl_json: &str,
-        source: &str,
-    ) -> TransactionIdlInspectionReport {
-        match decode_transaction_input_with_idl(&self.decode_input(), idl_json) {
-            Ok(mut report) => {
-                report.decode_enrichment.source = Some(source.to_owned());
-                self.report_from_decode(report)
-            }
-            Err(error) => TransactionIdlInspectionReport {
-                inspection: inspect_transaction_summary(self.summary),
-                decoded_instruction: None,
-                decode_enrichment: Some(DecodeEnrichmentReport {
-                    status: "failed".to_owned(),
-                    provenance: "program_decode_static".to_owned(),
-                    source: Some(source.to_owned()),
-                    error: Some(format!("{error:#}")),
-                }),
-            },
-        }
     }
 
     fn report_from_decode(
@@ -961,32 +924,6 @@ mod tests {
         };
         assert_eq!(raw_signature_row.value, "valid");
         assert_eq!(prehash_signature_row.value, "invalid");
-    }
-
-    #[test]
-    fn optional_idl_decode_preserves_transaction_report_on_decode_failure() {
-        let summary = public_summary();
-
-        let report =
-            inspect_transaction_summary_with_optional_idl_decode(&summary, "{", "registered_idl");
-
-        assert_eq!(report.inspection.hash, summary.hash);
-        assert!(report.decoded_instruction.is_none());
-        let enrichment = report.decode_enrichment.as_ref();
-        assert!(enrichment.is_some(), "missing decode enrichment state");
-        let Some(enrichment) = enrichment else {
-            return;
-        };
-        assert_eq!(enrichment.status, "failed");
-        assert_eq!(enrichment.provenance, "program_decode_static");
-        assert_eq!(enrichment.source.as_deref(), Some("registered_idl"));
-        assert!(
-            enrichment
-                .error
-                .as_deref()
-                .is_some_and(|error| error.contains("failed to parse IDL JSON")),
-            "{enrichment:?}"
-        );
     }
 
     #[test]

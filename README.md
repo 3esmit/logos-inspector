@@ -115,18 +115,12 @@ $env:LOGOS_BLOCKCHAIN_CIRCUITS="$env:TEMP\logos-blockchain-circuits"
 Run CLI mode:
 
 ```bash
-cargo run -- cli overview
+cargo run -- cli --help
 ```
 
 Examples:
 
 ```bash
-cargo run -- cli head
-cargo run -- cli programs
-cargo run -- cli block <block-id>
-cargo run -- cli tx <tx-hash>
-cargo run -- cli account <account-id>
-cargo run -- cli account <account-id> --idl <idl.json> --idl-account <account-type>
 cargo run -- cli blockchain-node
 cargo run -- cli blockchain-blocks --slot-from 0 --slot-to 100
 cargo run -- cli channels --slot-from 0 --slot-to 100
@@ -139,7 +133,7 @@ cargo run -- cli wallet bedrock-balance <64-hex-public-key>
 cargo run -- cli decode-account --data-hex <hex> --idl <idl.json> --idl-account <account-type>
 cargo run -- cli decode-instruction --program-id <program-id> --words <u32-list> --idl <idl.json> --accounts <account-list>
 cargo run -- cli program-file <program.bin>
-cargo run -- cli rpc http://127.0.0.1:8779/ getLastFinalizedBlockId '[]'
+cargo run -- cli rpc http://127.0.0.1:8080/ chain_info '[]'
 ```
 
 ## GUI
@@ -154,13 +148,6 @@ Running without arguments also starts the GUI:
 
 ```bash
 cargo run
-```
-
-GUI startup does not build or restart the local indexer automatically. To opt in
-to that helper, set:
-
-```bash
-LOGOS_INSPECTOR_ENABLE_INDEXER_AUTO_BOOTSTRAP=1 cargo run -- gui
 ```
 
 Run the Basecamp QML plugin directly:

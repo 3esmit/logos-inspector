@@ -3,8 +3,7 @@ use serde_json::Value;
 use tokio::runtime::Runtime;
 
 use crate::{
-    channel_scan as inspect_channel_scan, channel_state as inspect_channel_state,
-    overview as inspect_overview, raw_rpc_report,
+    channel_scan as inspect_channel_scan, channel_state as inspect_channel_state, raw_rpc_report,
     source_routing::{CoreEndpointMode, SourceEndpoint},
     support::args::Args,
 };
@@ -13,21 +12,10 @@ use super::super::value::to_value;
 use super::RuntimeMethodEntry;
 
 pub(super) const METHOD_CATALOG: &[RuntimeMethodEntry] = &[
-    RuntimeMethodEntry::with_runtime("overview", overview),
     RuntimeMethodEntry::with_runtime("channelScan", channel_scan),
     RuntimeMethodEntry::with_runtime("channelState", channel_state),
     RuntimeMethodEntry::with_runtime("rawRpc", raw_rpc),
 ];
-
-pub(super) fn overview(runtime: &Runtime, args: Value) -> Result<Value> {
-    let args = Args::new(args)?;
-    let value = runtime.block_on(inspect_overview(
-        args.string(0, "sequencer endpoint")?,
-        args.string(1, "indexer endpoint")?,
-        args.string(2, "node endpoint")?,
-    ));
-    to_value(value)
-}
 
 pub(super) fn channel_scan(runtime: &Runtime, args: Value) -> Result<Value> {
     let args = Args::new(args)?;

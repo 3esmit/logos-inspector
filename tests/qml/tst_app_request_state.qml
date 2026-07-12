@@ -107,7 +107,7 @@ TestCase {
     function test_busy_request_rejects_without_bridge_call() {
         shell.busy = true
 
-        const response = requests.requestModule("logos_inspector", "overview", [], "Overview", true)
+        const response = requests.requestModule("logos_inspector", "blockchainNode", [], "Node", true)
 
         verify(!response.ok)
         compare(bridge.lastMethod, "")
@@ -117,7 +117,7 @@ TestCase {
     function test_async_accept_response_can_ignore_result() {
         let callbackCount = 0
 
-        requests.requestModuleAsync("logos_inspector", "overview", [], "Overview", true, function () {
+        requests.requestModuleAsync("logos_inspector", "blockchainNode", [], "Node", true, function () {
             callbackCount += 1
         }, function () {
             return false

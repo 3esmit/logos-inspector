@@ -20,9 +20,6 @@ QtObject {
     property var knownProgramIds: ({})
     property int knownProgramIdsRevision: 0
     property int accountAutoDecodeSerial: 0
-    property int transactionAutoDecodeSerial: 0
-    property int searchResolveSerial: 0
-    property int programOpenSerial: 0
 
     function decodeGate(requiredInputs) {
         if (capabilityFacade && typeof capabilityFacade.programDecodeGate === "function") {

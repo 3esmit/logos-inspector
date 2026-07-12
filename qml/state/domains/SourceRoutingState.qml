@@ -12,17 +12,12 @@ QtObject {
     property var sourcePolicy: ({})
     property bool sourcePolicyLoaded: false
     property string blockchainModule: ""
-    property string indexerModule: ""
     property string deliveryModule: ""
     property string storageModule: ""
     property string blockchainSourceMode: "rpc"
-    property string indexerSourceMode: "rpc"
-    property string executionSourceMode: "rpc"
     property string messagingSourceMode: "rest"
     property string storageSourceMode: "rest"
     property string nodeUrl: ""
-    property string indexerUrl: ""
-    property string sequencerUrl: ""
     property string messagingRestUrl: ""
     property string messagingMetricsUrl: ""
     property string messagingNetworkPreset: ""
@@ -111,60 +106,6 @@ QtObject {
         return coreSourceArgs(connectorSourceMode("l1", blockchainSourceMode), connectorEndpoint("l1", nodeUrl), extra)
     }
 
-    function indexerArgs(extra) {
-        return coreSourceArgs(connectorSourceMode("lez.indexer", indexerSourceMode), connectorEndpoint("lez.indexer", indexerUrl), extra)
-    }
-
-    function executionArgs(extra) {
-        return coreSourceArgs(connectorSourceMode("lez.sequencer", executionSourceMode), connectorEndpoint("lez.sequencer", sequencerUrl), extra)
-    }
-
-    function accountLookupArgs(executionSourceMode, sequencerEndpoint, indexerSourceMode, indexerEndpoint, account, idlJson, accountType) {
-        return SourcePolicyProjection.accountLookupArgs(
-            root,
-            executionSourceMode,
-            sequencerEndpoint,
-            indexerSourceMode,
-            indexerEndpoint,
-            account,
-            idlJson,
-            accountType
-        )
-    }
-
-    function accountArgs(account, idlJson, accountType) {
-        return accountLookupArgs(
-            connectorSourceMode("lez.sequencer", executionSourceMode),
-            connectorEndpoint("lez.sequencer", sequencerUrl),
-            connectorSourceMode("lez.indexer", indexerSourceMode),
-            connectorEndpoint("lez.indexer", indexerUrl),
-            account,
-            idlJson,
-            accountType
-        )
-    }
-
-    function lezLookupArgs(executionSourceMode, sequencerEndpoint, indexerSourceMode, indexerEndpoint, target) {
-        return SourcePolicyProjection.lezLookupArgs(
-            root,
-            executionSourceMode,
-            sequencerEndpoint,
-            indexerSourceMode,
-            indexerEndpoint,
-            target
-        )
-    }
-
-    function lezArgs(target) {
-        return lezLookupArgs(
-            connectorSourceMode("lez.sequencer", executionSourceMode),
-            connectorEndpoint("lez.sequencer", sequencerUrl),
-            connectorSourceMode("lez.indexer", indexerSourceMode),
-            connectorEndpoint("lez.indexer", indexerUrl),
-            target
-        )
-    }
-
     function deliverySourceReportArgs(sourceMode, restEndpoint, metricsEndpoint) {
         if (arguments.length === 0) {
             return SourceRoutingUi.deliverySourceView(root).reportArgs()
@@ -245,22 +186,6 @@ QtObject {
 
     function blockchainSourceTarget() {
         return effectiveCoreSourceMode(blockchainSourceMode) === "module" ? blockchainModule : connectorEndpoint("l1", nodeUrl)
-    }
-
-    function indexerSourceLabel() {
-        return coreSourceLabel(connectorSourceMode("lez.indexer", indexerSourceMode), qsTr("Indexer RPC"))
-    }
-
-    function indexerSourceTarget() {
-        return effectiveCoreSourceMode(indexerSourceMode) === "module" ? indexerModule : connectorEndpoint("lez.indexer", indexerUrl)
-    }
-
-    function executionSourceLabel() {
-        return effectiveCoreSourceMode(executionSourceMode) === "module" ? qsTr("LEZ core module") : qsTr("Sequencer RPC")
-    }
-
-    function executionSourceTarget() {
-        return effectiveCoreSourceMode(executionSourceMode) === "module" ? "lez_core" : connectorEndpoint("lez.sequencer", sequencerUrl)
     }
 
     function deliverySourceLabel() {

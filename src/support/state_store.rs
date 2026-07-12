@@ -15,11 +15,8 @@ pub(crate) use super::config_path::config_dir;
 
 #[derive(Debug, Clone)]
 pub(crate) struct RegisteredIdlEntry {
-    pub(crate) key: Option<String>,
-    pub(crate) name: Option<String>,
     pub(crate) program_id_hex: String,
     pub(crate) json: String,
-    pub(crate) source: Option<String>,
 }
 
 pub(crate) fn load_idl_state() -> Result<Value> {
@@ -56,13 +53,8 @@ pub(crate) fn registered_idl_entries() -> Result<Vec<RegisteredIdlEntry>> {
                 return None;
             }
             Some(RegisteredIdlEntry {
-                key: optional_entry_string(entry, "key")
-                    .or_else(|| optional_entry_string(entry, "id")),
-                name: optional_entry_string(entry, "name")
-                    .or_else(|| optional_entry_string(entry, "programName")),
                 program_id_hex,
                 json: json.to_owned(),
-                source: optional_entry_string(entry, "source"),
             })
         })
         .collect())
@@ -129,15 +121,6 @@ fn registered_idl_program_id_hex(entry: &Value) -> String {
                 .and_then(normalized_program_id_hex_text)
         })
         .unwrap_or_default()
-}
-
-fn optional_entry_string(entry: &Value, key: &str) -> Option<String> {
-    entry
-        .get(key)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
 }
 
 fn normalized_program_id_hex_text(value: &str) -> Option<String> {

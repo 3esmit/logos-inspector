@@ -145,12 +145,6 @@ QtObject {
         if (key.indexOf("bedrock.") === 0) {
             return "l1"
         }
-        if (key.indexOf("indexer.") === 0) {
-            return "lez.indexer"
-        }
-        if (key.indexOf("lez.") === 0) {
-            return "lez.sequencer"
-        }
         return ""
     }
 }

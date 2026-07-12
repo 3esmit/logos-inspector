@@ -21,8 +21,6 @@ use super::config::{
 
 const SETTINGS_VERSION: u64 = 2;
 const CHANNEL_SOURCE_CONFIGS_KEY: &str = "channel_source_configs";
-const LEGACY_SEQUENCER_URL_KEY: &str = "sequencer_url";
-const LEGACY_INDEXER_URL_KEY: &str = "indexer_url";
 const SOURCE_ID_GENERATION_ATTEMPTS: usize = 8;
 
 static SETTINGS_WRITE_LOCK: Mutex<()> = Mutex::new(());
@@ -310,8 +308,6 @@ impl SettingsDocument {
         settings_version(fields.get("version"))?;
         fields.remove("version");
         fields.remove(CHANNEL_SOURCE_CONFIGS_KEY);
-        fields.remove(LEGACY_SEQUENCER_URL_KEY);
-        fields.remove(LEGACY_INDEXER_URL_KEY);
         Ok(Self {
             fields,
             channel_source_configs: Vec::new(),
@@ -328,8 +324,6 @@ impl SettingsDocument {
             .remove(CHANNEL_SOURCE_CONFIGS_KEY)
             .unwrap_or_else(|| Value::Array(Vec::new()));
         fields.remove("version");
-        fields.remove(LEGACY_SEQUENCER_URL_KEY);
-        fields.remove(LEGACY_INDEXER_URL_KEY);
         let channel_source_configs = if version == SETTINGS_VERSION {
             let configs = serde_json::from_value(configs)
                 .context("Channel source configuration list is invalid")?;
@@ -353,8 +347,6 @@ impl SettingsDocument {
             serde_json::to_value(self.channel_source_configs)
                 .context("failed to serialize Channel source configurations")?,
         );
-        self.fields.remove(LEGACY_SEQUENCER_URL_KEY);
-        self.fields.remove(LEGACY_INDEXER_URL_KEY);
         Ok(Value::Object(self.fields))
     }
 }
@@ -679,21 +671,16 @@ mod tests {
     use crate::source_routing::{INDEXER_MODULE, channel_sources::ChannelSourceTarget};
 
     #[test]
-    fn settings_v2_drops_legacy_l2_urls_and_preserves_rust_owned_configs() -> Result<()> {
+    fn settings_v2_preserves_rust_owned_configs() -> Result<()> {
         let (directory, store) = test_store("settings-v2")?;
         store.save_user_settings(&json!({
             "version": 1,
             "theme": "dark",
-            "sequencer_url": "http://legacy-sequencer/",
-            "indexer_url": "http://legacy-indexer/",
             "channel_source_configs": [{ "caller_owned": true }]
         }))?;
         let initial = store.load()?;
-        if initial.get("version").and_then(Value::as_u64) != Some(SETTINGS_VERSION)
-            || initial.get(LEGACY_SEQUENCER_URL_KEY).is_some()
-            || initial.get(LEGACY_INDEXER_URL_KEY).is_some()
-        {
-            bail!("legacy settings were not normalized: {initial}");
+        if initial.get("version").and_then(Value::as_u64) != Some(SETTINGS_VERSION) {
+            bail!("settings version was not normalized: {initial}");
         }
         if initial
             .get(CHANNEL_SOURCE_CONFIGS_KEY)
@@ -709,7 +696,6 @@ mod tests {
         store.save_user_settings(&json!({
             "version": 2,
             "theme": "light",
-            "sequencer_url": "http://stale/",
             "channel_source_configs": [{ "malformed": true }]
         }))?;
         let saved = store.load()?;

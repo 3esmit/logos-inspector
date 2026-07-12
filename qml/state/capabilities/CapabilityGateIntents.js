@@ -46,10 +46,6 @@ function diagnosticsDependency(action) {
         return "diagnostics.modules.metrics.read"
     case "probe":
         return "diagnostics.provider.probe"
-    case "lez.indexer":
-        return "diagnostics.lez.indexer.read"
-    case "lez.sequencer":
-        return "diagnostics.lez.sequencer.read"
     case "storage":
         return "diagnostics.storage.read"
     case "delivery":

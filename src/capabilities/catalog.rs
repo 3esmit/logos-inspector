@@ -46,14 +46,6 @@ pub(super) fn provider_types() -> &'static [CapabilityProviderTypeReport] {
 pub(super) fn provider_instances() -> &'static [CapabilityProviderInstanceReport] {
     &[
         CapabilityProviderInstanceReport {
-            id: "composed_lez",
-            provider_type: "composed",
-            label: "LEZ composed capability",
-            module: None,
-            endpoint_role: None,
-            capabilities: &["lez"],
-        },
-        CapabilityProviderInstanceReport {
             id: "composed_wallet",
             provider_type: "composed",
             label: "Wallet composed capability",
@@ -76,14 +68,6 @@ pub(super) fn provider_instances() -> &'static [CapabilityProviderInstanceReport
             module: Some("blockchain_module"),
             endpoint_role: None,
             capabilities: &["l1", "wallet.l1"],
-        },
-        CapabilityProviderInstanceReport {
-            id: "lez_indexer_module",
-            provider_type: "module",
-            label: "LEZ Indexer module",
-            module: Some("lez_indexer_module"),
-            endpoint_role: None,
-            capabilities: &["lez.indexer"],
         },
         CapabilityProviderInstanceReport {
             id: "storage_module",
@@ -116,22 +100,6 @@ pub(super) fn provider_instances() -> &'static [CapabilityProviderInstanceReport
             module: None,
             endpoint_role: Some("node_url"),
             capabilities: &["l1"],
-        },
-        CapabilityProviderInstanceReport {
-            id: "direct_indexer_rpc",
-            provider_type: "direct_rpc",
-            label: "Direct LEZ Indexer RPC",
-            module: None,
-            endpoint_role: Some("indexer_url"),
-            capabilities: &["lez.indexer"],
-        },
-        CapabilityProviderInstanceReport {
-            id: "direct_sequencer_rpc",
-            provider_type: "direct_rpc",
-            label: "Direct LEZ Sequencer RPC",
-            module: None,
-            endpoint_role: Some("sequencer_url"),
-            capabilities: &["lez.sequencer"],
         },
         CapabilityProviderInstanceReport {
             id: "direct_storage_rest",
@@ -173,18 +141,6 @@ pub(super) fn connector_scopes(
 ) -> Vec<CapabilityConnectorScopeReport> {
     [
         ("network_profile", "l1", "l1_connector", "l1"),
-        (
-            "network_profile",
-            "lez.indexer",
-            "lez_indexer_connector",
-            "lez.indexer",
-        ),
-        (
-            "network_profile",
-            "lez.sequencer",
-            "lez_sequencer_connector",
-            "lez.sequencer",
-        ),
         ("network_profile", "storage", "storage_connector", "storage"),
         (
             "network_profile",
@@ -243,15 +199,11 @@ pub(super) fn default_connector(
 ) -> &'static str {
     match (build_mode, capability_key) {
         (CapabilityBuildMode::Basecamp, "l1" | "wallet.l1") => "blockchain_module",
-        (CapabilityBuildMode::Basecamp, "lez.indexer") => "lez_indexer_module",
         (CapabilityBuildMode::Basecamp, "storage") => "storage_module",
         (CapabilityBuildMode::Basecamp, "delivery") => "delivery_module",
         (CapabilityBuildMode::Basecamp, "wallet.l2") => "lez_core",
-        (_, "lez") => "composed_lez",
         (_, "wallet") => "composed_wallet",
         (_, "l1") => "direct_l1_rpc",
-        (_, "lez.indexer") => "direct_indexer_rpc",
-        (_, "lez.sequencer") => "direct_sequencer_rpc",
         (_, "storage") => "direct_storage_rest",
         (_, "delivery") => "direct_delivery_rest",
         (_, "wallet.l1" | "wallet.l2") => "composed_wallet",
@@ -272,47 +224,6 @@ pub(super) fn capability_specs() -> &'static [CapabilitySpec] {
                 "l1.channels.read",
                 "l1.wallet_balance.read",
                 "l1.live_blocks.observe",
-            ],
-        },
-        CapabilitySpec {
-            key: "lez",
-            label: "LEZ inspection",
-            sub_capabilities: &[
-                "lez.indexer.blocks.finalized.read",
-                "lez.indexer.transactions.finalized.read",
-                "lez.indexer.account_history.read",
-                "lez.indexer.transfers.read",
-                "lez.sequencer.health",
-                "lez.sequencer.blocks.pending.read",
-                "lez.sequencer.transactions.pending.read",
-                "lez.sequencer.transactions.trace",
-                "lez.sequencer.accounts.read",
-                "lez.sequencer.programs.read",
-                "lez.target_resolution",
-            ],
-        },
-        CapabilitySpec {
-            key: "lez.indexer",
-            label: "LEZ Indexer",
-            sub_capabilities: &[
-                "lez.indexer.blocks.finalized.read",
-                "lez.indexer.transactions.finalized.read",
-                "lez.indexer.account_history.read",
-                "lez.indexer.transfers.read",
-                "lez.target_resolution",
-            ],
-        },
-        CapabilitySpec {
-            key: "lez.sequencer",
-            label: "LEZ Sequencer",
-            sub_capabilities: &[
-                "lez.sequencer.health",
-                "lez.sequencer.blocks.pending.read",
-                "lez.sequencer.transactions.pending.read",
-                "lez.sequencer.transactions.trace",
-                "lez.sequencer.accounts.read",
-                "lez.sequencer.programs.read",
-                "lez.target_resolution",
             ],
         },
         CapabilitySpec {
@@ -417,8 +328,6 @@ pub(super) fn capability_specs() -> &'static [CapabilitySpec] {
                 "diagnostics.modules.metrics.read",
                 "diagnostics.provider.probe",
                 "diagnostics.l1.read",
-                "diagnostics.lez.indexer.read",
-                "diagnostics.lez.sequencer.read",
                 "diagnostics.storage.read",
                 "diagnostics.delivery.read",
                 "diagnostics.wallet.read",
