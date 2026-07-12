@@ -1,10 +1,12 @@
 mod store;
 
+pub mod engine;
 pub mod model;
 pub mod source;
 
 use std::path::Path;
 
+pub use engine::*;
 pub use model::*;
 pub use source::*;
 
