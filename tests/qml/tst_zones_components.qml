@@ -59,6 +59,10 @@ TestCase {
         zoneState.summaryStale = false
         zoneState.activeZoneId = FixtureData.identity("1")
         zoneState.zoneDetail = FixtureData.detailFor(zoneState.activeZoneId)
+        zoneState.resetL2Fixture()
+        zoneState.l2BlocksError = ""
+        zoneState.l2BlocksErrorDetails = null
+        zoneState.l2RefreshCount = 0
         zoneState.evidenceLoaded = false
         zoneState.evidenceRows = []
         zoneState.selectedEvidenceRow = null
@@ -197,6 +201,75 @@ TestCase {
         verify(editor.conflict)
         compare(endpoint.text, "https://conflict.example/")
         verify(sources.hasDirtyDraft)
+    }
+
+    function test_l2_tab_renders_conflicts_and_exact_block_provenance() {
+        const detail = findChild(page, "zoneDetail")
+        verify(detail !== null)
+        verify(detail.requestTab("l2"))
+        tryVerify(function () {
+            return findChild(detail, "zoneL2Inspector") !== null
+                && findChild(detail, "zoneL2Blocks") !== null
+        })
+        const inspector = findChild(detail, "zoneL2Inspector")
+        const blocks = findChild(detail, "zoneL2Blocks")
+        verify(hasVisibleText(blocks, "1 conflict ID"))
+        verify(hasVisibleText(blocks, "Conflicting block observations"))
+        verify(hasVisibleText(blocks, "Final + provisional"))
+
+        const row = zoneState.l2BlockRows[0]
+        const sourceId = row.observations[0].source_id
+        blocks.blockRequested(row.summary, sourceId)
+        tryCompare(inspector, "currentView", "block")
+        const blockDetail = findChild(inspector, "zoneL2BlockDetail")
+        verify(blockDetail !== null && blockDetail.visible)
+        compare(zoneState.l2BlockRequestedSourceId, sourceId)
+        verify(hasVisibleText(blockDetail, sourceId))
+        verify(hasVisibleText(blockDetail, "Memory Cache"))
+        verify(hasVisibleText(blockDetail, "Provisional"))
+    }
+
+    function test_l2_transaction_embeds_trace_with_same_source() {
+        const detail = findChild(page, "zoneDetail")
+        verify(detail.requestTab("l2"))
+        tryVerify(function () {
+            return findChild(detail, "zoneL2Inspector") !== null
+        })
+        const inspector = findChild(detail, "zoneL2Inspector")
+        const blocks = findChild(inspector, "zoneL2Blocks")
+        const row = zoneState.l2BlockRows[0]
+        blocks.blockRequested(row.summary, row.observations[0].source_id)
+        const blockDetail = findChild(inspector, "zoneL2BlockDetail")
+        const transaction = zoneState.l2BlockDetail.transactions[0]
+        blockDetail.transactionRequested(transaction.hash, zoneState.l2BlockDetail.source.source_id)
+
+        tryCompare(inspector, "currentView", "transaction")
+        const transactionDetail = findChild(inspector, "zoneL2TransactionDetail")
+        verify(transactionDetail !== null && transactionDetail.visible)
+        compare(zoneState.l2TransactionDetail.source.source_id,
+            zoneState.l2TransactionTrace.source.source_id)
+        transactionDetail.currentTab = "trace"
+        tryVerify(function () {
+            return findChild(transactionDetail, "zoneL2TraceSummary") !== null
+        })
+        verify(hasVisibleText(transactionDetail, "Trace steps"))
+        verify(hasVisibleText(transactionDetail, "Content hash and signature checks"))
+        verify(hasVisibleText(transactionDetail, "0. Parse transaction"))
+        verify(hasVisibleText(transactionDetail,
+            zoneState.l2TransactionDetail.source.source_id))
+    }
+
+    function test_data_channel_l2_tab_is_explicitly_not_applicable() {
+        verify(page.requestZoneActivation(FixtureData.identity("8")))
+        const detail = findChild(page, "zoneDetail")
+        verify(detail.requestTab("l2"))
+        tryVerify(function () {
+            return findChild(detail, "zoneL2Inspector") !== null
+        })
+        const inspector = findChild(detail, "zoneL2Inspector")
+        verify(hasVisibleText(inspector, "L2 not applicable"))
+        verify(hasVisibleText(inspector, "L2 reads do not apply to this Channel type."))
+        compare(zoneState.l2RefreshCount, 0)
     }
 
     function countNamed(item, objectName) {

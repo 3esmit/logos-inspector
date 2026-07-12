@@ -12,6 +12,7 @@ ColumnLayout {
 
     property bool toolbarVisible: true
     property int loadCount: 20
+    property var loadOptions: [10, 20, 50]
     property string rangeText: ""
     property bool canGoNewer: false
     property bool canGoOlder: false
@@ -34,6 +35,7 @@ ColumnLayout {
         visible: root.toolbarVisible
         theme: root.theme
         loadCount: root.loadCount
+        loadOptions: root.loadOptions
         rangeText: root.rangeText
         canGoNewer: root.canGoNewer
         canGoOlder: root.canGoOlder

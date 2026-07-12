@@ -262,6 +262,197 @@ function observations() {
     }]
 }
 
+function activeZoneContext(channelId) {
+    const sequencer = channelId === identity("1")
+    return {
+        network_scope: networkScope(),
+        channel_id: channelId,
+        zone_kind: sequencer ? "sequencer_zone" : "data_channel",
+        selected_sequencer_source_id: sequencer
+            ? "src_11111111111111111111111111111111" : null,
+        indexer_source_id: sequencer
+            ? "src_33333333333333333333333333333333" : null,
+        source_config_revision: sequencer ? 7 : 0,
+        context_revision: sequencer ? 3 : 4
+    }
+}
+
+function l2Source(sourceId, role, finality, retrieval) {
+    return {
+        source_id: sourceId,
+        source_role: role,
+        source_config_revision: 7,
+        finality: finality,
+        retrieval: retrieval || "live"
+    }
+}
+
+function l2BlockRows() {
+    const indexer = l2Source(
+        "src_33333333333333333333333333333333",
+        "indexer",
+        "finalized",
+        "live"
+    )
+    const sequencer = l2Source(
+        "src_11111111111111111111111111111111",
+        "sequencer",
+        "provisional",
+        "live"
+    )
+    return [{
+        summary: l2BlockSummary(12844, identity("b"), identity("a"), "pending", 3),
+        observations: [sequencer]
+    }, {
+        summary: l2BlockSummary(12842, identity("d"), identity("c"), "accepted", 2),
+        observations: [indexer]
+    }, {
+        summary: l2BlockSummary(12842, identity("e"), identity("c"), "accepted", 2),
+        observations: [sequencer]
+    }, {
+        summary: l2BlockSummary(12840, identity("f"), identity("e"), "finalized", 1),
+        observations: [indexer, sequencer]
+    }]
+}
+
+function l2BlockSummary(blockId, hashValue, parentHash, status, transactionCount) {
+    return {
+        block_id: blockId,
+        block_hash: hashValue,
+        parent_hash: parentHash,
+        timestamp: 1783818000 - (12844 - blockId) * 6,
+        bedrock_status: status,
+        transaction_count: transactionCount
+    }
+}
+
+function l2RouteReport(reportKind, source) {
+    const attempts = source ? [{
+        source_id: source.source_id,
+        source_role: source.source_role,
+        outcome: "returned",
+        contribution: "payload",
+        finality: source.finality,
+        source_config_revision: source.source_config_revision,
+        retrieval: source.retrieval
+    }] : [{
+        source_id: "src_33333333333333333333333333333333",
+        source_role: "indexer",
+        outcome: "returned",
+        contribution: "finalized_prefix",
+        finality: "finalized",
+        source_config_revision: 7,
+        retrieval: "live"
+    }, {
+        source_id: "src_11111111111111111111111111111111",
+        source_role: "sequencer",
+        outcome: "returned",
+        contribution: "provisional_tail",
+        finality: "provisional",
+        source_config_revision: 7,
+        retrieval: "live"
+    }]
+    return {
+        report_kind: reportKind,
+        schema_version: 1,
+        context: activeZoneContext(identity("1")),
+        request_revision: 1,
+        route: {
+            policy: source ? "exact_source" : "composite",
+            attempts: attempts
+        },
+        route_completeness: source ? "single_configured" : "all_configured",
+        warnings: []
+    }
+}
+
+function l2Transaction(hashValue) {
+    return {
+        hash: hashValue,
+        kind: "public",
+        program_id_hex: identity("6"),
+        account_ids: [identity("7"), identity("8")],
+        nonces: ["18", "4"],
+        instruction_data: [16, 32, 64, 128],
+        bytecode_len: null,
+        raw_signature_valid: true,
+        message_prehash: identity("9"),
+        prehash_signature_valid: true
+    }
+}
+
+function l2BlockDetail(summary, sourceId) {
+    const source = l2Source(
+        sourceId || "src_11111111111111111111111111111111",
+        sourceId && sourceId.indexOf("3333") >= 0 ? "indexer" : "sequencer",
+        sourceId && sourceId.indexOf("3333") >= 0 ? "finalized" : "provisional",
+        "memory_cache"
+    )
+    return {
+        summary: summary || l2BlockRows()[0].summary,
+        transactions: [l2Transaction(identity("2")), l2Transaction(identity("3"))],
+        source: source
+    }
+}
+
+function l2TransactionDetail(hashValue, sourceId) {
+    const transaction = l2Transaction(hashValue || identity("2"))
+    const source = l2Source(
+        sourceId || "src_11111111111111111111111111111111",
+        sourceId && sourceId.indexOf("3333") >= 0 ? "indexer" : "sequencer",
+        sourceId && sourceId.indexOf("3333") >= 0 ? "finalized" : "provisional",
+        "memory_cache"
+    )
+    return {
+        transaction: transaction,
+        inspection: {
+            hash: transaction.hash,
+            kind: transaction.kind,
+            sections: [{
+                title: "Public Transaction",
+                rows: [{ label: "Program ID", index: null, value: transaction.program_id_hex, decimal: null, hex: transaction.program_id_hex, base58: null },
+                    { label: "Instruction word", index: 0, value: "16", decimal: "16", hex: "0x10", base58: null }]
+            }],
+            raw_summary: transaction
+        },
+        source: source
+    }
+}
+
+function l2TransactionTrace(hashValue, sourceId) {
+    const detail = l2TransactionDetail(hashValue, sourceId)
+    return {
+        transaction: detail.transaction,
+        trace: {
+            hash: detail.transaction.hash,
+            kind: detail.transaction.kind,
+            source: "local_derivation",
+            capabilities: ["Content hash and signature checks"],
+            limitations: ["Runtime execution is not replayed"],
+            steps: [{
+                index: 0,
+                phase: "parse",
+                label: "Parse transaction",
+                status: "ok",
+                severity: "success",
+                details: ["Public transaction envelope normalized"],
+                refs: null
+            }, {
+                index: 1,
+                phase: "verify",
+                label: "Verify signature",
+                status: "valid",
+                severity: "success",
+                details: ["Prehash signature matches returned payload"],
+                refs: { program_id_hex: detail.transaction.program_id_hex }
+            }],
+            inspection: detail.inspection,
+            decoded_instruction: null
+        },
+        source: detail.source
+    }
+}
+
 function evidenceRows(channelId) {
     return [evidenceRow("evidence-config", channelId, 187070, "channel_configuration", 0),
         evidenceRow("evidence-operation", channelId, 187075, "channel_operation", 2),

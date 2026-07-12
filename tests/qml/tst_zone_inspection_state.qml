@@ -315,6 +315,96 @@ TestCase {
         }
     }
 
+    function configuredSourceConfig() {
+        return {
+            config_revision: 7,
+            selected_sequencer_source_id: "seq-a",
+            sequencer_sources: [{
+                source_id: "seq-a",
+                label: "Primary",
+                target: { kind: "rpc", endpoint: "https://sequencer.example" },
+                binding_state: "runtime_attested"
+            }],
+            indexer_source: {
+                source_id: "idx-a",
+                label: "Finalized",
+                target: { kind: "module", module_id: "lez_indexer_module" }
+            }
+        }
+    }
+
+    function loadConfiguredL2Zone() {
+        configure("https://l1.example", 1)
+        const row = zoneRow("zone-a", "sequencer_zone", "seq-a", "idx-a")
+        loadOneZone(row)
+        verify(zoneState.activateZone("zone-a"))
+        gateway.respondNext("zoneDetail", ok(detailReport(row, configuredSourceConfig())))
+        verify(zoneState.l2ReadEnabled)
+        compare(zoneState.activeZoneContext.source_config_revision, 7)
+        return row
+    }
+
+    function l2Report(requestEntry, reportKind, data, overrides) {
+        const request = requestEntry.args[0]
+        const report = {
+            report_kind: String(reportKind),
+            schema_version: 1,
+            context: request.context,
+            request_revision: request.request_revision,
+            route: {
+                policy: "composite",
+                attempts: []
+            },
+            route_completeness: "all_configured",
+            warnings: [],
+            data: data
+        }
+        const values = overrides || {}
+        for (const key in values) {
+            report[key] = values[key]
+        }
+        return report
+    }
+
+    function l2Source(sourceId, role, finality, retrieval) {
+        return {
+            source_id: String(sourceId),
+            source_role: String(role),
+            source_config_revision: 7,
+            finality: String(finality),
+            retrieval: String(retrieval || "live")
+        }
+    }
+
+    function l2Block(blockId, hashValue, observations) {
+        return {
+            summary: {
+                block_id: Number(blockId),
+                block_hash: String(hashValue),
+                parent_hash: "p".repeat(64),
+                timestamp: 1000 + Number(blockId),
+                bedrock_status: "accepted",
+                transaction_count: 1
+            },
+            observations: observations
+        }
+    }
+
+    function l2Transaction(hashValue) {
+        return {
+            hash: String(hashValue),
+            kind: "public",
+            program_id_hex: "ab".repeat(32),
+            account_ids: ["account-a"],
+            nonces: ["1"],
+            instruction_data: [1, 2],
+            bytecode_len: null,
+            raw_signature_valid: true,
+            message_prehash: "cd".repeat(32),
+            prehash_signature_valid: true
+        }
+    }
+
     function loadOneZone(row) {
         verify(zoneState.pollStatus())
         gateway.respondNext("zoneCatalogStatus", ok(statusReport({
@@ -682,5 +772,228 @@ TestCase {
         compare(zoneState.evidenceDetail, null)
         compare(gateway.requestCount("zoneEvidencePayloadRelease"), 1)
         compare(gateway.lastRequest("zoneEvidencePayloadRelease").args[0].session_id, "session-b")
+    }
+
+    function test_l2_block_pages_carry_context_and_preserve_conflicts() {
+        loadConfiguredL2Zone()
+
+        verify(zoneState.refreshL2Blocks() !== null)
+        const request = gateway.lastRequest("zoneL2Blocks")
+        const payload = request.args[0]
+        compare(payload.context.channel_id, "zone-a")
+        compare(payload.context.selected_sequencer_source_id, "seq-a")
+        compare(payload.context.indexer_source_id, "idx-a")
+        compare(payload.context.source_config_revision, 7)
+        compare(payload.context.context_revision, zoneState.activeZoneContext.context_revision)
+        compare(payload.request_revision, zoneState.l2BlocksRequestRevision)
+        compare(payload.query.cursor, null)
+        compare(payload.query.limit, 25)
+        verify(JSON.stringify(payload).indexOf("endpoint") < 0)
+
+        const finalized = l2Source("idx-a", "indexer", "finalized", "live")
+        const provisional = l2Source("seq-a", "sequencer", "provisional", "live")
+        const rows = [
+            l2Block(12, "a".repeat(64), [finalized]),
+            l2Block(12, "b".repeat(64), [provisional])
+        ]
+        gateway.respondNext("zoneL2Blocks", ok(l2Report(request, "lez.blocks", {
+            outcome: "found",
+            value: {
+                rows: rows,
+                next_cursor: "opaque-next",
+                has_more: true,
+                distinct_block_ids: 1,
+                source_heads: [{ source_id: "idx-a", source_role: "indexer", block_id: 12, block_hash: "a".repeat(64) }]
+            }
+        })))
+
+        compare(zoneState.l2BlockRows.length, 2)
+        compare(zoneState.l2BlockRows[0].summary.block_id, 12)
+        verify(zoneState.l2BlockRows[0].summary.block_hash !== zoneState.l2BlockRows[1].summary.block_hash)
+        compare(zoneState.l2BlockRows[0].observations[0].source_id, "idx-a")
+        compare(zoneState.l2BlockRows[1].observations[0].finality, "provisional")
+        compare(zoneState.l2BlocksDistinctCount, 1)
+        verify(zoneState.l2BlocksHasMore)
+
+        verify(zoneState.loadMoreL2Blocks() !== null)
+        const nextRequest = gateway.lastRequest("zoneL2Blocks")
+        compare(nextRequest.args[0].query.cursor, "opaque-next")
+        gateway.respondNext("zoneL2Blocks", ok(l2Report(nextRequest, "lez.blocks", {
+            outcome: "found",
+            value: {
+                rows: [l2Block(11, "c".repeat(64), [finalized])],
+                next_cursor: null,
+                has_more: false,
+                distinct_block_ids: 1,
+                source_heads: []
+            }
+        })))
+        compare(zoneState.l2BlockRows.length, 3)
+        compare(zoneState.l2BlocksDistinctCount, 2)
+        verify(!zoneState.l2BlocksHasMore)
+    }
+
+    function test_l2_block_detail_rejects_superseded_reply_and_resolves_exact_source() {
+        loadConfiguredL2Zone()
+        const firstSummary = l2Block(12, "a".repeat(64), []).summary
+        const secondSummary = l2Block(12, "b".repeat(64), []).summary
+
+        verify(zoneState.openL2Block(firstSummary, "idx-a") !== null)
+        const firstRequest = gateway.lastRequest("zoneL2BlockDetail")
+        verify(zoneState.openL2Block(secondSummary, "seq-a") !== null)
+        const secondRequest = gateway.lastRequest("zoneL2BlockDetail")
+        verify(firstRequest.args[0].request_revision < secondRequest.args[0].request_revision)
+
+        gateway.respondNext("zoneL2BlockDetail", ok(l2Report(firstRequest, "lez.block_detail", {
+            outcome: "found",
+            value: {
+                summary: firstSummary,
+                transactions: [],
+                source: l2Source("idx-a", "indexer", "finalized")
+            }
+        })))
+        compare(zoneState.l2BlockDetail, null)
+
+        gateway.respondNext("zoneL2BlockDetail", ok(l2Report(secondRequest, "lez.block_detail", {
+            outcome: "ambiguous",
+            candidates: [{
+                source_id: "seq-a",
+                source_role: "sequencer",
+                canonical_key: "block:12:" + secondSummary.block_hash
+            }]
+        })))
+        compare(zoneState.l2BlockCandidates.length, 1)
+        verify(zoneState.resolveL2BlockCandidate(zoneState.l2BlockCandidates[0]) !== null)
+        const exactRequest = gateway.lastRequest("zoneL2BlockDetail")
+        compare(exactRequest.args[0].query.exact_source_id, "seq-a")
+        compare(exactRequest.args[0].query.target.kind, "identity")
+        compare(exactRequest.args[0].query.target.block_hash, secondSummary.block_hash)
+
+        gateway.respondNext("zoneL2BlockDetail", ok(l2Report(exactRequest, "lez.block_detail", {
+            outcome: "found",
+            value: {
+                summary: secondSummary,
+                transactions: [l2Transaction("d".repeat(64))],
+                source: l2Source("seq-a", "sequencer", "provisional", "memory_cache")
+            }
+        })))
+        compare(zoneState.l2BlockDetail.source.source_id, "seq-a")
+        compare(zoneState.l2BlockDetail.source.retrieval, "memory_cache")
+        compare(zoneState.l2BlockDetail.transactions.length, 1)
+    }
+
+    function test_l2_transaction_detail_auto_traces_same_source_and_fences_trace_race() {
+        loadConfiguredL2Zone()
+        const transaction = l2Transaction("e".repeat(64))
+
+        verify(zoneState.openL2Transaction(transaction.hash, "seq-a") !== null)
+        const detailRequest = gateway.lastRequest("zoneL2Transaction")
+        compare(detailRequest.args[0].query.exact_source_id, "seq-a")
+        gateway.respondNext("zoneL2Transaction", ok(l2Report(detailRequest, "lez.transaction", {
+            outcome: "found",
+            value: {
+                transaction: transaction,
+                inspection: {
+                    hash: transaction.hash,
+                    kind: transaction.kind,
+                    sections: [{ title: "Message", rows: [] }],
+                    raw_summary: transaction
+                },
+                source: l2Source("seq-a", "sequencer", "provisional")
+            }
+        })))
+
+        compare(zoneState.l2TransactionDetail.source.source_id, "seq-a")
+        const firstTraceRequest = gateway.lastRequest("zoneL2TransactionTrace")
+        verify(firstTraceRequest !== null)
+        compare(firstTraceRequest.args[0].query.transaction_id, transaction.hash)
+        compare(firstTraceRequest.args[0].query.exact_source_id, "seq-a")
+        compare(firstTraceRequest.args[0].query.idl_program_id, null)
+
+        verify(zoneState.requestL2TransactionTrace(transaction.hash, "seq-a", "") !== null)
+        const secondTraceRequest = gateway.lastRequest("zoneL2TransactionTrace")
+        verify(firstTraceRequest.args[0].request_revision < secondTraceRequest.args[0].request_revision)
+        const staleTrace = {
+            transaction: transaction,
+            trace: { hash: "stale", kind: "public", source: "local", capabilities: [], limitations: [], steps: [], inspection: {}, decoded_instruction: null },
+            source: l2Source("seq-a", "sequencer", "provisional")
+        }
+        gateway.respondNext("zoneL2TransactionTrace", ok(l2Report(firstTraceRequest, "lez.transaction_trace", {
+            outcome: "found",
+            value: staleTrace
+        })))
+        compare(zoneState.l2TransactionTrace, null)
+
+        const currentTrace = {
+            transaction: transaction,
+            trace: {
+                hash: transaction.hash,
+                kind: "public",
+                source: "local_derivation",
+                capabilities: ["Signature checks"],
+                limitations: [],
+                steps: [{ index: 0, phase: "parse", label: "Parse", status: "ok", severity: "success", details: [], refs: null }],
+                inspection: {},
+                decoded_instruction: null
+            },
+            source: l2Source("seq-a", "sequencer", "provisional", "memory_cache")
+        }
+        gateway.respondNext("zoneL2TransactionTrace", ok(l2Report(secondTraceRequest, "lez.transaction_trace", {
+            outcome: "found",
+            value: currentTrace
+        })))
+        compare(zoneState.l2TransactionTrace.trace.hash, transaction.hash)
+        compare(zoneState.l2TransactionTrace.source.source_id, "seq-a")
+        compare(zoneState.l2TransactionTrace.source.retrieval, "memory_cache")
+        compare(zoneState.l2TransactionTrace.trace.steps.length, 1)
+    }
+
+    function test_l2_trace_rejects_different_source_provenance() {
+        loadConfiguredL2Zone()
+        const transaction = l2Transaction("9".repeat(64))
+        verify(zoneState.requestL2TransactionTrace(transaction.hash, "seq-a", "") !== null)
+        const request = gateway.lastRequest("zoneL2TransactionTrace")
+        gateway.respondNext("zoneL2TransactionTrace", ok(l2Report(request, "lez.transaction_trace", {
+            outcome: "found",
+            value: {
+                transaction: transaction,
+                trace: {
+                    hash: transaction.hash,
+                    kind: transaction.kind,
+                    source: "local_derivation",
+                    capabilities: [],
+                    limitations: [],
+                    steps: [],
+                    inspection: {},
+                    decoded_instruction: null
+                },
+                source: l2Source("idx-a", "indexer", "finalized")
+            }
+        })))
+        compare(zoneState.l2TransactionTrace, null)
+        compare(zoneState.l2TransactionTraceError,
+            "Transaction trace returned different source provenance.")
+    }
+
+    function test_l2_success_with_mismatched_context_never_replaces_visible_rows() {
+        loadConfiguredL2Zone()
+        verify(zoneState.refreshL2Blocks() !== null)
+        const request = gateway.lastRequest("zoneL2Blocks")
+        const wrongContext = zoneState.l2RequestContext()
+        wrongContext.context_revision += 1
+        gateway.respondNext("zoneL2Blocks", ok(l2Report(request, "lez.blocks", {
+            outcome: "found",
+            value: {
+                rows: [l2Block(12, "f".repeat(64), [l2Source("idx-a", "indexer", "finalized")])],
+                next_cursor: null,
+                has_more: false,
+                distinct_block_ids: 1,
+                source_heads: []
+            }
+        }, {
+            context: wrongContext
+        })))
+        compare(zoneState.l2BlockRows.length, 0)
+        verify(!zoneState.l2BlocksLoaded)
     }
 }

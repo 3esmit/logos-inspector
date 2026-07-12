@@ -3,6 +3,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
+import "../../../../components"
 import "../../../../state"
 import "../../../../theme"
 
@@ -171,12 +172,62 @@ ColumnLayout {
                 }
             }
 
-            SequencerDetailSection {
+            ColumnLayout {
                 visible: stepRoot.referenceRows().length > 0
-                theme: stepRoot.theme
-                title: qsTr("References")
-                rows: stepRoot.referenceRows()
-                modelRef: stepRoot.modelRef
+                spacing: stepRoot.theme.gapTiny
+                Layout.fillWidth: true
+
+                Text {
+                    text: qsTr("References")
+                    color: stepRoot.theme.text
+                    textFormat: Text.PlainText
+                    font.pixelSize: stepRoot.theme.secondaryText
+                    font.weight: Font.DemiBold
+                    Layout.fillWidth: true
+                }
+
+                Repeater {
+                    model: stepRoot.referenceRows()
+
+                    RowLayout {
+                        id: referenceRow
+
+                        required property var modelData
+
+                        spacing: stepRoot.theme.gap
+                        Layout.fillWidth: true
+
+                        Text {
+                            text: String(referenceRow.modelData.label || "")
+                            color: stepRoot.theme.textDim
+                            textFormat: Text.PlainText
+                            elide: Text.ElideRight
+                            font.pixelSize: stepRoot.theme.labelText
+                            font.capitalization: Font.AllUppercase
+                            Layout.preferredWidth: 128
+                        }
+
+                        LinkCell {
+                            theme: stepRoot.theme
+                            text: String(referenceRow.modelData.value || "-")
+                            link: stepRoot.modelRef !== null
+                                && String(referenceRow.modelData.linkKind || "").length > 0
+                            copyable: String(referenceRow.modelData.value || "").length > 0
+                            copyText: String(referenceRow.modelData.value || "")
+                            monospace: referenceRow.modelData.monospace === true
+                            wrap: true
+                            Layout.fillWidth: true
+                            onActivated: {
+                                if (stepRoot.modelRef !== null) {
+                                    stepRoot.modelRef.entityNavigation.openReference(
+                                        String(referenceRow.modelData.linkKind || ""),
+                                        referenceRow.modelData.linkValue
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 

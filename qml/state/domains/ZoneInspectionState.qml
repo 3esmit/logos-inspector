@@ -54,6 +54,40 @@ QtObject {
     property double evidencePayloadOffset: 0
     property bool evidencePayloadDone: true
 
+    property int l2BlocksLimit: 25
+    property var l2BlockRows: []
+    property string l2BlocksNextCursor: ""
+    property bool l2BlocksHasMore: false
+    property int l2BlocksDistinctCount: 0
+    property var l2BlocksSourceHeads: []
+    property var l2BlocksRoute: null
+    property string l2BlocksRouteCompleteness: ""
+    property var l2BlocksWarnings: []
+    property string l2BlocksError: ""
+    property var l2BlocksErrorDetails: null
+    property bool l2BlocksLoaded: false
+
+    property var l2BlockTarget: null
+    property string l2BlockRequestedSourceId: ""
+    property var l2BlockDetailReport: null
+    property var l2BlockDetail: null
+    property var l2BlockCandidates: []
+    property string l2BlockDetailError: ""
+    property var l2BlockDetailErrorDetails: null
+
+    property string l2TransactionId: ""
+    property string l2TransactionRequestedSourceId: ""
+    property var l2TransactionDetailReport: null
+    property var l2TransactionDetail: null
+    property var l2TransactionCandidates: []
+    property string l2TransactionDetailError: ""
+    property var l2TransactionDetailErrorDetails: null
+
+    property var l2TransactionTraceReport: null
+    property var l2TransactionTrace: null
+    property string l2TransactionTraceError: ""
+    property var l2TransactionTraceErrorDetails: null
+
     property bool configureInFlight: false
     property bool statusInFlight: false
     property bool summaryInFlight: false
@@ -63,6 +97,10 @@ QtObject {
     property bool evidenceInFlight: false
     property bool evidenceDetailInFlight: false
     property bool evidencePayloadInFlight: false
+    property bool l2BlocksInFlight: false
+    property bool l2BlockDetailInFlight: false
+    property bool l2TransactionDetailInFlight: false
+    property bool l2TransactionTraceInFlight: false
     property int statusFailureCount: 0
 
     readonly property bool statusPollingEnabled: started
@@ -97,6 +135,18 @@ QtObject {
     property int evidenceRequestRevision: 0
     property int evidenceDetailRequestRevision: 0
     property int evidencePayloadRequestRevision: 0
+    property int l2BlocksRequestRevision: 0
+    property int l2BlockDetailRequestRevision: 0
+    property int l2TransactionDetailRequestRevision: 0
+    property int l2TransactionTraceRequestRevision: 0
+
+    readonly property bool l2Applicable: activeZoneContext !== null
+        && String(activeZoneContext.zone_kind || "") === "sequencer_zone"
+    readonly property bool l2SourceConfigured: activeZoneContext !== null
+        && (String(activeZoneContext.indexer_source_id || "").length > 0
+            || String(activeZoneContext.selected_sequencer_source_id || "").length > 0)
+    readonly property bool l2ReadEnabled: verification === "verified"
+        && l2Applicable && l2SourceConfigured
 
     signal statusRefreshRequested()
     signal sourceMutationFinished(var response)
@@ -106,6 +156,8 @@ QtObject {
             syncCatalogSource()
         }
     }
+
+    onActiveZoneContextChanged: resetL2InspectionState()
 
     function start() {
         if (started) {
@@ -571,6 +623,472 @@ QtObject {
         zoneDetail = null
         detailError = ""
         detailStale = false
+    }
+
+    function resetL2InspectionState() {
+        resetL2BlocksState(true)
+        resetL2BlockInspectionState()
+    }
+
+    function resetL2BlocksState(clearRows) {
+        l2BlocksRequestRevision += 1
+        l2BlocksInFlight = false
+        l2BlocksNextCursor = ""
+        l2BlocksHasMore = false
+        l2BlocksRoute = null
+        l2BlocksRouteCompleteness = ""
+        l2BlocksWarnings = []
+        l2BlocksError = ""
+        l2BlocksErrorDetails = null
+        if (clearRows) {
+            l2BlockRows = []
+            l2BlocksDistinctCount = 0
+            l2BlocksSourceHeads = []
+            l2BlocksLoaded = false
+        }
+    }
+
+    function resetL2BlockInspectionState() {
+        l2BlockDetailRequestRevision += 1
+        l2BlockDetailInFlight = false
+        l2BlockTarget = null
+        l2BlockRequestedSourceId = ""
+        l2BlockDetailReport = null
+        l2BlockDetail = null
+        l2BlockCandidates = []
+        l2BlockDetailError = ""
+        l2BlockDetailErrorDetails = null
+        resetL2TransactionInspectionState()
+    }
+
+    function resetL2TransactionInspectionState() {
+        l2TransactionDetailRequestRevision += 1
+        l2TransactionDetailInFlight = false
+        l2TransactionId = ""
+        l2TransactionRequestedSourceId = ""
+        l2TransactionDetailReport = null
+        l2TransactionDetail = null
+        l2TransactionCandidates = []
+        l2TransactionDetailError = ""
+        l2TransactionDetailErrorDetails = null
+        resetL2TransactionTraceState()
+    }
+
+    function resetL2TransactionTraceState() {
+        l2TransactionTraceRequestRevision += 1
+        l2TransactionTraceInFlight = false
+        l2TransactionTraceReport = null
+        l2TransactionTrace = null
+        l2TransactionTraceError = ""
+        l2TransactionTraceErrorDetails = null
+    }
+
+    function refreshL2Blocks() {
+        resetL2BlocksState(true)
+        resetL2BlockInspectionState()
+        if (!l2ReadEnabled) {
+            l2BlocksLoaded = true
+            l2BlocksError = l2AvailabilityMessage()
+            return null
+        }
+        return requestL2Blocks("", false)
+    }
+
+    function loadMoreL2Blocks() {
+        if (!l2ReadEnabled || l2BlocksInFlight || !l2BlocksHasMore
+                || l2BlocksNextCursor.length === 0) {
+            return null
+        }
+        return requestL2Blocks(l2BlocksNextCursor, true)
+    }
+
+    function setL2BlocksLimit(limit) {
+        const next = Math.max(1, Math.min(50, Math.floor(Number(limit || 25))))
+        if (next === l2BlocksLimit) {
+            return false
+        }
+        l2BlocksLimit = next
+        refreshL2Blocks()
+        return true
+    }
+
+    function requestL2Blocks(cursor, append) {
+        if (!l2ReadEnabled || l2BlocksInFlight) {
+            return null
+        }
+        l2BlocksRequestRevision += 1
+        const requestRevision = l2BlocksRequestRevision
+        const requestContext = l2RequestContext()
+        const cursorText = String(cursor || "")
+        l2BlocksInFlight = true
+        l2BlocksError = ""
+        l2BlocksErrorDetails = null
+        return dispatch("zoneL2Blocks", {
+            context: requestContext,
+            request_revision: requestRevision,
+            query: {
+                cursor: cursorText.length > 0 ? cursorText : null,
+                limit: l2BlocksLimit
+            }
+        }, function (response) {
+            if (requestRevision !== l2BlocksRequestRevision) {
+                return
+            }
+            l2BlocksInFlight = false
+            if (!l2RequestContextIsCurrent(requestContext)) {
+                return
+            }
+            if (!validL2ReportResponse(response, "lez.blocks", requestRevision)) {
+                if (acceptedL2Failure(response, requestContext, requestRevision)) {
+                    l2BlocksError = responseError(response, qsTr("L2 blocks could not be loaded."))
+                    l2BlocksErrorDetails = response && response.error_details
+                        ? response.error_details : null
+                }
+                return
+            }
+            const report = response.value
+            const outcome = report.data || ({})
+            if (String(outcome.outcome || "") === "not_found") {
+                l2BlocksLoaded = true
+                if (!append) {
+                    l2BlockRows = []
+                    l2BlocksDistinctCount = 0
+                }
+                applyL2BlocksReportMetadata(report, null, append)
+                return
+            }
+            const page = outcome.value
+            if (String(outcome.outcome || "") !== "found" || !page
+                    || !Array.isArray(page.rows) || !Array.isArray(page.source_heads)) {
+                l2BlocksError = qsTr("L2 blocks returned an invalid page.")
+                return
+            }
+            l2BlockRows = append ? l2BlockRows.concat(page.rows) : page.rows
+            l2BlocksDistinctCount = append
+                ? l2BlocksDistinctCount + Number(page.distinct_block_ids || 0)
+                : Number(page.distinct_block_ids || 0)
+            l2BlocksSourceHeads = page.source_heads
+            l2BlocksNextCursor = String(page.next_cursor || "")
+            l2BlocksHasMore = page.has_more === true && l2BlocksNextCursor.length > 0
+            l2BlocksLoaded = true
+            applyL2BlocksReportMetadata(report, page, append)
+        })
+    }
+
+    function applyL2BlocksReportMetadata(report, page, append) {
+        l2BlocksRoute = report.route || null
+        l2BlocksRouteCompleteness = String(report.route_completeness || "")
+        const warnings = Array.isArray(report.warnings) ? report.warnings : []
+        l2BlocksWarnings = append ? l2BlocksWarnings.concat(warnings) : warnings
+        if (!page) {
+            l2BlocksNextCursor = ""
+            l2BlocksHasMore = false
+            if (!append) {
+                l2BlocksSourceHeads = []
+            }
+        }
+    }
+
+    function openL2Block(value, exactSourceId) {
+        const target = l2BlockTargetFrom(value)
+        if (!target) {
+            return null
+        }
+        return requestL2BlockDetail(target, exactSourceId)
+    }
+
+    function resolveL2BlockCandidate(candidate) {
+        if (!l2BlockTarget || !candidate || String(candidate.source_id || "").length === 0) {
+            return null
+        }
+        return requestL2BlockDetail(l2BlockTarget, String(candidate.source_id))
+    }
+
+    function requestL2BlockDetail(target, exactSourceId) {
+        if (!l2ReadEnabled) {
+            return null
+        }
+        resetL2BlockInspectionState()
+        l2BlockTarget = target
+        l2BlockDetailRequestRevision += 1
+        const requestRevision = l2BlockDetailRequestRevision
+        const requestContext = l2RequestContext()
+        const sourceId = String(exactSourceId || "")
+        l2BlockRequestedSourceId = sourceId
+        l2BlockDetailInFlight = true
+        return dispatch("zoneL2BlockDetail", {
+            context: requestContext,
+            request_revision: requestRevision,
+            query: {
+                target: target,
+                exact_source_id: sourceId.length > 0 ? sourceId : null
+            }
+        }, function (response) {
+            if (requestRevision !== l2BlockDetailRequestRevision) {
+                return
+            }
+            l2BlockDetailInFlight = false
+            if (!l2RequestContextIsCurrent(requestContext)) {
+                return
+            }
+            if (!validL2ReportResponse(response, "lez.block_detail", requestRevision)) {
+                if (acceptedL2Failure(response, requestContext, requestRevision)) {
+                    l2BlockDetailError = responseError(response, qsTr("L2 block detail could not be loaded."))
+                    l2BlockDetailErrorDetails = response && response.error_details
+                        ? response.error_details : null
+                }
+                return
+            }
+            l2BlockDetailReport = response.value
+            const outcome = response.value.data || ({})
+            const kind = String(outcome.outcome || "")
+            if (kind === "found" && outcome.value) {
+                if (sourceId.length > 0 && String(outcome.value.source
+                        && outcome.value.source.source_id || "") !== sourceId) {
+                    l2BlockDetailError = qsTr("L2 block detail returned different source provenance.")
+                    return
+                }
+                l2BlockDetail = outcome.value
+                return
+            }
+            if (kind === "ambiguous") {
+                l2BlockCandidates = Array.isArray(outcome.candidates) ? outcome.candidates : []
+                return
+            }
+            if (kind === "not_found") {
+                l2BlockDetailError = qsTr("L2 block was not found in the Active Zone.")
+                return
+            }
+            l2BlockDetailError = qsTr("L2 block detail returned an invalid outcome.")
+        })
+    }
+
+    function closeL2BlockDetail() {
+        resetL2BlockInspectionState()
+    }
+
+    function openL2Transaction(transactionId, exactSourceId) {
+        const normalizedId = String(transactionId || "").trim()
+        if (!l2ReadEnabled || normalizedId.length === 0) {
+            return null
+        }
+        resetL2TransactionInspectionState()
+        l2TransactionId = normalizedId
+        l2TransactionDetailRequestRevision += 1
+        const requestRevision = l2TransactionDetailRequestRevision
+        const requestContext = l2RequestContext()
+        const sourceId = String(exactSourceId || "")
+        l2TransactionRequestedSourceId = sourceId
+        l2TransactionDetailInFlight = true
+        return dispatch("zoneL2Transaction", {
+            context: requestContext,
+            request_revision: requestRevision,
+            query: {
+                transaction_id: normalizedId,
+                exact_source_id: sourceId.length > 0 ? sourceId : null
+            }
+        }, function (response) {
+            if (requestRevision !== l2TransactionDetailRequestRevision) {
+                return
+            }
+            l2TransactionDetailInFlight = false
+            if (!l2RequestContextIsCurrent(requestContext)) {
+                return
+            }
+            if (!validL2ReportResponse(response, "lez.transaction", requestRevision)) {
+                if (acceptedL2Failure(response, requestContext, requestRevision)) {
+                    l2TransactionDetailError = responseError(response, qsTr("L2 transaction could not be loaded."))
+                    l2TransactionDetailErrorDetails = response && response.error_details
+                        ? response.error_details : null
+                }
+                return
+            }
+            l2TransactionDetailReport = response.value
+            const outcome = response.value.data || ({})
+            const kind = String(outcome.outcome || "")
+            if (kind === "found" && outcome.value) {
+                if (sourceId.length > 0 && String(outcome.value.source
+                        && outcome.value.source.source_id || "") !== sourceId) {
+                    l2TransactionDetailError = qsTr("L2 transaction returned different source provenance.")
+                    return
+                }
+                l2TransactionDetail = outcome.value
+                const source = outcome.value.source || ({})
+                const returnedSourceId = String(source.source_id || sourceId)
+                requestL2TransactionTrace(normalizedId, returnedSourceId, "")
+                return
+            }
+            if (kind === "ambiguous") {
+                l2TransactionCandidates = Array.isArray(outcome.candidates) ? outcome.candidates : []
+                return
+            }
+            if (kind === "not_found") {
+                l2TransactionDetailError = qsTr("L2 transaction was not found in the Active Zone.")
+                return
+            }
+            l2TransactionDetailError = qsTr("L2 transaction returned an invalid outcome.")
+        })
+    }
+
+    function resolveL2TransactionCandidate(candidate) {
+        if (l2TransactionId.length === 0 || !candidate
+                || String(candidate.source_id || "").length === 0) {
+            return null
+        }
+        return openL2Transaction(l2TransactionId, String(candidate.source_id))
+    }
+
+    function requestL2TransactionTrace(transactionId, exactSourceId, idlProgramId) {
+        const normalizedId = String(transactionId || "").trim()
+        if (!l2ReadEnabled || normalizedId.length === 0) {
+            return null
+        }
+        resetL2TransactionTraceState()
+        l2TransactionTraceRequestRevision += 1
+        const requestRevision = l2TransactionTraceRequestRevision
+        const requestContext = l2RequestContext()
+        const sourceId = String(exactSourceId || "")
+        const programId = String(idlProgramId || "")
+        l2TransactionTraceInFlight = true
+        return dispatch("zoneL2TransactionTrace", {
+            context: requestContext,
+            request_revision: requestRevision,
+            query: {
+                transaction_id: normalizedId,
+                exact_source_id: sourceId.length > 0 ? sourceId : null,
+                idl_program_id: programId.length > 0 ? programId : null
+            }
+        }, function (response) {
+            if (requestRevision !== l2TransactionTraceRequestRevision) {
+                return
+            }
+            l2TransactionTraceInFlight = false
+            if (!l2RequestContextIsCurrent(requestContext)) {
+                return
+            }
+            if (!validL2ReportResponse(response, "lez.transaction_trace", requestRevision)) {
+                if (acceptedL2Failure(response, requestContext, requestRevision)) {
+                    l2TransactionTraceError = responseError(response, qsTr("Transaction trace could not be derived."))
+                    l2TransactionTraceErrorDetails = response && response.error_details
+                        ? response.error_details : null
+                }
+                return
+            }
+            l2TransactionTraceReport = response.value
+            const outcome = response.value.data || ({})
+            const kind = String(outcome.outcome || "")
+            if (kind === "found" && outcome.value) {
+                if (sourceId.length > 0 && String(outcome.value.source
+                        && outcome.value.source.source_id || "") !== sourceId) {
+                    l2TransactionTraceError = qsTr("Transaction trace returned different source provenance.")
+                    return
+                }
+                l2TransactionTrace = outcome.value
+            } else if (kind === "not_found") {
+                l2TransactionTraceError = qsTr("Transaction trace source payload was not found.")
+            } else if (kind === "ambiguous") {
+                l2TransactionTraceError = qsTr("Transaction trace requires an exact source.")
+            } else {
+                l2TransactionTraceError = qsTr("Transaction trace returned an invalid outcome.")
+            }
+        })
+    }
+
+    function closeL2Transaction() {
+        resetL2TransactionInspectionState()
+    }
+
+    function l2BlockTargetFrom(value) {
+        if (!value || typeof value !== "object") {
+            return null
+        }
+        const kind = String(value.kind || "")
+        const blockId = Number(value.block_id)
+        const blockHash = String(value.block_hash || "").trim()
+        if (kind === "hash" && blockHash.length > 0) {
+            return { kind: "hash", block_hash: blockHash }
+        }
+        if (kind === "id" && Number.isFinite(blockId) && blockId >= 0) {
+            return { kind: "id", block_id: Math.floor(blockId) }
+        }
+        if (kind === "identity" && Number.isFinite(blockId) && blockId >= 0
+                && blockHash.length > 0) {
+            return { kind: "identity", block_id: Math.floor(blockId), block_hash: blockHash }
+        }
+        if (Number.isFinite(blockId) && blockId >= 0 && blockHash.length > 0) {
+            return { kind: "identity", block_id: Math.floor(blockId), block_hash: blockHash }
+        }
+        if (blockHash.length > 0) {
+            return { kind: "hash", block_hash: blockHash }
+        }
+        if (Number.isFinite(blockId) && blockId >= 0) {
+            return { kind: "id", block_id: Math.floor(blockId) }
+        }
+        return null
+    }
+
+    function l2RequestContext() {
+        if (!activeZoneContext) {
+            return null
+        }
+        return {
+            network_scope: activeZoneContext.network_scope,
+            channel_id: String(activeZoneContext.channel_id || ""),
+            zone_kind: String(activeZoneContext.zone_kind || "unknown"),
+            selected_sequencer_source_id: activeZoneContext.selected_sequencer_source_id
+                ? String(activeZoneContext.selected_sequencer_source_id) : null,
+            indexer_source_id: activeZoneContext.indexer_source_id
+                ? String(activeZoneContext.indexer_source_id) : null,
+            source_config_revision: numericRevision(activeZoneContext.source_config_revision),
+            context_revision: numericRevision(activeZoneContext.context_revision)
+        }
+    }
+
+    function l2RequestContextIsCurrent(context) {
+        return activeZoneContext !== null && sameFullL2Context(context, activeZoneContext)
+    }
+
+    function sameFullL2Context(left, right) {
+        return sameContext(left, right)
+            && scopeKey(left && left.network_scope) === scopeKey(right && right.network_scope)
+            && numericRevision(left && left.context_revision)
+                === numericRevision(right && right.context_revision)
+    }
+
+    function validL2ReportResponse(response, reportKind, requestRevision) {
+        return validReportResponse(response, reportKind)
+            && numericRevision(response.value.request_revision) === requestRevision
+            && l2RequestContextIsCurrent(response.value.context)
+    }
+
+    function acceptedL2Failure(response, requestContext, requestRevision) {
+        if (!response || response.ok !== false) {
+            return false
+        }
+        const details = response && response.error_details
+            && typeof response.error_details === "object"
+            ? response.error_details : null
+        if (!details) {
+            return true
+        }
+        return String(details.report_kind || "") === "lez.read_error"
+            && Number(details.schema_version || 0) === 1
+            && numericRevision(details.request_revision) === requestRevision
+            && sameFullL2Context(details.context, requestContext)
+            && l2RequestContextIsCurrent(details.context)
+    }
+
+    function l2AvailabilityMessage() {
+        if (!activeZoneContext) {
+            return qsTr("Select a verified Zone to inspect L2 data.")
+        }
+        if (!l2Applicable) {
+            return qsTr("L2 reads do not apply to this Channel type.")
+        }
+        if (!l2SourceConfigured) {
+            return qsTr("Configure an Indexer or select a Sequencer source for this Zone.")
+        }
+        return qsTr("Zone verification is required before reading L2 data.")
     }
 
     function reconcileDetail() {
