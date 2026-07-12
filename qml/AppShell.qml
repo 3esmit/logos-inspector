@@ -8,7 +8,6 @@ import "features/bedrock/pages" as BedrockPages
 import "features/chain/pages" as ChainPages
 import "features/dashboard/pages" as DashboardPages
 import "features/delivery/pages" as DeliveryPages
-import "features/lez/pages" as LezPages
 import "features/local/pages" as LocalPages
 import "features/modules/pages" as ModulePages
 import "features/programs/pages" as ProgramPages
@@ -208,12 +207,8 @@ Item {
             return transactionsPage
         case "transactionDetail":
             return transactionDetailPage
-        case "transferActivity":
-            return transferActivityPage
         case "blockchain":
             return blockchainPage
-        case "channels":
-            return channelsPage
         case "zones":
             return zonesPage
         case "storage":
@@ -226,27 +221,14 @@ Item {
             return deliveryDiagnosticsPage
         case "capabilities":
             return capabilitiesPage
-        case "l2Blocks":
-        case "sequencer":
-            return lezBlocksPage
-        case "l2Transactions":
-            return lezTransactionsPage
-        case "l2BlockDetail":
-            return lezBlockDetailPage
-        case "l2TransactionDetail":
-            return lezTransactionDetailPage
-        case "accounts":
-            return accountsPage
-        case "programs":
-            return programsPage
         case "favorites":
             return favoritesPage
+        case "programs":
+            return programsPage
         case "localWallet":
             return localWalletPage
         case "localNodes":
             return localNodesPage
-        case "indexer":
-            return indexerPage
         case "settings":
             return settingsPage
         default:
@@ -296,7 +278,6 @@ Item {
         ChainPages.BlockDetailPage {
             theme: theme
             model: appModel
-            l2: false
         }
     }
 
@@ -313,15 +294,6 @@ Item {
         ChainPages.TransactionDetailPage {
             theme: theme
             model: appModel
-            l2: false
-        }
-    }
-
-    Component {
-        id: transferActivityPage
-        LezPages.TransferActivityPage {
-            theme: theme
-            model: appModel
         }
     }
 
@@ -333,14 +305,6 @@ Item {
             moduleKind: "blockchain"
             title: qsTr("Bedrock Node Diagnostics")
             subtitle: qsTr("Inspect Bedrock node state and L1 block windows through direct node HTTP.")
-        }
-    }
-
-    Component {
-        id: channelsPage
-        BedrockPages.ChannelsPage {
-            theme: theme
-            model: appModel
         }
     }
 
@@ -397,42 +361,8 @@ Item {
     }
 
     Component {
-        id: lezBlocksPage
-        LezPages.LezBlocksPage {
-            theme: theme
-            model: appModel
-        }
-    }
-
-    Component {
-        id: lezTransactionsPage
-        LezPages.LezTransactionsPage {
-            theme: theme
-            model: appModel
-        }
-    }
-
-    Component {
-        id: lezBlockDetailPage
-        ChainPages.BlockDetailPage {
-            theme: theme
-            model: appModel
-            l2: true
-        }
-    }
-
-    Component {
-        id: lezTransactionDetailPage
-        ChainPages.TransactionDetailPage {
-            theme: theme
-            model: appModel
-            l2: true
-        }
-    }
-
-    Component {
-        id: accountsPage
-        LezPages.AccountsPage {
+        id: favoritesPage
+        LocalPages.FavoritesPage {
             theme: theme
             model: appModel
         }
@@ -441,14 +371,6 @@ Item {
     Component {
         id: programsPage
         ProgramPages.ProgramsPage {
-            theme: theme
-            model: appModel
-        }
-    }
-
-    Component {
-        id: favoritesPage
-        LocalPages.FavoritesPage {
             theme: theme
             model: appModel
         }
@@ -467,14 +389,6 @@ Item {
         LocalPages.LocalNodesPage {
             theme: theme
             model: appModel.localNodes
-        }
-    }
-
-    Component {
-        id: indexerPage
-        LezPages.IndexerPage {
-            theme: theme
-            model: appModel
         }
     }
 

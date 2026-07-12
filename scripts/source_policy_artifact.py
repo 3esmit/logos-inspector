@@ -14,9 +14,6 @@ ROOT = Path(__file__).resolve().parents[1]
 CATALOG_PATH = Path("qml/state/source_routing/SourcePolicyCatalog.generated.js")
 TOP_LEVEL_ORDER = ("version", "defaults", "network_profiles", "source_modes")
 DEFAULTS_ORDER = (
-    "sequencer_endpoint",
-    "local_sequencer_endpoint",
-    "indexer_endpoint",
     "node_endpoint",
     "delivery_rest_endpoint",
     "delivery_metrics_endpoint",
@@ -26,8 +23,6 @@ DEFAULTS_ORDER = (
 NETWORK_PROFILE_ORDER = (
     "id",
     "label",
-    "sequencer_endpoint",
-    "indexer_endpoint",
     "node_endpoint",
 )
 SOURCE_MODE_FAMILY_ORDER = ("core", "delivery", "storage")

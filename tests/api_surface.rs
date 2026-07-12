@@ -4,8 +4,6 @@ fn primary_domain_modules_expose_boundaries() {
     let _ = logos_inspector::program_decode::spel_idl_report;
     fn accepts_program_info(_: Option<logos_inspector::lez::ProgramFileInfo>) {}
     accepts_program_info(None);
-    let _ = logos_inspector::local_nodes::is_default_local_indexer_endpoint;
-    let _ = logos_inspector::overview::inspector_scopes;
     let _ = logos_inspector::probe::ProbeReport::ok("label", "source", true);
     let _ = logos_inspector::blockchain::logos_node_cryptarchia_info;
     let _ = logos_inspector::rpc::raw_rpc_report;

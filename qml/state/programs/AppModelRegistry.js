@@ -110,9 +110,6 @@ function registerIdl(root, name, programId, json, programBinary) {
             sharedAccountId: ""
         })
         saveIdlState()
-        if (transactionDetailValue !== null) {
-            autoDecodeTransactionDetail(transactionDetailValue)
-        }
         setResult(qsTr("IDL registry"), qsTr("Saved %1.").arg(resolvedName), false)
     }
 }

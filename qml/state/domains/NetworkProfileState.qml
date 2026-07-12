@@ -6,32 +6,33 @@ QtObject {
     property var sourcePolicy: null
 
     function normalizedProfile(value) {
-        const profile = String(value || "default").trim()
-        if (profile === "local" || profile === "custom") {
-            return profile
+        const key = String(value || "default").trim()
+        if (key === "custom") {
+            return key
+        }
+        const rows = profileRows()
+        for (let i = 0; i < rows.length; ++i) {
+            if (String(rows[i].id || "") === key) {
+                return key
+            }
         }
         return "default"
     }
 
-    function resolvedProfile(storedProfile, sequencer, indexer, node) {
-        const inferred = inferProfile(sequencer, indexer, node)
+    function resolvedProfile(storedProfile, node) {
+        const inferred = inferProfile(node)
         if (inferred !== "custom") {
             return inferred
         }
         return normalizedProfile(storedProfile) === "custom" ? "custom" : inferred
     }
 
-    function inferProfile(sequencer, indexer, node) {
-        const seq = normalizeEndpoint(sequencer)
-        const idx = normalizeEndpoint(indexer)
-        const nod = normalizeEndpoint(node)
-        const profiles = profileRows()
-        for (let i = 0; i < profiles.length; ++i) {
-            const profile = profiles[i] || {}
-            if (seq === normalizeEndpoint(profile.sequencer_endpoint)
-                    && idx === normalizeEndpoint(profile.indexer_endpoint)
-                    && nod === normalizeEndpoint(profile.node_endpoint)) {
-                return String(profile.id || "custom")
+    function inferProfile(node) {
+        const endpoint = normalizeEndpoint(node)
+        const rows = profileRows()
+        for (let i = 0; i < rows.length; ++i) {
+            if (endpoint === normalizeEndpoint(rows[i].node_endpoint)) {
+                return String(rows[i].id || "default")
             }
         }
         return "custom"
@@ -42,56 +43,53 @@ QtObject {
     }
 
     function profileRows() {
-        if (sourcePolicy && Array.isArray(sourcePolicy.network_profiles)) {
-            return sourcePolicy.network_profiles
+        const source = sourcePolicy && Array.isArray(sourcePolicy.network_profiles)
+            ? sourcePolicy.network_profiles : fallbackProfileRows()
+        const rows = []
+        const seen = ({})
+        for (let i = 0; i < source.length; ++i) {
+            const row = source[i] || ({})
+            const endpoint = String(row.node_endpoint || "")
+            const key = normalizeEndpoint(endpoint)
+            if (!key.length || seen[key] === true) {
+                continue
+            }
+            seen[key] = true
+            rows.push({
+                id: String(row.id || (rows.length === 0 ? "default" : "profile-" + rows.length)),
+                label: String(row.label || row.id || qsTr("Network")),
+                node_endpoint: endpoint
+            })
         }
-        return fallbackProfileRows()
+        return rows.length > 0 ? rows : fallbackProfileRows()
     }
 
     function optionRows() {
-        const rows = []
-        const profiles = profileRows()
-        for (let i = 0; i < profiles.length; ++i) {
-            const profile = profiles[i] || {}
-            rows.push({
+        const rows = profileRows().map(function (profile) {
+            return {
                 key: String(profile.id || ""),
                 label: String(profile.label || profile.id || ""),
-                summary: profileSummary(profile.id || "")
-            })
-        }
-        rows.push({
-            key: "custom",
-            label: qsTr("Custom"),
-            summary: qsTr("Manual endpoint override")
+                summary: qsTr("Bedrock node profile")
+            }
         })
+        rows.push({ key: "custom", label: qsTr("Custom"), summary: qsTr("Manual L1 endpoint") })
         return rows
     }
 
     function fallbackProfileRows() {
-        return [
-            {
-                id: "default",
-                label: qsTr("Testnet"),
-                sequencer_endpoint: sourcePolicyDefault("sequencer_endpoint", "https://testnet.lez.logos.co/"),
-                indexer_endpoint: sourcePolicyDefault("indexer_endpoint", "http://127.0.0.1:8779/"),
-                node_endpoint: sourcePolicyDefault("node_endpoint", "http://127.0.0.1:8080/")
-            },
-            {
-                id: "local",
-                label: qsTr("Local sequencer"),
-                sequencer_endpoint: sourcePolicyDefault("local_sequencer_endpoint", "http://127.0.0.1:3040/"),
-                indexer_endpoint: sourcePolicyDefault("indexer_endpoint", "http://127.0.0.1:8779/"),
-                node_endpoint: sourcePolicyDefault("node_endpoint", "http://127.0.0.1:8080/")
-            }
-        ]
+        return [{
+            id: "default",
+            label: qsTr("Default"),
+            node_endpoint: sourcePolicyDefault("node_endpoint", "http://127.0.0.1:8080/")
+        }]
     }
 
     function sourcePolicyDefault(key, fallback) {
         const defaults = sourcePolicy && sourcePolicy.defaults && typeof sourcePolicy.defaults === "object"
-            ? sourcePolicy.defaults
-            : ({})
+            ? sourcePolicy.defaults : ({})
         const value = defaults[String(key || "")]
-        return value === undefined || value === null || String(value).length === 0 ? String(fallback || "") : String(value)
+        return value === undefined || value === null || String(value).length === 0
+            ? String(fallback || "") : String(value)
     }
 
     function profileAt(index) {
@@ -116,45 +114,36 @@ QtObject {
         if (key === "custom") {
             return null
         }
-        const profiles = profileRows()
-        for (let i = 0; i < profiles.length; ++i) {
-            const row = profiles[i] || {}
-            if (String(row.id || "") === key) {
+        const rows = profileRows()
+        for (let i = 0; i < rows.length; ++i) {
+            if (String(rows[i].id || "") === key) {
                 return {
                     profile: key,
-                    sequencerUrl: String(row.sequencer_endpoint || ""),
-                    indexerUrl: String(row.indexer_endpoint || ""),
-                    nodeUrl: String(row.node_endpoint || "")
+                    nodeUrl: String(rows[i].node_endpoint || "")
                 }
             }
         }
-        return key === "default" ? null : applyProfile("default")
+        return null
     }
 
-    function settingsFromPayload(value, currentProfile, currentSequencer, currentIndexer, currentNode) {
+    function settingsFromPayload(value, currentProfile, currentNode) {
         const profile = normalizedProfile(stringValue(value, "network_profile", currentProfile))
-        const sequencer = stringValue(value, "sequencer_url", currentSequencer)
-        const indexer = stringValue(value, "indexer_url", currentIndexer)
         const node = stringValue(value, "node_url", currentNode)
         return {
-            profile: resolvedProfile(profile, sequencer, indexer, node),
-            sequencerUrl: sequencer,
-            indexerUrl: indexer,
+            profile: resolvedProfile(profile, node),
             nodeUrl: node
         }
     }
 
-    function settingsPayload(profile, sequencer, indexer, node) {
+    function settingsPayload(profile, node) {
         return {
-            network_profile: inferProfile(sequencer, indexer, node),
-            sequencer_url: String(sequencer || ""),
-            indexer_url: String(indexer || ""),
+            network_profile: inferProfile(node),
             node_url: String(node || "")
         }
     }
 
-    function cacheScope(profile, sequencer) {
-        return [String(profile || ""), String(sequencer || "")].join("|")
+    function cacheScope(profile, node) {
+        return [String(profile || ""), normalizeEndpoint(node)].join("|")
     }
 
     function localMode(profile) {
@@ -169,25 +158,16 @@ QtObject {
                 return String(rows[i].label || key)
             }
         }
-        return qsTr("Testnet")
+        return qsTr("Default")
     }
 
     function profileSummary(profile) {
-        const key = normalizedProfile(profile)
-        if (key === "local") {
-            return qsTr("All endpoints local")
-        }
-        if (key === "custom") {
-            return qsTr("Manual endpoints")
-        }
-        return qsTr("Default testnet")
+        return normalizedProfile(profile) === "custom"
+            ? qsTr("Manual L1 endpoint") : qsTr("Bedrock node profile")
     }
 
-    function profileDetail(sequencer, indexer, node) {
-        return qsTr("%1 / %2 / %3")
-            .arg(shortEndpoint(sequencer))
-            .arg(shortEndpoint(indexer))
-            .arg(shortEndpoint(node))
+    function profileDetail(node) {
+        return shortEndpoint(node)
     }
 
     function shortEndpoint(value) {

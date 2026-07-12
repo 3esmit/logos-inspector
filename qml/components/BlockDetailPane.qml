@@ -45,7 +45,7 @@ ColumnLayout {
             textColor: root.theme.textMuted
             textPixelSize: 12
             Layout.fillWidth: true
-            onActivated: root.model.entityNavigation.openReference(root.isLezBlock() ? "indexerBlock" : "block", root.detail.hash)
+            onActivated: root.model.entityNavigation.openReference("block", root.detail.hash)
         }
 
         RowLayout {
@@ -63,7 +63,7 @@ ColumnLayout {
             }
 
             Text {
-                text: root.isLezBlock() ? qsTr("LEZ block") : qsTr("Bedrock block")
+                text: qsTr("Bedrock block")
                 color: root.theme.textDim
                 textFormat: Text.PlainText
                 elide: Text.ElideRight
@@ -109,9 +109,9 @@ ColumnLayout {
         MetricCard {
             theme: root.theme
             compact: true
-            label: root.isLezBlock() ? qsTr("Block ID") : qsTr("Height")
+            label: qsTr("Height")
             value: root.detail ? UiFormat.valueText(root.detail.height) : "-"
-            delta: root.isLezBlock() ? qsTr("LEZ block id") : qsTr("Chain height")
+            delta: qsTr("Chain height")
         }
     }
 
@@ -127,7 +127,7 @@ ColumnLayout {
     }
 
     StatusMessage {
-        visible: root.detail !== null && !root.isIndexerBlock() && root.detail.leader_key.length > 0
+        visible: root.detail !== null && root.detail.leader_key.length > 0
         theme: root.theme
         tone: "info"
         title: qsTr("Leader key")
@@ -162,11 +162,7 @@ ColumnLayout {
                 if (!rowData.transaction) {
                     return
                 }
-                if (root.isLezBlock()) {
-                    root.model.entityNavigation.openTransaction(rowData.transaction.hash)
-                } else {
-                    root.model.entityNavigation.openBlockchainTransaction(rowData.transaction, root.detail)
-                }
+                root.model.entityNavigation.openBlockchainTransaction(rowData.transaction, root.detail)
             }
         }
     }
@@ -181,7 +177,7 @@ ColumnLayout {
     }
 
     function normalize(value) {
-        if (!value || typeof value !== "object" || Array.isArray(value) || (value.type !== "blockchain_block" && value.type !== "indexer_block" && value.type !== "sequencer_block")) {
+        if (!value || typeof value !== "object" || Array.isArray(value) || value.type !== "blockchain_block") {
             return null
         }
         return {
@@ -208,15 +204,15 @@ ColumnLayout {
             return []
         }
         return [
-            { label: root.isLezBlock() ? qsTr("Parent LEZ block") : qsTr("Parent"), value: UiFormat.valueText(root.detail.parent), monospace: true, linkKind: root.detail.parent.length ? (root.isLezBlock() ? "indexerBlock" : "block") : "", linkValue: root.detail.parent, copyable: root.detail.parent.length > 0 },
-            { label: root.isLezBlock() ? qsTr("LEZ block ID") : qsTr("Slot"), value: UiFormat.valueText(root.detail.slot), monospace: true, linkKind: UiFormat.valueText(root.detail.slot) !== "-" && !root.isLezBlock() ? "block" : "", linkValue: root.detail.slot },
+            { label: qsTr("Parent"), value: UiFormat.valueText(root.detail.parent), monospace: true, linkKind: root.detail.parent.length ? "block" : "", linkValue: root.detail.parent, copyable: root.detail.parent.length > 0 },
+            { label: qsTr("Slot"), value: UiFormat.valueText(root.detail.slot), monospace: true, linkKind: UiFormat.valueText(root.detail.slot) !== "-" ? "block" : "", linkValue: root.detail.slot },
             { label: qsTr("Height"), value: UiFormat.valueText(root.detail.height), monospace: true },
             { label: qsTr("Status"), value: UiFormat.valueText(root.detail.status), monospace: false },
-            { label: qsTr("Version"), value: root.isLezBlock() ? qsTr("- (not in this source)") : UiFormat.valueText(root.detail.version), monospace: true },
+            { label: qsTr("Version"), value: UiFormat.valueText(root.detail.version), monospace: true },
             { label: qsTr("Block root"), value: UiFormat.valueText(root.detail.block_root), monospace: true, copyable: root.detail.block_root.length > 0 },
             { label: qsTr("Voucher cm"), value: UiFormat.valueText(root.detail.voucher_cm), monospace: true, copyable: root.detail.voucher_cm.length > 0 },
             { label: qsTr("Entropy"), value: UiFormat.valueText(root.detail.entropy), monospace: true, copyable: root.detail.entropy.length > 0 },
-            { label: qsTr("Signature"), value: root.detail.signature.length ? root.detail.signature : qsTr("- (not in this source)"), monospace: true, copyable: root.detail.signature.length > 0 },
+            { label: qsTr("Signature"), value: UiFormat.valueText(root.detail.signature), monospace: true, copyable: root.detail.signature.length > 0 },
             { label: qsTr("Leader key"), value: UiFormat.valueText(root.detail.leader_key), monospace: true, copyable: root.detail.leader_key.length > 0 }
         ]
     }
@@ -250,49 +246,28 @@ ColumnLayout {
         if (!root.detail) {
             return "-"
         }
-        if (root.detail.type === "indexer_block") {
-            return qsTr("Indexer")
-        }
-        return root.detail.type === "sequencer_block" ? qsTr("Sequencer") : qsTr("Node")
+        return qsTr("Node")
     }
 
     function sourceDetailText() {
         if (!root.detail) {
             return "-"
         }
-        if (root.detail.type === "indexer_block") {
-            return qsTr("Indexer lookup")
-        }
-        if (root.detail.type === "sequencer_block") {
-            return qsTr("Sequencer RPC")
-        }
         return qsTr("Node block")
-    }
-
-    function isIndexerBlock() {
-        return root.detail !== null && root.detail.type === "indexer_block"
-    }
-
-    function isLezBlock() {
-        return root.detail !== null && (root.detail.type === "indexer_block" || root.detail.type === "sequencer_block")
     }
 
     function titleText() {
         if (!root.detail) {
             return ""
         }
-        return root.isLezBlock()
-            ? qsTr("LEZ block %1").arg(UiFormat.valueText(root.detail.block_id))
-            : qsTr("Block at slot %1").arg(UiFormat.valueText(root.detail.slot))
+        return qsTr("Block at slot %1").arg(UiFormat.valueText(root.detail.slot))
     }
 
     function positionText() {
         if (!root.detail) {
             return qsTr("Slot")
         }
-        return root.isLezBlock()
-            ? qsTr("Block ID %1").arg(UiFormat.valueText(root.detail.block_id))
-            : qsTr("Slot %1").arg(UiFormat.valueText(root.detail.slot))
+        return qsTr("Slot %1").arg(UiFormat.valueText(root.detail.slot))
     }
 
     function statusColor(value) {
@@ -318,10 +293,8 @@ ColumnLayout {
         if (!root.detail) {
             return ""
         }
-        const id = root.isLezBlock()
-            ? (String(root.detail.block_id || "").length ? String(root.detail.block_id) : root.detail.hash)
-            : (root.detail.hash.length ? root.detail.hash : String(root.detail.slot || ""))
-        return root.model.socialCommentTopic(root.isLezBlock() ? "lez" : "cryptarchia", "block", id)
+        const id = root.detail.hash.length ? root.detail.hash : String(root.detail.slot || "")
+        return root.model.socialCommentTopic("cryptarchia", "block", id)
     }
 
 }

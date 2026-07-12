@@ -84,21 +84,21 @@ TestCase {
             schema_version: 1,
             capabilities: [
                 {
-                    key: "lez.indexer",
-                    label: "LEZ Indexer",
+                    key: "storage",
+                    label: "Storage",
                     status: "unavailable",
-                    sub_capabilities: ["lez.indexer.blocks.finalized.read"]
+                    sub_capabilities: ["storage.content.upload"]
                 },
                 {
-                    key: "lez.sequencer",
-                    label: "LEZ Sequencer",
+                    key: "delivery",
+                    label: "Delivery",
                     status: "available",
-                    sub_capabilities: ["lez.sequencer.blocks.pending.read"]
+                    sub_capabilities: ["delivery.send"]
                 }
             ]
         })
 
-        const gate = gates.gateFor({ any_of: ["lez.indexer.blocks.finalized.read", "lez.sequencer.blocks.pending.read"] })
+        const gate = gates.gateFor({ any_of: ["storage.content.upload", "delivery.send"] })
 
         verify(gate.enabled)
         compare(gate.status, "enabled")
@@ -357,24 +357,4 @@ TestCase {
         compare(wallet.missing[0].dependency, "diagnostics.wallet.read")
     }
 
-    function test_diagnostics_gate_maps_lez_actions_to_runtime_subcapabilities() {
-        gates.registryLoaded = true
-        gates.registryReport = ({
-            schema_version: 1,
-            capabilities: [{
-                key: "diagnostics",
-                label: "Diagnostics",
-                status: "degraded",
-                sub_capabilities: ["diagnostics.lez.indexer.read", "diagnostics.lez.sequencer.read"],
-                unavailable_sub_capabilities: ["diagnostics.lez.sequencer.read"]
-            }]
-        })
-
-        const indexer = gates.diagnosticsGate("lez.indexer")
-        const sequencer = gates.diagnosticsGate("lez.sequencer")
-
-        verify(indexer.enabled)
-        verify(!sequencer.enabled)
-        compare(sequencer.missing[0].dependency, "diagnostics.lez.sequencer.read")
-    }
 }

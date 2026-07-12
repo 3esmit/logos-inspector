@@ -1,9 +1,7 @@
 use super::{
-    CapabilityBuildMode,
     availability::{
-        CapabilityState, append_unique, available_state, capability_state_usable,
-        input_required_state, loading_state, merge_state_constraints, state_from_unavailable,
-        state_marks_unavailable, unavailable_state,
+        CapabilityState, available_state, input_required_state, loading_state,
+        merge_state_constraints, state_from_unavailable, unavailable_state,
     },
     catalog::{CapabilitySpec, provider_instance_known, provider_instance_supports},
     diagnostics_evidence::diagnostics_state,
@@ -12,7 +10,6 @@ use super::{
 };
 
 pub(super) fn capability_state(
-    build_mode: CapabilityBuildMode,
     inputs: &CapabilityRuntimeInputs,
     spec: &CapabilitySpec,
     connector: &ResolvedConnector,
@@ -47,13 +44,6 @@ pub(super) fn capability_state(
 
     match spec.key {
         "l1" => endpoint_backed_state(inputs, "l1", connector, spec.sub_capabilities),
-        "lez" => composed_lez_state(build_mode, inputs, spec.sub_capabilities),
-        "lez.indexer" => {
-            endpoint_backed_state(inputs, "lez.indexer", connector, spec.sub_capabilities)
-        }
-        "lez.sequencer" => {
-            endpoint_backed_state(inputs, "lez.sequencer", connector, spec.sub_capabilities)
-        }
         "storage" => storage_state(inputs, connector, spec.sub_capabilities),
         "delivery" => delivery_state(inputs, connector, spec.sub_capabilities),
         "wallet" => wallet_state(inputs, spec.sub_capabilities),
@@ -87,46 +77,6 @@ fn endpoint_backed_state(
         );
     }
     source_report_state(inputs, scope, scope_label(scope), sub_capabilities)
-}
-
-fn composed_lez_state(
-    build_mode: CapabilityBuildMode,
-    inputs: &CapabilityRuntimeInputs,
-    sub_capabilities: &[&str],
-) -> CapabilityState {
-    let indexer = inputs.connector_for(build_mode, "lez.indexer");
-    let sequencer = inputs.connector_for(build_mode, "lez.sequencer");
-    let indexer_caps = prefixed_sub_capabilities(sub_capabilities, "lez.indexer.");
-    let sequencer_caps = prefixed_sub_capabilities(sub_capabilities, "lez.sequencer.");
-    let indexer_state = connector_capability_precheck(&indexer, "lez.indexer", &indexer_caps)
-        .unwrap_or_else(|| endpoint_backed_state(inputs, "lez.indexer", &indexer, &indexer_caps));
-    let sequencer_state =
-        connector_capability_precheck(&sequencer, "lez.sequencer", &sequencer_caps).unwrap_or_else(
-            || endpoint_backed_state(inputs, "lez.sequencer", &sequencer, &sequencer_caps),
-        );
-    let indexer_ready = capability_state_usable(&indexer_state);
-    let sequencer_ready = capability_state_usable(&sequencer_state);
-
-    let mut unavailable = Vec::new();
-    for capability in sub_capabilities {
-        let indexer_unavailable = capability.starts_with("lez.indexer.")
-            && (!indexer_ready || state_marks_unavailable(&indexer_state, capability));
-        let sequencer_unavailable = capability.starts_with("lez.sequencer.")
-            && (!sequencer_ready || state_marks_unavailable(&sequencer_state, capability));
-        let target_resolution_unavailable =
-            *capability == "lez.target_resolution" && !indexer_ready && !sequencer_ready;
-        if indexer_unavailable || sequencer_unavailable || target_resolution_unavailable {
-            unavailable.push((*capability).to_owned());
-        }
-    }
-
-    let mut warnings = Vec::new();
-    append_unique(&mut warnings, indexer_state.warnings);
-    append_unique(&mut warnings, sequencer_state.warnings);
-    let mut compact_errors = Vec::new();
-    append_unique(&mut compact_errors, indexer_state.compact_errors);
-    append_unique(&mut compact_errors, sequencer_state.compact_errors);
-    state_from_unavailable(sub_capabilities, unavailable, warnings, compact_errors)
 }
 
 fn storage_state(
@@ -276,48 +226,9 @@ fn wallet_sub_capability_needs_home(capability: &str) -> bool {
         || capability == "wallet.command.run"
 }
 
-fn prefixed_sub_capabilities<'a>(sub_capabilities: &[&'a str], prefix: &str) -> Vec<&'a str> {
-    sub_capabilities
-        .iter()
-        .copied()
-        .filter(|capability| capability.starts_with(prefix))
-        .collect()
-}
-
-fn connector_capability_precheck(
-    connector: &ResolvedConnector,
-    capability_key: &str,
-    sub_capabilities: &[&str],
-) -> Option<CapabilityState> {
-    if !provider_instance_known(&connector.id) {
-        return Some(unavailable_state(
-            sub_capabilities,
-            format!("connector `{}` is not registered", connector.id),
-        ));
-    }
-    if !provider_instance_supports(&connector.id, capability_key) {
-        return Some(unavailable_state(
-            sub_capabilities,
-            format!(
-                "connector `{}` does not provide capability `{capability_key}`",
-                connector.id
-            ),
-        ));
-    }
-    if connector.id == "unconfigured" {
-        return Some(input_required_state(
-            sub_capabilities,
-            format!("{capability_key} connector is not configured"),
-        ));
-    }
-    None
-}
-
 fn scope_label(scope: &str) -> &'static str {
     match scope {
         "l1" => "L1 RPC",
-        "lez.indexer" => "LEZ indexer RPC",
-        "lez.sequencer" => "LEZ sequencer RPC",
         "storage" => "storage REST",
         "delivery" => "delivery REST",
         _ => "capability",

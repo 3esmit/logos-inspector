@@ -10,12 +10,11 @@ mod storage;
 #[cfg(test)]
 pub(crate) use core::adapters::BLOCKCHAIN_MODULE;
 pub(crate) use core::adapters::{
-    INDEXER_MODULE, LEZ_CORE_MODULE, account_transactions_by_account,
-    attach_module_account_transactions, blockchain_block, blockchain_blocks,
-    blockchain_live_blocks_snapshot, blockchain_node_report, blockchain_recent_blocks,
-    blockchain_transaction, indexer_account_at_block, indexer_block_by_hash, indexer_block_by_id,
-    indexer_blocks, indexer_finalized_head, indexer_health, indexer_status, indexer_transaction,
-    indexer_transfer_recipients,
+    INDEXER_MODULE, LEZ_CORE_MODULE, account_transactions_by_account, blockchain_block,
+    blockchain_blocks, blockchain_live_blocks_snapshot, blockchain_node_report,
+    blockchain_recent_blocks, blockchain_transaction, indexer_account_at_block,
+    indexer_block_by_hash, indexer_block_by_id, indexer_blocks, indexer_finalized_head,
+    indexer_transaction,
 };
 pub(crate) use delivery::adapters::{
     DELIVERY_MODULE, delivery_lifecycle_args, delivery_message_args, delivery_store_query_url,
@@ -28,19 +27,17 @@ pub use network_profiles::{
 };
 pub use policy::{
     CoreEndpointMode, CoreSourceMode, DEFAULT_DELIVERY_METRICS_ENDPOINT,
-    DEFAULT_DELIVERY_REST_ENDPOINT, DEFAULT_INDEXER_ENDPOINT, DEFAULT_NODE_ENDPOINT,
-    DEFAULT_SEQUENCER_ENDPOINT, DEFAULT_STORAGE_METRICS_ENDPOINT, DEFAULT_STORAGE_REST_ENDPOINT,
-    DeliverySourceMode, DeliverySourceReportKind, LOCAL_SEQUENCER_ENDPOINT, SourceAdapterPolicy,
-    SourceCapabilityKey, SourceFamily, SourceModeFamilies, SourceModePolicy, SourcePolicyDefaults,
-    SourcePolicyReport, SourceProbeKey, StorageSourceMode, StorageSourceReportKind,
-    TESTNET_SEQUENCER_ENDPOINT, default_endpoint_for_domain, default_source_mode_for_domain,
+    DEFAULT_DELIVERY_REST_ENDPOINT, DEFAULT_NODE_ENDPOINT, DEFAULT_STORAGE_METRICS_ENDPOINT,
+    DEFAULT_STORAGE_REST_ENDPOINT, DeliverySourceMode, DeliverySourceReportKind,
+    SourceAdapterPolicy, SourceCapabilityKey, SourceFamily, SourceModeFamilies, SourceModePolicy,
+    SourcePolicyDefaults, SourcePolicyReport, SourceProbeKey, StorageSourceMode,
+    StorageSourceReportKind, default_endpoint_for_domain, default_source_mode_for_domain,
     effective_source_mode, normalized_core_source_mode, normalized_source_mode,
     source_mode_is_token, source_mode_policy, source_policy_report,
 };
 pub(crate) use selection::{
-    AccountSources, DeliveryStoreQuery, SourceArgsNormalization, SourceEndpoint,
-    delivery_rest_source, normalized_source_args, require_mutating_diagnostics,
-    storage_rest_source,
+    DeliveryStoreQuery, SourceArgsNormalization, SourceEndpoint, delivery_rest_source,
+    normalized_source_args, require_mutating_diagnostics, storage_rest_source,
 };
 pub(crate) use shared::{
     ModuleProbeStep, call_value, dispatch_result, raw_http_json_url, rest_empty_request,

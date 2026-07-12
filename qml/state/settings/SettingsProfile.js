@@ -55,8 +55,6 @@ function applySettingsState(root, value) {
         localDevnetEnabled = localNodesEnabled && root.boolSetting(value, "local_devnet_enabled", localDevnetEnabled)
         settingsBackupEncrypted = root.boolSetting(value, "settings_backup_encrypted", settingsBackupEncrypted)
         blockchainRefreshRate = root.canonicalRefreshRate(root.numberSetting(value, "blockchain_refresh_rate", blockchainRefreshRate))
-        indexerRefreshRate = root.canonicalRefreshRate(root.numberSetting(value, "indexer_refresh_rate", indexerRefreshRate))
-        executionRefreshRate = root.canonicalRefreshRate(root.numberSetting(value, "execution_refresh_rate", executionRefreshRate))
         messagingRefreshRate = root.canonicalRefreshRate(root.numberSetting(value, "messaging_refresh_rate", messagingRefreshRate))
         storageRefreshRate = root.canonicalRefreshRate(root.numberSetting(value, "storage_refresh_rate", storageRefreshRate))
         if (value.footer_fields && typeof value.footer_fields === "object" && !Array.isArray(value.footer_fields)) {
@@ -101,8 +99,6 @@ function settingsStatePayload(root) {
             local_devnet_enabled: localNodesEnabled === true && localDevnetEnabled === true,
             settings_backup_encrypted: settingsBackupEncrypted === true,
             blockchain_refresh_rate: root.canonicalRefreshRate(blockchainRefreshRate),
-            indexer_refresh_rate: root.canonicalRefreshRate(indexerRefreshRate),
-            execution_refresh_rate: root.canonicalRefreshRate(executionRefreshRate),
             messaging_refresh_rate: root.canonicalRefreshRate(messagingRefreshRate),
             storage_refresh_rate: root.canonicalRefreshRate(storageRefreshRate),
             footer_fields: footerFieldSelections || {},

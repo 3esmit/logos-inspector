@@ -1,15 +1,11 @@
 mod planner;
 
 use anyhow::{Context as _, Result, bail};
-use logos_inspector::local_nodes::bootstrap_default_local_indexer;
 use planner::{GuiLaunchTarget, plan_launch};
 use std::{path::Path, process::Command};
 
 pub fn run() -> Result<()> {
-    let plan = plan_launch()?;
-    if plan.bootstrap_default_local_indexer {
-        bootstrap_default_local_indexer()?;
-    }
+    let plan = plan_launch();
 
     match plan.target {
         GuiLaunchTarget::StandaloneProgram(program) => {

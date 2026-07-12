@@ -6,7 +6,7 @@ use crate::source_routing::{NetworkEndpoints, resolve_network_endpoints};
 
 #[derive(Debug, Parser)]
 #[command(name = "logos-inspector")]
-#[command(about = "Inspect Logos Blockchain and Logos Execution Zone networks")]
+#[command(about = "Inspect Logos networks")]
 pub struct Args {
     #[command(subcommand)]
     pub mode: Option<Mode>,
@@ -32,43 +32,6 @@ impl CliArgs {
 
 #[derive(Debug, Subcommand)]
 pub(super) enum CliCommand {
-    Overview(EndpointArgs),
-    Health(SequencerArgs),
-    Head(SequencerArgs),
-    Programs(SequencerArgs),
-    Block {
-        block_id: u64,
-        #[command(flatten)]
-        endpoints: SequencerArgs,
-    },
-    Tx {
-        hash: String,
-        #[command(flatten)]
-        endpoints: SequencerArgs,
-    },
-    InspectTx {
-        hash: String,
-        #[arg(long)]
-        idl: Option<String>,
-        #[command(flatten)]
-        endpoints: SequencerArgs,
-    },
-    TraceTx {
-        hash: String,
-        #[arg(long)]
-        idl: Option<String>,
-        #[command(flatten)]
-        endpoints: SequencerArgs,
-    },
-    Account {
-        account_id: String,
-        #[arg(long)]
-        idl: Option<String>,
-        #[arg(long)]
-        idl_account: Option<String>,
-        #[command(flatten)]
-        endpoints: EndpointArgs,
-    },
     DecodeAccount {
         #[arg(long)]
         data_hex: String,
@@ -216,41 +179,12 @@ pub struct EndpointArgs {
     #[arg(long, visible_alias = "network", value_name = "PROFILE")]
     pub(super) profile: Option<String>,
     #[arg(long)]
-    pub(super) sequencer_url: Option<String>,
-    #[arg(long)]
-    pub(super) indexer_url: Option<String>,
-    #[arg(long)]
     pub(super) node_url: Option<String>,
-}
-
-#[derive(Debug, Clone, ClapArgs)]
-pub struct SequencerArgs {
-    #[arg(long, visible_alias = "network", value_name = "PROFILE")]
-    profile: Option<String>,
-    #[arg(long)]
-    sequencer_url: Option<String>,
 }
 
 impl EndpointArgs {
     pub(super) fn endpoints(&self) -> Result<NetworkEndpoints> {
-        resolve_network_endpoints(
-            self.profile.as_deref(),
-            self.sequencer_url.as_deref(),
-            self.indexer_url.as_deref(),
-            self.node_url.as_deref(),
-        )
-    }
-}
-
-impl SequencerArgs {
-    pub(super) fn sequencer_url(&self) -> Result<String> {
-        Ok(resolve_network_endpoints(
-            self.profile.as_deref(),
-            self.sequencer_url.as_deref(),
-            None,
-            None,
-        )?
-        .sequencer_endpoint)
+        resolve_network_endpoints(self.profile.as_deref(), self.node_url.as_deref())
     }
 }
 

@@ -85,17 +85,6 @@ pub(super) fn all_sub_capabilities(sub_capabilities: &[&str]) -> Vec<String> {
         .collect()
 }
 
-pub(super) fn capability_state_usable(state: &CapabilityState) -> bool {
-    matches!(state.status, "available" | "degraded")
-}
-
-pub(super) fn state_marks_unavailable(state: &CapabilityState, capability: &str) -> bool {
-    state
-        .unavailable_sub_capabilities
-        .iter()
-        .any(|unavailable| unavailable == capability)
-}
-
 pub(super) fn remove_unavailable(target: &mut Vec<String>, key: &str) {
     target.retain(|value| value != key);
 }

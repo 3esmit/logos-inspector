@@ -20,8 +20,6 @@ TestCase {
     QtObject {
         id: model
 
-        property string sequencerUrl: "https://seq/"
-        property string indexerUrl: "https://idx/"
         property string nodeUrl: "https://node/"
         property string networkProfile: "default"
         property var sourceRouting: sourceRouting
@@ -29,8 +27,8 @@ TestCase {
         property string localWalletStatusError: ""
         property bool settingsBackupEncrypted: false
 
-        function inferNetworkProfileFromEndpoints(sequencer, indexer, node) {
-            return String(sequencer || "").indexOf("custom") >= 0 || String(indexer || "").indexOf("custom") >= 0 || String(node || "").indexOf("custom") >= 0
+        function inferNetworkProfileFromEndpoint(node) {
+            return String(node || "").indexOf("custom") >= 0
                 ? "custom"
                 : "default"
         }
@@ -62,8 +60,8 @@ TestCase {
             error: "error"
         })
 
-        function inferProfile(sequencer, indexer, node) {
-            return model.inferNetworkProfileFromEndpoints(sequencer, indexer, node)
+        function inferProfile(node) {
+            return model.inferNetworkProfileFromEndpoint(node)
         }
     }
 
@@ -73,8 +71,6 @@ TestCase {
     function init() {
         profileOptions.clear()
         sourceOptions.clear()
-        model.sequencerUrl = "https://seq/"
-        model.indexerUrl = "https://idx/"
         model.nodeUrl = "https://node/"
         model.networkProfile = "default"
         model.localWalletStatus = null
@@ -93,9 +89,9 @@ TestCase {
     }
 
     function test_endpoint_update_syncs_profile() {
-        SettingsProfileWorkspace.updateEndpoint(root, "sequencerUrl", "https://custom-seq/")
+        SettingsProfileWorkspace.updateEndpoint(root, "nodeUrl", "https://custom-node/")
 
-        compare(model.sequencerUrl, "https://custom-seq/")
+        compare(model.nodeUrl, "https://custom-node/")
         compare(model.networkProfile, "custom")
     }
 

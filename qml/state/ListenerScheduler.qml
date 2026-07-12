@@ -153,10 +153,6 @@ QtObject {
         switch (String(kind || "")) {
         case "blockchain":
             return Number(model.blockchainRefreshRate || 0)
-        case "indexer":
-            return Number(model.indexerRefreshRate || 0)
-        case "execution":
-            return Number(model.executionRefreshRate || 0)
         case "messaging":
             return Number(model.messagingRefreshRate || 0)
         case "storage":

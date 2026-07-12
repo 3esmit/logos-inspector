@@ -80,16 +80,15 @@ function contract() {
     }, {
         key: "navigation",
         facade: "EntityNavigationSession",
-        owner: "chainPages",
-        ownerLabel: "Network inspection state",
+        owner: "entityNavigation",
+        ownerLabel: "Entity navigation session",
         status: "compatibility",
         migration: "active",
         members: [
             "routeSearch",
             "openStorageCid",
-            "openAccount",
-            "openTransaction",
-            "openProgram",
+            "openBlockchainBlock",
+            "openMantleTransaction",
             "openLocalWallet"
         ]
     }]

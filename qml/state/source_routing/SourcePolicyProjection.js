@@ -139,27 +139,6 @@ function coreSourceArgs(root, sourceMode, endpoint, extra) {
     return [String(endpoint || "")].concat(rest)
 }
 
-function accountLookupArgs(root, executionSourceMode, sequencerEndpoint, indexerSourceMode, indexerEndpoint, account, idlJson, accountType) {
-    const suffix = [String(account || "")]
-    const idl = String(idlJson || "").trim()
-    if (idl.length > 0) {
-        suffix.push(idl)
-        if (accountType !== undefined && accountType !== null && String(accountType).trim().length > 0) {
-            suffix.push(String(accountType).trim())
-        }
-    }
-    const executionMode = String(sourceModePolicy(root, "core", resolvedSourceModeKey(root, "core", executionSourceMode)).effective || "rpc")
-    const indexerMode = String(sourceModePolicy(root, "core", resolvedSourceModeKey(root, "core", indexerSourceMode)).effective || "rpc")
-    if (executionMode === "module" || indexerMode === "module") {
-        return [executionMode, String(sequencerEndpoint || ""), indexerMode, String(indexerEndpoint || "")].concat(suffix)
-    }
-    return [String(sequencerEndpoint || ""), String(indexerEndpoint || "")].concat(suffix)
-}
-
-function lezLookupArgs(root, executionSourceMode, sequencerEndpoint, indexerSourceMode, indexerEndpoint, target) {
-    return accountLookupArgs(root, executionSourceMode, sequencerEndpoint, indexerSourceMode, indexerEndpoint, target, "", "")
-}
-
 function deliverySourceReportArgs(root, sourceMode, restEndpoint, metricsEndpoint) {
     return [
         String(sourceModePolicy(root, "delivery", resolvedSourceModeKey(root, "delivery", sourceMode)).effective || "rest"),

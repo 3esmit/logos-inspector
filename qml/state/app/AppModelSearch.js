@@ -1,5 +1,4 @@
 .import "../../services/BridgeHelpers.js" as BridgeHelpers
-.import "../chain/LezTargetNavigation.js" as LezTargetNavigation
 
 function refreshDashboard(root) {
     with (root) {
@@ -72,7 +71,7 @@ function projectZoneDashboard(root) {
         const context = state ? state.activeZoneContext : null
         if (!state || !context) {
             dashboardOverview = null
-            dashboardSequencerBlocks = []
+            dashboardProvisionalBlocks = []
             dashboardBlocks = []
             dashboardLezBlockRows = []
             return
@@ -108,7 +107,7 @@ function projectZoneDashboard(root) {
         }
         const projected = zoneDashboardRows(state)
         dashboardLezBlockRows = projected.slice(0, 5)
-        dashboardSequencerBlocks = projected.filter(function (row) {
+        dashboardProvisionalBlocks = projected.filter(function (row) {
             return Array.isArray(row.source_roles)
                 && row.source_roles.indexOf("sequencer") >= 0
         })
@@ -131,7 +130,7 @@ function projectZoneDashboard(root) {
                         + ":" + String(l2.latest_block_hash), null) : null
             }
             dashboardLezBlockRows = [synthetic]
-            dashboardSequencerBlocks = [synthetic]
+            dashboardProvisionalBlocks = [synthetic]
             if (finalizedBlock !== null && Number(finalizedBlock) === Number(latestBlock)) {
                 synthetic.source_roles.push("indexer")
                 dashboardBlocks = [synthetic]
@@ -212,8 +211,6 @@ function updateDashboardCache(root, method, value) {
             dashboardL1Blocks = value && Array.isArray(value.blocks) ? value.blocks : []
         } else if (method === "blockchainModuleReport") {
             blockchainModuleReport = value || null
-        } else if (method === "account") {
-            accountDetailValue = value || null
         } else if (method === "storageReport") {
             storageModuleReport = value || null
         } else if (method === "storageSourceReport") {
@@ -248,11 +245,6 @@ function routeSearch(root, query) {
         const view = viewKeyForQuery(value)
         if (view.length > 0) {
             selectView(view)
-            return
-        }
-
-        if (root.programIdKnown(value) && !/^(0x)?[0-9a-fA-F]{64}$/.test(value)) {
-            openProgram(value)
             return
         }
 
@@ -507,18 +499,6 @@ function inspectionDetailTab(entityKind) {
     return "l2"
 }
 
-function numericSearchUsesLezBlock(root) {
-    with (root) {
-        const view = String(currentView || "")
-        if (root.layerForView(view) === "l2") {
-            return true
-        }
-        return view === "l2Blocks" || view === "l2Transactions" || view === "l2BlockDetail"
-            || view === "l2TransactionDetail" || view === "sequencer" || view === "accounts"
-            || view === "programs" || view === "transferActivity" || view === "indexer"
-    }
-}
-
 function routePrefixedSearch(root, query) {
     with (root) {
         const parsed = searchPrefix(query)
@@ -528,10 +508,6 @@ function routePrefixedSearch(root, query) {
 
         const prefix = parsed.prefix
         const target = parsed.target
-        if ((prefix === "l1" || prefix === "slot" || prefix === "bedrock" || prefix === "cryptarchia") && target.length > 0) {
-            openBlockchainBlock(target)
-            return true
-        }
         if (prefix === "mantle") {
             if (target.length > 0) {
                 openMantleTransaction(target)
@@ -540,56 +516,8 @@ function routePrefixedSearch(root, query) {
             }
             return true
         }
-        if (prefix === "channel") {
-            if (target.length > 0) {
-                openChannel(target)
-            } else {
-                selectView("channels")
-            }
-            return true
-        }
-        if (prefix === "l2" || prefix === "lez" || prefix === "block") {
-            if (target.length > 0) {
-                openLezSearchTarget(target)
-            } else {
-                selectView("l2Blocks")
-            }
-            return true
-        }
-        if (prefix === "tx" || prefix === "transaction") {
-            if (target.length > 0) {
-                openLezTransaction(target)
-            } else {
-                selectView("l2Transactions")
-            }
-            return true
-        }
-        if (prefix === "account") {
-            if (target.length > 0) {
-                openAccount(target)
-            } else {
-                selectView("accounts")
-            }
-            return true
-        }
-        if (prefix === "public") {
-            if (target.length > 0) {
-                openAccount(target.indexOf("Public/") === 0 ? target : "Public/" + target)
-            } else {
-                selectView("accounts")
-            }
-            return true
-        }
         if (prefix === "private") {
             openPrivateAccountReference(target.length > 0 && target.indexOf("Private/") !== 0 ? "Private/" + target : target)
-            return true
-        }
-        if (prefix === "recipient") {
-            if (target.length > 0) {
-                openRecipient(target)
-            } else {
-                selectView("transferActivity")
-            }
             return true
         }
         if (prefix === "wallet") {
@@ -606,14 +534,6 @@ function routePrefixedSearch(root, query) {
         }
         if (prefix === "l1-wallet" || prefix === "note") {
             openLocalWallet(target, "bedrockNotes")
-            return true
-        }
-        if (prefix === "program") {
-            if (target.length > 0) {
-                openProgram(target)
-            } else {
-                selectView("programs")
-            }
             return true
         }
         if (prefix === "module") {
@@ -642,11 +562,8 @@ function searchPrefix(root, query) {
 function isSearchPrefix(root, prefix) {
     with (root) {
         const value = String(prefix || "").toLowerCase()
-        return value === "l1" || value === "slot" || value === "bedrock" || value === "cryptarchia"
-            || value === "mantle" || value === "channel" || value === "l2" || value === "lez"
-            || value === "block" || value === "tx" || value === "transaction" || value === "account"
-            || value === "public" || value === "private" || value === "program" || value === "wallet"
-            || value === "l1-wallet" || value === "note" || value === "recipient" || value === "module"
+        return value === "mantle" || value === "private" || value === "wallet"
+            || value === "l1-wallet" || value === "note" || value === "module"
             || value === "cid" || value === "storage"
     }
 }
@@ -705,77 +622,6 @@ function routeModuleSearchTarget(root, target) {
     }
 }
 
-function resolveSearchHash(root, hash) {
-    with (root) {
-        const value = String(hash || "").trim()
-        if (!value.length) {
-            return
-        }
-
-        pushNavigationHistory()
-        const serial = searchResolveSerial + 1
-        searchResolveSerial = serial
-        statusText = qsTr("Search")
-        requestModuleAsync(inspectorModule, "resolveLezTarget", root.lezLookupArgs(value), qsTr("LEZ lookup"), false, function (response) {
-            if (serial !== searchResolveSerial) {
-                return
-            }
-            if (root.applyResolvedLezTarget(response, qsTr("Search"))) {
-                return
-            }
-            setResult(qsTr("Search"), response.error || qsTr("No block, transaction, or account found."), true, null)
-        })
-    }
-}
-
-function applyResolvedLezTarget(root, response, errorTitle) {
-    return LezTargetNavigation.applyResolvedTarget(root, response, errorTitle)
-}
-
-function resolveSearchTransaction(root, serial, hash, recordHistory) {
-    with (root) {
-        if (recordHistory !== false) {
-            pushNavigationHistory()
-        }
-        requestModuleAsync(inspectorModule, "inspectTransaction", root.executionArgs([hash]), qsTr("Transaction inspection"), false, function (response) {
-            if (serial !== searchResolveSerial) {
-                return
-            }
-            if (response.ok && response.value !== null && response.value !== undefined) {
-                selectView("l2TransactionDetail", false)
-                transactionDetailValue = response.value
-                lezTransactionsPageError = ""
-                setResult(qsTr("LEZ transaction"), response.text, false, response.value)
-                root.autoDecodeTransactionDetail(response.value)
-                return
-            }
-            root.resolveSearchAccount(serial, hash, false)
-        })
-    }
-}
-
-function resolveSearchAccount(root, serial, account, recordHistory) {
-    with (root) {
-        if (recordHistory !== false) {
-            pushNavigationHistory()
-        }
-        requestModuleAsync(inspectorModule, "account", root.accountLookupArgs(account), qsTr("Account lookup"), false, function (response) {
-            if (serial !== searchResolveSerial) {
-                return
-            }
-            selectView("accounts", false)
-            accountTab = "lookup"
-            if (response.ok) {
-                accountDetailValue = response.value || null
-                setResult(qsTr("Account lookup"), response.text, false, response.value)
-            } else {
-                accountDetailValue = null
-                setResult(qsTr("Search"), response.error || qsTr("No block, transaction, or account found."), true, null)
-            }
-        })
-    }
-}
-
 function viewKeyForQuery(root, query) {
     with (root) {
         const normalized = String(query || "").trim().toLowerCase()
@@ -795,29 +641,21 @@ function viewKeyForQuery(root, query) {
         if (normalized === "transaction" || normalized === "tx" || normalized === "txs" || normalized === "latest transactions") {
             return "transactions"
         }
-        if (normalized === "l2 transaction" || normalized === "l2 transactions" || normalized === "lez transaction" || normalized === "lez transactions") {
-            return "l2Transactions"
-        }
         if (normalized === "wallet" || normalized === "local wallet" || normalized === "wallets") {
             return "localWallet"
         }
-        if (normalized === "recipient" || normalized === "recipients" || normalized === "transfer" || normalized === "transfers" || normalized === "transfer activity") {
-            return "transferActivity"
-        }
-        if (normalized === "channel") {
-            return "channels"
-        }
-        if (normalized === "account" || normalized === "public account") {
-            return "accounts"
-        }
-        if (normalized === "spel" || normalized === "program" || normalized === "programs") {
-            return "programs"
-        }
-        if (normalized === "l2" || normalized === "lez" || normalized === "sequencer" || normalized === "l2 blocks" || normalized === "lez blocks") {
-            return "l2Blocks"
-        }
-        if (normalized === "indexer" || normalized === "lez indexer" || normalized === "indexer diagnostics") {
-            return "indexer"
+        if (normalized === "zone" || normalized === "channel" || normalized === "l2"
+                || normalized === "lez" || normalized === "sequencer"
+                || normalized === "indexer" || normalized === "account"
+                || normalized === "public account" || normalized === "spel"
+                || normalized === "program" || normalized === "programs"
+                || normalized === "recipient" || normalized === "recipients"
+                || normalized === "transfer" || normalized === "transfers"
+                || normalized === "transfer activity" || normalized === "l2 blocks"
+                || normalized === "lez blocks" || normalized === "l2 transaction"
+                || normalized === "l2 transactions" || normalized === "lez transaction"
+                || normalized === "lez transactions") {
+            return "zones"
         }
         if (normalized === "chain" || normalized === "base chain" || normalized === "node" || normalized === "consensus" || normalized === "bedrock node" || normalized === "node diagnostics") {
             return "blockchain"
@@ -855,12 +693,6 @@ function settingsTargetForQuery(root, query) {
         }
         if (normalized === "blockchain rpc" || normalized === "node rpc" || normalized === "chain rpc" || normalized === "base chain rpc") {
             return { section: "network", subsection: "blockchain" }
-        }
-        if (normalized === "indexer rpc") {
-            return { section: "network", subsection: "indexer" }
-        }
-        if (normalized === "execution" || normalized === "execution zone" || normalized === "lez rpc" || normalized === "sequencer node" || normalized === "sequencer rpc") {
-            return { section: "network", subsection: "execution" }
         }
         if (normalized === "messaging rpc" || normalized === "delivery rpc" || normalized === "delivery settings") {
             return { section: "network", subsection: "messaging" }

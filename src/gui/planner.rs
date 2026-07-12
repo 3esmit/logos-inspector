@@ -3,15 +3,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::Result;
-use logos_inspector::local_nodes::default_local_indexer_requested_by_saved_settings;
-
-const ENABLE_INDEXER_AUTO_BOOTSTRAP_ENV: &str = "LOGOS_INSPECTOR_ENABLE_INDEXER_AUTO_BOOTSTRAP";
 const STANDALONE_GUI_ENV: &str = "LOGOS_INSPECTOR_STANDALONE_GUI";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct GuiLaunchPlan {
-    pub(crate) bootstrap_default_local_indexer: bool,
     pub(crate) target: GuiLaunchTarget,
 }
 
@@ -23,27 +18,17 @@ pub(crate) enum GuiLaunchTarget {
 
 #[derive(Debug, Clone)]
 struct GuiLaunchInputs {
-    enable_indexer_auto_bootstrap: bool,
-    saved_settings_request_default_local_indexer: bool,
     standalone_override: Option<PathBuf>,
     current_exe: Option<PathBuf>,
     manifest_dir: PathBuf,
 }
 
-pub(crate) fn plan_launch() -> Result<GuiLaunchPlan> {
-    let enable_indexer_auto_bootstrap = env::var_os(ENABLE_INDEXER_AUTO_BOOTSTRAP_ENV).is_some();
-    let saved_settings_request_default_local_indexer = if enable_indexer_auto_bootstrap {
-        default_local_indexer_requested_by_saved_settings()?
-    } else {
-        false
-    };
-    Ok(plan_launch_from_inputs(&GuiLaunchInputs {
-        enable_indexer_auto_bootstrap,
-        saved_settings_request_default_local_indexer,
+pub(crate) fn plan_launch() -> GuiLaunchPlan {
+    plan_launch_from_inputs(&GuiLaunchInputs {
         standalone_override: env::var_os(STANDALONE_GUI_ENV).map(PathBuf::from),
         current_exe: env::current_exe().ok(),
         manifest_dir: PathBuf::from(env!("CARGO_MANIFEST_DIR")),
-    }))
+    })
 }
 
 fn plan_launch_from_inputs(inputs: &GuiLaunchInputs) -> GuiLaunchPlan {
@@ -52,11 +37,7 @@ fn plan_launch_from_inputs(inputs: &GuiLaunchInputs) -> GuiLaunchPlan {
         .unwrap_or_else(|| GuiLaunchTarget::Nix {
             flake_ref: format!("path:{}#standalone", inputs.manifest_dir.display()),
         });
-    GuiLaunchPlan {
-        bootstrap_default_local_indexer: inputs.enable_indexer_auto_bootstrap
-            && inputs.saved_settings_request_default_local_indexer,
-        target,
-    }
+    GuiLaunchPlan { target }
 }
 
 fn standalone_program(inputs: &GuiLaunchInputs) -> Option<PathBuf> {
@@ -109,25 +90,21 @@ mod tests {
     };
 
     #[test]
-    fn launch_plan_selects_standalone_override_and_bootstrap() -> Result<()> {
+    fn launch_plan_selects_standalone_override() -> Result<()> {
         let dir = temp_test_dir("override");
         fs::create_dir_all(&dir)?;
         let override_program = dir.join("custom-gui");
         touch(&override_program)?;
         let inputs = GuiLaunchInputs {
-            enable_indexer_auto_bootstrap: true,
-            saved_settings_request_default_local_indexer: true,
             standalone_override: Some(override_program.clone()),
             current_exe: None,
             manifest_dir: dir.clone(),
         };
 
         let plan = plan_launch_from_inputs(&inputs);
-        let bootstraps = plan.bootstrap_default_local_indexer;
         let target = plan.target;
 
         cleanup_temp_dir(&dir)?;
-        ensure!(bootstraps, "expected indexer bootstrap");
         ensure!(
             target == GuiLaunchTarget::StandaloneProgram(override_program),
             "unexpected launch target"
@@ -138,8 +115,6 @@ mod tests {
     #[test]
     fn launch_plan_falls_back_to_nix_without_standalone_program() {
         let inputs = GuiLaunchInputs {
-            enable_indexer_auto_bootstrap: true,
-            saved_settings_request_default_local_indexer: false,
             standalone_override: None,
             current_exe: None,
             manifest_dir: PathBuf::from("/repo"),
@@ -147,7 +122,6 @@ mod tests {
 
         let plan = plan_launch_from_inputs(&inputs);
 
-        assert!(!plan.bootstrap_default_local_indexer);
         assert_eq!(
             plan.target,
             GuiLaunchTarget::Nix {

@@ -10,14 +10,6 @@ function referenceTarget(session, kind, value, payload) {
     case "blockNumber":
     case "slot":
         return { command: "blockchainBlock", target: target, payload: payload === undefined ? target : payload }
-    case "indexerBlock":
-        return { command: "indexerBlock", target: target, payload: payload }
-    case "lezBlock":
-        return { command: "lezBlock", target: target, payload: undefined }
-    case "transaction":
-    case "transactionHash":
-    case "tx":
-        return { command: "transaction", target: target, payload: undefined }
     case "mantleTransaction":
         return { command: "mantleTransaction", target: target, payload: undefined }
     case "wallet":
@@ -28,16 +20,20 @@ function referenceTarget(session, kind, value, payload) {
     case "bedrockWallet":
     case "note":
         return { command: "localWallet", target: target, tab: "bedrockNotes", payload: undefined }
-    case "recipient":
-    case "transferRecipient":
-        return { command: "recipient", target: target, payload: undefined }
+    case "indexerBlock":
+    case "lezBlock":
+        return { command: "search", target: "l2:" + target, payload: undefined }
+    case "transaction":
+    case "transactionHash":
+    case "tx":
+        return { command: "search", target: "tx:" + target, payload: undefined }
     case "channel":
-        return { command: "channel", target: target, payload: payload === undefined ? target : payload }
+        return { command: "search", target: "channel:" + target, payload: undefined }
     case "account":
     case "signer":
-        return { command: "account", target: target, payload: undefined }
+        return { command: "search", target: "account:" + target, payload: undefined }
     case "program":
-        return { command: "program", target: target, payload: undefined }
+        return { command: "search", target: "program:" + target, payload: undefined }
     default:
         return { command: "search", target: target, payload: undefined }
     }
@@ -49,15 +45,6 @@ function openReference(session, kind, value, payload) {
     case "blockchainBlock":
         session.openBlockchainBlock(target.payload)
         return
-    case "indexerBlock":
-        session.openIndexerBlock(target.target, target.payload)
-        return
-    case "lezBlock":
-        session.openLezBlock(target.target)
-        return
-    case "transaction":
-        session.openTransaction(target.target)
-        return
     case "mantleTransaction":
         session.openMantleTransaction(target.target)
         return
@@ -66,18 +53,6 @@ function openReference(session, kind, value, payload) {
         return
     case "privateAccount":
         session.openPrivateAccountReference(target.target)
-        return
-    case "recipient":
-        session.openRecipient(target.target)
-        return
-    case "channel":
-        session.openChannel(target.payload)
-        return
-    case "account":
-        session.openAccount(target.target)
-        return
-    case "program":
-        session.openProgram(target.target)
         return
     case "search":
         session.routeSearch(target.target)

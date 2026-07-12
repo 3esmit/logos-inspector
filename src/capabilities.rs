@@ -132,7 +132,7 @@ fn capabilities(
         .map(|spec| {
             let default = default_connector(build_mode, spec.key);
             let connector = resolved_connector(build_mode, inputs, spec.key, default);
-            let state = capability_state(build_mode, inputs, spec, &connector);
+            let state = capability_state(inputs, spec, &connector);
             CapabilityReport {
                 key: spec.key,
                 label: spec.label,
@@ -157,8 +157,9 @@ fn resolved_connector(
     default: &str,
 ) -> ResolvedConnector {
     match capability_key {
-        "l1" | "lez.indexer" | "lez.sequencer" | "storage" | "delivery" | "wallet.l1"
-        | "wallet.l2" => inputs.connector_for(build_mode, capability_key),
+        "l1" | "storage" | "delivery" | "wallet.l1" | "wallet.l2" => {
+            inputs.connector_for(build_mode, capability_key)
+        }
         _ => ResolvedConnector::build_default(default),
     }
 }
@@ -191,8 +192,6 @@ mod tests {
             serde_json::to_value(capability_registry_report(CapabilityBuildMode::Basecamp))?;
 
         assert_default(&value, "l1", "blockchain_module")?;
-        assert_default(&value, "lez.indexer", "lez_indexer_module")?;
-        assert_default(&value, "lez.sequencer", "direct_sequencer_rpc")?;
         assert_default(&value, "storage", "storage_module")?;
         assert_default(&value, "delivery", "delivery_module")?;
         assert_default(&value, "wallet.l1", "blockchain_module")?;
@@ -205,13 +204,12 @@ mod tests {
         let value =
             serde_json::to_value(capability_registry_report(CapabilityBuildMode::Standalone))?;
 
-        for key in ["l1", "lez.indexer", "storage", "delivery"] {
+        for key in ["l1", "storage", "delivery"] {
             let connector = default_connector_for(&value, key)?;
             if connector.ends_with("_module") {
                 bail!("standalone capability `{key}` defaulted to module connector");
             }
         }
-        assert_default(&value, "lez.sequencer", "direct_sequencer_rpc")?;
         Ok(())
     }
 
@@ -329,67 +327,6 @@ mod tests {
         };
         if ready_l1.get("status").and_then(Value::as_str) != Some("available") {
             bail!("l1 should be available with healthy provider probe: {ready_l1}");
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn runtime_inputs_compose_lez_from_child_provider_reports() -> Result<()> {
-        let inputs = serde_json::json!({
-            "indexer_url": "http://127.0.0.1:8081",
-            "sequencer_url": "http://127.0.0.1:8082",
-            "source_reports": {
-                "indexer": {
-                    "health": {
-                        "ready": true,
-                        "reachable": true,
-                        "status": "ready",
-                        "detail": "indexer reachable"
-                    }
-                },
-                "execution": {
-                    "health": {
-                        "ready": false,
-                        "reachable": false,
-                        "status": "unavailable",
-                        "detail": "sequencer refused connection"
-                    },
-                    "probe_facts": [
-                        {
-                            "key": "execution.connection",
-                            "ok": false,
-                            "error": "sequencer refused connection"
-                        }
-                    ]
-                }
-            }
-        });
-        let value = serde_json::to_value(capability_registry_report_with_value(
-            CapabilityBuildMode::Standalone,
-            Some(&inputs),
-        ))?;
-        let Some(lez) = capability_for(&value, "lez") else {
-            bail!("lez capability missing: {value}");
-        };
-        if lez.get("status").and_then(Value::as_str) != Some("degraded") {
-            bail!("lez should degrade when sequencer probe fails: {lez}");
-        }
-        let unavailable = lez
-            .get("unavailable_sub_capabilities")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        if !unavailable
-            .iter()
-            .any(|value| value.as_str() == Some("lez.sequencer.health"))
-        {
-            bail!("lez should mark sequencer sub-capabilities unavailable: {lez}");
-        }
-        if unavailable
-            .iter()
-            .any(|value| value.as_str() == Some("lez.indexer.blocks.finalized.read"))
-        {
-            bail!("lez should keep indexer sub-capabilities available: {lez}");
         }
         Ok(())
     }
@@ -852,64 +789,6 @@ mod tests {
         }
         if !unavailable_contains(diagnostics, "diagnostics.storage.read") {
             bail!("missing storage evidence should block storage diagnostics: {diagnostics}");
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn diagnostics_lez_source_reports_drive_matching_sub_capabilities() -> Result<()> {
-        let inputs = serde_json::json!({
-            "diagnostics_reports": {
-                "source_reports": {
-                    "lez.indexer": {
-                        "health": {
-                            "ready": true,
-                            "reachable": true,
-                            "status": "ready",
-                            "detail": "indexer reachable"
-                        },
-                        "probe_facts": [{
-                            "key": "indexer.connection",
-                            "ok": true
-                        }]
-                    },
-                    "lez.sequencer": {
-                        "health": {
-                            "ready": false,
-                            "reachable": false,
-                            "status": "unavailable",
-                            "detail": "sequencer refused connection"
-                        },
-                        "probe_facts": [{
-                            "key": "execution.connection",
-                            "ok": false,
-                            "error": "sequencer refused connection"
-                        }]
-                    }
-                }
-            }
-        });
-        let value = serde_json::to_value(capability_registry_report_with_value(
-            CapabilityBuildMode::Standalone,
-            Some(&inputs),
-        ))?;
-        let Some(diagnostics) = capability_for(&value, "diagnostics") else {
-            bail!("diagnostics capability missing: {value}");
-        };
-
-        if diagnostics.get("status").and_then(Value::as_str) != Some("degraded") {
-            bail!("LEZ sequencer probe failure should degrade diagnostics: {diagnostics}");
-        }
-        if unavailable_contains(diagnostics, "diagnostics.lez.indexer.read") {
-            bail!(
-                "LEZ indexer diagnostics evidence should enable indexer diagnostics: {diagnostics}"
-            );
-        }
-        if !unavailable_contains(diagnostics, "diagnostics.lez.sequencer.read") {
-            bail!("LEZ sequencer probe failure should block sequencer diagnostics: {diagnostics}");
-        }
-        if !compact_errors_contain(diagnostics, "sequencer refused connection") {
-            bail!("LEZ sequencer probe error should be preserved: {diagnostics}");
         }
         Ok(())
     }

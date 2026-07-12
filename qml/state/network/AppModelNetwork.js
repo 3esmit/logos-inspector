@@ -1,4 +1,3 @@
-.import "../../services/BridgeHelpers.js" as BridgeHelpers
 .import "../source_routing/SourceHealthProjection.js" as SourceHealthProjection
 .import "../source_routing/SourceRoutingUi.js" as SourceRoutingUi
 
@@ -12,8 +11,6 @@ function dashboardRefreshInterval(root) {
     with (root) {
         const rates = [
             blockchainRefreshRate,
-            indexerRefreshRate,
-            executionRefreshRate,
             messagingRefreshRate,
             storageRefreshRate
         ]
@@ -78,10 +75,6 @@ function networkConnectionRate(root, kind) {
         switch (kind) {
         case "blockchain":
             return root.canonicalRefreshRate(blockchainRefreshRate)
-        case "indexer":
-            return root.canonicalRefreshRate(indexerRefreshRate)
-        case "execution":
-            return root.canonicalRefreshRate(executionRefreshRate)
         case "messaging":
             return root.canonicalRefreshRate(messagingRefreshRate)
         case "storage":
@@ -98,12 +91,6 @@ function setNetworkConnectionRate(root, kind, seconds) {
         switch (kind) {
         case "blockchain":
             blockchainRefreshRate = value
-            return
-        case "indexer":
-            indexerRefreshRate = value
-            return
-        case "execution":
-            executionRefreshRate = value
             return
         case "messaging":
             messagingRefreshRate = value
@@ -147,111 +134,11 @@ function queryNetworkConnection(root, kind, showResult, includeSensitiveProbe) {
     }
 }
 
-function refreshIndexerStatus(root) {
-    with (root) {
-        const statusResponse = root.requestModule(root.inspectorModule, "indexerStatus", root.indexerArgs([]), qsTr("Indexer status"), false, false)
-        if (!statusResponse.ok) {
-            root.setResult(qsTr("Indexer status"), statusResponse.error, true, null)
-            return statusResponse
-        }
-
-        const statusValue = statusResponse.value && typeof statusResponse.value === "object" && !Array.isArray(statusResponse.value)
-            ? root.copyMap(statusResponse.value)
-            : { state: root.valueToString(statusResponse.value) }
-        if (!root.indexerStatusNeedsFallback(statusValue)) {
-            root.updateNetworkConnectionStatus("indexer", statusResponse)
-            root.setResult(qsTr("Indexer status"), statusResponse.text, false, statusResponse.value)
-            return statusResponse
-        }
-
-        const healthResponse = root.requestModule(root.inspectorModule, "indexerHealth", root.indexerArgs([]), qsTr("Indexer health"), false, false)
-        const headResponse = root.requestModule(root.inspectorModule, "indexerFinalizedHead", root.indexerArgs([]), qsTr("Indexer head"), false, false)
-        if (statusValue.indexedBlockId === undefined && headResponse.ok === true) {
-            const head = root.scalarValue(headResponse.value)
-            if (head !== null) {
-                statusValue.indexedBlockId = head
-            }
-        }
-        if ((statusValue.lastError === undefined || statusValue.lastError === null || statusValue.lastError === "")
-                && (healthResponse.ok !== true || headResponse.ok !== true)) {
-            const errors = []
-            if (healthResponse.ok !== true && healthResponse.error) {
-                errors.push(String(healthResponse.error))
-            }
-            if (headResponse.ok !== true && headResponse.error) {
-                errors.push(String(headResponse.error))
-            }
-            if (errors.length > 0) {
-                statusValue.lastError = errors.join("\n")
-            }
-        }
-
-        const fallbackValue = {
-            status: statusValue,
-            indexer: {
-                endpoint: indexerUrl,
-                health: root.probeFieldFromResponse(healthResponse),
-                head: root.probeFieldFromResponse(headResponse),
-                programs: null
-            }
-        }
-        root.updateNetworkConnectionStatus("indexer", {
-            ok: true,
-            value: fallbackValue,
-            text: BridgeHelpers.formatValue(fallbackValue),
-            error: ""
-        })
-        root.setResult(qsTr("Indexer status"), BridgeHelpers.formatValue(fallbackValue), false, fallbackValue)
-        return {
-            ok: true,
-            value: fallbackValue,
-            text: BridgeHelpers.formatValue(fallbackValue),
-            error: ""
-        }
-    }
-}
-
-function indexerStatusNeedsFallback(root, value) {
-    with (root) {
-        const status = value && value.status && typeof value.status === "object" ? value.status : value
-        if (!status || typeof status !== "object") {
-            return false
-        }
-        const state = String(status.state || "").toLowerCase()
-        const error = String(status.lastError || status.last_error || "").toLowerCase()
-        return state === "unavailable"
-            || state === "unsupported"
-            || error.indexOf("method not found") >= 0
-            || error.indexOf("-32601") >= 0
-    }
-}
-
-function probeFieldFromResponse(root, response) {
-    with (root) {
-        if (response && response.ok === true) {
-            return {
-                ok: true,
-                value: response.value === undefined ? null : response.value,
-                error: null
-            }
-        }
-        return {
-            ok: false,
-            value: null,
-            error: response && response.error ? String(response.error) : qsTr("unavailable")
-        }
-    }
-}
-
 function networkConnectionRequest(root, kind, includeSensitiveProbe) {
     with (root) {
         switch (kind) {
         case "blockchain":
             return { module: inspectorModule, method: "blockchainNode", args: root.blockchainArgs([]), label: qsTr("Blockchain node") }
-        case "indexer":
-            return { module: inspectorModule, method: "indexerFinalizedHead", args: root.indexerArgs([]), label: qsTr("Indexer head") }
-        case "execution":
-            return { module: inspectorModule, method: "head", args: root.executionArgs([]), label: qsTr("Sequencer head") }
         case "messaging":
             return { module: inspectorModule, method: "deliverySourceReport", args: root.deliverySourceReportArgs(), label: qsTr("Delivery source") }
         case "storage":
@@ -265,12 +152,6 @@ function networkConnectionRequest(root, kind, includeSensitiveProbe) {
 function blockchainRpcArgs(root, extra) {
     with (root) {
         return [String(nodeUrl || "")].concat(Array.isArray(extra) ? extra : [])
-    }
-}
-
-function executionRpcArgs(root, extra) {
-    with (root) {
-        return [String(sequencerUrl || "")].concat(Array.isArray(extra) ? extra : [])
     }
 }
 
@@ -289,11 +170,6 @@ function networkConnectionKindForMethod(root, method) {
         case "blockchainNode":
         case "blockchainLiveBlocks":
             return "blockchain"
-        case "indexerStatus":
-        case "indexerFinalizedHead":
-            return "indexer"
-        case "head":
-            return "execution"
         case "deliverySourceReport":
             return "messaging"
         case "storageSourceReport":

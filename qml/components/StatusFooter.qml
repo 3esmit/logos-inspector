@@ -258,7 +258,7 @@ Pane {
     }
 
     function lezBlockHeight() {
-        const blocks = root.model.dashboardSequencerBlocks || []
+        const blocks = root.model.dashboardProvisionalBlocks || []
         if (blocks.length > 0) {
             const block = blocks[0] || {}
             if (block.block_id !== undefined && block.block_id !== null) {
@@ -304,14 +304,14 @@ Pane {
 
     function networkLabel() {
         const profile = String(root.model.networkProfile || "").toLowerCase()
-        const sequencer = String(root.model.sequencerUrl || "").toLowerCase()
-        if (sequencer.indexOf("127.0.0.1") >= 0 || sequencer.indexOf("localhost") >= 0) {
+        const node = String(root.model.nodeUrl || "").toLowerCase()
+        if (node.indexOf("127.0.0.1") >= 0 || node.indexOf("localhost") >= 0) {
             return qsTr("local")
         }
-        if (profile.indexOf("mainnet") >= 0 || sequencer.indexOf("mainnet") >= 0) {
+        if (profile.indexOf("mainnet") >= 0 || node.indexOf("mainnet") >= 0) {
             return qsTr("mainnet")
         }
-        if (sequencer.indexOf("testnet") >= 0 || sequencer.indexOf("lez.logos.co") >= 0) {
+        if (profile.indexOf("testnet") >= 0 || node.indexOf("testnet") >= 0) {
             return qsTr("testnet")
         }
         if (profile === "custom") {
@@ -416,7 +416,7 @@ Pane {
     }
 
     function latestSequencerBlockValue(key) {
-        const blocks = root.model.dashboardSequencerBlocks || []
+        const blocks = root.model.dashboardProvisionalBlocks || []
         if (!blocks.length) {
             return null
         }

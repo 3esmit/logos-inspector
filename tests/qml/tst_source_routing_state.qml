@@ -29,17 +29,12 @@ TestCase {
 
         gateway: gateway
         blockchainModule: "blockchain_module"
-        indexerModule: "lez_indexer_module"
         deliveryModule: "delivery_module"
         storageModule: "storage_module"
         blockchainSourceMode: "rpc"
-        indexerSourceMode: "rpc"
-        executionSourceMode: "rpc"
         messagingSourceMode: "rest"
         storageSourceMode: "rest"
         nodeUrl: "http://node"
-        indexerUrl: "http://indexer"
-        sequencerUrl: "http://sequencer"
         messagingRestUrl: "http://delivery"
         messagingMetricsUrl: "http://delivery-metrics"
         messagingNetworkPreset: "logos.test"
@@ -51,13 +46,9 @@ TestCase {
     function init() {
         state.connectorConfig = ({})
         state.blockchainSourceMode = "rpc"
-        state.indexerSourceMode = "rpc"
-        state.executionSourceMode = "rpc"
         state.messagingSourceMode = "rest"
         state.storageSourceMode = "rest"
         state.nodeUrl = "http://node"
-        state.indexerUrl = "http://indexer"
-        state.sequencerUrl = "http://sequencer"
         state.storageRestUrl = "http://storage"
         state.messagingRestUrl = "http://delivery"
     }
@@ -159,31 +150,4 @@ TestCase {
         compare(deliveryMetrics.usesRestEndpoint, false)
     }
 
-    function test_lez_indexer_and_sequencer_routes_use_split_connectors() {
-        state.connectorConfig = ({
-            scopes: {
-                "lez.indexer": {
-                    connector_id: "lez_indexer_module",
-                    provenance: "network_profile"
-                },
-                "lez.sequencer": {
-                    connector_id: "direct_sequencer_rpc",
-                    endpoint: "http://configured-sequencer",
-                    provenance: "network_profile"
-                }
-            }
-        })
-
-        const indexer = state.coreSourceView("indexer")
-        const sequencer = state.coreSourceView("execution")
-
-        compare(indexer.connector.connector_id, "lez_indexer_module")
-        compare(indexer.effectiveMode, "module")
-        compare(sequencer.connector.connector_id, "direct_sequencer_rpc")
-        compare(sequencer.effectiveMode, "rpc")
-        compare(sequencer.endpoint, "http://configured-sequencer")
-        compare(state.lezArgs("tx-1")[0], "rpc")
-        compare(state.lezArgs("tx-1")[1], "http://configured-sequencer")
-        compare(state.lezArgs("tx-1")[2], "module")
-    }
 }

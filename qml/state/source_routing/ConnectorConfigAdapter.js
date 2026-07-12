@@ -59,14 +59,10 @@ function sourceModeForEntry(entry) {
 function sourceModeForConnector(connectorId) {
     switch (String(connectorId || "")) {
     case "blockchain_module":
-    case "lez_indexer_module":
     case "storage_module":
     case "delivery_module":
-    case "lez_core":
         return "module"
     case "direct_l1_rpc":
-    case "direct_indexer_rpc":
-    case "direct_sequencer_rpc":
         return "rpc"
     case "direct_storage_rest":
     case "direct_delivery_rest":
@@ -86,10 +82,6 @@ function connectorIdForMode(scope, mode) {
     switch (String(scope || "")) {
     case "l1":
         return normalized === "module" ? "blockchain_module" : "direct_l1_rpc"
-    case "lez.indexer":
-        return normalized === "module" ? "lez_indexer_module" : "direct_indexer_rpc"
-    case "lez.sequencer":
-        return normalized === "module" ? "lez_core" : "direct_sequencer_rpc"
     case "storage":
         if (normalized === "module") {
             return "storage_module"
@@ -118,10 +110,6 @@ function scopeAliases(scope) {
     switch (String(scope || "")) {
     case "l1":
         return ["l1", "blockchain", "bedrock"]
-    case "lez.indexer":
-        return ["lez.indexer", "lez_indexer", "indexer"]
-    case "lez.sequencer":
-        return ["lez.sequencer", "lez_sequencer", "sequencer", "execution"]
     case "storage":
         return ["storage"]
     case "delivery":

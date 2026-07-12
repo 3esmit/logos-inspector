@@ -3,17 +3,12 @@ use anyhow::Result;
 mod action_engine;
 mod action_workspace;
 mod commands;
-mod local_indexer;
 mod model;
 mod paths;
 mod presentation;
 mod process;
 mod workflow;
 
-pub use local_indexer::{
-    bootstrap_default_local_indexer, bootstrap_default_local_indexer_for_saved_settings,
-    default_local_indexer_requested_by_saved_settings, is_default_local_indexer_endpoint,
-};
 pub use model::{
     LocalDevnetListReport, LocalDevnetRecord, LocalNodeActionRequest, LocalNodeConfigRecord,
     LocalNodeOperationReport, LocalNodeProblemCode, LocalNodeReport, LocalNodeStatus,

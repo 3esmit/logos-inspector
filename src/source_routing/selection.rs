@@ -1,4 +1,4 @@
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
 use crate::support::args::Args;
@@ -14,15 +14,6 @@ pub(crate) struct SourceEndpoint<'a> {
     pub(crate) endpoint: &'a str,
     pub(crate) next_index: usize,
     pub(crate) module: &'static str,
-}
-
-pub(crate) struct AccountSources<'a> {
-    pub(crate) execution_mode: CoreEndpointMode,
-    pub(crate) sequencer_endpoint: &'a str,
-    pub(crate) indexer_mode: CoreEndpointMode,
-    pub(crate) indexer_endpoint: &'a str,
-    pub(crate) account: &'a str,
-    pub(crate) next_index: usize,
 }
 
 pub(crate) struct RestSource<'a> {
@@ -65,30 +56,6 @@ impl Args {
             endpoint: first,
             next_index: index + 1,
             module: source_module_for_label(label),
-        })
-    }
-
-    pub(crate) fn account_sources(&self) -> Result<AccountSources<'_>> {
-        let first = self.string(0, "sequencer endpoint")?;
-        if let Some(execution_mode) = CoreSourceMode::from_token(first) {
-            let indexer_mode = CoreSourceMode::from_token(self.string(2, "indexer source mode")?)
-                .context("indexer source mode must be `rpc` or `module`")?;
-            return Ok(AccountSources {
-                execution_mode: execution_mode.effective(),
-                sequencer_endpoint: self.string(1, "sequencer endpoint")?,
-                indexer_mode: indexer_mode.effective(),
-                indexer_endpoint: self.string(3, "indexer endpoint")?,
-                account: self.string(4, "account id")?,
-                next_index: 5,
-            });
-        }
-        Ok(AccountSources {
-            execution_mode: CoreEndpointMode::Rpc,
-            sequencer_endpoint: first,
-            indexer_mode: CoreEndpointMode::Rpc,
-            indexer_endpoint: self.string(1, "indexer endpoint")?,
-            account: self.string(2, "account id")?,
-            next_index: 3,
         })
     }
 }

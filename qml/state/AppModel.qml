@@ -20,7 +20,6 @@ QtObject {
 
     readonly property string inspectorModule: "logos_inspector"
     readonly property string blockchainModule: "blockchain_module"
-    readonly property string indexerModule: "lez_indexer_module"
     readonly property string storageModule: "storage_module"
     readonly property string deliveryModule: "delivery_module"
     readonly property string capabilityModule: "capability_module"
@@ -28,17 +27,12 @@ QtObject {
         id: sourceRoutingState
 
         blockchainModule: root.blockchainModule
-        indexerModule: root.indexerModule
         deliveryModule: root.deliveryModule
         storageModule: root.storageModule
         blockchainSourceMode: root.blockchainSourceMode
-        indexerSourceMode: root.indexerSourceMode
-        executionSourceMode: root.executionSourceMode
         messagingSourceMode: root.messagingSourceMode
         storageSourceMode: root.storageSourceMode
         nodeUrl: root.nodeUrl
-        indexerUrl: root.indexerUrl
-        sequencerUrl: root.sequencerUrl
         messagingRestUrl: root.messagingRestUrl
         messagingMetricsUrl: root.messagingMetricsUrl
         messagingNetworkPreset: root.messagingNetworkPreset
@@ -98,9 +92,6 @@ QtObject {
         updateDashboardCache: function (method, value) {
             return root.updateDashboardCache(method, value)
         }
-        clearAccountDetail: function () {
-            root.accountDetailValue = null
-        }
         updateNetworkConnectionStatus: function (method, response) {
             return root.updateNetworkConnectionStatusForMethod(method, response)
         }
@@ -133,10 +124,6 @@ QtObject {
 
             function blockchainArgs(extra) { return root.blockchainArgs(extra) }
 
-            function indexerArgs(extra) { return root.indexerArgs(extra) }
-
-            function executionArgs(extra) { return root.executionArgs(extra) }
-
             function blockchainRpcArgs(extra) { return root.blockchainRpcArgs(extra) }
 
             function networkConnectionState(kind) { return root.networkConnectionState(kind) }
@@ -152,17 +139,13 @@ QtObject {
     property alias dashboardNode: chainPageState.dashboardNode
     property alias dashboardL1Blocks: chainPageState.dashboardL1Blocks
     property alias dashboardBlocks: chainPageState.dashboardBlocks
-    property alias dashboardSequencerBlocks: chainPageState.dashboardSequencerBlocks
+    property alias dashboardProvisionalBlocks: chainPageState.dashboardProvisionalBlocks
     property alias dashboardLezBlockRows: chainPageState.dashboardLezBlockRows
     property alias dashboardError: chainPageState.dashboardError
     property alias blockDetailValue: chainPageState.blockDetailValue
     property alias blockDetailError: chainPageState.blockDetailError
     property alias transactionDetailValue: chainPageState.transactionDetailValue
     property alias transactionDetailError: chainPageState.transactionDetailError
-    property alias accountDetailValue: chainPageState.accountDetailValue
-    property alias transferRecipientDetailValue: chainPageState.transferRecipientDetailValue
-    property alias channelDetailValue: chainPageState.channelDetailValue
-    property alias channelDetailError: chainPageState.channelDetailError
     property alias blocksPageRows: chainPageState.blocksPageRows
     property alias blocksPageSlotFrom: chainPageState.blocksPageSlotFrom
     property alias blocksPageSlotTo: chainPageState.blocksPageSlotTo
@@ -180,45 +163,10 @@ QtObject {
     property alias transactionsPageBlockBatch: chainPageState.transactionsPageBlockBatch
     property alias transactionsPageLimit: chainPageState.transactionsPageLimit
     property alias transactionsPageError: chainPageState.transactionsPageError
-    property alias lezBlocksPageRows: chainPageState.lezBlocksPageRows
-    property alias lezBlocksPageBeforeBlock: chainPageState.lezBlocksPageBeforeBlock
-    property alias lezBlocksPageNextBeforeBlock: chainPageState.lezBlocksPageNextBeforeBlock
-    property alias lezBlocksPageLimit: chainPageState.lezBlocksPageLimit
-    property alias lezBlocksPageError: chainPageState.lezBlocksPageError
-    property alias lezBlocksPageLoading: chainPageState.lezBlocksPageLoading
-    property alias lezBlocksPageRequestSerial: chainPageState.lezBlocksPageRequestSerial
-    property alias lezTransactionsPageRows: chainPageState.lezTransactionsPageRows
-    property alias lezTransactionsPageBeforeBlock: chainPageState.lezTransactionsPageBeforeBlock
-    property alias lezTransactionsPageNextBeforeBlock: chainPageState.lezTransactionsPageNextBeforeBlock
-    property alias lezTransactionsPageOverflowRows: chainPageState.lezTransactionsPageOverflowRows
-    property alias lezTransactionsPageOverflowNextBeforeBlock: chainPageState.lezTransactionsPageOverflowNextBeforeBlock
-    property alias lezTransactionsBlockBatch: chainPageState.lezTransactionsBlockBatch
-    property alias lezTransactionsPageLimit: chainPageState.lezTransactionsPageLimit
-    property alias lezTransactionsPageError: chainPageState.lezTransactionsPageError
-    property alias transferActivityRows: chainPageState.transferActivityRows
-    property alias transferActivityBeforeBlock: chainPageState.transferActivityBeforeBlock
-    property alias transferActivityNextBeforeBlock: chainPageState.transferActivityNextBeforeBlock
-    property alias transferActivityOverflowRows: chainPageState.transferActivityOverflowRows
-    property alias transferActivityOverflowNextBeforeBlock: chainPageState.transferActivityOverflowNextBeforeBlock
-    property alias transferActivityBlockBatch: chainPageState.transferActivityBlockBatch
-    property alias transferActivityLimit: chainPageState.transferActivityLimit
-    property alias transferActivityHistory: chainPageState.transferActivityHistory
-    property alias transferActivityError: chainPageState.transferActivityError
-    property alias channelsPageRows: chainPageState.channelsPageRows
-    property alias channelsPageSlotFrom: chainPageState.channelsPageSlotFrom
-    property alias channelsPageSlotTo: chainPageState.channelsPageSlotTo
-    property alias channelsPageWindow: chainPageState.channelsPageWindow
-    property alias channelsPageLimit: chainPageState.channelsPageLimit
-    property alias channelsPageError: chainPageState.channelsPageError
-
     property string networkProfile: "default"
-    property string sequencerUrl: "https://testnet.lez.logos.co/"
-    property string indexerUrl: "http://127.0.0.1:8779/"
     property string nodeUrl: "http://127.0.0.1:8080/"
     property var networkConnectorConfig: defaultNetworkConnectorConfig()
     property string blockchainSourceMode: "rpc"
-    property string indexerSourceMode: "rpc"
-    property string executionSourceMode: "rpc"
     property string messagingSourceMode: "rest"
     property string messagingRestUrl: "http://127.0.0.1:8645"
     property string messagingMetricsUrl: "http://127.0.0.1:8008/metrics"
@@ -285,18 +233,13 @@ QtObject {
         operationHistory: operationHistoryState
     }
 
-    property string sequencerTab: "blocks"
-    property string accountTab: "lookup"
-    property string programTab: "programIds"
-    property string indexerTab: "status"
+    property string programTab: "idls"
     property string localWalletTab: "profiles"
     property string localWalletLookupTarget: ""
     property alias settingsSection: appShellState.settingsSection
     property alias settingsNetworkSection: appShellState.settingsNetworkSection
     property alias settingsUiSection: appShellState.settingsUiSection
     property int blockchainRefreshRate: 30
-    property int indexerRefreshRate: 30
-    property int executionRefreshRate: 30
     property int messagingRefreshRate: 30
     property int storageRefreshRate: 30
     property var networkConnectionStatus: ({})
@@ -667,9 +610,6 @@ QtObject {
     property alias knownProgramIds: programDecodeState.knownProgramIds
     property alias knownProgramIdsRevision: programDecodeState.knownProgramIdsRevision
     property alias accountAutoDecodeSerial: programDecodeState.accountAutoDecodeSerial
-    property alias transactionAutoDecodeSerial: programDecodeState.transactionAutoDecodeSerial
-    property alias searchResolveSerial: programDecodeState.searchResolveSerial
-    property alias programOpenSerial: programDecodeState.programOpenSerial
     property alias navExpanded: appShellState.navExpanded
     property alias navRevision: appShellState.navRevision
     property alias navigationBackStack: appShellState.navigationBackStack
@@ -745,16 +685,12 @@ QtObject {
 
     onCurrentViewChanged: expandNavGroupForView(currentView)
     onNetworkProfileChanged: handleNetworkConfigurationChanged()
-    onSequencerUrlChanged: handleNetworkConfigurationChanged()
-    onIndexerUrlChanged: handleNetworkConfigurationChanged()
     onNodeUrlChanged: handleNetworkConfigurationChanged()
     onNetworkConnectorConfigChanged: {
         syncSourceModesFromConnectorConfig()
         refreshCapabilityRegistryIfLoaded()
     }
     onBlockchainSourceModeChanged: handleNetworkConfigurationChanged()
-    onIndexerSourceModeChanged: handleNetworkConfigurationChanged()
-    onExecutionSourceModeChanged: handleNetworkConfigurationChanged()
     onMessagingSourceModeChanged: handleMessagingConfigurationChanged()
     onMessagingRestUrlChanged: handleMessagingConfigurationChanged()
     onMessagingMetricsUrlChanged: handleMessagingConfigurationChanged()
@@ -796,8 +732,6 @@ QtObject {
     }
     onSettingsBackupEncryptedChanged: saveSettingsState()
     onBlockchainRefreshRateChanged: saveSettingsState()
-    onIndexerRefreshRateChanged: saveSettingsState()
-    onExecutionRefreshRateChanged: saveSettingsState()
     onMessagingRefreshRateChanged: saveSettingsState()
     onStorageRefreshRateChanged: saveSettingsState()
     onFooterFieldRevisionChanged: saveSettingsState()
@@ -887,21 +821,7 @@ QtObject {
 
     function blockchainArgs(extra) { return sourceRouting.blockchainArgs(extra) }
 
-    function indexerArgs(extra) { return sourceRouting.indexerArgs(extra) }
-
-    function executionArgs(extra) { return sourceRouting.executionArgs(extra) }
-
     function blockchainRpcArgs(extra) { return AppModelNetwork.blockchainRpcArgs(root, extra) }
-
-    function executionRpcArgs(extra) { return AppModelNetwork.executionRpcArgs(root, extra) }
-
-    function accountLookupArgs(account, idlJson, accountType) {
-        return sourceRouting.accountArgs(account, idlJson, accountType)
-    }
-
-    function lezLookupArgs(target) {
-        return sourceRouting.lezArgs(target)
-    }
 
     function requestModule(moduleName, method, args, label, showResult, cacheResult) { return appRequestState.requestModule(moduleName, method, args, label, showResult, cacheResult) }
 
@@ -1351,12 +1271,6 @@ QtObject {
 
     function accountDecodeFullyConsumed(value) { return ProgramDecodeSession.accountDecodeFullyConsumed(root, value) }
 
-    function transactionDecodeFullyConsumed(value) { return ProgramDecodeSession.transactionDecodeFullyConsumed(root, value) }
-
-    function transactionDecodedInstruction(value) { return ProgramDecodeSession.transactionDecodedInstruction(root, value) }
-
-    function transactionSummaryFromDetail(value) { return ProgramDecodeSession.transactionSummaryFromDetail(root, value) }
-
     function normalizedHexText(value) { return AppModelIdentity.normalizedHexText(root, value) }
 
     function canonicalProgramIdHex(value) { return AppModelIdentity.canonicalProgramIdHex(root, value) }
@@ -1366,18 +1280,6 @@ QtObject {
     function accountDecodeCandidates(accountId, ownerProgramId) { return ProgramDecodeSession.accountDecodeCandidates(root, accountId, ownerProgramId) }
 
     function tryAccountDecodeCandidate(serial, dataHex, candidates, index, firstError, callback) { return ProgramDecodeSession.tryAccountDecodeCandidate(root, serial, dataHex, candidates, index, firstError, callback) }
-
-    function autoDecodeTransactionDetail(detail) { return ProgramDecodeSession.autoDecodeTransactionDetail(root, detail) }
-
-    function transactionDecodeCandidates(summary) { return ProgramDecodeSession.transactionDecodeCandidates(root, summary) }
-
-    function candidateListHasEntry(candidates, key) { return ProgramDecodeSession.candidateListHasEntry(root, candidates, key) }
-
-    function tryTransactionDecodeCandidate(serial, summary, candidates, index, partialValue) { return ProgramDecodeSession.tryTransactionDecodeCandidate(root, serial, summary, candidates, index, partialValue) }
-
-    function transactionDecodeSessionReport(response) { return ProgramDecodeSession.transactionDecodeSessionReport(root, response) }
-
-    function transactionDecodeSessionInstruction(response) { return ProgramDecodeSession.transactionDecodeSessionInstruction(root, response) }
 
     function programDecodeCandidatePayload(candidates) { return ProgramDecodeSession.programDecodeCandidatePayload(root, candidates) }
 
@@ -1422,8 +1324,6 @@ QtObject {
             network_connector_config: networkConnectorConfigPayload(),
             wallet_connector_config: walletConnectorConfigPayload(),
             node_url: String(nodeUrl || ""),
-            indexer_url: String(indexerUrl || ""),
-            sequencer_url: String(sequencerUrl || ""),
             storage_rest_url: configuredStorageRestUrl(),
             messaging_rest_url: configuredMessagingRestUrl(),
 	            storage_mutating_diagnostics_enabled: storageMutatingDiagnosticsEnabled === true,
@@ -1434,8 +1334,6 @@ QtObject {
             local_devnet_enabled: localNodesEnabled === true && localDevnetEnabled === true,
             source_reports: {
                 l1: capabilityNetworkSourceReport("blockchain", qsTr("L1 RPC")),
-                "lez.indexer": capabilityNetworkSourceReport("indexer", qsTr("LEZ indexer RPC")),
-                "lez.sequencer": capabilityNetworkSourceReport("execution", qsTr("LEZ sequencer RPC")),
                 storage: storageSourceReport || null,
                 delivery: messagingSourceReport || null
             },
@@ -1452,8 +1350,6 @@ QtObject {
             },
             source_reports: {
                 l1: capabilityNetworkSourceReport("blockchain", qsTr("L1 RPC")),
-                "lez.indexer": capabilityNetworkSourceReport("indexer", qsTr("LEZ indexer RPC")),
-                "lez.sequencer": capabilityNetworkSourceReport("execution", qsTr("LEZ sequencer RPC")),
                 storage: storageSourceReport || null,
                 delivery: messagingSourceReport || null
             },
@@ -1553,14 +1449,6 @@ QtObject {
                     connector_id: prefersBasecampModules() ? "blockchain_module" : "direct_l1_rpc",
                     provenance: "build_default"
                 },
-                "lez.indexer": {
-                    connector_id: prefersBasecampModules() ? "lez_indexer_module" : "direct_indexer_rpc",
-                    provenance: "build_default"
-                },
-                "lez.sequencer": {
-                    connector_id: "direct_sequencer_rpc",
-                    provenance: "build_default"
-                },
                 "delivery": {
                     connector_id: prefersBasecampModules() ? "delivery_module" : "direct_delivery_rest",
                     provenance: "build_default"
@@ -1586,7 +1474,7 @@ QtObject {
         const source = value && typeof value === "object" ? value : ({})
         const scopes = source.scopes && typeof source.scopes === "object" ? source.scopes : source
         const result = { scopes: ({}) }
-        const keys = ["l1", "lez.indexer", "lez.sequencer", "delivery", "storage"]
+        const keys = ["l1", "delivery", "storage"]
         for (let i = 0; i < keys.length; ++i) {
             const key = keys[i]
             const fallback = defaults[key] || {}
@@ -1626,12 +1514,6 @@ QtObject {
         case "l1":
             blockchainSourceMode = value
             break
-        case "lez.indexer":
-            indexerSourceMode = value
-            break
-        case "lez.sequencer":
-            executionSourceMode = value
-            break
         case "delivery":
             messagingSourceMode = value
             break
@@ -1643,8 +1525,6 @@ QtObject {
 
     function syncSourceModesFromConnectorConfig() {
         blockchainSourceMode = sourceRouting.connectorSourceMode("l1", "rpc")
-        indexerSourceMode = sourceRouting.connectorSourceMode("lez.indexer", "rpc")
-        executionSourceMode = sourceRouting.connectorSourceMode("lez.sequencer", "rpc")
         messagingSourceMode = sourceRouting.connectorSourceMode("delivery", "rest")
         storageSourceMode = sourceRouting.connectorSourceMode("storage", "rest")
     }
@@ -1668,12 +1548,6 @@ QtObject {
     function setNetworkConnectionPending(kind, pending) { return AppModelNetwork.setNetworkConnectionPending(root, kind, pending) }
 
     function networkConnectionIsPending(kind) { return AppModelNetwork.networkConnectionIsPending(root, kind) }
-
-    function refreshIndexerStatus() { return AppModelNetwork.refreshIndexerStatus(root) }
-
-    function indexerStatusNeedsFallback(value) { return AppModelNetwork.indexerStatusNeedsFallback(root, value) }
-
-    function probeFieldFromResponse(response) { return AppModelNetwork.probeFieldFromResponse(root, response) }
 
     function updateNetworkConnectionStatus(kind, response) { return AppModelNetwork.updateNetworkConnectionStatus(root, kind, response) }
 
@@ -1735,14 +1609,6 @@ QtObject {
 
     function blockchainSourceTarget() { return sourceRouting.blockchainSourceTarget() }
 
-    function indexerSourceLabel() { return sourceRouting.indexerSourceLabel() }
-
-    function indexerSourceTarget() { return sourceRouting.indexerSourceTarget() }
-
-    function executionSourceLabel() { return sourceRouting.executionSourceLabel() }
-
-    function executionSourceTarget() { return sourceRouting.executionSourceTarget() }
-
     function storageSourceReportArgs(includeCidProbe) { return sourceRouting.storageSourceReportArgs(includeCidProbe === true) }
 
     function storageSourceLabel() { return sourceRouting.storageSourceLabel() }
@@ -1777,21 +1643,19 @@ QtObject {
 
     function normalizedNetworkProfile(value) { return networkProfileState.normalizedProfile(value) }
 
-    function resolvedNetworkProfile(storedProfile, sequencer, indexer, node) { return networkProfileState.resolvedProfile(storedProfile, sequencer, indexer, node) }
+    function resolvedNetworkProfile(storedProfile, node) { return networkProfileState.resolvedProfile(storedProfile, node) }
 
-    function inferNetworkProfileFromEndpoints(sequencer, indexer, node) { return networkProfileState.inferProfile(sequencer, indexer, node) }
+    function inferNetworkProfileFromEndpoint(node) { return networkProfileState.inferProfile(node) }
 
     function normalizeEndpoint(value) { return networkProfileState.normalizeEndpoint(value) }
 
     function loadNetworkProfileSettings(value) {
-        const settings = networkProfileState.settingsFromPayload(value, networkProfile, sequencerUrl, indexerUrl, nodeUrl)
+        const settings = networkProfileState.settingsFromPayload(value, networkProfile, nodeUrl)
         networkProfile = settings.profile
-        sequencerUrl = settings.sequencerUrl
-        indexerUrl = settings.indexerUrl
         nodeUrl = settings.nodeUrl
     }
 
-    function networkProfileSettingsPayload() { return networkProfileState.settingsPayload(networkProfile, sequencerUrl, indexerUrl, nodeUrl) }
+    function networkProfileSettingsPayload() { return networkProfileState.settingsPayload(networkProfile, nodeUrl) }
 
     function networkProfileOptions() { return networkProfileState.optionRows() }
 
@@ -1804,7 +1668,7 @@ QtObject {
     function applyProfile(index) {
         const profile = networkProfileState.profileAt(index)
         if (profile === "custom") {
-            networkProfile = inferNetworkProfileFromEndpoints(sequencerUrl, indexerUrl, nodeUrl)
+            networkProfile = inferNetworkProfileFromEndpoint(nodeUrl)
             return
         }
         const endpoints = networkProfileState.applyProfile(profile)
@@ -1812,8 +1676,6 @@ QtObject {
             return
         }
         networkProfile = endpoints.profile
-        sequencerUrl = endpoints.sequencerUrl
-        indexerUrl = endpoints.indexerUrl
         nodeUrl = endpoints.nodeUrl
         messagingNetworkPreset = "logos.test"
     }
@@ -1822,9 +1684,9 @@ QtObject {
 
     function networkProfileSummary(value) { return networkProfileState.profileSummary(value) }
 
-    function networkProfileDetail() { return networkProfileState.profileDetail(sequencerUrl, indexerUrl, nodeUrl) }
+    function networkProfileDetail() { return networkProfileState.profileDetail(nodeUrl) }
 
-    function networkProfileCacheScope() { return networkProfileState.cacheScope(networkProfile, sequencerUrl) }
+    function networkProfileCacheScope() { return networkProfileState.cacheScope(networkProfile, nodeUrl) }
 
     function zoneScopeKey() {
         const context = zoneInspection.activeZoneContext
@@ -1975,8 +1837,6 @@ QtObject {
 
     function isStorageCid(value) { return entityNavigation.isStorageCid(value) }
 
-    function numericSearchUsesLezBlock() { return entityNavigation.numericSearchUsesLezBlock() }
-
     function routePrefixedSearch(query) { return entityNavigation.routePrefixedSearch(query) }
 
     function searchPrefix(query) { return entityNavigation.searchPrefix(query) }
@@ -1984,14 +1844,6 @@ QtObject {
     function isSearchPrefix(prefix) { return entityNavigation.isSearchPrefix(prefix) }
 
     function routeModuleSearchTarget(target) { return entityNavigation.routeModuleSearchTarget(target) }
-
-    function resolveSearchHash(hash) { return entityNavigation.resolveSearchHash(hash) }
-
-    function applyResolvedLezTarget(response, errorTitle) { return entityNavigation.applyResolvedLezTarget(response, errorTitle) }
-
-    function resolveSearchTransaction(serial, hash, recordHistory) { return entityNavigation.resolveSearchTransaction(serial, hash, recordHistory) }
-
-    function resolveSearchAccount(serial, account, recordHistory) { return entityNavigation.resolveSearchAccount(serial, account, recordHistory) }
 
     function viewKeyForQuery(query) { return entityNavigation.viewKeyForQuery(query) }
 
@@ -2001,21 +1853,7 @@ QtObject {
 
     function openMantleTransaction(hash) { return entityNavigation.openMantleTransaction(hash) }
 
-    function openAccount(account) { return entityNavigation.openAccount(account) }
-
     function openPrivateAccountReference(account) { return entityNavigation.openPrivateAccountReference(account) }
-
-    function openTransaction(hash) { return entityNavigation.openTransaction(hash) }
-
-    function openLezSearchTarget(target) { return entityNavigation.openLezSearchTarget(target) }
-
-    function openLezBlock(blockId) { return entityNavigation.openLezBlock(blockId) }
-
-    function resolveLezHash(hash) { return entityNavigation.resolveLezHash(hash) }
-
-    function openLezTransaction(hash, recordHistory) { return entityNavigation.openLezTransaction(hash, recordHistory) }
-
-    function inspectTransaction(hash, idl, recordHistory) { return entityNavigation.inspectTransaction(hash, idl, recordHistory) }
 
     function openBlockchainBlock(blockOrId) { return entityNavigation.openBlockchainBlock(blockOrId) }
 
@@ -2029,29 +1867,9 @@ QtObject {
 
     function blockchainTransactionDetail(value, fallbackHash) { return entityNavigation.blockchainTransactionDetail(value, fallbackHash) }
 
-    function openIndexerBlock(headerHash, payload) { return entityNavigation.openIndexerBlock(headerHash, payload) }
-
-    function indexerBlockDetail(value, source) { return entityNavigation.indexerBlockDetail(value, source) }
-
     function openLocalWallet(wallet, tab) { return entityNavigation.openLocalWallet(wallet, tab) }
 
     function showLocalWalletRequired(wallet) { return entityNavigation.showLocalWalletRequired(wallet) }
-
-    function openProgram(programId) { return entityNavigation.openProgram(programId) }
-
-    function programContextDetail(programId) { return entityNavigation.programContextDetail(programId) }
-
-    function programContextFromParts(input, normalized, knownRow, accountResponse, lookupError) { return entityNavigation.programContextFromParts(input, normalized, knownRow, accountResponse, lookupError) }
-
-    function knownProgramRow(programId) { return entityNavigation.knownProgramRow(programId) }
-
-    function programRecentTransactions(programId) { return entityNavigation.programRecentTransactions(programId) }
-
-    function looksLikeHexId(value) { return entityNavigation.looksLikeHexId(value) }
-
-    function openRecipient(recipient) { return entityNavigation.openRecipient(recipient) }
-
-    function openChannel(channel) { return entityNavigation.openChannel(channel) }
 
     function programIdKnown(programId) { return AppModelRegistry.programIdKnown(root, programId) }
 

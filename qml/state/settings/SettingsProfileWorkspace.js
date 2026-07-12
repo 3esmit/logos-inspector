@@ -83,7 +83,7 @@ function updateEndpoint(root, key, value) {
 }
 
 function syncProfileFromEndpoints(root) {
-    root.model.networkProfile = root.inferProfile(root.model.sequencerUrl, root.model.indexerUrl, root.model.nodeUrl)
+    root.model.networkProfile = root.inferProfile(root.model.nodeUrl)
 }
 
 function applyProfileIndex(root, index) {
@@ -124,8 +124,8 @@ function profileIndexFor(root, value) {
     return root.model.profileIndexFor(value)
 }
 
-function inferProfile(root, sequencer, indexer, node) {
-    return root.model.inferNetworkProfileFromEndpoints(sequencer, indexer, node)
+function inferProfile(root, node) {
+    return root.model.inferNetworkProfileFromEndpoint(node)
 }
 
 function profileLabel(root, value) {

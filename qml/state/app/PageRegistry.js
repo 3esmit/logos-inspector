@@ -11,22 +11,8 @@ function navTreeItems(root) {
                 children: [
                     { key: "blocks", view: "blocks", label: qsTr("Blocks"), token: "L1B", layer: "l1" },
                     { key: "transactions", view: "transactions", label: qsTr("Mantle Tx"), token: "L1T", layer: "l1" },
-                    { key: "channels", view: "channels", label: qsTr("Channels"), token: "L1C", layer: "l1" },
+                    { key: "zones", view: "zones", label: qsTr("Zones"), token: "ZON", layer: "l1" },
                     { key: "blockchain", view: "blockchain", label: qsTr("Node / Module"), token: "L1N", layer: "l1" }
-                ]
-            },
-            {
-                type: "group",
-                key: "l2",
-                label: qsTr("L2 LEZ"),
-                token: "L2",
-                layer: "l2",
-                children: [
-                    { key: "l2Blocks", view: "l2Blocks", label: qsTr("Blocks"), token: "L2B", layer: "l2" },
-                    { key: "l2Transactions", view: "l2Transactions", label: qsTr("Transactions"), token: "L2T", layer: "l2" },
-                    { key: "accounts", view: "accounts", label: qsTr("Accounts"), token: "ACC", layer: "l2" },
-                    { key: "transferActivity", view: "transferActivity", label: qsTr("Transfer Activity"), token: "XFR", layer: "l2" },
-                    { key: "programs", view: "programs", label: qsTr("Programs"), token: "PRG", layer: "l2" }
                 ]
             },
             {
@@ -47,7 +33,6 @@ function navTreeItems(root) {
                 token: "DIA",
                 layer: "system",
                 children: [
-                    { key: "indexer", view: "indexer", label: qsTr("LEZ Indexer"), token: "IDX", layer: "system" },
                     { key: "storageDiagnostics", view: "diagnosticsStorage", label: qsTr("Storage"), token: "DST", layer: "system" },
                     { key: "deliveryDiagnostics", view: "diagnosticsDelivery", label: qsTr("Delivery"), token: "DDL", layer: "system" },
                     { key: "capabilities", view: "capabilities", label: qsTr("Capabilities"), token: "CAP", layer: "system" }
@@ -61,6 +46,7 @@ function navTreeItems(root) {
                 layer: "local",
                 children: [
                     { key: "favorites", view: "favorites", label: qsTr("Favorites"), token: "FAV", layer: "local" },
+                    { key: "programs", view: "programs", label: qsTr("Program / IDL"), token: "IDL", layer: "local" },
                     { key: "localWallet", view: "localWallet", label: qsTr("Wallet"), token: "WAL", layer: "local" }
                 ]
             },
@@ -81,11 +67,8 @@ function navTreeItems(root) {
 
 function parentNavKeyForView(root, view) {
     const target = String(view || "")
-    if (target === "blockDetail" || target === "transactionDetail" || target === "zones") {
+    if (target === "blockDetail" || target === "transactionDetail") {
         return "l1"
-    }
-    if (target === "l2BlockDetail" || target === "l2TransactionDetail" || target === "sequencer") {
-        return "l2"
     }
     const tree = navTreeItems(root)
     for (let i = 0; i < tree.length; ++i) {
@@ -121,15 +104,6 @@ function navItemForView(root, view) {
         }
         if (target === "transactionDetail") {
             return { key: "transactionDetail", view: "transactionDetail", label: qsTr("Mantle Tx"), token: "L1T", layer: "l1" }
-        }
-        if (target === "l2BlockDetail") {
-            return { key: "l2BlockDetail", view: "l2BlockDetail", label: qsTr("LEZ Block"), token: "L2B", layer: "l2" }
-        }
-        if (target === "l2TransactionDetail") {
-            return { key: "l2TransactionDetail", view: "l2TransactionDetail", label: qsTr("LEZ Transaction"), token: "L2T", layer: "l2" }
-        }
-        if (target === "zones") {
-            return { key: "zones", view: "zones", label: qsTr("Zones"), token: "ZON", layer: "l1" }
         }
         return null
     }
@@ -184,6 +158,5 @@ function viewTitle(root) {
 }
 
 function normalizedNavigationView(requestedView) {
-    const requested = String(requestedView || "")
-    return requested === "sequencer" ? "l2Blocks" : requested
+    return String(requestedView || "")
 }

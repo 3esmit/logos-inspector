@@ -73,21 +73,6 @@ mod tests {
     }
 
     #[test]
-    fn indexer_status_bridge_requires_endpoint_argument() -> Result<()> {
-        let bridge = InspectorBridge::new()?;
-
-        let result = bridge.call_module_value(INSPECTOR_MODULE, "indexerStatus", json!([]));
-
-        let Err(error) = result else {
-            bail!("expected missing indexer endpoint to fail");
-        };
-        if !error.to_string().contains("indexer endpoint is required") {
-            bail!("unexpected error: {error:#}");
-        }
-        Ok(())
-    }
-
-    #[test]
     fn blockchain_live_blocks_bridge_requires_slot_arguments() -> Result<()> {
         let bridge = InspectorBridge::new()?;
 
@@ -113,6 +98,8 @@ mod tests {
         let value = bridge.call_module_value(INSPECTOR_MODULE, "sourcePolicy", json!([]))?;
 
         if value.get("version").and_then(Value::as_u64) != Some(2)
+            || value.pointer("/defaults/sequencer_endpoint").is_some()
+            || value.pointer("/defaults/indexer_endpoint").is_some()
             || value
                 .pointer("/defaults/storage_rest_endpoint")
                 .and_then(Value::as_str)
@@ -133,6 +120,11 @@ mod tests {
             .any(|profile| profile.get("id").and_then(Value::as_str) == Some("default"))
         {
             bail!("source policy missing default profile: {value}");
+        }
+        if profiles.iter().any(|profile| {
+            profile.get("sequencer_endpoint").is_some() || profile.get("indexer_endpoint").is_some()
+        }) {
+            bail!("source policy exposes global L2 endpoints: {value}");
         }
 
         let Some(storage_modes) = value
@@ -230,29 +222,6 @@ mod tests {
             || source.module != INDEXER_MODULE
         {
             bail!("unexpected source endpoint");
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn account_sources_accepts_mixed_source_shape() -> Result<()> {
-        let args = Args::new(json!([
-            "rpc",
-            "https://testnet.lez.logos.co/",
-            "module",
-            "http://127.0.0.1:8779/",
-            "account-1"
-        ]))?;
-        let sources = args.account_sources()?;
-
-        if sources.execution_mode != CoreEndpointMode::Rpc
-            || sources.sequencer_endpoint != "https://testnet.lez.logos.co/"
-            || sources.indexer_mode != CoreEndpointMode::Module
-            || sources.indexer_endpoint != "http://127.0.0.1:8779/"
-            || sources.account != "account-1"
-            || sources.next_index != 5
-        {
-            bail!("unexpected account sources");
         }
         Ok(())
     }
