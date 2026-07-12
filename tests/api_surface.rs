@@ -32,6 +32,10 @@ fn network_inspection_exposes_legacy_and_zone_boundaries() {
     let _ = logos_inspector::inspection::zones::classify_zone;
     let _ = logos_inspector::inspection::classify_zone;
     let _ = logos_inspector::inspection::ZoneKind::Unknown;
+    let _schema = logos_inspector::inspection::catalog::CatalogSchemaMetadata::current();
+    let _ = logos_inspector::inspection::catalog::CatalogInvalidationReason::RecordDecode;
+    fn accepts_catalog(_: Option<logos_inspector::inspection::catalog::ZoneCatalog>) {}
+    accepts_catalog(None);
 }
 
 #[test]

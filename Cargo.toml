@@ -51,6 +51,7 @@ hex = "0.4"
 hkdf = "0.12"
 k256 = { version = "0.13.3", features = ["ecdsa-core"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+redb = "4.1"
 risc0-zkvm = "3.0.5"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
