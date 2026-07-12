@@ -1,11 +1,18 @@
 use anyhow::{Context as _, Result, bail};
+use reqwest::{Response, StatusCode, Url};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use crate::{
-    ProbeReport, response_excerpt, rpc::raw_http_json, support::json_value::value_to_string,
-    support::raw_source_transport::request_text,
+    ProbeReport, response_excerpt,
+    rpc::raw_http_json,
+    support::json_value::value_to_string,
+    support::{
+        http_response::{read_response_body_bytes_bounded, response_excerpt_bytes},
+        raw_source_transport::{request_json_bounded, request_success_bounded, request_text},
+    },
 };
 
 const BLOCK_STREAM_SNAPSHOT_TIMEOUT: Duration = Duration::from_millis(250);
@@ -169,6 +176,130 @@ async fn blockchain_blocks_range_text(
         false,
     )
     .await
+}
+
+pub(crate) async fn blockchain_finalized_blocks_response(
+    client: &reqwest::Client,
+    endpoint: &str,
+    slot_from: u64,
+    slot_to: u64,
+    blocks_limit: NonZeroUsize,
+    max_error_bytes: usize,
+) -> Result<Response> {
+    let url = finalized_blocks_range_url(endpoint, slot_from, slot_to, blocks_limit)?;
+    request_success_bounded(
+        client.get(url),
+        "catalog finalized block range",
+        "/cryptarchia/blocks_range",
+        "failed to read finalized block range error body",
+        max_error_bytes,
+    )
+    .await
+}
+
+pub(crate) async fn blockchain_cryptarchia_info_bounded(
+    client: &reqwest::Client,
+    endpoint: &str,
+    max_bytes: usize,
+) -> Result<Value> {
+    let url = bedrock_url(endpoint, "/cryptarchia/info")?;
+    request_json_bounded(
+        client.get(url),
+        "/cryptarchia/info",
+        "failed to read Cryptarchia info response body",
+        "invalid Cryptarchia info JSON response",
+        false,
+        false,
+        max_bytes,
+    )
+    .await
+}
+
+pub(crate) async fn blockchain_time_info_bounded(
+    client: &reqwest::Client,
+    endpoint: &str,
+    max_bytes: usize,
+) -> Result<Value> {
+    let url = bedrock_url(endpoint, "/time/info")?;
+    request_json_bounded(
+        client.get(url),
+        "/time/info",
+        "failed to read time info response body",
+        "invalid time info JSON response",
+        false,
+        false,
+        max_bytes,
+    )
+    .await
+}
+
+pub(crate) async fn blockchain_block_bounded(
+    client: &reqwest::Client,
+    endpoint: &str,
+    block_id: &str,
+    max_bytes: usize,
+) -> Result<Option<Value>> {
+    let block_id = block_id.trim();
+    if block_id.is_empty() {
+        bail!("block id is required");
+    }
+    reject_path_markers(block_id, "block id")?;
+    let url = bedrock_url(endpoint, &format!("/cryptarchia/blocks/{block_id}"))?;
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .context("failed to call /cryptarchia/blocks/:id")?;
+    let status = response.status();
+    let (_, bytes) = read_response_body_bytes_bounded(
+        response,
+        "failed to read block detail response body",
+        max_bytes,
+    )
+    .await?;
+    if status == StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if !status.is_success() {
+        bail!(
+            "http call `/cryptarchia/blocks/:id` failed with status {status}: {}",
+            response_excerpt_bytes(&bytes)
+        );
+    }
+    let value = serde_json::from_slice(&bytes).with_context(|| {
+        format!(
+            "invalid block detail JSON response: {}",
+            response_excerpt_bytes(&bytes)
+        )
+    })?;
+    Ok(Some(value))
+}
+
+fn finalized_blocks_range_url(
+    endpoint: &str,
+    slot_from: u64,
+    slot_to: u64,
+    blocks_limit: NonZeroUsize,
+) -> Result<Url> {
+    if slot_from > slot_to {
+        bail!("slot_from must be less than or equal to slot_to");
+    }
+    let mut url = bedrock_url(endpoint, "/cryptarchia/blocks_range")?;
+    let batch_size = blocks_limit.get().min(100);
+    url.query_pairs_mut()
+        .append_pair("slot_from", &slot_from.to_string())
+        .append_pair("slot_to", &slot_to.to_string())
+        .append_pair("order", "ascending")
+        .append_pair("blocks_limit", &blocks_limit.to_string())
+        .append_pair("server_batch_size", &batch_size.to_string())
+        .append_pair("block_filter", "immutable_only");
+    Ok(url)
+}
+
+fn bedrock_url(endpoint: &str, path: &str) -> Result<Url> {
+    let endpoint = endpoint.trim_end_matches('/');
+    Url::parse(&format!("{endpoint}/{}", path.trim_start_matches('/')))
+        .context("invalid Bedrock endpoint URL")
 }
 
 async fn blockchain_blocks_stream_text(endpoint: &str, limit: u64) -> Result<String> {
@@ -655,6 +786,35 @@ mod tests {
             {
                 bail!("unexpected error: {error:#}");
             }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn finalized_catalog_range_uses_ascending_immutable_query() -> Result<()> {
+        let limit = NonZeroUsize::new(25).context("test limit must be non-zero")?;
+
+        let url = finalized_blocks_range_url("http://localhost:8080/", 10, 80, limit)?;
+
+        if url.as_str()
+            != "http://localhost:8080/cryptarchia/blocks_range?slot_from=10&slot_to=80&order=ascending&blocks_limit=25&server_batch_size=25&block_filter=immutable_only"
+        {
+            bail!("unexpected finalized range URL: {url}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn finalized_catalog_range_rejects_reversed_bounds() -> Result<()> {
+        let limit = NonZeroUsize::new(1).context("test limit must be non-zero")?;
+
+        let result = finalized_blocks_range_url("http://localhost:8080", 81, 80, limit);
+
+        let Err(error) = result else {
+            bail!("expected reversed range to fail");
+        };
+        if !error.to_string().contains("slot_from") {
+            bail!("unexpected range error: {error:#}");
         }
         Ok(())
     }
