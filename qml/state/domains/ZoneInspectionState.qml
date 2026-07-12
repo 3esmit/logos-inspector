@@ -88,6 +88,62 @@ QtObject {
     property string l2TransactionTraceError: ""
     property var l2TransactionTraceErrorDetails: null
 
+    property string l2AccountId: ""
+    property var l2AccountFinalizedReport: null
+    property var l2AccountFinalized: null
+    property string l2AccountFinalizedError: ""
+    property var l2AccountFinalizedErrorDetails: null
+    property var l2AccountProvisionalReport: null
+    property var l2AccountProvisional: null
+    property string l2AccountProvisionalError: ""
+    property var l2AccountProvisionalErrorDetails: null
+    property var l2AccountHistoricalTarget: null
+    property var l2AccountHistoricalReport: null
+    property var l2AccountHistorical: null
+    property string l2AccountHistoricalError: ""
+    property var l2AccountHistoricalErrorDetails: null
+    property int l2AccountActivityLimit: 25
+    property var l2AccountActivityReport: null
+    property string l2AccountActivityCanonicalId: ""
+    property var l2AccountActivityRows: []
+    property string l2AccountActivityNextCursor: ""
+    property bool l2AccountActivityHasMore: false
+    property bool l2AccountActivityLoaded: false
+    property string l2AccountActivityError: ""
+    property var l2AccountActivityErrorDetails: null
+
+    property var l2ProgramsReport: null
+    property var l2Programs: []
+    property bool l2ProgramsLoaded: false
+    property string l2ProgramsError: ""
+    property var l2ProgramsErrorDetails: null
+    property string l2CommitmentHex: ""
+    property var l2CommitmentProofReport: null
+    property var l2CommitmentProof: null
+    property bool l2CommitmentProofLoaded: false
+    property string l2CommitmentProofError: ""
+    property var l2CommitmentProofErrorDetails: null
+    property var l2NonceAccountIds: []
+    property var l2AccountNoncesReport: null
+    property var l2AccountNonces: []
+    property bool l2AccountNoncesLoaded: false
+    property string l2AccountNoncesError: ""
+    property var l2AccountNoncesErrorDetails: null
+
+    property int l2TransfersLimit: 25
+    property var l2TransfersReport: null
+    property var l2TransferRecipients: []
+    property string l2TransfersNextCursor: ""
+    property bool l2TransfersHasMore: false
+    property var l2TransfersNewestBlock: null
+    property var l2TransfersOldestBlock: null
+    property int l2TransfersScannedBlocks: 0
+    property bool l2TransfersFinalized: false
+    property bool l2TransfersLoaded: false
+    property var l2TransfersHistory: []
+    property string l2TransfersError: ""
+    property var l2TransfersErrorDetails: null
+
     property bool configureInFlight: false
     property bool statusInFlight: false
     property bool summaryInFlight: false
@@ -101,6 +157,14 @@ QtObject {
     property bool l2BlockDetailInFlight: false
     property bool l2TransactionDetailInFlight: false
     property bool l2TransactionTraceInFlight: false
+    property bool l2AccountFinalizedInFlight: false
+    property bool l2AccountProvisionalInFlight: false
+    property bool l2AccountHistoricalInFlight: false
+    property bool l2AccountActivityInFlight: false
+    property bool l2ProgramsInFlight: false
+    property bool l2CommitmentProofInFlight: false
+    property bool l2AccountNoncesInFlight: false
+    property bool l2TransfersInFlight: false
     property int statusFailureCount: 0
 
     readonly property bool statusPollingEnabled: started
@@ -139,6 +203,14 @@ QtObject {
     property int l2BlockDetailRequestRevision: 0
     property int l2TransactionDetailRequestRevision: 0
     property int l2TransactionTraceRequestRevision: 0
+    property int l2AccountFinalizedRequestRevision: 0
+    property int l2AccountProvisionalRequestRevision: 0
+    property int l2AccountHistoricalRequestRevision: 0
+    property int l2AccountActivityRequestRevision: 0
+    property int l2ProgramsRequestRevision: 0
+    property int l2CommitmentProofRequestRevision: 0
+    property int l2AccountNoncesRequestRevision: 0
+    property int l2TransfersRequestRevision: 0
 
     readonly property bool l2Applicable: activeZoneContext !== null
         && String(activeZoneContext.zone_kind || "") === "sequencer_zone"
@@ -147,6 +219,11 @@ QtObject {
             || String(activeZoneContext.selected_sequencer_source_id || "").length > 0)
     readonly property bool l2ReadEnabled: verification === "verified"
         && l2Applicable && l2SourceConfigured
+    readonly property bool l2IndexerReadEnabled: l2ReadEnabled
+        && String(activeZoneContext && activeZoneContext.indexer_source_id || "").length > 0
+    readonly property bool l2SequencerReadEnabled: l2ReadEnabled
+        && String(activeZoneContext
+            && activeZoneContext.selected_sequencer_source_id || "").length > 0
 
     signal statusRefreshRequested()
     signal sourceMutationFinished(var response)
@@ -628,6 +705,11 @@ QtObject {
     function resetL2InspectionState() {
         resetL2BlocksState(true)
         resetL2BlockInspectionState()
+        resetL2AccountState(true)
+        resetL2ProgramsState()
+        resetL2CommitmentProofState()
+        resetL2AccountNoncesState()
+        resetL2TransfersState(true)
     }
 
     function resetL2BlocksState(clearRows) {
@@ -681,6 +763,106 @@ QtObject {
         l2TransactionTrace = null
         l2TransactionTraceError = ""
         l2TransactionTraceErrorDetails = null
+    }
+
+    function resetL2AccountState(clearAccount) {
+        resetL2CurrentAccountSnapshots()
+        resetL2HistoricalAccountState()
+        resetL2AccountActivityState(true)
+        if (clearAccount) {
+            l2AccountId = ""
+        }
+    }
+
+    function resetL2CurrentAccountSnapshots() {
+        l2AccountFinalizedRequestRevision += 1
+        l2AccountProvisionalRequestRevision += 1
+        l2AccountFinalizedInFlight = false
+        l2AccountProvisionalInFlight = false
+        l2AccountFinalizedReport = null
+        l2AccountFinalized = null
+        l2AccountFinalizedError = ""
+        l2AccountFinalizedErrorDetails = null
+        l2AccountProvisionalReport = null
+        l2AccountProvisional = null
+        l2AccountProvisionalError = ""
+        l2AccountProvisionalErrorDetails = null
+    }
+
+    function resetL2HistoricalAccountState() {
+        l2AccountHistoricalRequestRevision += 1
+        l2AccountHistoricalInFlight = false
+        l2AccountHistoricalTarget = null
+        l2AccountHistoricalReport = null
+        l2AccountHistorical = null
+        l2AccountHistoricalError = ""
+        l2AccountHistoricalErrorDetails = null
+    }
+
+    function resetL2AccountActivityState(clearRows) {
+        l2AccountActivityRequestRevision += 1
+        l2AccountActivityInFlight = false
+        l2AccountActivityReport = null
+        l2AccountActivityNextCursor = ""
+        l2AccountActivityHasMore = false
+        l2AccountActivityError = ""
+        l2AccountActivityErrorDetails = null
+        if (clearRows) {
+            l2AccountActivityCanonicalId = ""
+            l2AccountActivityRows = []
+            l2AccountActivityLoaded = false
+        }
+    }
+
+    function resetL2ProgramsState() {
+        l2ProgramsRequestRevision += 1
+        l2ProgramsInFlight = false
+        l2ProgramsReport = null
+        l2Programs = []
+        l2ProgramsLoaded = false
+        l2ProgramsError = ""
+        l2ProgramsErrorDetails = null
+    }
+
+    function resetL2CommitmentProofState() {
+        l2CommitmentProofRequestRevision += 1
+        l2CommitmentProofInFlight = false
+        l2CommitmentHex = ""
+        l2CommitmentProofReport = null
+        l2CommitmentProof = null
+        l2CommitmentProofLoaded = false
+        l2CommitmentProofError = ""
+        l2CommitmentProofErrorDetails = null
+    }
+
+    function resetL2AccountNoncesState() {
+        l2AccountNoncesRequestRevision += 1
+        l2AccountNoncesInFlight = false
+        l2NonceAccountIds = []
+        l2AccountNoncesReport = null
+        l2AccountNonces = []
+        l2AccountNoncesLoaded = false
+        l2AccountNoncesError = ""
+        l2AccountNoncesErrorDetails = null
+    }
+
+    function resetL2TransfersState(clearHistory) {
+        l2TransfersRequestRevision += 1
+        l2TransfersInFlight = false
+        l2TransfersReport = null
+        l2TransferRecipients = []
+        l2TransfersNextCursor = ""
+        l2TransfersHasMore = false
+        l2TransfersNewestBlock = null
+        l2TransfersOldestBlock = null
+        l2TransfersScannedBlocks = 0
+        l2TransfersFinalized = false
+        l2TransfersLoaded = false
+        l2TransfersError = ""
+        l2TransfersErrorDetails = null
+        if (clearHistory) {
+            l2TransfersHistory = []
+        }
     }
 
     function refreshL2Blocks() {
@@ -996,6 +1178,710 @@ QtObject {
 
     function closeL2Transaction() {
         resetL2TransactionInspectionState()
+    }
+
+    function inspectL2Account(accountId) {
+        const normalizedId = String(accountId || "").trim()
+        if (!l2ReadEnabled || normalizedId.length === 0) {
+            return false
+        }
+        resetL2AccountState(true)
+        l2AccountId = normalizedId
+        let dispatched = false
+        if (l2IndexerReadEnabled) {
+            requestL2AccountSnapshot("finalized", { kind: "finalized" }, l2IndexerSourceId())
+            requestL2AccountActivity("", false)
+            dispatched = true
+        } else {
+            l2AccountFinalizedError = qsTr("Configure an Indexer for finalized account state.")
+            l2AccountActivityError = qsTr("Configure an Indexer for account activity.")
+            l2AccountActivityLoaded = true
+        }
+        if (l2SequencerReadEnabled) {
+            requestL2AccountSnapshot("provisional", { kind: "provisional" }, l2SequencerSourceId())
+            dispatched = true
+        } else {
+            l2AccountProvisionalError = qsTr("Select a Sequencer source for provisional account state.")
+        }
+        return dispatched
+    }
+
+    function refreshL2AccountSnapshots() {
+        if (l2AccountId.length === 0 || !l2ReadEnabled) {
+            return false
+        }
+        resetL2CurrentAccountSnapshots()
+        let dispatched = false
+        if (l2IndexerReadEnabled) {
+            requestL2AccountSnapshot("finalized", { kind: "finalized" }, l2IndexerSourceId())
+            dispatched = true
+        } else {
+            l2AccountFinalizedError = qsTr("Configure an Indexer for finalized account state.")
+        }
+        if (l2SequencerReadEnabled) {
+            requestL2AccountSnapshot("provisional", { kind: "provisional" }, l2SequencerSourceId())
+            dispatched = true
+        } else {
+            l2AccountProvisionalError = qsTr("Select a Sequencer source for provisional account state.")
+        }
+        return dispatched
+    }
+
+    function requestL2HistoricalAccount(blockId, blockHash) {
+        const normalizedBlockId = Number(blockId)
+        const normalizedBlockHash = String(blockHash || "").trim()
+        resetL2HistoricalAccountState()
+        if (l2AccountId.length === 0) {
+            l2AccountHistoricalError = qsTr("Inspect an account before requesting historical state.")
+            return null
+        }
+        if (!Number.isFinite(normalizedBlockId) || normalizedBlockId < 0
+                || Math.floor(normalizedBlockId) !== normalizedBlockId
+                || normalizedBlockHash.length === 0) {
+            l2AccountHistoricalError = qsTr("Historical state requires an exact block ID and hash.")
+            return null
+        }
+        if (!l2IndexerReadEnabled) {
+            l2AccountHistoricalError = qsTr("Configure an Indexer for historical account state.")
+            return null
+        }
+        l2AccountHistoricalTarget = {
+            block_id: normalizedBlockId,
+            block_hash: normalizedBlockHash
+        }
+        return requestL2AccountSnapshot("historical", {
+            kind: "historical",
+            block_id: normalizedBlockId,
+            block_hash: normalizedBlockHash
+        }, l2IndexerSourceId())
+    }
+
+    function requestL2AccountSnapshot(kind, snapshot, exactSourceId) {
+        if (!l2ReadEnabled || l2AccountId.length === 0) {
+            return null
+        }
+        const requestRevision = beginL2AccountSnapshotRequest(kind)
+        if (requestRevision < 0) {
+            return null
+        }
+        const requestContext = l2RequestContext()
+        const sourceId = String(exactSourceId || "")
+        return dispatch("zoneL2Account", {
+            context: requestContext,
+            request_revision: requestRevision,
+            query: {
+                account_id: l2AccountId,
+                snapshot: snapshot,
+                exact_source_id: sourceId.length > 0 ? sourceId : null
+            }
+        }, function (response) {
+            if (requestRevision !== l2AccountSnapshotRevision(kind)) {
+                return
+            }
+            setL2AccountSnapshotInFlight(kind, false)
+            if (!l2RequestContextIsCurrent(requestContext)) {
+                return
+            }
+            if (!validL2ReportResponse(response, "lez.account", requestRevision)) {
+                if (acceptedL2Failure(response, requestContext, requestRevision)) {
+                    setL2AccountSnapshotError(kind,
+                        responseError(response, l2AccountSnapshotFailureText(kind)),
+                        response && response.error_details ? response.error_details : null)
+                }
+                return
+            }
+            const report = response.value
+            setL2AccountSnapshotReport(kind, report)
+            const outcome = report.data || ({})
+            const outcomeKind = String(outcome.outcome || "")
+            if (outcomeKind === "found" && outcome.value) {
+                const expectedRole = kind === "provisional" ? "sequencer" : "indexer"
+                if (!validL2SingleSourceValue(outcome.value, sourceId, expectedRole)
+                        || !outcome.value.account
+                        || String(outcome.value.account.account_id || "").length === 0
+                        || !validL2AccountAnchor(kind, outcome.value)) {
+                    setL2AccountSnapshotError(kind,
+                        qsTr("Account snapshot returned invalid source or account data."), null)
+                    return
+                }
+                setL2AccountSnapshotValue(kind, outcome.value)
+                return
+            }
+            if (outcomeKind === "not_found") {
+                setL2AccountSnapshotError(kind, l2AccountSnapshotNotFoundText(kind), null)
+                return
+            }
+            if (outcomeKind === "ambiguous") {
+                setL2AccountSnapshotError(kind,
+                    qsTr("Account snapshot requires an exact source."), null)
+                return
+            }
+            setL2AccountSnapshotError(kind,
+                qsTr("Account snapshot returned an invalid outcome."), null)
+        })
+    }
+
+    function beginL2AccountSnapshotRequest(kind) {
+        if (kind === "finalized") {
+            l2AccountFinalizedRequestRevision += 1
+            l2AccountFinalizedInFlight = true
+            l2AccountFinalizedReport = null
+            l2AccountFinalized = null
+            l2AccountFinalizedError = ""
+            l2AccountFinalizedErrorDetails = null
+            return l2AccountFinalizedRequestRevision
+        }
+        if (kind === "provisional") {
+            l2AccountProvisionalRequestRevision += 1
+            l2AccountProvisionalInFlight = true
+            l2AccountProvisionalReport = null
+            l2AccountProvisional = null
+            l2AccountProvisionalError = ""
+            l2AccountProvisionalErrorDetails = null
+            return l2AccountProvisionalRequestRevision
+        }
+        if (kind === "historical") {
+            l2AccountHistoricalRequestRevision += 1
+            l2AccountHistoricalInFlight = true
+            l2AccountHistoricalReport = null
+            l2AccountHistorical = null
+            l2AccountHistoricalError = ""
+            l2AccountHistoricalErrorDetails = null
+            return l2AccountHistoricalRequestRevision
+        }
+        return -1
+    }
+
+    function l2AccountSnapshotRevision(kind) {
+        if (kind === "finalized") {
+            return l2AccountFinalizedRequestRevision
+        }
+        if (kind === "provisional") {
+            return l2AccountProvisionalRequestRevision
+        }
+        return kind === "historical" ? l2AccountHistoricalRequestRevision : -1
+    }
+
+    function setL2AccountSnapshotInFlight(kind, value) {
+        if (kind === "finalized") {
+            l2AccountFinalizedInFlight = value
+        } else if (kind === "provisional") {
+            l2AccountProvisionalInFlight = value
+        } else if (kind === "historical") {
+            l2AccountHistoricalInFlight = value
+        }
+    }
+
+    function setL2AccountSnapshotReport(kind, report) {
+        if (kind === "finalized") {
+            l2AccountFinalizedReport = report
+        } else if (kind === "provisional") {
+            l2AccountProvisionalReport = report
+        } else if (kind === "historical") {
+            l2AccountHistoricalReport = report
+        }
+    }
+
+    function setL2AccountSnapshotValue(kind, value) {
+        if (kind === "finalized") {
+            l2AccountFinalized = value
+        } else if (kind === "provisional") {
+            l2AccountProvisional = value
+        } else if (kind === "historical") {
+            l2AccountHistorical = value
+        }
+    }
+
+    function setL2AccountSnapshotError(kind, message, details) {
+        if (kind === "finalized") {
+            l2AccountFinalizedError = String(message || "")
+            l2AccountFinalizedErrorDetails = details
+        } else if (kind === "provisional") {
+            l2AccountProvisionalError = String(message || "")
+            l2AccountProvisionalErrorDetails = details
+        } else if (kind === "historical") {
+            l2AccountHistoricalError = String(message || "")
+            l2AccountHistoricalErrorDetails = details
+        }
+    }
+
+    function l2AccountSnapshotFailureText(kind) {
+        if (kind === "finalized") {
+            return qsTr("Finalized account snapshot could not be loaded.")
+        }
+        if (kind === "provisional") {
+            return qsTr("Provisional account snapshot could not be loaded.")
+        }
+        return qsTr("Historical account snapshot could not be loaded.")
+    }
+
+    function l2AccountSnapshotNotFoundText(kind) {
+        if (kind === "finalized") {
+            return qsTr("Finalized account snapshot was not found.")
+        }
+        if (kind === "provisional") {
+            return qsTr("Provisional account snapshot was not found.")
+        }
+        return qsTr("Historical account snapshot was not found at the exact block.")
+    }
+
+    function refreshL2AccountActivity() {
+        if (l2AccountId.length === 0 || !l2IndexerReadEnabled) {
+            return false
+        }
+        resetL2AccountActivityState(true)
+        return requestL2AccountActivity("", false) !== null
+    }
+
+    function loadMoreL2AccountActivity() {
+        if (!l2IndexerReadEnabled || l2AccountActivityInFlight
+                || !l2AccountActivityHasMore
+                || l2AccountActivityNextCursor.length === 0) {
+            return false
+        }
+        return requestL2AccountActivity(l2AccountActivityNextCursor, true) !== null
+    }
+
+    function setL2AccountActivityLimit(limit) {
+        const next = Math.max(1, Math.min(50, Math.floor(Number(limit || 25))))
+        if (next === l2AccountActivityLimit) {
+            return false
+        }
+        l2AccountActivityLimit = next
+        if (l2AccountId.length > 0) {
+            refreshL2AccountActivity()
+        }
+        return true
+    }
+
+    function requestL2AccountActivity(cursor, append) {
+        if (!l2IndexerReadEnabled || l2AccountActivityInFlight
+                || l2AccountId.length === 0) {
+            return null
+        }
+        l2AccountActivityRequestRevision += 1
+        const requestRevision = l2AccountActivityRequestRevision
+        const requestContext = l2RequestContext()
+        const cursorText = String(cursor || "")
+        const requestedAccountId = l2AccountId
+        l2AccountActivityInFlight = true
+        l2AccountActivityError = ""
+        l2AccountActivityErrorDetails = null
+        return dispatch("zoneL2AccountActivity", {
+            context: requestContext,
+            request_revision: requestRevision,
+            query: {
+                account_id: requestedAccountId,
+                cursor: cursorText.length > 0 ? cursorText : null,
+                limit: l2AccountActivityLimit,
+                order: "oldest_first"
+            }
+        }, function (response) {
+            if (requestRevision !== l2AccountActivityRequestRevision) {
+                return
+            }
+            l2AccountActivityInFlight = false
+            if (!l2RequestContextIsCurrent(requestContext)
+                    || requestedAccountId !== l2AccountId) {
+                return
+            }
+            if (!validL2ReportResponse(response, "lez.account_activity", requestRevision)) {
+                if (acceptedL2Failure(response, requestContext, requestRevision)) {
+                    l2AccountActivityError = responseError(response,
+                        qsTr("Account activity could not be loaded."))
+                    l2AccountActivityErrorDetails = response && response.error_details
+                        ? response.error_details : null
+                }
+                return
+            }
+            const report = response.value
+            const outcome = report.data || ({})
+            if (String(outcome.outcome || "") !== "found" || !outcome.value
+                    || !Array.isArray(outcome.value.rows)
+                    || String(outcome.value.order || "") !== "oldest_first"
+                    || String(outcome.value.account_id || "").length === 0) {
+                l2AccountActivityError = qsTr("Account activity returned an invalid page.")
+                return
+            }
+            const page = outcome.value
+            const canonicalId = String(page.account_id)
+            if (append && canonicalId !== l2AccountActivityCanonicalId) {
+                l2AccountActivityError = qsTr("Account activity cursor belongs to another account.")
+                return
+            }
+            l2AccountActivityReport = report
+            l2AccountActivityCanonicalId = canonicalId
+            l2AccountActivityRows = append
+                ? l2AccountActivityRows.concat(page.rows) : page.rows.slice()
+            l2AccountActivityNextCursor = String(page.next_cursor || "")
+            l2AccountActivityHasMore = page.has_more === true
+                && l2AccountActivityNextCursor.length > 0
+            l2AccountActivityLoaded = true
+        })
+    }
+
+    function refreshL2Programs() {
+        resetL2ProgramsState()
+        if (!l2SequencerReadEnabled) {
+            l2ProgramsLoaded = true
+            l2ProgramsError = qsTr("Select a Sequencer source to inspect known programs.")
+            return null
+        }
+        l2ProgramsRequestRevision += 1
+        const requestRevision = l2ProgramsRequestRevision
+        const requestContext = l2RequestContext()
+        const sourceId = l2SequencerSourceId()
+        l2ProgramsInFlight = true
+        return dispatch("zoneL2Programs", {
+            context: requestContext,
+            request_revision: requestRevision,
+            query: {
+                exact_source_id: sourceId
+            }
+        }, function (response) {
+            if (requestRevision !== l2ProgramsRequestRevision) {
+                return
+            }
+            l2ProgramsInFlight = false
+            if (!l2RequestContextIsCurrent(requestContext)) {
+                return
+            }
+            if (!validL2ReportResponse(response, "lez.programs", requestRevision)) {
+                if (acceptedL2Failure(response, requestContext, requestRevision)) {
+                    l2ProgramsError = responseError(response,
+                        qsTr("Known programs could not be loaded."))
+                    l2ProgramsErrorDetails = response && response.error_details
+                        ? response.error_details : null
+                }
+                return
+            }
+            const report = response.value
+            const outcome = report.data || ({})
+            if (String(outcome.outcome || "") !== "found" || !outcome.value
+                    || !Array.isArray(outcome.value.programs)
+                    || !validL2SingleSourceValue(outcome.value, sourceId, "sequencer")) {
+                l2ProgramsError = qsTr("Known programs returned invalid source data.")
+                return
+            }
+            l2ProgramsReport = report
+            l2Programs = outcome.value.programs.slice()
+            l2ProgramsLoaded = true
+        })
+    }
+
+    function requestL2CommitmentProof(commitmentHex) {
+        resetL2CommitmentProofState()
+        const normalizedCommitment = String(commitmentHex || "").trim()
+        if (normalizedCommitment.length === 0) {
+            l2CommitmentProofError = qsTr("Enter a commitment hash.")
+            return null
+        }
+        if (!l2SequencerReadEnabled) {
+            l2CommitmentProofError = qsTr("Select a Sequencer source to inspect a commitment proof.")
+            return null
+        }
+        l2CommitmentHex = normalizedCommitment
+        l2CommitmentProofRequestRevision += 1
+        const requestRevision = l2CommitmentProofRequestRevision
+        const requestContext = l2RequestContext()
+        const sourceId = l2SequencerSourceId()
+        l2CommitmentProofInFlight = true
+        return dispatch("zoneL2CommitmentProof", {
+            context: requestContext,
+            request_revision: requestRevision,
+            query: {
+                commitment_hex: normalizedCommitment,
+                exact_source_id: sourceId
+            }
+        }, function (response) {
+            if (requestRevision !== l2CommitmentProofRequestRevision) {
+                return
+            }
+            l2CommitmentProofInFlight = false
+            if (!l2RequestContextIsCurrent(requestContext)
+                    || normalizedCommitment !== l2CommitmentHex) {
+                return
+            }
+            if (!validL2ReportResponse(response, "lez.commitment_proof", requestRevision)) {
+                if (acceptedL2Failure(response, requestContext, requestRevision)) {
+                    l2CommitmentProofError = responseError(response,
+                        qsTr("Commitment proof could not be loaded."))
+                    l2CommitmentProofErrorDetails = response && response.error_details
+                        ? response.error_details : null
+                }
+                return
+            }
+            const report = response.value
+            const outcome = report.data || ({})
+            const outcomeKind = String(outcome.outcome || "")
+            l2CommitmentProofReport = report
+            l2CommitmentProofLoaded = true
+            if (outcomeKind === "not_found") {
+                return
+            }
+            if (outcomeKind !== "found" || !outcome.value
+                    || !Array.isArray(outcome.value.sibling_hashes)
+                    || String(outcome.value.commitment_hex || "") !== normalizedCommitment
+                    || !validL2SingleSourceValue(outcome.value, sourceId, "sequencer")) {
+                l2CommitmentProofError = qsTr("Commitment proof returned invalid source data.")
+                return
+            }
+            l2CommitmentProof = outcome.value
+        })
+    }
+
+    function requestL2AccountNonces(accountIds) {
+        resetL2AccountNoncesState()
+        const normalizedIds = normalizedL2AccountIds(accountIds)
+        if (normalizedIds.length === 0) {
+            l2AccountNoncesError = qsTr("Enter at least one account ID.")
+            return null
+        }
+        if (normalizedIds.length > 100) {
+            l2AccountNoncesError = qsTr("At most 100 account IDs can be requested.")
+            return null
+        }
+        if (!l2SequencerReadEnabled) {
+            l2AccountNoncesError = qsTr("Select a Sequencer source to inspect account nonces.")
+            return null
+        }
+        l2NonceAccountIds = normalizedIds
+        l2AccountNoncesRequestRevision += 1
+        const requestRevision = l2AccountNoncesRequestRevision
+        const requestContext = l2RequestContext()
+        const sourceId = l2SequencerSourceId()
+        l2AccountNoncesInFlight = true
+        return dispatch("zoneL2AccountNonces", {
+            context: requestContext,
+            request_revision: requestRevision,
+            query: {
+                account_ids: normalizedIds,
+                exact_source_id: sourceId
+            }
+        }, function (response) {
+            if (requestRevision !== l2AccountNoncesRequestRevision) {
+                return
+            }
+            l2AccountNoncesInFlight = false
+            if (!l2RequestContextIsCurrent(requestContext)) {
+                return
+            }
+            if (!validL2ReportResponse(response, "lez.account_nonces", requestRevision)) {
+                if (acceptedL2Failure(response, requestContext, requestRevision)) {
+                    l2AccountNoncesError = responseError(response,
+                        qsTr("Account nonces could not be loaded."))
+                    l2AccountNoncesErrorDetails = response && response.error_details
+                        ? response.error_details : null
+                }
+                return
+            }
+            const report = response.value
+            const outcome = report.data || ({})
+            if (String(outcome.outcome || "") !== "found" || !outcome.value
+                    || !Array.isArray(outcome.value.rows)
+                    || outcome.value.rows.length !== normalizedIds.length
+                    || !validL2SingleSourceValue(outcome.value, sourceId, "sequencer")) {
+                l2AccountNoncesError = qsTr("Account nonces returned invalid source data.")
+                return
+            }
+            l2AccountNoncesReport = report
+            l2AccountNonces = outcome.value.rows.slice()
+            l2AccountNoncesLoaded = true
+        })
+    }
+
+    function normalizedL2AccountIds(accountIds) {
+        const values = Array.isArray(accountIds) ? accountIds : []
+        const result = []
+        for (let i = 0; i < values.length; ++i) {
+            const value = String(values[i] || "").trim()
+            if (value.length > 0) {
+                result.push(value)
+            }
+        }
+        return result
+    }
+
+    function refreshL2Transfers() {
+        resetL2TransfersState(true)
+        if (!l2IndexerReadEnabled) {
+            l2TransfersLoaded = true
+            l2TransfersError = qsTr("Configure an Indexer to inspect finalized transfer windows.")
+            return null
+        }
+        return requestL2Transfers("", false)
+    }
+
+    function loadOlderL2Transfers() {
+        if (!l2IndexerReadEnabled || l2TransfersInFlight || !l2TransfersHasMore
+                || l2TransfersNextCursor.length === 0) {
+            return null
+        }
+        return requestL2Transfers(l2TransfersNextCursor, true)
+    }
+
+    function loadNewerL2Transfers() {
+        if (l2TransfersInFlight || l2TransfersHistory.length === 0) {
+            return false
+        }
+        l2TransfersRequestRevision += 1
+        const history = l2TransfersHistory.slice()
+        const page = history.pop()
+        l2TransfersHistory = history
+        restoreL2TransfersPage(page)
+        l2TransfersError = ""
+        l2TransfersErrorDetails = null
+        return true
+    }
+
+    function setL2TransfersLimit(limit) {
+        const next = Math.max(1, Math.min(50, Math.floor(Number(limit || 25))))
+        if (next === l2TransfersLimit) {
+            return false
+        }
+        l2TransfersLimit = next
+        refreshL2Transfers()
+        return true
+    }
+
+    function requestL2Transfers(cursor, older) {
+        if (!l2IndexerReadEnabled || l2TransfersInFlight) {
+            return null
+        }
+        l2TransfersRequestRevision += 1
+        const requestRevision = l2TransfersRequestRevision
+        const requestContext = l2RequestContext()
+        const cursorText = String(cursor || "")
+        const previousPage = older ? currentL2TransfersPage() : null
+        l2TransfersInFlight = true
+        l2TransfersError = ""
+        l2TransfersErrorDetails = null
+        return dispatch("zoneL2Transfers", {
+            context: requestContext,
+            request_revision: requestRevision,
+            query: {
+                cursor: cursorText.length > 0 ? cursorText : null,
+                block_limit: l2TransfersLimit
+            }
+        }, function (response) {
+            if (requestRevision !== l2TransfersRequestRevision) {
+                return
+            }
+            l2TransfersInFlight = false
+            if (!l2RequestContextIsCurrent(requestContext)) {
+                return
+            }
+            if (!validL2ReportResponse(response, "lez.transfers", requestRevision)) {
+                if (acceptedL2Failure(response, requestContext, requestRevision)) {
+                    l2TransfersError = responseError(response,
+                        qsTr("Transfer window could not be loaded."))
+                    l2TransfersErrorDetails = response && response.error_details
+                        ? response.error_details : null
+                }
+                return
+            }
+            const report = response.value
+            const outcome = report.data || ({})
+            if (String(outcome.outcome || "") !== "found" || !outcome.value
+                    || !Array.isArray(outcome.value.recipients)
+                    || outcome.value.finalized !== true) {
+                l2TransfersError = qsTr("Transfer window returned invalid finalized data.")
+                return
+            }
+            if (older && previousPage) {
+                l2TransfersHistory = l2TransfersHistory.concat([previousPage])
+            }
+            applyL2TransfersPage(report, outcome.value)
+        })
+    }
+
+    function currentL2TransfersPage() {
+        return {
+            report: l2TransfersReport,
+            recipients: l2TransferRecipients.slice(),
+            next_cursor: l2TransfersNextCursor,
+            has_more: l2TransfersHasMore,
+            newest_block: l2TransfersNewestBlock,
+            oldest_block: l2TransfersOldestBlock,
+            scanned_blocks: l2TransfersScannedBlocks,
+            finalized: l2TransfersFinalized,
+            loaded: l2TransfersLoaded
+        }
+    }
+
+    function applyL2TransfersPage(report, page) {
+        l2TransfersReport = report
+        l2TransferRecipients = page.recipients.slice()
+        l2TransfersNextCursor = String(page.next_cursor || "")
+        l2TransfersHasMore = page.has_more === true
+            && l2TransfersNextCursor.length > 0
+        l2TransfersNewestBlock = page.newest_block === undefined
+            ? null : page.newest_block
+        l2TransfersOldestBlock = page.oldest_block === undefined
+            ? null : page.oldest_block
+        l2TransfersScannedBlocks = Number(page.scanned_blocks || 0)
+        l2TransfersFinalized = page.finalized === true
+        l2TransfersLoaded = true
+    }
+
+    function restoreL2TransfersPage(page) {
+        l2TransfersReport = page.report || null
+        l2TransferRecipients = Array.isArray(page.recipients)
+            ? page.recipients.slice() : []
+        l2TransfersNextCursor = String(page.next_cursor || "")
+        l2TransfersHasMore = page.has_more === true
+        l2TransfersNewestBlock = page.newest_block === undefined
+            ? null : page.newest_block
+        l2TransfersOldestBlock = page.oldest_block === undefined
+            ? null : page.oldest_block
+        l2TransfersScannedBlocks = Number(page.scanned_blocks || 0)
+        l2TransfersFinalized = page.finalized === true
+        l2TransfersLoaded = page.loaded === true
+    }
+
+    function l2IndexerSourceId() {
+        return String(activeZoneContext && activeZoneContext.indexer_source_id || "")
+    }
+
+    function l2SequencerSourceId() {
+        return String(activeZoneContext
+            && activeZoneContext.selected_sequencer_source_id || "")
+    }
+
+    function validL2SingleSourceValue(value, exactSourceId, expectedRole) {
+        const source = value && value.source ? value.source : null
+        if (!source || String(source.source_role || "") !== String(expectedRole || "")) {
+            return false
+        }
+        const sourceId = String(exactSourceId || "")
+        return sourceId.length === 0 || String(source.source_id || "") === sourceId
+    }
+
+    function validL2AccountAnchor(kind, value) {
+        const anchor = value && value.anchor ? value.anchor : null
+        const anchorState = String(value && value.anchor_state || "")
+        if (!anchor || !Number.isFinite(Number(anchor.block_id))
+                || String(anchor.block_hash || "").length === 0) {
+            return false
+        }
+        if (kind !== "provisional") {
+            if (anchorState !== "exact" || value.after_anchor !== null) {
+                return false
+            }
+            if (kind === "historical" && l2AccountHistoricalTarget) {
+                return Number(anchor.block_id)
+                        === Number(l2AccountHistoricalTarget.block_id)
+                    && String(anchor.block_hash || "")
+                        === String(l2AccountHistoricalTarget.block_hash || "")
+            }
+            return true
+        }
+        if (anchorState === "exact") {
+            return value.after_anchor === null
+        }
+        return anchorState === "moving" && value.after_anchor
+            && Number.isFinite(Number(value.after_anchor.block_id))
+            && String(value.after_anchor.block_hash || "").length > 0
     }
 
     function l2BlockTargetFrom(value) {

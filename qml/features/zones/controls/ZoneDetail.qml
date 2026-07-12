@@ -16,6 +16,7 @@ ColumnLayout {
     property bool sourceEditorInitiallyOpen: false
     property string currentTab: initialTab
     property string pendingTab: ""
+    property string l2InitialView: "blocks"
     readonly property var detail: root.zoneState.zoneDetail
     readonly property var zone: root.detail && root.detail.summary ? root.detail.summary : ({})
     readonly property bool hasDirtyDraft: sourceLoader.section !== null
@@ -30,6 +31,9 @@ ColumnLayout {
 
         ListElement { value: "overview"; label: "Overview" }
         ListElement { value: "l2"; label: "L2 Blocks" }
+        ListElement { value: "accounts"; label: "Accounts" }
+        ListElement { value: "programs"; label: "Programs" }
+        ListElement { value: "transfers"; label: "Transfers" }
         ListElement { value: "sources"; label: "Sources" }
         ListElement { value: "evidence"; label: "L1 Evidence" }
     }
@@ -92,6 +96,7 @@ ColumnLayout {
         theme: root.theme
         options: detailTabs
         current: root.currentTab
+        compressTabs: false
         onSelected: function (value) {
             root.requestTab(value)
         }
@@ -114,7 +119,47 @@ ColumnLayout {
         sourceComponent: ZoneL2Inspector {
             theme: root.theme
             zoneState: root.zoneState
+            initialView: root.l2InitialView
             onConfigureSourcesRequested: root.requestTab("sources")
+        }
+    }
+
+    Loader {
+        active: root.currentTab === "accounts"
+        asynchronous: false
+        Layout.fillWidth: true
+        sourceComponent: ZoneL2Accounts {
+            theme: root.theme
+            zoneState: root.zoneState
+            onConfigureSourcesRequested: root.requestTab("sources")
+            onTransactionRequested: function (transactionId, exactSourceId) {
+                root.inspectL2Transaction(transactionId, exactSourceId)
+            }
+        }
+    }
+
+    Loader {
+        active: root.currentTab === "programs"
+        asynchronous: false
+        Layout.fillWidth: true
+        sourceComponent: ZoneL2Programs {
+            theme: root.theme
+            zoneState: root.zoneState
+            onConfigureSourcesRequested: root.requestTab("sources")
+        }
+    }
+
+    Loader {
+        active: root.currentTab === "transfers"
+        asynchronous: false
+        Layout.fillWidth: true
+        sourceComponent: ZoneL2Transfers {
+            theme: root.theme
+            zoneState: root.zoneState
+            onConfigureSourcesRequested: root.requestTab("sources")
+            onTransactionRequested: function (transactionId, exactSourceId) {
+                root.inspectL2Transaction(transactionId, exactSourceId)
+            }
         }
     }
 
@@ -173,8 +218,27 @@ ColumnLayout {
             tabGuardPopup.open()
             return false
         }
+        if (nextTab === "l2") {
+            l2InitialView = l2ViewForState()
+        }
         currentTab = nextTab
         return true
+    }
+
+    function inspectL2Transaction(transactionId, exactSourceId) {
+        zoneState.openL2Transaction(transactionId, exactSourceId)
+        l2InitialView = "transaction"
+        currentTab = "l2"
+    }
+
+    function l2ViewForState() {
+        if (String(zoneState.l2TransactionId || "").length > 0) {
+            return "transaction"
+        }
+        if (zoneState.l2BlockDetail !== null) {
+            return "block"
+        }
+        return "blocks"
     }
 
     function discardSourceDraft() {

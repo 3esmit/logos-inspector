@@ -66,6 +66,12 @@ TestCase {
         function respondNext(method, response) {
             const entry = pendingRequest(method)
             testRoot.verify(entry !== null, "Missing pending request for " + method)
+            respond(entry, response)
+        }
+
+        function respond(entry, response) {
+            testRoot.verify(entry !== null, "Missing request entry")
+            testRoot.verify(!entry.completed, "Request already completed")
             entry.completed = true
             entry.callback(response)
         }
@@ -403,6 +409,78 @@ TestCase {
             message_prehash: "cd".repeat(32),
             prehash_signature_valid: true
         }
+    }
+
+    function l2AccountSnapshot(accountId, balance, source, anchorState, blockId) {
+        return {
+            account: {
+                account_id: String(accountId),
+                account_id_base58: "account-base58",
+                account_id_hex: "ab".repeat(32),
+                balance: String(balance),
+                nonce: "4",
+                owner_program_base58: "program-base58",
+                owner_program_hex: "cd".repeat(32),
+                data_hex: "0102",
+                existence: "unknown"
+            },
+            anchor: blockId === null || blockId === undefined ? null : {
+                block_id: Number(blockId),
+                block_hash: String(blockId).repeat(64).slice(0, 64)
+            },
+            after_anchor: null,
+            anchor_state: String(anchorState || "exact"),
+            source: source
+        }
+    }
+
+    function l2ActivityRow(index, transactionId) {
+        return {
+            index: Number(index),
+            transaction_id: String(transactionId),
+            kind: "public",
+            direction: "outgoing",
+            program_id_hex: "ab".repeat(32),
+            account_ids: ["account-a"],
+            signer_account_ids: ["account-a"],
+            nonces: [String(index)],
+            instruction_data: [1, 2],
+            transfer_outputs: [],
+            bytecode_len: null
+        }
+    }
+
+    function l2TransferRecipient(recipient, received, outputs, references) {
+        return {
+            recipient: String(recipient),
+            account_ref: String(recipient),
+            received: received === null ? null : String(received),
+            txs: 1,
+            outputs: Number(outputs),
+            references: Number(references),
+            last_slot: 12,
+            source: outputs > 0 && references > 0
+                ? "transfer_outputs_and_account_refs"
+                : (outputs > 0 ? "transfer_outputs" : "account_refs"),
+            transfers: [{
+                slot: 12,
+                tx_hash: "ef".repeat(32),
+                block_hash: "12".repeat(32),
+                value: received === null ? null : String(received)
+            }]
+        }
+    }
+
+    function l2AccountRequest(kind) {
+        for (let i = gateway.requests.length - 1; i >= 0; --i) {
+            const entry = gateway.requests[i]
+            const query = entry.args && entry.args[0] && entry.args[0].query
+            if (entry.method === "zoneL2Account" && query && query.snapshot
+                    && query.snapshot.kind === kind && !entry.completed) {
+                return entry
+            }
+        }
+        return null
     }
 
     function loadOneZone(row) {
@@ -995,5 +1073,202 @@ TestCase {
         })))
         compare(zoneState.l2BlockRows.length, 0)
         verify(!zoneState.l2BlocksLoaded)
+    }
+
+    function test_l2_account_snapshots_are_independent_and_historical_is_exact() {
+        loadConfiguredL2Zone()
+        verify(zoneState.inspectL2Account("account-a"))
+        compare(gateway.requestCount("zoneL2Account"), 2)
+        compare(gateway.requestCount("zoneL2AccountActivity"), 1)
+
+        const finalizedRequest = l2AccountRequest("finalized")
+        const provisionalRequest = l2AccountRequest("provisional")
+        compare(finalizedRequest.args[0].query.exact_source_id, "idx-a")
+        compare(provisionalRequest.args[0].query.exact_source_id, "seq-a")
+
+        const provisional = l2AccountSnapshot("account-a", "19",
+            l2Source("seq-a", "sequencer", "provisional"), "moving", 14)
+        provisional.after_anchor = {
+            block_id: 15,
+            block_hash: "f".repeat(64)
+        }
+        gateway.respond(provisionalRequest, ok(l2Report(provisionalRequest, "lez.account", {
+            outcome: "found",
+            value: provisional
+        })))
+        compare(zoneState.l2AccountProvisional.account.balance, "19")
+        compare(zoneState.l2AccountProvisional.anchor_state, "moving")
+        compare(zoneState.l2AccountFinalized, null)
+
+        gateway.respondNext("zoneL2AccountActivity", failed("activity unavailable"))
+        compare(zoneState.l2AccountActivityError, "activity unavailable")
+        compare(zoneState.l2AccountProvisional.account.balance, "19")
+
+        const finalized = l2AccountSnapshot("account-a", "17",
+            l2Source("idx-a", "indexer", "finalized"), "exact", 12)
+        gateway.respond(finalizedRequest, ok(l2Report(finalizedRequest, "lez.account", {
+            outcome: "found",
+            value: finalized
+        })))
+        compare(zoneState.l2AccountFinalized.account.balance, "17")
+        compare(zoneState.l2AccountProvisional.account.balance, "19")
+        compare(zoneState.l2AccountFinalized.source.source_role, "indexer")
+        compare(zoneState.l2AccountProvisional.source.source_role, "sequencer")
+
+        verify(zoneState.requestL2HistoricalAccount(9, "9".repeat(64)) !== null)
+        const historicalRequest = l2AccountRequest("historical")
+        compare(historicalRequest.args[0].query.snapshot.block_id, 9)
+        compare(historicalRequest.args[0].query.snapshot.block_hash, "9".repeat(64))
+        compare(historicalRequest.args[0].query.exact_source_id, "idx-a")
+        const historical = l2AccountSnapshot("account-a", "11",
+            l2Source("idx-a", "indexer", "finalized", "memory_cache"), "exact", 9)
+        gateway.respond(historicalRequest, ok(l2Report(historicalRequest, "lez.account", {
+            outcome: "found",
+            value: historical
+        })))
+        compare(zoneState.l2AccountHistorical.account.balance, "11")
+        compare(zoneState.l2AccountHistorical.source.retrieval, "memory_cache")
+        compare(zoneState.l2AccountFinalized.account.balance, "17")
+        compare(zoneState.l2AccountProvisional.account.balance, "19")
+    }
+
+    function test_l2_account_activity_appends_oldest_first_without_touching_snapshots() {
+        loadConfiguredL2Zone()
+        verify(zoneState.inspectL2Account("account-a"))
+        const activityRequest = gateway.lastRequest("zoneL2AccountActivity")
+        compare(activityRequest.args[0].query.order, "oldest_first")
+        compare(activityRequest.args[0].query.limit, 25)
+        gateway.respond(activityRequest, ok(l2Report(activityRequest, "lez.account_activity", {
+            outcome: "found",
+            value: {
+                account_id: "account-a",
+                order: "oldest_first",
+                rows: [l2ActivityRow(0, "tx-oldest"), l2ActivityRow(1, "tx-next")],
+                next_cursor: "activity-next",
+                has_more: true
+            }
+        })))
+        compare(zoneState.l2AccountActivityRows.length, 2)
+        compare(zoneState.l2AccountActivityRows[0].transaction_id, "tx-oldest")
+        compare(zoneState.l2AccountActivityRows[1].transaction_id, "tx-next")
+        verify(zoneState.l2AccountActivityHasMore)
+
+        verify(zoneState.loadMoreL2AccountActivity())
+        const nextRequest = gateway.lastRequest("zoneL2AccountActivity")
+        compare(nextRequest.args[0].query.cursor, "activity-next")
+        gateway.respond(nextRequest, ok(l2Report(nextRequest, "lez.account_activity", {
+            outcome: "found",
+            value: {
+                account_id: "account-a",
+                order: "oldest_first",
+                rows: [l2ActivityRow(2, "tx-newest")],
+                next_cursor: null,
+                has_more: false
+            }
+        })))
+        compare(zoneState.l2AccountActivityRows.length, 3)
+        compare(zoneState.l2AccountActivityRows[2].transaction_id, "tx-newest")
+        verify(!zoneState.l2AccountActivityHasMore)
+        compare(zoneState.l2AccountFinalized, null)
+        compare(zoneState.l2AccountProvisional, null)
+    }
+
+    function test_l2_sequencer_tools_use_selected_exact_source_and_isolated_slots() {
+        loadConfiguredL2Zone()
+        verify(zoneState.refreshL2Programs() !== null)
+        const programsRequest = gateway.lastRequest("zoneL2Programs")
+        compare(programsRequest.args[0].query.exact_source_id, "seq-a")
+        gateway.respond(programsRequest, ok(l2Report(programsRequest, "lez.programs", {
+            outcome: "found",
+            value: {
+                programs: [{ label: "System", base58: "program-58", hex: "ab".repeat(32) }],
+                source: l2Source("seq-a", "sequencer", "provisional")
+            }
+        })))
+        compare(zoneState.l2Programs.length, 1)
+
+        verify(zoneState.requestL2CommitmentProof("cd".repeat(32)) !== null)
+        const proofRequest = gateway.lastRequest("zoneL2CommitmentProof")
+        compare(proofRequest.args[0].query.exact_source_id, "seq-a")
+        gateway.respond(proofRequest, ok(l2Report(proofRequest, "lez.commitment_proof", {
+            outcome: "found",
+            value: {
+                commitment_hex: "cd".repeat(32),
+                leaf_index: 4,
+                sibling_hashes: ["ef".repeat(32)],
+                source: l2Source("seq-a", "sequencer", "provisional")
+            }
+        })))
+        compare(zoneState.l2CommitmentProof.leaf_index, 4)
+        compare(zoneState.l2Programs.length, 1)
+
+        verify(zoneState.requestL2AccountNonces(["account-a", "account-b"]) !== null)
+        const nonceRequest = gateway.lastRequest("zoneL2AccountNonces")
+        compare(nonceRequest.args[0].query.exact_source_id, "seq-a")
+        gateway.respond(nonceRequest, ok(l2Report(nonceRequest, "lez.account_nonces", {
+            outcome: "found",
+            value: {
+                rows: [{ account_id: "account-a", nonce: "7" },
+                    { account_id: "account-b", nonce: "9" }],
+                source: l2Source("seq-a", "sequencer", "provisional")
+            }
+        })))
+        compare(zoneState.l2AccountNonces.length, 2)
+        compare(zoneState.l2CommitmentProof.leaf_index, 4)
+        compare(zoneState.l2Programs.length, 1)
+    }
+
+    function test_l2_transfer_pages_replace_window_and_restore_newer_page() {
+        loadConfiguredL2Zone()
+        verify(zoneState.refreshL2Transfers() !== null)
+        const firstRequest = gateway.lastRequest("zoneL2Transfers")
+        compare(firstRequest.args[0].query.cursor, null)
+        compare(firstRequest.args[0].query.block_limit, 25)
+        const recipient = "aa".repeat(32)
+        gateway.respond(firstRequest, ok(l2Report(firstRequest, "lez.transfers", {
+            outcome: "found",
+            value: {
+                recipients: [l2TransferRecipient(recipient, "10", 1, 2)],
+                next_cursor: "transfers-older",
+                has_more: true,
+                newest_block: 20,
+                oldest_block: 16,
+                scanned_blocks: 5,
+                finalized: true
+            }
+        })))
+        compare(zoneState.l2TransferRecipients[0].received, "10")
+        compare(zoneState.l2TransferRecipients[0].source,
+            "transfer_outputs_and_account_refs")
+        compare(zoneState.l2TransfersNewestBlock, 20)
+        compare(zoneState.l2TransfersOldestBlock, 16)
+
+        verify(zoneState.loadOlderL2Transfers() !== null)
+        compare(zoneState.l2TransferRecipients[0].received, "10")
+        const olderRequest = gateway.lastRequest("zoneL2Transfers")
+        compare(olderRequest.args[0].query.cursor, "transfers-older")
+        gateway.respond(olderRequest, ok(l2Report(olderRequest, "lez.transfers", {
+            outcome: "found",
+            value: {
+                recipients: [l2TransferRecipient(recipient, "3", 1, 0)],
+                next_cursor: null,
+                has_more: false,
+                newest_block: 15,
+                oldest_block: 11,
+                scanned_blocks: 5,
+                finalized: true
+            }
+        })))
+        compare(zoneState.l2TransferRecipients.length, 1)
+        compare(zoneState.l2TransferRecipients[0].received, "3")
+        compare(zoneState.l2TransfersHistory.length, 1)
+        compare(zoneState.l2TransfersNewestBlock, 15)
+        compare(zoneState.l2TransfersOldestBlock, 11)
+
+        verify(zoneState.loadNewerL2Transfers())
+        compare(zoneState.l2TransferRecipients[0].received, "10")
+        compare(zoneState.l2TransfersNewestBlock, 20)
+        compare(zoneState.l2TransfersOldestBlock, 16)
+        compare(zoneState.l2TransfersHistory.length, 0)
     }
 }

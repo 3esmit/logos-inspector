@@ -47,10 +47,14 @@ capture() {
 
 capture 1024 720 overview
 capture 1024 720 l2
+capture 1024 720 accounts
+capture 1024 720 transfers
 capture 1440 900 evidence
 capture 1440 900 l2
 capture 1440 900 l2-block
+capture 1440 900 programs
 capture 1920 1080 l2-trace
+capture 1920 1080 transfers-detail
 capture 1920 1080 sources
 
 if [[ -n "$KEEP_OUTPUT" ]]; then

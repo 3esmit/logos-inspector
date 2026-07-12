@@ -10,7 +10,8 @@ ColumnLayout {
 
     required property Theme theme
     required property var zoneState
-    property string currentView: "blocks"
+    property string initialView: "blocks"
+    property string currentView: initialView
 
     signal configureSourcesRequested()
 

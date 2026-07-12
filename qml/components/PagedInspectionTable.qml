@@ -17,6 +17,9 @@ ColumnLayout {
     property bool canGoNewer: false
     property bool canGoOlder: false
     property bool busy: false
+    property string refreshText: qsTr("Latest")
+    property string newerText: qsTr("Newer")
+    property string olderText: qsTr("Older")
     property var headerCells: []
     property var rows: []
 
@@ -40,6 +43,9 @@ ColumnLayout {
         canGoNewer: root.canGoNewer
         canGoOlder: root.canGoOlder
         busy: root.busy
+        refreshText: root.refreshText
+        newerText: root.newerText
+        olderText: root.olderText
         Layout.fillWidth: true
         onRefresh: root.refreshRequested()
         onNewer: root.newerRequested()

@@ -11,6 +11,7 @@ Control {
     required property Theme theme
     required property ListModel options
     property string current: ""
+    property bool compressTabs: true
     signal selected(string value)
 
     readonly property int tabSpacing: root.theme.gapSmall
@@ -19,6 +20,8 @@ Control {
     readonly property int baseTabWidth: 96
     readonly property int optionCount: root.options ? root.options.count : 0
     readonly property int naturalContentWidth: root.naturalWidthTotal()
+
+    onCurrentChanged: root.ensureCurrentVisible()
 
     Layout.fillWidth: true
     implicitWidth: Math.min(root.naturalContentWidth, 360)
@@ -186,10 +189,20 @@ Control {
     }
 
     function tabWidth(label) {
-        if (root.width > 0 && root.naturalContentWidth > root.width) {
+        if (root.compressTabs && root.width > 0
+                && root.naturalContentWidth > root.width) {
             return root.compressedTabWidth()
         }
 
         return root.naturalTabWidth(label)
+    }
+
+    function ensureCurrentVisible() {
+        for (let i = 0; i < root.optionCount; ++i) {
+            if (String(root.options.get(i).value) === root.current) {
+                root.ensureVisible(tabRepeater.itemAt(i))
+                return
+            }
+        }
     }
 }
