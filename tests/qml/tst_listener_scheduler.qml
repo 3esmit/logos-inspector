@@ -40,6 +40,27 @@ TestCase {
     }
 
     QtObject {
+        id: zoneState
+
+        signal statusRefreshRequested()
+
+        property bool statusPollingEnabled: false
+        property int statusPollInterval: 5000
+        property int polls: 0
+        property int resumes: 0
+
+        function pollStatus() {
+            polls += 1
+            return true
+        }
+
+        function appResumed() {
+            resumes += 1
+            return true
+        }
+    }
+
+    QtObject {
         id: fakeModel
 
         property int blockchainRefreshRate: 30
@@ -51,6 +72,7 @@ TestCase {
         property bool blocksLiveEnabled: false
         property QtObject storageApp: storageState
         property QtObject deliveryApp: deliveryState
+        property QtObject zoneInspection: zoneState
         property var queriedKinds: []
         property int dashboardCalls: 0
         property int liveCalls: 0
@@ -101,6 +123,10 @@ TestCase {
         storageState.polls = 0
         deliveryState.running = false
         deliveryState.polls = 0
+        zoneState.statusPollingEnabled = false
+        zoneState.statusPollInterval = 5000
+        zoneState.polls = 0
+        zoneState.resumes = 0
     }
 
     function test_tick_routes_refresh_consumers() {
@@ -130,5 +156,30 @@ TestCase {
         verify(!scheduler.enabled("dashboard"))
         fakeModel.blocksLiveEnabled = true
         verify(scheduler.enabled("liveBlocks"))
+    }
+
+    function test_zones_status_uses_adaptive_interval_and_immediate_signal() {
+        zoneState.statusPollingEnabled = true
+        zoneState.statusPollInterval = 2000
+
+        verify(scheduler.enabled("zonesStatus"))
+        compare(scheduler.intervalFor("zonesStatus"), 2000)
+
+        zoneState.statusRefreshRequested()
+
+        compare(zoneState.polls, 1)
+        scheduler.applicationResumed()
+        compare(zoneState.resumes, 1)
+    }
+
+    function test_legacy_l2_connection_probes_are_not_scheduled() {
+        fakeModel.indexerRefreshRate = 30
+        fakeModel.executionRefreshRate = 30
+
+        verify(!scheduler.enabled("indexer"))
+        verify(!scheduler.enabled("execution"))
+        compare(scheduler.tick("indexer"), null)
+        compare(scheduler.tick("execution"), null)
+        compare(fakeModel.queriedKinds.length, 0)
     }
 }
