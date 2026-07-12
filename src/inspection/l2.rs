@@ -8,6 +8,7 @@ use crate::source_routing::channel_sources::{ChannelSourceConfig, ChannelSourceM
 mod cache;
 mod model;
 mod normalization;
+mod resolution;
 mod router;
 mod source;
 
@@ -295,6 +296,76 @@ pub struct ZoneL2EntityRef {
     pub entity_kind: ZoneL2EntityKind,
     pub canonical_key: String,
     pub source: ZoneL2SourceQualifier,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InspectionResolveTargetRequest {
+    pub query: String,
+    pub active_zone_context: Option<ActiveZoneContext>,
+    pub request_revision: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InspectionTargetResolutionReport {
+    pub report_kind: String,
+    pub schema_version: u32,
+    pub query: String,
+    pub request_revision: u64,
+    pub context_revision: Option<u64>,
+    pub status: InspectionTargetResolutionStatus,
+    pub candidates: Vec<InspectionTargetCandidate>,
+    pub recovery: Option<L2RecoveryAction>,
+    pub warnings: Vec<InspectionTargetResolutionWarning>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InspectionTargetResolutionStatus {
+    Resolved,
+    Ambiguous,
+    NotFound,
+    Recovery,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InspectionTargetCandidate {
+    pub entity_ref: InspectionEntityRef,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finality: Option<L2RouteFinality>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "layer", rename_all = "snake_case")]
+pub enum InspectionEntityRef {
+    Zone {
+        network_scope: NetworkScope,
+        channel_id: String,
+        zone_kind: ZoneKind,
+    },
+    L1 {
+        network_scope: NetworkScope,
+        entity_kind: InspectionL1EntityKind,
+        canonical_key: String,
+        block_id: Option<u64>,
+        block_hash: Option<String>,
+    },
+    L2 {
+        #[serde(flatten)]
+        entity: ZoneL2EntityRef,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InspectionL1EntityKind {
+    Block,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InspectionTargetResolutionWarning {
+    pub code: L2ReadErrorCode,
+    pub recovery: L2RecoveryAction,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

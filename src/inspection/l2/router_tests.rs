@@ -13,8 +13,10 @@ use crate::{
         RawActivitySummary, ZoneFacts,
         catalog::{CatalogFrontier, CatalogIdentityAssurance, CatalogMetadata, CatalogSnapshot},
         l2::{
-            L2AccountActivityRow, L2AccountExistence, L2AccountValue, L2BlockSummary,
-            L2SourceFuture,
+            InspectionEntityRef, InspectionResolveTargetRequest, InspectionTargetCandidate,
+            InspectionTargetResolutionStatus, L2AccountActivityRow, L2AccountExistence,
+            L2AccountValue, L2BlockSummary, L2SourceFuture, ZoneL2EntityKind,
+            ZoneL2SourceQualifier,
         },
         project_catalog_zones_with_sources,
     },
@@ -1097,6 +1099,143 @@ async fn advertised_head_with_empty_page_is_protocol_failure() -> Result<()> {
     };
     if failure.code != L2ReadErrorCode::SourceProtocolError {
         bail!("unexpected missing-range failure: {failure:?}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn target_resolution_keeps_cross_layer_and_exact_source_candidates() -> Result<()> {
+    let adapter = Arc::new(ScriptedAdapter::default());
+    let router = ZoneL2Router::new(adapter.clone());
+    let (facts, config) = facts(true, true);
+    adapter.edit(|state| {
+        state
+            .heads
+            .entry(indexer_id())
+            .or_default()
+            .push_back(Ok(Some(block(42, 'f'))));
+        state
+            .blocks_by_id
+            .entry((indexer_id(), 42))
+            .or_default()
+            .push_back(Ok(Some(block(42, 'a'))));
+        state
+            .blocks_by_id
+            .entry((sequencer_id(), 42))
+            .or_default()
+            .push_back(Ok(Some(block(42, 'b'))));
+    })?;
+
+    let report = router
+        .resolve_target(
+            &facts,
+            InspectionResolveTargetRequest {
+                query: "42".to_owned(),
+                active_zone_context: Some(request(&config, ()).context),
+                request_revision: 9,
+            },
+        )
+        .await;
+
+    if report.status != InspectionTargetResolutionStatus::Ambiguous
+        || report.request_revision != 9
+        || report.candidates.len() != 3
+    {
+        bail!("unexpected cross-layer resolution report: {report:?}");
+    }
+    let l2_candidates = report
+        .candidates
+        .iter()
+        .filter_map(|candidate| match &candidate.entity_ref {
+            InspectionEntityRef::L2 { entity } => Some(entity),
+            InspectionEntityRef::Zone { .. } | InspectionEntityRef::L1 { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    if l2_candidates.len() != 2
+        || l2_candidates.iter().any(|entity| {
+            !matches!(entity.source, ZoneL2SourceQualifier::Exact { .. })
+                || !entity.canonical_key.starts_with("block:42:")
+        })
+    {
+        bail!("conflicting blocks lost exact source identity: {l2_candidates:?}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn target_resolution_without_zone_omits_implicit_l2_and_recovers_explicit_l2() -> Result<()> {
+    let adapter = Arc::new(ScriptedAdapter::default());
+    let router = ZoneL2Router::new(adapter.clone());
+    let (facts, _) = facts(true, true);
+
+    let numeric = router
+        .resolve_target(
+            &facts,
+            InspectionResolveTargetRequest {
+                query: "42".to_owned(),
+                active_zone_context: None,
+                request_revision: 1,
+            },
+        )
+        .await;
+    let explicit = router
+        .resolve_target(
+            &facts,
+            InspectionResolveTargetRequest {
+                query: "l2:42".to_owned(),
+                active_zone_context: None,
+                request_revision: 2,
+            },
+        )
+        .await;
+
+    if numeric.status != InspectionTargetResolutionStatus::Resolved
+        || numeric.candidates.len() != 1
+        || explicit.status != InspectionTargetResolutionStatus::Recovery
+        || explicit.recovery != Some(L2RecoveryAction::RefreshContext)
+        || !adapter.calls()?.is_empty()
+    {
+        bail!("unexpected no-Zone resolution: {numeric:?}, {explicit:?}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn explicit_account_resolution_never_probes_default_account_state() -> Result<()> {
+    let adapter = Arc::new(ScriptedAdapter::default());
+    let router = ZoneL2Router::new(adapter.clone());
+    let (facts, config) = facts(true, true);
+    let account_id = crate::parse_account_id(&identity('4'))?.to_string();
+
+    let report = router
+        .resolve_target(
+            &facts,
+            InspectionResolveTargetRequest {
+                query: format!("account:Public/{account_id}"),
+                active_zone_context: Some(request(&config, ()).context),
+                request_revision: 3,
+            },
+        )
+        .await;
+
+    if report.status != InspectionTargetResolutionStatus::Resolved
+        || report.candidates.len() != 1
+        || !adapter.calls()?.is_empty()
+    {
+        bail!("explicit account resolution performed a state probe: {report:?}");
+    }
+    let Some(InspectionTargetCandidate {
+        entity_ref: InspectionEntityRef::L2 { entity },
+        ..
+    }) = report.candidates.first()
+    else {
+        bail!("missing account candidate");
+    };
+    if entity.entity_kind != ZoneL2EntityKind::Account
+        || entity.canonical_key != account_id
+        || entity.source != ZoneL2SourceQualifier::Policy
+    {
+        bail!("account candidate was not policy-qualified: {entity:?}");
     }
     Ok(())
 }

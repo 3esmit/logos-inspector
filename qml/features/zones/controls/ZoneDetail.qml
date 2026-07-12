@@ -16,7 +16,7 @@ ColumnLayout {
     property bool sourceEditorInitiallyOpen: false
     property string currentTab: initialTab
     property string pendingTab: ""
-    property string l2InitialView: "blocks"
+    property string l2InitialView: String(root.zoneState.requestedL2View || "blocks")
     readonly property var detail: root.zoneState.zoneDetail
     readonly property var zone: root.detail && root.detail.summary ? root.detail.summary : ({})
     readonly property bool hasDirtyDraft: sourceLoader.section !== null
@@ -25,6 +25,12 @@ ColumnLayout {
     objectName: "zoneDetail"
     spacing: root.theme.gapLarge
     Layout.fillWidth: true
+
+    onInitialTabChanged: {
+        if (!root.hasDirtyDraft) {
+            root.currentTab = root.initialTab
+        }
+    }
 
     ListModel {
         id: detailTabs

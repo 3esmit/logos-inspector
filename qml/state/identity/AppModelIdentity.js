@@ -577,12 +577,16 @@ function accountCacheKey(root, accountId, ownerProgramId) {
         if (!account.length) {
             return ""
         }
-        return [root.accountNetworkCacheScope(), account, root.accountOwnerCacheKey(ownerProgramId)].join("|")
+        const scope = root.accountNetworkCacheScope()
+        if (!scope.length) {
+            return ""
+        }
+        return [scope, account, root.accountOwnerCacheKey(ownerProgramId)].join("|")
     }
 }
 
 function accountNetworkCacheScope(root) {
-    return root.networkProfileCacheScope()
+    return root.zoneScopeKey()
 }
 
 function accountOwnerCacheKey(root, ownerProgramId) {

@@ -4,8 +4,29 @@ function socialCommentTopic(root, layer, entity, id) {
     return socialRuntimeString(root, "socialCommentTopic", [String(layer || ""), String(entity || ""), String(id || "")])
 }
 
-function socialLezAccountIdlTopic(root, accountId) {
-    return socialRuntimeString(root, "socialLezAccountIdlTopic", [String(accountId || "")])
+function socialZoneCommentTopic(root, entityRef) {
+    return socialRuntimeString(root, "socialZoneCommentTopic", [entityRef || null])
+}
+
+function socialZoneAccountIdlTopic(root, entityRef) {
+    return socialRuntimeString(root, "socialZoneAccountIdlTopic", [entityRef || null])
+}
+
+function zoneSocialScope(entityRef) {
+    if (!entityRef || typeof entityRef !== "object"
+            || String(entityRef.entity_kind || "") === "program") {
+        return null
+    }
+    const scope = entityRef.network_scope
+    if (!scope || String(scope.kind || "") !== "genesis_id") {
+        return null
+    }
+    return {
+        network_scope: scope,
+        zone_id: String(entityRef.channel_id || ""),
+        entity_kind: String(entityRef.entity_kind || ""),
+        canonical_entity_key: String(entityRef.canonical_key || "")
+    }
 }
 
 function socialRuntimeString(root, method, args) {
@@ -119,15 +140,9 @@ function applyIncomingComment(root, event) {
         return false
     }
     const current = root.socialCommentStateForTopic(topic)
-    const row = socialCommentRowFromIncomingEvent(root, incoming) || {
-        key: "event|" + String(incoming.messageHash || "") + "|" + String(payload.created_at || ""),
-        cursor: "",
-        topic: topic,
-        identity: payload.identity || {},
-        displayName: socialIdentityDisplayName(payload.identity),
-        body: String(payload.body || ""),
-        createdAt: String(payload.created_at || ""),
-        conversationId: String(payload.conversation_id || topic)
+    const row = socialCommentRowFromIncomingEvent(root, incoming)
+    if (!row) {
+        return false
     }
     root.setSocialCommentState(topic, {
         rows: root.mergeSocialCommentRows(current.rows || [], [row]),
@@ -291,7 +306,7 @@ function lastSocialMessageCursor(root, messages) {
     return ""
 }
 
-function postSocialComment(root, topic, body, identityKey) {
+function postSocialComment(root, topic, body, identityKey, entityRef) {
     with (root) {
         const key = String(topic || "").trim()
         const text = String(body || "").trim()
@@ -303,13 +318,20 @@ function postSocialComment(root, topic, body, identityKey) {
             return false
         }
         const createdAt = new Date().toISOString()
+        const zoneScope = root.zoneSocialScope(entityRef)
+        if (key.indexOf("/lez/") === 0 && !zoneScope) {
+            return false
+        }
         const payload = {
             kind: "comment",
-            version: 1,
+            version: zoneScope ? 2 : 1,
             identity: root.socialIdentityPayload(identity),
             body: text,
             created_at: createdAt,
             conversation_id: key
+        }
+        if (zoneScope) {
+            payload.scope = zoneScope
         }
         const response = root.callInspector(
             "deliverySend",
@@ -688,8 +710,8 @@ function setSharedIdlAutoShare(root, enabled) {
     root.saveSettingsState()
 }
 
-function refreshSharedIdlsForAccount(root, accountId, dataHex, ownerProgramId) {
-    return SharedIdlTransport.refreshSharedIdlsForAccount(root, accountId, dataHex, ownerProgramId)
+function refreshSharedIdlsForAccount(root, entityRef, dataHex, ownerProgramId) {
+    return SharedIdlTransport.refreshSharedIdlsForAccount(root, entityRef, dataHex, ownerProgramId)
 }
 
 function applySharedIdlPolicy(root, accountId, entry) {
@@ -737,7 +759,10 @@ function idlEntryExists(root, key) {
 }
 
 function storeSharedIdl(root, accountId, entry) {
-    const cacheKey = String(accountId || "")
+    const owner = String(entry && entry.programIdHex || "")
+        || root.canonicalProgramIdHex(entry && entry.programId)
+        || root.normalizedHexText(entry && entry.programId)
+    const cacheKey = sharedIdlCacheKey(root, accountId, owner)
     if (!cacheKey.length || !entry || !String(entry.key || "").length) {
         return
     }
@@ -750,13 +775,15 @@ function storeSharedIdl(root, accountId, entry) {
     }
     rows.push(entry)
     next[cacheKey] = rows
+    trimZoneSharedIdls(root, next, 100)
     root.socialSharedIdls = next
     root.sharedIdlRevision += 1
 }
 
-function sharedIdlSuggestions(root, accountId) {
+function sharedIdlSuggestions(root, accountId, ownerProgramId) {
     const revision = root.sharedIdlRevision
-    const rows = (root.socialSharedIdls || {})[String(accountId || "")]
+    const cacheKey = sharedIdlCacheKey(root, accountId, ownerProgramId)
+    const rows = cacheKey.length ? (root.socialSharedIdls || {})[cacheKey] : null
     return Array.isArray(rows) ? rows : []
 }
 
@@ -766,7 +793,7 @@ function sharedIdlEntriesForAccount(root, accountId, ownerProgramId) {
         return []
     }
     const owner = root.accountOwnerCacheKey(ownerProgramId)
-    const rows = sharedIdlSuggestions(root, accountId)
+    const rows = sharedIdlSuggestions(root, accountId, owner)
     const result = []
     for (let i = 0; i < rows.length; ++i) {
         const entry = rows[i] || {}
@@ -778,10 +805,39 @@ function sharedIdlEntriesForAccount(root, accountId, ownerProgramId) {
     return result
 }
 
-function publishAccountIdl(root, accountId, ownerProgramId, idlEntry) {
-    return SharedIdlTransport.publishAccountIdl(root, accountId, ownerProgramId, idlEntry)
+function sharedIdlCacheKey(root, accountId, ownerProgramId) {
+    const zoneScope = root.zoneScopeKey()
+    const account = String(accountId || "").trim()
+    const owner = root.accountOwnerCacheKey(ownerProgramId)
+    if (!zoneScope.length || !account.length || !owner.length) {
+        return ""
+    }
+    return [zoneScope, account, owner].join("|")
 }
 
-function maybeAutoShareAccountIdl(root, accountId, ownerProgramId, idlEntry) {
-    return SharedIdlTransport.maybeAutoShareAccountIdl(root, accountId, ownerProgramId, idlEntry)
+function trimZoneSharedIdls(root, values, limit) {
+    const zoneScope = root.zoneScopeKey()
+    const keys = Object.keys(values).filter(function (key) {
+        return String(key).indexOf(zoneScope + "|") === 0
+    }).sort()
+    let total = 0
+    for (let i = 0; i < keys.length; ++i) {
+        total += Array.isArray(values[keys[i]]) ? values[keys[i]].length : 0
+    }
+    let excess = Math.max(0, total - Number(limit || 100))
+    for (let i = 0; i < keys.length && excess > 0; ++i) {
+        const rows = Array.isArray(values[keys[i]]) ? values[keys[i]].slice(0) : []
+        const remove = Math.min(excess, rows.length)
+        rows.splice(0, remove)
+        excess -= remove
+        values[keys[i]] = rows
+    }
+}
+
+function publishAccountIdl(root, entityRef, ownerProgramId, idlEntry) {
+    return SharedIdlTransport.publishAccountIdl(root, entityRef, ownerProgramId, idlEntry)
+}
+
+function maybeAutoShareAccountIdl(root, entityRef, ownerProgramId, idlEntry) {
+    return SharedIdlTransport.maybeAutoShareAccountIdl(root, entityRef, ownerProgramId, idlEntry)
 }

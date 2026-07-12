@@ -139,7 +139,9 @@ ColumnLayout {
                     title: qsTr("Recent L2 Blocks")
                     action: qsTr("View all")
                     onActivated: {
-                        root.model.selectView("l2Blocks")
+                        root.model.zoneInspection.requestedDetailTab = "l2"
+                        root.model.zoneInspection.requestedL2View = "blocks"
+                        root.model.selectView("zones")
                     }
                 }
 
@@ -163,7 +165,9 @@ ColumnLayout {
                         linkValues: [modelData.blockHash, modelData.blockHash, "", ""]
                         onCellActivated: function (column) {
                             if (column === 0 || column === 1) {
-                                root.model.entityNavigation.openReference("indexerBlock", modelData.blockHash, modelData.rawBlock)
+                                if (modelData.entityRef) {
+                                    root.model.openInspectionEntityRef(modelData.entityRef, true)
+                                }
                             }
                         }
                     }
@@ -243,7 +247,8 @@ ColumnLayout {
                     title: qsTr("Recent L2 Transactions")
                     action: qsTr("View all")
                     onActivated: {
-                        root.model.selectView("l2Transactions")
+                        root.model.zoneInspection.requestedDetailTab = "l2"
+                        root.model.selectView("zones")
                     }
                 }
 
@@ -529,7 +534,9 @@ ColumnLayout {
                     tx: root.numberText(block.tx_count),
                     status: block.bedrock_status || "-",
                     blockHash: String(block.header_hash || ""),
-                    rawBlock: block
+                    rawBlock: block,
+                    entityRef: block.entity_ref
+                        ? Object.assign({ layer: "l2" }, block.entity_ref) : null
                 };
             });
         }
@@ -546,10 +553,6 @@ ColumnLayout {
     }
 
     function l2BlocksForDashboard() {
-        const loaded = root.model.lezBlocksPageRows || []
-        if (loaded.length > 0) {
-            return loaded
-        }
         return root.model.dashboardLezBlockRows || []
     }
 

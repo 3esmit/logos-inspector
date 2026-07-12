@@ -7,10 +7,10 @@ use tokio::runtime::Runtime;
 use super::{decode_object_request, zone_catalog::ZoneCatalogCommandInterface};
 use crate::{
     inspection::l2::{
-        L2ReadErrorCode, L2ReadFailure, ZoneL2AccountActivityQuery, ZoneL2AccountNoncesQuery,
-        ZoneL2AccountQuery, ZoneL2BlockDetailQuery, ZoneL2BlocksQuery, ZoneL2CommitmentProofQuery,
-        ZoneL2ProgramsQuery, ZoneL2Request, ZoneL2Router, ZoneL2TransactionQuery,
-        ZoneL2TransactionTraceQuery, ZoneL2TransfersQuery,
+        InspectionResolveTargetRequest, L2ReadErrorCode, L2ReadFailure, ZoneL2AccountActivityQuery,
+        ZoneL2AccountNoncesQuery, ZoneL2AccountQuery, ZoneL2BlockDetailQuery, ZoneL2BlocksQuery,
+        ZoneL2CommitmentProofQuery, ZoneL2ProgramsQuery, ZoneL2Request, ZoneL2Router,
+        ZoneL2TransactionQuery, ZoneL2TransactionTraceQuery, ZoneL2TransfersQuery,
     },
     support::bridge_envelope::structured_bridge_error,
 };
@@ -27,9 +27,10 @@ pub(crate) enum ZoneL2Command {
     CommitmentProof,
     AccountNonces,
     Transfers,
+    ResolveTarget,
 }
 
-const COMMANDS: [(&str, ZoneL2Command); 10] = [
+const COMMANDS: [(&str, ZoneL2Command); 11] = [
     ("zoneL2Blocks", ZoneL2Command::Blocks),
     ("zoneL2BlockDetail", ZoneL2Command::BlockDetail),
     ("zoneL2Transaction", ZoneL2Command::Transaction),
@@ -40,6 +41,7 @@ const COMMANDS: [(&str, ZoneL2Command); 10] = [
     ("zoneL2CommitmentProof", ZoneL2Command::CommitmentProof),
     ("zoneL2AccountNonces", ZoneL2Command::AccountNonces),
     ("zoneL2Transfers", ZoneL2Command::Transfers),
+    ("inspectionResolveTarget", ZoneL2Command::ResolveTarget),
 ];
 
 pub(crate) fn zone_l2_command(method: &str) -> Option<ZoneL2Command> {
@@ -132,6 +134,13 @@ impl ZoneL2CommandInterface {
             ZoneL2Command::Transfers => {
                 execute!(ZoneL2TransfersQuery, transfers, "zoneL2Transfers")
             }
+            ZoneL2Command::ResolveTarget => {
+                let request: InspectionResolveTargetRequest =
+                    decode_object_request(args, "inspectionResolveTarget")?;
+                let facts = self.catalog.context_snapshot(runtime)?;
+                serde_json::to_value(runtime.block_on(self.router.resolve_target(&facts, request)))
+                    .context("failed to serialize inspectionResolveTarget report")
+            }
         }
     }
 }
@@ -172,6 +181,22 @@ mod tests {
             .is_ok()
         {
             bail!("Zone L2 request accepted an endpoint");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn target_resolution_request_rejects_connection_data() -> Result<()> {
+        let args = json!([{
+            "query": "42",
+            "active_zone_context": null,
+            "request_revision": 1,
+            "endpoint": "https://forbidden.example"
+        }]);
+        if decode_object_request::<InspectionResolveTargetRequest>(&args, "inspectionResolveTarget")
+            .is_ok()
+        {
+            bail!("target resolution accepted connection data");
         }
         Ok(())
     }

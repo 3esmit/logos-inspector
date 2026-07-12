@@ -222,6 +222,8 @@ function navigationSnapshot(root) {
         settingsNetworkSection: String(root.settingsNetworkSection || ""),
         settingsUiSection: String(root.settingsUiSection || "")
     }
+    values.inspectionEntityRef = String(root.currentView || "") === "zones"
+        ? cloneNavigationValue(root, root.currentInspectionEntityRef) : null
     const snapshot = {
         view: normalizedNavigationView(root, root.currentView),
         values: values,
@@ -315,6 +317,14 @@ function restoreNavigationSnapshot(root, snapshot) {
         root.programOpenSerial += 1
         expandNavGroupForView(root, targetView)
         root.currentView = targetView
+        if (values.inspectionEntityRef) {
+            const entity = cloneNavigationValue(root, values.inspectionEntityRef)
+            Qt.callLater(function () {
+                root.openInspectionEntityRef(entity, false)
+            })
+        } else {
+            root.currentInspectionEntityRef = null
+        }
     } finally {
         root.navigationRestoring = false
     }

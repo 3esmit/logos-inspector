@@ -2,7 +2,10 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use serde::Serialize;
 use serde_json::Value;
 
-use super::payload::{SocialPayload, parse_social_payload};
+use super::{
+    payload::{SocialPayload, parse_social_payload_for_topic},
+    social_topic_is_valid,
+};
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct SocialMessage {
@@ -17,6 +20,9 @@ pub fn social_messages_from_store(
     store_value: &Value,
     expected_account_id: Option<&str>,
 ) -> Vec<SocialMessage> {
+    if !social_topic_is_valid(topic) {
+        return Vec::new();
+    }
     let mut objects = Vec::new();
     collect_store_message_objects(store_value, &mut objects);
     objects
@@ -52,7 +58,7 @@ fn social_message_from_store_object(
     let payload = message_payload(message)?;
     let bytes = BASE64_STANDARD.decode(payload).ok()?;
     let text = String::from_utf8(bytes).ok()?;
-    let parsed = parse_social_payload(&text, expected_account_id).ok()?;
+    let parsed = parse_social_payload_for_topic(&text, expected_account_id, topic).ok()?;
     Some(SocialMessage {
         topic: message_topic.unwrap_or(topic).to_owned(),
         cursor: first_string(message, &["cursor", "messageHash", "message_hash", "hash"])

@@ -21,6 +21,29 @@ TestCase {
                 callback: callback
             }])
         }
+
+        function callModuleJson(moduleName, method, argsJson) {
+            const args = JSON.parse(String(argsJson || "[]"))
+            if (String(method || "") !== "socialCommentRowFromEvent") {
+                return JSON.stringify({ ok: true, value: {}, text: "OK", error: "" })
+            }
+            const event = args[0] || ({})
+            return JSON.stringify({
+                ok: true,
+                value: {
+                    key: "event|" + String(event.messageHash || ""),
+                    cursor: "",
+                    topic: String(event.topic || ""),
+                    identity: event.payload && event.payload.identity || {},
+                    displayName: "Peer",
+                    body: String(event.payload && event.payload.body || ""),
+                    createdAt: String(event.payload && event.payload.created_at || ""),
+                    conversationId: String(event.payload && event.payload.conversation_id || "")
+                },
+                text: "OK",
+                error: ""
+            })
+        }
     }
 
     QtObject {
@@ -110,7 +133,7 @@ TestCase {
     }
 
     function test_ingest_delivery_message_merges_social_comment() {
-        const topic = "/lez/account/account-1/comments"
+        const topic = "/cryptarchia/account/account-1/comments"
         const payload = {
             kind: "comment",
             version: 1,

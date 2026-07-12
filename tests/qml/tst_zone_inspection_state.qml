@@ -1271,4 +1271,100 @@ TestCase {
         compare(zoneState.l2TransfersOldestBlock, 16)
         compare(zoneState.l2TransfersHistory.length, 0)
     }
+
+    function test_target_resolution_is_request_and_context_fenced() {
+        loadConfiguredL2Zone()
+        let accepted = null
+        verify(zoneState.resolveTarget("42", function (report) {
+            accepted = report
+        }) !== null)
+        const first = gateway.lastRequest("inspectionResolveTarget")
+        compare(first.args[0].query, "42")
+        compare(first.args[0].active_zone_context.channel_id, "zone-a")
+
+        verify(zoneState.resolveTarget("43", function (report) {
+            accepted = report
+        }) !== null)
+        const second = gateway.lastRequest("inspectionResolveTarget")
+        verify(first.args[0].request_revision < second.args[0].request_revision)
+        gateway.respond(first, ok(targetResolutionReport(first, "resolved", [{
+            entity_ref: {
+                layer: "l1",
+                network_scope: scope("network-a"),
+                entity_kind: "block",
+                canonical_key: "block:42",
+                block_id: 42,
+                block_hash: null
+            }
+        }])))
+        compare(accepted, null)
+        compare(zoneState.targetResolutionCandidates.length, 0)
+
+        gateway.respond(second, ok(targetResolutionReport(second, "ambiguous", [{
+            entity_ref: {
+                layer: "l1",
+                network_scope: scope("network-a"),
+                entity_kind: "block",
+                canonical_key: "block:43",
+                block_id: 43,
+                block_hash: null
+            }
+        }, {
+            entity_ref: {
+                layer: "l2",
+                network_scope: scope("network-a"),
+                channel_id: "zone-a",
+                zone_kind: "sequencer_zone",
+                entity_kind: "block",
+                canonical_key: "block:43:" + "a".repeat(64),
+                source: { kind: "exact", source_id: "idx-a", source_role: "indexer" }
+            }
+        }])))
+        verify(accepted !== null)
+        compare(zoneState.targetResolutionStatus, "ambiguous")
+        compare(zoneState.targetResolutionCandidates.length, 2)
+
+        const oldRevision = zoneState.targetResolutionRequestRevision
+        zoneState.activeZoneContext = Object.assign({}, zoneState.activeZoneContext, {
+            context_revision: zoneState.activeZoneContext.context_revision + 1
+        })
+        verify(zoneState.targetResolutionRequestRevision > oldRevision)
+        compare(zoneState.targetResolutionCandidates.length, 0)
+    }
+
+    function test_zone_capabilities_gate_provisional_collaboration_only() {
+        loadConfiguredL2Zone()
+        verify(zoneState.l2Capability("").enabled)
+        verify(zoneState.collaborationCapability().enabled)
+
+        zoneState.activeZoneContext = Object.assign({}, zoneState.activeZoneContext, {
+            network_scope: {
+                kind: "finalized_anchor",
+                genesis_time: "2026-01-01T00:00:00Z",
+                block_slot: 1,
+                block_id: "a".repeat(64),
+                parent_id: "b".repeat(64)
+            },
+            context_revision: zoneState.activeZoneContext.context_revision + 1
+        })
+
+        verify(zoneState.l2Capability("").enabled)
+        verify(!zoneState.collaborationCapability().enabled)
+        verify(zoneState.collaborationCapability().reason.indexOf("genesis") >= 0)
+    }
+
+    function targetResolutionReport(request, status, candidates) {
+        const payload = request.args[0]
+        return {
+            report_kind: "inspection.target_resolution",
+            schema_version: 1,
+            query: payload.query,
+            request_revision: payload.request_revision,
+            context_revision: payload.active_zone_context.context_revision,
+            status: status,
+            candidates: candidates,
+            recovery: null,
+            warnings: []
+        }
+    }
 }

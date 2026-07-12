@@ -153,10 +153,16 @@ ColumnLayout {
             headerCells: [
                 { text: qsTr("Label"), width: 150 },
                 { text: qsTr("Base58"), width: 260, fill: true },
-                { text: qsTr("Hex"), width: 260, fill: true }
+                { text: qsTr("Hex"), width: 260, fill: true },
+                { text: qsTr("Saved"), width: 92, monospace: false }
             ]
             rows: root.programRows()
             Layout.fillWidth: true
+            onCellActivated: function (row, column, cell, rowData) {
+                if (column === 3 && rowData.favoriteEntry) {
+                    root.zoneState.appModel.favoriteStore.toggle(rowData.favoriteEntry)
+                }
+            }
         }
 
         Text {
@@ -346,12 +352,21 @@ ColumnLayout {
         return rows.map(function (row) {
             const base58 = String(row && row.base58 || "")
             const hex = String(row && row.hex || "")
+            const entityRef = typeof root.zoneState.l2ProgramEntityRef === "function"
+                ? root.zoneState.l2ProgramEntityRef(row) : null
+            const favorite = root.zoneState.appModel && entityRef
+                ? root.zoneState.appModel.favoriteStore.l2EntityEntry(entityRef,
+                    qsTr("Program %1").arg(String(row && row.label || hex).slice(0, 20)),
+                    String(entityRef.channel_id || "")) : null
+            const saved = favorite && root.zoneState.appModel.favoriteStore.isFavoriteEntry(favorite)
             return {
                 cells: [
                     { text: Presentation.text(row && row.label), width: 150, monospace: false },
                     { text: base58, width: 260, fill: true, copyable: base58.length > 0, copyText: base58 },
-                    { text: hex, width: 260, fill: true, copyable: hex.length > 0, copyText: hex }
-                ]
+                    { text: hex, width: 260, fill: true, copyable: hex.length > 0, copyText: hex },
+                    { text: saved ? qsTr("Yes") : qsTr("Add"), width: 92, link: favorite !== null, monospace: false }
+                ],
+                favoriteEntry: favorite
             }
         })
     }

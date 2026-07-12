@@ -101,6 +101,10 @@ TestCase {
         model.navigationRevision = 0
         model.navigationRestoring = false
         model.favoriteStore.clear()
+        model.zoneInspection.activeZoneContext = null
+        model.zoneInspection.networkScope = null
+        model.zoneInspection.zoneSummaries = []
+        model.zoneInspection.zoneDetail = null
         model.dashboardNode = null
         model.dashboardSequencerBlocks = []
         model.blockchainModuleReport = null
@@ -229,6 +233,47 @@ TestCase {
         model.localNodesRevision = 0
         model.localDevnets = []
         basecampModel.walletConnectorConfig = ({})
+    }
+
+    function setActiveZone(channelId) {
+        const zoneId = String(channelId || "22".repeat(32))
+        const scope = { kind: "genesis_id", genesis_id: "11".repeat(32) }
+        model.zoneInspection.networkScope = scope
+        model.zoneInspection.verification = "verified"
+        model.zoneInspection.zoneSummaries = [{
+            channel_id: zoneId,
+            kind: "sequencer_zone",
+            l1_channel: {},
+            l2_zone: {},
+            activity_detail: {}
+        }]
+        model.zoneInspection.activeZoneContext = {
+            network_scope: scope,
+            channel_id: zoneId,
+            zone_kind: "sequencer_zone",
+            selected_sequencer_source_id: "seq-a",
+            indexer_source_id: "idx-a",
+            source_config_revision: 7,
+            context_revision: 1
+        }
+        return zoneId
+    }
+
+    function zoneEntityRef(kind, canonicalKey, sourceId, sourceRole) {
+        const channelId = model.zoneInspection.activeZoneId.length > 0
+            ? model.zoneInspection.activeZoneId : setActiveZone("")
+        return {
+            network_scope: model.zoneInspection.activeZoneContext.network_scope,
+            channel_id: channelId,
+            zone_kind: "sequencer_zone",
+            entity_kind: String(kind || ""),
+            canonical_key: String(canonicalKey || ""),
+            source: sourceId ? {
+                kind: "exact",
+                source_id: String(sourceId),
+                source_role: String(sourceRole || "sequencer")
+            } : { kind: "policy" }
+        }
     }
 
     function appModelTestCapabilityRegistry() {
@@ -616,7 +661,7 @@ TestCase {
         compare(model.inferNetworkProfileFromEndpoints(model.sequencerUrl, model.indexerUrl, model.nodeUrl), "default")
     }
 
-    function test_settings_query_caches_execution_head_for_footer_metrics() {
+    function test_settings_execution_query_does_not_replace_active_zone_projection() {
         fakeHost.responses = {
             head: {
                 ok: true,
@@ -629,9 +674,9 @@ TestCase {
         model.queryNetworkConnection("execution", false)
 
         tryVerify(function () { return model.networkConnectionIsPending("execution") === false })
-        compare(model.sequencerHeadValue(), 42)
-        verify(model.dashboardOverview.sequencer.health.ok)
-        compare(model.dashboardOverview.sequencer.head.value, 42)
+        compare(model.networkConnectionStatus.execution.value, 42)
+        compare(model.sequencerHeadValue(), null)
+        compare(model.dashboardOverview, null)
     }
 
     function test_settings_query_caches_blockchain_node_for_footer_metrics() {
@@ -1047,6 +1092,7 @@ TestCase {
     }
 
     function test_favorites_toggle_and_filter_rows() {
+        setActiveZone("")
         const blockEntry = model.favoriteStore.blockEntry({
             type: "blockchain_block",
             hash: "block-hash",
@@ -1057,7 +1103,7 @@ TestCase {
             mode: "lez",
             hash: "tx-hash",
             kind: "transfer"
-        })
+        }, zoneEntityRef("transaction", "tx-hash", "seq-a", "sequencer"))
 
         verify(blockEntry !== null)
         compare(blockEntry.kind, "block")
@@ -1101,11 +1147,22 @@ TestCase {
 
         model.loadSettingsState()
 
+        compare(model.favoriteStore.entries.length, 0)
+        const accountRef = zoneEntityRef("account", "account-1", "idx-a", "indexer")
+        accountRef.network_scope = Object.assign({}, accountRef.network_scope, {
+            endpoint: "https://forbidden.example"
+        })
+        const accountEntry = model.favoriteStore.l2EntityEntry(accountRef,
+            "Account account-1", "")
+        verify(model.favoriteStore.add(accountEntry))
         compare(model.favoriteStore.entries.length, 1)
         compare(model.favoriteStore.entries[0].value, "account-1")
         const settingsPayload = model.settingsStatePayload()
         compare(settingsPayload.version, 2)
         compare(settingsPayload.favorites.length, 1)
+        compare(settingsPayload.favorites[0].entity_ref.channel_id,
+            model.zoneInspection.activeZoneId)
+        verify(settingsPayload.favorites[0].entity_ref.network_scope.endpoint === undefined)
         verify(settingsPayload.sequencer_url === undefined)
         verify(settingsPayload.indexer_url === undefined)
         verify(settingsPayload.channel_source_configs === undefined)
@@ -1260,30 +1317,148 @@ TestCase {
         compare(sequencerReport.probe_facts[0].error, "sequencer refused connection")
     }
 
+    function test_zone_scopes_isolate_programs_decode_choices_and_dashboard() {
+        const firstZone = setActiveZone("22".repeat(32))
+        const owner = "ab".repeat(32)
+        model.updateKnownProgramIds([{ hex: owner, base58: "program-a", label: "A" }])
+        model.cacheAccountIdlSelection("account-a", { key: "idl-a" }, "State", owner)
+        model.dashboardLezBlockRows = [{ block_id: 7 }]
+        model.dashboardSequencerBlocks = [{ block_id: 7 }]
+        compare(model.knownProgramIdRows().length, 1)
+        verify(model.accountIdlSelection("account-a", owner) !== null)
+
+        const secondZone = "33".repeat(32)
+        model.zoneInspection.zoneSummaries = model.zoneInspection.zoneSummaries.concat([{
+            channel_id: secondZone,
+            kind: "sequencer_zone",
+            l1_channel: {},
+            l2_zone: {},
+            activity_detail: {}
+        }])
+        model.zoneInspection.activeZoneContext = Object.assign(
+            {}, model.zoneInspection.activeZoneContext, {
+                channel_id: secondZone,
+                source_config_revision: 8,
+                context_revision: 2
+            })
+
+        verify(firstZone !== model.zoneInspection.activeZoneId)
+        compare(model.knownProgramIdRows().length, 0)
+        compare(model.accountIdlSelection("account-a", owner), null)
+        compare(model.dashboardLezBlockRows.length, 0)
+        compare(model.dashboardSequencerBlocks.length, 0)
+    }
+
+    function test_chain_search_uses_typed_candidate_resolver_and_keeps_local_shortcuts() {
+        setActiveZone("")
+        fakeHost.responses = {
+            inspectionResolveTarget: function(args) {
+                const request = args[0]
+                return {
+                    ok: true,
+                    value: {
+                        report_kind: "inspection.target_resolution",
+                        schema_version: 1,
+                        query: request.query,
+                        request_revision: request.request_revision,
+                        context_revision: request.active_zone_context.context_revision,
+                        status: "ambiguous",
+                        candidates: [{
+                            entity_ref: {
+                                layer: "l1",
+                                network_scope: request.active_zone_context.network_scope,
+                                entity_kind: "block",
+                                canonical_key: "block:42",
+                                block_id: 42,
+                                block_hash: null
+                            }
+                        }, {
+                            entity_ref: Object.assign({ layer: "l2" },
+                                zoneEntityRef("block", "block:42:" + "a".repeat(64),
+                                    "idx-a", "indexer"))
+                        }],
+                        recovery: null,
+                        warnings: []
+                    },
+                    text: "OK",
+                    error: ""
+                }
+            }
+        }
+
+        model.routeSearch("42")
+
+        tryCompare(model.zoneInspection, "targetResolutionStatus", "ambiguous")
+        compare(model.zoneInspection.targetResolutionCandidates.length, 2)
+        compare(model.currentView, "zones")
+        compare(callCountFor("resolveLezTarget"), 0)
+        compare(callCountFor("inspectionResolveTarget"), 1)
+
+        fakeHost.callCount = 0
+        fakeHost.calls = []
+        model.routeSearch("settings")
+        compare(model.currentView, "settings")
+        compare(callCountFor("inspectionResolveTarget"), 0)
+    }
+
+    function test_typed_navigation_rejects_wrong_network_references() {
+        setActiveZone("")
+        const wrongScope = { kind: "genesis_id", genesis_id: "ff".repeat(32) }
+        const l2Ref = Object.assign({ layer: "l2" },
+            zoneEntityRef("transaction", "aa".repeat(32), "seq-a", "sequencer"), {
+                network_scope: wrongScope
+            })
+        const l1Ref = {
+            layer: "l1",
+            network_scope: wrongScope,
+            entity_kind: "block",
+            canonical_key: "block:7",
+            block_id: 7,
+            block_hash: null
+        }
+
+        compare(model.openInspectionEntityRef(l2Ref, false), false)
+        compare(model.openInspectionEntityRef(l1Ref, false), false)
+        compare(callCountFor("zoneL2Transaction"), 0)
+        compare(callCountFor("blockchainBlock"), 0)
+    }
+
     function test_social_comment_topics_for_supported_detail_kinds() {
         fakeHost.responses = {
             socialCommentTopic: function(args) {
                 const layer = String(args[0] || "")
                 const entity = String(args[1] || "")
                 const id = String(args[2] || "")
-                if (id.indexOf("/") >= 0) {
+                if (layer === "lez" || id.indexOf("/") >= 0) {
                     return { ok: true, value: "", text: "", error: "" }
                 }
                 return { ok: true, value: "/" + layer + "/" + entity + "/" + id + "/comments", text: "OK", error: "" }
             },
-            socialLezAccountIdlTopic: function(args) {
-                const account = String(args[0] || "")
-                return { ok: true, value: account.length ? "/lez/account/" + account + "/idl" : "", text: "OK", error: "" }
+            socialZoneCommentTopic: {
+                ok: true,
+                value: "/lez/account/" + "a".repeat(64) + "/comments",
+                text: "OK",
+                error: ""
+            },
+            socialZoneAccountIdlTopic: {
+                ok: true,
+                value: "/lez/account/" + "a".repeat(64) + "/idl",
+                text: "OK",
+                error: ""
             }
         }
+        setActiveZone("")
+        const accountRef = zoneEntityRef("account", "account-2", "idx-a", "indexer")
 
         compare(model.socialCommentTopic("cryptarchia", "transaction", "tx-1"), "/cryptarchia/transaction/tx-1/comments")
         compare(model.socialCommentTopic("cryptarchia", "block", "block-1"), "/cryptarchia/block/block-1/comments")
         compare(model.socialCommentTopic("cryptarchia", "account", "account-1"), "/cryptarchia/account/account-1/comments")
-        compare(model.socialCommentTopic("lez", "transaction", "tx-2"), "/lez/transaction/tx-2/comments")
-        compare(model.socialCommentTopic("lez", "block", "102"), "/lez/block/102/comments")
-        compare(model.socialCommentTopic("lez", "account", "account-2"), "/lez/account/account-2/comments")
-        compare(model.socialLezAccountIdlTopic("account-2"), "/lez/account/account-2/idl")
+        compare(model.socialCommentTopic("lez", "transaction", "tx-2"), "")
+        compare(model.socialZoneCommentTopic(accountRef),
+            "/lez/account/" + "a".repeat(64) + "/comments")
+        compare(model.socialZoneAccountIdlTopic(accountRef),
+            "/lez/account/" + "a".repeat(64) + "/idl")
+        compare(model.zoneSocialScope(accountRef).zone_id, model.zoneInspection.activeZoneId)
         compare(model.socialCommentTopic("lez", "account", "bad/id"), "")
     }
 
@@ -1365,6 +1540,7 @@ TestCase {
 
     function test_shared_idl_policies_store_register_or_ignore_verified_entries() {
         model.idlStateLoaded = true
+        setActiveZone("")
         const sharedEntry = {
             key: "shared-1",
             name: "Shared",
@@ -1380,11 +1556,11 @@ TestCase {
 
         model.setSharedIdlPolicy("disabled")
         verify(!model.applySharedIdlPolicy("account-1", sharedEntry))
-        compare(model.sharedIdlSuggestions("account-1").length, 0)
+        compare(model.sharedIdlSuggestions("account-1", sharedEntry.programIdHex).length, 0)
 
         model.setSharedIdlPolicy("suggestion")
         verify(model.applySharedIdlPolicy("account-1", sharedEntry))
-        compare(model.sharedIdlSuggestions("account-1").length, 1)
+        compare(model.sharedIdlSuggestions("account-1", sharedEntry.programIdHex).length, 1)
         compare(model.registeredIdls.count, 0)
 
         model.socialSharedIdls = ({})
@@ -1401,6 +1577,7 @@ TestCase {
     }
 
     function test_shared_idl_policy_rejects_wrong_account_or_non_shared_entries() {
+        setActiveZone("")
         const sharedEntry = {
             key: "shared-1",
             name: "Shared",
@@ -1428,6 +1605,7 @@ TestCase {
     }
 
     function test_local_idl_priority_beats_shared_match() {
+        setActiveZone("")
         const programIdHex = "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
         const localEntry = {
             key: "local-1",
@@ -1581,12 +1759,13 @@ TestCase {
     }
 
     function test_publish_account_idl_uploads_artifact_before_delivery_send() {
+        setActiveZone("")
         model.storageMutatingDiagnosticsEnabled = true
         model.messagingMutatingDiagnosticsEnabled = true
         fakeHost.responses = {
-            socialLezAccountIdlTopic: {
+            socialZoneAccountIdlTopic: {
                 ok: true,
-                value: "/lez/account/account-1/idl",
+                value: "/lez/account/" + "a".repeat(64) + "/idl",
                 text: "OK",
                 error: ""
             },
@@ -1614,7 +1793,8 @@ TestCase {
             }
         }
 
-        verify(model.publishAccountIdl("account-1", "program-1", {
+        const accountRef = zoneEntityRef("account", "account-1", "idx-a", "indexer")
+        verify(model.publishAccountIdl(accountRef, "program-1", {
             name: "Shared",
             json: "{\"name\":\"Shared\",\"accounts\":[]}"
         }))
@@ -1626,17 +1806,20 @@ TestCase {
         compare(fakeHost.calls[uploadIndex].args[3], "logos-inspector-shared-idl.json")
         const deliveryPayload = JSON.parse(fakeHost.calls[sendIndex].args[4])
 	        compare(deliveryPayload.idl_cid, "cid-idl")
+	        compare(deliveryPayload.version, 2)
+	        compare(deliveryPayload.scope.zone_id, model.zoneInspection.activeZoneId)
 	        verify(deliveryPayload.idl_json === undefined)
 	    }
 
 	    function test_publish_account_idl_blocks_storage_module_sync_upload_path() {
+	        setActiveZone("")
 	        model.storageSourceMode = "module"
 	        model.storageMutatingDiagnosticsEnabled = true
 	        model.messagingMutatingDiagnosticsEnabled = true
 	        fakeHost.responses = {
-	            socialLezAccountIdlTopic: {
+	            socialZoneAccountIdlTopic: {
 	                ok: true,
-	                value: "/lez/account/account-1/idl",
+	                value: "/lez/account/" + "a".repeat(64) + "/idl",
 	                text: "OK",
 	                error: ""
 	            },
@@ -1654,7 +1837,8 @@ TestCase {
 	            }
 	        }
 
-	        verify(!model.publishAccountIdl("account-1", "program-1", {
+	        verify(!model.publishAccountIdl(
+	            zoneEntityRef("account", "account-1", "idx-a", "indexer"), "program-1", {
 	            name: "Shared",
 	            json: "{\"name\":\"Shared\",\"accounts\":[]}"
 	        }))
@@ -3514,7 +3698,7 @@ TestCase {
     }
 
     function test_delivery_module_message_event_merges_social_comment() {
-        const topic = "/lez/account/account-1/comments"
+        const topic = "/cryptarchia/account/account-1/comments"
         const payload = {
             kind: "comment",
             version: 1,
@@ -3522,6 +3706,26 @@ TestCase {
             body: "hello",
             created_at: "2026-07-07T00:00:00Z",
             conversation_id: topic
+        }
+        fakeHost.responses = {
+            socialCommentRowFromEvent: function(args) {
+                const event = args[0]
+                return {
+                    ok: true,
+                    value: {
+                        key: "event|hash-1",
+                        cursor: "",
+                        topic: event.topic,
+                        identity: event.payload.identity,
+                        displayName: "Peer",
+                        body: event.payload.body,
+                        createdAt: event.payload.created_at,
+                        conversationId: event.payload.conversation_id
+                    },
+                    text: "OK",
+                    error: ""
+                }
+            }
         }
 
         moduleEventIntake.ingest(model.deliveryModule, "messageReceived", [
@@ -3534,6 +3738,40 @@ TestCase {
         compare(model.deliveryModuleEventRows()[0].label, "messageReceived")
         compare(model.socialComments(topic).length, 1)
         compare(model.socialComments(topic)[0].body, "hello")
+    }
+
+    function test_delivery_module_rejects_unvalidated_zone_comment() {
+        const topic = "/lez/account/" + "a".repeat(64) + "/comments"
+        fakeHost.responses = {
+            socialCommentRowFromEvent: {
+                ok: true,
+                value: null,
+                text: "",
+                error: ""
+            }
+        }
+
+        const accepted = model.applyIncomingSocialComment({
+            topic: topic,
+            messageHash: "hash-invalid",
+            payload: {
+                kind: "comment",
+                version: 2,
+                identity: { display_name: "Peer" },
+                body: "wrong scope",
+                created_at: "2026-07-07T00:00:00Z",
+                conversation_id: topic,
+                scope: {
+                    network_scope: { kind: "genesis_id", genesis_id: "1".repeat(64) },
+                    zone_id: "2".repeat(64),
+                    entity_kind: "account",
+                    canonical_entity_key: "account-1"
+                }
+            }
+        })
+
+        compare(accepted, false)
+        compare(model.socialComments(topic).length, 0)
     }
 
     function test_stop_blocks_live_mode_keeps_paged_rows() {
@@ -3938,6 +4176,41 @@ TestCase {
     }
 
     function test_dashboard_refresh_loads_recent_blocks_for_both_chains() {
+        const channelId = setActiveZone("")
+        model.zoneInspection.zoneDetail = {
+            summary: {
+                channel_id: channelId,
+                kind: "sequencer_zone",
+                l2_zone: {
+                    source_status: "reachable",
+                    latest_block_id: 104,
+                    latest_block_hash: "a".repeat(64),
+                    finalized_block_id: 101,
+                    finality_state: "provisional"
+                },
+                activity_detail: { last_seen_unix: 1000 }
+            }
+        }
+        model.zoneInspection.l2BlockRows = [104, 103, 102, 101, 100].map(function (id) {
+            const sequencer = id >= 102
+            return {
+                summary: {
+                    block_id: id,
+                    block_hash: String(id).padStart(64, "0"),
+                    parent_hash: "0".repeat(64),
+                    timestamp: id,
+                    bedrock_status: sequencer ? "Submitted" : "Finalized",
+                    transaction_count: id === 102 ? 1 : 0
+                },
+                observations: [{
+                    source_id: sequencer ? "seq-a" : "idx-a",
+                    source_role: sequencer ? "sequencer" : "indexer",
+                    source_config_revision: 7,
+                    finality: sequencer ? "provisional" : "finalized",
+                    retrieval: "live"
+                }]
+            }
+        })
         fakeHost.responses = {
             blockchainNode: {
                 ok: true,
@@ -4019,6 +4292,9 @@ TestCase {
         compare(model.dashboardLezBlockRows.length, 5)
         compare(model.dashboardLezBlockRows[0].source, "sequencer")
         compare(model.lezBlocksPageRows.length, 0)
+        compare(callCountFor("sequencerBlocks"), 0)
+        compare(callCountFor("indexerBlocks"), 0)
+        compare(callCountFor("overview"), 0)
     }
 
     function setTipMinusLib(value) {

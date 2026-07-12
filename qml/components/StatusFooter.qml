@@ -416,11 +416,7 @@ Pane {
     }
 
     function latestSequencerBlockValue(key) {
-        const loaded = root.model.lezBlocksPageRows || []
-        const sequencerRows = loaded.filter(function (block) {
-            return String((block || {}).source || "") === "sequencer"
-        })
-        const blocks = sequencerRows.length > 0 ? sequencerRows : (root.model.dashboardSequencerBlocks || [])
+        const blocks = root.model.dashboardSequencerBlocks || []
         if (!blocks.length) {
             return null
         }

@@ -14,6 +14,14 @@ ColumnLayout {
     property string accountQuery: String(root.zoneState.l2AccountId || "")
     property string historicalBlockId: ""
     property string historicalBlockHash: ""
+    readonly property var appModel: root.zoneState.appModel || null
+    readonly property var entityRef: typeof root.zoneState.l2AccountEntityRef === "function"
+        ? root.zoneState.l2AccountEntityRef(root.zoneState.l2AccountFinalized
+            || root.zoneState.l2AccountProvisional) : null
+    readonly property var favoriteEntry: root.appModel && root.entityRef
+        ? root.appModel.favoriteStore.l2EntityEntry(root.entityRef,
+            qsTr("L2 Account %1").arg(String(root.zoneState.l2AccountId).slice(0, 12)),
+            String(root.entityRef.channel_id || "")) : null
 
     signal configureSourcesRequested()
     signal transactionRequested(string transactionId, string exactSourceId)
@@ -59,6 +67,17 @@ ColumnLayout {
                 && !root.zoneState.l2AccountProvisionalInFlight
             Layout.preferredWidth: 160
             onClicked: root.zoneState.refreshL2AccountSnapshots()
+        }
+
+        ActionButton {
+            visible: root.favoriteEntry !== null
+            theme: root.theme
+            text: root.favoriteEntry && root.appModel.favoriteStore.isFavoriteEntry(
+                root.favoriteEntry) ? qsTr("Favorited") : qsTr("Favorite")
+            selected: root.favoriteEntry && root.appModel.favoriteStore.isFavoriteEntry(
+                root.favoriteEntry)
+            Layout.preferredWidth: 112
+            onClicked: root.appModel.favoriteStore.toggle(root.favoriteEntry)
         }
     }
 
@@ -114,6 +133,30 @@ ColumnLayout {
             Layout.alignment: Qt.AlignBottom | Qt.AlignLeft
             onClicked: root.zoneState.inspectL2Account(root.accountQuery)
         }
+    }
+
+    Loader {
+        active: root.appModel !== null && root.entityRef !== null
+            && root.commentTopic().length > 0
+        asynchronous: false
+        Layout.fillWidth: true
+        sourceComponent: SocialPanel {
+            theme: root.theme
+            model: root.appModel
+            topic: root.commentTopic()
+            entityRef: root.entityRef
+            expectedAccountId: root.zoneState.l2AccountId
+            title: qsTr("Account comments")
+        }
+    }
+
+    StatusMessage {
+        visible: root.entityRef !== null && root.commentTopic().length === 0
+        theme: root.theme
+        tone: "info"
+        title: qsTr("Collaboration unavailable")
+        message: qsTr("Zone collaboration requires a verified genesis network identity. Local account inspection remains available.")
+        Layout.fillWidth: true
     }
 
     GridLayout {
@@ -301,6 +344,12 @@ ColumnLayout {
                 transactionId: transactionId
             }
         })
+    }
+
+    function commentTopic() {
+        return root.appModel && root.entityRef
+            && typeof root.appModel.socialZoneCommentTopic === "function"
+            ? root.appModel.socialZoneCommentTopic(root.entityRef) : ""
     }
 
     function historicalTitle() {

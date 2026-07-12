@@ -512,6 +512,7 @@ ColumnLayout {
         model: root.model
         title: qsTr("Account comments")
         topic: root.accountSocialTopic()
+        entityRef: root.zoneAccountEntityRef()
         expectedAccountId: root.accountCacheId()
         Layout.fillWidth: true
     }
@@ -534,7 +535,7 @@ ColumnLayout {
         message: qsTr("This sends the selected IDL as a public Delivery message for %1.").arg(root.shortId(root.accountCacheId()))
         confirmText: qsTr("Share")
         confirmEnabled: root.canShareActiveIdl()
-        onAccepted: root.model.publishAccountIdl(root.accountCacheId(), root.ownerProgramId(), root.shareIdlEntry())
+        onAccepted: root.model.publishAccountIdl(root.zoneAccountEntityRef(), root.ownerProgramId(), root.shareIdlEntry())
     }
 
     function normalize(value) {
@@ -707,6 +708,10 @@ ColumnLayout {
 
     function accountSocialTopic() {
         return accountWorkspace.accountSocialTopic()
+    }
+
+    function zoneAccountEntityRef() {
+        return accountWorkspace.zoneAccountEntityRef()
     }
 
     function shareIdlEntry() {

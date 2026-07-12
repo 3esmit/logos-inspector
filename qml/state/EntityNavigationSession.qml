@@ -12,7 +12,17 @@ QtObject {
 
     function updateDashboardCache(method, value) { return AppModelSearch.updateDashboardCache(model, method, value) }
 
+    function projectZoneDashboard() { return AppModelSearch.projectZoneDashboard(model) }
+
     function routeSearch(query) { return AppModelSearch.routeSearch(model, query) }
+
+    function resolveInspectionTarget(query) { return AppModelSearch.resolveInspectionTarget(model, query) }
+
+    function openInspectionCandidate(candidate, recordHistory) { return AppModelSearch.openInspectionCandidate(model, candidate, recordHistory) }
+
+    function openInspectionEntityRef(entity, recordHistory) { return AppModelSearch.openInspectionEntityRef(model, entity, recordHistory) }
+
+    function resumePendingInspectionEntityRef() { return AppModelSearch.resumePendingInspectionEntityRef(model) }
 
     function openStorageCid(cid) { return AppModelSearch.openStorageCid(model, cid) }
 
