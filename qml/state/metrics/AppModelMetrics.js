@@ -263,11 +263,6 @@ function indexerHeadValue(root) {
         if (overviewValue !== null) {
             return overviewValue
         }
-        const status = networkConnectionStatus.indexer
-        const statusValue = status ? root.scalarValue(status.value) : null
-        if (statusValue !== null) {
-            return statusValue
-        }
         const blocks = dashboardBlocks || []
         if (blocks.length > 0) {
             return root.scalarValue((blocks[0] || {}).block_id)
@@ -282,8 +277,7 @@ function sequencerHeadValue(root) {
         if (overviewValue !== null) {
             return overviewValue
         }
-        const status = networkConnectionStatus.execution
-        return status ? root.scalarValue(status.value) : null
+        return null
     }
 }
 

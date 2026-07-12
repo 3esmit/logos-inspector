@@ -19,13 +19,15 @@ ColumnLayout {
     spacing: root.theme.gapLarge
     Layout.fillWidth: true
 
+    onInitialViewChanged: root.currentView = root.initialView
+
     Component.onCompleted: root.ensureLoaded()
 
     Connections {
         target: root.zoneState
 
         function onActiveZoneContextChanged() {
-            root.currentView = "blocks"
+            root.currentView = root.initialView
             Qt.callLater(root.ensureLoaded)
         }
     }

@@ -65,6 +65,7 @@ QtObject {
     property Domains.ZoneInspectionState zoneInspection: Domains.ZoneInspectionState {
         id: zoneInspectionState
 
+        appModel: root
         sourceDescriptor: root.zoneCatalogL1SourceDescriptor()
         gateway: QtObject {
             function request(method, args, callback) {
@@ -96,9 +97,6 @@ QtObject {
         inspectorModule: root.inspectorModule
         updateDashboardCache: function (method, value) {
             return root.updateDashboardCache(method, value)
-        }
-        updateKnownProgramIds: function (value) {
-            return root.updateKnownProgramIds(value)
         }
         clearAccountDetail: function () {
             root.accountDetailValue = null
@@ -679,14 +677,69 @@ QtObject {
     property alias navigationRevision: appShellState.navigationRevision
     property alias navigationRestoring: appShellState.navigationRestoring
     readonly property alias navigationHistoryLimit: appShellState.navigationHistoryLimit
+    property var pendingInspectionEntityRef: null
+    property var currentInspectionEntityRef: null
     property EntityNavigationSession entityNavigation: EntityNavigationSession {
         id: entityNavigationState
         model: root
     }
     property FavoritesState favoriteStore: FavoritesState {
         onRevisionChanged: root.saveSettingsState()
-        onOpenRequested: function (openKind, value) {
-            entityNavigationState.openReference(openKind, value)
+        onOpenRequested: function (openKind, value, entityRef) {
+            if (entityRef) {
+                entityNavigationState.openInspectionEntityRef(entityRef, true)
+            } else {
+                entityNavigationState.openReference(openKind, value)
+            }
+        }
+    }
+
+    property Connections zoneInspectionConnections: Connections {
+        target: zoneInspectionState
+
+        function onActiveZoneContextChanged() {
+            root.currentInspectionEntityRef = null
+            root.knownProgramIds = ({})
+            root.knownProgramIdsRevision += 1
+            Qt.callLater(entityNavigationState.resumePendingInspectionEntityRef)
+            entityNavigationState.projectZoneDashboard()
+        }
+
+        function onZoneDetailChanged() {
+            Qt.callLater(entityNavigationState.resumePendingInspectionEntityRef)
+            entityNavigationState.projectZoneDashboard()
+        }
+
+        function onL2BlockRowsChanged() {
+            entityNavigationState.projectZoneDashboard()
+        }
+
+        function onL2BlockDetailChanged() {
+            root.captureCurrentZoneEntityRef(zoneInspectionState.l2BlockEntityRef(
+                zoneInspectionState.l2BlockDetail))
+        }
+
+        function onL2TransactionDetailChanged() {
+            root.captureCurrentZoneEntityRef(zoneInspectionState.l2TransactionEntityRef(
+                zoneInspectionState.l2TransactionDetail))
+        }
+
+        function onL2AccountFinalizedChanged() {
+            root.captureCurrentZoneEntityRef(zoneInspectionState.l2AccountEntityRef(
+                zoneInspectionState.l2AccountFinalized))
+        }
+
+        function onL2AccountProvisionalChanged() {
+            if (!zoneInspectionState.l2AccountFinalized) {
+                root.captureCurrentZoneEntityRef(zoneInspectionState.l2AccountEntityRef(
+                    zoneInspectionState.l2AccountProvisional))
+            }
+        }
+
+        function onL2ProgramsChanged() {
+            if (zoneInspectionState.l2ProgramsLoaded) {
+                root.updateKnownProgramIds(zoneInspectionState.l2Programs)
+            }
         }
     }
 
@@ -943,7 +996,11 @@ QtObject {
 
     function socialCommentTopic(layer, entity, id) { return AppModelSocial.socialCommentTopic(root, layer, entity, id) }
 
-    function socialLezAccountIdlTopic(accountId) { return AppModelSocial.socialLezAccountIdlTopic(root, accountId) }
+    function socialZoneCommentTopic(entityRef) { return AppModelSocial.socialZoneCommentTopic(root, entityRef) }
+
+    function socialZoneAccountIdlTopic(entityRef) { return AppModelSocial.socialZoneAccountIdlTopic(root, entityRef) }
+
+    function zoneSocialScope(entityRef) { return AppModelSocial.zoneSocialScope(entityRef) }
 
     function socialComments(topic) { return AppModelSocial.socialComments(root, topic) }
 
@@ -965,7 +1022,7 @@ QtObject {
 
     function lastSocialMessageCursor(messages) { return AppModelSocial.lastSocialMessageCursor(root, messages) }
 
-    function postSocialComment(topic, body, identityKey) { return AppModelSocial.postSocialComment(root, topic, body, identityKey) }
+    function postSocialComment(topic, body, identityKey, entityRef) { return AppModelSocial.postSocialComment(root, topic, body, identityKey, entityRef) }
 
     function socialDeliveryArgs(extra) { return AppModelSocial.socialDeliveryArgs(root, extra) }
 
@@ -1023,17 +1080,17 @@ QtObject {
 
     function setSharedIdlAutoShare(enabled) { return AppModelSocial.setSharedIdlAutoShare(root, enabled) }
 
-    function refreshSharedIdlsForAccount(accountId, dataHex, ownerProgramId) { return AppModelSocial.refreshSharedIdlsForAccount(root, accountId, dataHex, ownerProgramId) }
+    function refreshSharedIdlsForAccount(entityRef, dataHex, ownerProgramId) { return AppModelSocial.refreshSharedIdlsForAccount(root, entityRef, dataHex, ownerProgramId) }
 
     function applySharedIdlPolicy(accountId, entry) { return AppModelSocial.applySharedIdlPolicy(root, accountId, entry) }
 
-    function sharedIdlSuggestions(accountId) { return AppModelSocial.sharedIdlSuggestions(root, accountId) }
+    function sharedIdlSuggestions(accountId, ownerProgramId) { return AppModelSocial.sharedIdlSuggestions(root, accountId, ownerProgramId) }
 
     function sharedIdlEntriesForAccount(accountId, ownerProgramId) { return AppModelSocial.sharedIdlEntriesForAccount(root, accountId, ownerProgramId) }
 
-    function publishAccountIdl(accountId, ownerProgramId, idlEntry) { return AppModelSocial.publishAccountIdl(root, accountId, ownerProgramId, idlEntry) }
+    function publishAccountIdl(entityRef, ownerProgramId, idlEntry) { return AppModelSocial.publishAccountIdl(root, entityRef, ownerProgramId, idlEntry) }
 
-    function maybeAutoShareAccountIdl(accountId, ownerProgramId, idlEntry) { return AppModelSocial.maybeAutoShareAccountIdl(root, accountId, ownerProgramId, idlEntry) }
+    function maybeAutoShareAccountIdl(entityRef, ownerProgramId, idlEntry) { return AppModelSocial.maybeAutoShareAccountIdl(root, entityRef, ownerProgramId, idlEntry) }
 
     function backupSettingsToStorage(encrypted, contents) { return AppModelIdentity.backupSettingsToStorage(root, encrypted, contents || settingsBackupContents) }
 
@@ -1769,6 +1826,30 @@ QtObject {
 
     function networkProfileCacheScope() { return networkProfileState.cacheScope(networkProfile, sequencerUrl) }
 
+    function zoneScopeKey() {
+        const context = zoneInspection.activeZoneContext
+        if (!context) {
+            return ""
+        }
+        return "zone:" + zoneInspection.scopeKey(context.network_scope)
+            + ":" + String(context.channel_id || "")
+    }
+
+    function zoneSourceScopeKey() {
+        const context = zoneInspection.activeZoneContext
+        const zoneScope = zoneScopeKey()
+        const sourceId = String(context && context.selected_sequencer_source_id || "")
+        if (!zoneScope.length || !sourceId.length) {
+            return ""
+        }
+        return zoneScope + ":source:" + sourceId + ":revision:"
+            + String(context.source_config_revision || 0)
+    }
+
+    function zoneL2Capability(sourceRole) { return zoneInspection.l2Capability(sourceRole) }
+
+    function zoneCollaborationCapability() { return zoneInspection.collaborationCapability() }
+
     function normalizedMessagingNetworkPreset(value) { return AppModelNetwork.normalizedMessagingNetworkPreset(root, value) }
 
     function scalarValue(value) { return AppModelNetwork.scalarValue(root, value) }
@@ -1868,6 +1949,27 @@ QtObject {
     function updateDashboardCache(method, value) { return entityNavigation.updateDashboardCache(method, value) }
 
     function routeSearch(query) { return entityNavigation.routeSearch(query) }
+
+    function resolveInspectionTarget(query) { return entityNavigation.resolveInspectionTarget(query) }
+
+    function openInspectionCandidate(candidate, recordHistory) { return entityNavigation.openInspectionCandidate(candidate, recordHistory) }
+
+    function openInspectionEntityRef(entity, recordHistory) { return entityNavigation.openInspectionEntityRef(entity, recordHistory) }
+
+    function captureCurrentZoneEntityRef(entity) {
+        if (!entity) {
+            return
+        }
+        currentInspectionEntityRef = {
+            layer: "l2",
+            network_scope: entity.network_scope,
+            channel_id: String(entity.channel_id || ""),
+            zone_kind: String(entity.zone_kind || "unknown"),
+            entity_kind: String(entity.entity_kind || ""),
+            canonical_key: String(entity.canonical_key || ""),
+            source: entity.source || { kind: "policy" }
+        }
+    }
 
     function openStorageCid(cid) { return entityNavigation.openStorageCid(cid) }
 

@@ -26,13 +26,17 @@ function programIdKnown(root, programId) {
 }
 
 function knownProgramCacheScope(root) {
-    return root.networkProfileCacheScope()
+    return root.zoneSourceScopeKey()
 }
 
 function knownProgramIdRows(root) {
     with (root) {
         const revision = knownProgramIdsRevision
-        const rows = knownProgramIds[root.knownProgramCacheScope()]
+        const scope = root.knownProgramCacheScope()
+        if (!scope.length) {
+            return []
+        }
+        const rows = knownProgramIds[scope]
         return Array.isArray(rows) ? rows : []
     }
 }
@@ -40,6 +44,10 @@ function knownProgramIdRows(root) {
 function updateKnownProgramIds(root, value) {
     with (root) {
         if (!Array.isArray(value)) {
+            return
+        }
+        const scope = root.knownProgramCacheScope()
+        if (!scope.length) {
             return
         }
         const rows = []
@@ -58,7 +66,7 @@ function updateKnownProgramIds(root, value) {
             })
         }
         const next = copyMap(knownProgramIds)
-        next[root.knownProgramCacheScope()] = rows
+        next[scope] = rows
         knownProgramIds = next
         knownProgramIdsRevision += 1
     }

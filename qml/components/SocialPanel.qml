@@ -16,6 +16,7 @@ ColumnLayout {
     property string topic: ""
     property string title: qsTr("Comments")
     property string expectedAccountId: ""
+    property var entityRef: null
     property string composerIdentityKey: model.selectedSocialIdentityKey
 
     visible: root.topic.length > 0
@@ -298,7 +299,8 @@ ColumnLayout {
         confirmText: qsTr("Post")
         confirmEnabled: root.writeAvailable() && commentBody.text.trim().length > 0
         onAccepted: {
-            if (root.model.postSocialComment(root.topic, commentBody.text, root.composerIdentityKey)) {
+            if (root.model.postSocialComment(root.topic, commentBody.text,
+                    root.composerIdentityKey, root.entityRef)) {
                 commentBody.text = ""
             }
         }

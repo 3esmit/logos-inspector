@@ -1,8 +1,8 @@
-function refreshSharedIdlsForAccount(root, accountId, dataHex, ownerProgramId) {
+function refreshSharedIdlsForAccount(root, entityRef, dataHex, ownerProgramId) {
     const policy = root.normalizedSharedIdlPolicy(root.sharedIdlPolicy)
-    const account = String(accountId || "").trim()
+    const account = String(entityRef && entityRef.canonical_key || "").trim()
     const data = String(dataHex || "").trim()
-    const topic = root.socialLezAccountIdlTopic(account)
+    const topic = root.socialZoneAccountIdlTopic(entityRef)
     if (policy === "disabled" || !topic.length || !data.length || !root.socialSharedIdlReadAvailable()) {
         return false
     }
@@ -40,12 +40,14 @@ function refreshSharedIdlsForAccount(root, accountId, dataHex, ownerProgramId) {
     return accepted > 0
 }
 
-function publishAccountIdl(root, accountId, ownerProgramId, idlEntry) {
-    const account = String(accountId || "").trim()
-    const topic = root.socialLezAccountIdlTopic(account)
+function publishAccountIdl(root, entityRef, ownerProgramId, idlEntry) {
+    const account = String(entityRef && entityRef.canonical_key || "").trim()
+    const topic = root.socialZoneAccountIdlTopic(entityRef)
+    const scope = root.zoneSocialScope(entityRef)
     const entry = idlEntry || {}
     const idlJson = String(entry.json || "")
-    if (!topic.length || !idlJson.length || !root.socialSharedIdlWriteAvailable(topic)) {
+    if (!topic.length || !scope || !idlJson.length
+            || !root.socialSharedIdlWriteAvailable(topic)) {
         return false
     }
     const identity = root.socialIdentityForConversation(topic, "")
@@ -54,12 +56,13 @@ function publishAccountIdl(root, accountId, ownerProgramId, idlEntry) {
     const idlName = String(entry.name || root.idlNameFromJson(idlJson) || qsTr("IDL"))
     const artifact = {
         kind: "lez_account_idl_artifact",
-        version: 1,
+        version: 2,
         account_id: account,
         program_id: programId,
         idl_name: idlName,
         idl_json: idlJson,
-        created_at: createdAt
+        created_at: createdAt,
+        scope: scope
     }
     const upload = root.callInspector(
         "storageUploadPayload",
@@ -79,7 +82,7 @@ function publishAccountIdl(root, accountId, ownerProgramId, idlEntry) {
     const cid = String(upload.value.cid || "")
     const payload = {
         kind: "lez_account_idl",
-        version: 1,
+        version: 2,
         identity: root.socialIdentityPayload(identity),
         account_id: account,
         program_id: programId,
@@ -90,7 +93,8 @@ function publishAccountIdl(root, accountId, ownerProgramId, idlEntry) {
             provider: "logos_storage",
             endpoint: root.configuredStorageRestUrl()
         },
-        created_at: createdAt
+        created_at: createdAt,
+        scope: scope
     }
     const response = root.callInspector(
         "deliverySend",
@@ -100,16 +104,17 @@ function publishAccountIdl(root, accountId, ownerProgramId, idlEntry) {
     return response.ok === true
 }
 
-function maybeAutoShareAccountIdl(root, accountId, ownerProgramId, idlEntry) {
+function maybeAutoShareAccountIdl(root, entityRef, ownerProgramId, idlEntry) {
     if (root.sharedIdlAutoShare !== true || !idlEntry || String(idlEntry.source || "") === "shared") {
         return false
     }
-    const topic = root.socialLezAccountIdlTopic(accountId)
-    const key = [String(accountId || ""), topic, String(idlEntry.key || "")].join("|")
+    const topic = root.socialZoneAccountIdlTopic(entityRef)
+    const key = [String(entityRef && entityRef.canonical_key || ""), topic,
+        String(idlEntry.key || "")].join("|")
     if (!topic.length || (root.socialAutoSharedIdls || {})[key] === true) {
         return false
     }
-    if (!publishAccountIdl(root, accountId, ownerProgramId, idlEntry)) {
+    if (!publishAccountIdl(root, entityRef, ownerProgramId, idlEntry)) {
         return false
     }
     const next = root.copyMap(root.socialAutoSharedIdls || {})

@@ -209,6 +209,7 @@ QtObject {
     function indexForTypeInIdlKey(idlKey, accountType) { return accountDecodeSession.indexForTypeInIdlKey(idlKey, accountType) }
     function accountCacheId() { return accountDecodeSession.accountCacheId() }
     function ownerProgramId() { return accountDecodeSession.ownerProgramId() }
+    function zoneAccountEntityRef() { return accountDecodeSession.zoneAccountEntityRef() }
     function activeIdlTypeLabel() { return accountDecodeSession.activeIdlTypeLabel() }
     function decodeMessage() { return accountDecodeSession.decodeMessage() }
     function accountSocialTopic() { return accountDecodeSession.accountSocialTopic() }

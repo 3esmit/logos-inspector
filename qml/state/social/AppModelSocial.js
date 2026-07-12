@@ -1,7 +1,9 @@
 .import "SocialCollaborationOrchestrator.js" as Orchestrator
 
 function socialCommentTopic(root, layer, entity, id) { return Orchestrator.socialCommentTopic.apply(null, arguments) }
-function socialLezAccountIdlTopic(root, accountId) { return Orchestrator.socialLezAccountIdlTopic.apply(null, arguments) }
+function socialZoneCommentTopic(root, entityRef) { return Orchestrator.socialZoneCommentTopic.apply(null, arguments) }
+function socialZoneAccountIdlTopic(root, entityRef) { return Orchestrator.socialZoneAccountIdlTopic.apply(null, arguments) }
+function zoneSocialScope(entityRef) { return Orchestrator.zoneSocialScope.apply(null, arguments) }
 function socialRuntimeString(root, method, args) { return Orchestrator.socialRuntimeString.apply(null, arguments) }
 function socialComments(root, topic) { return Orchestrator.socialComments.apply(null, arguments) }
 function socialCommentState(root, topic) { return Orchestrator.socialCommentState.apply(null, arguments) }

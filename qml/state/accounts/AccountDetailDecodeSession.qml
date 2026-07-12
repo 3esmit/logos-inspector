@@ -77,8 +77,10 @@ QtObject {
         if (!root.detail.private_reference && !root.activeDecode) {
             root.autoSelectDecode()
         }
-        if (!root.detail.private_reference && root.detail.data_hex.length && typeof root.model.refreshSharedIdlsForAccount === "function") {
-            root.model.refreshSharedIdlsForAccount(root.accountCacheId(), root.detail.data_hex, root.ownerProgramId())
+        const entityRef = root.zoneAccountEntityRef()
+        if (!root.detail.private_reference && entityRef && root.detail.data_hex.length
+                && typeof root.model.refreshSharedIdlsForAccount === "function") {
+            root.model.refreshSharedIdlsForAccount(entityRef, root.detail.data_hex, root.ownerProgramId())
         }
     }
 
@@ -151,7 +153,10 @@ QtObject {
                 root.activeIdlLabel = String(response.entry.name || qsTr("IDL"))
                 root.selectedIdlTypeIndex = root.indexForTypeInIdlKey(response.entry.key, response.value.account_type)
                 root.model.cacheAccountIdlSelection(root.accountCacheId(), response.entry, response.value.account_type, root.ownerProgramId())
-                root.model.maybeAutoShareAccountIdl(root.accountCacheId(), root.ownerProgramId(), response.entry)
+                const entityRef = root.zoneAccountEntityRef()
+                if (entityRef) {
+                    root.model.maybeAutoShareAccountIdl(entityRef, root.ownerProgramId(), response.entry)
+                }
             } else {
                 root.activeDecodeError = response.error || ""
             }
@@ -176,7 +181,10 @@ QtObject {
                 root.activeDecodeError = ""
                 if (root.model.accountDecodeFullyConsumed(response.value)) {
                     root.model.cacheAccountIdlSelection(root.accountCacheId(), option, response.value.account_type || option.accountType, root.ownerProgramId())
-                    root.model.maybeAutoShareAccountIdl(root.accountCacheId(), root.ownerProgramId(), option)
+                    const entityRef = root.zoneAccountEntityRef()
+                    if (entityRef) {
+                        root.model.maybeAutoShareAccountIdl(entityRef, root.ownerProgramId(), option)
+                    }
                 }
             } else {
                 root.activeDecode = null
@@ -424,6 +432,24 @@ QtObject {
         return root.detail.owner_hex.length ? root.detail.owner_hex : root.detail.owner_base58
     }
 
+    function zoneAccountEntityRef() {
+        const value = root.model && root.model.currentInspectionEntityRef
+            ? root.model.currentInspectionEntityRef : null
+        if (!value || String(value.layer || "") !== "l2"
+                || String(value.entity_kind || "") !== "account"
+                || String(value.canonical_key || "") !== root.accountCacheId()) {
+            return null
+        }
+        return {
+            network_scope: value.network_scope,
+            channel_id: String(value.channel_id || ""),
+            zone_kind: String(value.zone_kind || "unknown"),
+            entity_kind: "account",
+            canonical_key: String(value.canonical_key || ""),
+            source: value.source || { kind: "policy" }
+        }
+    }
+
     function activeIdlTypeLabel() {
         if (!root.activeDecode) {
             return "-"
@@ -450,7 +476,8 @@ QtObject {
     }
 
     function accountSocialTopic() {
-        return root.detail && root.model ? root.model.socialCommentTopic("lez", "account", root.accountCacheId()) : ""
+        const entityRef = root.zoneAccountEntityRef()
+        return entityRef && root.model ? root.model.socialZoneCommentTopic(entityRef) : ""
     }
 
     function shareIdlEntry() {
@@ -459,7 +486,11 @@ QtObject {
 
     function canShareActiveIdl() {
         const entry = root.shareIdlEntry()
+        const entityRef = root.zoneAccountEntityRef()
+        const topic = entityRef && root.model
+            ? root.model.socialZoneAccountIdlTopic(entityRef) : ""
         return root.model !== null
+            && entityRef !== null
             && root.detail !== null
             && !root.detail.private_reference
             && root.activeDecode !== null
@@ -467,7 +498,7 @@ QtObject {
             && entry !== null
             && String(entry.json || "").length > 0
             && String(entry.source || "") !== "shared"
-            && root.model.socialSharedIdlWriteAvailable(root.model.socialLezAccountIdlTopic(root.accountCacheId()))
+            && root.model.socialSharedIdlWriteAvailable(topic)
     }
 
     function sharedIdlSuggestionRows() {
@@ -475,7 +506,7 @@ QtObject {
             return []
         }
         const revision = root.model.sharedIdlRevision
-        return root.model.sharedIdlSuggestions(root.accountCacheId())
+        return root.model.sharedIdlSuggestions(root.accountCacheId(), root.ownerProgramId())
     }
 
     function sharedIdlSuggestionText() {

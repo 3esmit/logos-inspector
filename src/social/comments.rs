@@ -54,7 +54,8 @@ pub fn social_comment_rows_from_messages(messages: &[SocialMessage]) -> Vec<Soci
 pub fn social_comment_row_from_event(event: &Value) -> Option<SocialCommentRow> {
     let object = event.as_object()?;
     let payload = object.get("payload")?;
-    let parsed = parse_social_payload_value(payload, None).ok()?;
+    let event_topic = first_string(event, &["topic", "contentTopic", "content_topic"]);
+    let parsed = parse_social_payload_value(payload, None, event_topic).ok()?;
     let SocialPayload::Comment {
         identity,
         body,
@@ -65,9 +66,7 @@ pub fn social_comment_row_from_event(event: &Value) -> Option<SocialCommentRow> 
     else {
         return None;
     };
-    let topic = first_string(event, &["topic", "contentTopic", "content_topic"])
-        .unwrap_or(conversation_id.as_str())
-        .to_owned();
+    let topic = event_topic.unwrap_or(conversation_id.as_str()).to_owned();
     if topic.is_empty() {
         return None;
     }

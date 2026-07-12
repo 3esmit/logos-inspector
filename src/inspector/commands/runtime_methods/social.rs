@@ -6,9 +6,9 @@ use crate::{
     social::{
         SocialCommentQuery, SocialPayload,
         accepted_shared_idl_entries_from_messages as decode_accepted_shared_idls_from_messages,
-        build_comment_topic as build_social_comment_topic, build_lez_account_idl_topic,
-        decode_comment_page as decode_social_comment_page, decode_social_messages,
-        project_comment_event as decode_social_comment_row, validate_topic,
+        build_comment_topic as build_social_comment_topic, build_zone_account_idl_topic,
+        build_zone_comment_topic, decode_comment_page as decode_social_comment_page,
+        decode_social_messages, project_comment_event as decode_social_comment_row, validate_topic,
     },
     source_routing::{storage_rest_download_bytes, storage_rest_source},
     support::args::Args,
@@ -19,7 +19,8 @@ use super::RuntimeMethodEntry;
 
 pub(super) const METHOD_CATALOG: &[RuntimeMethodEntry] = &[
     RuntimeMethodEntry::sync("socialCommentTopic", social_comment_topic),
-    RuntimeMethodEntry::sync("socialLezAccountIdlTopic", social_lez_account_idl_topic),
+    RuntimeMethodEntry::sync("socialZoneCommentTopic", social_zone_comment_topic),
+    RuntimeMethodEntry::sync("socialZoneAccountIdlTopic", social_zone_account_idl_topic),
     RuntimeMethodEntry::sync("socialMessagesFromStore", social_messages_from_store),
     RuntimeMethodEntry::sync("socialCommentPageFromStore", social_comment_page_from_store),
     RuntimeMethodEntry::sync("socialCommentRowFromEvent", social_comment_row_from_event),
@@ -42,9 +43,26 @@ pub(super) fn social_comment_topic(args: Value) -> Result<Value> {
     )
 }
 
-pub(super) fn social_lez_account_idl_topic(args: Value) -> Result<Value> {
+pub(super) fn social_zone_comment_topic(args: Value) -> Result<Value> {
     let args = Args::new(args)?;
-    to_value(build_lez_account_idl_topic(args.string(0, "account id")?).unwrap_or_default())
+    let entity = serde_json::from_value(
+        args.value(0)
+            .context("Zone L2 entity reference is required")?
+            .clone(),
+    )
+    .context("Zone L2 entity reference is invalid")?;
+    to_value(build_zone_comment_topic(&entity).unwrap_or_default())
+}
+
+pub(super) fn social_zone_account_idl_topic(args: Value) -> Result<Value> {
+    let args = Args::new(args)?;
+    let entity = serde_json::from_value(
+        args.value(0)
+            .context("Zone L2 account reference is required")?
+            .clone(),
+    )
+    .context("Zone L2 account reference is invalid")?;
+    to_value(build_zone_account_idl_topic(&entity).unwrap_or_default())
 }
 
 pub(super) fn social_messages_from_store(args: Value) -> Result<Value> {

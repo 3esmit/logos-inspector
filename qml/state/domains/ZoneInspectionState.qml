@@ -4,6 +4,7 @@ QtObject {
     id: root
 
     required property var gateway
+    property var appModel: null
     property var sourceDescriptor: null
     property bool started: false
 
@@ -40,6 +41,13 @@ QtObject {
         ? String(activeZoneContext.channel_id || "")
         : ""
     property double contextRevision: 0
+    property string requestedDetailTab: "overview"
+    property string requestedL2View: "blocks"
+    property var targetResolutionReport: null
+    property var targetResolutionCandidates: []
+    property string targetResolutionQuery: ""
+    property string targetResolutionStatus: ""
+    property string targetResolutionError: ""
     property var zoneDetailReport: null
     property var zoneDetail: null
     property bool detailStale: false
@@ -165,6 +173,7 @@ QtObject {
     property bool l2CommitmentProofInFlight: false
     property bool l2AccountNoncesInFlight: false
     property bool l2TransfersInFlight: false
+    property bool targetResolutionInFlight: false
     property int statusFailureCount: 0
 
     readonly property bool statusPollingEnabled: started
@@ -211,6 +220,7 @@ QtObject {
     property int l2CommitmentProofRequestRevision: 0
     property int l2AccountNoncesRequestRevision: 0
     property int l2TransfersRequestRevision: 0
+    property int targetResolutionRequestRevision: 0
 
     readonly property bool l2Applicable: activeZoneContext !== null
         && String(activeZoneContext.zone_kind || "") === "sequencer_zone"
@@ -234,7 +244,10 @@ QtObject {
         }
     }
 
-    onActiveZoneContextChanged: resetL2InspectionState()
+    onActiveZoneContextChanged: {
+        resetL2InspectionState()
+        resetTargetResolution()
+    }
 
     function start() {
         if (started) {
@@ -865,6 +878,64 @@ QtObject {
         }
     }
 
+    function resetTargetResolution() {
+        targetResolutionRequestRevision += 1
+        targetResolutionInFlight = false
+        targetResolutionReport = null
+        targetResolutionCandidates = []
+        targetResolutionQuery = ""
+        targetResolutionStatus = ""
+        targetResolutionError = ""
+    }
+
+    function resolveTarget(query, callback) {
+        const value = String(query || "").trim()
+        if (value.length === 0) {
+            return null
+        }
+        targetResolutionRequestRevision += 1
+        const requestRevision = targetResolutionRequestRevision
+        const requestContext = l2RequestContext()
+        const requestedContextRevision = numericRevision(contextRevision)
+        targetResolutionInFlight = true
+        targetResolutionQuery = value
+        targetResolutionStatus = ""
+        targetResolutionError = ""
+        targetResolutionCandidates = []
+        return dispatch("inspectionResolveTarget", {
+            query: value,
+            active_zone_context: requestContext,
+            request_revision: requestRevision
+        }, function (response) {
+            if (requestRevision !== targetResolutionRequestRevision
+                    || requestedContextRevision !== numericRevision(contextRevision)) {
+                return
+            }
+            targetResolutionInFlight = false
+            if (!response || response.ok !== true || !response.value
+                    || String(response.value.report_kind || "")
+                        !== "inspection.target_resolution"
+                    || numericRevision(response.value.request_revision) !== requestRevision
+                    || (requestContext && numericRevision(response.value.context_revision)
+                        !== numericRevision(requestContext.context_revision))) {
+                targetResolutionError = responseError(response,
+                    qsTr("Search target could not be resolved."))
+                if (typeof callback === "function") {
+                    callback(null, targetResolutionError)
+                }
+                return
+            }
+            const report = response.value
+            targetResolutionReport = report
+            targetResolutionCandidates = Array.isArray(report.candidates)
+                ? report.candidates.slice() : []
+            targetResolutionStatus = String(report.status || "not_found")
+            if (typeof callback === "function") {
+                callback(report, "")
+            }
+        })
+    }
+
     function refreshL2Blocks() {
         resetL2BlocksState(true)
         resetL2BlockInspectionState()
@@ -1204,6 +1275,35 @@ QtObject {
             l2AccountProvisionalError = qsTr("Select a Sequencer source for provisional account state.")
         }
         return dispatched
+    }
+
+    function inspectL2AccountReference(accountId, source) {
+        const qualifier = source && typeof source === "object" ? source : ({ kind: "policy" })
+        if (String(qualifier.kind || "policy") !== "exact") {
+            return inspectL2Account(accountId)
+        }
+        const normalizedId = String(accountId || "").trim()
+        const sourceId = String(qualifier.source_id || "")
+        const sourceRole = String(qualifier.source_role || "")
+        if (!l2ReadEnabled || normalizedId.length === 0 || sourceId.length === 0) {
+            return false
+        }
+        resetL2AccountState(true)
+        l2AccountId = normalizedId
+        if (sourceRole === "indexer" && sourceId === l2IndexerSourceId()) {
+            requestL2AccountSnapshot("finalized", { kind: "finalized" }, sourceId)
+            requestL2AccountActivity("", false)
+            l2AccountProvisionalError = qsTr("Exact reference is qualified to the Indexer source.")
+            return true
+        }
+        if (sourceRole === "sequencer" && sourceId === l2SequencerSourceId()) {
+            requestL2AccountSnapshot("provisional", { kind: "provisional" }, sourceId)
+            l2AccountFinalizedError = qsTr("Exact reference is qualified to the Sequencer source.")
+            l2AccountActivityLoaded = true
+            return true
+        }
+        resetL2AccountState(true)
+        return false
     }
 
     function refreshL2AccountSnapshots() {
@@ -1930,6 +2030,60 @@ QtObject {
         }
     }
 
+    function l2EntityRef(entityKind, canonicalKey, sourceObservation) {
+        if (!activeZoneContext) {
+            return null
+        }
+        const key = String(canonicalKey || "").trim()
+        if (key.length === 0) {
+            return null
+        }
+        const sourceId = String(sourceObservation && sourceObservation.source_id || "")
+        const sourceRole = String(sourceObservation && sourceObservation.source_role || "")
+        return {
+            network_scope: activeZoneContext.network_scope,
+            channel_id: String(activeZoneContext.channel_id || ""),
+            zone_kind: String(activeZoneContext.zone_kind || "unknown"),
+            entity_kind: String(entityKind || ""),
+            canonical_key: key,
+            source: sourceId.length > 0 && sourceRole.length > 0 ? {
+                kind: "exact",
+                source_id: sourceId,
+                source_role: sourceRole
+            } : { kind: "policy" }
+        }
+    }
+
+    function l2BlockEntityRef(detail) {
+        const value = detail || l2BlockDetail
+        const summary = value && value.summary ? value.summary : null
+        if (!summary) {
+            return null
+        }
+        return l2EntityRef("block", "block:" + String(summary.block_id)
+            + ":" + String(summary.block_hash || ""), value.source)
+    }
+
+    function l2TransactionEntityRef(detail) {
+        const value = detail || l2TransactionDetail
+        const transaction = value && value.transaction ? value.transaction : null
+        return transaction ? l2EntityRef("transaction", transaction.hash, value.source) : null
+    }
+
+    function l2AccountEntityRef(snapshot) {
+        const value = snapshot || l2AccountFinalized || l2AccountProvisional
+        const account = value && value.account ? value.account : null
+        return account ? l2EntityRef("account", account.account_id
+            || account.account_id_base58 || account.account_id_hex, value.source) : null
+    }
+
+    function l2ProgramEntityRef(program) {
+        const value = program || null
+        const source = l2ProgramsReport && l2ProgramsReport.data
+            && l2ProgramsReport.data.value ? l2ProgramsReport.data.value.source : null
+        return value ? l2EntityRef("program", value.hex || value.base58, source) : null
+    }
+
     function l2RequestContextIsCurrent(context) {
         return activeZoneContext !== null && sameFullL2Context(context, activeZoneContext)
     }
@@ -1975,6 +2129,58 @@ QtObject {
             return qsTr("Configure an Indexer or select a Sequencer source for this Zone.")
         }
         return qsTr("Zone verification is required before reading L2 data.")
+    }
+
+    function l2Capability(sourceRole) {
+        const role = String(sourceRole || "")
+        if (!activeZoneContext) {
+            return capability(false, "input_required", "select_zone",
+                qsTr("Select an Active Zone."))
+        }
+        if (verification !== "verified") {
+            return capability(false, "disabled", "refresh_context",
+                qsTr("Zone catalog verification is required."))
+        }
+        if (!l2Applicable) {
+            return capability(false, "disabled", "none",
+                qsTr("Active Zone has no Sequencer L2."))
+        }
+        if (role === "indexer" && !l2IndexerReadEnabled) {
+            return capability(false, "input_required", "configure_source",
+                qsTr("Configure this Channel's Indexer."))
+        }
+        if (role === "sequencer" && !l2SequencerReadEnabled) {
+            return capability(false, "input_required", "select_source",
+                qsTr("Select this Channel's Sequencer."))
+        }
+        if (!l2ReadEnabled) {
+            return capability(false, "input_required", "configure_source",
+                qsTr("Configure an L2 source owned by this Channel."))
+        }
+        return capability(true, "enabled", "none", "")
+    }
+
+    function collaborationCapability() {
+        const read = l2Capability("")
+        if (!read.enabled) {
+            return read
+        }
+        const scope = activeZoneContext && activeZoneContext.network_scope
+        if (!scope || String(scope.kind || "") !== "genesis_id") {
+            return capability(false, "disabled", "refresh_context",
+                qsTr("Verified genesis network identity is required for Zone collaboration."))
+        }
+        return capability(true, "enabled", "none", "")
+    }
+
+    function capability(enabled, status, recovery, reason) {
+        return {
+            enabled: enabled === true,
+            status: String(status || "disabled"),
+            recovery: String(recovery || "none"),
+            reason: String(reason || ""),
+            provenance: ["active_zone_context"]
+        }
     }
 
     function reconcileDetail() {

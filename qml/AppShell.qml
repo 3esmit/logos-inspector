@@ -349,6 +349,7 @@ Item {
         ZonePages.ZonesPage {
             theme: theme
             model: appModel
+            initialDetailTab: appModel.zoneInspection.requestedDetailTab
         }
     }
 

@@ -20,6 +20,14 @@ ColumnLayout {
     readonly property var inspection: root.detail ? root.detail.inspection : null
     readonly property var traceValue: root.zoneState.l2TransactionTrace
     readonly property var trace: root.traceValue ? root.traceValue.trace : null
+    readonly property var appModel: root.zoneState.appModel || null
+    readonly property var entityRef: typeof root.zoneState.l2TransactionEntityRef === "function"
+        ? root.zoneState.l2TransactionEntityRef(root.detail) : null
+    readonly property var favoriteEntry: root.appModel && root.entityRef
+        ? root.appModel.favoriteStore.l2EntityEntry(root.entityRef,
+            qsTr("L2 Transaction %1").arg(String(
+                root.transaction && root.transaction.hash || "").slice(0, 12)),
+            String(root.transaction && root.transaction.hash || "")) : null
 
     signal backRequested()
     signal configureSourcesRequested()
@@ -79,6 +87,17 @@ ColumnLayout {
             theme: root.theme
             label: Presentation.words(root.detail && root.detail.source.finality)
             tone: root.detail && root.detail.source.finality === "finalized" ? "success" : "warning"
+        }
+
+        ActionButton {
+            visible: root.favoriteEntry !== null
+            theme: root.theme
+            text: root.favoriteEntry && root.appModel.favoriteStore.isFavoriteEntry(
+                root.favoriteEntry) ? qsTr("Favorited") : qsTr("Favorite")
+            selected: root.favoriteEntry && root.appModel.favoriteStore.isFavoriteEntry(
+                root.favoriteEntry)
+            Layout.preferredWidth: 112
+            onClicked: root.appModel.favoriteStore.toggle(root.favoriteEntry)
         }
     }
 
@@ -165,6 +184,36 @@ ColumnLayout {
         route: root.report ? root.report.route : null
         routeCompleteness: root.report ? String(root.report.route_completeness || "") : ""
         Layout.fillWidth: true
+    }
+
+    Loader {
+        active: root.appModel !== null && root.detail !== null
+            && root.commentTopic().length > 0
+        asynchronous: false
+        Layout.fillWidth: true
+        sourceComponent: SocialPanel {
+            theme: root.theme
+            model: root.appModel
+            topic: root.commentTopic()
+            entityRef: root.entityRef
+            title: qsTr("Transaction comments")
+        }
+    }
+
+    StatusMessage {
+        visible: root.detail !== null && root.commentTopic().length === 0
+            && root.entityRef !== null
+        theme: root.theme
+        tone: "info"
+        title: qsTr("Collaboration unavailable")
+        message: qsTr("Zone collaboration requires a verified genesis network identity.")
+        Layout.fillWidth: true
+    }
+
+    function commentTopic() {
+        return root.appModel && root.entityRef
+            && typeof root.appModel.socialZoneCommentTopic === "function"
+            ? root.appModel.socialZoneCommentTopic(root.entityRef) : ""
     }
 
     TabSwitch {

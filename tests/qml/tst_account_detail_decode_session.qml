@@ -36,7 +36,6 @@ TestCase {
         function maybeAutoShareAccountIdl(accountId, ownerProgramId, entry) { maybeAutoShareAccountIdlCalls += 1 }
         function sharedIdlSuggestions(account) { return [] }
         function socialCommentTopic(layer, kind, account) { return layer + ":" + kind + ":" + account }
-        function socialLezAccountIdlTopic(account) { return "idl:" + account }
         function socialSharedIdlWriteAvailable(topic) { return true }
         function transactionDecodeCandidates(summary) { return [] }
         function programDecodeCandidatePayload(candidates) { return candidates }

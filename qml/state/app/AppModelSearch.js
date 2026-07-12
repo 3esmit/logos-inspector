@@ -11,12 +11,10 @@ function refreshDashboard(root) {
         dashboardRefreshSerial = refreshId
         dashboardRefreshing = true
         dashboardError = ""
+        projectZoneDashboard(root)
         const requests = [
-            { module: inspectorModule, method: "overview", args: [sequencerUrl, indexerUrl, nodeUrl], label: qsTr("Dashboard overview") },
             { module: inspectorModule, method: "blockchainNode", args: root.blockchainArgs([]), label: qsTr("Blockchain node") },
             { module: inspectorModule, method: "blockchainLiveBlocks", args: root.blockchainArgs([0, 9007199254740991, 5]), label: qsTr("Latest L1 blocks") },
-            { module: inspectorModule, method: "sequencerBlocks", args: root.executionArgs([null, 5]), label: qsTr("Latest L2 blocks") },
-            { module: inspectorModule, method: "indexerBlocks", args: root.indexerArgs([null, 10]), label: qsTr("Latest blocks") },
             { module: inspectorModule, method: "storageSourceReport", args: root.storageSourceReportArgs(false), label: qsTr("Storage source") },
             { module: inspectorModule, method: "deliverySourceReport", args: root.deliverySourceReportArgs(), label: qsTr("Delivery source") }
         ]
@@ -44,7 +42,7 @@ function refreshDashboard(root) {
                 }
                 remaining -= 1
                 if (remaining === 0) {
-                    dashboardLezBlockRows = root.chainPages.lezBlockListReportRows(dashboardSequencerBlocks || [], dashboardBlocks || [], 5)
+                    projectZoneDashboard(root)
                     dashboardRefreshing = false
                     dashboardError = errors.join("\n")
                     root.recordDashboardSnapshot()
@@ -68,18 +66,150 @@ function refreshDashboard(root) {
     }
 }
 
+function projectZoneDashboard(root) {
+    with (root) {
+        const state = zoneInspection
+        const context = state ? state.activeZoneContext : null
+        if (!state || !context) {
+            dashboardOverview = null
+            dashboardSequencerBlocks = []
+            dashboardBlocks = []
+            dashboardLezBlockRows = []
+            return
+        }
+        const summary = zoneDashboardSummary(state)
+        const l2 = summary && summary.l2_zone ? summary.l2_zone : ({})
+        const sourceStatus = String(l2.source_status || "unknown")
+        const latestBlock = l2.latest_block_id === undefined ? null : l2.latest_block_id
+        const finalizedBlock = l2.finalized_block_id === undefined
+            ? (l2.safe_block_id === undefined ? null : l2.safe_block_id)
+            : l2.finalized_block_id
+        const channelId = String(context.channel_id || "")
+        const sequencerObservation = zoneSourceObservation(state,
+            context.selected_sequencer_source_id, "sequencer")
+        const indexerObservation = zoneSourceObservation(state,
+            context.indexer_source_id, "indexer")
+        const sequencerHealth = sourceHealthProjection(sequencerObservation, sourceStatus)
+        const indexerHealth = sourceHealthProjection(indexerObservation, "unknown")
+        dashboardOverview = {
+            context_revision: Number(context.context_revision || 0),
+            network_scope: context.network_scope,
+            channel_id: channelId,
+            sequencer: {
+                health: sequencerHealth,
+                head: { ok: latestBlock !== null, value: latestBlock },
+                zone_id: { ok: true, value: channelId },
+                channel_id: { ok: true, value: channelId }
+            },
+            indexer: {
+                health: indexerHealth,
+                head: { ok: finalizedBlock !== null, value: finalizedBlock }
+            }
+        }
+        const projected = zoneDashboardRows(state)
+        dashboardLezBlockRows = projected.slice(0, 5)
+        dashboardSequencerBlocks = projected.filter(function (row) {
+            return Array.isArray(row.source_roles)
+                && row.source_roles.indexOf("sequencer") >= 0
+        })
+        dashboardBlocks = projected.filter(function (row) {
+            return Array.isArray(row.source_roles)
+                && row.source_roles.indexOf("indexer") >= 0
+        })
+        if (!projected.length && latestBlock !== null) {
+            const synthetic = {
+                block_id: latestBlock,
+                header_hash: String(l2.latest_block_hash || ""),
+                timestamp: Number(summary && summary.activity_detail
+                    && summary.activity_detail.last_seen_unix || 0),
+                tx_count: null,
+                bedrock_status: String(l2.finality_state || "unknown"),
+                source: "summary",
+                source_roles: ["sequencer"],
+                entity_ref: String(l2.latest_block_hash || "").length > 0
+                    ? state.l2EntityRef("block", "block:" + String(latestBlock)
+                        + ":" + String(l2.latest_block_hash), null) : null
+            }
+            dashboardLezBlockRows = [synthetic]
+            dashboardSequencerBlocks = [synthetic]
+            if (finalizedBlock !== null && Number(finalizedBlock) === Number(latestBlock)) {
+                synthetic.source_roles.push("indexer")
+                dashboardBlocks = [synthetic]
+            }
+        }
+    }
+}
+
+function zoneSourceObservation(state, sourceId, role) {
+    const id = String(sourceId || "")
+    const rows = state && state.zoneDetail
+        && Array.isArray(state.zoneDetail.source_observations)
+        ? state.zoneDetail.source_observations : []
+    for (let i = 0; i < rows.length; ++i) {
+        const row = rows[i] || ({})
+        if (String(row.source_id || "") === id
+                && String(row.role || "") === String(role || "")) {
+            return row
+        }
+    }
+    return null
+}
+
+function sourceHealthProjection(observation, fallback) {
+    const health = String(observation && observation.health || fallback || "unknown")
+    return { ok: health === "reachable", value: health }
+}
+
+function zoneDashboardSummary(state) {
+    if (state.zoneDetail && state.zoneDetail.summary) {
+        return state.zoneDetail.summary
+    }
+    const rows = Array.isArray(state.zoneSummaries) ? state.zoneSummaries : []
+    for (let i = 0; i < rows.length; ++i) {
+        if (String(rows[i] && rows[i].channel_id || "") === String(state.activeZoneId || "")) {
+            return rows[i]
+        }
+    }
+    return null
+}
+
+function zoneDashboardRows(state) {
+    const rows = Array.isArray(state.l2BlockRows) ? state.l2BlockRows : []
+    const result = []
+    for (let i = 0; i < rows.length; ++i) {
+        const row = rows[i] || ({})
+        const summary = row.summary || ({})
+        const observations = Array.isArray(row.observations) ? row.observations : []
+        const observation = observations.length > 0 ? observations[0] : null
+        const sourceRoles = []
+        for (let j = 0; j < observations.length; ++j) {
+            const role = String(observations[j] && observations[j].source_role || "")
+            if (role.length > 0 && sourceRoles.indexOf(role) < 0) {
+                sourceRoles.push(role)
+            }
+        }
+        result.push({
+            block_id: summary.block_id,
+            header_hash: String(summary.block_hash || ""),
+            parent_hash: String(summary.parent_hash || ""),
+            timestamp: summary.timestamp,
+            tx_count: summary.transaction_count,
+            bedrock_status: String(summary.bedrock_status || ""),
+            source: String(observation && observation.source_role || ""),
+            source_roles: sourceRoles,
+            entity_ref: state.l2EntityRef("block", "block:" + String(summary.block_id)
+                + ":" + String(summary.block_hash || ""), observation)
+        })
+    }
+    return result
+}
+
 function updateDashboardCache(root, method, value) {
     with (root) {
-        if (method === "overview") {
-            dashboardOverview = value
-        } else if (method === "blockchainNode") {
+        if (method === "blockchainNode") {
             dashboardNode = value
         } else if (method === "blockchainLiveBlocks") {
             dashboardL1Blocks = value && Array.isArray(value.blocks) ? value.blocks : []
-        } else if (method === "indexerBlocks") {
-            dashboardBlocks = value || []
-        } else if (method === "sequencerBlocks") {
-            dashboardSequencerBlocks = value || []
         } else if (method === "blockchainModuleReport") {
             blockchainModuleReport = value || null
         } else if (method === "account") {
@@ -103,7 +233,9 @@ function routeSearch(root, query) {
             return
         }
 
-        if (routePrefixedSearch(value)) {
+        const parsedPrefix = searchPrefix(value)
+        if (parsedPrefix.prefix.length > 0 && isLocalSearchPrefix(parsedPrefix.prefix)) {
+            routePrefixedSearch(value)
             return
         }
 
@@ -119,35 +251,7 @@ function routeSearch(root, query) {
             return
         }
 
-        if (/^[0-9]+$/.test(value)) {
-            if (root.numericSearchUsesLezBlock()) {
-                openLezBlock(value)
-                return
-            }
-            const detail = blockchainBlockDetailById(value)
-            if (detail) {
-                openBlockchainBlock(value)
-                return
-            }
-            openBlockchainBlock(value)
-            return
-        }
-
-        if (/^(0x)?[0-9a-fA-F]{64}$/.test(value)) {
-            const detail = blockchainBlockDetailById(value)
-            if (detail) {
-                openBlockchainBlock(value)
-                return
-            }
-            if (root.programIdKnown(value)) {
-                openProgram(value)
-                return
-            }
-            resolveSearchHash(value)
-            return
-        }
-
-        if (root.programIdKnown(value)) {
+        if (root.programIdKnown(value) && !/^(0x)?[0-9a-fA-F]{64}$/.test(value)) {
             openProgram(value)
             return
         }
@@ -157,8 +261,250 @@ function routeSearch(root, query) {
             return
         }
 
-        openAccount(value)
+        resolveInspectionTarget(value)
     }
+}
+
+function isLocalSearchPrefix(prefix) {
+    const value = String(prefix || "").toLowerCase()
+    return value === "mantle" || value === "private" || value === "recipient"
+        || value === "wallet" || value === "cid" || value === "storage"
+        || value === "l1-wallet" || value === "note" || value === "module"
+}
+
+function resolveInspectionTarget(root, query) {
+    with (root) {
+        const value = String(query || "").trim()
+        if (!value.length || !zoneInspection) {
+            return
+        }
+        pushNavigationHistory()
+        statusText = qsTr("Search")
+        zoneInspection.resolveTarget(value, function (report, error) {
+            if (!report) {
+                setResult(qsTr("Search"), error || qsTr("Target resolution failed."), true, null)
+                return
+            }
+            const candidates = Array.isArray(report.candidates)
+                ? report.candidates.slice() : []
+            if (/^(0x)?[0-9a-fA-F]{64}$/.test(value)
+                    && root.programIdKnown(value) && zoneInspection.activeZoneContext) {
+                const canonicalProgram = root.canonicalProgramIdHex(value)
+                const localProgramRef = canonicalProgram.length > 0
+                    ? zoneInspection.l2EntityRef("program", canonicalProgram, null) : null
+                if (localProgramRef) {
+                    candidates.push({ entity_ref: Object.assign({ layer: "l2" }, localProgramRef) })
+                }
+            }
+            report.candidates = dedupeInspectionCandidates(candidates)
+            zoneInspection.targetResolutionReport = report
+            zoneInspection.targetResolutionCandidates = report.candidates
+            if (report.candidates.length === 1) {
+                openInspectionCandidate(report.candidates[0], false)
+                return
+            }
+            if (report.candidates.length > 1) {
+                zoneInspection.targetResolutionStatus = "ambiguous"
+                zoneInspection.requestedDetailTab = "overview"
+                selectView("zones", false)
+                setResult(qsTr("Search candidates"), qsTr("Select one typed candidate."), false, report)
+                return
+            }
+            if (String(report.status || "") === "recovery") {
+                zoneInspection.requestedDetailTab = "sources"
+                selectView("zones", false)
+                setResult(qsTr("Search"), qsTr("Select an Active Zone before resolving this L2 target."), true, report)
+                return
+            }
+            setResult(qsTr("Search"), qsTr("No matching inspection target found."), true, report)
+        })
+    }
+}
+
+function dedupeInspectionCandidates(candidates) {
+    const result = []
+    const seen = ({})
+    for (let i = 0; i < candidates.length; ++i) {
+        const candidate = candidates[i] || null
+        const entity = candidate && candidate.entity_ref ? candidate.entity_ref : null
+        if (!entity) {
+            continue
+        }
+        const key = JSON.stringify(entity)
+        if (seen[key] === true) {
+            continue
+        }
+        seen[key] = true
+        result.push(candidate)
+    }
+    return result
+}
+
+function openInspectionCandidate(root, candidate, recordHistory) {
+    const entity = candidate && candidate.entity_ref ? candidate.entity_ref : candidate
+    return openInspectionEntityRef(root, entity, recordHistory)
+}
+
+function openInspectionEntityRef(root, entity, recordHistory) {
+    with (root) {
+        if (!entity || typeof entity !== "object") {
+            return false
+        }
+        if (recordHistory !== false) {
+            pushNavigationHistory()
+        }
+        const layer = String(entity.layer || "")
+        if (layer === "zone") {
+            if (!inspectionEntityRefMatchesCatalog(root, entity)) {
+                setResult(qsTr("Open reference"), qsTr("Stored Zone reference does not match the current network catalog."), true, entity)
+                selectView("zones", false)
+                return false
+            }
+            currentInspectionEntityRef = entity
+            zoneInspection.requestedDetailTab = "overview"
+            selectView("zones", false)
+            return zoneInspection.activateZone(String(entity.channel_id || ""))
+        }
+        if (layer === "l1") {
+            if (!inspectionNetworkScopeMatches(root, entity.network_scope)) {
+                setResult(qsTr("Open reference"), qsTr("Stored L1 reference belongs to another network."), true, entity)
+                return false
+            }
+            currentInspectionEntityRef = entity
+            const target = entity.block_id !== undefined && entity.block_id !== null
+                ? entity.block_id : entity.block_hash
+            openBlockchainBlock(target)
+            return true
+        }
+        if (layer !== "l2" || !inspectionEntityRefMatchesCatalog(root, entity)) {
+            setResult(qsTr("Open reference"), qsTr("Stored reference does not match current network or Zone catalog."), true, entity)
+            selectView("zones", false)
+            return false
+        }
+        const tab = inspectionDetailTab(entity.entity_kind)
+        zoneInspection.requestedDetailTab = tab
+        zoneInspection.requestedL2View = String(entity.entity_kind || "") === "transaction"
+            ? "transaction" : (String(entity.entity_kind || "") === "block" ? "block" : "blocks")
+        selectView("zones", false)
+        if (!zoneInspection.activeZoneContext
+                || String(zoneInspection.activeZoneId || "") !== String(entity.channel_id || "")) {
+            pendingInspectionEntityRef = entity
+            if (!zoneInspection.activateZone(String(entity.channel_id || ""))) {
+                pendingInspectionEntityRef = null
+                return false
+            }
+            return true
+        }
+        return openInspectionEntityInActiveZone(entity)
+    }
+}
+
+function resumePendingInspectionEntityRef(root) {
+    with (root) {
+        const entity = pendingInspectionEntityRef
+        if (!entity || !zoneInspection || zoneInspection.detailInFlight
+                || zoneInspection.detailStale || !zoneInspection.zoneDetail) {
+            return false
+        }
+        if (String(zoneInspection.activeZoneId || "") !== String(entity.channel_id || "")) {
+            return false
+        }
+        if (!inspectionEntityRefMatchesCatalog(root, entity)) {
+            pendingInspectionEntityRef = null
+            return false
+        }
+        pendingInspectionEntityRef = null
+        return openInspectionEntityInActiveZone(entity)
+    }
+}
+
+function inspectionEntityRefMatchesCatalog(root, entity) {
+    with (root) {
+        if (!zoneInspection || !inspectionNetworkScopeMatches(root, entity.network_scope)) {
+            return false
+        }
+        const rows = Array.isArray(zoneInspection.zoneSummaries)
+            ? zoneInspection.zoneSummaries : []
+        for (let i = 0; i < rows.length; ++i) {
+            const row = rows[i] || ({})
+            if (String(row.channel_id || "") === String(entity.channel_id || "")
+                    && String(row.kind || "unknown") === String(entity.zone_kind || "unknown")) {
+                return true
+            }
+        }
+        return false
+    }
+}
+
+function inspectionNetworkScopeMatches(root, scope) {
+    return root.zoneInspection
+        && root.zoneInspection.scopeKey(scope)
+            === root.zoneInspection.scopeKey(root.zoneInspection.networkScope)
+}
+
+function openInspectionEntityInActiveZone(root, entity) {
+    with (root) {
+        if (!inspectionEntityRefMatchesCatalog(root, entity)) {
+            return false
+        }
+        const source = entity.source && typeof entity.source === "object"
+            ? entity.source : ({ kind: "policy" })
+        const sourceId = String(source.source_id || "")
+        if (String(source.kind || "policy") === "exact") {
+            const role = String(source.source_role || "")
+            const currentId = role === "indexer" ? zoneInspection.l2IndexerSourceId()
+                : (role === "sequencer" ? zoneInspection.l2SequencerSourceId() : "")
+            if (!sourceId.length || sourceId !== currentId) {
+                zoneInspection.requestedDetailTab = "sources"
+                setResult(qsTr("Open reference"), qsTr("Exact source is no longer configured for this Zone."), true, entity)
+                return false
+            }
+        }
+        const kind = String(entity.entity_kind || "")
+        const key = String(entity.canonical_key || "")
+        let opened = false
+        if (kind === "block") {
+            const block = inspectionBlockTarget(key)
+            opened = block ? zoneInspection.openL2Block(block, sourceId) !== null : false
+        } else if (kind === "transaction") {
+            opened = zoneInspection.openL2Transaction(key, sourceId) !== null
+        } else if (kind === "account") {
+            opened = zoneInspection.inspectL2AccountReference(key, source)
+        } else if (kind === "program") {
+            opened = zoneInspection.refreshL2Programs() !== null
+        }
+        if (opened) {
+            currentInspectionEntityRef = entity
+        }
+        return opened
+    }
+}
+
+function inspectionBlockTarget(canonicalKey) {
+    const parts = String(canonicalKey || "").split(":")
+    if (parts.length >= 3 && parts[0] === "block") {
+        const blockId = Number(parts[1])
+        return Number.isFinite(blockId) ? {
+            block_id: blockId,
+            block_hash: parts.slice(2).join(":")
+        } : null
+    }
+    if (parts.length === 2 && parts[0] === "block") {
+        const blockId = Number(parts[1])
+        return Number.isFinite(blockId) ? { block_id: blockId } : null
+    }
+    return null
+}
+
+function inspectionDetailTab(entityKind) {
+    const kind = String(entityKind || "")
+    if (kind === "account") {
+        return "accounts"
+    }
+    if (kind === "program") {
+        return "programs"
+    }
+    return "l2"
 }
 
 function numericSearchUsesLezBlock(root) {

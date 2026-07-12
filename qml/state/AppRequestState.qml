@@ -8,7 +8,6 @@ QtObject {
     required property string inspectorModule
 
     property var updateDashboardCache: null
-    property var updateKnownProgramIds: null
     property var clearAccountDetail: null
     property var updateNetworkConnectionStatus: null
 
@@ -72,9 +71,6 @@ QtObject {
         if (response && response.ok) {
             if (cacheResult && updateDashboardCache) {
                 updateDashboardCache(method, response.value)
-            }
-            if (method === "programs" && updateKnownProgramIds) {
-                updateKnownProgramIds(response.value)
             }
             if (showResult) {
                 shell.setResult(label, response.text, false, response.value)

@@ -69,6 +69,39 @@ ColumnLayout {
         Layout.fillWidth: true
     }
 
+    ColumnLayout {
+        visible: root.zoneState && Array.isArray(root.zoneState.targetResolutionCandidates)
+            && root.zoneState.targetResolutionCandidates.length > 1
+        spacing: root.theme.gapSmall
+        Layout.fillWidth: true
+
+        StatusMessage {
+            theme: root.theme
+            tone: "warning"
+            title: qsTr("Search is ambiguous")
+            message: qsTr("Select a typed target. Source order is not used as a tie-breaker.")
+            Layout.fillWidth: true
+        }
+
+        DataTableFrame {
+            objectName: "inspectionTargetCandidatesTable"
+            theme: root.theme
+            headerCells: [
+                { text: qsTr("Layer"), width: 72 },
+                { text: qsTr("Entity"), width: 120 },
+                { text: qsTr("Canonical key"), width: 320, fill: true },
+                { text: qsTr("Source"), width: 220, fill: true }
+            ]
+            rows: root.targetCandidateRows()
+            Layout.fillWidth: true
+            onCellActivated: function (row, column, cell, rowData) {
+                const candidate = rowData.candidate
+                root.zoneState.resetTargetResolution()
+                root.model.openInspectionCandidate(candidate, false)
+            }
+        }
+    }
+
     RowLayout {
         spacing: root.theme.gap
         Layout.fillWidth: true
@@ -301,6 +334,29 @@ ColumnLayout {
         if (detailLoader.detailItem) {
             detailLoader.detailItem.discardSourceDraft()
         }
+    }
+
+    function targetCandidateRows() {
+        const candidates = root.zoneState && Array.isArray(
+            root.zoneState.targetResolutionCandidates)
+            ? root.zoneState.targetResolutionCandidates : []
+        return candidates.map(function (candidate) {
+            const entity = candidate && candidate.entity_ref ? candidate.entity_ref : ({})
+            const source = entity.source || ({})
+            const sourceText = String(source.kind || "") === "exact"
+                ? String(source.source_role || "") + " / " + String(source.source_id || "")
+                : String(source.kind || "-")
+            const canonicalKey = String(entity.canonical_key || entity.channel_id || "")
+            return {
+                cells: [
+                    { text: String(entity.layer || "-").toUpperCase(), width: 72, monospace: false },
+                    { text: Presentation.words(entity.entity_kind || "zone"), width: 120, monospace: false },
+                    { text: canonicalKey, width: 320, fill: true, link: true, copyText: canonicalKey },
+                    { text: sourceText, width: 220, fill: true, monospace: false }
+                ],
+                candidate: candidate
+            }
+        })
     }
 
     function catalogSubtitle() {

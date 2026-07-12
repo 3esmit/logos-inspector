@@ -14,6 +14,14 @@ ColumnLayout {
     required property var zoneState
     readonly property var detail: root.zoneState.l2BlockDetail
     readonly property var report: root.zoneState.l2BlockDetailReport
+    readonly property var appModel: root.zoneState.appModel || null
+    readonly property var entityRef: typeof root.zoneState.l2BlockEntityRef === "function"
+        ? root.zoneState.l2BlockEntityRef(root.detail) : null
+    readonly property var favoriteEntry: root.appModel && root.entityRef
+        ? root.appModel.favoriteStore.l2EntityEntry(root.entityRef,
+            qsTr("L2 Block %1").arg(Presentation.numberText(
+                root.detail && root.detail.summary.block_id)),
+            String(root.detail && root.detail.summary.block_hash || "")) : null
 
     signal backRequested()
     signal transactionRequested(string transactionId, string exactSourceId)
@@ -69,6 +77,17 @@ ColumnLayout {
             theme: root.theme
             label: Presentation.words(root.detail && root.detail.source.finality)
             tone: root.detail && root.detail.source.finality === "finalized" ? "success" : "warning"
+        }
+
+        ActionButton {
+            visible: root.favoriteEntry !== null
+            theme: root.theme
+            text: root.favoriteEntry && root.appModel.favoriteStore.isFavoriteEntry(
+                root.favoriteEntry) ? qsTr("Favorited") : qsTr("Favorite")
+            selected: root.favoriteEntry && root.appModel.favoriteStore.isFavoriteEntry(
+                root.favoriteEntry)
+            Layout.preferredWidth: 112
+            onClicked: root.appModel.favoriteStore.toggle(root.favoriteEntry)
         }
     }
 
@@ -162,6 +181,30 @@ ColumnLayout {
         Layout.fillWidth: true
     }
 
+    Loader {
+        active: root.appModel !== null && root.detail !== null
+            && root.commentTopic().length > 0
+        asynchronous: false
+        Layout.fillWidth: true
+        sourceComponent: SocialPanel {
+            theme: root.theme
+            model: root.appModel
+            topic: root.commentTopic()
+            entityRef: root.entityRef
+            title: qsTr("Block comments")
+        }
+    }
+
+    StatusMessage {
+        visible: root.detail !== null && root.commentTopic().length === 0
+            && root.entityRef !== null
+        theme: root.theme
+        tone: "info"
+        title: qsTr("Collaboration unavailable")
+        message: qsTr("Zone collaboration requires a verified genesis network identity.")
+        Layout.fillWidth: true
+    }
+
     ColumnLayout {
         visible: root.detail !== null
         spacing: root.theme.gapSmall
@@ -244,6 +287,12 @@ ColumnLayout {
     function transactionRows() {
         return root.detail && Array.isArray(root.detail.transactions)
             ? root.detail.transactions : []
+    }
+
+    function commentTopic() {
+        return root.appModel && root.entityRef
+            && typeof root.appModel.socialZoneCommentTopic === "function"
+            ? root.appModel.socialZoneCommentTopic(root.entityRef) : ""
     }
 
     function transactionTableRows() {

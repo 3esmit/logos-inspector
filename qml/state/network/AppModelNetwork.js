@@ -369,26 +369,6 @@ function cacheNetworkConnectionResult(root, kind, response) {
             dashboardOverview = overview
             return
         }
-        if (target === "execution") {
-            const overview = root.copyMap(dashboardOverview || {})
-            const sequencer = root.copyMap(overview.sequencer || {})
-            sequencer.endpoint = sequencerUrl
-            sequencer.health = { ok: true, value: "ok", error: null }
-            sequencer.head = { ok: true, value: value === undefined ? null : value, error: null }
-            overview.sequencer = sequencer
-            dashboardOverview = overview
-            return
-        }
-        if (target === "indexer") {
-            const overview = root.copyMap(dashboardOverview || {})
-            const indexer = root.copyMap(overview.indexer || {})
-            indexer.endpoint = indexerUrl
-            indexer.health = { ok: true, value: "ok", error: null }
-            indexer.head = { ok: true, value: value === undefined ? null : value, error: null }
-            overview.indexer = indexer
-            dashboardOverview = overview
-            return
-        }
 	        if (target === "messaging") {
 	            messagingSourceReport = value || null
 	            root.refreshCapabilityRegistryIfLoaded()
