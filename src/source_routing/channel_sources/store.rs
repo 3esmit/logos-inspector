@@ -39,6 +39,13 @@ pub fn apply_channel_source_config(
     SettingsStore::new(settings_state_path()?).apply(request)
 }
 
+pub(crate) fn apply_channel_source_config_with_attestation(
+    request: ChannelSourceConfigApplyRequest,
+    attestation: Option<SequencerAttestationReceipt>,
+) -> Result<ChannelSourceConfig> {
+    SettingsStore::new(settings_state_path()?).apply_with_attestation(request, attestation)
+}
+
 pub fn record_sequencer_attestation(
     network_scope: NetworkScope,
     channel_id: &str,
@@ -109,6 +116,14 @@ impl SettingsStore {
     }
 
     fn apply(&self, request: ChannelSourceConfigApplyRequest) -> Result<ChannelSourceConfig> {
+        self.apply_with_attestation(request, None)
+    }
+
+    fn apply_with_attestation(
+        &self,
+        request: ChannelSourceConfigApplyRequest,
+        attestation: Option<SequencerAttestationReceipt>,
+    ) -> Result<ChannelSourceConfig> {
         let _guard = settings_guard(&self.path)?;
         let mut document = self.load_document_unlocked()?;
         let network_scope = normalize_network_scope(request.network_scope)?;
@@ -135,7 +150,7 @@ impl SettingsStore {
             indexer_source: None,
         });
         let mut source_ids = configured_source_ids(&document.channel_source_configs);
-        apply_mutation(&mut config, request.mutation, &mut source_ids)?;
+        apply_mutation(&mut config, request.mutation, &mut source_ids, attestation)?;
         config.config_revision = current_revision
             .checked_add(1)
             .context("Channel source configuration revision overflow")?;
@@ -375,6 +390,7 @@ fn apply_mutation(
     config: &mut ChannelSourceConfig,
     mutation: ChannelSourceConfigMutation,
     source_ids: &mut BTreeSet<String>,
+    attestation: Option<SequencerAttestationReceipt>,
 ) -> Result<()> {
     match mutation {
         ChannelSourceConfigMutation::AddSequencer {
@@ -383,11 +399,14 @@ fn apply_mutation(
             allow_insecure_http,
         } => {
             let source_id = fresh_source_id(source_ids)?;
+            let target = target.normalized(ChannelSourceRole::Sequencer, allow_insecure_http)?;
+            let channel_attestation =
+                sequencer_attestation(&config.channel_id, &target, attestation)?;
             config.sequencer_sources.push(ConfiguredSequencerSource {
                 source_id,
                 label: normalize_label(label)?,
-                target: target.normalized(ChannelSourceRole::Sequencer, allow_insecure_http)?,
-                channel_attestation: PersistedSequencerAttestation::Pending,
+                target,
+                channel_attestation,
             });
         }
         ChannelSourceConfigMutation::UpdateSequencer {
@@ -398,6 +417,7 @@ fn apply_mutation(
         } => {
             let source_id = validate_source_id(&source_id)?;
             let target = target.normalized(ChannelSourceRole::Sequencer, allow_insecure_http)?;
+            let owner_channel_id = config.channel_id.clone();
             let Some(source) = config
                 .sequencer_sources
                 .iter_mut()
@@ -405,13 +425,15 @@ fn apply_mutation(
             else {
                 bail!("Sequencer source `{source_id}` does not exist");
             };
-            if source.target != target {
-                source.channel_attestation = PersistedSequencerAttestation::Pending;
+            if source.target != target || attestation.is_some() {
+                source.channel_attestation =
+                    sequencer_attestation(&owner_channel_id, &target, attestation)?;
             }
             source.label = normalize_label(label)?;
             source.target = target;
         }
         ChannelSourceConfigMutation::RemoveSequencer { source_id } => {
+            reject_unused_attestation(attestation)?;
             let source_id = validate_source_id(&source_id)?;
             let previous_len = config.sequencer_sources.len();
             config
@@ -425,6 +447,7 @@ fn apply_mutation(
             }
         }
         ChannelSourceConfigMutation::SelectSequencer { source_id } => {
+            reject_unused_attestation(attestation)?;
             let source_id = source_id.as_deref().map(validate_source_id).transpose()?;
             if let Some(source_id) = source_id.as_ref()
                 && !config
@@ -436,11 +459,24 @@ fn apply_mutation(
             }
             config.selected_sequencer_source_id = source_id;
         }
+        ChannelSourceConfigMutation::RetryAttestation { source_id } => {
+            let source_id = validate_source_id(&source_id)?;
+            let receipt = attestation.context("Sequencer attestation retry has no receipt")?;
+            let owner_channel_id = config.channel_id.clone();
+            let source = config
+                .sequencer_sources
+                .iter_mut()
+                .find(|source| source.source_id == source_id)
+                .with_context(|| format!("Sequencer source `{source_id}` does not exist"))?;
+            source.channel_attestation =
+                sequencer_attestation(&owner_channel_id, &source.target, Some(receipt))?;
+        }
         ChannelSourceConfigMutation::SetIndexer {
             label,
             target,
             allow_insecure_http,
         } => {
+            reject_unused_attestation(attestation)?;
             let label = normalize_label(label)?;
             let target = target.normalized(ChannelSourceRole::Indexer, allow_insecure_http)?;
             if let Some(indexer) = config.indexer_source.as_mut() {
@@ -455,10 +491,41 @@ fn apply_mutation(
             }
         }
         ChannelSourceConfigMutation::RemoveIndexer => {
+            reject_unused_attestation(attestation)?;
             if config.indexer_source.take().is_none() {
                 bail!("Indexer source does not exist");
             }
         }
+    }
+    Ok(())
+}
+
+fn sequencer_attestation(
+    owner_channel_id: &str,
+    target: &super::ChannelSourceTarget,
+    receipt: Option<SequencerAttestationReceipt>,
+) -> Result<PersistedSequencerAttestation> {
+    let Some(receipt) = receipt else {
+        return Ok(PersistedSequencerAttestation::Pending);
+    };
+    let reported_channel_id = normalize_channel_id(&receipt.reported_channel_id)?;
+    if reported_channel_id != owner_channel_id {
+        bail!("Sequencer attestation reported another Channel");
+    }
+    let target_fingerprint = target.fingerprint();
+    if receipt.target_fingerprint != target_fingerprint {
+        bail!("Sequencer attestation target fingerprint is stale");
+    }
+    Ok(PersistedSequencerAttestation::PersistedAttested {
+        channel_id: reported_channel_id,
+        target_fingerprint,
+        attested_at_unix: receipt.attested_at_unix,
+    })
+}
+
+fn reject_unused_attestation(receipt: Option<SequencerAttestationReceipt>) -> Result<()> {
+    if receipt.is_some() {
+        bail!("Sequencer attestation does not apply to this mutation");
     }
     Ok(())
 }
@@ -736,6 +803,100 @@ mod tests {
             != indexer_id
         {
             bail!("Indexer endpoint edit changed stable source id");
+        }
+        cleanup_test_dir(&directory)
+    }
+
+    #[test]
+    fn attested_add_persists_receipt_in_single_revision_and_rejects_mismatch() -> Result<()> {
+        let (directory, store) = test_store("attested-add")?;
+        let target = rpc_target(3041);
+        let request = apply_request(
+            '4',
+            0,
+            ChannelSourceConfigMutation::AddSequencer {
+                label: Some("Attested".to_owned()),
+                target: target.clone(),
+                allow_insecure_http: false,
+            },
+        );
+        let config = store.apply_with_attestation(
+            request,
+            Some(SequencerAttestationReceipt {
+                reported_channel_id: channel_id('4'),
+                target_fingerprint: target.fingerprint(),
+                attested_at_unix: 10,
+            }),
+        )?;
+        let source = first_sequencer_source(&config)?;
+        if config.config_revision != 1
+            || !matches!(
+                &source.channel_attestation,
+                PersistedSequencerAttestation::PersistedAttested {
+                    channel_id: attested_channel_id,
+                    attested_at_unix: 10,
+                    ..
+                } if attested_channel_id == &channel_id('4')
+            )
+        {
+            bail!("attested source was not persisted atomically: {config:?}");
+        }
+
+        let mismatched_target = rpc_target(3042);
+        let mismatched = store.apply_with_attestation(
+            apply_request(
+                '5',
+                0,
+                ChannelSourceConfigMutation::AddSequencer {
+                    label: None,
+                    target: mismatched_target.clone(),
+                    allow_insecure_http: false,
+                },
+            ),
+            Some(SequencerAttestationReceipt {
+                reported_channel_id: channel_id('6'),
+                target_fingerprint: mismatched_target.fingerprint(),
+                attested_at_unix: 11,
+            }),
+        );
+        if mismatched.is_ok()
+            || store
+                .load_document_unlocked()?
+                .channel_source_configs
+                .iter()
+                .any(|config| config.channel_id == channel_id('5'))
+        {
+            bail!("mismatched attestation changed source settings");
+        }
+
+        let pending = store.apply(add_sequencer_request('7', 0, 3043))?;
+        let pending_source = first_sequencer_source(&pending)?;
+        let pending_source_id = pending_source.source_id.clone();
+        let pending_fingerprint = pending_source.target.fingerprint();
+        let retried = store.apply_with_attestation(
+            apply_request(
+                '7',
+                1,
+                ChannelSourceConfigMutation::RetryAttestation {
+                    source_id: pending_source_id,
+                },
+            ),
+            Some(SequencerAttestationReceipt {
+                reported_channel_id: channel_id('7'),
+                target_fingerprint: pending_fingerprint,
+                attested_at_unix: 12,
+            }),
+        )?;
+        if retried.config_revision != 2
+            || !matches!(
+                &first_sequencer_source(&retried)?.channel_attestation,
+                PersistedSequencerAttestation::PersistedAttested {
+                    attested_at_unix: 12,
+                    ..
+                }
+            )
+        {
+            bail!("explicit attestation retry did not persist receipt: {retried:?}");
         }
         cleanup_test_dir(&directory)
     }

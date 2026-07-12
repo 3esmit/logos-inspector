@@ -102,6 +102,7 @@ pub struct SequencerAttestationReceipt {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ChannelSourceConfigApplyRequest {
     pub network_scope: NetworkScope,
     pub channel_id: String,
@@ -110,7 +111,7 @@ pub struct ChannelSourceConfigApplyRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ChannelSourceConfigMutation {
     AddSequencer {
         label: Option<String>,
@@ -130,6 +131,9 @@ pub enum ChannelSourceConfigMutation {
     },
     SelectSequencer {
         source_id: Option<String>,
+    },
+    RetryAttestation {
+        source_id: String,
     },
     SetIndexer {
         label: Option<String>,

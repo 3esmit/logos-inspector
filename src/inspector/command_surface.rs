@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use anyhow::{Context as _, Result};
 use serde_json::{Value, json};
 use tokio::runtime::Runtime;
@@ -5,9 +7,13 @@ use tokio::runtime::Runtime;
 use super::commands::{
     operations::{OperationBridgeCommand, RuntimeOperationInterface, operation_bridge_command},
     runtime_methods::{self, RuntimeMethodEntry},
+    zone_catalog::{ZoneCatalogCommand, ZoneCatalogCommandInterface, zone_catalog_command},
+    zone_l2::{ZoneL2Command, ZoneL2CommandInterface, zone_l2_command},
 };
 use super::value::to_value;
-use crate::{modules::logos_core, support::args::Args};
+use crate::{
+    inspection::catalog::DirectZoneCatalogWorker, modules::logos_core, support::args::Args,
+};
 
 pub(crate) const INSPECTOR_MODULE: &str = "logos_inspector";
 
@@ -34,9 +40,11 @@ impl CoreModuleCaller for LogosCoreModuleCaller {
 }
 
 pub(crate) struct InspectorCommandSurface<C = LogosCoreModuleCaller> {
-    runtime: Runtime,
     operations: RuntimeOperationInterface,
     core_modules: C,
+    zone_catalog: Arc<ZoneCatalogCommandInterface>,
+    zone_l2: ZoneL2CommandInterface,
+    runtime: Runtime,
 }
 
 impl InspectorCommandSurface<LogosCoreModuleCaller> {
@@ -50,10 +58,19 @@ where
     C: CoreModuleCaller,
 {
     pub(crate) fn with_core_modules(core_modules: C) -> Result<Self> {
+        let runtime = Runtime::new().context("failed to create tokio runtime")?;
+        let catalog_worker = Arc::new(DirectZoneCatalogWorker::for_config_dir()?);
+        let zone_catalog = Arc::new(ZoneCatalogCommandInterface::with_worker(
+            &runtime,
+            catalog_worker,
+        ));
+        let zone_l2 = ZoneL2CommandInterface::new(zone_catalog.clone());
         Ok(Self {
-            runtime: Runtime::new().context("failed to create tokio runtime")?,
             operations: RuntimeOperationInterface::default(),
             core_modules,
+            zone_catalog,
+            zone_l2,
+            runtime,
         })
     }
 
@@ -82,6 +99,14 @@ where
             InspectorCommand::Runtime(method) => {
                 runtime_methods::handle(&self.runtime, method, args).map(Some)
             }
+            InspectorCommand::ZoneCatalog(command) => self
+                .zone_catalog
+                .bridge_call(&self.runtime, command, &args)
+                .map(Some),
+            InspectorCommand::ZoneL2(command) => self
+                .zone_l2
+                .bridge_call(&self.runtime, command, &args)
+                .map(Some),
             InspectorCommand::CallModule => {
                 let args = Args::new(args)?;
                 let module = args.string(0, "module name")?;
@@ -102,6 +127,8 @@ where
 enum InspectorCommand {
     Operation(OperationBridgeCommand),
     Runtime(&'static RuntimeMethodEntry),
+    ZoneCatalog(ZoneCatalogCommand),
+    ZoneL2(ZoneL2Command),
     CallModule,
 }
 
@@ -111,6 +138,12 @@ fn inspector_command(method: &str) -> Option<InspectorCommand> {
     }
     if let Some(method) = runtime_methods::lookup(method) {
         return Some(InspectorCommand::Runtime(method));
+    }
+    if let Some(command) = zone_catalog_command(method) {
+        return Some(InspectorCommand::ZoneCatalog(command));
+    }
+    if let Some(command) = zone_l2_command(method) {
+        return Some(InspectorCommand::ZoneL2(command));
     }
     match method {
         "callModule" => Some(InspectorCommand::CallModule),
@@ -126,7 +159,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::inspector::commands::{operations, runtime_methods};
+    use crate::inspector::commands::{operations, runtime_methods, zone_catalog, zone_l2};
 
     #[derive(Debug, Default)]
     struct FakeCoreModules;
@@ -166,10 +199,35 @@ mod tests {
     }
 
     #[test]
+    fn surface_owns_zone_catalog_names() -> Result<()> {
+        for method in zone_catalog::zone_catalog_command_names() {
+            if !matches!(
+                inspector_command(method),
+                Some(InspectorCommand::ZoneCatalog(_))
+            ) {
+                bail!("Zone Catalog method `{method}` missing from inspector surface");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn surface_owns_zone_l2_names() -> Result<()> {
+        for method in zone_l2::zone_l2_command_names() {
+            if !matches!(inspector_command(method), Some(InspectorCommand::ZoneL2(_))) {
+                bail!("Zone L2 method `{method}` missing from inspector surface");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn surface_names_are_unique() -> Result<()> {
         let mut names = HashSet::new();
         for method in operations::operation_bridge_command_names()
             .chain(runtime_methods::runtime_method_names())
+            .chain(zone_catalog::zone_catalog_command_names())
+            .chain(zone_l2::zone_l2_command_names())
             .chain(["callModule"])
         {
             if !names.insert(method) {
@@ -232,6 +290,24 @@ mod tests {
             .contains("unknown inspector method `missingMethod`")
         {
             bail!("unexpected error: {error:#}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn zone_l2_reads_do_not_enter_runtime_operation_history() -> Result<()> {
+        let surface =
+            InspectorCommandSurface::with_core_modules(FakeCoreModules).context("surface")?;
+        if surface.operations_for_test().len()? != 0 {
+            bail!("fresh operation history is not empty");
+        }
+
+        let result = surface.call_inspector("zoneL2Programs", json!([]));
+        if result.is_ok() {
+            bail!("malformed Zone L2 request unexpectedly succeeded");
+        }
+        if surface.operations_for_test().len()? != 0 {
+            bail!("Zone L2 read entered runtime operation history");
         }
         Ok(())
     }

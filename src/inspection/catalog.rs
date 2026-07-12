@@ -2,15 +2,19 @@ mod store;
 
 pub mod engine;
 pub mod model;
+pub mod report;
 pub mod service;
 pub mod source;
+pub mod worker;
 
 use std::path::Path;
 
 pub use engine::*;
 pub use model::*;
+pub use report::*;
 pub use service::*;
 pub use source::*;
+pub use worker::*;
 
 use store::ZoneCatalogStore;
 

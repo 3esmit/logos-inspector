@@ -31,6 +31,12 @@ pub type ZoneCatalogServiceResult<T> = Result<T, ZoneCatalogServiceError>;
 pub type ZoneCatalogWorkerFuture =
     Pin<Box<dyn Future<Output = ZoneCatalogServiceResult<()>> + Send + 'static>>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZoneCatalogRunMode {
+    Resume,
+    Rebuild,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ZoneCatalogServiceError {
     InvalidSource(String),
@@ -138,6 +144,7 @@ pub trait ZoneCatalogWorker: Send + Sync + 'static {
 pub struct ZoneCatalogRunContext {
     source_revision: u64,
     source_fingerprint: String,
+    run_mode: ZoneCatalogRunMode,
     cancellation: CancellationToken,
     publisher: CatalogRunPublisher,
 }
@@ -151,6 +158,11 @@ impl ZoneCatalogRunContext {
     #[must_use]
     pub fn source_fingerprint(&self) -> &str {
         &self.source_fingerprint
+    }
+
+    #[must_use]
+    pub const fn run_mode(&self) -> ZoneCatalogRunMode {
+        self.run_mode
     }
 
     #[must_use]
@@ -335,6 +347,31 @@ impl ZoneCatalogService {
         })?
     }
 
+    pub async fn retry(&self) -> ZoneCatalogServiceResult<u64> {
+        self.control(CatalogControl::Retry).await
+    }
+
+    pub async fn rebuild(&self) -> ZoneCatalogServiceResult<u64> {
+        self.control(CatalogControl::Rebuild).await
+    }
+
+    async fn control(&self, control: CatalogControl) -> ZoneCatalogServiceResult<u64> {
+        let (response, result) = oneshot::channel();
+        self.commands
+            .send(CatalogServiceCommand::Control { control, response })
+            .await
+            .map_err(|_| {
+                ZoneCatalogServiceError::InvalidState(
+                    "catalog service controller is stopped".to_owned(),
+                )
+            })?;
+        result.await.map_err(|_| {
+            ZoneCatalogServiceError::InvalidState(
+                "catalog service controller dropped its response".to_owned(),
+            )
+        })?
+    }
+
     pub async fn shutdown(&self) -> ZoneCatalogServiceResult<()> {
         let controller = {
             let mut controller = self.controller.lock().map_err(|_| {
@@ -380,9 +417,19 @@ enum CatalogServiceCommand {
         source: ZoneCatalogSourceDescriptor,
         response: oneshot::Sender<ZoneCatalogServiceResult<u64>>,
     },
+    Control {
+        control: CatalogControl,
+        response: oneshot::Sender<ZoneCatalogServiceResult<u64>>,
+    },
     Shutdown {
         response: oneshot::Sender<ZoneCatalogServiceResult<()>>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CatalogControl {
+    Retry,
+    Rebuild,
 }
 
 struct ActiveCatalogRun {
@@ -415,7 +462,22 @@ async fn run_catalog_controller(
                             &publisher,
                             &shutdown,
                             &mut active,
-                            source,
+                            CatalogRunRequest {
+                                source,
+                                force_restart: false,
+                                run_mode: ZoneCatalogRunMode::Resume,
+                            },
+                        ).await;
+                        drop(response.send(result));
+                    }
+                    Some(CatalogServiceCommand::Control { control, response }) => {
+                        let result = restart_catalog_run(
+                            &runtime,
+                            worker.clone(),
+                            &publisher,
+                            &shutdown,
+                            &mut active,
+                            control,
                         ).await;
                         drop(response.send(result));
                     }
@@ -443,11 +505,17 @@ async fn configure_catalog_run(
     publisher: &CatalogRunPublisher,
     shutdown: &CancellationToken,
     active: &mut Option<ActiveCatalogRun>,
-    source: ZoneCatalogSourceDescriptor,
+    request: CatalogRunRequest,
 ) -> ZoneCatalogServiceResult<u64> {
+    let CatalogRunRequest {
+        source,
+        force_restart,
+        run_mode,
+    } = request;
     if let Some(current) = active.as_ref()
         && current.source == source
         && !current.join.is_finished()
+        && !force_restart
     {
         return Ok(publisher.desired_revision.load(Ordering::Acquire));
     }
@@ -463,6 +531,7 @@ async fn configure_catalog_run(
     let context = ZoneCatalogRunContext {
         source_revision,
         source_fingerprint: source.fingerprint().to_owned(),
+        run_mode,
         cancellation: cancellation.clone(),
         publisher: publisher.clone(),
     };
@@ -489,6 +558,47 @@ async fn configure_catalog_run(
         join,
     });
     Ok(source_revision)
+}
+
+async fn restart_catalog_run(
+    runtime: &Handle,
+    worker: Arc<dyn ZoneCatalogWorker>,
+    publisher: &CatalogRunPublisher,
+    shutdown: &CancellationToken,
+    active: &mut Option<ActiveCatalogRun>,
+    control: CatalogControl,
+) -> ZoneCatalogServiceResult<u64> {
+    let source = active
+        .as_ref()
+        .map(|run| run.source.clone())
+        .ok_or_else(|| {
+            ZoneCatalogServiceError::InvalidState(
+                "catalog service has no configured source".to_owned(),
+            )
+        })?;
+    let run_mode = match control {
+        CatalogControl::Retry => ZoneCatalogRunMode::Resume,
+        CatalogControl::Rebuild => ZoneCatalogRunMode::Rebuild,
+    };
+    configure_catalog_run(
+        runtime,
+        worker,
+        publisher,
+        shutdown,
+        active,
+        CatalogRunRequest {
+            source,
+            force_restart: true,
+            run_mode,
+        },
+    )
+    .await
+}
+
+struct CatalogRunRequest {
+    source: ZoneCatalogSourceDescriptor,
+    force_restart: bool,
+    run_mode: ZoneCatalogRunMode,
 }
 
 fn next_source_revision(publisher: &CatalogRunPublisher) -> ZoneCatalogServiceResult<u64> {
@@ -572,7 +682,11 @@ impl CatalogIdentityRebinder for ChannelSourceCatalogIdentityRebinder {
             tokio::task::spawn_blocking(move || rebind_channel_source_configs(old_scope, new_scope))
                 .await
                 .map_err(map_join_error)?
-                .map_err(|error| ZoneCatalogServiceError::Worker(error.to_string()))
+                .map_err(|_error| {
+                    ZoneCatalogServiceError::Worker(
+                        "failed to rebind Channel source settings".to_owned(),
+                    )
+                })
         })
     }
 }
@@ -1031,11 +1145,16 @@ fn transition_matches_promotion(
 }
 
 fn map_source_error(error: CatalogL1SourceError) -> ZoneCatalogServiceError {
-    ZoneCatalogServiceError::Source(error.to_string())
+    let detail = match error {
+        CatalogL1SourceError::InvalidRequest(_) => "catalog L1 request was invalid",
+        CatalogL1SourceError::Unavailable(_) => "catalog L1 source is unavailable",
+        CatalogL1SourceError::InvalidResponse(_) => "catalog L1 source returned invalid data",
+    };
+    ZoneCatalogServiceError::Source(detail.to_owned())
 }
 
-fn map_catalog_error(error: CatalogError) -> ZoneCatalogServiceError {
-    ZoneCatalogServiceError::Catalog(error.to_string())
+fn map_catalog_error(_error: CatalogError) -> ZoneCatalogServiceError {
+    ZoneCatalogServiceError::Catalog("catalog storage or validation failed".to_owned())
 }
 
 fn map_join_error(error: tokio::task::JoinError) -> ZoneCatalogServiceError {
