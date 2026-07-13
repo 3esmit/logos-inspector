@@ -6,6 +6,7 @@ use std::{
 use crate::{
     inspection::ZoneSourceRole,
     lez::{IndexerBlockReport, ProgramIdEntry, TransactionSummary},
+    modules::logos_core::{ModuleTransportKind, SharedModuleTransport},
 };
 
 use super::{
@@ -42,7 +43,7 @@ impl Default for ZoneL2Router {
     fn default() -> Self {
         Self::new(
             Arc::new(DirectSequencerL2SourceAdapter),
-            Arc::new(DirectIndexerL2SourceAdapter),
+            Arc::new(DirectIndexerL2SourceAdapter::default()),
         )
     }
 }
@@ -58,6 +59,20 @@ impl ZoneL2Router {
             indexer,
             state: Mutex::new(L2RouterState::default()),
         }
+    }
+
+    #[must_use]
+    pub(crate) fn with_module_transport(
+        module_transport: SharedModuleTransport,
+        module_transport_kind: ModuleTransportKind,
+    ) -> Self {
+        Self::new(
+            Arc::new(DirectSequencerL2SourceAdapter),
+            Arc::new(DirectIndexerL2SourceAdapter::new(
+                module_transport,
+                module_transport_kind,
+            )),
+        )
     }
 
     pub(crate) async fn blocks(

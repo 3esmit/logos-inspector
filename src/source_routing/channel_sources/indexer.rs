@@ -1,7 +1,10 @@
+use std::sync::Arc;
+
 use serde_json::Value;
 
 use crate::{
     AccountReport, AccountTransactionSummary, IndexerBlockReport, TransactionSummary,
+    modules::logos_core::{ModuleTransportKind, SharedModuleTransport},
     source_routing::{
         adapter::{
             AdapterConnectionType, AdapterInputPolicy, SourceAdapterPolicy, SourceModePolicy,
@@ -13,8 +16,8 @@ use crate::{
 use super::{
     ChannelSourceTarget,
     layer::{
-        ExecutionZoneReadResult, blocking_module_call, capability_error,
-        managed_config as shared_managed_config, map_read_error, optional_u64,
+        ExecutionZoneReadResult, capability_error, managed_config as shared_managed_config,
+        map_read_error, optional_u64,
     },
 };
 
@@ -82,44 +85,67 @@ pub(crate) const SOURCE_MODES: &[SourceModePolicy] = &[
     },
 ];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone)]
 pub(crate) enum IndexerAdapter<'a> {
-    Rpc { endpoint: &'a str },
-    Module,
+    Rpc {
+        endpoint: &'a str,
+    },
+    Module {
+        transport: SharedModuleTransport,
+        transport_kind: ModuleTransportKind,
+    },
 }
 
 impl<'a> IndexerAdapter<'a> {
-    pub(crate) fn connect(target: &'a ChannelSourceTarget) -> ExecutionZoneReadResult<Self> {
+    pub(crate) fn connect(
+        target: &'a ChannelSourceTarget,
+        transport: &SharedModuleTransport,
+        transport_kind: ModuleTransportKind,
+    ) -> ExecutionZoneReadResult<Self> {
         match target {
             ChannelSourceTarget::Rpc { endpoint } => Ok(Self::Rpc { endpoint }),
-            ChannelSourceTarget::Module { module_id } if module_id == MODULE_ID => Ok(Self::Module),
+            ChannelSourceTarget::Module { module_id } if module_id == MODULE_ID => {
+                Ok(Self::Module {
+                    transport: Arc::clone(transport),
+                    transport_kind,
+                })
+            }
             ChannelSourceTarget::Module { .. } => Err(capability_error()),
         }
     }
 
-    pub(crate) async fn health(self) -> ExecutionZoneReadResult<()> {
+    pub(crate) async fn health(&self) -> ExecutionZoneReadResult<()> {
         match self {
             Self::Rpc { endpoint } => crate::lez::indexer_health(endpoint)
                 .await
                 .map(|_| ())
                 .map_err(map_read_error),
-            Self::Module => module_health().await.map(|_| ()).map_err(map_read_error),
+            Self::Module {
+                transport,
+                transport_kind,
+            } => module_adapters::indexer_health(transport, *transport_kind)
+                .await
+                .map(|_| ())
+                .map_err(map_read_error),
         }
     }
 
-    pub(crate) async fn reported_head_id(self) -> ExecutionZoneReadResult<Option<u64>> {
+    pub(crate) async fn reported_head_id(&self) -> ExecutionZoneReadResult<Option<u64>> {
         match self {
             Self::Rpc { endpoint } => crate::lez::indexer_finalized_block_id(endpoint)
                 .await
                 .map_err(map_read_error),
-            Self::Module => module_finalized_head()
+            Self::Module {
+                transport,
+                transport_kind,
+            } => module_adapters::indexer_finalized_head(transport, *transport_kind)
                 .await
                 .map_err(map_read_error)
                 .and_then(optional_u64),
         }
     }
 
-    pub(crate) async fn head(self) -> ExecutionZoneReadResult<Option<IndexerBlockReport>> {
+    pub(crate) async fn head(&self) -> ExecutionZoneReadResult<Option<IndexerBlockReport>> {
         let Some(block_id) = self.reported_head_id().await? else {
             return Ok(None);
         };
@@ -127,7 +153,7 @@ impl<'a> IndexerAdapter<'a> {
     }
 
     pub(crate) async fn blocks(
-        self,
+        &self,
         before: Option<u64>,
         limit: u64,
     ) -> ExecutionZoneReadResult<Vec<IndexerBlockReport>> {
@@ -135,52 +161,68 @@ impl<'a> IndexerAdapter<'a> {
             Self::Rpc { endpoint } => crate::lez::indexer_blocks(endpoint, before, limit)
                 .await
                 .map_err(map_read_error),
-            Self::Module => module_blocks(before, limit).await.map_err(map_read_error),
+            Self::Module {
+                transport,
+                transport_kind,
+            } => module_adapters::indexer_blocks(transport, *transport_kind, before, limit)
+                .await
+                .map_err(map_read_error),
         }
     }
 
     pub(crate) async fn block_by_id(
-        self,
+        &self,
         block_id: u64,
     ) -> ExecutionZoneReadResult<Option<IndexerBlockReport>> {
         match self {
             Self::Rpc { endpoint } => crate::lez::indexer_block_by_id(endpoint, block_id)
                 .await
                 .map_err(map_read_error),
-            Self::Module => module_block_by_id(block_id).await.map_err(map_read_error),
+            Self::Module {
+                transport,
+                transport_kind,
+            } => module_adapters::indexer_block_by_id(transport, *transport_kind, block_id)
+                .await
+                .map_err(map_read_error),
         }
     }
 
     pub(crate) async fn block_by_hash(
-        self,
+        &self,
         block_hash: &str,
     ) -> ExecutionZoneReadResult<Option<IndexerBlockReport>> {
         match self {
             Self::Rpc { endpoint } => crate::lez::indexer_block_by_hash(endpoint, block_hash)
                 .await
                 .map_err(map_read_error),
-            Self::Module => module_block_by_hash(block_hash.to_owned())
+            Self::Module {
+                transport,
+                transport_kind,
+            } => module_adapters::indexer_block_by_hash(transport, *transport_kind, block_hash)
                 .await
                 .map_err(map_read_error),
         }
     }
 
     pub(crate) async fn transaction(
-        self,
+        &self,
         transaction_id: &str,
     ) -> ExecutionZoneReadResult<Option<TransactionSummary>> {
         match self {
             Self::Rpc { endpoint } => crate::lez::indexer_transaction(endpoint, transaction_id)
                 .await
                 .map_err(map_read_error),
-            Self::Module => module_transaction(transaction_id.to_owned())
+            Self::Module {
+                transport,
+                transport_kind,
+            } => module_adapters::indexer_transaction(transport, *transport_kind, transaction_id)
                 .await
                 .map_err(map_read_error),
         }
     }
 
     pub(crate) async fn account_at_block(
-        self,
+        &self,
         account_id: &str,
         block_id: u64,
     ) -> ExecutionZoneReadResult<AccountReport> {
@@ -190,14 +232,22 @@ impl<'a> IndexerAdapter<'a> {
                     .await
                     .map_err(map_read_error)
             }
-            Self::Module => module_account_at_block(account_id.to_owned(), block_id)
-                .await
-                .map_err(map_read_error),
+            Self::Module {
+                transport,
+                transport_kind,
+            } => module_adapters::indexer_account_at_block(
+                transport,
+                *transport_kind,
+                account_id,
+                block_id,
+            )
+            .await
+            .map_err(map_read_error),
         }
     }
 
     pub(crate) async fn account_activity(
-        self,
+        &self,
         account_id: &str,
         offset: usize,
         limit: usize,
@@ -208,9 +258,18 @@ impl<'a> IndexerAdapter<'a> {
                     .await
                     .map_err(map_read_error)
             }
-            Self::Module => module_account_activity(account_id.to_owned(), offset, limit)
-                .await
-                .map_err(map_read_error),
+            Self::Module {
+                transport,
+                transport_kind,
+            } => module_adapters::account_transactions_by_account(
+                transport,
+                *transport_kind,
+                account_id,
+                offset,
+                limit,
+            )
+            .await
+            .map_err(map_read_error),
         }
     }
 }
@@ -225,75 +284,58 @@ pub(crate) fn managed_config(
     shared_managed_config("indexer", network_id, data_dir, endpoint, port)
 }
 
-async fn module_health() -> anyhow::Result<Value> {
-    blocking_module_call(
-        "Execution Zone Indexer health",
-        module_adapters::module::indexer_health,
-    )
-    .await
-}
-
-async fn module_finalized_head() -> anyhow::Result<Value> {
-    blocking_module_call(
-        "Execution Zone Indexer finalized head",
-        module_adapters::indexer_finalized_head,
-    )
-    .await
-}
-
-async fn module_blocks(before: Option<u64>, limit: u64) -> anyhow::Result<Vec<IndexerBlockReport>> {
-    blocking_module_call("Execution Zone Indexer blocks", move || {
-        module_adapters::indexer_blocks(before, limit)
-    })
-    .await
-}
-
-async fn module_block_by_id(block_id: u64) -> anyhow::Result<Option<IndexerBlockReport>> {
-    blocking_module_call("Execution Zone Indexer block", move || {
-        module_adapters::indexer_block_by_id(block_id)
-    })
-    .await
-}
-
-async fn module_block_by_hash(block_hash: String) -> anyhow::Result<Option<IndexerBlockReport>> {
-    blocking_module_call("Execution Zone Indexer block", move || {
-        module_adapters::indexer_block_by_hash(&block_hash)
-    })
-    .await
-}
-
-async fn module_transaction(transaction_id: String) -> anyhow::Result<Option<TransactionSummary>> {
-    blocking_module_call("Execution Zone Indexer transaction", move || {
-        module_adapters::indexer_transaction(&transaction_id)
-    })
-    .await
-}
-
-async fn module_account_at_block(
-    account_id: String,
-    block_id: u64,
-) -> anyhow::Result<AccountReport> {
-    blocking_module_call("Execution Zone Indexer account", move || {
-        module_adapters::indexer_account_at_block(&account_id, block_id)
-    })
-    .await
-}
-
-async fn module_account_activity(
-    account_id: String,
-    offset: usize,
-    limit: usize,
-) -> anyhow::Result<Vec<AccountTransactionSummary>> {
-    blocking_module_call("Execution Zone Indexer activity", move || {
-        module_adapters::account_transactions_by_account(&account_id, offset, limit)
-    })
-    .await
-}
-
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
+    use anyhow::{Context as _, Result, bail};
+    use serde_json::json;
+
     use super::*;
-    use crate::source_routing::channel_sources::layer::ExecutionZoneReadErrorKind;
+    use crate::{
+        modules::logos_core::{ModuleCall, ModuleCallFuture, ModuleCallReply, ModuleTransport},
+        source_routing::channel_sources::layer::ExecutionZoneReadErrorKind,
+    };
+
+    struct RecordingModuleTransport {
+        kind: ModuleTransportKind,
+        reply_kind: ModuleTransportKind,
+        reply: Value,
+        calls: Arc<Mutex<Vec<ModuleCall>>>,
+    }
+
+    impl ModuleTransport for RecordingModuleTransport {
+        fn kind(&self) -> ModuleTransportKind {
+            self.kind
+        }
+
+        fn call(&self, call: ModuleCall) -> ModuleCallFuture<'_> {
+            Box::pin(async move {
+                self.calls
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("recorded calls lock poisoned"))?
+                    .push(call);
+                Ok(ModuleCallReply::new(self.reply_kind, self.reply.clone()))
+            })
+        }
+    }
+
+    fn recording_transport(
+        kind: ModuleTransportKind,
+        reply_kind: ModuleTransportKind,
+        reply: Value,
+    ) -> (SharedModuleTransport, Arc<Mutex<Vec<ModuleCall>>>) {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        (
+            Arc::new(RecordingModuleTransport {
+                kind,
+                reply_kind,
+                reply,
+                calls: Arc::clone(&calls),
+            }),
+            calls,
+        )
+    }
 
     #[test]
     fn adapter_accepts_rpc_and_owned_module_only() {
@@ -306,15 +348,89 @@ mod tests {
         let other_module = ChannelSourceTarget::Module {
             module_id: "other".to_owned(),
         };
+        let (transport, _) = recording_transport(
+            ModuleTransportKind::LogoscoreCli,
+            ModuleTransportKind::LogoscoreCli,
+            Value::Null,
+        );
 
         assert!(matches!(
-            IndexerAdapter::connect(&rpc),
+            IndexerAdapter::connect(&rpc, &transport, ModuleTransportKind::LogoscoreCli),
             Ok(IndexerAdapter::Rpc { .. })
         ));
-        assert_eq!(IndexerAdapter::connect(&module), Ok(IndexerAdapter::Module));
-        assert_eq!(
-            IndexerAdapter::connect(&other_module).map_err(|error| error.kind),
+        assert!(matches!(
+            IndexerAdapter::connect(&module, &transport, ModuleTransportKind::LogoscoreCli),
+            Ok(IndexerAdapter::Module {
+                transport_kind: ModuleTransportKind::LogoscoreCli,
+                ..
+            })
+        ));
+        assert!(matches!(
+            IndexerAdapter::connect(&other_module, &transport, ModuleTransportKind::LogoscoreCli)
+                .map_err(|error| error.kind),
             Err(ExecutionZoneReadErrorKind::Capability)
+        ));
+    }
+
+    #[tokio::test]
+    async fn module_adapter_preserves_host_transport_identity() -> Result<()> {
+        let target = ChannelSourceTarget::Module {
+            module_id: MODULE_ID.to_owned(),
+        };
+        let (transport, calls) = recording_transport(
+            ModuleTransportKind::Module,
+            ModuleTransportKind::Module,
+            json!(42),
         );
+        let Ok(adapter) = IndexerAdapter::connect(&target, &transport, ModuleTransportKind::Module)
+        else {
+            bail!("Indexer module adapter did not connect");
+        };
+
+        let Ok(head) = adapter.reported_head_id().await else {
+            bail!("Indexer module finalized-head call failed");
+        };
+        if head != Some(42) {
+            bail!("Indexer module adapter lost finalized head response");
+        }
+        let calls = calls
+            .lock()
+            .map_err(|_| anyhow::anyhow!("calls lock poisoned"))?;
+        let call = calls
+            .first()
+            .context("Indexer module call was not recorded")?;
+        anyhow::ensure!(call.transport() == ModuleTransportKind::Module);
+        anyhow::ensure!(call.module() == MODULE_ID);
+        anyhow::ensure!(call.method() == "getLastFinalizedBlockId");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn module_adapter_rejects_transport_mismatch_without_dispatch() -> Result<()> {
+        let target = ChannelSourceTarget::Module {
+            module_id: MODULE_ID.to_owned(),
+        };
+        let (transport, calls) = recording_transport(
+            ModuleTransportKind::LogoscoreCli,
+            ModuleTransportKind::LogoscoreCli,
+            json!(42),
+        );
+        let Ok(adapter) = IndexerAdapter::connect(&target, &transport, ModuleTransportKind::Module)
+        else {
+            bail!("Indexer module adapter did not connect");
+        };
+
+        let Err(error) = adapter.reported_head_id().await else {
+            bail!("transport mismatch did not fail closed");
+        };
+        anyhow::ensure!(error.kind == ExecutionZoneReadErrorKind::Unavailable);
+        if !calls
+            .lock()
+            .map_err(|_| anyhow::anyhow!("calls lock poisoned"))?
+            .is_empty()
+        {
+            bail!("transport mismatch reached active adapter");
+        }
+        Ok(())
     }
 }

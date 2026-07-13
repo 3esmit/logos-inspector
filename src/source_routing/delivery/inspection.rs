@@ -6,9 +6,9 @@ use super::{
 };
 use crate::{
     ProbeReport,
-    modules::ModuleReport,
+    modules::{ModuleReport, logos_core::SharedModuleTransport},
     source_routing::{
-        DeliverySourceReportKind, SourceProbeKey, SourceReport,
+        AdapterConnectionType, DeliverySourceReportKind, SourceProbeKey, SourceReport,
         shared::{
             evidence::SourceEvidence,
             http,
@@ -56,11 +56,12 @@ pub async fn delivery_source_report(
     source_mode: &str,
     rest_endpoint: Option<&str>,
     metrics_endpoint: Option<&str>,
+    module_transport: &SharedModuleTransport,
 ) -> SourceReport {
     match MessagingAdapter::select(source_mode, rest_endpoint, metrics_endpoint) {
-        MessagingAdapter::Module => module_source_report(
+        MessagingAdapter::Module { transport } => module_source_report(
             SourceReportKind::Delivery(DeliverySourceReportKind::Module),
-            layer::module_report(None),
+            layer::module_report(module_transport, transport, None).await,
         ),
         MessagingAdapter::Rest {
             endpoint,
@@ -116,9 +117,15 @@ fn delivery_network_monitor_probe_plan() -> Vec<DeliveryProbeStep> {
 }
 
 fn module_source_report(kind: SourceReportKind, report: ModuleReport) -> SourceReport {
+    let adapter = match report.adapter {
+        crate::modules::logos_core::ModuleTransportKind::Module => AdapterConnectionType::Module,
+        crate::modules::logos_core::ModuleTransportKind::LogoscoreCli => {
+            AdapterConnectionType::LogoscoreCli
+        }
+    };
     source_report_from_evidence(
         kind,
-        SourceEvidence::new(report.module, report.module_info, report.probes),
+        SourceEvidence::new(report.module, report.module_info, report.probes).with_adapter(adapter),
     )
 }
 

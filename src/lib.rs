@@ -23,7 +23,9 @@ pub mod source_routing;
 pub(crate) mod support;
 pub mod wallet;
 
-pub use public_surface::{bridge, idl_decode, logoscore, network, program_decode};
+pub use public_surface::{
+    bridge, idl_decode, logoscore, module_transport, network, program_decode,
+};
 
 // Public data models and pure helpers retained at the crate root.
 pub use public_surface::compat::*;

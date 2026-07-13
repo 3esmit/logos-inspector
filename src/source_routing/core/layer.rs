@@ -1,6 +1,6 @@
 use std::num::NonZeroUsize;
 
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 use reqwest::{Client, Response};
 use serde_json::{Value, json};
 
@@ -8,7 +8,7 @@ use super::adapters::{self, BLOCKCHAIN_MODULE};
 use crate::{
     blockchain::{BlockchainLiveBlocksReport, BlockchainNodeReport, channels::ChannelScanReport},
     modules::ModuleReport,
-    modules::logos_core::LogoscoreCliRuntime,
+    modules::logos_core::{LogoscoreCliRuntime, ModuleTransportKind, SharedModuleTransport},
     rpc::RawRpcReport,
     source_routing::adapter::{
         AdapterConnectionType, AdapterInputPolicy, ManagedModuleCallSpec, ManagedNodeAction,
@@ -48,9 +48,12 @@ pub(crate) fn call_managed_module(
     runtime.call_checked(module_id(), method, signature, args)
 }
 
-#[must_use]
-pub(crate) fn diagnostic_report(address: Option<&str>) -> ModuleReport {
-    crate::modules::blockchain_module_report(address)
+pub(crate) async fn diagnostic_report(
+    module_transport: &SharedModuleTransport,
+    transport: ModuleTransportKind,
+    address: Option<&str>,
+) -> ModuleReport {
+    crate::modules::blockchain_module_report(module_transport, transport, address).await
 }
 
 #[must_use]
@@ -178,7 +181,7 @@ pub(crate) const BEDROCK_SOURCE_MODES: &[SourceModePolicy] = &[
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BedrockAdapter<'a> {
     Rpc { endpoint: &'a str },
-    Module,
+    Module { transport: ModuleTransportKind },
 }
 
 impl<'a> BedrockAdapter<'a> {
@@ -188,21 +191,21 @@ impl<'a> BedrockAdapter<'a> {
     }
 
     #[must_use]
-    pub(crate) const fn module() -> Self {
-        Self::Module
+    pub(crate) const fn module(transport: ModuleTransportKind) -> Self {
+        Self::Module { transport }
     }
 }
 
-pub(crate) async fn node_report(adapter: BedrockAdapter<'_>) -> Result<BlockchainNodeReport> {
+pub(crate) async fn node_report(
+    adapter: BedrockAdapter<'_>,
+    module_transport: &SharedModuleTransport,
+) -> Result<BlockchainNodeReport> {
     match adapter {
         BedrockAdapter::Rpc { endpoint } => {
             Ok(crate::blockchain::blockchain_node_report(endpoint).await)
         }
-        BedrockAdapter::Module => {
-            blocking_module_call("Bedrock node report", || {
-                Ok(adapters::blockchain_node_report())
-            })
-            .await
+        BedrockAdapter::Module { transport } => {
+            Ok(adapters::blockchain_node_report(module_transport, transport).await)
         }
     }
 }
@@ -212,6 +215,7 @@ pub(crate) async fn blocks(
     slot_from: u64,
     slot_to: u64,
     limit: Option<u64>,
+    module_transport: &SharedModuleTransport,
 ) -> Result<Value> {
     match adapter {
         BedrockAdapter::Rpc { endpoint } => match limit {
@@ -221,13 +225,21 @@ pub(crate) async fn blocks(
             }
             None => crate::blockchain::blockchain_blocks(endpoint, slot_from, slot_to).await,
         },
-        BedrockAdapter::Module => {
-            blocking_module_call("Bedrock blocks", move || match limit {
-                Some(limit) => adapters::blockchain_recent_blocks(slot_from, slot_to, limit),
-                None => adapters::blockchain_blocks(slot_from, slot_to),
-            })
-            .await
-        }
+        BedrockAdapter::Module { transport } => match limit {
+            Some(limit) => {
+                adapters::blockchain_recent_blocks(
+                    module_transport,
+                    transport,
+                    slot_from,
+                    slot_to,
+                    limit,
+                )
+                .await
+            }
+            None => {
+                adapters::blockchain_blocks(module_transport, transport, slot_from, slot_to).await
+            }
+        },
     }
 }
 
@@ -236,32 +248,37 @@ pub(crate) async fn live_blocks(
     slot_from: u64,
     slot_to: u64,
     limit: u64,
+    module_transport: &SharedModuleTransport,
 ) -> Result<BlockchainLiveBlocksReport> {
     match adapter {
         BedrockAdapter::Rpc { endpoint } => {
             crate::blockchain::blockchain_live_blocks_snapshot(endpoint, slot_from, slot_to, limit)
                 .await
         }
-        BedrockAdapter::Module => {
-            blocking_module_call("Bedrock live blocks", move || {
-                adapters::blockchain_live_blocks_snapshot(slot_from, slot_to, limit)
-            })
+        BedrockAdapter::Module { transport } => {
+            adapters::blockchain_live_blocks_snapshot(
+                module_transport,
+                transport,
+                slot_from,
+                slot_to,
+                limit,
+            )
             .await
         }
     }
 }
 
-pub(crate) async fn block(adapter: BedrockAdapter<'_>, block_id: &str) -> Result<Value> {
+pub(crate) async fn block(
+    adapter: BedrockAdapter<'_>,
+    block_id: &str,
+    module_transport: &SharedModuleTransport,
+) -> Result<Value> {
     match adapter {
         BedrockAdapter::Rpc { endpoint } => {
             crate::blockchain::blockchain_block(endpoint, block_id).await
         }
-        BedrockAdapter::Module => {
-            let block_id = block_id.to_owned();
-            blocking_module_call("Bedrock block", move || {
-                adapters::blockchain_block(&block_id)
-            })
-            .await
+        BedrockAdapter::Module { transport } => {
+            adapters::blockchain_block(module_transport, transport, block_id).await
         }
     }
 }
@@ -269,17 +286,14 @@ pub(crate) async fn block(adapter: BedrockAdapter<'_>, block_id: &str) -> Result
 pub(crate) async fn transaction(
     adapter: BedrockAdapter<'_>,
     transaction_id: &str,
+    module_transport: &SharedModuleTransport,
 ) -> Result<Value> {
     match adapter {
         BedrockAdapter::Rpc { endpoint } => {
             crate::blockchain::blockchain_transaction(endpoint, transaction_id).await
         }
-        BedrockAdapter::Module => {
-            let transaction_id = transaction_id.to_owned();
-            blocking_module_call("Bedrock transaction", move || {
-                adapters::blockchain_transaction(&transaction_id)
-            })
-            .await
+        BedrockAdapter::Module { transport } => {
+            adapters::blockchain_transaction(module_transport, transport, transaction_id).await
         }
     }
 }
@@ -359,16 +373,6 @@ pub(crate) async fn catalog_block(
         .await
 }
 
-async fn blocking_module_call<T, F>(label: &'static str, call: F) -> Result<T>
-where
-    T: Send + 'static,
-    F: FnOnce() -> Result<T> + Send + 'static,
-{
-    tokio::task::spawn_blocking(call)
-        .await
-        .with_context(|| format!("{label} worker failed"))?
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -399,6 +403,11 @@ mod tests {
                 endpoint: "http://bedrock"
             }
         );
-        assert_eq!(BedrockAdapter::module(), BedrockAdapter::Module);
+        assert_eq!(
+            BedrockAdapter::module(ModuleTransportKind::Module),
+            BedrockAdapter::Module {
+                transport: ModuleTransportKind::Module
+            }
+        );
     }
 }

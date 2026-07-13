@@ -1,4 +1,3 @@
-use anyhow::{Context as _, Result};
 use serde_json::{Value, json};
 
 use crate::source_routing::adapter::SourceModePolicy;
@@ -107,16 +106,6 @@ pub(super) fn map_read_error(error: anyhow::Error) -> ExecutionZoneReadError {
         ExecutionZoneReadErrorKind::Unavailable
     };
     ExecutionZoneReadError { kind }
-}
-
-pub(super) async fn blocking_module_call<T, F>(label: &'static str, call: F) -> Result<T>
-where
-    T: Send + 'static,
-    F: FnOnce() -> Result<T> + Send + 'static,
-{
-    tokio::task::spawn_blocking(call)
-        .await
-        .with_context(|| format!("{label} worker failed"))?
 }
 
 #[cfg(test)]

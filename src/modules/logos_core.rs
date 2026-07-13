@@ -1,12 +1,15 @@
 use std::{
     env, fs,
+    future::Future,
     path::{Path, PathBuf},
+    pin::Pin,
     process::Command,
+    sync::Arc,
     time::Duration,
 };
 
 use anyhow::{Context as _, Result, bail};
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 use serde_json::Value;
 use tempfile::TempDir;
 
@@ -59,8 +62,190 @@ impl LogoscoreModuleDiscovery {
     }
 }
 
-pub trait ModuleTransport {
-    fn call(&self, module: &str, method: &str, args: &[String]) -> Result<Value>;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModuleTransportKind {
+    Module,
+    LogoscoreCli,
+}
+
+impl ModuleTransportKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Module => "module",
+            Self::LogoscoreCli => "logoscore_cli",
+        }
+    }
+}
+
+impl Serialize for ModuleTransportKind {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModuleCall {
+    transport: ModuleTransportKind,
+    module: String,
+    method: String,
+    args: Vec<Value>,
+}
+
+impl ModuleCall {
+    pub fn new(
+        transport: ModuleTransportKind,
+        module: impl Into<String>,
+        method: impl Into<String>,
+        args: Vec<Value>,
+    ) -> Result<Self> {
+        let module = module.into();
+        let method = method.into();
+        if module.trim().is_empty() {
+            bail!("module name is required");
+        }
+        if method.trim().is_empty() {
+            bail!("method name is required");
+        }
+        Ok(Self {
+            transport,
+            module,
+            method,
+            args,
+        })
+    }
+
+    #[must_use]
+    pub const fn transport(&self) -> ModuleTransportKind {
+        self.transport
+    }
+
+    #[must_use]
+    pub fn module(&self) -> &str {
+        &self.module
+    }
+
+    #[must_use]
+    pub fn method(&self) -> &str {
+        &self.method
+    }
+
+    #[must_use]
+    pub fn args(&self) -> &[Value] {
+        &self.args
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModuleCallReply {
+    transport: ModuleTransportKind,
+    value: Value,
+}
+
+impl ModuleCallReply {
+    #[must_use]
+    pub const fn new(transport: ModuleTransportKind, value: Value) -> Self {
+        Self { transport, value }
+    }
+
+    #[must_use]
+    pub const fn transport(&self) -> ModuleTransportKind {
+        self.transport
+    }
+
+    #[must_use]
+    pub fn into_value(self) -> Value {
+        self.value
+    }
+}
+
+pub type ModuleCallFuture<'a> = Pin<Box<dyn Future<Output = Result<ModuleCallReply>> + Send + 'a>>;
+pub type ModuleDiagnosticFuture<'a> = Pin<Box<dyn Future<Output = Result<Value>> + Send + 'a>>;
+pub type SharedModuleTransport = Arc<dyn ModuleTransport>;
+
+pub trait ModuleTransport: Send + Sync {
+    fn kind(&self) -> ModuleTransportKind;
+
+    fn call(&self, call: ModuleCall) -> ModuleCallFuture<'_>;
+
+    fn status(&self) -> ModuleDiagnosticFuture<'_> {
+        let adapter = self.kind();
+        Box::pin(async move {
+            Ok(unsupported_diagnostic(
+                adapter,
+                "transport status is unavailable through this adapter",
+            ))
+        })
+    }
+
+    fn module_info(&self, module: String) -> ModuleDiagnosticFuture<'_> {
+        let adapter = self.kind();
+        Box::pin(async move {
+            Ok(unsupported_diagnostic(
+                adapter,
+                format!("module metadata for `{module}` is unavailable through this adapter"),
+            ))
+        })
+    }
+}
+
+fn unsupported_diagnostic(adapter: ModuleTransportKind, reason: impl Into<String>) -> Value {
+    serde_json::json!({
+        "supported": false,
+        "adapter": adapter,
+        "reason": reason.into(),
+    })
+}
+
+#[derive(Debug, Clone)]
+pub struct UnavailableModuleTransport {
+    reason: String,
+}
+
+impl UnavailableModuleTransport {
+    #[must_use]
+    pub fn basecamp_protocol_gate() -> Self {
+        Self {
+            reason: "Basecamp host module transport is unavailable: the pinned protocol does not provide safe async error and close semantics".to_owned(),
+        }
+    }
+}
+
+impl ModuleTransport for UnavailableModuleTransport {
+    fn kind(&self) -> ModuleTransportKind {
+        ModuleTransportKind::Module
+    }
+
+    fn call(&self, _call: ModuleCall) -> ModuleCallFuture<'_> {
+        Box::pin(async move { bail!(self.reason.clone()) })
+    }
+}
+
+pub async fn dispatch_module_call(
+    transport: &dyn ModuleTransport,
+    call: ModuleCall,
+) -> Result<ModuleCallReply> {
+    let expected = call.transport();
+    let actual = transport.kind();
+    if expected != actual {
+        bail!(
+            "resolved module transport `{}` is unavailable; active transport is `{}`",
+            expected.as_str(),
+            actual.as_str()
+        );
+    }
+    let reply = transport.call(call).await?;
+    if reply.transport() != actual {
+        bail!(
+            "module transport `{}` returned reply identity `{}`",
+            actual.as_str(),
+            reply.transport().as_str()
+        );
+    }
+    Ok(reply)
 }
 
 #[derive(Debug, Clone)]
@@ -76,17 +261,67 @@ impl Default for LogoscoreCliTransport {
     }
 }
 
-impl LogoscoreCliTransport {
-    #[must_use]
-    fn from_runtime(runtime: LogoscoreCliRuntime) -> Self {
-        Self { runtime }
-    }
-}
-
 impl ModuleTransport for LogoscoreCliTransport {
-    fn call(&self, module: &str, method: &str, args: &[String]) -> Result<Value> {
-        serde_json::to_value(self.runtime.call(module, method, args)?)
-            .context("failed to serialize logoscore call output")
+    fn kind(&self) -> ModuleTransportKind {
+        ModuleTransportKind::LogoscoreCli
+    }
+
+    fn call(&self, call: ModuleCall) -> ModuleCallFuture<'_> {
+        let runtime = self.runtime.clone();
+        Box::pin(async move {
+            let transport = call.transport();
+            if transport != ModuleTransportKind::LogoscoreCli {
+                bail!(
+                    "LogosCore CLI transport cannot execute `{}` calls",
+                    transport.as_str()
+                );
+            }
+            let module = call.module().to_owned();
+            let method = call.method().to_owned();
+            let args = call
+                .args()
+                .iter()
+                .cloned()
+                .map(|value| match value {
+                    Value::String(value) => value,
+                    value => value.to_string(),
+                })
+                .collect::<Vec<_>>();
+            let module_label = module.clone();
+            let method_label = method.clone();
+            let output = tokio::task::spawn_blocking(move || runtime.call(&module, &method, &args))
+                .await
+                .context("LogosCore CLI module-call worker failed")??;
+            let value = normalize_module_call_value(&module_label, &method_label, output.value)?;
+            Ok(ModuleCallReply::new(
+                ModuleTransportKind::LogoscoreCli,
+                value,
+            ))
+        })
+    }
+
+    fn status(&self) -> ModuleDiagnosticFuture<'_> {
+        let runtime = self.runtime.clone();
+        Box::pin(async move {
+            let output = tokio::task::spawn_blocking(move || runtime.status())
+                .await
+                .context("LogosCore CLI status worker failed")??;
+            serde_json::to_value(output).context("failed to serialize LogosCore CLI status")
+        })
+    }
+
+    fn module_info(&self, module: String) -> ModuleDiagnosticFuture<'_> {
+        let runtime = self.runtime.clone();
+        Box::pin(async move {
+            let module_label = module.clone();
+            let output = tokio::task::spawn_blocking(move || runtime.module_info(&module))
+                .await
+                .with_context(|| {
+                    format!("LogosCore CLI module-info worker failed for `{module_label}`")
+                })??;
+            serde_json::to_value(output)
+                .with_context(|| format!("failed to serialize module info for `{module_label}`"))
+        })
     }
 }
 
@@ -195,7 +430,8 @@ impl LogoscoreCliRuntime {
         args: &[String],
     ) -> Result<Value> {
         self.require_module_method(module, method, signature)?;
-        LogoscoreCliTransport::from_runtime(self.clone()).call(module, method, args)
+        serde_json::to_value(self.call(module, method, args)?)
+            .context("failed to serialize logoscore call output")
     }
 
     #[must_use]
@@ -578,10 +814,243 @@ fn normalize_call_value(value: &mut Value) {
     *call_value = parsed;
 }
 
+pub(crate) fn normalize_module_call_value(
+    module: &str,
+    method: &str,
+    value: Value,
+) -> Result<Value> {
+    let status = value
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if !status.is_empty() && status != "ok" {
+        bail!(
+            "{module}.{method} returned status `{status}`: {}",
+            crate::response_excerpt(&value.to_string())
+        );
+    }
+
+    let Some(result) = value.get("result") else {
+        return Ok(parse_module_json_string(value));
+    };
+    if let Some(object) = result.as_object()
+        && let Some(success) = object.get("success").and_then(Value::as_bool)
+    {
+        if !success {
+            let error = object
+                .get("error")
+                .map(module_value_error_text)
+                .filter(|error| !error.is_empty())
+                .unwrap_or_else(|| "module call failed".to_owned());
+            bail!("{module}.{method} failed: {error}");
+        }
+        return Ok(object
+            .get("value")
+            .cloned()
+            .map(parse_module_json_string)
+            .unwrap_or(Value::Null));
+    }
+    Ok(parse_module_json_string(result.clone()))
+}
+
+fn parse_module_json_string(value: Value) -> Value {
+    let Value::String(text) = value else {
+        return value;
+    };
+    let trimmed = text.trim();
+    if !(trimmed.starts_with('{') || trimmed.starts_with('[')) {
+        return Value::String(text);
+    }
+    serde_json::from_str(trimmed).unwrap_or(Value::String(text))
+}
+
+fn module_value_error_text(value: &Value) -> String {
+    match value {
+        Value::String(value) => value.clone(),
+        Value::Null => String::new(),
+        value => value.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
+
     use super::*;
     use serde_json::json;
+
+    struct RecordingTransport {
+        kind: ModuleTransportKind,
+        reply_kind: ModuleTransportKind,
+        calls: AtomicUsize,
+        last_call: Mutex<Option<ModuleCall>>,
+    }
+
+    impl RecordingTransport {
+        fn new(kind: ModuleTransportKind, reply_kind: ModuleTransportKind) -> Self {
+            Self {
+                kind,
+                reply_kind,
+                calls: AtomicUsize::new(0),
+                last_call: Mutex::new(None),
+            }
+        }
+    }
+
+    impl ModuleTransport for RecordingTransport {
+        fn kind(&self) -> ModuleTransportKind {
+            self.kind
+        }
+
+        fn call(&self, call: ModuleCall) -> ModuleCallFuture<'_> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            if let Ok(mut last_call) = self.last_call.lock() {
+                *last_call = Some(call.clone());
+            }
+            let reply_kind = self.reply_kind;
+            Box::pin(async move {
+                Ok(ModuleCallReply::new(
+                    reply_kind,
+                    json!({
+                        "module": call.module(),
+                        "method": call.method(),
+                        "args": call.args(),
+                    }),
+                ))
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_preserves_json_arguments_and_transport_identity() -> Result<()> {
+        let transport = RecordingTransport::new(
+            ModuleTransportKind::LogoscoreCli,
+            ModuleTransportKind::LogoscoreCli,
+        );
+        let args = vec![json!({ "nested": [true, 7] }), json!("0")];
+        let call = ModuleCall::new(
+            ModuleTransportKind::LogoscoreCli,
+            "storage_module",
+            "get",
+            args.clone(),
+        )?;
+
+        let reply = dispatch_module_call(&transport, call).await?;
+
+        anyhow::ensure!(reply.transport() == ModuleTransportKind::LogoscoreCli);
+        anyhow::ensure!(reply.into_value().get("args") == Some(&json!(args)));
+        let recorded = transport
+            .last_call
+            .lock()
+            .map_err(|error| anyhow::anyhow!("recording transport lock failed: {error}"))?
+            .clone()
+            .context("recording transport did not receive call")?;
+        anyhow::ensure!(recorded.transport() == ModuleTransportKind::LogoscoreCli);
+        anyhow::ensure!(recorded.args() == args);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn dispatch_rejects_transport_mismatch_before_invocation() -> Result<()> {
+        let transport = RecordingTransport::new(
+            ModuleTransportKind::LogoscoreCli,
+            ModuleTransportKind::LogoscoreCli,
+        );
+        let call = ModuleCall::new(ModuleTransportKind::Module, "storage_module", "get", vec![])?;
+
+        let Err(error) = dispatch_module_call(&transport, call).await else {
+            bail!("transport mismatch unexpectedly succeeded");
+        };
+
+        anyhow::ensure!(
+            error
+                .to_string()
+                .contains("resolved module transport `module` is unavailable")
+        );
+        anyhow::ensure!(transport.calls.load(Ordering::Relaxed) == 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn dispatch_rejects_reply_identity_mismatch() -> Result<()> {
+        let transport = RecordingTransport::new(
+            ModuleTransportKind::LogoscoreCli,
+            ModuleTransportKind::Module,
+        );
+        let call = ModuleCall::new(
+            ModuleTransportKind::LogoscoreCli,
+            "storage_module",
+            "get",
+            vec![],
+        )?;
+
+        let Err(error) = dispatch_module_call(&transport, call).await else {
+            bail!("reply identity mismatch unexpectedly succeeded");
+        };
+
+        anyhow::ensure!(
+            error
+                .to_string()
+                .contains("returned reply identity `module`")
+        );
+        anyhow::ensure!(transport.calls.load(Ordering::Relaxed) == 1);
+        Ok(())
+    }
+
+    #[test]
+    fn module_call_value_unwraps_logos_result_json_string() -> Result<()> {
+        let value = normalize_module_call_value(
+            "module",
+            "method",
+            json!({
+                "status": "ok",
+                "result": {
+                    "success": true,
+                    "value": "{\"slot\":7}",
+                    "error": null
+                }
+            }),
+        )?;
+
+        anyhow::ensure!(value.get("slot").and_then(Value::as_u64) == Some(7));
+        Ok(())
+    }
+
+    #[test]
+    fn module_call_value_unwraps_plain_json_string_result() -> Result<()> {
+        let value = normalize_module_call_value(
+            "module",
+            "method",
+            json!({
+                "status": "ok",
+                "result": "[{\"id\":1}]"
+            }),
+        )?;
+
+        anyhow::ensure!(value.as_array().map(Vec::len) == Some(1));
+        Ok(())
+    }
+
+    #[test]
+    fn module_call_value_reports_module_failure() {
+        let result = normalize_module_call_value(
+            "module",
+            "method",
+            json!({
+                "status": "ok",
+                "result": {
+                    "success": false,
+                    "value": null,
+                    "error": "not started"
+                }
+            }),
+        );
+
+        assert!(result.is_err_and(|error| error.to_string().contains("not started")));
+    }
 
     #[test]
     fn normalizes_nested_json_call_value() {

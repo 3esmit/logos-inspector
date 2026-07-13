@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 
 use crate::{
     modules::ModuleReport,
-    modules::logos_core::LogoscoreCliRuntime,
+    modules::logos_core::{LogoscoreCliRuntime, ModuleTransportKind, SharedModuleTransport},
     source_routing::{
         DEFAULT_STORAGE_METRICS_ENDPOINT, DEFAULT_STORAGE_REST_ENDPOINT,
         adapter::{
@@ -276,7 +276,9 @@ pub(crate) const STORAGE_SOURCE_MODES: &[SourceModePolicy] = &[
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StorageAdapter<'a> {
-    Module,
+    Module {
+        transport: ModuleTransportKind,
+    },
     Rest {
         endpoint: &'a str,
         metrics_endpoint: Option<&'a str>,
@@ -314,8 +316,8 @@ struct StorageReportOptions {
 
 impl<'a> StorageAdapter<'a> {
     #[must_use]
-    pub(crate) const fn module() -> Self {
-        Self::Module
+    pub(crate) const fn module(transport: ModuleTransportKind) -> Self {
+        Self::Module { transport }
     }
 
     #[must_use]
@@ -338,8 +340,12 @@ impl<'a> StorageAdapter<'a> {
         metrics_endpoint: Option<&'a str>,
     ) -> Self {
         match crate::source_routing::StorageSourceMode::from_token(source_mode) {
-            crate::source_routing::StorageSourceMode::Module
-            | crate::source_routing::StorageSourceMode::LogoscoreCli => Self::module(),
+            crate::source_routing::StorageSourceMode::Module => {
+                Self::module(ModuleTransportKind::Module)
+            }
+            crate::source_routing::StorageSourceMode::LogoscoreCli => {
+                Self::module(ModuleTransportKind::LogoscoreCli)
+            }
             crate::source_routing::StorageSourceMode::Rest => Self::rest(
                 present(rest_endpoint).unwrap_or(DEFAULT_STORAGE_REST_ENDPOINT),
                 present(metrics_endpoint),
@@ -381,9 +387,13 @@ fn present(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
 }
 
-#[must_use]
-pub(crate) fn module_report(cid: Option<&str>, privileged_debug_enabled: bool) -> ModuleReport {
-    crate::modules::storage_report(cid, privileged_debug_enabled)
+pub(crate) async fn module_report(
+    module_transport: &SharedModuleTransport,
+    transport: ModuleTransportKind,
+    cid: Option<&str>,
+    privileged_debug_enabled: bool,
+) -> ModuleReport {
+    crate::modules::storage_report(module_transport, transport, cid, privileged_debug_enabled).await
 }
 
 #[cfg(test)]
@@ -433,7 +443,7 @@ mod tests {
     fn storage_endpoint_adapters_satisfy_shared_behavior_contract() {
         assert_endpoint_adapter_contract("storage", STORAGE_SOURCE_MODES, |mode, rest, metrics| {
             match StorageAdapter::select(mode, rest, metrics) {
-                StorageAdapter::Module => EndpointAdapterBehavior::Module {
+                StorageAdapter::Module { .. } => EndpointAdapterBehavior::Module {
                     module_id: module_id(),
                 },
                 StorageAdapter::Rest {
@@ -456,7 +466,18 @@ mod tests {
 
     #[test]
     fn storage_adapter_initializers_only_take_supported_inputs() {
-        assert_eq!(StorageAdapter::module(), StorageAdapter::Module);
+        assert_eq!(
+            StorageAdapter::module(ModuleTransportKind::Module),
+            StorageAdapter::Module {
+                transport: ModuleTransportKind::Module
+            }
+        );
+        assert_eq!(
+            StorageAdapter::select("logoscore_cli", None, None),
+            StorageAdapter::Module {
+                transport: ModuleTransportKind::LogoscoreCli
+            }
+        );
         assert_eq!(
             StorageAdapter::metrics("http://metrics"),
             StorageAdapter::Metrics {

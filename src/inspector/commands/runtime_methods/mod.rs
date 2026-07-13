@@ -4,6 +4,8 @@ use anyhow::Result;
 use serde_json::Value;
 use tokio::runtime::Runtime;
 
+use crate::modules::logos_core::SharedModuleTransport;
+
 mod decode;
 mod local_nodes;
 mod module_reports;
@@ -44,16 +46,34 @@ impl RuntimeMethodEntry {
         }
     }
 
+    pub(super) const fn with_module_transport(
+        name: &'static str,
+        handler: fn(&Runtime, Value, SharedModuleTransport) -> Result<Value>,
+    ) -> Self {
+        Self {
+            name,
+            handler: RuntimeMethodHandler::WithModuleTransport(handler),
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn name(&self) -> &'static str {
         self.name
     }
 
-    pub(crate) fn execute(&self, runtime: &Runtime, args: Value) -> Result<Value> {
+    pub(crate) fn execute(
+        &self,
+        runtime: &Runtime,
+        args: Value,
+        module_transport: SharedModuleTransport,
+    ) -> Result<Value> {
         match self.handler {
             RuntimeMethodHandler::Sync(handler) => handler(args),
             RuntimeMethodHandler::WithRuntime(handler) => handler(runtime, args),
             RuntimeMethodHandler::NoArgs(handler) => handler(),
+            RuntimeMethodHandler::WithModuleTransport(handler) => {
+                handler(runtime, args, module_transport)
+            }
         }
     }
 }
@@ -80,6 +100,7 @@ enum RuntimeMethodHandler {
     Sync(fn(Value) -> Result<Value>),
     WithRuntime(fn(&Runtime, Value) -> Result<Value>),
     NoArgs(fn() -> Result<Value>),
+    WithModuleTransport(fn(&Runtime, Value, SharedModuleTransport) -> Result<Value>),
 }
 
 const RUNTIME_METHOD_CATALOGS: &[&[RuntimeMethodEntry]] = &[
@@ -108,8 +129,13 @@ pub(crate) fn lookup(method: &str) -> Option<&'static RuntimeMethodEntry> {
     runtime_method_entries().find(|entry| entry.name == method)
 }
 
-pub(crate) fn handle(runtime: &Runtime, entry: &RuntimeMethodEntry, args: Value) -> Result<Value> {
-    entry.execute(runtime, args)
+pub(crate) fn handle(
+    runtime: &Runtime,
+    entry: &RuntimeMethodEntry,
+    args: Value,
+    module_transport: SharedModuleTransport,
+) -> Result<Value> {
+    entry.execute(runtime, args, module_transport)
 }
 
 #[cfg(test)]

@@ -10,21 +10,30 @@ use crate::{
         indexer_account_report, summarize_account_transaction, summarize_indexer_status_response,
         verified_indexer_block_report, verified_indexer_transaction_summary,
     },
-    modules::logos_core,
-    response_excerpt,
+    modules::logos_core::{ModuleTransportKind, SharedModuleTransport},
 };
 
 pub(crate) const BLOCKCHAIN_MODULE: &str = "blockchain_module";
 pub(crate) const INDEXER_MODULE: &str = "lez_indexer_module";
 pub(crate) const LEZ_CORE_MODULE: &str = "lez_core";
 
-pub(crate) fn blockchain_node_report() -> BlockchainNodeReport {
+pub(crate) async fn blockchain_node_report(
+    transport: &SharedModuleTransport,
+    transport_kind: ModuleTransportKind,
+) -> BlockchainNodeReport {
     BlockchainNodeReport {
         endpoint: BLOCKCHAIN_MODULE.to_owned(),
         cryptarchia_info: ProbeReport::from_result(
             "cryptarchia info",
             "blockchain_module.get_cryptarchia_info",
-            call_value(BLOCKCHAIN_MODULE, "get_cryptarchia_info", &[]),
+            transport_call_value(
+                transport,
+                transport_kind,
+                BLOCKCHAIN_MODULE,
+                "get_cryptarchia_info",
+                Vec::new(),
+            )
+            .await,
         ),
         headers: ProbeReport::err(
             "headers",
@@ -44,26 +53,43 @@ pub(crate) fn blockchain_node_report() -> BlockchainNodeReport {
     }
 }
 
-pub(crate) fn blockchain_blocks(slot_from: u64, slot_to: u64) -> Result<Value> {
+pub(crate) async fn blockchain_blocks(
+    transport: &SharedModuleTransport,
+    transport_kind: ModuleTransportKind,
+    slot_from: u64,
+    slot_to: u64,
+) -> Result<Value> {
     validate_slot_range(slot_from, slot_to)?;
-    call_value(
+    transport_call_value(
+        transport,
+        transport_kind,
         BLOCKCHAIN_MODULE,
         "get_blocks",
-        &[slot_from.to_string(), slot_to.to_string()],
+        vec![json!(slot_from), json!(slot_to)],
     )
+    .await
 }
 
-pub(crate) fn blockchain_recent_blocks(slot_from: u64, slot_to: u64, limit: u64) -> Result<Value> {
-    let blocks = blockchain_blocks(slot_from, slot_to)?;
+pub(crate) async fn blockchain_recent_blocks(
+    transport: &SharedModuleTransport,
+    transport_kind: ModuleTransportKind,
+    slot_from: u64,
+    slot_to: u64,
+    limit: u64,
+) -> Result<Value> {
+    let blocks = blockchain_blocks(transport, transport_kind, slot_from, slot_to).await?;
     Ok(sort_and_limit_blocks(blocks, limit.clamp(1, 500)))
 }
 
-pub(crate) fn blockchain_live_blocks_snapshot(
+pub(crate) async fn blockchain_live_blocks_snapshot(
+    transport: &SharedModuleTransport,
+    transport_kind: ModuleTransportKind,
     slot_from: u64,
     slot_to: u64,
     limit: u64,
 ) -> Result<BlockchainLiveBlocksReport> {
-    let blocks = blockchain_recent_blocks(slot_from, slot_to, limit)?;
+    let blocks =
+        blockchain_recent_blocks(transport, transport_kind, slot_from, slot_to, limit).await?;
     Ok(BlockchainLiveBlocksReport {
         endpoint: BLOCKCHAIN_MODULE.to_owned(),
         source: "module_range".to_owned(),
@@ -72,72 +98,172 @@ pub(crate) fn blockchain_live_blocks_snapshot(
     })
 }
 
-pub(crate) fn blockchain_block(block_id: &str) -> Result<Value> {
+pub(crate) async fn blockchain_block(
+    transport: &SharedModuleTransport,
+    transport_kind: ModuleTransportKind,
+    block_id: &str,
+) -> Result<Value> {
     let block_id = required_text(block_id, "block id")?;
-    call_value(BLOCKCHAIN_MODULE, "get_block", &[block_id.to_owned()])
+    transport_call_value(
+        transport,
+        transport_kind,
+        BLOCKCHAIN_MODULE,
+        "get_block",
+        vec![json!(block_id)],
+    )
+    .await
 }
 
-pub(crate) fn blockchain_transaction(transaction_id: &str) -> Result<Value> {
+pub(crate) async fn blockchain_transaction(
+    transport: &SharedModuleTransport,
+    transport_kind: ModuleTransportKind,
+    transaction_id: &str,
+) -> Result<Value> {
     let transaction_id = required_text(transaction_id, "transaction id")?;
-    call_value(
+    transport_call_value(
+        transport,
+        transport_kind,
         BLOCKCHAIN_MODULE,
         "get_transaction",
-        &[transaction_id.to_owned()],
+        vec![json!(transaction_id)],
     )
+    .await
 }
 
-pub(crate) fn indexer_health() -> Result<Value> {
-    let status = indexer_status()?;
+async fn transport_call_value(
+    transport: &SharedModuleTransport,
+    transport_kind: ModuleTransportKind,
+    module: &str,
+    method: &str,
+    args: Vec<Value>,
+) -> Result<Value> {
+    crate::source_routing::shared::module_bridge::call_value(
+        transport,
+        transport_kind,
+        module,
+        method,
+        args,
+    )
+    .await
+    .map(|reply| reply.into_value())
+}
+
+pub(crate) async fn indexer_health(
+    transport: &SharedModuleTransport,
+    transport_kind: ModuleTransportKind,
+) -> Result<Value> {
+    let status = indexer_status(transport, transport_kind).await?;
     Ok(json!({
         "status": "healthy",
         "health": status,
     }))
 }
 
-fn indexer_status() -> Result<IndexerStatusReport> {
-    let value = call_value(INDEXER_MODULE, "getStatus", &[])?;
+async fn indexer_status(
+    transport: &SharedModuleTransport,
+    transport_kind: ModuleTransportKind,
+) -> Result<IndexerStatusReport> {
+    let value = transport_call_value(
+        transport,
+        transport_kind,
+        INDEXER_MODULE,
+        "getStatus",
+        Vec::new(),
+    )
+    .await?;
     Ok(summarize_indexer_status_response(&json!({
         "result": value,
     })))
 }
 
-pub(crate) fn indexer_finalized_head() -> Result<Value> {
-    call_value(INDEXER_MODULE, "getLastFinalizedBlockId", &[])
+pub(crate) async fn indexer_finalized_head(
+    transport: &SharedModuleTransport,
+    transport_kind: ModuleTransportKind,
+) -> Result<Value> {
+    transport_call_value(
+        transport,
+        transport_kind,
+        INDEXER_MODULE,
+        "getLastFinalizedBlockId",
+        Vec::new(),
+    )
+    .await
 }
 
-pub(crate) fn indexer_blocks(before: Option<u64>, limit: u64) -> Result<Vec<IndexerBlockReport>> {
+pub(crate) async fn indexer_blocks(
+    transport: &SharedModuleTransport,
+    transport_kind: ModuleTransportKind,
+    before: Option<u64>,
+    limit: u64,
+) -> Result<Vec<IndexerBlockReport>> {
     let before = before.map_or_else(String::new, |block_id| block_id.to_string());
-    let value = call_value(INDEXER_MODULE, "getBlocks", &[before, limit.to_string()])?;
+    let value = transport_call_value(
+        transport,
+        transport_kind,
+        INDEXER_MODULE,
+        "getBlocks",
+        vec![json!(before), json!(limit.to_string())],
+    )
+    .await?;
     let blocks = value
         .as_array()
         .context("getBlocks result was not an array")?;
     blocks.iter().map(verified_indexer_block_report).collect()
 }
 
-pub(crate) fn indexer_block_by_hash(header_hash: &str) -> Result<Option<IndexerBlockReport>> {
+pub(crate) async fn indexer_block_by_hash(
+    transport: &SharedModuleTransport,
+    transport_kind: ModuleTransportKind,
+    header_hash: &str,
+) -> Result<Option<IndexerBlockReport>> {
     let header_hash = required_text(header_hash, "block header hash")?;
-    let value = call_value(INDEXER_MODULE, "getBlockByHash", &[header_hash.to_owned()])?;
+    let value = transport_call_value(
+        transport,
+        transport_kind,
+        INDEXER_MODULE,
+        "getBlockByHash",
+        vec![json!(header_hash)],
+    )
+    .await?;
     if empty_module_lookup(&value) {
         return Ok(None);
     }
     Ok(Some(verified_indexer_block_report(&value)?))
 }
 
-pub(crate) fn indexer_block_by_id(block_id: u64) -> Result<Option<IndexerBlockReport>> {
-    let value = call_value(INDEXER_MODULE, "getBlockById", &[block_id.to_string()])?;
+pub(crate) async fn indexer_block_by_id(
+    transport: &SharedModuleTransport,
+    transport_kind: ModuleTransportKind,
+    block_id: u64,
+) -> Result<Option<IndexerBlockReport>> {
+    let value = transport_call_value(
+        transport,
+        transport_kind,
+        INDEXER_MODULE,
+        "getBlockById",
+        vec![json!(block_id.to_string())],
+    )
+    .await?;
     if empty_module_lookup(&value) {
         return Ok(None);
     }
     Ok(Some(verified_indexer_block_report(&value)?))
 }
 
-pub(crate) fn indexer_transaction(transaction_hash: &str) -> Result<Option<TransactionSummary>> {
+pub(crate) async fn indexer_transaction(
+    transport: &SharedModuleTransport,
+    transport_kind: ModuleTransportKind,
+    transaction_hash: &str,
+) -> Result<Option<TransactionSummary>> {
     let transaction_hash = required_text(transaction_hash, "transaction hash")?;
-    let value = call_value(
+    let value = transport_call_value(
+        transport,
+        transport_kind,
         INDEXER_MODULE,
         "getTransaction",
-        &[transaction_hash.to_owned()],
-    )?;
+        vec![json!(transaction_hash)],
+    )
+    .await?;
     if empty_module_lookup(&value) {
         return Ok(None);
     }
@@ -147,30 +273,47 @@ pub(crate) fn indexer_transaction(transaction_hash: &str) -> Result<Option<Trans
     )?))
 }
 
-pub(crate) fn indexer_account_at_block(account_id: &str, block_id: u64) -> Result<AccountReport> {
+pub(crate) async fn indexer_account_at_block(
+    transport: &SharedModuleTransport,
+    transport_kind: ModuleTransportKind,
+    account_id: &str,
+    block_id: u64,
+) -> Result<AccountReport> {
     let account_id = required_text(account_id, "account id")?;
-    let value = call_value(
+    let value = transport_call_value(
+        transport,
+        transport_kind,
         INDEXER_MODULE,
         "getAccountAtBlock",
-        &[account_id.to_owned(), block_id.to_string()],
-    )?;
+        vec![json!(account_id), json!(block_id.to_string())],
+    )
+    .await?;
     if empty_module_lookup(&value) {
         bail!("getAccountAtBlock returned no account");
     }
     indexer_account_report(&value, account_id)
 }
 
-pub(crate) fn account_transactions_by_account(
+pub(crate) async fn account_transactions_by_account(
+    transport: &SharedModuleTransport,
+    transport_kind: ModuleTransportKind,
     account_id: &str,
     offset: usize,
     limit: usize,
 ) -> Result<Vec<AccountTransactionSummary>> {
     let account_id = required_text(account_id, "account id")?;
-    let value = call_value(
+    let value = transport_call_value(
+        transport,
+        transport_kind,
         INDEXER_MODULE,
         "getTransactionsByAccount",
-        &[account_id.to_owned(), offset.to_string(), limit.to_string()],
-    )?;
+        vec![
+            json!(account_id),
+            json!(offset.to_string()),
+            json!(limit.to_string()),
+        ],
+    )
+    .await?;
     let transactions = value
         .as_array()
         .context("getTransactionsByAccount result was not an array")?;
@@ -181,65 +324,6 @@ pub(crate) fn account_transactions_by_account(
             summarize_account_transaction(transaction, offset + index, account_id)
         })
         .collect())
-}
-
-pub(crate) fn call_value(module: &str, method: &str, args: &[String]) -> Result<Value> {
-    let output = logos_core::call(module, method, args)?;
-    unwrap_call_output(module, method, output.value)
-}
-
-fn unwrap_call_output(module: &str, method: &str, value: Value) -> Result<Value> {
-    let status = value
-        .get("status")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    if !status.is_empty() && status != "ok" {
-        bail!(
-            "{module}.{method} returned status `{status}`: {}",
-            response_excerpt(&value.to_string())
-        );
-    }
-
-    let Some(result) = value.get("result") else {
-        return Ok(parse_json_string(value));
-    };
-    if let Some(object) = result.as_object()
-        && let Some(success) = object.get("success").and_then(Value::as_bool)
-    {
-        if !success {
-            let error = object
-                .get("error")
-                .map(value_error_text)
-                .filter(|error| !error.is_empty())
-                .unwrap_or_else(|| "module call failed".to_owned());
-            bail!("{module}.{method} failed: {error}");
-        }
-        return Ok(object
-            .get("value")
-            .cloned()
-            .map(parse_json_string)
-            .unwrap_or(Value::Null));
-    }
-    Ok(parse_json_string(result.clone()))
-}
-
-fn parse_json_string(value: Value) -> Value {
-    let Value::String(text) = value else {
-        return value;
-    };
-    let trimmed = text.trim();
-    if !(trimmed.starts_with('{') || trimmed.starts_with('[')) {
-        return Value::String(text);
-    }
-    serde_json::from_str(trimmed).unwrap_or(Value::String(text))
-}
-
-fn value_error_text(value: &Value) -> String {
-    match value {
-        Value::String(value) => value.clone(),
-        Value::Null => String::new(),
-        value => value.to_string(),
-    }
 }
 
 fn required_text<'a>(value: &'a str, label: &str) -> Result<&'a str> {
@@ -287,65 +371,4 @@ fn value_array(value: Value) -> Vec<Value> {
 
 fn empty_module_lookup(value: &Value) -> bool {
     value.is_null() || value.as_str().is_some_and(|value| value.trim().is_empty())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn unwraps_logos_result_json_string_value() -> Result<()> {
-        let value = unwrap_call_output(
-            "module",
-            "method",
-            json!({
-                "status": "ok",
-                "result": {
-                    "success": true,
-                    "value": "{\"slot\":7}",
-                    "error": null
-                }
-            }),
-        )?;
-
-        if value.get("slot").and_then(Value::as_u64) != Some(7) {
-            bail!("unexpected slot value: {value}");
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn unwraps_plain_qstring_json_result() -> Result<()> {
-        let value = unwrap_call_output(
-            "module",
-            "method",
-            json!({
-                "status": "ok",
-                "result": "[{\"id\":1}]"
-            }),
-        )?;
-
-        if value.as_array().map(Vec::len) != Some(1) {
-            bail!("unexpected array value: {value}");
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn unwrap_reports_module_failure() {
-        let result = unwrap_call_output(
-            "module",
-            "method",
-            json!({
-                "status": "ok",
-                "result": {
-                    "success": false,
-                    "value": null,
-                    "error": "not started"
-                }
-            }),
-        );
-
-        assert!(result.is_err_and(|error| error.to_string().contains("not started")));
-    }
 }

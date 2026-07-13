@@ -4,7 +4,8 @@ use tokio::runtime::Runtime;
 
 use crate::{
     modules::{
-        capabilities_report as inspect_capabilities_report, logoscore_status_report, modules_report,
+        capabilities_report as inspect_capabilities_report, logos_core::SharedModuleTransport,
+        logoscore_status_report, modules_report,
     },
     source_routing::{
         bedrock_layer, delivery_source_report as inspect_delivery_source_report, messaging_layer,
@@ -19,46 +20,79 @@ use super::RuntimeMethodEntry;
 
 pub(super) const METHOD_CATALOG: &[RuntimeMethodEntry] = &[
     RuntimeMethodEntry::no_args("sourcePolicy", source_policy),
-    RuntimeMethodEntry::no_args("modules", modules),
-    RuntimeMethodEntry::no_args("capabilitiesReport", capabilities_report),
-    RuntimeMethodEntry::no_args("logoscoreStatus", logoscore_status),
-    RuntimeMethodEntry::sync("blockchainModuleReport", blockchain_module_report),
-    RuntimeMethodEntry::sync("storageReport", storage_report),
-    RuntimeMethodEntry::with_runtime("storageSourceReport", storage_source_report),
-    RuntimeMethodEntry::sync("deliveryReport", delivery_report),
-    RuntimeMethodEntry::with_runtime("deliverySourceReport", delivery_source_report),
+    RuntimeMethodEntry::with_module_transport("modules", modules),
+    RuntimeMethodEntry::with_module_transport("capabilitiesReport", capabilities_report),
+    RuntimeMethodEntry::with_module_transport("logoscoreStatus", logoscore_status),
+    RuntimeMethodEntry::with_module_transport("blockchainModuleReport", blockchain_module_report),
+    RuntimeMethodEntry::with_module_transport("storageReport", storage_report),
+    RuntimeMethodEntry::with_module_transport("storageSourceReport", storage_source_report),
+    RuntimeMethodEntry::with_module_transport("deliveryReport", delivery_report),
+    RuntimeMethodEntry::with_module_transport("deliverySourceReport", delivery_source_report),
 ];
 
 pub(super) fn source_policy() -> Result<Value> {
     to_value(source_policy_report())
 }
 
-pub(super) fn modules() -> Result<Value> {
-    to_value(modules_report())
+pub(super) fn modules(
+    runtime: &Runtime,
+    _args: Value,
+    module_transport: SharedModuleTransport,
+) -> Result<Value> {
+    to_value(runtime.block_on(modules_report(&module_transport)))
 }
 
-pub(super) fn capabilities_report() -> Result<Value> {
-    to_value(inspect_capabilities_report())
+pub(super) fn capabilities_report(
+    runtime: &Runtime,
+    _args: Value,
+    module_transport: SharedModuleTransport,
+) -> Result<Value> {
+    let adapter = module_transport.kind();
+    to_value(runtime.block_on(inspect_capabilities_report(&module_transport, adapter)))
 }
 
-pub(super) fn logoscore_status() -> Result<Value> {
-    to_value(logoscore_status_report())
+pub(super) fn logoscore_status(
+    runtime: &Runtime,
+    _args: Value,
+    module_transport: SharedModuleTransport,
+) -> Result<Value> {
+    to_value(runtime.block_on(logoscore_status_report(&module_transport)))
 }
 
-pub(super) fn blockchain_module_report(args: Value) -> Result<Value> {
+pub(super) fn blockchain_module_report(
+    runtime: &Runtime,
+    args: Value,
+    module_transport: SharedModuleTransport,
+) -> Result<Value> {
     let args = Args::new(args)?;
-    to_value(bedrock_layer::diagnostic_report(args.optional_string(0)))
+    let adapter = module_transport.kind();
+    to_value(runtime.block_on(bedrock_layer::diagnostic_report(
+        &module_transport,
+        adapter,
+        args.optional_string(0),
+    )))
 }
 
-pub(super) fn storage_report(args: Value) -> Result<Value> {
+pub(super) fn storage_report(
+    runtime: &Runtime,
+    args: Value,
+    module_transport: SharedModuleTransport,
+) -> Result<Value> {
     let args = Args::new(args)?;
-    to_value(storage_layer::module_report(
+    let adapter = module_transport.kind();
+    to_value(runtime.block_on(storage_layer::module_report(
+        &module_transport,
+        adapter,
         args.optional_string(0),
         args.optional_bool(1),
-    ))
+    )))
 }
 
-pub(super) fn storage_source_report(runtime: &Runtime, args: Value) -> Result<Value> {
+pub(super) fn storage_source_report(
+    runtime: &Runtime,
+    args: Value,
+    module_transport: SharedModuleTransport,
+) -> Result<Value> {
     let args = Args::new(args)?;
     let inputs = storage_layer::report_inputs(&args)?;
     to_value(runtime.block_on(inspect_storage_source_report(
@@ -67,20 +101,35 @@ pub(super) fn storage_source_report(runtime: &Runtime, args: Value) -> Result<Va
         inputs.metrics_endpoint.as_deref(),
         inputs.cid.as_deref(),
         inputs.privileged_debug_enabled,
+        &module_transport,
     )))
 }
 
-pub(super) fn delivery_report(args: Value) -> Result<Value> {
+pub(super) fn delivery_report(
+    runtime: &Runtime,
+    args: Value,
+    module_transport: SharedModuleTransport,
+) -> Result<Value> {
     let args = Args::new(args)?;
-    to_value(messaging_layer::module_report(args.optional_string(0)))
+    let adapter = module_transport.kind();
+    to_value(runtime.block_on(messaging_layer::module_report(
+        &module_transport,
+        adapter,
+        args.optional_string(0),
+    )))
 }
 
-pub(super) fn delivery_source_report(runtime: &Runtime, args: Value) -> Result<Value> {
+pub(super) fn delivery_source_report(
+    runtime: &Runtime,
+    args: Value,
+    module_transport: SharedModuleTransport,
+) -> Result<Value> {
     let args = Args::new(args)?;
     let inputs = messaging_layer::report_inputs(&args)?;
     to_value(runtime.block_on(inspect_delivery_source_report(
         &inputs.source_mode,
         inputs.rest_endpoint.as_deref(),
         inputs.metrics_endpoint.as_deref(),
+        &module_transport,
     )))
 }

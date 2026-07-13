@@ -2,6 +2,7 @@ use anyhow::{Context as _, Result, bail};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
+use crate::modules::logos_core::{ModuleTransportKind, SharedModuleTransport};
 use crate::source_routing::{
     AdapterInitialization, DeliverySourceMode, ModuleCorrelation, ModuleDispatchIdentityRole,
     ModuleDispatchReceipt, ModuleEventCorrelationKind, ModuleTerminalEventContract,
@@ -39,7 +40,7 @@ impl DeliveryOperation {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum MessagingOperationAdapter {
-    Module,
+    Module(ModuleTransportKind),
     Rest { endpoint: String },
 }
 
@@ -81,8 +82,9 @@ impl DeliveryOperationRequest {
 
 pub(crate) async fn execute_operation(
     request: DeliveryOperationRequest,
+    module_transport: SharedModuleTransport,
 ) -> Result<NodeOperationOutcome> {
-    execute_plan(request.plan).await
+    execute_plan(request.plan, module_transport).await
 }
 
 #[cfg(test)]
@@ -93,6 +95,7 @@ pub(crate) fn store_query_url(endpoint: &str, query: DeliveryStoreQuery<'_>) -> 
 #[derive(Debug, Clone, PartialEq)]
 enum DeliveryOperationPlan {
     Module {
+        transport: ModuleTransportKind,
         method: &'static str,
         args: Vec<Value>,
         context: Vec<(&'static str, String)>,
@@ -173,8 +176,9 @@ fn operation_plan(
             let topic = required_text(payload.topic, "content topic")?;
             let subscribe = operation == DeliveryOperation::Subscribe;
             match adapter {
-                MessagingOperationAdapter::Module => Ok((
+                MessagingOperationAdapter::Module(transport) => Ok((
                     DeliveryOperationPlan::Module {
+                        transport,
                         method: if subscribe {
                             "subscribe"
                         } else {
@@ -206,8 +210,9 @@ fn operation_plan(
             let message = required_text(payload.payload, "message payload")?;
             let bytes = message.len().to_string();
             match adapter {
-                MessagingOperationAdapter::Module => Ok((
+                MessagingOperationAdapter::Module(transport) => Ok((
                     DeliveryOperationPlan::Module {
+                        transport,
                         method: "send",
                         args: vec![json!(topic), json!(message)],
                         context: vec![("contentTopic", topic.clone()), ("bytes", bytes.clone())],
@@ -236,6 +241,7 @@ fn operation_plan(
             let config = required_text(payload.config, "node config")?;
             Ok((
                 DeliveryOperationPlan::Module {
+                    transport: module_transport_kind(&adapter)?,
                     method: "createNode",
                     args: vec![json!(config)],
                     context: Vec::new(),
@@ -249,6 +255,7 @@ fn operation_plan(
             let _payload: EmptyPayload = request.payload("delivery node lifecycle")?;
             Ok((
                 DeliveryOperationPlan::Module {
+                    transport: module_transport_kind(&adapter)?,
                     method: if operation == DeliveryOperation::Start {
                         "start"
                     } else {
@@ -289,16 +296,21 @@ fn operation_plan(
     }
 }
 
-async fn execute_plan(plan: DeliveryOperationPlan) -> Result<NodeOperationOutcome> {
+async fn execute_plan(
+    plan: DeliveryOperationPlan,
+    module_transport: SharedModuleTransport,
+) -> Result<NodeOperationOutcome> {
     match plan {
         DeliveryOperationPlan::Module {
+            transport,
             method,
             args,
             context,
             dispatch,
         } => {
             execute_module_plan(
-                &ProductionDeliveryModuleTransport,
+                &module_transport,
+                transport,
                 method,
                 args,
                 context,
@@ -359,49 +371,16 @@ async fn execute_plan(plan: DeliveryOperationPlan) -> Result<NodeOperationOutcom
     }
 }
 
-trait DeliveryModuleTransport {
-    async fn call(&self, method: &'static str, args: Vec<Value>) -> Result<Value>;
-
-    async fn dispatch(
-        &self,
-        method: &'static str,
-        args: Vec<Value>,
-        context: Vec<(&'static str, String)>,
-        identity_role: ModuleDispatchIdentityRole,
-    ) -> Result<ModuleDispatchReceipt>;
-}
-
-struct ProductionDeliveryModuleTransport;
-
-impl DeliveryModuleTransport for ProductionDeliveryModuleTransport {
-    async fn call(&self, method: &'static str, args: Vec<Value>) -> Result<Value> {
-        transport::module_call(method, args).await
-    }
-
-    async fn dispatch(
-        &self,
-        method: &'static str,
-        args: Vec<Value>,
-        context: Vec<(&'static str, String)>,
-        identity_role: ModuleDispatchIdentityRole,
-    ) -> Result<ModuleDispatchReceipt> {
-        transport::module_dispatch(method, args, &context, identity_role).await
-    }
-}
-
-async fn execute_module_plan<T>(
-    transport: &T,
+async fn execute_module_plan(
+    transport: &SharedModuleTransport,
+    transport_kind: ModuleTransportKind,
     method: &'static str,
     args: Vec<Value>,
     context: Vec<(&'static str, String)>,
     dispatch: bool,
-) -> Result<NodeOperationOutcome>
-where
-    T: DeliveryModuleTransport,
-{
+) -> Result<NodeOperationOutcome> {
     if !dispatch {
-        return transport
-            .call(method, args)
+        return super::transport::module_call(transport, transport_kind, method, args)
             .await
             .map(NodeOperationOutcome::Completed);
     }
@@ -411,9 +390,15 @@ where
     } else {
         ModuleDispatchIdentityRole::None
     };
-    let receipt = transport
-        .dispatch(method, args, context, identity_role)
-        .await?;
+    let receipt = super::transport::module_dispatch(
+        transport,
+        transport_kind,
+        method,
+        args,
+        &context,
+        identity_role,
+    )
+    .await?;
     delivery_module_dispatch_outcome(method, receipt)
 }
 
@@ -423,8 +408,11 @@ pub(crate) async fn execute_module_adapter_fixture(
     dispatch: bool,
     value: Value,
 ) -> Result<NodeOperationOutcome> {
+    let transport: SharedModuleTransport =
+        std::sync::Arc::new(FakeDeliveryModuleTransport { value });
     execute_module_plan(
-        &FakeDeliveryModuleTransport { value },
+        &transport,
+        ModuleTransportKind::LogoscoreCli,
         method,
         Vec::new(),
         Vec::new(),
@@ -439,27 +427,21 @@ struct FakeDeliveryModuleTransport {
 }
 
 #[cfg(test)]
-impl DeliveryModuleTransport for FakeDeliveryModuleTransport {
-    async fn call(&self, _method: &'static str, _args: Vec<Value>) -> Result<Value> {
-        Ok(self.value.clone())
+impl crate::modules::logos_core::ModuleTransport for FakeDeliveryModuleTransport {
+    fn kind(&self) -> ModuleTransportKind {
+        ModuleTransportKind::LogoscoreCli
     }
 
-    async fn dispatch(
+    fn call(
         &self,
-        method: &'static str,
-        _args: Vec<Value>,
-        context: Vec<(&'static str, String)>,
-        identity_role: ModuleDispatchIdentityRole,
-    ) -> Result<ModuleDispatchReceipt> {
-        Ok(
-            crate::source_routing::shared::module_bridge::dispatch_result(
-                super::layer::module_id(),
-                method,
+        _call: crate::modules::logos_core::ModuleCall,
+    ) -> crate::modules::logos_core::ModuleCallFuture<'_> {
+        Box::pin(async move {
+            Ok(crate::modules::logos_core::ModuleCallReply::new(
+                ModuleTransportKind::LogoscoreCli,
                 self.value.clone(),
-                &context,
-                identity_role,
-            ),
-        )
+            ))
+        })
     }
 }
 
@@ -495,9 +477,12 @@ fn delivery_module_dispatch_outcome(
 fn parse_adapter(value: &Value) -> Result<MessagingOperationAdapter> {
     let initialization = AdapterInitialization::parse(value, MESSAGING_SOURCE_MODES, "rest")?;
     match DeliverySourceMode::from_token(initialization.source_mode()) {
-        DeliverySourceMode::Module | DeliverySourceMode::LogoscoreCli => {
-            Ok(MessagingOperationAdapter::Module)
-        }
+        DeliverySourceMode::Module => Ok(MessagingOperationAdapter::Module(
+            ModuleTransportKind::Module,
+        )),
+        DeliverySourceMode::LogoscoreCli => Ok(MessagingOperationAdapter::Module(
+            ModuleTransportKind::LogoscoreCli,
+        )),
         DeliverySourceMode::Rest => Ok(MessagingOperationAdapter::Rest {
             endpoint: initialization
                 .input("rest_endpoint")
@@ -518,10 +503,19 @@ fn parse_adapter(value: &Value) -> Result<MessagingOperationAdapter> {
 }
 
 fn require_module_adapter(adapter: &MessagingOperationAdapter) -> Result<()> {
-    if *adapter == MessagingOperationAdapter::Module {
+    if matches!(adapter, MessagingOperationAdapter::Module(_)) {
         return Ok(());
     }
     bail!("delivery node lifecycle actions require delivery module source")
+}
+
+fn module_transport_kind(adapter: &MessagingOperationAdapter) -> Result<ModuleTransportKind> {
+    match adapter {
+        MessagingOperationAdapter::Module(transport) => Ok(*transport),
+        MessagingOperationAdapter::Rest { .. } => {
+            bail!("delivery node lifecycle actions require delivery module source")
+        }
+    }
 }
 
 fn required_text(value: String, label: &str) -> Result<String> {
@@ -570,6 +564,7 @@ mod tests {
         let request = DeliveryOperationRequest::parse(&request, DeliveryOperation::Send)?;
 
         let expected = DeliveryOperationPlan::Module {
+            transport: ModuleTransportKind::Module,
             method: "send",
             args: vec![json!("/topic"), json!("hello")],
             context: vec![
@@ -579,6 +574,29 @@ mod tests {
             dispatch: true,
         };
         anyhow::ensure!(request.plan == expected, "unexpected Messaging send plan");
+        Ok(())
+    }
+
+    #[test]
+    fn logoscore_cli_send_plan_preserves_cli_transport() -> Result<()> {
+        let request = request(json!({
+            "adapter": { "source_mode": "logoscore_cli", "inputs": {} },
+            "mutating_enabled": true,
+            "payload": { "topic": "/topic", "payload": "hello" }
+        }))?;
+
+        let request = DeliveryOperationRequest::parse(&request, DeliveryOperation::Send)?;
+
+        anyhow::ensure!(
+            matches!(
+                request.plan,
+                DeliveryOperationPlan::Module {
+                    transport: ModuleTransportKind::LogoscoreCli,
+                    ..
+                }
+            ),
+            "Messaging LogosCore CLI plan lost transport identity"
+        );
         Ok(())
     }
 

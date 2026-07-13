@@ -54,6 +54,7 @@ pub enum CoreSourceMode {
 pub enum CoreEndpointMode {
     Rpc,
     Module,
+    LogoscoreCli,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -376,7 +377,8 @@ impl CoreSourceMode {
 
     pub fn effective(self) -> CoreEndpointMode {
         match self {
-            Self::Module | Self::LogoscoreCli => CoreEndpointMode::Module,
+            Self::Module => CoreEndpointMode::Module,
+            Self::LogoscoreCli => CoreEndpointMode::LogoscoreCli,
             Self::Rpc => CoreEndpointMode::Rpc,
         }
     }
@@ -387,6 +389,7 @@ impl CoreEndpointMode {
         match self {
             Self::Rpc => "rpc",
             Self::Module => "module",
+            Self::LogoscoreCli => "logoscore_cli",
         }
     }
 }
@@ -635,6 +638,12 @@ mod tests {
                 .map(CoreSourceMode::effective)
                 .map(CoreEndpointMode::as_str),
             Some("module")
+        );
+        assert_eq!(
+            CoreSourceMode::from_token("logoscore_cli")
+                .map(CoreSourceMode::effective)
+                .map(CoreEndpointMode::as_str),
+            Some("logoscore_cli")
         );
     }
 

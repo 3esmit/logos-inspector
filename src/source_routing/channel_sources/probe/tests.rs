@@ -178,7 +178,7 @@ async fn indexer_probe_exposes_only_indexer_facts() -> Result<()> {
 #[tokio::test]
 async fn sequencer_module_probe_is_explicitly_unsupported() -> Result<()> {
     let transport: Arc<dyn ChannelSourceProbeTransport> =
-        Arc::new(DefaultChannelSourceProbeTransport);
+        Arc::new(DefaultChannelSourceProbeTransport::default());
     let result = transport
         .sequencer_health(ChannelSourceTarget::Module {
             module_id: super::super::layer::module_id_for_role(

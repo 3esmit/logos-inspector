@@ -13,41 +13,56 @@ use super::commands::{
 use crate::{
     capabilities::{CapabilityBuildMode, CapabilityRegistry},
     inspection::catalog::DirectZoneCatalogWorker,
-    modules::logos_core::{LogoscoreCliTransport, ModuleTransport},
+    modules::logos_core::{
+        LogoscoreCliTransport, ModuleCall, ModuleTransport, SharedModuleTransport,
+        dispatch_module_call,
+    },
     support::args::Args,
 };
 
 pub(crate) const INSPECTOR_MODULE: &str = "logos_inspector";
 
-pub(crate) struct InspectorCommandSurface<T = LogoscoreCliTransport> {
+pub(crate) struct InspectorCommandSurface {
     operations: RuntimeOperationInterface,
-    module_transport: T,
+    module_transport: SharedModuleTransport,
     zone_catalog: Arc<ZoneCatalogCommandInterface>,
     zone_l2: ZoneL2CommandInterface,
     capability_registry: CapabilityRegistry,
     runtime: Runtime,
 }
 
-impl InspectorCommandSurface<LogoscoreCliTransport> {
+impl InspectorCommandSurface {
     pub(crate) fn new() -> Result<Self> {
         Self::with_module_transport(LogoscoreCliTransport::default())
     }
-}
 
-impl<T> InspectorCommandSurface<T>
-where
-    T: ModuleTransport,
-{
-    pub(crate) fn with_module_transport(module_transport: T) -> Result<Self> {
+    pub(crate) fn with_module_transport(
+        module_transport: impl ModuleTransport + 'static,
+    ) -> Result<Self> {
+        Self::with_shared_module_transport(Arc::new(module_transport))
+    }
+
+    pub(crate) fn with_shared_module_transport(
+        module_transport: SharedModuleTransport,
+    ) -> Result<Self> {
         let runtime = Runtime::new().context("failed to create tokio runtime")?;
+        let module_transport_kind = module_transport.kind();
         let catalog_worker = Arc::new(DirectZoneCatalogWorker::for_config_dir()?);
-        let zone_catalog = Arc::new(ZoneCatalogCommandInterface::with_worker(
-            &runtime,
-            catalog_worker,
-        ));
-        let zone_l2 = ZoneL2CommandInterface::new(zone_catalog.clone());
+        let zone_catalog = Arc::new(
+            ZoneCatalogCommandInterface::with_worker_and_module_transport(
+                &runtime,
+                catalog_worker,
+                Arc::clone(&module_transport),
+                module_transport_kind,
+            ),
+        );
+        let zone_l2 = ZoneL2CommandInterface::new(
+            zone_catalog.clone(),
+            Arc::clone(&module_transport),
+            module_transport_kind,
+        );
         Ok(Self {
-            operations: RuntimeOperationInterface::default(),
+            operations: RuntimeOperationInterface::new(Arc::clone(&module_transport)),
             module_transport,
             zone_catalog,
             zone_l2,
@@ -90,9 +105,13 @@ where
                 .operations
                 .bridge_call(&self.runtime, command, &args)
                 .map(Some),
-            InspectorCommand::Runtime(method) => {
-                runtime_methods::handle(&self.runtime, method, args).map(Some)
-            }
+            InspectorCommand::Runtime(method) => runtime_methods::handle(
+                &self.runtime,
+                method,
+                args,
+                Arc::clone(&self.module_transport),
+            )
+            .map(Some),
             InspectorCommand::ZoneCatalog(command) => self
                 .zone_catalog
                 .bridge_call(&self.runtime, command, &args)
@@ -126,16 +145,11 @@ where
     }
 
     fn call_transport(&self, module: &str, method: &str, args: Value) -> Result<Value> {
-        let args = Args::new(args)?
-            .iter()
-            .map(|value| {
-                value
-                    .as_str()
-                    .map(ToOwned::to_owned)
-                    .unwrap_or_else(|| value.to_string())
-            })
-            .collect::<Vec<_>>();
-        self.module_transport.call(module, method, &args)
+        let args = Args::new(args)?.iter().cloned().collect::<Vec<_>>();
+        let call = ModuleCall::new(self.module_transport.kind(), module, method, args)?;
+        self.runtime
+            .block_on(dispatch_module_call(self.module_transport.as_ref(), call))
+            .map(|reply| reply.into_value())
     }
 
     #[cfg(test)]
@@ -190,12 +204,24 @@ mod tests {
     struct FakeModuleTransport;
 
     impl ModuleTransport for FakeModuleTransport {
-        fn call(&self, module: &str, method: &str, args: &[String]) -> Result<Value> {
-            Ok(json!({
-                "module": module,
-                "method": method,
-                "args": args,
-            }))
+        fn kind(&self) -> crate::modules::logos_core::ModuleTransportKind {
+            crate::modules::logos_core::ModuleTransportKind::LogoscoreCli
+        }
+
+        fn call(
+            &self,
+            call: crate::modules::logos_core::ModuleCall,
+        ) -> crate::modules::logos_core::ModuleCallFuture<'_> {
+            Box::pin(async move {
+                Ok(crate::modules::logos_core::ModuleCallReply::new(
+                    crate::modules::logos_core::ModuleTransportKind::LogoscoreCli,
+                    json!({
+                        "module": call.module(),
+                        "method": call.method(),
+                        "args": call.args(),
+                    }),
+                ))
+            })
         }
     }
 

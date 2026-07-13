@@ -4,6 +4,9 @@ use serde_json::Value;
 use serde_json::json;
 
 use super::command_surface::{INSPECTOR_MODULE, InspectorCommandSurface};
+use crate::modules::logos_core::{
+    ModuleTransport, SharedModuleTransport, UnavailableModuleTransport,
+};
 #[cfg(test)]
 use crate::source_routing::{
     self, CoreEndpointMode, DEFAULT_DELIVERY_REST_ENDPOINT, DEFAULT_STORAGE_REST_ENDPOINT,
@@ -28,6 +31,34 @@ impl InspectorBridge {
         })
     }
 
+    /// Builds a bridge around one authoritative module transport.
+    ///
+    /// The transport future must complete without re-entering the thread that
+    /// invokes this synchronous bridge. This includes operation aliases that
+    /// wait through `RuntimeOperations::run_blocking`. Thread-affine host
+    /// transports require asynchronous bridge and operation entry points.
+    pub fn with_module_transport(module_transport: impl ModuleTransport + 'static) -> Result<Self> {
+        Ok(Self {
+            surface: InspectorCommandSurface::with_module_transport(module_transport)?,
+        })
+    }
+
+    /// Builds a bridge around one shared authoritative module transport.
+    ///
+    /// The transport future must complete without re-entering the thread that
+    /// invokes this synchronous bridge. This includes operation aliases that
+    /// wait through `RuntimeOperations::run_blocking`. Thread-affine host
+    /// transports require asynchronous bridge and operation entry points.
+    pub fn with_shared_module_transport(module_transport: SharedModuleTransport) -> Result<Self> {
+        Ok(Self {
+            surface: InspectorCommandSurface::with_shared_module_transport(module_transport)?,
+        })
+    }
+
+    pub fn basecamp_unavailable() -> Result<Self> {
+        Self::with_module_transport(UnavailableModuleTransport::basecamp_protocol_gate())
+    }
+
     pub fn call_module_json(&self, module: &str, method: &str, args_json: &str) -> String {
         let result = serde_json::from_str(args_json)
             .context("failed to parse bridge args")
@@ -50,6 +81,8 @@ impl InspectorBridge {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use anyhow::bail;
 
     use super::*;
@@ -57,6 +90,36 @@ mod tests {
         RuntimeOperationRequest, runtime_operation_request_from_value,
     };
     use crate::support::args::Args;
+
+    #[derive(Clone)]
+    struct RecordingModuleTransport {
+        calls: Arc<Mutex<Vec<crate::modules::logos_core::ModuleCall>>>,
+    }
+
+    impl crate::modules::logos_core::ModuleTransport for RecordingModuleTransport {
+        fn kind(&self) -> crate::modules::logos_core::ModuleTransportKind {
+            crate::modules::logos_core::ModuleTransportKind::Module
+        }
+
+        fn call(
+            &self,
+            call: crate::modules::logos_core::ModuleCall,
+        ) -> crate::modules::logos_core::ModuleCallFuture<'_> {
+            if let Ok(mut calls) = self.calls.lock() {
+                calls.push(call.clone());
+            }
+            let value = match call.method() {
+                "exists" => json!(true),
+                _ => json!({ "handled": call.method() }),
+            };
+            Box::pin(async move {
+                Ok(crate::modules::logos_core::ModuleCallReply::new(
+                    crate::modules::logos_core::ModuleTransportKind::Module,
+                    value,
+                ))
+            })
+        }
+    }
 
     fn storage_download_request(cid: &str, path: &str) -> Result<RuntimeOperationRequest> {
         runtime_operation_request_from_value(json!({
@@ -70,6 +133,64 @@ mod tests {
             "mutating_enabled": true,
             "label": "Storage download"
         }))
+    }
+
+    #[test]
+    fn direct_runtime_method_and_operation_calls_share_module_transport() -> Result<()> {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let bridge = InspectorBridge::with_module_transport(RecordingModuleTransport {
+            calls: Arc::clone(&calls),
+        })?;
+
+        let direct = bridge.call_module_value(
+            BLOCKCHAIN_MODULE,
+            "nodeInfo",
+            json!([{ "includePeers": true }]),
+        )?;
+        let exists = bridge.call_module_value(
+            INSPECTOR_MODULE,
+            "storageExists",
+            json!([{
+                "adapter": { "source_mode": "module", "inputs": {} },
+                "payload": { "cid": "cid-1" },
+                "mutating_enabled": false
+            }]),
+        )?;
+        let fetch = bridge.call_module_value(
+            INSPECTOR_MODULE,
+            "storageFetch",
+            json!([{
+                "adapter": { "source_mode": "module", "inputs": {} },
+                "payload": { "cid": "cid-2" },
+                "mutating_enabled": true
+            }]),
+        )?;
+
+        anyhow::ensure!(direct == json!({ "handled": "nodeInfo" }));
+        anyhow::ensure!(exists == json!(true));
+        anyhow::ensure!(fetch == json!({ "handled": "fetch" }));
+        let calls = calls
+            .lock()
+            .map_err(|error| anyhow::anyhow!("recorded call lock failed: {error}"))?;
+        let [direct_call, exists_call, fetch_call] = calls.as_slice() else {
+            bail!("expected three calls through shared seam: {calls:?}");
+        };
+        anyhow::ensure!(
+            direct_call.module() == BLOCKCHAIN_MODULE
+                && direct_call.method() == "nodeInfo"
+                && direct_call.args() == [json!({ "includePeers": true })]
+        );
+        anyhow::ensure!(
+            exists_call.module() == "storage_module"
+                && exists_call.method() == "exists"
+                && exists_call.args() == [json!("cid-1")]
+        );
+        anyhow::ensure!(
+            fetch_call.module() == "storage_module"
+                && fetch_call.method() == "fetch"
+                && fetch_call.args() == [json!("cid-2")]
+        );
+        Ok(())
     }
 
     #[test]

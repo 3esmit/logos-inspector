@@ -6,29 +6,49 @@ use serde_json::{Value, json};
 use tokio_util::io::ReaderStream;
 
 use crate::{
+    modules::logos_core::{ModuleTransportKind, SharedModuleTransport},
     source_routing::shared::{http, module_bridge},
     source_routing::{ModuleDispatchIdentityRole, ModuleDispatchReceipt},
     support::raw_source_transport::{request_bytes, request_success},
 };
 
-pub(super) async fn module_call(method: &'static str, args: Vec<Value>) -> Result<Value> {
-    blocking_module_call("Storage module call", move || {
-        module_bridge::call_value(super::layer::module_id(), method, &args)
-    })
+pub(super) async fn module_call(
+    transport: &SharedModuleTransport,
+    transport_kind: ModuleTransportKind,
+    method: &'static str,
+    args: Vec<Value>,
+) -> Result<Value> {
+    module_bridge::call_value(
+        transport,
+        transport_kind,
+        super::layer::module_id(),
+        method,
+        args,
+    )
     .await
+    .map(|reply| reply.into_value())
 }
 
 pub(super) async fn module_dispatch(
+    transport: &SharedModuleTransport,
+    transport_kind: ModuleTransportKind,
     method: &'static str,
     args: Vec<Value>,
     context: &[(&'static str, String)],
     identity_role: ModuleDispatchIdentityRole,
 ) -> Result<ModuleDispatchReceipt> {
-    let value = module_call(method, args).await?;
+    let reply = module_bridge::call_value(
+        transport,
+        transport_kind,
+        super::layer::module_id(),
+        method,
+        args,
+    )
+    .await?;
     Ok(module_bridge::dispatch_result(
         super::layer::module_id(),
         method,
-        value,
+        reply,
         context,
         identity_role,
     ))
@@ -174,16 +194,12 @@ fn module_upload_bytes_blocking(filename: &str, bytes: &[u8], block_size: u64) -
         "manifests",
         "manifests()",
     )?;
-    let manifests_before = crate::source_routing::shared::module_bridge::call_value(
-        super::layer::module_id(),
-        "manifests",
-        &[],
-    )?;
+    let manifests_before = logoscore_cli_call_value(super::layer::module_id(), "manifests", &[])?;
     let baseline_cids = manifest_cids(&manifests_before);
-    let session = crate::source_routing::shared::module_bridge::call_value(
+    let session = logoscore_cli_call_value(
         super::layer::module_id(),
         "uploadUrl",
-        &[json!(path), json!(block_size)],
+        &[path, block_size.to_string()],
     )?;
     let session_id = session
         .as_str()
@@ -193,11 +209,7 @@ fn module_upload_bytes_blocking(filename: &str, bytes: &[u8], block_size: u64) -
         .to_owned();
     let deadline = std::time::Instant::now() + Duration::from_secs(60);
     let cid = loop {
-        let manifests = crate::source_routing::shared::module_bridge::call_value(
-            super::layer::module_id(),
-            "manifests",
-            &[],
-        )?;
+        let manifests = logoscore_cli_call_value(super::layer::module_id(), "manifests", &[])?;
         if let Some(cid) = new_manifest_cid(&manifests, safe_filename, bytes.len(), &baseline_cids)
         {
             break cid;
@@ -215,6 +227,11 @@ fn module_upload_bytes_blocking(filename: &str, bytes: &[u8], block_size: u64) -
         "completion": "manifest_poll",
         "sessionId": session_id,
     }))
+}
+
+fn logoscore_cli_call_value(module: &str, method: &str, args: &[String]) -> Result<Value> {
+    let output = crate::modules::logos_core::call(module, method, args)?;
+    crate::modules::logos_core::normalize_module_call_value(module, method, output.value)
 }
 
 fn manifest_cids(manifests: &Value) -> HashSet<String> {

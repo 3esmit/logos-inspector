@@ -6,9 +6,9 @@ use super::{
 };
 use crate::{
     ProbeReport,
-    modules::ModuleReport,
+    modules::{ModuleReport, logos_core::SharedModuleTransport},
     source_routing::{
-        SourceProbeKey, SourceReport, StorageSourceReportKind,
+        AdapterConnectionType, SourceProbeKey, SourceReport, StorageSourceReportKind,
         shared::{
             evidence::SourceEvidence,
             http,
@@ -59,11 +59,12 @@ pub async fn storage_source_report(
     metrics_endpoint: Option<&str>,
     cid: Option<&str>,
     privileged_debug_enabled: bool,
+    module_transport: &SharedModuleTransport,
 ) -> SourceReport {
     match StorageAdapter::select(source_mode, rest_endpoint, metrics_endpoint) {
-        StorageAdapter::Module => module_source_report(
+        StorageAdapter::Module { transport } => module_source_report(
             SourceReportKind::Storage(StorageSourceReportKind::Module),
-            layer::module_report(cid, privileged_debug_enabled),
+            layer::module_report(module_transport, transport, cid, privileged_debug_enabled).await,
         ),
         StorageAdapter::Rest {
             endpoint,
@@ -124,9 +125,15 @@ fn storage_rest_probe_plan(
 }
 
 fn module_source_report(kind: SourceReportKind, report: ModuleReport) -> SourceReport {
+    let adapter = match report.adapter {
+        crate::modules::logos_core::ModuleTransportKind::Module => AdapterConnectionType::Module,
+        crate::modules::logos_core::ModuleTransportKind::LogoscoreCli => {
+            AdapterConnectionType::LogoscoreCli
+        }
+    };
     source_report_from_evidence(
         kind,
-        SourceEvidence::new(report.module, report.module_info, report.probes),
+        SourceEvidence::new(report.module, report.module_info, report.probes).with_adapter(adapter),
     )
 }
 
@@ -306,9 +313,40 @@ fn scalar_field(value: &Value, keys: &[&str]) -> Option<Value> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use anyhow::{Result, bail};
     use serde_json::json;
 
     use super::*;
+    use crate::modules::logos_core::ModuleTransportKind;
+
+    #[derive(Debug)]
+    struct RecordingBasecampTransport {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl crate::modules::logos_core::ModuleTransport for RecordingBasecampTransport {
+        fn kind(&self) -> ModuleTransportKind {
+            ModuleTransportKind::Module
+        }
+
+        fn call(
+            &self,
+            _call: crate::modules::logos_core::ModuleCall,
+        ) -> crate::modules::logos_core::ModuleCallFuture<'_> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async {
+                Ok(crate::modules::logos_core::ModuleCallReply::new(
+                    ModuleTransportKind::Module,
+                    json!({}),
+                ))
+            })
+        }
+    }
 
     #[test]
     fn rest_probe_plan_includes_optional_debug_and_cid_steps() {
@@ -344,7 +382,12 @@ mod tests {
     fn module_report_adapter_derives_source_facts_from_keyed_evidence() {
         let module_info = ProbeReport::ok("storage module", "module-info", json!({}))
             .with_probe_key(SourceProbeKey::StoragePeerId.as_str());
-        let report = ModuleReport::new("storage_module", module_info, Vec::new());
+        let report = ModuleReport::new(
+            ModuleTransportKind::Module,
+            "storage_module",
+            module_info,
+            Vec::new(),
+        );
 
         let source_report = module_source_report(
             SourceReportKind::Storage(StorageSourceReportKind::Module),
@@ -352,11 +395,59 @@ mod tests {
         );
 
         assert!(source_report.health.reachable);
+        assert_eq!(source_report.adapter, Some(AdapterConnectionType::Module));
         assert!(
             source_report
                 .probe_facts
                 .iter()
                 .any(|fact| fact.key == SourceProbeKey::StoragePeerId.as_str())
         );
+    }
+
+    #[tokio::test]
+    async fn logoscore_source_never_falls_back_when_basecamp_transport_is_active() -> Result<()> {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let module_transport: SharedModuleTransport = Arc::new(RecordingBasecampTransport {
+            calls: Arc::clone(&calls),
+        });
+
+        let report =
+            storage_source_report("logoscore_cli", None, None, None, false, &module_transport)
+                .await;
+
+        if report.adapter != Some(AdapterConnectionType::LogoscoreCli) {
+            bail!("source adapter identity was lost: {report:?}");
+        }
+        if calls.load(Ordering::SeqCst) != 0 {
+            bail!("mismatched source reached active Basecamp transport");
+        }
+        if report.probes.iter().any(|probe| probe.ok) {
+            bail!("mismatched source unexpectedly produced a successful probe: {report:?}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn healthy_basecamp_source_uses_live_module_version_as_identity() -> Result<()> {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let module_transport: SharedModuleTransport = Arc::new(RecordingBasecampTransport {
+            calls: Arc::clone(&calls),
+        });
+
+        let report =
+            storage_source_report("module", None, None, None, false, &module_transport).await;
+
+        if report.adapter != Some(AdapterConnectionType::Module)
+            || report.module_info.probe_key.as_deref()
+                != Some(SourceProbeKey::StorageModuleVersion.as_str())
+            || !report.health.reachable
+            || !report.health.ready
+        {
+            bail!("healthy Basecamp report was degraded by metadata handling: {report:?}");
+        }
+        if calls.load(Ordering::SeqCst) == 0 {
+            bail!("Basecamp report did not use injected transport");
+        }
+        Ok(())
     }
 }

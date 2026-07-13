@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-use crate::ProbeReport;
+use crate::{ProbeReport, source_routing::AdapterConnectionType};
 
 use crate::source_routing::{DeliverySourceReportKind, SourceProbeKey, StorageSourceReportKind};
 
@@ -11,6 +11,8 @@ use super::facts::{
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SourceReport {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub adapter: Option<AdapterConnectionType>,
     pub module: String,
     pub module_info: ProbeReport,
     pub probes: Vec<ProbeReport>,
@@ -21,12 +23,14 @@ pub struct SourceReport {
 
 impl SourceReport {
     fn new(
+        adapter: Option<AdapterConnectionType>,
         module: impl Into<String>,
         module_info: ProbeReport,
         probes: Vec<ProbeReport>,
         facts: SourceFacts,
     ) -> Self {
         Self {
+            adapter,
             module: module.into(),
             module_info,
             probes,
@@ -115,7 +119,8 @@ impl SourceReportBuilder {
     ) -> Self {
         Self {
             kind,
-            evidence: SourceEvidence::new(module, module_info, Vec::new()),
+            evidence: SourceEvidence::new(module, module_info, Vec::new())
+                .with_optional_adapter(default_adapter(kind)),
         }
     }
 
@@ -179,6 +184,7 @@ impl SourceReportBuilder {
     pub(crate) fn finish(self) -> SourceReport {
         let facts = self.source_facts();
         SourceReport::new(
+            self.evidence.adapter,
             self.evidence.module,
             self.evidence.module_info,
             self.evidence.probes,
@@ -188,6 +194,28 @@ impl SourceReportBuilder {
 
     fn source_facts(&self) -> SourceFacts {
         source_facts_for_report(self.kind, &self.evidence.module_info, &self.evidence.probes)
+    }
+}
+
+fn default_adapter(kind: SourceReportKind) -> Option<AdapterConnectionType> {
+    match kind {
+        SourceReportKind::Delivery(DeliverySourceReportKind::Rest)
+        | SourceReportKind::Storage(StorageSourceReportKind::Rest) => {
+            Some(AdapterConnectionType::Rest)
+        }
+        SourceReportKind::Delivery(DeliverySourceReportKind::Metrics)
+        | SourceReportKind::Storage(StorageSourceReportKind::Metrics) => {
+            Some(AdapterConnectionType::Metrics)
+        }
+        SourceReportKind::Delivery(DeliverySourceReportKind::NetworkMonitor) => {
+            Some(AdapterConnectionType::NetworkMonitor)
+        }
+        SourceReportKind::Delivery(
+            DeliverySourceReportKind::Module | DeliverySourceReportKind::Unsupported,
+        )
+        | SourceReportKind::Storage(
+            StorageSourceReportKind::Module | StorageSourceReportKind::Unsupported,
+        ) => None,
     }
 }
 
@@ -299,7 +327,12 @@ mod tests {
         .finish();
         let value = serde_json::to_value(report)?;
 
+        if value.get("adapter").and_then(serde_json::Value::as_str) != Some("rest") {
+            bail!("source adapter identity was not serialized: {value}");
+        }
+
         for key in [
+            "adapter",
             "module",
             "module_info",
             "probes",
@@ -310,6 +343,22 @@ mod tests {
             if value.get(key).is_none() {
                 bail!("source report missing `{key}`: {value}");
             }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unsupported_source_report_omits_absent_adapter_instead_of_null() -> Result<()> {
+        let report = unsupported_source_report(
+            "storage",
+            "storage",
+            SourceReportKind::Storage(StorageSourceReportKind::Unsupported),
+            "unknown",
+        );
+        let value = serde_json::to_value(report)?;
+
+        if value.get("adapter").is_some() {
+            bail!("unsupported source serialized an absent adapter: {value}");
         }
         Ok(())
     }
