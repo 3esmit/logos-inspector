@@ -162,35 +162,39 @@ function coreSourceArgs(root, sourceMode, endpoint, extra) {
 }
 
 function deliverySourceReportArgs(root, sourceMode, restEndpoint, metricsEndpoint) {
-    const effective = String(sourceModePolicy(root, "delivery", resolvedSourceModeKey(root, "delivery", sourceMode)).effective || "rest")
-    if (effective === "module") {
-        return [effective]
-    }
-    if (effective === "metrics") {
-        return [effective, String(metricsEndpoint || "")]
-    }
-    return [effective, String(restEndpoint || ""), String(metricsEndpoint || "")]
+    return [adapterInitialization(root, "delivery", sourceMode, {
+        rest_endpoint: String(restEndpoint || ""),
+        metrics_endpoint: String(metricsEndpoint || "")
+    })]
 }
 
 function storageSourceReportArgs(root, sourceMode, restEndpoint, metricsEndpoint, cid, includeCidProbe, privilegedDebugEnabled) {
-    const effective = String(sourceModePolicy(root, "storage", resolvedSourceModeKey(root, "storage", sourceMode)).effective || "rest")
-    if (effective === "module") {
-        return [
-            effective,
-            includeCidProbe === true && sourceModeSupportsCidProbe(root, "storage", sourceMode) ? String(cid || "") : "",
-            privilegedDebugEnabled === true
-        ]
+    const initialization = adapterInitialization(root, "storage", sourceMode, {
+        rest_endpoint: String(restEndpoint || ""),
+        metrics_endpoint: String(metricsEndpoint || "")
+    })
+    initialization.options = {
+        cid: includeCidProbe === true && sourceModeSupportsCidProbe(root, "storage", sourceMode) ? String(cid || "") : "",
+        privileged_debug_enabled: privilegedDebugEnabled === true
     }
-    if (effective === "metrics") {
-        return [effective, String(metricsEndpoint || "")]
+    return [initialization]
+}
+
+function adapterInitialization(root, family, sourceMode, values) {
+    const descriptor = sourceModeDescriptor(root, family, sourceMode)
+    const provided = values && typeof values === "object" ? values : ({})
+    const inputs = {}
+    for (let i = 0; i < descriptor.inputs.length; ++i) {
+        const input = descriptor.inputs[i] || {}
+        const key = String(input.key || "")
+        if (key.length > 0) {
+            inputs[key] = String(provided[key] || "")
+        }
     }
-    return [
-        effective,
-        String(restEndpoint || ""),
-        String(metricsEndpoint || ""),
-        includeCidProbe === true && sourceModeSupportsCidProbe(root, "storage", sourceMode) ? String(cid || "") : "",
-        privilegedDebugEnabled === true
-    ]
+    return {
+        source_mode: descriptor.key,
+        inputs: inputs
+    }
 }
 
 function sourceTarget(root, family, sourceMode, targets) {

@@ -113,7 +113,7 @@ fn capability_registry_report_with_inputs(
         build_mode: build_mode.as_str(),
         selection_policy: "configured_connector_or_build_default",
         provider_types: provider_types().to_vec(),
-        provider_instances: provider_instances().to_vec(),
+        provider_instances: provider_instances(),
         connector_scopes: connector_scopes(build_mode),
         capabilities: capabilities(build_mode, inputs),
     }

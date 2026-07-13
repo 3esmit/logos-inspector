@@ -4,9 +4,12 @@ use std::{
 };
 
 use anyhow::{Context as _, Result, bail};
-use serde_json::{Value, json};
+use serde_json::Value;
 
-use crate::support::time::now_millis;
+use crate::{
+    source_routing::{bedrock_layer, execution_zone_layer, messaging_layer, storage_layer},
+    support::time::now_millis,
+};
 
 use super::commands::{
     command_spec_for, ensure_module_loaded, execute_command_spec, has_static_module_contract,
@@ -840,28 +843,26 @@ fn generate_devnet_files(record: &LocalDevnetRecord) -> Result<()> {
 
 fn generated_node_config(record: &LocalDevnetRecord, node: &LocalNodeConfigRecord) -> Value {
     match node.kind {
-        NodeKind::Storage => json!({
-            "data-dir": node.data_dir,
-            "log-level": "INFO",
-            "nat": "none",
-            "network": "logos.test",
-        }),
-        NodeKind::Messaging => json!({
-            "mode": "Core",
-            "preset": "logos.test",
-            "rest": true,
-            "restAddress": "127.0.0.1",
-            "restPort": node.port.unwrap_or(8645),
-            "logLevel": "INFO",
-            "logFormat": "TEXT",
-        }),
-        _ => json!({
-            "network_id": record.id,
-            "node": node.kind.as_str(),
-            "data_dir": node.data_dir,
-            "endpoint": node.endpoint,
-            "port": node.port,
-        }),
+        NodeKind::Bedrock => bedrock_layer::managed_config(
+            &record.id,
+            &node.data_dir,
+            node.endpoint.as_deref(),
+            node.port,
+        ),
+        NodeKind::Storage => storage_layer::managed_config(&node.data_dir),
+        NodeKind::Messaging => messaging_layer::managed_config(node.port),
+        NodeKind::Sequencer => execution_zone_layer::managed_sequencer_config(
+            &record.id,
+            &node.data_dir,
+            node.endpoint.as_deref(),
+            node.port,
+        ),
+        NodeKind::Indexer => execution_zone_layer::managed_indexer_config(
+            &record.id,
+            &node.data_dir,
+            node.endpoint.as_deref(),
+            node.port,
+        ),
     }
 }
 

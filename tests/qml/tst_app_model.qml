@@ -439,16 +439,21 @@ TestCase {
     function test_messaging_and_storage_use_standalone_connectors_without_basecamp() {
         compare(model.normalizedMessagingSourceMode(model.messagingSourceMode), "rest")
         compare(model.effectiveMessagingSourceMode(model.messagingSourceMode), "rest")
-        compare(model.deliverySourceReportArgs()[0], "rest")
-        compare(model.deliverySourceReportArgs()[1], model.configuredMessagingRestUrl())
-        compare(model.deliverySourceReportArgs()[2], model.messagingMetricsUrl)
+        const deliveryArgs = model.deliverySourceReportArgs()
+        compare(deliveryArgs.length, 1)
+        compare(deliveryArgs[0].source_mode, "rest")
+        compare(deliveryArgs[0].inputs.rest_endpoint, model.configuredMessagingRestUrl())
+        compare(deliveryArgs[0].inputs.metrics_endpoint, model.messagingMetricsUrl)
         compare(model.deliverySourceTarget(), model.configuredMessagingRestUrl())
 
         compare(model.normalizedStorageSourceMode(model.storageSourceMode), "rest")
         compare(model.effectiveStorageSourceMode(model.storageSourceMode), "rest")
-        compare(model.storageSourceReportArgs(false)[0], "rest")
-        compare(model.storageSourceReportArgs(false)[1], model.configuredStorageRestUrl())
-        compare(model.storageSourceReportArgs(false)[2], model.storageMetricsUrl)
+        const storageArgs = model.storageSourceReportArgs(false)
+        compare(storageArgs.length, 1)
+        compare(storageArgs[0].source_mode, "rest")
+        compare(storageArgs[0].inputs.rest_endpoint, model.configuredStorageRestUrl())
+        compare(storageArgs[0].inputs.metrics_endpoint, model.storageMetricsUrl)
+        compare(storageArgs[0].options.privileged_debug_enabled, false)
         compare(model.storageSourceTarget(), model.configuredStorageRestUrl())
     }
 
@@ -458,15 +463,17 @@ TestCase {
         compare(delivery.effectiveMode, "rest")
         compare(delivery.label, "Direct Waku REST")
         compare(delivery.target, model.configuredMessagingRestUrl())
-        compare(delivery.reportArgs()[0], "rest")
-        compare(delivery.reportArgs()[1], model.configuredMessagingRestUrl())
+        const deliveryArgs = delivery.reportArgs()
+        compare(deliveryArgs[0].source_mode, "rest")
+        compare(deliveryArgs[0].inputs.rest_endpoint, model.configuredMessagingRestUrl())
 
         const storage = model.sourceRouting.storageSourceView()
         compare(storage.mode, "rest")
         compare(storage.effectiveMode, "rest")
         compare(storage.target, model.configuredStorageRestUrl())
-        compare(storage.reportArgs(false)[0], "rest")
-        compare(storage.reportArgs(false)[1], model.configuredStorageRestUrl())
+        const storageArgs = storage.reportArgs(false)
+        compare(storageArgs[0].source_mode, "rest")
+        compare(storageArgs[0].inputs.rest_endpoint, model.configuredStorageRestUrl())
 
     }
 
@@ -482,12 +489,12 @@ TestCase {
 
         model.setNetworkConnectorMode("delivery", "network-monitor")
         compare(model.effectiveMessagingSourceMode(model.messagingSourceMode), "network-monitor")
-        compare(model.deliverySourceReportArgs()[0], "network-monitor")
+        compare(model.deliverySourceReportArgs()[0].source_mode, "network-monitor")
         compare(model.deliverySourceTarget(), model.configuredMessagingRestUrl())
 
         model.setNetworkConnectorMode("storage", "metrics")
         compare(model.effectiveStorageSourceMode(model.storageSourceMode), "metrics")
-        compare(model.storageSourceReportArgs(false)[0], "metrics")
+        compare(model.storageSourceReportArgs(false)[0].source_mode, "metrics")
         compare(model.storageSourceTarget(), model.storageMetricsUrl)
 
         const deliveryOptions = model.sourceModeOptions("delivery")
@@ -501,15 +508,16 @@ TestCase {
         compare(basecampModel.effectiveMessagingSourceMode(basecampModel.messagingSourceMode), "module")
         const deliveryArgs = basecampModel.deliverySourceReportArgs()
         compare(deliveryArgs.length, 1)
-        compare(deliveryArgs[0], "module")
+        compare(deliveryArgs[0].source_mode, "module")
+        compare(Object.keys(deliveryArgs[0].inputs).length, 0)
         compare(basecampModel.deliverySourceTarget(), basecampModel.deliveryModule)
 
         compare(basecampModel.effectiveStorageSourceMode(basecampModel.storageSourceMode), "module")
         const storageArgs = basecampModel.storageSourceReportArgs(false)
-        compare(storageArgs.length, 3)
-        compare(storageArgs[0], "module")
-        compare(storageArgs[1], "")
-        compare(storageArgs[2], false)
+        compare(storageArgs.length, 1)
+        compare(storageArgs[0].source_mode, "module")
+        compare(Object.keys(storageArgs[0].inputs).length, 0)
+        compare(storageArgs[0].options.privileged_debug_enabled, false)
         compare(basecampModel.storageSourceTarget(), basecampModel.storageModule)
     }
 
@@ -629,14 +637,16 @@ TestCase {
     function test_explicit_rest_blank_urls_use_visible_defaults() {
         model.setNetworkConnectorMode("delivery", "rest")
         model.messagingRestUrl = ""
-        compare(model.deliverySourceReportArgs()[0], "rest")
-        compare(model.deliverySourceReportArgs()[1], "http://127.0.0.1:8645")
+        const deliveryArgs = model.deliverySourceReportArgs()
+        compare(deliveryArgs[0].source_mode, "rest")
+        compare(deliveryArgs[0].inputs.rest_endpoint, "http://127.0.0.1:8645")
         compare(model.deliverySourceTarget(), "http://127.0.0.1:8645")
 
         model.setNetworkConnectorMode("storage", "rest")
         model.storageRestUrl = ""
-        compare(model.storageSourceReportArgs(false)[0], "rest")
-        compare(model.storageSourceReportArgs(false)[1], "http://127.0.0.1:8080/api/storage/v1")
+        const storageArgs = model.storageSourceReportArgs(false)
+        compare(storageArgs[0].source_mode, "rest")
+        compare(storageArgs[0].inputs.rest_endpoint, "http://127.0.0.1:8080/api/storage/v1")
         compare(model.storageSourceTarget(), "http://127.0.0.1:8080/api/storage/v1")
     }
 
@@ -646,9 +656,10 @@ TestCase {
         compare(model.normalizedStorageSourceMode("module"), "module")
         model.setNetworkConnectorMode("storage", "module")
         compare(model.effectiveStorageSourceMode(model.storageSourceMode), "module")
-        compare(model.storageSourceReportArgs(false)[0], "module")
-        compare(model.storageSourceReportArgs(false)[1], "")
-        compare(model.storageSourceReportArgs(false)[2], false)
+        const storageArgs = model.storageSourceReportArgs(false)
+        compare(storageArgs[0].source_mode, "module")
+        compare(Object.keys(storageArgs[0].inputs).length, 0)
+        compare(storageArgs[0].options.privileged_debug_enabled, false)
         compare(model.storageSourceTarget(), model.storageModule)
     }
 
@@ -663,9 +674,10 @@ TestCase {
         model.setNetworkConnectorMode("delivery", "network-monitor")
 
         compare(model.effectiveMessagingSourceMode(model.messagingSourceMode), "network-monitor")
-        compare(model.deliverySourceReportArgs()[0], "network-monitor")
-        compare(model.deliverySourceReportArgs()[1], model.configuredMessagingRestUrl())
-        compare(model.deliverySourceReportArgs()[2], model.messagingMetricsUrl)
+        const deliveryArgs = model.deliverySourceReportArgs()
+        compare(deliveryArgs[0].source_mode, "network-monitor")
+        compare(deliveryArgs[0].inputs.rest_endpoint, model.configuredMessagingRestUrl())
+        compare(deliveryArgs[0].inputs.metrics_endpoint, model.messagingMetricsUrl)
         compare(model.deliverySourceTarget(), model.configuredMessagingRestUrl())
     }
 

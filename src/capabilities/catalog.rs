@@ -2,6 +2,9 @@ use super::{
     CapabilityBuildMode, CapabilityConnectorScopeReport, CapabilityProviderInstanceReport,
     CapabilityProviderTypeReport,
 };
+use crate::source_routing::{
+    AdapterConnectionType, SourceModePolicy, capability_provider_mode_policies,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct CapabilitySpec {
@@ -51,121 +54,71 @@ pub(super) fn provider_types() -> &'static [CapabilityProviderTypeReport] {
     ]
 }
 
-pub(super) fn provider_instances() -> &'static [CapabilityProviderInstanceReport] {
-    &[
-        CapabilityProviderInstanceReport {
-            id: "composed_wallet",
-            provider_type: "composed",
-            label: "Wallet composed capability",
-            module: None,
-            endpoint_role: None,
-            capabilities: &["wallet", "wallet.l1", "wallet.l2"],
-        },
-        CapabilityProviderInstanceReport {
-            id: "unconfigured",
-            provider_type: "unconfigured",
-            label: "Unconfigured connector",
-            module: None,
-            endpoint_role: None,
-            capabilities: &["wallet.l1", "wallet.l2"],
-        },
-        CapabilityProviderInstanceReport {
-            id: "blockchain_module",
-            provider_type: "module",
-            label: "Blockchain module",
-            module: Some("blockchain_module"),
-            endpoint_role: None,
-            capabilities: &["l1", "wallet.l1"],
-        },
-        CapabilityProviderInstanceReport {
-            id: "storage_module",
-            provider_type: "module",
-            label: "Storage module",
-            module: Some("storage_module"),
-            endpoint_role: None,
-            capabilities: &["storage"],
-        },
-        CapabilityProviderInstanceReport {
-            id: "delivery_module",
-            provider_type: "module",
-            label: "Delivery module",
-            module: Some("delivery_module"),
-            endpoint_role: None,
-            capabilities: &["delivery"],
-        },
-        CapabilityProviderInstanceReport {
-            id: "lez_core",
-            provider_type: "module",
-            label: "LEZ core",
-            module: Some("lez_core"),
-            endpoint_role: None,
-            capabilities: &["wallet.l2"],
-        },
-        CapabilityProviderInstanceReport {
-            id: "direct_l1_rpc",
-            provider_type: "direct_rpc",
-            label: "Direct L1 RPC",
-            module: None,
-            endpoint_role: Some("node_url"),
-            capabilities: &["l1"],
-        },
-        CapabilityProviderInstanceReport {
-            id: "direct_storage_rest",
-            provider_type: "direct_rest",
-            label: "Direct Storage REST",
-            module: None,
-            endpoint_role: Some("storage_rest_url"),
-            capabilities: &["storage"],
-        },
-        CapabilityProviderInstanceReport {
-            id: "direct_delivery_rest",
-            provider_type: "direct_rest",
-            label: "Direct Delivery REST",
-            module: None,
-            endpoint_role: Some("messaging_rest_url"),
-            capabilities: &["delivery"],
-        },
-        CapabilityProviderInstanceReport {
-            id: "storage_metrics",
-            provider_type: "direct_metrics",
-            label: "Storage metrics",
-            module: None,
-            endpoint_role: Some("storage_metrics_url"),
-            capabilities: &["storage"],
-        },
-        CapabilityProviderInstanceReport {
-            id: "delivery_metrics",
-            provider_type: "direct_metrics",
-            label: "Delivery metrics",
-            module: None,
-            endpoint_role: Some("messaging_metrics_url"),
-            capabilities: &["delivery"],
-        },
-        CapabilityProviderInstanceReport {
-            id: "delivery_network_monitor",
-            provider_type: "network_monitor",
-            label: "Delivery Network Monitor",
-            module: None,
-            endpoint_role: Some("messaging_rest_url"),
-            capabilities: &["delivery"],
-        },
-        CapabilityProviderInstanceReport {
-            id: "local_node_control",
-            provider_type: "local_control",
-            label: "Local node control",
-            module: None,
-            endpoint_role: Some("local_nodes"),
-            capabilities: &["local_nodes"],
-        },
-        CapabilityProviderInstanceReport {
-            id: "module_diagnostics_metrics",
-            provider_type: "module_diagnostics",
-            label: "Module diagnostics and metrics",
-            module: None,
-            endpoint_role: Some("diagnostics"),
-            capabilities: &["diagnostics"],
-        },
-    ]
+const COMPOSED_PROVIDERS: &[CapabilityProviderInstanceReport] = &[
+    CapabilityProviderInstanceReport {
+        id: "composed_wallet",
+        provider_type: "composed",
+        label: "Wallet composed capability",
+        module: None,
+        endpoint_role: None,
+        capabilities: &["wallet", "wallet.l1", "wallet.l2"],
+    },
+    CapabilityProviderInstanceReport {
+        id: "unconfigured",
+        provider_type: "unconfigured",
+        label: "Unconfigured connector",
+        module: None,
+        endpoint_role: None,
+        capabilities: &["wallet.l1", "wallet.l2"],
+    },
+];
+
+const OPERATION_PROVIDERS: &[CapabilityProviderInstanceReport] = &[
+    CapabilityProviderInstanceReport {
+        id: "local_node_control",
+        provider_type: "local_control",
+        label: "Local node control",
+        module: None,
+        endpoint_role: Some("local_nodes"),
+        capabilities: &["local_nodes"],
+    },
+    CapabilityProviderInstanceReport {
+        id: "module_diagnostics_metrics",
+        provider_type: "module_diagnostics",
+        label: "Module diagnostics and metrics",
+        module: None,
+        endpoint_role: Some("diagnostics"),
+        capabilities: &["diagnostics"],
+    },
+];
+
+pub(super) fn provider_instances() -> Vec<CapabilityProviderInstanceReport> {
+    let mut providers = Vec::new();
+    providers.extend_from_slice(COMPOSED_PROVIDERS);
+    providers.extend(capability_provider_mode_policies().map(provider_from_mode));
+    providers.extend_from_slice(OPERATION_PROVIDERS);
+    providers
+}
+
+fn provider_from_mode(mode: &'static SourceModePolicy) -> CapabilityProviderInstanceReport {
+    CapabilityProviderInstanceReport {
+        id: mode.adapter.connector_id,
+        provider_type: provider_type_for(mode.adapter.connection_type),
+        label: mode.label,
+        module: mode.adapter.module_id,
+        endpoint_role: mode.adapter.endpoint_role,
+        capabilities: mode.adapter.capability_scopes,
+    }
+}
+
+const fn provider_type_for(connection_type: AdapterConnectionType) -> &'static str {
+    match connection_type {
+        AdapterConnectionType::Module => "module",
+        AdapterConnectionType::Rpc => "direct_rpc",
+        AdapterConnectionType::Rest => "direct_rest",
+        AdapterConnectionType::Metrics => "direct_metrics",
+        AdapterConnectionType::NetworkMonitor => "network_monitor",
+    }
 }
 
 pub(super) fn connector_scopes(
@@ -214,15 +167,20 @@ pub(super) fn connector_scopes(
 }
 
 pub(super) fn provider_instance_known(connector: &str) -> bool {
-    provider_instances()
-        .iter()
-        .any(|provider| provider.id == connector)
+    capability_provider_mode_policies().any(|mode| mode.adapter.connector_id == connector)
+        || registry_owned_providers().any(|provider| provider.id == connector)
 }
 
 pub(super) fn provider_instance_supports(connector: &str, capability_key: &str) -> bool {
-    provider_instances()
-        .iter()
+    capability_provider_mode_policies().any(|mode| {
+        mode.adapter.connector_id == connector
+            && mode.adapter.capability_scopes.contains(&capability_key)
+    }) || registry_owned_providers()
         .any(|provider| provider.id == connector && provider.capabilities.contains(&capability_key))
+}
+
+fn registry_owned_providers() -> impl Iterator<Item = &'static CapabilityProviderInstanceReport> {
+    COMPOSED_PROVIDERS.iter().chain(OPERATION_PROVIDERS)
 }
 
 pub(super) fn default_connector(
@@ -370,4 +328,46 @@ pub(super) fn capability_specs() -> &'static [CapabilitySpec] {
             ],
         },
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use super::*;
+
+    #[test]
+    fn provider_instances_derive_node_owned_adapter_facts() {
+        let providers = provider_instances();
+        let mut ids = BTreeSet::new();
+        for provider in &providers {
+            assert!(
+                ids.insert(provider.id),
+                "duplicate provider `{}`",
+                provider.id
+            );
+        }
+
+        for mode in capability_provider_mode_policies() {
+            let provider = providers
+                .iter()
+                .find(|provider| provider.id == mode.adapter.connector_id);
+            assert!(
+                provider.is_some(),
+                "missing provider `{}`",
+                mode.adapter.connector_id
+            );
+            let Some(provider) = provider else {
+                continue;
+            };
+            assert_eq!(
+                provider.provider_type,
+                provider_type_for(mode.adapter.connection_type)
+            );
+            assert_eq!(provider.label, mode.label);
+            assert_eq!(provider.module, mode.adapter.module_id);
+            assert_eq!(provider.endpoint_role, mode.adapter.endpoint_role);
+            assert_eq!(provider.capabilities, mode.adapter.capability_scopes);
+        }
+    }
 }

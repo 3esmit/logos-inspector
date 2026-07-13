@@ -1,4 +1,54 @@
-use crate::source_routing::SourceReport;
+use serde_json::{Value, json};
+
+use super::layer::{self, StorageAdapter};
+use crate::{
+    ProbeReport,
+    modules::ModuleReport,
+    source_routing::{
+        SourceProbeKey, SourceReport, StorageSourceReportKind,
+        shared::{
+            evidence::SourceEvidence,
+            http,
+            report::{
+                MetricsProbeSpec, SourceReportBuilder, SourceReportKind, keyed_probe_result,
+                source_report_from_evidence, source_text_metrics_report, unsupported_source_report,
+            },
+        },
+    },
+};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StorageProbeNormalizer {
+    Identity,
+    Manifests,
+    Spr,
+    PeerId,
+    Exists(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StorageProbeStep {
+    key: SourceProbeKey,
+    label: &'static str,
+    path: String,
+    normalizer: StorageProbeNormalizer,
+}
+
+impl StorageProbeStep {
+    fn new(
+        key: SourceProbeKey,
+        label: &'static str,
+        path: impl Into<String>,
+        normalizer: StorageProbeNormalizer,
+    ) -> Self {
+        Self {
+            key,
+            label,
+            path: path.into(),
+            normalizer,
+        }
+    }
+}
 
 pub async fn storage_source_report(
     source_mode: &str,
@@ -7,12 +57,303 @@ pub async fn storage_source_report(
     cid: Option<&str>,
     privileged_debug_enabled: bool,
 ) -> SourceReport {
-    crate::source_routing::shared::inspection::storage_source_report(
-        source_mode,
-        rest_endpoint,
-        metrics_endpoint,
-        cid,
-        privileged_debug_enabled,
+    match StorageAdapter::select(source_mode, rest_endpoint, metrics_endpoint) {
+        StorageAdapter::Module => module_source_report(
+            SourceReportKind::Storage(StorageSourceReportKind::Module),
+            layer::module_report(cid, privileged_debug_enabled),
+        ),
+        StorageAdapter::Rest {
+            endpoint,
+            metrics_endpoint,
+        } => storage_rest_report(endpoint, metrics_endpoint, cid, privileged_debug_enabled).await,
+        StorageAdapter::Metrics { endpoint } => storage_metrics_report(endpoint).await,
+        StorageAdapter::Unsupported { mode } => unsupported_storage_source_report(mode),
+    }
+}
+
+fn storage_rest_probe_plan(
+    cid: Option<&str>,
+    privileged_debug_enabled: bool,
+) -> Vec<StorageProbeStep> {
+    let mut steps = vec![
+        StorageProbeStep::new(
+            SourceProbeKey::StorageSpace,
+            "storage_rest.space",
+            "/space",
+            StorageProbeNormalizer::Identity,
+        ),
+        StorageProbeStep::new(
+            SourceProbeKey::StorageSpr,
+            "storage_rest.spr",
+            "/spr",
+            StorageProbeNormalizer::Spr,
+        ),
+        StorageProbeStep::new(
+            SourceProbeKey::StoragePeerId,
+            "storage_rest.peerId",
+            "/peerid",
+            StorageProbeNormalizer::PeerId,
+        ),
+        StorageProbeStep::new(
+            SourceProbeKey::StorageManifests,
+            "storage_rest.manifests",
+            "/data",
+            StorageProbeNormalizer::Manifests,
+        ),
+    ];
+    if privileged_debug_enabled {
+        steps.push(StorageProbeStep::new(
+            SourceProbeKey::StorageDebug,
+            "storage_rest.debug",
+            "/debug/info",
+            StorageProbeNormalizer::Identity,
+        ));
+    }
+    if let Some(cid) = optional(cid) {
+        steps.push(StorageProbeStep::new(
+            SourceProbeKey::StorageExists,
+            "storage_rest.exists",
+            format!("/data/{cid}/exists"),
+            StorageProbeNormalizer::Exists(cid.to_owned()),
+        ));
+    }
+    steps
+}
+
+fn module_source_report(kind: SourceReportKind, report: ModuleReport) -> SourceReport {
+    source_report_from_evidence(
+        kind,
+        SourceEvidence::new(report.module, report.module_info, report.probes),
     )
-    .await
+}
+
+fn probe_step(plan: &[StorageProbeStep], key: SourceProbeKey) -> Option<&StorageProbeStep> {
+    plan.iter().find(|step| step.key == key)
+}
+
+fn optional_probe_steps<'a>(
+    plan: &'a [StorageProbeStep],
+    handled: &[SourceProbeKey],
+) -> Vec<&'a StorageProbeStep> {
+    plan.iter()
+        .filter(|step| !handled.contains(&step.key))
+        .collect()
+}
+
+async fn http_json_probe(endpoint: &str, step: &StorageProbeStep) -> ProbeReport {
+    keyed_probe_result(
+        step.key,
+        step.label,
+        http::rest_url(endpoint, &step.path),
+        layer::probe_value(endpoint, &step.path)
+            .await
+            .map(|value| normalize_http_probe_value(value, &step.normalizer)),
+    )
+}
+
+fn normalize_http_probe_value(value: Value, normalizer: &StorageProbeNormalizer) -> Value {
+    match normalizer {
+        StorageProbeNormalizer::Identity => value,
+        StorageProbeNormalizer::Manifests => normalize_storage_manifests(value),
+        StorageProbeNormalizer::Spr => normalize_storage_spr(value),
+        StorageProbeNormalizer::PeerId => normalize_storage_peer_id(value),
+        StorageProbeNormalizer::Exists(cid) => normalize_storage_exists(value, cid),
+    }
+}
+
+async fn storage_rest_report(
+    endpoint: &str,
+    metrics_endpoint: Option<&str>,
+    cid: Option<&str>,
+    privileged_debug_enabled: bool,
+) -> SourceReport {
+    let plan = storage_rest_probe_plan(cid, privileged_debug_enabled);
+    let Some(space_step) = probe_step(&plan, SourceProbeKey::StorageSpace) else {
+        return unsupported_storage_source_report("rest");
+    };
+    let Some(spr_step) = probe_step(&plan, SourceProbeKey::StorageSpr) else {
+        return unsupported_storage_source_report("rest");
+    };
+    let Some(peer_id_step) = probe_step(&plan, SourceProbeKey::StoragePeerId) else {
+        return unsupported_storage_source_report("rest");
+    };
+    let Some(manifests_step) = probe_step(&plan, SourceProbeKey::StorageManifests) else {
+        return unsupported_storage_source_report("rest");
+    };
+    let (space_probe, spr_probe, peer_id_probe, manifests_probe) = tokio::join!(
+        http_json_probe(endpoint, space_step),
+        http_json_probe(endpoint, spr_step),
+        http_json_probe(endpoint, peer_id_step),
+        http_json_probe(endpoint, manifests_step),
+    );
+    let mut report =
+        SourceReportBuilder::storage("storage_rest", StorageSourceReportKind::Rest, space_probe)
+            .include_module_info_probe();
+    report.push_probe(spr_probe);
+    report.push_probe(peer_id_probe);
+    report.push_probe(manifests_probe);
+    if !privileged_debug_enabled {
+        report.push_ok(
+            SourceProbeKey::StoragePrivilegedProbe,
+            "storage_rest.privilegedProbe",
+            "disabled",
+            json!({ "skipped": true }),
+        );
+    }
+    for step in optional_probe_steps(
+        &plan,
+        &[
+            SourceProbeKey::StorageSpace,
+            SourceProbeKey::StorageSpr,
+            SourceProbeKey::StoragePeerId,
+            SourceProbeKey::StorageManifests,
+        ],
+    ) {
+        report.push_probe(http_json_probe(endpoint, step).await);
+    }
+    if let Some(metrics_endpoint) = optional(metrics_endpoint) {
+        report.push_probe(storage_metrics_probe(metrics_endpoint).await);
+    }
+    report.finish()
+}
+
+async fn storage_metrics_report(endpoint: &str) -> SourceReport {
+    source_text_metrics_report(
+        "storage_metrics",
+        SourceReportKind::Storage(StorageSourceReportKind::Metrics),
+        endpoint,
+        MetricsProbeSpec {
+            key: SourceProbeKey::StorageMetricsScrape,
+            label: "storage_metrics.scrape",
+        },
+        MetricsProbeSpec {
+            key: SourceProbeKey::StorageCollectMetrics,
+            label: "storage_metrics.collectMetrics",
+        },
+        layer::probe_metrics(endpoint).await,
+    )
+}
+
+async fn storage_metrics_probe(metrics_endpoint: &str) -> ProbeReport {
+    keyed_probe_result(
+        SourceProbeKey::StorageCollectMetrics,
+        "storage_rest.collectMetrics",
+        metrics_endpoint,
+        layer::probe_metrics(metrics_endpoint).await,
+    )
+}
+
+fn unsupported_storage_source_report(mode: &str) -> SourceReport {
+    unsupported_source_report(
+        "storage",
+        "storage",
+        SourceReportKind::Storage(StorageSourceReportKind::Unsupported),
+        mode,
+    )
+}
+
+fn normalize_storage_manifests(value: Value) -> Value {
+    match value {
+        Value::Object(mut object) => match object.remove("content") {
+            Some(Value::Array(items)) => Value::Array(items),
+            Some(content) => {
+                object.insert("content".to_owned(), content);
+                Value::Object(object)
+            }
+            None => Value::Object(object),
+        },
+        value => value,
+    }
+}
+
+fn normalize_storage_spr(value: Value) -> Value {
+    scalar_field(&value, &["spr", "value", "result"]).unwrap_or(value)
+}
+
+fn normalize_storage_peer_id(value: Value) -> Value {
+    scalar_field(&value, &["peerId", "peer_id", "id", "value", "result"]).unwrap_or(value)
+}
+
+fn normalize_storage_exists(value: Value, cid: &str) -> Value {
+    scalar_field(&value, &[cid, "exists", "has", "value", "result"]).unwrap_or(value)
+}
+
+fn optional(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn scalar_field(value: &Value, keys: &[&str]) -> Option<Value> {
+    match value {
+        Value::Object(object) => {
+            for key in keys {
+                if let Some(value) = object.get(*key) {
+                    return match value {
+                        Value::Object(_) => {
+                            scalar_field(value, keys).or_else(|| Some(value.clone()))
+                        }
+                        _ => Some(value.clone()),
+                    };
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn rest_probe_plan_includes_optional_debug_and_cid_steps() {
+        let steps = storage_rest_probe_plan(Some("cid-1"), true);
+        let keys = steps.iter().map(|step| step.key).collect::<Vec<_>>();
+
+        assert!(keys.contains(&SourceProbeKey::StorageDebug));
+        assert!(keys.contains(&SourceProbeKey::StorageExists));
+        assert!(steps.iter().any(|step| step.path == "/data/cid-1/exists"));
+    }
+
+    #[test]
+    fn rest_normalizers_unwrap_current_scalar_shapes() {
+        assert_eq!(
+            normalize_storage_peer_id(json!({ "id": "peer-a" })),
+            json!("peer-a")
+        );
+        assert_eq!(
+            normalize_storage_spr(json!({ "spr": "spr-a" })),
+            json!("spr-a")
+        );
+        assert_eq!(
+            normalize_storage_exists(json!({ "cid-a": true }), "cid-a"),
+            json!(true)
+        );
+        assert_eq!(
+            normalize_storage_exists(json!({ "has": false }), "cid-a"),
+            json!(false)
+        );
+    }
+
+    #[test]
+    fn module_report_adapter_derives_source_facts_from_keyed_evidence() {
+        let module_info = ProbeReport::ok("storage module", "module-info", json!({}))
+            .with_probe_key(SourceProbeKey::StoragePeerId.as_str());
+        let report = ModuleReport::new("storage_module", module_info, Vec::new());
+
+        let source_report = module_source_report(
+            SourceReportKind::Storage(StorageSourceReportKind::Module),
+            report,
+        );
+
+        assert!(source_report.health.reachable);
+        assert!(
+            source_report
+                .probe_facts
+                .iter()
+                .any(|fact| fact.key == SourceProbeKey::StoragePeerId.as_str())
+        );
+    }
 }

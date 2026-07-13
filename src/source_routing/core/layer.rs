@@ -2,7 +2,7 @@ use std::num::NonZeroUsize;
 
 use anyhow::{Context as _, Result};
 use reqwest::{Client, Response};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use super::adapters::{self, BLOCKCHAIN_MODULE};
 use crate::{
@@ -10,6 +10,10 @@ use crate::{
     modules::ModuleReport,
     modules::logos_core::LogoscoreCliRuntime,
     rpc::RawRpcReport,
+    source_routing::adapter::{
+        AdapterConnectionType, AdapterInputPolicy, ManagedModuleCallSpec, ManagedNodeAction,
+        SourceAdapterPolicy, SourceModePolicy,
+    },
 };
 
 #[must_use]
@@ -18,7 +22,7 @@ pub(crate) const fn module_id() -> &'static str {
 }
 
 pub(crate) fn ensure_managed_module(runtime: &LogoscoreCliRuntime) -> Result<()> {
-    crate::source_routing::adapter::ensure_managed_module(runtime, module_id())
+    runtime.ensure_module_loaded(module_id())
 }
 
 pub(crate) fn call_managed_module(
@@ -27,23 +31,45 @@ pub(crate) fn call_managed_module(
     signature: &str,
     args: &[String],
 ) -> Result<Value> {
-    crate::source_routing::adapter::call_managed_module(
-        runtime,
-        module_id(),
-        method,
-        signature,
-        args,
-    )
+    runtime.call_checked(module_id(), method, signature, args)
 }
 
 #[must_use]
 pub(crate) fn diagnostic_report(address: Option<&str>) -> ModuleReport {
     crate::modules::blockchain_module_report(address)
 }
-use crate::source_routing::adapter::{
-    AdapterConnectionType, AdapterInputPolicy, AdapterLayer, SourceAdapterPolicy, SourceModePolicy,
-    sealed,
-};
+
+#[must_use]
+pub(crate) fn managed_call_spec(
+    action: ManagedNodeAction,
+    config_path: &str,
+) -> Option<ManagedModuleCallSpec> {
+    match action {
+        ManagedNodeAction::Start => Some(ManagedModuleCallSpec::new(
+            "start",
+            "start(QString,QString)",
+            vec![config_path.to_owned(), String::new()],
+        )),
+        ManagedNodeAction::Stop => Some(ManagedModuleCallSpec::new("stop", "stop()", Vec::new())),
+        ManagedNodeAction::Initialize | ManagedNodeAction::Destroy => None,
+    }
+}
+
+#[must_use]
+pub(crate) fn managed_config(
+    network_id: &str,
+    data_dir: &str,
+    endpoint: Option<&str>,
+    port: Option<u16>,
+) -> Value {
+    json!({
+        "network_id": network_id,
+        "node": "bedrock",
+        "data_dir": data_dir,
+        "endpoint": endpoint,
+        "port": port,
+    })
+}
 
 const RPC_INPUTS: &[AdapterInputPolicy] = &[AdapterInputPolicy {
     key: "rpc_endpoint",
@@ -85,6 +111,8 @@ pub(crate) const BEDROCK_SOURCE_MODES: &[SourceModePolicy] = &[
             capabilities: BEDROCK_CAPABILITIES,
             supports_cid_probe: false,
             supports_mutating_diagnostics: false,
+            capability_scopes: &["l1"],
+            endpoint_role: Some("node_url"),
         },
     },
     SourceModePolicy {
@@ -105,24 +133,11 @@ pub(crate) const BEDROCK_SOURCE_MODES: &[SourceModePolicy] = &[
             capabilities: BEDROCK_CAPABILITIES,
             supports_cid_probe: false,
             supports_mutating_diagnostics: true,
+            capability_scopes: &["l1", "wallet.l1"],
+            endpoint_role: None,
         },
     },
 ];
-
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct BedrockAdapterLayer;
-
-impl sealed::Sealed for BedrockAdapterLayer {}
-
-impl AdapterLayer for BedrockAdapterLayer {
-    fn key(&self) -> &'static str {
-        "bedrock"
-    }
-
-    fn modes(&self) -> &'static [SourceModePolicy] {
-        BEDROCK_SOURCE_MODES
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BedrockAdapter<'a> {
@@ -308,11 +323,24 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::source_routing::adapter::contract_tests::assert_layer_contract;
+    use crate::source_routing::adapter::{
+        ManagedNodeAction,
+        contract_tests::{assert_layer_contract, assert_managed_module_contract},
+    };
 
     #[test]
     fn bedrock_adapters_satisfy_shared_seam_contract() {
-        assert_layer_contract(&BedrockAdapterLayer);
+        assert_layer_contract("bedrock", BEDROCK_SOURCE_MODES);
+    }
+
+    #[test]
+    fn bedrock_managed_calls_satisfy_shared_contract() {
+        assert_managed_module_contract(
+            "bedrock",
+            module_id(),
+            &[ManagedNodeAction::Start, ManagedNodeAction::Stop],
+            managed_call_spec,
+        );
     }
 
     #[test]

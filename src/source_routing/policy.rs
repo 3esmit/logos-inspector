@@ -1,17 +1,16 @@
 use super::{
     NetworkProfile,
     adapter::{
-        AdapterConnectionType, AdapterLayer, SourceAdapterPolicy, SourceModePolicy,
-        adapter_for_connector,
+        AdapterConnectionType, SourceAdapterPolicy, SourceModePolicy, adapter_for_connector,
     },
     channel_sources::{
         ChannelSourceRole,
         layer::{INDEXER_SOURCE_MODES, SEQUENCER_SOURCE_MODES, source_modes_for_role},
     },
-    core::layer::{BEDROCK_SOURCE_MODES, BedrockAdapterLayer},
-    delivery::layer::{MESSAGING_SOURCE_MODES, MessagingAdapterLayer},
+    core::layer::BEDROCK_SOURCE_MODES,
+    delivery::layer::MESSAGING_SOURCE_MODES,
     network_profiles,
-    storage::layer::{STORAGE_SOURCE_MODES, StorageAdapterLayer},
+    storage::layer::STORAGE_SOURCE_MODES,
 };
 use serde::Serialize;
 
@@ -39,6 +38,8 @@ const EMERGENCY_SOURCE_MODE: SourceModePolicy = SourceModePolicy {
         capabilities: &[],
         supports_cid_probe: false,
         supports_mutating_diagnostics: false,
+        capability_scopes: &[],
+        endpoint_role: None,
     },
 };
 
@@ -515,11 +516,28 @@ pub fn source_policy_report() -> SourcePolicyReport {
 pub(crate) fn network_adapter_policy_for_connector(
     connector_id: &str,
 ) -> Option<&'static SourceAdapterPolicy> {
-    let bedrock = BedrockAdapterLayer;
-    let storage = StorageAdapterLayer;
-    let messaging = MessagingAdapterLayer;
-    let layers: [&dyn AdapterLayer; 3] = [&bedrock, &storage, &messaging];
-    adapter_for_connector(&layers, connector_id)
+    adapter_for_connector(
+        &[
+            BEDROCK_SOURCE_MODES,
+            STORAGE_SOURCE_MODES,
+            MESSAGING_SOURCE_MODES,
+        ],
+        connector_id,
+    )
+}
+
+pub(crate) fn capability_provider_mode_policies() -> impl Iterator<Item = &'static SourceModePolicy>
+{
+    [
+        BEDROCK_SOURCE_MODES,
+        STORAGE_SOURCE_MODES,
+        MESSAGING_SOURCE_MODES,
+        SEQUENCER_SOURCE_MODES,
+        INDEXER_SOURCE_MODES,
+    ]
+    .into_iter()
+    .flat_map(<[SourceModePolicy]>::iter)
+    .filter(|mode| !mode.adapter.capability_scopes.is_empty())
 }
 
 fn fallback_source_mode_key(family: SourceFamily) -> &'static str {
