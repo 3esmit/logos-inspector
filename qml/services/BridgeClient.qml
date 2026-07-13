@@ -5,11 +5,21 @@ QtObject {
     id: root
 
     property var host: null
+    property int hostEpoch: 0
     property int nextRequestId: 1
     property var pendingCalls: ({})
     property var moduleEventSubscriptions: ({})
 
-    onHostChanged: moduleEventSubscriptions = ({})
+    onHostChanged: {
+        hostEpoch += 1
+        moduleEventSubscriptions = ({})
+        failPendingCalls({
+            ok: false,
+            value: null,
+            text: "",
+            error: "Logos bridge call failed: host_changed"
+        })
+    }
 
     signal moduleEventReceived(string moduleName, string eventName, var args)
 
@@ -27,19 +37,31 @@ QtObject {
 
     function callModuleAsync(moduleName, method, args, callback) {
         const requestId = root.nextRequestId
+        const requestHost = root.host
+        const requestHostEpoch = root.hostEpoch
         root.nextRequestId += 1
         const pending = root.copyPendingCalls()
-        pending[requestId] = callback
+        pending[requestId] = {
+            callback: typeof callback === "function" ? callback : null,
+            hostEpoch: requestHostEpoch
+        }
         root.pendingCalls = pending
 
-        if (BridgeEnvelope.dispatchAsync(root.host, requestId, moduleName, method, args || [], function (response) {
-                root.finishAsyncCall(requestId, response)
+        if (BridgeEnvelope.dispatchAsync(requestHost, requestId, moduleName, method, args || [], function (response) {
+                root.finishAsyncCall(requestId, response, requestHostEpoch)
             })) {
             return requestId
         }
 
         Qt.callLater(function () {
-            root.finishAsyncCall(requestId, root.callModule(moduleName, method, args || []))
+            if (requestHostEpoch !== root.hostEpoch) {
+                return
+            }
+            root.finishAsyncCall(
+                requestId,
+                BridgeEnvelope.callModule(requestHost, moduleName, method, args || []),
+                requestHostEpoch
+            )
         })
         return requestId
     }
@@ -76,8 +98,11 @@ QtObject {
         let active = false
         try {
             if (root.host && root.host["onModuleEvent"]) {
-                root.host["onModuleEvent"](moduleText, eventText, callback)
-                active = true
+                if (root.prefersBasecampModules()) {
+                    active = root.host["onModuleEvent"](moduleText, eventText) === true
+                } else {
+                    active = root.host["onModuleEvent"](moduleText, eventText, callback) !== false
+                }
             }
         } catch (error) {
             active = false
@@ -108,15 +133,30 @@ QtObject {
         return true
     }
 
-    function finishAsyncCall(requestId, response) {
+    function finishAsyncCall(requestId, response, expectedHostEpoch) {
         const pending = root.copyPendingCalls()
-        const callback = pending[requestId]
-        if (!callback) {
+        const entry = pending[requestId]
+        if (!entry
+                || (expectedHostEpoch !== undefined
+                    && entry.hostEpoch !== expectedHostEpoch)) {
             return
         }
         delete pending[requestId]
         root.pendingCalls = pending
-        callback(response)
+        if (typeof entry.callback === "function") {
+            entry.callback(response)
+        }
+    }
+
+    function failPendingCalls(response) {
+        const pending = root.pendingCalls || {}
+        root.pendingCalls = ({})
+        for (const requestId in pending) {
+            const entry = pending[requestId]
+            if (entry && typeof entry.callback === "function") {
+                entry.callback(response)
+            }
+        }
     }
 
     function copyPendingCalls() {
@@ -137,6 +177,10 @@ QtObject {
         }
 
         function onModuleEvent(moduleName, eventName, args) {
+            root.moduleEventReceived(String(moduleName || ""), String(eventName || ""), args)
+        }
+
+        function onModuleEventReceived(moduleName, eventName, args) {
             root.moduleEventReceived(String(moduleName || ""), String(eventName || ""), args)
         }
     }
