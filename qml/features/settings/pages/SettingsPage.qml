@@ -1058,9 +1058,13 @@ ColumnLayout {
             connectionType: settingsRoot.model.blockchainSourceLabel()
             endpointLabel: qsTr("RPC URL")
             endpoint: settingsRoot.model.nodeUrl
-            primaryFieldVisible: true
+            primaryFieldVisible: settingsRoot.model.sourceRouting.sourceModeUsesInput(
+                "core",
+                settingsRoot.model.currentConnectorSourceMode("l1", "rpc"),
+                "rpc_endpoint"
+            )
             moduleName: settingsRoot.model.blockchainModule
-            moduleFieldVisible: false
+            moduleFieldVisible: !primaryFieldVisible
             sourceSelectorVisible: true
             sourceOptions: coreSourceOptions
             sourceIndex: settingsRoot.coreSourceIndexFor(settingsRoot.model.currentConnectorSourceMode("l1", "rpc"))

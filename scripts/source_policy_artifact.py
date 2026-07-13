@@ -25,7 +25,13 @@ NETWORK_PROFILE_ORDER = (
     "label",
     "node_endpoint",
 )
-SOURCE_MODE_FAMILY_ORDER = ("core", "delivery", "storage")
+SOURCE_MODE_FAMILY_ORDER = (
+    "core",
+    "delivery",
+    "storage",
+    "execution_zone_sequencer",
+    "execution_zone_indexer",
+)
 SOURCE_MODE_ORDER = (
     "key",
     "aliases",
@@ -38,12 +44,16 @@ SOURCE_MODE_ORDER = (
     "adapter",
 )
 SOURCE_ADAPTER_ORDER = (
+    "connector_id",
+    "connection_type",
     "target",
-    "uses_rest_endpoint",
-    "uses_metrics_endpoint",
+    "module_id",
+    "inputs",
+    "capabilities",
     "supports_cid_probe",
     "supports_mutating_diagnostics",
 )
+SOURCE_ADAPTER_INPUT_ORDER = ("key", "label", "required")
 
 
 def source_policy(root: Path) -> dict[str, Any]:
@@ -108,18 +118,16 @@ def key_order_for_path(path: tuple[str, ...]) -> tuple[str, ...]:
         return NETWORK_PROFILE_ORDER
     if path == ("source_modes",):
         return SOURCE_MODE_FAMILY_ORDER
-    if path == ("source_modes", "core", "*"):
+    if len(path) == 3 and path[0] == "source_modes" and path[2] == "*":
         return SOURCE_MODE_ORDER
-    if path == ("source_modes", "delivery", "*"):
-        return SOURCE_MODE_ORDER
-    if path == ("source_modes", "storage", "*"):
-        return SOURCE_MODE_ORDER
-    if path in {
-        ("source_modes", "core", "*", "adapter"),
-        ("source_modes", "delivery", "*", "adapter"),
-        ("source_modes", "storage", "*", "adapter"),
-    }:
+    if len(path) == 4 and path[0] == "source_modes" and path[2:] == ("*", "adapter"):
         return SOURCE_ADAPTER_ORDER
+    if (
+        len(path) == 6
+        and path[0] == "source_modes"
+        and path[2:] == ("*", "adapter", "inputs", "*")
+    ):
+        return SOURCE_ADAPTER_INPUT_ORDER
     return ()
 
 

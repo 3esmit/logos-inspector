@@ -1,10 +1,7 @@
 use anyhow::{Context as _, Result, bail};
 use serde_json::Value;
 
-use crate::{
-    local_wallet_deploy_program, local_wallet_instruction_submit,
-    support::confirmation::ConfirmationPolicy,
-};
+use crate::{source_routing::execution_zone_layer, support::confirmation::ConfirmationPolicy};
 
 use super::super::value::{blocking_value, to_value};
 use super::RuntimeOperationRequest;
@@ -44,7 +41,10 @@ async fn execute_program_deployment(request: &RuntimeOperationRequest) -> Result
     let profile = wallet_profile_arg(&args)?;
     let program_path = args.string(1, "program path")?.to_owned();
     blocking_value("program deployment", move || {
-        to_value(local_wallet_deploy_program(profile, &program_path)?)
+        to_value(execution_zone_layer::deploy_program(
+            profile,
+            &program_path,
+        )?)
     })
     .await
 }
@@ -52,7 +52,7 @@ async fn execute_program_deployment(request: &RuntimeOperationRequest) -> Result
 async fn execute_instruction_submission(request: &RuntimeOperationRequest) -> Result<Value> {
     let args = confirmed_wallet_args(request, 2, ConfirmationPolicy::WalletInstructionSubmit)?;
     to_value(
-        local_wallet_instruction_submit(
+        execution_zone_layer::submit_instruction(
             wallet_profile_arg(&args)?,
             args.value(1)
                 .cloned()

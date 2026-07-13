@@ -1,4 +1,18 @@
-use super::{NetworkProfile, network_profiles};
+use super::{
+    NetworkProfile,
+    adapter::{
+        AdapterConnectionType, AdapterLayer, SourceAdapterPolicy, SourceModePolicy,
+        adapter_for_connector,
+    },
+    channel_sources::{
+        ChannelSourceRole,
+        layer::{INDEXER_SOURCE_MODES, SEQUENCER_SOURCE_MODES, source_modes_for_role},
+    },
+    core::layer::{BEDROCK_SOURCE_MODES, BedrockAdapterLayer},
+    delivery::layer::{MESSAGING_SOURCE_MODES, MessagingAdapterLayer},
+    network_profiles,
+    storage::layer::{STORAGE_SOURCE_MODES, StorageAdapterLayer},
+};
 use serde::Serialize;
 
 pub const DEFAULT_NODE_ENDPOINT: &str = "http://127.0.0.1:8080/";
@@ -7,63 +21,7 @@ pub const DEFAULT_DELIVERY_METRICS_ENDPOINT: &str = "http://127.0.0.1:8008/metri
 pub const DEFAULT_STORAGE_REST_ENDPOINT: &str = "http://127.0.0.1:8080/api/storage/v1";
 pub const DEFAULT_STORAGE_METRICS_ENDPOINT: &str = "http://127.0.0.1:8008/metrics";
 
-const RPC_ADAPTER: SourceAdapterPolicy = SourceAdapterPolicy {
-    target: "rpc_endpoint",
-    uses_rest_endpoint: false,
-    uses_metrics_endpoint: false,
-    supports_cid_probe: false,
-    supports_mutating_diagnostics: false,
-};
-const MODULE_ADAPTER: SourceAdapterPolicy = SourceAdapterPolicy {
-    target: "module",
-    uses_rest_endpoint: false,
-    uses_metrics_endpoint: false,
-    supports_cid_probe: false,
-    supports_mutating_diagnostics: true,
-};
-const DELIVERY_REST_ADAPTER: SourceAdapterPolicy = SourceAdapterPolicy {
-    target: "rest_endpoint",
-    uses_rest_endpoint: true,
-    uses_metrics_endpoint: true,
-    supports_cid_probe: false,
-    supports_mutating_diagnostics: true,
-};
-const DELIVERY_METRICS_ADAPTER: SourceAdapterPolicy = SourceAdapterPolicy {
-    target: "metrics_endpoint",
-    uses_rest_endpoint: false,
-    uses_metrics_endpoint: true,
-    supports_cid_probe: false,
-    supports_mutating_diagnostics: false,
-};
-const DELIVERY_MONITOR_ADAPTER: SourceAdapterPolicy = SourceAdapterPolicy {
-    target: "rest_endpoint",
-    uses_rest_endpoint: true,
-    uses_metrics_endpoint: true,
-    supports_cid_probe: false,
-    supports_mutating_diagnostics: false,
-};
-const STORAGE_MODULE_ADAPTER: SourceAdapterPolicy = SourceAdapterPolicy {
-    target: "module",
-    uses_rest_endpoint: false,
-    uses_metrics_endpoint: false,
-    supports_cid_probe: true,
-    supports_mutating_diagnostics: true,
-};
-const STORAGE_REST_ADAPTER: SourceAdapterPolicy = SourceAdapterPolicy {
-    target: "rest_endpoint",
-    uses_rest_endpoint: true,
-    uses_metrics_endpoint: true,
-    supports_cid_probe: true,
-    supports_mutating_diagnostics: true,
-};
-const STORAGE_METRICS_ADAPTER: SourceAdapterPolicy = SourceAdapterPolicy {
-    target: "metrics_endpoint",
-    uses_rest_endpoint: false,
-    uses_metrics_endpoint: true,
-    supports_cid_probe: false,
-    supports_mutating_diagnostics: false,
-};
-const FALLBACK_CORE_SOURCE_MODE: SourceModePolicy = SourceModePolicy {
+const EMERGENCY_SOURCE_MODE: SourceModePolicy = SourceModePolicy {
     key: "rpc",
     aliases: &[],
     effective: "rpc",
@@ -71,30 +29,17 @@ const FALLBACK_CORE_SOURCE_MODE: SourceModePolicy = SourceModePolicy {
     label: "Direct RPC",
     source_label: "Direct RPC",
     summary: "Use configured standalone RPC endpoint",
-    implemented: true,
-    adapter: RPC_ADAPTER,
-};
-const FALLBACK_DELIVERY_SOURCE_MODE: SourceModePolicy = SourceModePolicy {
-    key: "rest",
-    aliases: &[],
-    effective: "rest",
-    label_key: "delivery_rest",
-    label: "Direct Waku REST",
-    source_label: "Direct Waku REST",
-    summary: "Read-only health, info, version, and optional metrics",
-    implemented: true,
-    adapter: DELIVERY_REST_ADAPTER,
-};
-const FALLBACK_STORAGE_SOURCE_MODE: SourceModePolicy = SourceModePolicy {
-    key: "rest",
-    aliases: &[],
-    effective: "rest",
-    label_key: "storage_rest",
-    label: "Standalone REST",
-    source_label: "Standalone REST",
-    summary: "Read-only space, identity, local data, debug, and metrics",
-    implemented: true,
-    adapter: STORAGE_REST_ADAPTER,
+    implemented: false,
+    adapter: SourceAdapterPolicy {
+        connector_id: "unconfigured",
+        connection_type: AdapterConnectionType::Rpc,
+        target: "rpc_endpoint",
+        module_id: None,
+        inputs: &[],
+        capabilities: &[],
+        supports_cid_probe: false,
+        supports_mutating_diagnostics: false,
+    },
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,6 +76,8 @@ pub enum SourceFamily {
     Core,
     Delivery,
     Storage,
+    ExecutionZoneSequencer,
+    ExecutionZoneIndexer,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -308,28 +255,8 @@ pub struct SourceModeFamilies {
     pub core: &'static [SourceModePolicy],
     pub delivery: &'static [SourceModePolicy],
     pub storage: &'static [SourceModePolicy],
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct SourceModePolicy {
-    pub key: &'static str,
-    pub aliases: &'static [&'static str],
-    pub effective: &'static str,
-    pub label_key: &'static str,
-    pub label: &'static str,
-    pub source_label: &'static str,
-    pub summary: &'static str,
-    pub implemented: bool,
-    pub adapter: SourceAdapterPolicy,
-}
-
-#[derive(Debug, Clone, Copy, Serialize)]
-pub struct SourceAdapterPolicy {
-    pub target: &'static str,
-    pub uses_rest_endpoint: bool,
-    pub uses_metrics_endpoint: bool,
-    pub supports_cid_probe: bool,
-    pub supports_mutating_diagnostics: bool,
+    pub execution_zone_sequencer: &'static [SourceModePolicy],
+    pub execution_zone_indexer: &'static [SourceModePolicy],
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -385,7 +312,7 @@ impl SourcePolicyCatalog {
     #[must_use]
     pub fn report(self) -> SourcePolicyReport {
         SourcePolicyReport {
-            version: 2,
+            version: 3,
             defaults: SourcePolicyDefaults {
                 node_endpoint: DEFAULT_NODE_ENDPOINT,
                 delivery_rest_endpoint: DEFAULT_DELIVERY_REST_ENDPOINT,
@@ -395,9 +322,11 @@ impl SourcePolicyCatalog {
             },
             network_profiles: network_profiles().to_vec(),
             source_modes: SourceModeFamilies {
-                core: CORE_SOURCE_MODES,
-                delivery: DELIVERY_SOURCE_MODES,
+                core: BEDROCK_SOURCE_MODES,
+                delivery: MESSAGING_SOURCE_MODES,
                 storage: STORAGE_SOURCE_MODES,
+                execution_zone_sequencer: source_modes_for_role(ChannelSourceRole::Sequencer),
+                execution_zone_indexer: source_modes_for_role(ChannelSourceRole::Indexer),
             },
         }
     }
@@ -421,134 +350,6 @@ impl SourcePolicyCatalog {
             .unwrap_or_else(|| fallback_source_mode(family))
     }
 }
-
-const CORE_SOURCE_MODES: &[SourceModePolicy] = &[
-    SourceModePolicy {
-        key: "rpc",
-        aliases: &[
-            "rpc",
-            "direct-rpc",
-            "direct rpc",
-            "standalone",
-            "standalone-rpc",
-            "standalone rpc",
-        ],
-        effective: "rpc",
-        label_key: "direct_rpc",
-        label: "Direct RPC",
-        source_label: "Direct RPC",
-        summary: "Use configured standalone RPC endpoint",
-        implemented: true,
-        adapter: RPC_ADAPTER,
-    },
-    SourceModePolicy {
-        key: "module",
-        aliases: &["module", "basecamp", "basecamp-module", "basecamp module"],
-        effective: "module",
-        label_key: "basecamp_module",
-        label: "Basecamp module",
-        source_label: "Basecamp module",
-        summary: "Use Basecamp module APIs where the installed modules expose Inspector data",
-        implemented: true,
-        adapter: MODULE_ADAPTER,
-    },
-];
-
-const DELIVERY_SOURCE_MODES: &[SourceModePolicy] = &[
-    SourceModePolicy {
-        key: "module",
-        aliases: &["module", "basecamp", "basecamp-module", "basecamp module"],
-        effective: "module",
-        label_key: "delivery_module",
-        label: "Delivery module",
-        source_label: "Delivery module",
-        summary: "Use delivery_module through logoscore for node lifecycle, subscriptions, and sends",
-        implemented: true,
-        adapter: MODULE_ADAPTER,
-    },
-    SourceModePolicy {
-        key: "rest",
-        aliases: &["rest", "direct-rest", "direct waku rest", "waku-rest"],
-        effective: "rest",
-        label_key: "delivery_rest",
-        label: "Direct Waku REST",
-        source_label: "Direct Waku REST",
-        summary: "Read-only health, info, version, and optional metrics",
-        implemented: true,
-        adapter: DELIVERY_REST_ADAPTER,
-    },
-    SourceModePolicy {
-        key: "metrics",
-        aliases: &["metrics", "metrics-only", "metrics only"],
-        effective: "metrics",
-        label_key: "metrics_only",
-        label: "Metrics only",
-        source_label: "Metrics only",
-        summary: "Scrape a Prometheus/OpenMetrics endpoint",
-        implemented: true,
-        adapter: DELIVERY_METRICS_ADAPTER,
-    },
-    SourceModePolicy {
-        key: "network-monitor",
-        aliases: &[
-            "network-monitor",
-            "delivery-network-monitor",
-            "delivery network monitor",
-            "discovery-crawler",
-            "discovery crawler",
-        ],
-        effective: "network-monitor",
-        label_key: "delivery_network_monitor",
-        label: "Delivery Network Monitor",
-        source_label: "Delivery Network Monitor",
-        summary: "Inspect Delivery fleet topology from allpeersinfo, contenttopics, and metrics",
-        implemented: true,
-        adapter: DELIVERY_MONITOR_ADAPTER,
-    },
-];
-
-const STORAGE_SOURCE_MODES: &[SourceModePolicy] = &[
-    SourceModePolicy {
-        key: "module",
-        aliases: &["module", "basecamp", "basecamp-module", "basecamp module"],
-        effective: "module",
-        label_key: "storage_module",
-        label: "Storage module",
-        source_label: "Storage module",
-        summary: "Use storage_module through logoscore for manifests, CID checks, uploads, downloads, and node storage operations",
-        implemented: true,
-        adapter: STORAGE_MODULE_ADAPTER,
-    },
-    SourceModePolicy {
-        key: "rest",
-        aliases: &[
-            "rest",
-            "standalone",
-            "standalone-rest",
-            "standalone rest",
-            "direct-rest",
-            "direct rest",
-        ],
-        effective: "rest",
-        label_key: "storage_rest",
-        label: "Standalone REST",
-        source_label: "Standalone REST",
-        summary: "Read-only space, identity, local data, debug, and metrics",
-        implemented: true,
-        adapter: STORAGE_REST_ADAPTER,
-    },
-    SourceModePolicy {
-        key: "metrics",
-        aliases: &["metrics", "metrics-only", "metrics only"],
-        effective: "metrics",
-        label_key: "metrics_only",
-        label: "Metrics only",
-        source_label: "Metrics only",
-        summary: "Scrape a Prometheus/OpenMetrics endpoint",
-        implemented: true,
-        adapter: STORAGE_METRICS_ADAPTER,
-    },
-];
 
 impl CoreSourceMode {
     pub fn from_token(value: &str) -> Option<Self> {
@@ -652,9 +453,11 @@ impl SourceFamily {
     #[must_use]
     pub fn modes(self) -> &'static [SourceModePolicy] {
         match self {
-            Self::Core => CORE_SOURCE_MODES,
-            Self::Delivery => DELIVERY_SOURCE_MODES,
+            Self::Core => BEDROCK_SOURCE_MODES,
+            Self::Delivery => MESSAGING_SOURCE_MODES,
             Self::Storage => STORAGE_SOURCE_MODES,
+            Self::ExecutionZoneSequencer => SEQUENCER_SOURCE_MODES,
+            Self::ExecutionZoneIndexer => INDEXER_SOURCE_MODES,
         }
     }
 
@@ -708,19 +511,33 @@ pub fn source_policy_report() -> SourcePolicyReport {
     SourcePolicyCatalog::new().report()
 }
 
+#[must_use]
+pub(crate) fn network_adapter_policy_for_connector(
+    connector_id: &str,
+) -> Option<&'static SourceAdapterPolicy> {
+    let bedrock = BedrockAdapterLayer;
+    let storage = StorageAdapterLayer;
+    let messaging = MessagingAdapterLayer;
+    let layers: [&dyn AdapterLayer; 3] = [&bedrock, &storage, &messaging];
+    adapter_for_connector(&layers, connector_id)
+}
+
 fn fallback_source_mode_key(family: SourceFamily) -> &'static str {
     match family {
-        SourceFamily::Core => "rpc",
+        SourceFamily::Core
+        | SourceFamily::ExecutionZoneSequencer
+        | SourceFamily::ExecutionZoneIndexer => "rpc",
         SourceFamily::Delivery | SourceFamily::Storage => "rest",
     }
 }
 
 fn fallback_source_mode(family: SourceFamily) -> &'static SourceModePolicy {
-    match family {
-        SourceFamily::Core => &FALLBACK_CORE_SOURCE_MODE,
-        SourceFamily::Delivery => &FALLBACK_DELIVERY_SOURCE_MODE,
-        SourceFamily::Storage => &FALLBACK_STORAGE_SOURCE_MODE,
-    }
+    family
+        .modes()
+        .iter()
+        .find(|mode| mode.key == fallback_source_mode_key(family))
+        .or_else(|| family.modes().first())
+        .unwrap_or(&EMERGENCY_SOURCE_MODE)
 }
 
 fn source_mode_matches(mode: &SourceModePolicy, value: &str) -> bool {
@@ -820,7 +637,7 @@ mod tests {
         );
 
         let report = catalog.report();
-        assert_eq!(report.version, 2);
+        assert_eq!(report.version, 3);
         assert!(
             report
                 .source_modes
@@ -849,7 +666,7 @@ mod tests {
             .iter()
             .find(|mode| mode.key == "network-monitor");
 
-        assert_eq!(policy.version, 2);
+        assert_eq!(policy.version, 3);
         assert_eq!(
             delivery_rest.map(|mode| mode.label),
             Some("Direct Waku REST")
@@ -858,8 +675,18 @@ mod tests {
             delivery_rest.map(|mode| mode.adapter.target),
             Some("rest_endpoint")
         );
-        assert!(delivery_rest.is_some_and(|mode| mode.adapter.uses_rest_endpoint));
-        assert!(delivery_rest.is_some_and(|mode| mode.adapter.uses_metrics_endpoint));
+        assert!(delivery_rest.is_some_and(|mode| {
+            mode.adapter
+                .inputs
+                .iter()
+                .any(|input| input.key == "rest_endpoint")
+        }));
+        assert!(delivery_rest.is_some_and(|mode| {
+            mode.adapter
+                .inputs
+                .iter()
+                .any(|input| input.key == "metrics_endpoint")
+        }));
         assert_eq!(
             storage_rest.map(|mode| mode.source_label),
             Some("Standalone REST")

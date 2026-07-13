@@ -9,7 +9,9 @@ pub(super) struct CapabilityRuntimeInputs {
     wallet_connector_config: Option<Value>,
     node_url: String,
     storage_rest_url: String,
+    storage_metrics_url: String,
     messaging_rest_url: String,
+    messaging_metrics_url: String,
     pub(super) storage_mutating_diagnostics_enabled: bool,
     pub(super) messaging_mutating_diagnostics_enabled: bool,
     pub(super) wallet_profile_configured: bool,
@@ -38,7 +40,9 @@ impl CapabilityRuntimeInputs {
             wallet_connector_config: value.get("wallet_connector_config").cloned(),
             node_url: string_input(value, "node_url"),
             storage_rest_url: string_input(value, "storage_rest_url"),
+            storage_metrics_url: string_input(value, "storage_metrics_url"),
             messaging_rest_url: string_input(value, "messaging_rest_url"),
+            messaging_metrics_url: string_input(value, "messaging_metrics_url"),
             storage_mutating_diagnostics_enabled: bool_input(
                 value,
                 "storage_mutating_diagnostics_enabled",
@@ -113,7 +117,9 @@ impl CapabilityRuntimeInputs {
         }
         match scope {
             "l1" => self.node_url.clone(),
+            "storage" if connector.id == "storage_metrics" => self.storage_metrics_url.clone(),
             "storage" => self.storage_rest_url.clone(),
+            "delivery" if connector.id == "delivery_metrics" => self.messaging_metrics_url.clone(),
             "delivery" => self.messaging_rest_url.clone(),
             _ => String::new(),
         }

@@ -54,10 +54,10 @@ QtObject {
     }
 
     function sourceArgs(extra) {
-        const args = [
-            effectiveSourceMode,
-            usesRestEndpoint ? restEndpoint : ""
-        ]
+        const args = [effectiveSourceMode]
+        if (usesRestEndpoint) {
+            args.push(restEndpoint)
+        }
         if (sourceArgsIncludeMutatingFlag) {
             args.push(mutatingDiagnosticsEnabled === true)
         }

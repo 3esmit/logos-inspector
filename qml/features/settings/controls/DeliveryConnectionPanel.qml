@@ -29,10 +29,9 @@ SourceSettingsPanel {
         }
 
         FieldRow {
+            visible: root.deliverySource().usesRestEndpoint
             theme: root.theme
             label: qsTr("Waku REST URL")
-            enabled: root.deliverySource().usesRestEndpoint
-            opacity: enabled ? 1 : 0.56
             sourceText: root.modelRef.messagingRestUrl
             syncSourceText: true
             placeholderText: qsTr("http://127.0.0.1:8645")
@@ -40,10 +39,9 @@ SourceSettingsPanel {
         }
 
         FieldRow {
+            visible: root.messagingMetricsEnabled()
             theme: root.theme
             label: qsTr("Metrics URL")
-            enabled: root.messagingMetricsEnabled()
-            opacity: enabled ? 1 : 0.56
             sourceText: root.modelRef.messagingMetricsUrl
             syncSourceText: true
             placeholderText: qsTr("http://127.0.0.1:8008/metrics")

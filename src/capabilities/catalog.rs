@@ -33,6 +33,14 @@ pub(super) fn provider_types() -> &'static [CapabilityProviderTypeReport] {
             label: "Direct REST endpoint",
         },
         CapabilityProviderTypeReport {
+            key: "direct_metrics",
+            label: "Direct metrics endpoint",
+        },
+        CapabilityProviderTypeReport {
+            key: "network_monitor",
+            label: "Network monitor",
+        },
+        CapabilityProviderTypeReport {
             key: "local_control",
             label: "Local control",
         },
@@ -113,6 +121,30 @@ pub(super) fn provider_instances() -> &'static [CapabilityProviderInstanceReport
             id: "direct_delivery_rest",
             provider_type: "direct_rest",
             label: "Direct Delivery REST",
+            module: None,
+            endpoint_role: Some("messaging_rest_url"),
+            capabilities: &["delivery"],
+        },
+        CapabilityProviderInstanceReport {
+            id: "storage_metrics",
+            provider_type: "direct_metrics",
+            label: "Storage metrics",
+            module: None,
+            endpoint_role: Some("storage_metrics_url"),
+            capabilities: &["storage"],
+        },
+        CapabilityProviderInstanceReport {
+            id: "delivery_metrics",
+            provider_type: "direct_metrics",
+            label: "Delivery metrics",
+            module: None,
+            endpoint_role: Some("messaging_metrics_url"),
+            capabilities: &["delivery"],
+        },
+        CapabilityProviderInstanceReport {
+            id: "delivery_network_monitor",
+            provider_type: "network_monitor",
+            label: "Delivery Network Monitor",
             module: None,
             endpoint_role: Some("messaging_rest_url"),
             capabilities: &["delivery"],
@@ -231,7 +263,9 @@ pub(super) fn capability_specs() -> &'static [CapabilitySpec] {
             label: "Storage",
             sub_capabilities: &[
                 "storage.identity.read",
+                "storage.space.read",
                 "storage.manifests.read",
+                "storage.metrics.read",
                 "storage.content.exists",
                 "storage.content.read_by_cid",
                 "storage.content.upload",
@@ -248,6 +282,7 @@ pub(super) fn capability_specs() -> &'static [CapabilitySpec] {
             label: "Delivery",
             sub_capabilities: &[
                 "delivery.identity.read",
+                "delivery.metrics.read",
                 "delivery.topics.read",
                 "delivery.store.query",
                 "delivery.subscribe",

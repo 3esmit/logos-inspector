@@ -87,6 +87,7 @@ function sourceModeAdapter(root, family, value) {
 function sourceModeDescriptor(root, family, value) {
     const policy = sourceModePolicy(root, family, value)
     const adapter = policy.adapter && typeof policy.adapter === "object" ? policy.adapter : ({})
+    const inputs = Array.isArray(adapter.inputs) ? adapter.inputs : []
     return {
         key: String(policy.key || defaultSourceMode(family)),
         effective: String(policy.effective || (family === "core" ? "rpc" : "rest")),
@@ -95,12 +96,32 @@ function sourceModeDescriptor(root, family, value) {
         summary: String(policy.summary || ""),
         implemented: policy.implemented === true,
         adapter: adapter,
+        connectorId: String(adapter.connector_id || ""),
+        connectionType: String(adapter.connection_type || ""),
         target: String(adapter.target || "none"),
-        usesRestEndpoint: adapter.uses_rest_endpoint === true,
-        usesMetricsEndpoint: adapter.uses_metrics_endpoint === true,
+        moduleId: String(adapter.module_id || ""),
+        inputs: inputs,
+        capabilities: Array.isArray(adapter.capabilities) ? adapter.capabilities : [],
+        usesRestEndpoint: adapterUsesInput(adapter, "rest_endpoint"),
+        usesMetricsEndpoint: adapterUsesInput(adapter, "metrics_endpoint"),
         supportsCidProbe: adapter.supports_cid_probe === true,
         supportsMutatingDiagnostics: adapter.supports_mutating_diagnostics === true
     }
+}
+
+function adapterUsesInput(adapter, inputKey) {
+    const inputs = adapter && Array.isArray(adapter.inputs) ? adapter.inputs : []
+    const key = String(inputKey || "")
+    for (let i = 0; i < inputs.length; ++i) {
+        if (String(inputs[i] && inputs[i].key || "") === key) {
+            return true
+        }
+    }
+    return false
+}
+
+function sourceModeUsesInput(root, family, value, inputKey) {
+    return adapterUsesInput(sourceModeDescriptor(root, family, value).adapter, inputKey)
 }
 
 function resolvedSourceModeKey(root, family, value) {
@@ -112,12 +133,13 @@ function sourceModeTargetKind(root, family, value) {
 }
 
 function sourceModeUsesEndpoint(root, family, value, endpointKind) {
-    const descriptor = sourceModeDescriptor(root, family, value)
     switch (String(endpointKind || "")) {
     case "rest":
-        return descriptor.usesRestEndpoint
+        return sourceModeUsesInput(root, family, value, "rest_endpoint")
     case "metrics":
-        return descriptor.usesMetricsEndpoint
+        return sourceModeUsesInput(root, family, value, "metrics_endpoint")
+    case "rpc":
+        return sourceModeUsesInput(root, family, value, "rpc_endpoint")
     default:
         return false
     }
@@ -134,24 +156,38 @@ function sourceModeSupportsMutatingDiagnostics(root, family, value) {
 function coreSourceArgs(root, sourceMode, endpoint, extra) {
     const rest = Array.isArray(extra) ? extra : []
     if (String(sourceModePolicy(root, "core", resolvedSourceModeKey(root, "core", sourceMode)).effective || "rpc") === "module") {
-        return ["module", String(endpoint || "")].concat(rest)
+        return ["module"].concat(rest)
     }
     return [String(endpoint || "")].concat(rest)
 }
 
 function deliverySourceReportArgs(root, sourceMode, restEndpoint, metricsEndpoint) {
-    return [
-        String(sourceModePolicy(root, "delivery", resolvedSourceModeKey(root, "delivery", sourceMode)).effective || "rest"),
-        sourceModeUsesEndpoint(root, "delivery", sourceMode, "rest") ? String(restEndpoint || "") : "",
-        sourceModeUsesEndpoint(root, "delivery", sourceMode, "metrics") ? String(metricsEndpoint || "") : ""
-    ]
+    const effective = String(sourceModePolicy(root, "delivery", resolvedSourceModeKey(root, "delivery", sourceMode)).effective || "rest")
+    if (effective === "module") {
+        return [effective]
+    }
+    if (effective === "metrics") {
+        return [effective, String(metricsEndpoint || "")]
+    }
+    return [effective, String(restEndpoint || ""), String(metricsEndpoint || "")]
 }
 
 function storageSourceReportArgs(root, sourceMode, restEndpoint, metricsEndpoint, cid, includeCidProbe, privilegedDebugEnabled) {
+    const effective = String(sourceModePolicy(root, "storage", resolvedSourceModeKey(root, "storage", sourceMode)).effective || "rest")
+    if (effective === "module") {
+        return [
+            effective,
+            includeCidProbe === true && sourceModeSupportsCidProbe(root, "storage", sourceMode) ? String(cid || "") : "",
+            privilegedDebugEnabled === true
+        ]
+    }
+    if (effective === "metrics") {
+        return [effective, String(metricsEndpoint || "")]
+    }
     return [
-        String(sourceModePolicy(root, "storage", resolvedSourceModeKey(root, "storage", sourceMode)).effective || "rest"),
-        sourceModeUsesEndpoint(root, "storage", sourceMode, "rest") ? String(restEndpoint || "") : "",
-        sourceModeUsesEndpoint(root, "storage", sourceMode, "metrics") ? String(metricsEndpoint || "") : "",
+        effective,
+        String(restEndpoint || ""),
+        String(metricsEndpoint || ""),
         includeCidProbe === true && sourceModeSupportsCidProbe(root, "storage", sourceMode) ? String(cid || "") : "",
         privilegedDebugEnabled === true
     ]

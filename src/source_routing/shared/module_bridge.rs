@@ -28,9 +28,9 @@ pub(crate) fn storage_args(
         return Ok(None);
     }
     if uses_mutating_flag {
-        require_mutating(args, 2, action_label)?;
+        require_mutating(args, 1, action_label)?;
     }
-    let start_index = if uses_mutating_flag { 3 } else { 2 };
+    let start_index = if uses_mutating_flag { 2 } else { 1 };
     Ok(Some(ModuleCallArgs {
         values: args.iter().skip(start_index).cloned().collect(),
     }))
@@ -49,8 +49,8 @@ pub(crate) fn delivery_message_args(
     if !is_delivery_module_source_token(source) {
         return Ok(None);
     }
-    require_mutating(args, 2, action_label)?;
-    let values = args.iter().skip(3).cloned().collect::<Vec<_>>();
+    require_mutating(args, 1, action_label)?;
+    let values = args.iter().skip(2).cloned().collect::<Vec<_>>();
     if values.is_empty() {
         bail!("delivery module message arguments are required");
     }
@@ -65,8 +65,8 @@ pub(crate) fn delivery_lifecycle_args(args: &Args, action_label: &str) -> Result
         if !is_delivery_module_source_token(source) {
             bail!("delivery node lifecycle actions require delivery module source");
         }
-        require_mutating(args, 2, action_label)?;
-        3
+        require_mutating(args, 1, action_label)?;
+        2
     } else {
         require_mutating(args, 0, action_label)?;
         0

@@ -10,7 +10,7 @@ use crate::{
         build_zone_comment_topic, decode_comment_page as decode_social_comment_page,
         decode_social_messages, project_comment_event as decode_social_comment_row, validate_topic,
     },
-    source_routing::{storage_rest_download_bytes, storage_rest_source},
+    source_routing::{storage_layer, storage_rest_source},
     support::args::Args,
 };
 
@@ -124,7 +124,7 @@ pub(super) fn accepted_shared_idl_entries_from_store_with_storage(
         args.string(5, "storage source mode")?,
         args.string(6, "storage REST endpoint")?
     ]))?;
-    if crate::source_routing::is_storage_module_source(&storage_args) {
+    if storage_layer::is_module_source(&storage_args) {
         bail!(
             "shared IDL CID fetch through storage_module needs storageDownloadDone correlation; use Direct REST source for synchronous shared IDL fetch"
         )
@@ -166,7 +166,7 @@ fn hydrate_shared_idl_payload(
         return Ok(());
     }
     let bytes = runtime
-        .block_on(storage_rest_download_bytes(endpoint, idl_cid, local_only))
+        .block_on(storage_layer::download_bytes(endpoint, idl_cid, local_only))
         .with_context(|| format!("failed to fetch shared IDL CID {idl_cid}"))?;
     let text = String::from_utf8(bytes).context("shared IDL CID payload is not UTF-8")?;
     let value: Value = serde_json::from_str(&text).context("shared IDL CID payload is not JSON")?;

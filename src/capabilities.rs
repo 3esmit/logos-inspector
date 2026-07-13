@@ -934,7 +934,7 @@ mod tests {
             "network_connector_config": {
                 "scopes": {
                     "storage": {
-                        "connector_id": "storage_metrics",
+                        "connector_id": "unknown_storage_adapter",
                         "provenance": "network_profile"
                     }
                 }
@@ -958,6 +958,44 @@ mod tests {
             .is_none_or(|items| items.is_empty())
         {
             bail!("unknown storage connector should report compact error: {storage}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn storage_metrics_adapter_exposes_only_declared_capability() -> Result<()> {
+        let inputs = serde_json::json!({
+            "network_connector_config": {
+                "scopes": {
+                    "storage": {
+                        "connector_id": "storage_metrics",
+                        "provenance": "network_profile"
+                    }
+                }
+            },
+            "storage_metrics_url": "http://127.0.0.1:8008/metrics",
+            "source_reports": {
+                "storage": {
+                    "health": {
+                        "status": "ready",
+                        "ready": true,
+                        "reachable": true
+                    }
+                }
+            }
+        });
+        let value = serde_json::to_value(capability_registry_report_with_value(
+            CapabilityBuildMode::Standalone,
+            Some(&inputs),
+        ))?;
+        let Some(storage) = capability_for(&value, "storage") else {
+            bail!("storage capability missing: {value}");
+        };
+
+        if unavailable_contains(storage, "storage.metrics.read")
+            || !unavailable_contains(storage, "storage.identity.read")
+        {
+            bail!("metrics adapter capability mask is incorrect: {storage}");
         }
         Ok(())
     }

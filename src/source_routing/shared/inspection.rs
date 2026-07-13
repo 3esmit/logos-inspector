@@ -11,17 +11,20 @@ use super::report::{
     source_report_from_evidence, source_text_metrics_report, unsupported_source_report,
 };
 use crate::source_routing::{
-    DEFAULT_DELIVERY_METRICS_ENDPOINT, DEFAULT_DELIVERY_REST_ENDPOINT,
-    DEFAULT_STORAGE_METRICS_ENDPOINT, DEFAULT_STORAGE_REST_ENDPOINT, DeliverySourceMode,
-    DeliverySourceReportKind, SourceProbeKey, SourceReport, StorageSourceMode,
-    StorageSourceReportKind,
+    DeliverySourceReportKind, SourceProbeKey, SourceReport, StorageSourceReportKind,
+    delivery::layer::MessagingAdapter, storage::layer::StorageAdapter,
 };
 use crate::{
     ProbeReport,
-    modules::{ModuleReport, delivery_report, storage_report},
+    modules::ModuleReport,
+    source_routing::{messaging_layer, storage_layer},
 };
 
-use super::http::raw_http_text_url;
+#[derive(Debug, Clone, Copy)]
+enum ProbeNode {
+    Storage,
+    Messaging,
+}
 
 pub async fn storage_source_report(
     source_mode: &str,
@@ -30,25 +33,17 @@ pub async fn storage_source_report(
     cid: Option<&str>,
     privileged_debug_enabled: bool,
 ) -> SourceReport {
-    match StorageSourceMode::from_token(source_mode)
-        .effective()
-        .as_str()
-    {
-        "module" => module_source_report(
+    match StorageAdapter::select(source_mode, rest_endpoint, metrics_endpoint) {
+        StorageAdapter::Module => module_source_report(
             SourceReportKind::Storage(StorageSourceReportKind::Module),
-            storage_report(cid, privileged_debug_enabled),
+            storage_layer::module_report(cid, privileged_debug_enabled),
         ),
-        "rest" => {
-            storage_rest_report(
-                rest_endpoint,
-                metrics_endpoint,
-                cid,
-                privileged_debug_enabled,
-            )
-            .await
-        }
-        "metrics" => storage_metrics_report(metrics_endpoint).await,
-        mode => unsupported_storage_source_report(mode),
+        StorageAdapter::Rest {
+            endpoint,
+            metrics_endpoint,
+        } => storage_rest_report(endpoint, metrics_endpoint, cid, privileged_debug_enabled).await,
+        StorageAdapter::Metrics { endpoint } => storage_metrics_report(endpoint).await,
+        StorageAdapter::Unsupported { mode } => unsupported_storage_source_report(mode),
     }
 }
 
@@ -57,18 +52,21 @@ pub async fn delivery_source_report(
     rest_endpoint: Option<&str>,
     metrics_endpoint: Option<&str>,
 ) -> SourceReport {
-    match DeliverySourceMode::from_token(source_mode)
-        .effective()
-        .as_str()
-    {
-        "module" => module_source_report(
+    match MessagingAdapter::select(source_mode, rest_endpoint, metrics_endpoint) {
+        MessagingAdapter::Module => module_source_report(
             SourceReportKind::Delivery(DeliverySourceReportKind::Module),
-            delivery_report(None),
+            messaging_layer::module_report(None),
         ),
-        "rest" => delivery_rest_report(rest_endpoint, metrics_endpoint).await,
-        "metrics" => delivery_metrics_report(metrics_endpoint).await,
-        "network-monitor" => delivery_network_monitor_report(rest_endpoint, metrics_endpoint).await,
-        mode => unsupported_delivery_source_report(mode),
+        MessagingAdapter::Rest {
+            endpoint,
+            metrics_endpoint,
+        } => delivery_rest_report(endpoint, metrics_endpoint).await,
+        MessagingAdapter::Metrics { endpoint } => delivery_metrics_report(endpoint).await,
+        MessagingAdapter::NetworkMonitor {
+            endpoint,
+            metrics_endpoint,
+        } => delivery_network_monitor_report(endpoint, metrics_endpoint).await,
+        MessagingAdapter::Unsupported { mode } => unsupported_delivery_source_report(mode),
     }
 }
 
@@ -92,12 +90,12 @@ fn optional_probe_steps<'a>(
         .collect()
 }
 
-async fn http_json_probe(endpoint: &str, step: &HttpJsonProbeStep) -> ProbeReport {
+async fn http_json_probe(node: ProbeNode, endpoint: &str, step: &HttpJsonProbeStep) -> ProbeReport {
     keyed_probe_result(
         step.key,
         step.label,
         http_url(endpoint, &step.path),
-        raw_http_value(endpoint, &step.path)
+        probe_value(node, endpoint, &step.path)
             .await
             .map(|value| normalize_http_probe_value(value, &step.normalizer)),
     )
@@ -117,12 +115,11 @@ fn normalize_http_probe_value(value: Value, normalizer: &HttpProbeNormalizer) ->
 }
 
 async fn storage_rest_report(
-    rest_endpoint: Option<&str>,
+    endpoint: &str,
     metrics_endpoint: Option<&str>,
     cid: Option<&str>,
     privileged_debug_enabled: bool,
 ) -> SourceReport {
-    let endpoint = optional(rest_endpoint).unwrap_or(DEFAULT_STORAGE_REST_ENDPOINT);
     let plan = storage_rest_probe_plan(cid, privileged_debug_enabled);
     let Some(space_step) = probe_step(&plan, SourceProbeKey::StorageSpace) else {
         return unsupported_storage_source_report("rest");
@@ -137,10 +134,10 @@ async fn storage_rest_report(
         return unsupported_storage_source_report("rest");
     };
     let (space_probe, spr_probe, peer_id_probe, manifests_probe) = tokio::join!(
-        http_json_probe(endpoint, space_step),
-        http_json_probe(endpoint, spr_step),
-        http_json_probe(endpoint, peer_id_step),
-        http_json_probe(endpoint, manifests_step),
+        http_json_probe(ProbeNode::Storage, endpoint, space_step),
+        http_json_probe(ProbeNode::Storage, endpoint, spr_step),
+        http_json_probe(ProbeNode::Storage, endpoint, peer_id_step),
+        http_json_probe(ProbeNode::Storage, endpoint, manifests_step),
     );
     let mut report =
         SourceReportBuilder::storage("storage_rest", StorageSourceReportKind::Rest, space_probe)
@@ -165,7 +162,7 @@ async fn storage_rest_report(
             SourceProbeKey::StorageManifests,
         ],
     ) {
-        report.push_probe(http_json_probe(endpoint, step).await);
+        report.push_probe(http_json_probe(ProbeNode::Storage, endpoint, step).await);
     }
     if let Some(metrics_endpoint) = optional(metrics_endpoint) {
         report.push_probe(storage_metrics_probe(metrics_endpoint).await);
@@ -173,8 +170,7 @@ async fn storage_rest_report(
     report.finish()
 }
 
-async fn storage_metrics_report(metrics_endpoint: Option<&str>) -> SourceReport {
-    let endpoint = optional(metrics_endpoint).unwrap_or(DEFAULT_STORAGE_METRICS_ENDPOINT);
+async fn storage_metrics_report(endpoint: &str) -> SourceReport {
     source_text_metrics_report(
         "storage_metrics",
         SourceReportKind::Storage(StorageSourceReportKind::Metrics),
@@ -187,7 +183,7 @@ async fn storage_metrics_report(metrics_endpoint: Option<&str>) -> SourceReport 
             key: SourceProbeKey::StorageCollectMetrics,
             label: "storage_metrics.collectMetrics",
         },
-        raw_http_text_url(endpoint).await,
+        storage_layer::probe_metrics(endpoint).await,
     )
 }
 
@@ -196,7 +192,7 @@ async fn storage_metrics_probe(metrics_endpoint: &str) -> ProbeReport {
         SourceProbeKey::StorageCollectMetrics,
         "storage_rest.collectMetrics",
         metrics_endpoint,
-        raw_http_text_url(metrics_endpoint).await,
+        storage_layer::probe_metrics(metrics_endpoint).await,
     )
 }
 
@@ -235,11 +231,7 @@ fn normalize_storage_exists(value: Value, cid: &str) -> Value {
     scalar_field(&value, &[cid, "exists", "has", "value", "result"]).unwrap_or(value)
 }
 
-async fn delivery_rest_report(
-    rest_endpoint: Option<&str>,
-    metrics_endpoint: Option<&str>,
-) -> SourceReport {
-    let endpoint = optional(rest_endpoint).unwrap_or(DEFAULT_DELIVERY_REST_ENDPOINT);
+async fn delivery_rest_report(endpoint: &str, metrics_endpoint: Option<&str>) -> SourceReport {
     let plan = delivery_rest_probe_plan();
     let Some(health_step) = probe_step(&plan, SourceProbeKey::DeliveryHealth) else {
         return unsupported_delivery_source_report("rest");
@@ -251,9 +243,9 @@ async fn delivery_rest_report(
         return unsupported_delivery_source_report("rest");
     };
     let (health_probe, info_probe, version_probe) = tokio::join!(
-        http_json_probe(endpoint, health_step),
-        http_json_probe(endpoint, info_step),
-        http_json_probe(endpoint, version_step),
+        http_json_probe(ProbeNode::Messaging, endpoint, health_step),
+        http_json_probe(ProbeNode::Messaging, endpoint, info_step),
+        http_json_probe(ProbeNode::Messaging, endpoint, version_step),
     );
     let health_value = health_probe.value.clone();
     let info_value = info_probe.value.clone();
@@ -379,8 +371,7 @@ fn push_delivery_probe(
     }
 }
 
-async fn delivery_metrics_report(metrics_endpoint: Option<&str>) -> SourceReport {
-    let endpoint = optional(metrics_endpoint).unwrap_or(DEFAULT_DELIVERY_METRICS_ENDPOINT);
+async fn delivery_metrics_report(endpoint: &str) -> SourceReport {
     source_text_metrics_report(
         "delivery_metrics",
         SourceReportKind::Delivery(DeliverySourceReportKind::Metrics),
@@ -393,7 +384,7 @@ async fn delivery_metrics_report(metrics_endpoint: Option<&str>) -> SourceReport
             key: SourceProbeKey::DeliveryCollectOpenMetricsText,
             label: "delivery_metrics.collectOpenMetricsText",
         },
-        raw_http_text_url(endpoint).await,
+        messaging_layer::probe_metrics(endpoint).await,
     )
 }
 
@@ -402,15 +393,14 @@ async fn delivery_metrics_probe(metrics_endpoint: &str) -> ProbeReport {
         SourceProbeKey::DeliveryCollectOpenMetricsText,
         "delivery_rest.collectOpenMetricsText",
         metrics_endpoint,
-        raw_http_text_url(metrics_endpoint).await,
+        messaging_layer::probe_metrics(metrics_endpoint).await,
     )
 }
 
 async fn delivery_network_monitor_report(
-    rest_endpoint: Option<&str>,
+    endpoint: &str,
     metrics_endpoint: Option<&str>,
 ) -> SourceReport {
-    let endpoint = optional(rest_endpoint).unwrap_or(DEFAULT_DELIVERY_REST_ENDPOINT);
     let plan = delivery_network_monitor_probe_plan();
     let Some(all_peers_step) = probe_step(&plan, SourceProbeKey::DeliveryAllPeersInfo) else {
         return unsupported_delivery_source_report("network-monitor");
@@ -419,8 +409,8 @@ async fn delivery_network_monitor_report(
         return unsupported_delivery_source_report("network-monitor");
     };
     let (all_peers_probe, content_topics_probe) = tokio::join!(
-        http_json_probe(endpoint, all_peers_step),
-        http_json_probe(endpoint, content_topics_step),
+        http_json_probe(ProbeNode::Messaging, endpoint, all_peers_step),
+        http_json_probe(ProbeNode::Messaging, endpoint, content_topics_step),
     );
     let mut report = SourceReportBuilder::delivery(
         "delivery_network_monitor",
@@ -434,7 +424,7 @@ async fn delivery_network_monitor_report(
             SourceProbeKey::DeliveryCollectOpenMetricsText,
             "delivery_network_monitor.collectOpenMetricsText",
             metrics_endpoint,
-            raw_http_text_url(metrics_endpoint).await,
+            messaging_layer::probe_metrics(metrics_endpoint).await,
         );
     }
     report.finish()
@@ -449,15 +439,10 @@ fn unsupported_delivery_source_report(mode: &str) -> SourceReport {
     )
 }
 
-async fn raw_http_value(endpoint: &str, path: &str) -> Result<Value> {
-    let text = raw_http_text_url(&http_url(endpoint, path)).await?;
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return Ok(Value::Null);
-    }
-    match serde_json::from_str(trimmed) {
-        Ok(value) => Ok(value),
-        Err(_) => Ok(Value::String(trimmed.to_owned())),
+async fn probe_value(node: ProbeNode, endpoint: &str, path: &str) -> Result<Value> {
+    match node {
+        ProbeNode::Storage => storage_layer::probe_value(endpoint, path).await,
+        ProbeNode::Messaging => messaging_layer::probe_value(endpoint, path).await,
     }
 }
 

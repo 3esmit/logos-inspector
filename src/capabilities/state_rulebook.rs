@@ -8,6 +8,7 @@ use super::{
     runtime_evidence,
     runtime_inputs::{CapabilityRuntimeInputs, ResolvedConnector},
 };
+use crate::source_routing::network_adapter_policy_for_connector;
 
 pub(super) fn capability_state(
     inputs: &CapabilityRuntimeInputs,
@@ -69,14 +70,19 @@ fn endpoint_backed_state(
     connector: &ResolvedConnector,
     sub_capabilities: &[&str],
 ) -> CapabilityState {
-    let requires_endpoint = !connector.id.ends_with("_module") && connector.id != "lez_core";
+    let requires_endpoint = network_adapter_policy_for_connector(&connector.id)
+        .is_some_and(|adapter| adapter.inputs.iter().any(|input| input.required));
     if requires_endpoint && inputs.endpoint_for(scope, connector).is_empty() {
         return input_required_state(
             sub_capabilities,
             format!("{} endpoint is required", scope_label(scope)),
         );
     }
-    source_report_state(inputs, scope, scope_label(scope), sub_capabilities)
+    adapter_constrained_state(
+        source_report_state(inputs, scope, scope_label(scope), sub_capabilities),
+        connector,
+        sub_capabilities,
+    )
 }
 
 fn storage_state(
@@ -84,55 +90,39 @@ fn storage_state(
     connector: &ResolvedConnector,
     sub_capabilities: &[&str],
 ) -> CapabilityState {
-    match connector.id.as_str() {
-        "storage_module" => {
-            let state = source_report_state(inputs, "storage", "Storage", sub_capabilities);
-            let unavailable = vec![
-                "storage.rest.read_by_cid".to_owned(),
-                "storage.rest.upload".to_owned(),
-                "storage.backup.sync_read_by_cid".to_owned(),
-                "storage.backup.sync_upload".to_owned(),
-            ];
-            merge_state_constraints(
-                state,
-                unavailable,
-                vec![
-                    "Storage module does not support synchronous backup CID read/upload paths"
-                        .to_owned(),
-                ],
-                Vec::new(),
-            )
-        }
-        "direct_storage_rest" => {
-            if inputs.endpoint_for("storage", connector).is_empty() {
-                return input_required_state(
-                    sub_capabilities,
-                    "storage REST endpoint is required".to_owned(),
-                );
-            }
-            let state = source_report_state(inputs, "storage", "Storage", sub_capabilities);
-            let unavailable = if inputs.storage_mutating_diagnostics_enabled {
-                Vec::new()
-            } else {
-                vec![
-                    "storage.content.upload".to_owned(),
-                    "storage.rest.upload".to_owned(),
-                    "storage.content.download_to_file".to_owned(),
-                    "storage.content.remove".to_owned(),
-                ]
-            };
-            let warnings = if unavailable.is_empty() {
-                Vec::new()
-            } else {
-                vec!["Storage mutating diagnostics are disabled".to_owned()]
-            };
-            merge_state_constraints(state, unavailable, warnings, Vec::new())
-        }
-        _ => unavailable_state(
+    let Some(adapter) = network_adapter_policy_for_connector(&connector.id) else {
+        return unavailable_state(
             sub_capabilities,
             format!("connector `{}` does not provide Storage", connector.id),
-        ),
+        );
+    };
+    if adapter.inputs.iter().any(|input| input.required)
+        && inputs.endpoint_for("storage", connector).is_empty()
+    {
+        return input_required_state(
+            sub_capabilities,
+            "Storage adapter endpoint is required".to_owned(),
+        );
     }
+    let state = adapter_constrained_state(
+        source_report_state(inputs, "storage", "Storage", sub_capabilities),
+        connector,
+        sub_capabilities,
+    );
+    if connector.id != "direct_storage_rest" || inputs.storage_mutating_diagnostics_enabled {
+        return state;
+    }
+    merge_state_constraints(
+        state,
+        vec![
+            "storage.content.upload".to_owned(),
+            "storage.rest.upload".to_owned(),
+            "storage.content.download_to_file".to_owned(),
+            "storage.content.remove".to_owned(),
+        ],
+        vec!["Storage mutating diagnostics are disabled".to_owned()],
+        Vec::new(),
+    )
 }
 
 fn delivery_state(
@@ -140,39 +130,64 @@ fn delivery_state(
     connector: &ResolvedConnector,
     sub_capabilities: &[&str],
 ) -> CapabilityState {
-    match connector.id.as_str() {
-        "delivery_module" => source_report_state(inputs, "delivery", "Delivery", sub_capabilities),
-        "direct_delivery_rest" => {
-            if inputs.endpoint_for("delivery", connector).is_empty() {
-                return input_required_state(
-                    sub_capabilities,
-                    "delivery REST endpoint is required".to_owned(),
-                );
-            }
-            let state = source_report_state(inputs, "delivery", "Delivery", sub_capabilities);
-            let unavailable = if inputs.messaging_mutating_diagnostics_enabled {
-                Vec::new()
-            } else {
-                vec![
-                    "delivery.subscribe".to_owned(),
-                    "delivery.unsubscribe".to_owned(),
-                    "delivery.send".to_owned(),
-                    "delivery.node.start".to_owned(),
-                    "delivery.node.stop".to_owned(),
-                ]
-            };
-            let warnings = if unavailable.is_empty() {
-                Vec::new()
-            } else {
-                vec!["Delivery mutating diagnostics are disabled".to_owned()]
-            };
-            merge_state_constraints(state, unavailable, warnings, Vec::new())
-        }
-        _ => unavailable_state(
+    let Some(adapter) = network_adapter_policy_for_connector(&connector.id) else {
+        return unavailable_state(
             sub_capabilities,
             format!("connector `{}` does not provide Delivery", connector.id),
-        ),
+        );
+    };
+    if adapter.inputs.iter().any(|input| input.required)
+        && inputs.endpoint_for("delivery", connector).is_empty()
+    {
+        return input_required_state(
+            sub_capabilities,
+            "Delivery adapter endpoint is required".to_owned(),
+        );
     }
+    let state = adapter_constrained_state(
+        source_report_state(inputs, "delivery", "Delivery", sub_capabilities),
+        connector,
+        sub_capabilities,
+    );
+    if connector.id != "direct_delivery_rest" || inputs.messaging_mutating_diagnostics_enabled {
+        return state;
+    }
+    merge_state_constraints(
+        state,
+        vec![
+            "delivery.subscribe".to_owned(),
+            "delivery.unsubscribe".to_owned(),
+            "delivery.send".to_owned(),
+            "delivery.node.start".to_owned(),
+            "delivery.node.stop".to_owned(),
+        ],
+        vec!["Delivery mutating diagnostics are disabled".to_owned()],
+        Vec::new(),
+    )
+}
+
+fn adapter_constrained_state(
+    state: CapabilityState,
+    connector: &ResolvedConnector,
+    sub_capabilities: &[&str],
+) -> CapabilityState {
+    let Some(adapter) = network_adapter_policy_for_connector(&connector.id) else {
+        return state;
+    };
+    let unavailable = sub_capabilities
+        .iter()
+        .filter(|capability| !adapter.capabilities.contains(capability))
+        .map(|capability| (*capability).to_owned())
+        .collect::<Vec<_>>();
+    let warnings = if unavailable.is_empty() {
+        Vec::new()
+    } else {
+        vec![format!(
+            "{} adapter does not implement every capability",
+            connector.id
+        )]
+    };
+    merge_state_constraints(state, unavailable, warnings, Vec::new())
 }
 
 fn wallet_state(inputs: &CapabilityRuntimeInputs, sub_capabilities: &[&str]) -> CapabilityState {

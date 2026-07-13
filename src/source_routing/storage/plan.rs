@@ -1,4 +1,4 @@
-use crate::source_routing::{ModuleProbeStep, SourceProbeKey};
+use crate::source_routing::{SourceProbeKey, shared::plan::ModuleProbeStep};
 
 pub(crate) fn storage_module_probe_plan<'a>(
     cid: Option<&'a str>,

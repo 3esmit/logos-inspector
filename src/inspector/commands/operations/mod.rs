@@ -12,10 +12,7 @@ use anyhow::{Context as _, Result, bail};
 use serde_json::{Value, json};
 use tokio::runtime::Runtime;
 
-use crate::source_routing;
 use crate::support::time::now_millis;
-
-use super::value::blocking_value;
 
 mod blockchain;
 mod delivery;
@@ -50,34 +47,6 @@ use spec::{OperationExclusiveGroup, normalized_operation_method};
 
 #[cfg(test)]
 use record::test_runtime_operation_record;
-
-pub(super) async fn blocking_module_call(
-    label: &'static str,
-    module: &'static str,
-    method: &'static str,
-    args: Vec<Value>,
-) -> Result<Value> {
-    blocking_value(label, move || {
-        source_routing::call_value(module, method, &args)
-    })
-    .await
-}
-
-pub(super) async fn blocking_module_dispatch(
-    label: &'static str,
-    module: &'static str,
-    method: &'static str,
-    args: Vec<Value>,
-    context: Vec<(&'static str, String)>,
-) -> Result<Value> {
-    blocking_value(label, move || {
-        let value = source_routing::call_value(module, method, &args)?;
-        Ok(source_routing::dispatch_result(
-            module, method, value, &context,
-        ))
-    })
-    .await
-}
 
 #[derive(Debug)]
 pub(crate) struct RuntimeOperations {

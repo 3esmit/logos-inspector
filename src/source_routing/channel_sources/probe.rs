@@ -3,15 +3,7 @@ use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{ChannelSourceRole, ChannelSourceTarget};
-use crate::{
-    lez::{
-        indexer_block_by_id as direct_indexer_block_by_id, indexer_finalized_block_id,
-        indexer_health as direct_indexer_health, last_sequencer_block_id, sequencer_block,
-        sequencer_channel_id, sequencer_health,
-    },
-    source_routing::core::adapters::module,
-};
+use super::{ChannelSourceRole, ChannelSourceTarget, layer};
 
 const SOURCE_PROBE_TIMEOUT: Duration = Duration::from_secs(8);
 
@@ -330,12 +322,12 @@ impl ChannelSourceProbeTransport for DefaultChannelSourceProbeTransport {
         Box::pin(async move {
             match (role, target) {
                 (ChannelSourceRole::Sequencer, ChannelSourceTarget::Rpc { endpoint }) => {
-                    sequencer_health(&endpoint).await.map_err(|_| {
+                    layer::sequencer_health(&endpoint).await.map_err(|_| {
                         ChannelSourceProbeFailure::unavailable("Sequencer health request failed")
                     })
                 }
                 (ChannelSourceRole::Indexer, ChannelSourceTarget::Rpc { endpoint }) => {
-                    direct_indexer_health(&endpoint)
+                    layer::indexer_health(&endpoint)
                         .await
                         .map(|_| ())
                         .map_err(|_| {
@@ -348,7 +340,12 @@ impl ChannelSourceProbeTransport for DefaultChannelSourceProbeTransport {
                     ))
                 }
                 (ChannelSourceRole::Indexer, ChannelSourceTarget::Module { .. }) => {
-                    run_module(module::indexer_health).await.map(|_| ())
+                    layer::module_indexer_health()
+                        .await
+                        .map(|_| ())
+                        .map_err(|_| {
+                            ChannelSourceProbeFailure::unavailable("Indexer module health failed")
+                        })
                 }
             }
         })
@@ -361,7 +358,7 @@ impl ChannelSourceProbeTransport for DefaultChannelSourceProbeTransport {
         Box::pin(async move {
             match target {
                 ChannelSourceTarget::Rpc { endpoint } => {
-                    sequencer_channel_id(&endpoint).await.map_err(|_| {
+                    layer::sequencer_channel_id(&endpoint).await.map_err(|_| {
                         ChannelSourceProbeFailure::unavailable(
                             "Sequencer Channel identity request failed",
                         )
@@ -377,11 +374,11 @@ impl ChannelSourceProbeTransport for DefaultChannelSourceProbeTransport {
     fn sequencer_head_id(self: Arc<Self>, target: ChannelSourceTarget) -> TransportFuture<u64> {
         Box::pin(async move {
             match target {
-                ChannelSourceTarget::Rpc { endpoint } => {
-                    last_sequencer_block_id(&endpoint).await.map_err(|_| {
+                ChannelSourceTarget::Rpc { endpoint } => layer::sequencer_last_block_id(&endpoint)
+                    .await
+                    .map_err(|_| {
                         ChannelSourceProbeFailure::unavailable("Sequencer head request failed")
-                    })
-                }
+                    }),
                 ChannelSourceTarget::Module { .. } => Err(ChannelSourceProbeFailure::unsupported(
                     "configured module does not expose Sequencer head inspection",
                 )),
@@ -396,14 +393,21 @@ impl ChannelSourceProbeTransport for DefaultChannelSourceProbeTransport {
         Box::pin(async move {
             match target {
                 ChannelSourceTarget::Rpc { endpoint } => {
-                    indexer_finalized_block_id(&endpoint).await.map_err(|_| {
+                    layer::indexer_finalized_block_id(&endpoint)
+                        .await
+                        .map_err(|_| {
+                            ChannelSourceProbeFailure::unavailable(
+                                "Indexer finalized-head request failed",
+                            )
+                        })
+                }
+                ChannelSourceTarget::Module { .. } => layer::module_indexer_finalized_head()
+                    .await
+                    .map_err(|_| {
                         ChannelSourceProbeFailure::unavailable(
-                            "Indexer finalized-head request failed",
+                            "Indexer module finalized-head request failed",
                         )
                     })
-                }
-                ChannelSourceTarget::Module { .. } => run_module(module::indexer_finalized_head)
-                    .await
                     .and_then(parse_optional_block_id),
             }
         })
@@ -418,7 +422,7 @@ impl ChannelSourceProbeTransport for DefaultChannelSourceProbeTransport {
         Box::pin(async move {
             match (role, target) {
                 (ChannelSourceRole::Sequencer, ChannelSourceTarget::Rpc { endpoint }) => {
-                    sequencer_block(&endpoint, block_id)
+                    layer::sequencer_block(&endpoint, block_id)
                         .await
                         .map(|block| block.map(sequencer_block_reference))
                         .map_err(|_| {
@@ -426,7 +430,7 @@ impl ChannelSourceProbeTransport for DefaultChannelSourceProbeTransport {
                         })
                 }
                 (ChannelSourceRole::Indexer, ChannelSourceTarget::Rpc { endpoint }) => {
-                    direct_indexer_block_by_id(&endpoint, block_id)
+                    layer::indexer_block_by_id(&endpoint, block_id)
                         .await
                         .map(|block| block.and_then(indexer_block_reference))
                         .map_err(|_| {
@@ -440,11 +444,8 @@ impl ChannelSourceProbeTransport for DefaultChannelSourceProbeTransport {
                 }
                 (ChannelSourceRole::Indexer, ChannelSourceTarget::Module { .. }) => {
                     let block =
-                        tokio::task::spawn_blocking(move || module::indexer_block_by_id(block_id))
+                        layer::module_indexer_block_by_id(block_id)
                             .await
-                            .map_err(|_| {
-                                ChannelSourceProbeFailure::unavailable("Indexer module task failed")
-                            })?
                             .map_err(|_| {
                                 ChannelSourceProbeFailure::unavailable(
                                     "Indexer module block request failed",
@@ -455,17 +456,6 @@ impl ChannelSourceProbeTransport for DefaultChannelSourceProbeTransport {
             }
         })
     }
-}
-
-async fn run_module<T, F>(task: F) -> Result<T, ChannelSourceProbeFailure>
-where
-    T: Send + 'static,
-    F: FnOnce() -> anyhow::Result<T> + Send + 'static,
-{
-    tokio::task::spawn_blocking(task)
-        .await
-        .map_err(|_| ChannelSourceProbeFailure::unavailable("module probe task failed"))?
-        .map_err(|_| ChannelSourceProbeFailure::unavailable("module probe request failed"))
 }
 
 fn parse_optional_block_id(value: Value) -> Result<Option<u64>, ChannelSourceProbeFailure> {

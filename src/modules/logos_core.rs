@@ -18,31 +18,265 @@ pub struct LogosCoreOutput {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LogoscoreModuleMethod {
+    name: String,
+    signature: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LogoscoreModuleDiscovery {
+    module: String,
+    methods: Vec<LogoscoreModuleMethod>,
+}
+
+impl LogoscoreModuleDiscovery {
+    pub(crate) fn require_method(&self, method: &str, signature: &str) -> Result<()> {
+        let Some(found) = self
+            .methods
+            .iter()
+            .find(|candidate| candidate.name == method)
+        else {
+            bail!(
+                "logoscore module `{}` does not expose invokable method `{method}`",
+                self.module
+            );
+        };
+        if found.signature != signature {
+            bail!(
+                "logoscore module `{}` method `{method}` signature mismatch: expected `{signature}`, found `{}`",
+                self.module,
+                found.signature
+            );
+        }
+        Ok(())
+    }
+}
+
+pub trait ModuleTransport {
+    fn call(&self, module: &str, method: &str, args: &[String]) -> Result<Value>;
+}
+
+#[derive(Debug, Clone)]
+pub struct LogoscoreCliTransport {
+    runtime: LogoscoreCliRuntime,
+}
+
+impl Default for LogoscoreCliTransport {
+    fn default() -> Self {
+        Self {
+            runtime: configured_runtime(),
+        }
+    }
+}
+
+impl LogoscoreCliTransport {
+    #[must_use]
+    pub(crate) fn for_runtime(runtime: LogoscoreCliRuntime) -> Self {
+        Self { runtime }
+    }
+}
+
+impl ModuleTransport for LogoscoreCliTransport {
+    fn call(&self, module: &str, method: &str, args: &[String]) -> Result<Value> {
+        serde_json::to_value(self.runtime.call(module, method, args)?)
+            .context("failed to serialize logoscore call output")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LogoscoreCliRuntime {
+    runner: LogosCoreRunner,
+}
+
+impl LogoscoreCliRuntime {
+    #[must_use]
+    pub(crate) fn managed(binary_path: String, config_dir: String) -> Self {
+        Self {
+            runner: LogosCoreRunner {
+                program: binary_path,
+                sudo_user: None,
+                home: None,
+                config_dir: Some(config_dir),
+                label: "Inspector-managed logoscore".to_owned(),
+            },
+        }
+    }
+
+    pub(crate) fn status(&self) -> Result<LogosCoreOutput> {
+        self.run_json(["status", "--json"], command_timeout())
+    }
+
+    pub(crate) fn status_with_timeout(&self, timeout: Duration) -> Result<LogosCoreOutput> {
+        self.run_json(["status", "--json"], timeout)
+    }
+
+    pub(crate) fn list_modules(&self) -> Result<LogosCoreOutput> {
+        self.run_json(["list-modules", "--json"], command_timeout())
+    }
+
+    pub(crate) fn module_info(&self, module: &str) -> Result<LogosCoreOutput> {
+        if module.trim().is_empty() {
+            bail!("module name is required");
+        }
+        self.run_json(["module-info", module, "--json"], command_timeout())
+    }
+
+    pub(crate) fn require_module_method(
+        &self,
+        module: &str,
+        method: &str,
+        signature: &str,
+    ) -> Result<()> {
+        let modules = self
+            .list_modules()
+            .context("failed to list logoscore modules")?;
+        let module_info = self
+            .module_info(module)
+            .with_context(|| format!("failed to inspect logoscore module `{module}`"))?;
+        module_discovery(module, &modules.value, &module_info.value)?
+            .require_method(method, signature)
+    }
+
+    pub(crate) fn ensure_module_loaded(&self, module: &str) -> Result<()> {
+        let modules = self
+            .list_modules()
+            .context("failed to list logoscore modules")?;
+        let rows = module_rows(&modules.value)?;
+        let Some(row) = rows
+            .iter()
+            .find(|candidate| candidate.get("name").and_then(Value::as_str) == Some(module))
+        else {
+            bail!("logoscore module `{module}` is not listed");
+        };
+        if row.get("status").and_then(Value::as_str) == Some("loaded") {
+            return Ok(());
+        }
+
+        self.run_json(["load-module", module, "--json"], command_timeout())
+            .with_context(|| format!("failed to load logoscore module `{module}`"))?;
+        Ok(())
+    }
+
+    pub(crate) fn call(
+        &self,
+        module: &str,
+        method: &str,
+        args: &[String],
+    ) -> Result<LogosCoreOutput> {
+        let command_args = call_arguments(module, method, args)?;
+        let mut output = self.run_json(command_args, command_timeout())?;
+        normalize_call_value(&mut output.value);
+        Ok(output)
+    }
+
+    #[must_use]
+    pub(crate) fn daemon_command(&self, persistence_path: &str, modules_dir: &str) -> Command {
+        command_for_runner(
+            &self.runner,
+            [
+                "--persistence-path",
+                persistence_path,
+                "daemon",
+                "--modules-dir",
+                modules_dir,
+            ],
+        )
+    }
+
+    #[must_use]
+    pub(crate) fn watch_command(&self, module: &str, event: &str) -> Command {
+        command_for_runner(&self.runner, ["watch", module, "--event", event, "--json"])
+    }
+
+    pub(crate) fn stop(&self) -> Result<LogosCoreOutput> {
+        self.run_json(["stop", "--json"], command_timeout())
+    }
+
+    fn run_json<I, S>(&self, args: I, timeout: Duration) -> Result<LogosCoreOutput>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        run_json_with(&self.runner, args, timeout)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct LogosCoreRunner {
     program: String,
     sudo_user: Option<String>,
     home: Option<String>,
+    config_dir: Option<String>,
     label: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RunnerPreference {
-    Default,
-    PreferService,
-}
-
 pub fn status() -> Result<LogosCoreOutput> {
-    run_json(["status", "--json"])
+    configured_runtime().status()
 }
 
 pub fn module_info(module: &str) -> Result<LogosCoreOutput> {
     if module.trim().is_empty() {
         bail!("module name is required");
     }
-    run_json_prefer_service(["module-info", module, "--json"])
+    configured_runtime().module_info(module)
+}
+
+fn module_discovery(
+    module: &str,
+    modules_value: &Value,
+    module_info_value: &Value,
+) -> Result<LogoscoreModuleDiscovery> {
+    if module.trim().is_empty() {
+        bail!("module name is required");
+    }
+    let modules = module_rows(modules_value)?;
+    let Some(module_row) = modules
+        .iter()
+        .find(|candidate| candidate.get("name").and_then(Value::as_str) == Some(module))
+    else {
+        bail!("logoscore module `{module}` is not listed");
+    };
+    let status = module_row
+        .get("status")
+        .and_then(Value::as_str)
+        .context("logoscore module listing has no status")?;
+    if status != "loaded" {
+        bail!("logoscore module `{module}` is not loaded (status `{status}`)");
+    }
+    if module_info_value.get("name").and_then(Value::as_str) != Some(module) {
+        bail!("logoscore module-info did not identify module `{module}`");
+    }
+    let methods = module_info_value
+        .get("methods")
+        .and_then(Value::as_array)
+        .context("logoscore module-info response does not contain a methods array")?
+        .iter()
+        .filter(|method| method.get("isInvokable").and_then(Value::as_bool) == Some(true))
+        .filter_map(|method| {
+            Some(LogoscoreModuleMethod {
+                name: method.get("name")?.as_str()?.to_owned(),
+                signature: method.get("signature")?.as_str()?.to_owned(),
+            })
+        })
+        .collect();
+    Ok(LogoscoreModuleDiscovery {
+        module: module.to_owned(),
+        methods,
+    })
+}
+
+fn module_rows(modules_value: &Value) -> Result<&Vec<Value>> {
+    modules_value
+        .as_array()
+        .or_else(|| modules_value.get("modules").and_then(Value::as_array))
+        .context("logoscore list-modules response does not contain a modules array")
 }
 
 pub fn call(module: &str, method: &str, args: &[String]) -> Result<LogosCoreOutput> {
+    configured_runtime().call(module, method, args)
+}
+
+fn call_arguments(module: &str, method: &str, args: &[String]) -> Result<Vec<String>> {
     if module.trim().is_empty() {
         bail!("module name is required");
     }
@@ -56,50 +290,19 @@ pub fn call(module: &str, method: &str, args: &[String]) -> Result<LogosCoreOutp
     command_args.push(method.to_owned());
     command_args.extend(args.iter().cloned());
     command_args.push("--json".to_owned());
-
-    let mut output = run_json_prefer_service(command_args)?;
-    normalize_call_value(&mut output.value);
-    Ok(output)
+    Ok(command_args)
 }
 
-fn run_json<I, S>(args: I) -> Result<LogosCoreOutput>
-where
-    I: IntoIterator<Item = S> + Clone,
-    S: AsRef<str>,
-{
-    run_json_with_preference(args, RunnerPreference::Default)
-}
-
-fn run_json_prefer_service<I, S>(args: I) -> Result<LogosCoreOutput>
-where
-    I: IntoIterator<Item = S> + Clone,
-    S: AsRef<str>,
-{
-    run_json_with_preference(args, RunnerPreference::PreferService)
-}
-
-fn run_json_with_preference<I, S>(args: I, preference: RunnerPreference) -> Result<LogosCoreOutput>
-where
-    I: IntoIterator<Item = S> + Clone,
-    S: AsRef<str>,
-{
-    let mut errors = Vec::new();
-    for runner in ordered_runners(preference) {
-        match run_json_with(&runner, args.clone()) {
-            Ok(output) => return Ok(output),
-            Err(error) => errors.push(format!("{error:#}")),
-        }
-    }
-    bail!("logoscore failed: {}", errors.join("; "))
-}
-
-fn run_json_with<I, S>(runner: &LogosCoreRunner, args: I) -> Result<LogosCoreOutput>
+fn run_json_with<I, S>(
+    runner: &LogosCoreRunner,
+    args: I,
+    timeout: Duration,
+) -> Result<LogosCoreOutput>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
     let command = command_for_runner(runner, args);
-    let timeout = command_timeout();
     let output = run_command(
         command,
         CommandRunPolicy {
@@ -136,33 +339,6 @@ fn command_timeout() -> Duration {
         .unwrap_or_else(|| Duration::from_secs(5))
 }
 
-fn ordered_runners(preference: RunnerPreference) -> Vec<LogosCoreRunner> {
-    order_runners(runners(), preference)
-}
-
-fn order_runners(
-    runners: Vec<LogosCoreRunner>,
-    preference: RunnerPreference,
-) -> Vec<LogosCoreRunner> {
-    if preference == RunnerPreference::Default {
-        return runners;
-    }
-
-    let mut configured = Vec::new();
-    let mut service = Vec::new();
-    let mut plain = Vec::new();
-    for runner in runners {
-        if runner.label == "configured logoscore" {
-            configured.push(runner);
-        } else if runner.sudo_user.is_some() {
-            service.push(runner);
-        } else {
-            plain.push(runner);
-        }
-    }
-    configured.into_iter().chain(service).chain(plain).collect()
-}
-
 fn command_for_runner<I, S>(runner: &LogosCoreRunner, args: I) -> Command
 where
     I: IntoIterator<Item = S>,
@@ -175,6 +351,9 @@ where
             command.arg(format!("HOME={home}"));
         }
         command.arg(&runner.program);
+        if let Some(config_dir) = &runner.config_dir {
+            command.arg("--config-dir").arg(config_dir);
+        }
         for arg in args {
             command.arg(arg.as_ref());
         }
@@ -184,6 +363,9 @@ where
         if let Some(home) = &runner.home {
             command.env("HOME", home);
         }
+        if let Some(config_dir) = &runner.config_dir {
+            command.arg("--config-dir").arg(config_dir);
+        }
         for arg in args {
             command.arg(arg.as_ref());
         }
@@ -191,52 +373,38 @@ where
     }
 }
 
-fn runners() -> Vec<LogosCoreRunner> {
-    let program = env::var("LOGOSCORE_BIN").unwrap_or_else(|_| "logoscore".to_owned());
+fn configured_runtime() -> LogoscoreCliRuntime {
+    let env_program = env::var("LOGOSCORE_BIN")
+        .ok()
+        .filter(|value| !value.is_empty());
+    let program = env_program
+        .clone()
+        .unwrap_or_else(|| "logoscore".to_owned());
     let env_user = env::var("LOGOSCORE_USER")
         .ok()
         .filter(|value| !value.is_empty());
     let env_home = env::var("LOGOSCORE_HOME")
         .ok()
         .filter(|value| !value.is_empty());
-    let mut runners = Vec::new();
+    let config_dir = env::var("LOGOSCORE_CONFIG_DIR")
+        .ok()
+        .filter(|value| !value.is_empty());
+    let configured =
+        env_program.is_some() || env_user.is_some() || env_home.is_some() || config_dir.is_some();
 
-    if env_user.is_some() || env_home.is_some() || env::var("LOGOSCORE_BIN").is_ok() {
-        runners.push(LogosCoreRunner {
-            program: program.clone(),
-            sudo_user: env_user.clone(),
-            home: env_home.clone(),
-            label: "configured logoscore".to_owned(),
-        });
-    }
-
-    runners.push(LogosCoreRunner {
-        program: program.clone(),
-        sudo_user: None,
-        home: None,
-        label: "plain logoscore".to_owned(),
-    });
-
-    if env::var("LOGOSCORE_DISABLE_SUDO_FALLBACK").is_err() {
-        runners.push(LogosCoreRunner {
+    LogoscoreCliRuntime {
+        runner: LogosCoreRunner {
             program,
-            sudo_user: Some(env_user.unwrap_or_else(|| "logos".to_owned())),
-            home: Some(env_home.unwrap_or_else(|| "/var/lib/logos-node".to_owned())),
-            label: "service user logoscore".to_owned(),
-        });
+            sudo_user: env_user,
+            home: env_home,
+            config_dir,
+            label: if configured {
+                "configured logoscore".to_owned()
+            } else {
+                "plain logoscore".to_owned()
+            },
+        },
     }
-
-    dedupe_runners(runners)
-}
-
-fn dedupe_runners(runners: Vec<LogosCoreRunner>) -> Vec<LogosCoreRunner> {
-    let mut unique = Vec::new();
-    for runner in runners {
-        if !unique.iter().any(|existing| existing == &runner) {
-            unique.push(runner);
-        }
-    }
-    unique
 }
 
 fn normalize_call_value(value: &mut Value) {
@@ -291,31 +459,112 @@ mod tests {
     }
 
     #[test]
-    fn service_preference_keeps_configured_runner_first() {
-        let configured = LogosCoreRunner {
+    fn cli_transport_builds_logoscore_call_arguments() -> Result<()> {
+        let args = vec!["alpha".to_owned(), "42".to_owned()];
+
+        let command_args = call_arguments("storage_module", "get", &args)?;
+
+        if command_args != ["call", "storage_module", "get", "alpha", "42", "--json"] {
+            bail!("unexpected logoscore call arguments: {command_args:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn configured_runtime_arguments_precede_call_arguments() {
+        let runner = LogosCoreRunner {
             program: "logoscore".to_owned(),
             sudo_user: None,
             home: Some("/tmp/home".to_owned()),
+            config_dir: Some("/tmp/logoscore".to_owned()),
             label: "configured logoscore".to_owned(),
         };
-        let plain = LogosCoreRunner {
-            program: "logoscore".to_owned(),
-            sudo_user: None,
-            home: None,
-            label: "plain logoscore".to_owned(),
-        };
-        let service = LogosCoreRunner {
-            program: "logoscore".to_owned(),
-            sudo_user: Some("logos".to_owned()),
-            home: Some("/var/lib/logos-node".to_owned()),
-            label: "service user logoscore".to_owned(),
-        };
+        let command = command_for_runner(&runner, ["call", "storage_module", "get", "--json"]);
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
 
-        let ordered = order_runners(
-            vec![configured.clone(), plain.clone(), service.clone()],
-            RunnerPreference::PreferService,
+        assert_eq!(
+            args,
+            [
+                "--config-dir",
+                "/tmp/logoscore",
+                "call",
+                "storage_module",
+                "get",
+                "--json"
+            ]
         );
+    }
 
-        assert_eq!(ordered, vec![configured, service, plain]);
+    #[test]
+    fn module_discovery_accepts_matching_loaded_method_contract() -> Result<()> {
+        let modules = json!([{"name": "storage_module", "status": "loaded"}]);
+        let info = json!({
+            "name": "storage_module",
+            "methods": [
+                {"isInvokable": true, "name": "init", "signature": "init(QString)"},
+                {"isInvokable": true, "name": "start", "signature": "start()"}
+            ]
+        });
+
+        let discovery = module_discovery("storage_module", &modules, &info)?;
+
+        discovery.require_method("init", "init(QString)")
+    }
+
+    #[test]
+    fn module_discovery_rejects_missing_unloaded_and_mismatched_contracts() -> Result<()> {
+        let missing = module_discovery("storage_module", &json!([]), &json!({}));
+        let Err(error) = missing else {
+            bail!("missing module discovery unexpectedly succeeded");
+        };
+        if !error.to_string().contains("is not listed") {
+            bail!("unexpected missing module error: {error:#}");
+        }
+
+        let unloaded = module_discovery(
+            "storage_module",
+            &json!([{"name": "storage_module", "status": "not_loaded"}]),
+            &json!({}),
+        );
+        let Err(error) = unloaded else {
+            bail!("unloaded module discovery unexpectedly succeeded");
+        };
+        if !error.to_string().contains("is not loaded") {
+            bail!("unexpected unloaded module error: {error:#}");
+        }
+
+        let methods = json!({
+            "name": "storage_module",
+            "methods": [
+                {"isInvokable": true, "name": "start", "signature": "start(QString)"}
+            ]
+        });
+        let discovery = module_discovery(
+            "storage_module",
+            &json!([{"name": "storage_module", "status": "loaded"}]),
+            &methods,
+        )?;
+        let mismatch = discovery.require_method("start", "start()");
+        let Err(error) = mismatch else {
+            bail!("signature mismatch unexpectedly succeeded");
+        };
+        if !error.to_string().contains("signature mismatch") {
+            bail!("unexpected signature mismatch error: {error:#}");
+        }
+
+        let absent = discovery.require_method("stop", "stop()");
+        let Err(error) = absent else {
+            bail!("missing method unexpectedly succeeded");
+        };
+        if !error
+            .to_string()
+            .contains("does not expose invokable method")
+        {
+            bail!("unexpected missing method error: {error:#}");
+        }
+        Ok(())
     }
 }

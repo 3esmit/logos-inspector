@@ -3,17 +3,20 @@ use anyhow::Result;
 mod action_engine;
 mod action_workspace;
 mod commands;
+mod lifecycle;
 mod model;
 mod paths;
 mod presentation;
 mod process;
+mod runtime;
 mod workflow;
 
 pub use model::{
     LocalDevnetListReport, LocalDevnetRecord, LocalNodeActionRequest, LocalNodeConfigRecord,
     LocalNodeOperationReport, LocalNodeProblemCode, LocalNodeReport, LocalNodeStatus,
-    LocalNodeSummary, LocalNodeTools, NodeAction, NodeKind, ToolStatus,
+    LocalNodeSummary, LocalNodeTools, NodeAction, NodeKind, NodeLifecycleState, ToolStatus,
 };
+pub use runtime::LogoscoreRuntimeStatus;
 
 pub fn local_nodes_status(profile: &str) -> Result<LocalNodeReport> {
     action_engine::LocalNodeActionEngine::system()?.status(profile)
@@ -35,6 +38,7 @@ pub fn local_nodes_action(
 mod tests {
     use super::*;
     use anyhow::{Context as _, Result, bail};
+    use serde_json::Value;
     use std::{env, fs, path::Path};
 
     use super::{
@@ -152,6 +156,28 @@ mod tests {
         );
     }
 
+    #[test]
+    fn indexer_is_not_actionable_without_a_verified_module_contract() -> Result<()> {
+        let state = LocalNodesState::default_for_config_dir(Path::new("/tmp/local-nodes-contract"));
+
+        let report = action_engine::report_for_state("local", &state);
+        let indexer = report
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Indexer)
+            .context("missing indexer node")?;
+
+        if indexer.install_state != "needs_configuration"
+            || !indexer.available_actions.is_empty()
+            || !indexer
+                .detail
+                .contains("no verified logoscore module lifecycle contract")
+        {
+            bail!("unexpected indexer discovery gate: {indexer:?}");
+        }
+        Ok(())
+    }
+
     fn local_node_status(kind: NodeKind, install_state: &str) -> LocalNodeStatus {
         LocalNodeStatus {
             kind,
@@ -184,34 +210,27 @@ mod tests {
             "blockchain_module",
             "start",
             "/tmp/bedrock.json",
-            "local",
+            "",
             "--json",
         ];
         if bedrock.args != expected_bedrock {
             bail!("unexpected bedrock command: {:?}", bedrock.args);
         }
 
-        let indexer = command_spec_for(
+        if command_spec_for(
             NodeKind::Indexer,
             NodeAction::Start,
             "/tmp/indexer.json",
             "local",
         )
-        .context("missing indexer command")?;
-        let expected_indexer = vec![
-            "call",
-            "lez_indexer_module",
-            "start_indexer",
-            "/tmp/indexer.json",
-            "--json",
-        ];
-        if indexer.args != expected_indexer {
-            bail!("unexpected indexer command: {:?}", indexer.args);
+        .is_some()
+        {
+            bail!("indexer start must stay unavailable without a verified module contract");
         }
 
         let messaging = command_spec_for(
             NodeKind::Messaging,
-            NodeAction::Install,
+            NodeAction::Initialize,
             "/tmp/delivery.json",
             "local",
         )
@@ -220,11 +239,155 @@ mod tests {
             "call",
             "delivery_module",
             "createNode",
-            "/tmp/delivery.json",
+            "@/tmp/delivery.json",
             "--json",
         ];
         if messaging.args != expected_messaging {
             bail!("unexpected messaging command: {:?}", messaging.args);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn local_devnet_writes_native_storage_and_delivery_configs() -> Result<()> {
+        let config = env::temp_dir().join(format!(
+            "logos-inspector-local-native-config-{}",
+            now_millis()
+        ));
+        let mut state = LocalNodesState::default_for_config_dir(&config);
+        let request = LocalNodeActionRequest {
+            action: NodeAction::NewNetwork,
+            node: None,
+            network_id: Some("native-config".to_owned()),
+            workspace_path: None,
+            runtime_modules_dir: None,
+            runtime_binary_path: None,
+            label: None,
+        };
+        let mut runtime = None;
+
+        let operation = action_workspace::LocalNodeActionWorkspace::system().apply(
+            &mut state,
+            &mut runtime,
+            &config,
+            "local",
+            &request,
+        );
+        if operation.status != "created" {
+            bail!("unexpected operation status: {}", operation.status);
+        }
+        let record = state.active_devnet().context("missing active devnet")?;
+        let storage = record
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Storage)
+            .context("missing storage config")?;
+        let storage_config: Value = serde_json::from_str(
+            &fs::read_to_string(&storage.config_path)
+                .with_context(|| format!("failed to read {}", storage.config_path))?,
+        )?;
+        if storage_config.pointer("/data-dir").and_then(Value::as_str)
+            != Some(storage.data_dir.as_str())
+            || storage_config.pointer("/log-level").and_then(Value::as_str) != Some("INFO")
+            || storage_config.get("network_id").is_some()
+        {
+            bail!("unexpected storage config: {storage_config}");
+        }
+
+        let delivery = record
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Messaging)
+            .context("missing delivery config")?;
+        let delivery_config: Value = serde_json::from_str(
+            &fs::read_to_string(&delivery.config_path)
+                .with_context(|| format!("failed to read {}", delivery.config_path))?,
+        )?;
+        if delivery_config.pointer("/mode").and_then(Value::as_str) != Some("Core")
+            || delivery_config.pointer("/preset").and_then(Value::as_str) != Some("logos.test")
+            || delivery_config.pointer("/rest").and_then(Value::as_bool) != Some(true)
+            || delivery_config.pointer("/restPort").and_then(Value::as_u64) != Some(8645)
+            || delivery_config.get("network_id").is_some()
+        {
+            bail!("unexpected delivery config: {delivery_config}");
+        }
+        fs::remove_dir_all(&config)
+            .with_context(|| format!("failed to remove {}", config.display()))?;
+        Ok(())
+    }
+
+    #[test]
+    fn module_lifecycle_commands_preserve_discovered_arities() -> Result<()> {
+        let cases = [
+            (
+                NodeKind::Bedrock,
+                NodeAction::Stop,
+                "blockchain_module",
+                "stop",
+            ),
+            (
+                NodeKind::Storage,
+                NodeAction::Start,
+                "storage_module",
+                "start",
+            ),
+            (
+                NodeKind::Storage,
+                NodeAction::Stop,
+                "storage_module",
+                "stop",
+            ),
+            (
+                NodeKind::Storage,
+                NodeAction::Uninstall,
+                "storage_module",
+                "destroy",
+            ),
+            (
+                NodeKind::Messaging,
+                NodeAction::Start,
+                "delivery_module",
+                "start",
+            ),
+            (
+                NodeKind::Messaging,
+                NodeAction::Stop,
+                "delivery_module",
+                "stop",
+            ),
+        ];
+
+        for (kind, action, module, method) in cases {
+            let spec = command_spec_for(kind, action, "/tmp/ignored.json", "local")
+                .with_context(|| format!("missing {module}.{method} command"))?;
+
+            if spec.args != ["call", module, method, "--json"] {
+                bail!("unexpected {module}.{method} command: {:?}", spec.args);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn storage_init_reads_json_through_cli_file_argument() -> Result<()> {
+        let spec = command_spec_for(
+            NodeKind::Storage,
+            NodeAction::Initialize,
+            "/tmp/storage.json",
+            "local",
+        )
+        .context("missing storage init command")?;
+
+        if spec.args
+            != [
+                "call",
+                "storage_module",
+                "init",
+                "@/tmp/storage.json",
+                "--json",
+            ]
+        {
+            bail!("unexpected storage init command: {:?}", spec.args);
         }
         Ok(())
     }
@@ -293,11 +456,19 @@ mod tests {
             node: None,
             network_id: Some("Demo Net".to_owned()),
             workspace_path: None,
+            runtime_modules_dir: None,
+            runtime_binary_path: None,
             label: Some("Demo Net".to_owned()),
         };
+        let mut runtime = None;
 
-        let operation = action_workspace::LocalNodeActionWorkspace::system()
-            .apply(&mut state, "local", &request);
+        let operation = action_workspace::LocalNodeActionWorkspace::system().apply(
+            &mut state,
+            &mut runtime,
+            &config,
+            "local",
+            &request,
+        );
 
         if operation.status != "created" {
             bail!("unexpected operation status: {}", operation.status);

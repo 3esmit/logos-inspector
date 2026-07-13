@@ -17,13 +17,15 @@ ColumnLayout {
 
     property string newNetworkId: ""
     property string loadWorkspace: ""
+    property string runtimeModulesDir: ""
+    property string runtimeBinaryPath: ""
 
     width: parent ? parent.width : 900
     spacing: 16
 
     Component.onCompleted: {
-        root.model.refresh(false)
-        root.model.refreshDevnets()
+        root.model.refresh(false);
+        root.model.refreshDevnets();
     }
 
     PageHeader {
@@ -47,7 +49,7 @@ ColumnLayout {
         }
 
         contentItem: GridLayout {
-            columns: root.width < 760 ? 2 : 4
+            columns: root.width < 1060 ? 2 : 5
             columnSpacing: root.theme.gapSmall
             rowSpacing: root.theme.gapSmall
 
@@ -87,6 +89,17 @@ ColumnLayout {
                 label: qsTr("Status")
                 value: root.model.summaryText()
                 tone: root.summaryTone()
+                compact: true
+                showIndicator: true
+                Layout.fillWidth: true
+            }
+
+            StatusChip {
+                theme: root.theme
+                label: qsTr("Runtime")
+                value: root.stateLabel(root.model.runtimeState())
+                detail: root.runtimeDetail()
+                tone: root.runtimeTone()
                 compact: true
                 showIndicator: true
                 Layout.fillWidth: true
@@ -196,18 +209,93 @@ ColumnLayout {
     }
 
     Panel {
+        visible: root.model.localMode()
+        theme: root.theme
+        title: qsTr("LogosCore Runtime")
+
+        GridLayout {
+            columns: root.width < 840 ? 1 : 4
+            columnSpacing: root.theme.gapSmall
+            rowSpacing: root.theme.gapSmall
+            Layout.fillWidth: true
+
+            FieldRow {
+                theme: root.theme
+                label: qsTr("Modules directory")
+                sourceText: root.runtimeModulesDir.length ? root.runtimeModulesDir : root.model.runtimeModulesDir()
+                syncSourceText: true
+                placeholderText: qsTr("/path/to/modules")
+                Layout.columnSpan: root.width < 840 ? 1 : 2
+                Layout.fillWidth: true
+                onTextEdited: text => root.runtimeModulesDir = text
+            }
+
+            FieldRow {
+                theme: root.theme
+                label: qsTr("Binary path")
+                sourceText: root.runtimeBinaryPath.length ? root.runtimeBinaryPath : root.configuredRuntimeBinaryPath()
+                syncSourceText: true
+                placeholderText: qsTr("logoscore on PATH")
+                Layout.fillWidth: true
+                onTextEdited: text => root.runtimeBinaryPath = text
+            }
+
+            RowLayout {
+                spacing: root.theme.gapSmall
+                Layout.fillWidth: true
+
+                ActionButton {
+                    theme: root.theme
+                    text: qsTr("Start")
+                    primary: true
+                    enabled: root.model.runtimeActionEnabled("start_runtime") && (root.runtimeModulesDir.trim().length > 0 || root.model.runtimeModulesDir().length > 0)
+                    Layout.preferredWidth: 96
+                    onClicked: root.openRuntimeConfirm("start_runtime")
+                }
+
+                ActionButton {
+                    theme: root.theme
+                    text: qsTr("Stop")
+                    enabled: root.model.runtimeActionEnabled("stop_runtime")
+                    Layout.preferredWidth: 96
+                    onClicked: root.openRuntimeConfirm("stop_runtime")
+                }
+            }
+        }
+    }
+
+    Panel {
         theme: root.theme
         title: qsTr("Node Status")
 
         DataTableFrame {
             theme: root.theme
             headerCells: [
-                { text: qsTr("Node"), width: 150 },
-                { text: qsTr("Install"), width: 130 },
-                { text: qsTr("Run"), width: 110 },
-                { text: qsTr("Endpoint"), width: 230, fill: true },
-                { text: qsTr("Data"), width: 190 },
-                { text: qsTr("Last"), width: 180 }
+                {
+                    text: qsTr("Node"),
+                    width: 150
+                },
+                {
+                    text: qsTr("Install"),
+                    width: 130
+                },
+                {
+                    text: qsTr("Run"),
+                    width: 110
+                },
+                {
+                    text: qsTr("Endpoint"),
+                    width: 230,
+                    fill: true
+                },
+                {
+                    text: qsTr("Data"),
+                    width: 190
+                },
+                {
+                    text: qsTr("Last"),
+                    width: 180
+                }
             ]
             rows: root.nodeTableRows()
             Layout.fillWidth: true
@@ -245,10 +333,11 @@ ColumnLayout {
 
                     ActionButton {
                         theme: root.theme
-                        text: qsTr("Install")
-                        enabled: root.model.actionEnabled(actionRow.modelData.key, "install")
+                        visible: actionRow.modelData.setupAction.length > 0
+                        text: root.model.actionLabel(actionRow.modelData.setupAction)
+                        enabled: root.model.actionEnabled(actionRow.modelData.key, actionRow.modelData.setupAction)
                         Layout.preferredWidth: 92
-                        onClicked: root.openNodeConfirm("install", actionRow.modelData.key)
+                        onClicked: root.openNodeConfirm(actionRow.modelData.setupAction, actionRow.modelData.key)
                     }
 
                     ActionButton {
@@ -332,161 +421,246 @@ ColumnLayout {
     }
 
     function activeNetworkId() {
-        const report = root.model.report || null
-        return String(report && report.active_devnet ? report.active_devnet : "")
+        const report = root.model.report || null;
+        return String(report && report.active_devnet ? report.active_devnet : "");
     }
 
     function workspaceLabel() {
-        const report = root.model.report || null
-        return String(report && report.workspace_root ? report.workspace_root : "")
+        const report = root.model.report || null;
+        return String(report && report.workspace_root ? report.workspace_root : "");
     }
 
     function summaryTone() {
-        const report = root.model.report || null
-        const summary = report && report.summary ? report.summary : null
+        const report = root.model.report || null;
+        const summary = report && report.summary ? report.summary : null;
         if (!summary) {
-            return "warning"
+            return "warning";
         }
         if (Number(summary.needs_configuration || 0) > 0) {
-            return "warning"
+            return "warning";
         }
-        return Number(summary.running || 0) > 0 ? "success" : "neutral"
+        return Number(summary.running || 0) > 0 ? "success" : "neutral";
+    }
+
+    function runtimeDetail() {
+        const runtime = root.model.runtimeInfo();
+        return String(runtime && runtime.detail ? runtime.detail : "");
+    }
+
+    function configuredRuntimeBinaryPath() {
+        const runtime = root.model.runtimeInfo()
+        return String(runtime && runtime.binary_path ? runtime.binary_path : "")
+    }
+
+    function runtimeTone() {
+        const state = root.model.runtimeState();
+        if (state === "running") {
+            return "success";
+        }
+        if (state === "starting" || state === "stopping") {
+            return "warning";
+        }
+        return "neutral";
     }
 
     function nodeTableRows() {
-        const report = root.model.report || null
-        const nodes = report && Array.isArray(report.nodes) ? report.nodes : []
+        const report = root.model.report || null;
+        const nodes = report && Array.isArray(report.nodes) ? report.nodes : [];
         if (!nodes.length) {
-            return [{
-                cells: [
-                    { text: qsTr("No node status loaded"), width: 150, monospace: false },
-                    { text: "-", width: 130 },
-                    { text: "-", width: 110 },
-                    { text: "-", width: 230, fill: true },
-                    { text: "-", width: 190 },
-                    { text: "-", width: 180 }
-                ]
-            }]
+            return [
+                {
+                    cells: [
+                        {
+                            text: qsTr("No node status loaded"),
+                            width: 150,
+                            monospace: false
+                        },
+                        {
+                            text: "-",
+                            width: 130
+                        },
+                        {
+                            text: "-",
+                            width: 110
+                        },
+                        {
+                            text: "-",
+                            width: 230,
+                            fill: true
+                        },
+                        {
+                            text: "-",
+                            width: 190
+                        },
+                        {
+                            text: "-",
+                            width: 180
+                        }
+                    ]
+                }
+            ];
         }
         return nodes.map(function (node) {
             return {
                 key: String(node.key || node.kind || ""),
                 cells: [
-                    { text: String(node.label || node.kind || "-"), width: 150, monospace: false },
-                    { text: root.stateLabel(node.install_state), width: 130, tone: root.installTone(node.install_state), monospace: false },
-                    { text: root.stateLabel(node.run_state), width: 110, tone: root.runTone(node.run_state), monospace: false },
-                    { text: String(node.endpoint || "-"), width: 230, fill: true, copyText: String(node.endpoint || "") },
-                    { text: root.shortText(node.data_dir || "-", 32), width: 190, copyText: String(node.data_dir || "") },
-                    { text: root.lastActionText(node.last_action), width: 180, monospace: false }
+                    {
+                        text: String(node.label || node.kind || "-"),
+                        width: 150,
+                        monospace: false
+                    },
+                    {
+                        text: root.stateLabel(node.install_state),
+                        width: 130,
+                        tone: root.installTone(node.install_state),
+                        monospace: false
+                    },
+                    {
+                        text: root.stateLabel(node.run_state),
+                        width: 110,
+                        tone: root.runTone(node.run_state),
+                        monospace: false
+                    },
+                    {
+                        text: String(node.endpoint || "-"),
+                        width: 230,
+                        fill: true,
+                        copyText: String(node.endpoint || "")
+                    },
+                    {
+                        text: root.shortText(node.data_dir || "-", 32),
+                        width: 190,
+                        copyText: String(node.data_dir || "")
+                    },
+                    {
+                        text: root.lastActionText(node.last_action),
+                        width: 180,
+                        monospace: false
+                    }
                 ]
-            }
-        })
+            };
+        });
     }
 
     function actionRows() {
-        const report = root.model.report || null
-        const nodes = report && Array.isArray(report.nodes) ? report.nodes : []
+        const report = root.model.report || null;
+        const nodes = report && Array.isArray(report.nodes) ? report.nodes : [];
         return nodes.map(function (node) {
+            const actions = Array.isArray(node.available_actions) ? node.available_actions : [];
+            const setupAction = actions.indexOf("initialize") >= 0 ? "initialize"
+                              : (actions.indexOf("install") >= 0 ? "install" : "");
             return {
                 key: String(node.key || node.kind || ""),
-                label: String(node.label || node.kind || "-")
-            }
-        })
+                label: String(node.label || node.kind || "-"),
+                setupAction: setupAction
+            };
+        });
     }
 
     function operationRows() {
-        const rows = Array.isArray(root.model.operations) ? root.model.operations.slice() : []
+        const rows = Array.isArray(root.model.operations) ? root.model.operations.slice() : [];
         if (!rows.length) {
-            return [{ time: "-", label: qsTr("No operations"), status: "-", detail: "-" }]
+            return [
+                {
+                    time: "-",
+                    label: qsTr("No operations"),
+                    status: "-",
+                    detail: "-"
+                }
+            ];
         }
-        rows.reverse()
+        rows.reverse();
         return rows.map(function (row) {
             return {
                 time: root.operationTime(row),
                 label: root.operationLabel(row),
                 status: String(row.status || "-"),
                 detail: String(row.detail || "-")
-            }
-        })
+            };
+        });
     }
 
     function operationTime(row) {
-        const millis = Number(row.timestamp_millis || row.time || 0)
+        const millis = Number(row.timestamp_millis || row.time || 0);
         if (millis > 0) {
-            return new Date(millis).toLocaleTimeString(Qt.locale(), "hh:mm:ss")
+            return new Date(millis).toLocaleTimeString(Qt.locale(), "hh:mm:ss");
         }
-        return String(row.time || "-")
+        return String(row.time || "-");
     }
 
     function operationLabel(row) {
-        const node = String(row.node || "")
-        const action = root.model.actionLabel(row.action)
-        return node.length ? qsTr("%1 %2").arg(action).arg(root.nodeLabel(node)) : action
+        const node = String(row.node || "");
+        const action = root.model.actionLabel(row.action);
+        return node.length ? qsTr("%1 %2").arg(action).arg(root.nodeLabel(node)) : action;
     }
 
     function lastActionText(operation) {
         if (!operation) {
-            return "-"
+            return "-";
         }
-        return qsTr("%1 %2").arg(root.model.actionLabel(operation.action)).arg(String(operation.status || ""))
+        return qsTr("%1 %2").arg(root.model.actionLabel(operation.action)).arg(String(operation.status || ""));
     }
 
     function openNodeConfirm(action, node) {
-        root.model.beginNodeAction(action, node)
-        confirmPopup.open()
+        root.model.beginNodeAction(action, node);
+        confirmPopup.open();
     }
 
     function openNetworkConfirm(action) {
-        const actionKey = String(action || "")
-        root.model.beginNetworkAction(
-            actionKey,
-            actionKey === "new_network" ? root.newNetworkId.trim() : root.activeNetworkId(),
-            actionKey === "load_network" ? root.loadWorkspace.trim() : ""
-        )
-        confirmPopup.open()
+        const actionKey = String(action || "");
+        root.model.beginNetworkAction(actionKey, actionKey === "new_network" ? root.newNetworkId.trim() : root.activeNetworkId(), actionKey === "load_network" ? root.loadWorkspace.trim() : "");
+        confirmPopup.open();
+    }
+
+    function openRuntimeConfirm(action) {
+        root.model.beginRuntimeAction(action, root.runtimeModulesDir.trim(), root.runtimeBinaryPath.trim());
+        confirmPopup.open();
     }
 
     function acceptPendingAction() {
-        root.model.runPendingAction()
+        root.model.runPendingAction();
     }
 
     function confirmTitle() {
-        return root.model.actionDraftTitle()
+        return root.model.actionDraftTitle();
     }
 
     function confirmMessage() {
-        return root.model.actionDraftMessage()
+        return root.model.actionDraftMessage();
     }
 
     function stateLabel(value) {
-        const text = String(value || "unknown").replace(/_/g, " ")
-        return text.length ? text[0].toUpperCase() + text.slice(1) : qsTr("Unknown")
+        const text = String(value || "unknown").replace(/_/g, " ");
+        return text.length ? text[0].toUpperCase() + text.slice(1) : qsTr("Unknown");
     }
 
     function installTone(value) {
-        const text = String(value || "")
+        const text = String(value || "");
         if (text === "installed") {
-            return "success"
+            return "success";
         }
         if (text === "needs_configuration") {
-            return "warning"
+            return "warning";
         }
-        return "neutral"
+        return "neutral";
     }
 
     function runTone(value) {
-        const text = String(value || "")
+        const text = String(value || "");
         if (text === "running") {
-            return "success"
+            return "success";
         }
-        if (text === "stale_pid") {
-            return "warning"
+        if (text === "starting" || text === "stopping" || text === "stale_pid") {
+            return "warning";
         }
-        return "neutral"
+        if (text === "failed") {
+            return "error";
+        }
+        return "neutral";
     }
 
     function nodeLabel(kind) {
-        return root.model.nodeLabel(kind)
+        return root.model.nodeLabel(kind);
     }
 
     function shortText(value, limit) {
@@ -495,7 +669,7 @@ ColumnLayout {
             limit: limit || 24,
             minimum: 8,
             tailLength: 6
-        })
+        });
     }
 
     component OperationRow: Item {
@@ -544,33 +718,36 @@ ColumnLayout {
 
         function textColor(index) {
             if (rowRoot.header) {
-                return rowRoot.theme.textMuted
+                return rowRoot.theme.textMuted;
             }
             if (index === 2) {
-                if (rowRoot.status === "started" || rowRoot.status === "installed" || rowRoot.status === "created" || rowRoot.status === "loaded" || rowRoot.status === "stopped" || rowRoot.status === "purged" || rowRoot.status === "reset" || rowRoot.status === "deleted") {
-                    return rowRoot.theme.success
+                if (rowRoot.status === "started" || rowRoot.status === "installed" || rowRoot.status === "initialized" || rowRoot.status === "created" || rowRoot.status === "loaded" || rowRoot.status === "stopped" || rowRoot.status === "purged" || rowRoot.status === "reset" || rowRoot.status === "deleted") {
+                    return rowRoot.theme.success;
+                }
+                if (rowRoot.status === "starting" || rowRoot.status === "stopping") {
+                    return rowRoot.theme.warning;
                 }
                 if (rowRoot.status === "failed") {
-                    return rowRoot.theme.error
+                    return rowRoot.theme.error;
                 }
                 if (rowRoot.status === "needs_configuration") {
-                    return rowRoot.theme.warning
+                    return rowRoot.theme.warning;
                 }
             }
-            return rowRoot.theme.text
+            return rowRoot.theme.text;
         }
 
         function columnWidth(index) {
             if (index === 0) {
-                return 88
+                return 88;
             }
             if (index === 1) {
-                return 170
+                return 170;
             }
             if (index === 2) {
-                return 120
+                return 120;
             }
-            return 280
+            return 280;
         }
     }
 }

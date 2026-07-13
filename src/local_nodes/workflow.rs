@@ -59,6 +59,9 @@ impl LocalNodeWorkflow {
     }
 
     fn action_allowed(self, action: NodeAction, node: Option<NodeKind>) -> bool {
+        if action.is_runtime_action() {
+            return self.profile == "local" && node.is_none();
+        }
         available_actions_for(self.profile, node, self.has_active_devnet).contains(&action)
     }
 }
@@ -108,19 +111,27 @@ pub(super) fn available_actions_for(
         return Vec::new();
     }
 
-    if local_mode && !has_active_devnet {
-        return vec![NodeAction::Install];
+    if !local_mode || !has_active_devnet {
+        return Vec::new();
     }
 
-    let mut actions = vec![
-        NodeAction::Install,
-        NodeAction::Start,
-        NodeAction::Stop,
-        NodeAction::Uninstall,
-    ];
-    if local_mode {
-        actions.push(NodeAction::Purge);
-    }
+    let mut actions = match kind {
+        NodeKind::Sequencer => vec![
+            NodeAction::Install,
+            NodeAction::Start,
+            NodeAction::Stop,
+            NodeAction::Uninstall,
+        ],
+        NodeKind::Storage | NodeKind::Messaging => vec![
+            NodeAction::Initialize,
+            NodeAction::Start,
+            NodeAction::Stop,
+            NodeAction::Uninstall,
+        ],
+        NodeKind::Bedrock => vec![NodeAction::Start, NodeAction::Stop],
+        NodeKind::Indexer => Vec::new(),
+    };
+    actions.push(NodeAction::Purge);
     actions
 }
 

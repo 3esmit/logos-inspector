@@ -499,15 +499,17 @@ TestCase {
 
     function test_messaging_and_storage_use_module_connectors_in_basecamp() {
         compare(basecampModel.effectiveMessagingSourceMode(basecampModel.messagingSourceMode), "module")
-        compare(basecampModel.deliverySourceReportArgs()[0], "module")
-        compare(basecampModel.deliverySourceReportArgs()[1], "")
-        compare(basecampModel.deliverySourceReportArgs()[2], "")
+        const deliveryArgs = basecampModel.deliverySourceReportArgs()
+        compare(deliveryArgs.length, 1)
+        compare(deliveryArgs[0], "module")
         compare(basecampModel.deliverySourceTarget(), basecampModel.deliveryModule)
 
         compare(basecampModel.effectiveStorageSourceMode(basecampModel.storageSourceMode), "module")
-        compare(basecampModel.storageSourceReportArgs(false)[0], "module")
-        compare(basecampModel.storageSourceReportArgs(false)[1], "")
-        compare(basecampModel.storageSourceReportArgs(false)[2], "")
+        const storageArgs = basecampModel.storageSourceReportArgs(false)
+        compare(storageArgs.length, 3)
+        compare(storageArgs[0], "module")
+        compare(storageArgs[1], "")
+        compare(storageArgs[2], false)
         compare(basecampModel.storageSourceTarget(), basecampModel.storageModule)
     }
 
@@ -535,8 +537,8 @@ TestCase {
                     ],
                     source_modes: {
                         core: [
-                            { key: "rpc", aliases: ["rpc"], effective: "rpc" },
-                            { key: "module", aliases: ["basecamp"], effective: "module" }
+                            { key: "rpc", aliases: ["rpc"], effective: "rpc", adapter: { connector_id: "direct_l1_rpc", inputs: [{ key: "rpc_endpoint" }] } },
+                            { key: "module", aliases: ["basecamp"], effective: "module", adapter: { connector_id: "blockchain_module", inputs: [] } }
                         ],
                         delivery: [
                             { key: "rest", aliases: ["direct waku rest"], effective: "rest" },
@@ -646,6 +648,7 @@ TestCase {
         compare(model.effectiveStorageSourceMode(model.storageSourceMode), "module")
         compare(model.storageSourceReportArgs(false)[0], "module")
         compare(model.storageSourceReportArgs(false)[1], "")
+        compare(model.storageSourceReportArgs(false)[2], false)
         compare(model.storageSourceTarget(), model.storageModule)
     }
 

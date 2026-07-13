@@ -3,11 +3,7 @@ use serde_json::{Value, json};
 use tokio::runtime::Runtime;
 
 use crate::{
-    raw_http_json,
-    source_routing::{
-        self, require_mutating_diagnostics, storage_rest_download_bytes, storage_rest_source,
-        storage_rest_upload_bytes,
-    },
+    source_routing::{require_mutating_diagnostics, storage_layer, storage_rest_source},
     support::args::Args,
     support::backup_catalog::{
         attach_remote_backup_metadata, backup_payload_bytes, record_remote_settings_backup_payload,
@@ -29,25 +25,18 @@ pub(super) const METHOD_CATALOG: &[RuntimeMethodEntry] = &[
 
 pub(super) fn storage_exists(runtime: &Runtime, args: Value) -> Result<Value> {
     let args = Args::new(args)?;
-    if source_routing::is_storage_module_source(&args) {
-        let cid = args.string(2, "CID")?;
-        return to_value(source_routing::call_value(
-            source_routing::STORAGE_MODULE,
-            "exists",
-            &[json!(cid)],
-        )?);
+    if storage_layer::is_module_source(&args) {
+        let cid = args.string(1, "CID")?;
+        return to_value(runtime.block_on(storage_layer::module_call("exists", vec![json!(cid)]))?);
     }
     let source = storage_rest_source(&args)?;
     let cid = args.string(source.next_index, "CID")?;
-    to_value(runtime.block_on(raw_http_json(
-        source.endpoint,
-        &format!("/data/{cid}/exists"),
-    ))?)
+    to_value(runtime.block_on(storage_layer::exists(source.endpoint, cid))?)
 }
 
 pub(super) fn storage_upload_backup_catalog_entry(runtime: &Runtime, args: Value) -> Result<Value> {
     let args = Args::new(args)?;
-    if source_routing::is_storage_module_source(&args) {
+    if storage_layer::is_module_source(&args) {
         bail!(
             "settings backup through storage_module needs storageUploadDone event correlation to return the final CID; use the Storage app upload flow or Direct REST source for synchronous settings backup"
         );
@@ -61,7 +50,7 @@ pub(super) fn storage_upload_backup_catalog_entry(runtime: &Runtime, args: Value
         .unwrap_or(65_536);
     let bytes = backup_payload_bytes(backup_catalog_id)?;
     let upload = runtime
-        .block_on(storage_rest_upload_bytes(
+        .block_on(storage_layer::upload_bytes(
             source.endpoint,
             "logos-inspector-settings-backup.json",
             &bytes,
@@ -94,7 +83,7 @@ pub(super) fn storage_upload_backup_catalog_entry(runtime: &Runtime, args: Value
 
 pub(super) fn storage_upload_payload(runtime: &Runtime, args: Value) -> Result<Value> {
     let args = Args::new(args)?;
-    if source_routing::is_storage_module_source(&args) {
+    if storage_layer::is_module_source(&args) {
         bail!(
             "payload upload through storage_module needs storageUploadDone event correlation to return the final CID; use Direct REST source for synchronous payload upload"
         );
@@ -112,7 +101,7 @@ pub(super) fn storage_upload_payload(runtime: &Runtime, args: Value) -> Result<V
     let bytes =
         serde_json::to_vec_pretty(payload).context("failed to serialize storage payload")?;
     let upload = runtime
-        .block_on(storage_rest_upload_bytes(
+        .block_on(storage_layer::upload_bytes(
             source.endpoint,
             filename,
             &bytes,
@@ -135,7 +124,7 @@ pub(super) fn storage_upload_payload(runtime: &Runtime, args: Value) -> Result<V
 
 pub(super) fn storage_restore_settings(runtime: &Runtime, args: Value) -> Result<Value> {
     let args = Args::new(args)?;
-    if source_routing::is_storage_module_source(&args) {
+    if storage_layer::is_module_source(&args) {
         bail!(
             "settings restore through storage_module needs storageDownloadDone chunk correlation; use Direct REST source for synchronous settings restore"
         );
@@ -152,7 +141,7 @@ pub(super) fn storage_restore_settings(runtime: &Runtime, args: Value) -> Result
         args.optional_bool(cid_index + 2)
     };
     let bytes = runtime
-        .block_on(storage_rest_download_bytes(
+        .block_on(storage_layer::download_bytes(
             source.endpoint,
             cid,
             local_only,

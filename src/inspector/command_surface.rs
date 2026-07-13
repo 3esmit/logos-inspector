@@ -10,54 +10,33 @@ use super::commands::{
     zone_catalog::{ZoneCatalogCommand, ZoneCatalogCommandInterface, zone_catalog_command},
     zone_l2::{ZoneL2Command, ZoneL2CommandInterface, zone_l2_command},
 };
-use super::value::to_value;
 use crate::{
-    inspection::catalog::DirectZoneCatalogWorker, modules::logos_core, support::args::Args,
+    inspection::catalog::DirectZoneCatalogWorker,
+    modules::logos_core::{LogoscoreCliTransport, ModuleTransport},
+    support::args::Args,
 };
 
 pub(crate) const INSPECTOR_MODULE: &str = "logos_inspector";
 
-pub(crate) trait CoreModuleCaller {
-    fn call(&self, module: &str, method: &str, args: Value) -> Result<Value>;
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct LogosCoreModuleCaller;
-
-impl CoreModuleCaller for LogosCoreModuleCaller {
-    fn call(&self, module: &str, method: &str, args: Value) -> Result<Value> {
-        let args = Args::new(args)?
-            .iter()
-            .map(|value| {
-                value
-                    .as_str()
-                    .map(ToOwned::to_owned)
-                    .unwrap_or_else(|| value.to_string())
-            })
-            .collect::<Vec<_>>();
-        to_value(logos_core::call(module, method, &args)?)
-    }
-}
-
-pub(crate) struct InspectorCommandSurface<C = LogosCoreModuleCaller> {
+pub(crate) struct InspectorCommandSurface<T = LogoscoreCliTransport> {
     operations: RuntimeOperationInterface,
-    core_modules: C,
+    module_transport: T,
     zone_catalog: Arc<ZoneCatalogCommandInterface>,
     zone_l2: ZoneL2CommandInterface,
     runtime: Runtime,
 }
 
-impl InspectorCommandSurface<LogosCoreModuleCaller> {
+impl InspectorCommandSurface<LogoscoreCliTransport> {
     pub(crate) fn new() -> Result<Self> {
-        Self::with_core_modules(LogosCoreModuleCaller)
+        Self::with_module_transport(LogoscoreCliTransport::default())
     }
 }
 
-impl<C> InspectorCommandSurface<C>
+impl<T> InspectorCommandSurface<T>
 where
-    C: CoreModuleCaller,
+    T: ModuleTransport,
 {
-    pub(crate) fn with_core_modules(core_modules: C) -> Result<Self> {
+    pub(crate) fn with_module_transport(module_transport: T) -> Result<Self> {
         let runtime = Runtime::new().context("failed to create tokio runtime")?;
         let catalog_worker = Arc::new(DirectZoneCatalogWorker::for_config_dir()?);
         let zone_catalog = Arc::new(ZoneCatalogCommandInterface::with_worker(
@@ -67,7 +46,7 @@ where
         let zone_l2 = ZoneL2CommandInterface::new(zone_catalog.clone());
         Ok(Self {
             operations: RuntimeOperationInterface::default(),
-            core_modules,
+            module_transport,
             zone_catalog,
             zone_l2,
             runtime,
@@ -78,7 +57,7 @@ where
         if module == INSPECTOR_MODULE {
             self.call_inspector(method, args)
         } else {
-            self.core_modules.call(module, method, args)
+            self.call_transport(module, method, args)
         }
     }
 
@@ -112,9 +91,22 @@ where
                 let module = args.string(0, "module name")?;
                 let method = args.string(1, "method name")?;
                 let call_args = args.value(2).cloned().unwrap_or_else(|| json!([]));
-                self.core_modules.call(module, method, call_args).map(Some)
+                self.call_transport(module, method, call_args).map(Some)
             }
         }
+    }
+
+    fn call_transport(&self, module: &str, method: &str, args: Value) -> Result<Value> {
+        let args = Args::new(args)?
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(ToOwned::to_owned)
+                    .unwrap_or_else(|| value.to_string())
+            })
+            .collect::<Vec<_>>();
+        self.module_transport.call(module, method, &args)
     }
 
     #[cfg(test)]
@@ -162,10 +154,10 @@ mod tests {
     use crate::inspector::commands::{operations, runtime_methods, zone_catalog, zone_l2};
 
     #[derive(Debug, Default)]
-    struct FakeCoreModules;
+    struct FakeModuleTransport;
 
-    impl CoreModuleCaller for FakeCoreModules {
-        fn call(&self, module: &str, method: &str, args: Value) -> Result<Value> {
+    impl ModuleTransport for FakeModuleTransport {
+        fn call(&self, module: &str, method: &str, args: &[String]) -> Result<Value> {
             Ok(json!({
                 "module": module,
                 "method": method,
@@ -239,8 +231,8 @@ mod tests {
 
     #[test]
     fn surface_dispatches_call_module_special() -> Result<()> {
-        let surface =
-            InspectorCommandSurface::with_core_modules(FakeCoreModules).context("surface")?;
+        let surface = InspectorCommandSurface::with_module_transport(FakeModuleTransport)
+            .context("surface")?;
 
         let value =
             surface.call_inspector("callModule", json!(["module_a", "method_b", ["arg"]]))?;
@@ -259,8 +251,8 @@ mod tests {
 
     #[test]
     fn surface_dispatches_non_inspector_modules_to_core_adapter() -> Result<()> {
-        let surface =
-            InspectorCommandSurface::with_core_modules(FakeCoreModules).context("surface")?;
+        let surface = InspectorCommandSurface::with_module_transport(FakeModuleTransport)
+            .context("surface")?;
 
         let value = surface.call_module("other_module", "method_c", json!(["arg"]))?;
 
@@ -278,8 +270,8 @@ mod tests {
 
     #[test]
     fn surface_reports_unknown_methods() -> Result<()> {
-        let surface =
-            InspectorCommandSurface::with_core_modules(FakeCoreModules).context("surface")?;
+        let surface = InspectorCommandSurface::with_module_transport(FakeModuleTransport)
+            .context("surface")?;
 
         let result = surface.call_inspector("missingMethod", json!([]));
         let Err(error) = result else {
@@ -296,8 +288,8 @@ mod tests {
 
     #[test]
     fn zone_l2_reads_do_not_enter_runtime_operation_history() -> Result<()> {
-        let surface =
-            InspectorCommandSurface::with_core_modules(FakeCoreModules).context("surface")?;
+        let surface = InspectorCommandSurface::with_module_transport(FakeModuleTransport)
+            .context("surface")?;
         if surface.operations_for_test().len()? != 0 {
             bail!("fresh operation history is not empty");
         }

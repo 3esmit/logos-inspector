@@ -438,7 +438,7 @@ TestCase {
 
         compare(gateway.lastMethod, "storageManifests")
         compare(gateway.lastArgs[0], "module")
-        compare(gateway.lastArgs[1], "")
+        compare(gateway.lastArgs.length, 1)
         compare(state.manifestRows()[0].cid, "z-module")
     }
 

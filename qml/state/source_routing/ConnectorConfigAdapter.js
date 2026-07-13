@@ -77,35 +77,6 @@ function sourceModeForConnector(connectorId) {
     }
 }
 
-function connectorIdForMode(scope, mode) {
-    const normalized = String(mode || "").trim().toLowerCase()
-    switch (String(scope || "")) {
-    case "l1":
-        return normalized === "module" ? "blockchain_module" : "direct_l1_rpc"
-    case "storage":
-        if (normalized === "module") {
-            return "storage_module"
-        }
-        if (normalized === "metrics") {
-            return "storage_metrics"
-        }
-        return "direct_storage_rest"
-    case "delivery":
-        if (normalized === "module") {
-            return "delivery_module"
-        }
-        if (normalized === "metrics") {
-            return "delivery_metrics"
-        }
-        if (normalized === "network-monitor") {
-            return "delivery_network_monitor"
-        }
-        return "direct_delivery_rest"
-    default:
-        return ""
-    }
-}
-
 function scopeAliases(scope) {
     switch (String(scope || "")) {
     case "l1":

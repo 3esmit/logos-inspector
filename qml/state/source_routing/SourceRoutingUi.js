@@ -40,10 +40,11 @@ function deliverySourceView(root) {
         reportArgs: function () { return SourcePolicyProjection.deliverySourceReportArgs(root, mode, root.configuredMessagingRestUrl(), root.messagingMetricsUrl) },
         actionArgs: function (extra) {
             const source = deliverySourceView(root)
-            return [
-                source.effectiveMode,
-                source.usesRestEndpoint ? source.restEndpoint : ""
-            ].concat(extra || [])
+            const args = [source.effectiveMode]
+            if (source.usesRestEndpoint) {
+                args.push(source.restEndpoint)
+            }
+            return args.concat(extra || [])
         }
     })
 }
@@ -72,10 +73,11 @@ function storageSourceView(root) {
         },
         actionArgs: function (extra) {
             const source = storageSourceView(root)
-            return [
-                source.effectiveMode,
-                source.usesRestEndpoint ? source.restEndpoint : ""
-            ].concat(extra || [])
+            const args = [source.effectiveMode]
+            if (source.usesRestEndpoint) {
+                args.push(source.restEndpoint)
+            }
+            return args.concat(extra || [])
         }
     })
 }
@@ -146,6 +148,7 @@ function sourceView(root, family, mode, options, details) {
     const resolvedMode = SourcePolicyProjection.resolvedSourceModeKey(root, family, mode)
     const policy = SourcePolicyProjection.sourceModePolicy(root, family, resolvedMode)
     const adapter = SourcePolicyProjection.sourceModeAdapter(root, family, mode)
+    const descriptor = SourcePolicyProjection.sourceModeDescriptor(root, family, mode)
     return {
         family: family,
         mode: String(mode || "rest"),
@@ -156,6 +159,9 @@ function sourceView(root, family, mode, options, details) {
         label: String(details.label || ""),
         target: String(details.target || ""),
         targetKind: String(adapter.target || "none"),
+        connectorId: descriptor.connectorId,
+        connectionType: descriptor.connectionType,
+        inputs: descriptor.inputs,
         options: options,
         currentIndex: function (candidateOptions) {
             return SourcePolicyProjection.sourceModeIndexFor(root, family, mode, candidateOptions || options)
@@ -163,8 +169,8 @@ function sourceView(root, family, mode, options, details) {
         modeAt: function (index, candidateOptions) {
             return SourcePolicyProjection.sourceModeAt(index, candidateOptions || options)
         },
-        usesRestEndpoint: adapter.uses_rest_endpoint === true,
-        usesMetricsEndpoint: adapter.uses_metrics_endpoint === true,
+        usesRestEndpoint: descriptor.usesRestEndpoint,
+        usesMetricsEndpoint: descriptor.usesMetricsEndpoint,
         supportsCidProbe: adapter.supports_cid_probe === true,
         supportsMutatingDiagnostics: adapter.supports_mutating_diagnostics === true,
         restEndpoint: String(details.restEndpoint || ""),

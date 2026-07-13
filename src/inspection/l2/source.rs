@@ -9,7 +9,7 @@ use super::{
 use crate::{
     inspection::ZoneSourceRole,
     lez::{IndexerBlockReport, ProgramIdEntry, TransactionSummary},
-    source_routing::channel_sources::ChannelSourceTarget,
+    source_routing::{channel_sources::ChannelSourceTarget, execution_zone_layer},
 };
 
 pub(crate) type L2SourceFuture<'a, T> =
@@ -170,23 +170,23 @@ impl ZoneL2SourceAdapter for DirectZoneL2SourceAdapter {
         Box::pin(async move {
             match (&source.role, &source.target) {
                 (ZoneSourceRole::Sequencer, ChannelSourceTarget::Rpc { endpoint }) => {
-                    let block_id = crate::lez::last_sequencer_block_id(endpoint)
+                    let block_id = execution_zone_layer::sequencer_last_block_id(endpoint)
                         .await
                         .map_err(map_direct_error)?;
-                    crate::lez::sequencer_block(endpoint, block_id)
+                    execution_zone_layer::sequencer_block(endpoint, block_id)
                         .await
                         .map_err(map_direct_error)?
                         .map(normalize_sequencer_block)
                         .transpose()
                 }
                 (ZoneSourceRole::Indexer, ChannelSourceTarget::Rpc { endpoint }) => {
-                    let Some(block_id) = crate::lez::indexer_finalized_block_id(endpoint)
+                    let Some(block_id) = execution_zone_layer::indexer_finalized_block_id(endpoint)
                         .await
                         .map_err(map_direct_error)?
                     else {
                         return Ok(None);
                     };
-                    crate::lez::indexer_block_by_id(endpoint, block_id)
+                    execution_zone_layer::indexer_block_by_id(endpoint, block_id)
                         .await
                         .map_err(map_direct_error)?
                         .map(normalize_indexer_block)
@@ -211,7 +211,7 @@ impl ZoneL2SourceAdapter for DirectZoneL2SourceAdapter {
         Box::pin(async move {
             match (&source.role, &source.target) {
                 (ZoneSourceRole::Sequencer, ChannelSourceTarget::Rpc { endpoint }) => {
-                    crate::lez::sequencer_blocks(endpoint, before, limit)
+                    execution_zone_layer::sequencer_blocks(endpoint, before, limit)
                         .await
                         .map_err(map_direct_error)?
                         .into_iter()
@@ -219,7 +219,7 @@ impl ZoneL2SourceAdapter for DirectZoneL2SourceAdapter {
                         .collect()
                 }
                 (ZoneSourceRole::Indexer, ChannelSourceTarget::Rpc { endpoint }) => {
-                    crate::lez::indexer_blocks(endpoint, before, limit)
+                    execution_zone_layer::indexer_blocks(endpoint, before, limit)
                         .await
                         .map_err(map_direct_error)?
                         .into_iter()
@@ -244,14 +244,14 @@ impl ZoneL2SourceAdapter for DirectZoneL2SourceAdapter {
         Box::pin(async move {
             match (&source.role, &source.target) {
                 (ZoneSourceRole::Sequencer, ChannelSourceTarget::Rpc { endpoint }) => {
-                    crate::lez::sequencer_block(endpoint, block_id)
+                    execution_zone_layer::sequencer_block(endpoint, block_id)
                         .await
                         .map_err(map_direct_error)?
                         .map(normalize_sequencer_block)
                         .transpose()
                 }
                 (ZoneSourceRole::Indexer, ChannelSourceTarget::Rpc { endpoint }) => {
-                    crate::lez::indexer_block_by_id(endpoint, block_id)
+                    execution_zone_layer::indexer_block_by_id(endpoint, block_id)
                         .await
                         .map_err(map_direct_error)?
                         .map(normalize_indexer_block)
@@ -275,7 +275,7 @@ impl ZoneL2SourceAdapter for DirectZoneL2SourceAdapter {
         Box::pin(async move {
             match (&source.role, &source.target) {
                 (ZoneSourceRole::Indexer, ChannelSourceTarget::Rpc { endpoint }) => {
-                    crate::lez::indexer_block_by_hash(endpoint, &block_hash)
+                    execution_zone_layer::indexer_block_by_hash(endpoint, &block_hash)
                         .await
                         .map_err(map_direct_error)?
                         .map(normalize_indexer_block)
@@ -297,12 +297,12 @@ impl ZoneL2SourceAdapter for DirectZoneL2SourceAdapter {
         Box::pin(async move {
             match (&source.role, &source.target) {
                 (ZoneSourceRole::Sequencer, ChannelSourceTarget::Rpc { endpoint }) => {
-                    crate::lez::sequencer_transaction(endpoint, &transaction_id)
+                    execution_zone_layer::sequencer_transaction(endpoint, &transaction_id)
                         .await
                         .map_err(map_direct_error)
                 }
                 (ZoneSourceRole::Indexer, ChannelSourceTarget::Rpc { endpoint }) => {
-                    crate::lez::indexer_transaction(endpoint, &transaction_id)
+                    execution_zone_layer::indexer_transaction(endpoint, &transaction_id)
                         .await
                         .map_err(map_direct_error)
                 }
@@ -324,7 +324,7 @@ impl ZoneL2SourceAdapter for DirectZoneL2SourceAdapter {
         Box::pin(async move {
             match (&source.role, &source.target) {
                 (ZoneSourceRole::Sequencer, ChannelSourceTarget::Rpc { endpoint }) => {
-                    crate::lez::sequencer_account(endpoint, &account_id)
+                    execution_zone_layer::sequencer_account(endpoint, &account_id)
                         .await
                         .map(normalize_account)
                         .map_err(map_direct_error)
@@ -344,7 +344,7 @@ impl ZoneL2SourceAdapter for DirectZoneL2SourceAdapter {
         Box::pin(async move {
             match (&source.role, &source.target) {
                 (ZoneSourceRole::Indexer, ChannelSourceTarget::Rpc { endpoint }) => {
-                    crate::lez::indexer_account_at_block(endpoint, &account_id, block_id)
+                    execution_zone_layer::indexer_account_at_block(endpoint, &account_id, block_id)
                         .await
                         .map(normalize_account)
                         .map_err(map_direct_error)
@@ -367,7 +367,7 @@ impl ZoneL2SourceAdapter for DirectZoneL2SourceAdapter {
         Box::pin(async move {
             let rows = match (&source.role, &source.target) {
                 (ZoneSourceRole::Indexer, ChannelSourceTarget::Rpc { endpoint }) => {
-                    crate::lez::account_transactions_by_account(
+                    execution_zone_layer::indexer_account_activity(
                         endpoint,
                         &account_id,
                         offset,
@@ -392,7 +392,7 @@ impl ZoneL2SourceAdapter for DirectZoneL2SourceAdapter {
         Box::pin(async move {
             match (&source.role, &source.target) {
                 (ZoneSourceRole::Sequencer, ChannelSourceTarget::Rpc { endpoint }) => {
-                    crate::lez::sequencer_program_ids(endpoint)
+                    execution_zone_layer::sequencer_program_ids(endpoint)
                         .await
                         .map_err(map_direct_error)
                 }
@@ -409,7 +409,7 @@ impl ZoneL2SourceAdapter for DirectZoneL2SourceAdapter {
         Box::pin(async move {
             match (&source.role, &source.target) {
                 (ZoneSourceRole::Sequencer, ChannelSourceTarget::Rpc { endpoint }) => {
-                    crate::lez::sequencer_commitment_proof(endpoint, &commitment_hex)
+                    execution_zone_layer::sequencer_commitment_proof(endpoint, &commitment_hex)
                         .await
                         .map_err(map_direct_error)
                 }
@@ -426,7 +426,7 @@ impl ZoneL2SourceAdapter for DirectZoneL2SourceAdapter {
         Box::pin(async move {
             match (&source.role, &source.target) {
                 (ZoneSourceRole::Sequencer, ChannelSourceTarget::Rpc { endpoint }) => {
-                    crate::lez::sequencer_account_nonces(endpoint, &account_ids)
+                    execution_zone_layer::sequencer_account_nonces(endpoint, &account_ids)
                         .await
                         .map_err(map_direct_error)
                 }
@@ -444,17 +444,14 @@ impl ZoneL2SourceAdapter for DirectZoneL2SourceAdapter {
         Box::pin(async move {
             match (&source.role, &source.target) {
                 (ZoneSourceRole::Indexer, ChannelSourceTarget::Rpc { endpoint }) => {
-                    crate::lez::indexer_blocks(endpoint, before, limit)
+                    execution_zone_layer::indexer_blocks(endpoint, before, limit)
                         .await
                         .map_err(map_direct_error)
                 }
                 (ZoneSourceRole::Indexer, ChannelSourceTarget::Module { .. }) => {
-                    tokio::task::spawn_blocking(move || {
-                        crate::source_routing::indexer_blocks(before, limit)
-                    })
-                    .await
-                    .map_err(|_| L2SourceError::unavailable())?
-                    .map_err(map_direct_error)
+                    execution_zone_layer::module_indexer_blocks(before, limit)
+                        .await
+                        .map_err(map_direct_error)
                 }
                 (ZoneSourceRole::Sequencer, _) => Err(L2SourceError::capability()),
             }
@@ -463,9 +460,8 @@ impl ZoneL2SourceAdapter for DirectZoneL2SourceAdapter {
 }
 
 async fn module_indexer_head() -> Result<Option<NormalizedL2Block>, L2SourceError> {
-    let block_id = tokio::task::spawn_blocking(crate::source_routing::indexer_finalized_head)
+    let block_id = execution_zone_layer::module_indexer_finalized_head()
         .await
-        .map_err(|_| L2SourceError::unavailable())?
         .map_err(map_direct_error)
         .and_then(optional_u64)?;
     let Some(block_id) = block_id else {
@@ -478,9 +474,8 @@ async fn module_indexer_blocks(
     before: Option<u64>,
     limit: u64,
 ) -> Result<Vec<NormalizedL2Block>, L2SourceError> {
-    tokio::task::spawn_blocking(move || crate::source_routing::indexer_blocks(before, limit))
+    execution_zone_layer::module_indexer_blocks(before, limit)
         .await
-        .map_err(|_| L2SourceError::unavailable())?
         .map_err(map_direct_error)?
         .into_iter()
         .map(normalize_indexer_block)
@@ -490,9 +485,8 @@ async fn module_indexer_blocks(
 async fn module_indexer_block_by_id(
     block_id: u64,
 ) -> Result<Option<NormalizedL2Block>, L2SourceError> {
-    tokio::task::spawn_blocking(move || crate::source_routing::indexer_block_by_id(block_id))
+    execution_zone_layer::module_indexer_block_by_id(block_id)
         .await
-        .map_err(|_| L2SourceError::unavailable())?
         .map_err(map_direct_error)?
         .map(normalize_indexer_block)
         .transpose()
@@ -501,9 +495,8 @@ async fn module_indexer_block_by_id(
 async fn module_indexer_block_by_hash(
     block_hash: String,
 ) -> Result<Option<NormalizedL2Block>, L2SourceError> {
-    tokio::task::spawn_blocking(move || crate::source_routing::indexer_block_by_hash(&block_hash))
+    execution_zone_layer::module_indexer_block_by_hash(block_hash)
         .await
-        .map_err(|_| L2SourceError::unavailable())?
         .map_err(map_direct_error)?
         .map(normalize_indexer_block)
         .transpose()
@@ -512,9 +505,8 @@ async fn module_indexer_block_by_hash(
 async fn module_indexer_transaction(
     transaction_id: String,
 ) -> Result<Option<TransactionSummary>, L2SourceError> {
-    tokio::task::spawn_blocking(move || crate::source_routing::indexer_transaction(&transaction_id))
+    execution_zone_layer::module_indexer_transaction(transaction_id)
         .await
-        .map_err(|_| L2SourceError::unavailable())?
         .map_err(map_direct_error)
 }
 
@@ -522,13 +514,10 @@ async fn module_indexer_account_at_block(
     account_id: String,
     block_id: u64,
 ) -> Result<L2AccountValue, L2SourceError> {
-    tokio::task::spawn_blocking(move || {
-        crate::source_routing::indexer_account_at_block(&account_id, block_id)
-    })
-    .await
-    .map_err(|_| L2SourceError::unavailable())?
-    .map(normalize_account)
-    .map_err(map_direct_error)
+    execution_zone_layer::module_indexer_account_at_block(account_id, block_id)
+        .await
+        .map(normalize_account)
+        .map_err(map_direct_error)
 }
 
 async fn module_indexer_account_activity(
@@ -536,12 +525,9 @@ async fn module_indexer_account_activity(
     offset: usize,
     limit: usize,
 ) -> Result<Vec<crate::lez::AccountTransactionSummary>, L2SourceError> {
-    tokio::task::spawn_blocking(move || {
-        crate::source_routing::account_transactions_by_account(&account_id, offset, limit)
-    })
-    .await
-    .map_err(|_| L2SourceError::unavailable())?
-    .map_err(map_direct_error)
+    execution_zone_layer::module_indexer_account_activity(account_id, offset, limit)
+        .await
+        .map_err(map_direct_error)
 }
 
 fn optional_u64(value: Value) -> Result<Option<u64>, L2SourceError> {
