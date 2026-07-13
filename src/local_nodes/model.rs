@@ -41,23 +41,26 @@ impl NodeKind {
             Self::Bedrock => Some(8080),
             Self::Sequencer => Some(3040),
             Self::Indexer => Some(8779),
-            Self::Storage => Some(8081),
+            Self::Storage => None,
             Self::Messaging => Some(8645),
         }
     }
 
     pub(super) fn endpoint(self, port: Option<u16>) -> Option<String> {
-        port.map(|value| match self {
-            Self::Storage => format!("http://127.0.0.1:{value}/api/storage/v1"),
-            _ => format!("http://127.0.0.1:{value}/"),
-        })
+        if self == Self::Storage {
+            return None;
+        }
+        port.map(|value| format!("http://127.0.0.1:{value}/"))
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NodeAction {
+    StartRuntime,
+    StopRuntime,
     Install,
+    Initialize,
     Uninstall,
     NewNetwork,
     LoadNetwork,
@@ -79,7 +82,10 @@ impl NodeAction {
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::StartRuntime => "start_runtime",
+            Self::StopRuntime => "stop_runtime",
             Self::Install => "install",
+            Self::Initialize => "initialize",
             Self::Uninstall => "uninstall",
             Self::NewNetwork => "new_network",
             Self::LoadNetwork => "load_network",
@@ -93,7 +99,10 @@ impl NodeAction {
 
     pub(super) fn label(self) -> &'static str {
         match self {
+            Self::StartRuntime => "Start Local Runtime",
+            Self::StopRuntime => "Stop Local Runtime",
             Self::Install => "Install",
+            Self::Initialize => "Initialize",
             Self::Uninstall => "Uninstall",
             Self::NewNetwork => "New Local Devnet",
             Self::LoadNetwork => "Load Local Devnet",
@@ -111,6 +120,11 @@ impl NodeAction {
             Self::NewNetwork | Self::LoadNetwork | Self::DeleteNetwork | Self::ResetNetwork
         )
     }
+
+    #[must_use]
+    pub(super) fn is_runtime_action(self) -> bool {
+        matches!(self, Self::StartRuntime | Self::StopRuntime)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -123,6 +137,10 @@ pub struct LocalNodeActionRequest {
     #[serde(default)]
     pub workspace_path: Option<String>,
     #[serde(default)]
+    pub runtime_modules_dir: Option<String>,
+    #[serde(default)]
+    pub runtime_binary_path: Option<String>,
+    #[serde(default)]
     pub label: Option<String>,
 }
 
@@ -131,6 +149,7 @@ pub struct LocalNodeReport {
     pub profile: String,
     pub mode: String,
     pub available_network_actions: Vec<NodeAction>,
+    pub available_runtime_actions: Vec<NodeAction>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub primary_problem: Option<LocalNodeProblemCode>,
     pub active_devnet: Option<String>,
@@ -139,6 +158,7 @@ pub struct LocalNodeReport {
     pub nodes: Vec<LocalNodeStatus>,
     pub operations: Vec<LocalNodeOperationReport>,
     pub tools: LocalNodeTools,
+    pub runtime: super::runtime::LogoscoreRuntimeStatus,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -238,6 +258,45 @@ pub struct LocalNodeConfigRecord {
     pub process_id: Option<u32>,
     #[serde(default)]
     pub installed: bool,
+    #[serde(default)]
+    pub lifecycle_state: NodeLifecycleState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_lifecycle_action: Option<NodeAction>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NodeLifecycleState {
+    #[default]
+    NotInitialized,
+    Initializing,
+    Starting,
+    Running,
+    Stopping,
+    Stopped,
+    Unknown,
+    Failed,
+}
+
+impl NodeLifecycleState {
+    #[must_use]
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::NotInitialized => "not_initialized",
+            Self::Initializing => "initializing",
+            Self::Starting => "starting",
+            Self::Running => "running",
+            Self::Stopping => "stopping",
+            Self::Stopped => "stopped",
+            Self::Unknown => "unknown",
+            Self::Failed => "failed",
+        }
+    }
+
+    #[must_use]
+    pub(super) fn is_pending(self) -> bool {
+        matches!(self, Self::Initializing | Self::Starting | Self::Stopping)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -5,10 +5,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use url::{Host, Url};
 
-use crate::{
-    inspection::NetworkScope,
-    source_routing::{INDEXER_MODULE, LEZ_CORE_MODULE},
-};
+use crate::inspection::NetworkScope;
+
+use super::layer::module_id_for_role;
 
 const SOURCE_ID_PREFIX: &str = "src_";
 const SOURCE_ID_RANDOM_BYTES: usize = 16;
@@ -402,10 +401,7 @@ fn normalized_module_id(value: &str, role: ChannelSourceRole) -> Result<String> 
         bail!("module id cannot contain control characters");
     }
     let value = value.trim();
-    let expected = match role {
-        ChannelSourceRole::Sequencer => LEZ_CORE_MODULE,
-        ChannelSourceRole::Indexer => INDEXER_MODULE,
-    };
+    let expected = module_id_for_role(role);
     if value != expected {
         bail!("module id `{value}` is not valid for this Channel source role");
     }
@@ -492,18 +488,18 @@ mod tests {
     #[test]
     fn module_targets_are_known_and_role_specific() -> Result<()> {
         let sequencer = ChannelSourceTarget::Module {
-            module_id: LEZ_CORE_MODULE.to_owned(),
+            module_id: module_id_for_role(ChannelSourceRole::Sequencer).to_owned(),
         }
         .normalized(ChannelSourceRole::Sequencer, false)?;
         let indexer = ChannelSourceTarget::Module {
-            module_id: INDEXER_MODULE.to_owned(),
+            module_id: module_id_for_role(ChannelSourceRole::Indexer).to_owned(),
         }
         .normalized(ChannelSourceRole::Indexer, false)?;
         if sequencer.fingerprint() == indexer.fingerprint() {
             bail!("different module targets produced one fingerprint");
         }
         if (ChannelSourceTarget::Module {
-            module_id: INDEXER_MODULE.to_owned(),
+            module_id: module_id_for_role(ChannelSourceRole::Indexer).to_owned(),
         })
         .normalized(ChannelSourceRole::Sequencer, false)
         .is_ok()

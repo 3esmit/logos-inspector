@@ -4,7 +4,9 @@ import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Layouts
 import "../../../components"
+import "../../../components/common"
 import "../../../theme"
+import "../../../state/source_routing/SourcePolicyCatalog.js" as SourcePolicyCatalog
 import "../ZonePresentation.js" as Presentation
 
 Rectangle {
@@ -21,12 +23,14 @@ Rectangle {
     property string initialTargetKind: "rpc"
     property string initialTargetValue: ""
     property bool conflict: false
+    readonly property var adapterPolicy: root.selectedAdapterPolicy()
     readonly property string targetValue: root.targetKind === "module"
-        ? moduleField.text.trim() : endpointField.text.trim()
+        ? root.moduleDefault() : endpointField.text.trim()
     readonly property bool dirty: labelField.text.trim() !== root.initialLabel
         || root.targetKind !== root.initialTargetKind
         || root.targetValue !== root.initialTargetValue
-    readonly property bool validDraft: root.targetValue.length > 0
+    readonly property bool validDraft: root.targetKind === "module"
+        || (root.adapterAcceptsInput("rpc_endpoint") && root.targetValue.length > 0)
     signal saved()
     signal cancelled()
     signal reloadRequested()
@@ -102,9 +106,6 @@ Rectangle {
             current: root.targetKind
             onSelected: function (value) {
                 root.targetKind = value
-                if (value === "module" && moduleField.text.trim().length === 0) {
-                    moduleField.text = root.moduleDefault()
-                }
             }
         }
 
@@ -112,7 +113,7 @@ Rectangle {
             id: endpointField
 
             objectName: "channelSourceEndpointField"
-            visible: root.targetKind === "rpc"
+            visible: root.adapterAcceptsInput("rpc_endpoint")
             placeholderText: qsTr("https://host:port/")
             color: root.theme.text
             placeholderTextColor: root.theme.textMuted
@@ -132,27 +133,14 @@ Rectangle {
             }
         }
 
-        TextField {
-            id: moduleField
-
-            objectName: "channelSourceModuleField"
+        DetailValueRow {
+            objectName: "channelSourceModuleInfo"
             visible: root.targetKind === "module"
-            placeholderText: root.moduleDefault()
-            color: root.theme.text
-            placeholderTextColor: root.theme.textMuted
-            selectionColor: root.theme.accent
-            selectedTextColor: root.theme.selectedText
-            font.family: "monospace"
-            font.pixelSize: root.theme.dataText
+            theme: root.theme
+            label: qsTr("Module")
+            value: root.moduleDefault()
+            copyable: true
             Layout.fillWidth: true
-            Layout.preferredHeight: visible ? root.theme.controlHeight : 0
-
-            background: Rectangle {
-                radius: root.theme.radius
-                color: root.theme.field
-                border.width: moduleField.activeFocus ? 1 : 0
-                border.color: root.theme.accent
-            }
         }
 
         CheckBox {
@@ -260,7 +248,6 @@ Rectangle {
         labelField.text = initialLabel
         targetKind = initialTargetKind
         endpointField.text = initialTargetKind === "rpc" ? initialTargetValue : ""
-        moduleField.text = initialTargetKind === "module" ? initialTargetValue : moduleDefault()
         insecureHttpCheck.checked = false
         conflict = false
     }
@@ -271,7 +258,7 @@ Rectangle {
         }
         const label = labelField.text.trim().length > 0 ? labelField.text.trim() : null
         const target = targetKind === "module"
-            ? { kind: "module", module_id: moduleField.text.trim() }
+            ? { kind: "module", module_id: moduleDefault() }
             : { kind: "rpc", endpoint: endpointField.text.trim() }
         let mutation
         if (role === "indexer") {
@@ -314,7 +301,31 @@ Rectangle {
     }
 
     function moduleDefault() {
-        return role === "indexer" ? "lez_indexer_module" : "lez_core"
+        return String(root.adapterPolicy.module_id || "")
+    }
+
+    function selectedAdapterPolicy() {
+        const family = role === "indexer"
+            ? "execution_zone_indexer" : "execution_zone_sequencer"
+        const modes = SourcePolicyCatalog.sourceModes(family)
+        for (let i = 0; i < modes.length; ++i) {
+            const mode = modes[i] || {}
+            if (String(mode.key || "") === targetKind) {
+                return mode.adapter && typeof mode.adapter === "object" ? mode.adapter : ({})
+            }
+        }
+        return ({})
+    }
+
+    function adapterAcceptsInput(inputKey) {
+        const inputs = root.adapterPolicy && Array.isArray(root.adapterPolicy.inputs)
+            ? root.adapterPolicy.inputs : []
+        for (let i = 0; i < inputs.length; ++i) {
+            if (String(inputs[i] && inputs[i].key || "") === String(inputKey || "")) {
+                return true
+            }
+        }
+        return false
     }
 
     function remoteInsecureHttp(value) {

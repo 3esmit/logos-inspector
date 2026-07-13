@@ -3,27 +3,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use serde_json::Map;
 
 use anyhow::{Context as _, Result, bail};
-use reqwest::Method;
 use serde_json::{Value, json};
 use tokio::io::AsyncWriteExt as _;
 
 use crate::{
-    raw_http_json,
-    source_routing::{
-        self, require_mutating_diagnostics, rest_empty_request, rest_json_request, rest_url,
-        storage_rest_source, storage_rest_upload,
-    },
+    source_routing::{require_mutating_diagnostics, storage_layer, storage_rest_source},
     support::args::Args,
-    support::raw_source_transport::request_success,
 };
 
 use super::super::value::to_value;
 use super::record::update_runtime_operation_progress;
 use super::spec::{OperationDefinition, OperationDomain, OperationExclusiveGroup, OperationMethod};
-use super::{
-    RuntimeOperationRegistry, RuntimeOperationRequest, blocking_module_call,
-    blocking_module_dispatch,
-};
+use super::{RuntimeOperationRegistry, RuntimeOperationRequest};
 
 pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
     OperationDefinition::new(
@@ -140,17 +131,11 @@ pub(super) fn add_operation_context(
 
 pub(super) async fn execute_storage_manifests(request: &RuntimeOperationRequest) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
-    if let Some(module_args) = source_routing::storage_args(&args, false, "storage manifests")? {
-        return blocking_module_call(
-            "storage module manifests",
-            source_routing::STORAGE_MODULE,
-            "manifests",
-            module_args.values,
-        )
-        .await;
+    if let Some(module_args) = storage_layer::operation_args(&args, false, "storage manifests")? {
+        return storage_layer::module_call("manifests", module_args.values).await;
     }
     let source = storage_rest_source(&args)?;
-    to_value(raw_http_json(source.endpoint, "/data").await?)
+    to_value(storage_layer::manifests(source.endpoint).await?)
 }
 
 pub(super) async fn execute_storage_download_manifest(
@@ -158,7 +143,7 @@ pub(super) async fn execute_storage_download_manifest(
 ) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
     if let Some(module_args) =
-        source_routing::storage_args(&args, false, "storage manifest download")?
+        storage_layer::operation_args(&args, false, "storage manifest download")?
     {
         let cid = module_args
             .values
@@ -166,9 +151,7 @@ pub(super) async fn execute_storage_download_manifest(
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
-        return blocking_module_dispatch(
-            "storage module manifest download",
-            source_routing::STORAGE_MODULE,
+        return storage_layer::module_dispatch(
             "downloadManifest",
             module_args.values,
             vec![("cid", cid)],
@@ -182,12 +165,12 @@ pub(super) async fn execute_storage_download_manifest(
         source.next_index
     };
     let cid = args.string(cid_index, "CID")?;
-    to_value(raw_http_json(source.endpoint, &format!("/data/{cid}/network/manifest")).await?)
+    to_value(storage_layer::manifest(source.endpoint, cid).await?)
 }
 
 pub(super) async fn execute_storage_fetch(request: &RuntimeOperationRequest) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
-    if let Some(module_args) = source_routing::storage_args(&args, true, "storage network action")?
+    if let Some(module_args) = storage_layer::operation_args(&args, true, "storage network action")?
     {
         let cid = module_args
             .values
@@ -195,31 +178,21 @@ pub(super) async fn execute_storage_fetch(request: &RuntimeOperationRequest) -> 
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
-        return blocking_module_dispatch(
-            "storage module fetch",
-            source_routing::STORAGE_MODULE,
-            "fetch",
-            module_args.values,
-            vec![("cid", cid)],
-        )
-        .await;
+        return storage_layer::module_dispatch("fetch", module_args.values, vec![("cid", cid)])
+            .await;
     }
     let source = storage_rest_source(&args)?;
     require_mutating_diagnostics(&args, source.next_index, "storage network action")?;
     let cid = args.string(source.next_index + 1, "CID")?;
-    rest_json_request(
-        Method::POST,
-        source.endpoint,
-        &format!("/data/{cid}/network"),
-        None,
-    )
-    .await
-    .with_context(|| format!("failed to start storage network fetch for {cid}"))
+    storage_layer::fetch(source.endpoint, cid)
+        .await
+        .with_context(|| format!("failed to start storage network fetch for {cid}"))
 }
 
 pub(super) async fn execute_storage_upload(request: &RuntimeOperationRequest) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
-    if let Some(module_args) = source_routing::storage_args(&args, true, "storage upload action")? {
+    if let Some(module_args) = storage_layer::operation_args(&args, true, "storage upload action")?
+    {
         let mut values = module_args.values;
         if values.len() < 2 {
             values.push(json!(65_536));
@@ -229,14 +202,7 @@ pub(super) async fn execute_storage_upload(request: &RuntimeOperationRequest) ->
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
-        return blocking_module_dispatch(
-            "storage module upload",
-            source_routing::STORAGE_MODULE,
-            "uploadUrl",
-            values,
-            vec![("path", path)],
-        )
-        .await;
+        return storage_layer::module_dispatch("uploadUrl", values, vec![("path", path)]).await;
     }
     let source = storage_rest_source(&args)?;
     require_mutating_diagnostics(&args, source.next_index, "storage upload action")?;
@@ -248,7 +214,7 @@ pub(super) async fn execute_storage_upload(request: &RuntimeOperationRequest) ->
         .value(source.next_index + 2)
         .and_then(Value::as_u64)
         .unwrap_or(65_536);
-    storage_rest_upload(source.endpoint, path, block_size)
+    storage_layer::upload(source.endpoint, path, block_size)
         .await
         .with_context(|| format!("failed to upload `{path}` through storage REST"))
 }
@@ -260,7 +226,8 @@ pub(super) async fn execute_storage_download(
     cancel_requested: &AtomicBool,
 ) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
-    if let Some(module_args) = source_routing::storage_args(&args, true, "storage download action")?
+    if let Some(module_args) =
+        storage_layer::operation_args(&args, true, "storage download action")?
     {
         let mut values = module_args.values;
         if values.len() < 3 {
@@ -279,9 +246,7 @@ pub(super) async fn execute_storage_download(
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
-        return blocking_module_dispatch(
-            "storage module download",
-            source_routing::STORAGE_MODULE,
+        return storage_layer::module_dispatch(
             "downloadToUrl",
             values,
             vec![("cid", cid), ("path", path)],
@@ -308,38 +273,23 @@ pub(super) async fn execute_storage_download(
 
 pub(super) async fn execute_storage_remove(request: &RuntimeOperationRequest) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
-    if let Some(module_args) = source_routing::storage_args(&args, true, "storage remove action")? {
+    if let Some(module_args) = storage_layer::operation_args(&args, true, "storage remove action")?
+    {
         let cid = module_args
             .values
             .first()
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_owned();
-        return blocking_module_dispatch(
-            "storage module remove",
-            source_routing::STORAGE_MODULE,
-            "remove",
-            module_args.values,
-            vec![("cid", cid)],
-        )
-        .await;
+        return storage_layer::module_dispatch("remove", module_args.values, vec![("cid", cid)])
+            .await;
     }
     let source = storage_rest_source(&args)?;
     require_mutating_diagnostics(&args, source.next_index, "storage remove action")?;
     let cid = args.string(source.next_index + 1, "CID")?;
-    rest_empty_request(
-        Method::DELETE,
-        source.endpoint,
-        &format!("/data/{cid}"),
-        None,
-    )
-    .await
-    .with_context(|| format!("failed to remove storage CID {cid}"))?;
-    Ok(json!({
-        "removed": true,
-        "cid": cid,
-        "endpoint": source.endpoint,
-    }))
+    storage_layer::remove(source.endpoint, cid)
+        .await
+        .with_context(|| format!("failed to remove storage CID {cid}"))
 }
 
 pub(super) async fn storage_rest_download_tracked(
@@ -354,19 +304,7 @@ pub(super) async fn storage_rest_download_tracked(
     if cancel_requested.load(Ordering::Relaxed) {
         bail!("storage download canceled");
     }
-    let route = if local_only {
-        format!("/data/{cid}")
-    } else {
-        format!("/data/{cid}/network/stream")
-    };
-    let url = rest_url(endpoint, &route);
-    let response = request_success(
-        reqwest::Client::new().get(&url),
-        &url,
-        "storage download",
-        "failed to read storage download error body",
-    )
-    .await?;
+    let response = storage_layer::download_response(endpoint, cid, local_only).await?;
     update_runtime_operation_progress(registry, operation_id, 0, response.content_length());
     let temp_path = format!("{path}.part");
     let mut file = tokio::fs::File::create(&temp_path)

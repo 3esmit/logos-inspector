@@ -141,6 +141,8 @@ TestCase {
         compare(storageModule.supportsCidProbe, true)
         compare(storageModule.supportsMutatingDiagnostics, true)
         compare(storageModule.usesRestEndpoint, false)
+        compare(storageModule.connectorId, "storage_module")
+        compare(storageModule.inputs.length, 0)
 
         const deliveryMetrics = state.sourceModeDescriptor("delivery", "metrics")
         compare(deliveryMetrics.key, "metrics")
@@ -148,6 +150,17 @@ TestCase {
         compare(deliveryMetrics.target, "metrics_endpoint")
         compare(deliveryMetrics.usesMetricsEndpoint, true)
         compare(deliveryMetrics.usesRestEndpoint, false)
+        compare(deliveryMetrics.connectorId, "delivery_metrics")
+        compare(deliveryMetrics.inputs.length, 1)
+        compare(deliveryMetrics.inputs[0].key, "metrics_endpoint")
+    }
+
+    function test_module_source_args_do_not_include_rpc_input() {
+        const args = state.coreSourceArgs("module", "http://unused", ["payload"])
+
+        compare(args.length, 2)
+        compare(args[0], "module")
+        compare(args[1], "payload")
     }
 
 }

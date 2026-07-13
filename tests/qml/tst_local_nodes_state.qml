@@ -37,6 +37,7 @@ TestCase {
             profile: "local",
             mode: "localnet",
             available_network_actions: ["new_network", "load_network", "reset_network", "delete_network"],
+            available_runtime_actions: ["stop_runtime"],
             primary_problem: "missing_sequencer_binary",
             active_devnet: "devnet",
             workspace_root: "/tmp/logos-devnet",
@@ -73,6 +74,12 @@ TestCase {
                 logoscore: {
                     available: true
                 }
+            },
+            runtime: {
+                ownership: "inspector_managed",
+                run_state: "running",
+                modules_dir: "/tmp/modules",
+                detail: "Inspector-managed logoscore daemon process is running"
             }
         }
     }
@@ -232,6 +239,9 @@ TestCase {
         gateway.busy = false
 
         compare(state.actionLabel("reset_network"), "Reset Local Devnet")
+        verify(state.runtimeActionEnabled("stop_runtime"))
+        compare(state.runtimeState(), "running")
+        compare(state.runtimeModulesDir(), "/tmp/modules")
         compare(state.nodeByKind("sequencer").label, "Sequencer")
         compare(state.toolProblem(), "sequencer_service not found. Local sequencer start requires a configured binary.")
     }
@@ -279,5 +289,34 @@ TestCase {
         compare(gateway.calls[0].args[1].action, "load_network")
         compare(gateway.calls[0].args[1].workspace_path, "/tmp/local-devnet")
         compare(gateway.history[0].operation.label, "Load Local Devnet")
+    }
+
+    function test_runtime_action_draft_serializes_managed_runtime_paths() {
+        state.networkProfile = "local"
+        state.beginRuntimeAction("start_runtime", "/tmp/modules", "/tmp/logoscore")
+        gateway.responses = ({
+            localNodesAction: {
+                ok: true,
+                value: sampleReport(),
+                text: "OK",
+                error: ""
+            },
+            localDevnetList: {
+                ok: true,
+                value: { devnets: [] },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        compare(state.actionDraftTitle(), "Start Local Runtime")
+        compare(state.actionDraftMessage(), "This starts an Inspector-managed LogosCore runtime using modules from /tmp/modules.")
+
+        state.runPendingAction()
+
+        compare(gateway.calls[0].args[1].action, "start_runtime")
+        compare(gateway.calls[0].args[1].runtime_modules_dir, "/tmp/modules")
+        compare(gateway.calls[0].args[1].runtime_binary_path, "/tmp/logoscore")
+        compare(gateway.history[0].operation.label, "Start Local Runtime")
     }
 }

@@ -1,4 +1,4 @@
-use crate::source_routing::{ModuleProbeStep, SourceProbeKey};
+use crate::source_routing::{SourceProbeKey, shared::plan::ModuleProbeStep};
 
 pub(crate) fn delivery_module_probe_plan(info_id: Option<&str>) -> Vec<ModuleProbeStep<'_>> {
     let mut steps = vec![

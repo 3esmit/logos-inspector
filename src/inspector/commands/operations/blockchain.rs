@@ -1,13 +1,9 @@
 use anyhow::{Result, bail};
 use serde_json::Value;
 
-use crate::{
-    blockchain,
-    source_routing::{self, CoreEndpointMode},
-    support::args::Args,
-};
+use crate::{source_routing::bedrock_layer, support::args::Args};
 
-use super::super::value::{blocking_value, to_value};
+use super::super::value::to_value;
 use super::RuntimeOperationRequest;
 use super::spec::{OperationDefinition, OperationDomain, OperationMethod};
 
@@ -58,13 +54,7 @@ pub(super) async fn execute(request: &RuntimeOperationRequest) -> Result<Value> 
 async fn execute_blockchain_node(request: &RuntimeOperationRequest) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
     let source = args.source_endpoint(0, "node endpoint")?;
-    if source.mode == CoreEndpointMode::Module {
-        return blocking_value("blockchain module node", move || {
-            to_value(source_routing::blockchain_node_report())
-        })
-        .await;
-    }
-    to_value(blockchain::blockchain_node_report(source.endpoint).await)
+    to_value(bedrock_layer::node_report(source.adapter()).await?)
 }
 
 async fn execute_blockchain_blocks(request: &RuntimeOperationRequest) -> Result<Value> {
@@ -72,27 +62,8 @@ async fn execute_blockchain_blocks(request: &RuntimeOperationRequest) -> Result<
     let source = args.source_endpoint(0, "node endpoint")?;
     let slot_from = args.u64(source.next_index, "slot from")?;
     let slot_to = args.u64(source.next_index + 1, "slot to")?;
-    if source.mode == CoreEndpointMode::Module {
-        let limit = args.value(source.next_index + 2).and_then(Value::as_u64);
-        return blocking_value("blockchain module blocks", move || {
-            if let Some(limit) = limit {
-                to_value(source_routing::blockchain_recent_blocks(
-                    slot_from, slot_to, limit,
-                )?)
-            } else {
-                to_value(source_routing::blockchain_blocks(slot_from, slot_to)?)
-            }
-        })
-        .await;
-    }
-    if let Some(limit) = args.value(source.next_index + 2).and_then(Value::as_u64) {
-        to_value(
-            blockchain::blockchain_recent_blocks(source.endpoint, slot_from, slot_to, limit)
-                .await?,
-        )
-    } else {
-        to_value(blockchain::blockchain_blocks(source.endpoint, slot_from, slot_to).await?)
-    }
+    let limit = args.value(source.next_index + 2).and_then(Value::as_u64);
+    to_value(bedrock_layer::blocks(source.adapter(), slot_from, slot_to, limit).await?)
 }
 
 async fn execute_blockchain_live_blocks(request: &RuntimeOperationRequest) -> Result<Value> {
@@ -104,49 +75,27 @@ async fn execute_blockchain_live_blocks(request: &RuntimeOperationRequest) -> Re
         .value(source.next_index + 2)
         .and_then(Value::as_u64)
         .unwrap_or(50);
-    if source.mode == CoreEndpointMode::Module {
-        return blocking_value("blockchain module live blocks", move || {
-            to_value(source_routing::blockchain_live_blocks_snapshot(
-                slot_from, slot_to, limit,
-            )?)
-        })
-        .await;
-    }
-    to_value(
-        blockchain::blockchain_live_blocks_snapshot(source.endpoint, slot_from, slot_to, limit)
-            .await?,
-    )
+    to_value(bedrock_layer::live_blocks(source.adapter(), slot_from, slot_to, limit).await?)
 }
 
 async fn execute_blockchain_block(request: &RuntimeOperationRequest) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
     let source = args.source_endpoint(0, "node endpoint")?;
-    if source.mode == CoreEndpointMode::Module {
-        let block_id = args.string(source.next_index, "block id")?.to_owned();
-        return blocking_value("blockchain module block", move || {
-            to_value(source_routing::blockchain_block(&block_id)?)
-        })
-        .await;
-    }
     to_value(
-        blockchain::blockchain_block(source.endpoint, args.string(source.next_index, "block id")?)
-            .await?,
+        bedrock_layer::block(
+            source.adapter(),
+            args.string(source.next_index, "block id")?,
+        )
+        .await?,
     )
 }
 
 async fn execute_blockchain_transaction(request: &RuntimeOperationRequest) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
     let source = args.source_endpoint(0, "node endpoint")?;
-    if source.mode == CoreEndpointMode::Module {
-        let transaction_id = args.string(source.next_index, "transaction id")?.to_owned();
-        return blocking_value("blockchain module transaction", move || {
-            to_value(source_routing::blockchain_transaction(&transaction_id)?)
-        })
-        .await;
-    }
     to_value(
-        blockchain::blockchain_transaction(
-            source.endpoint,
+        bedrock_layer::transaction(
+            source.adapter(),
             args.string(source.next_index, "transaction id")?,
         )
         .await?,

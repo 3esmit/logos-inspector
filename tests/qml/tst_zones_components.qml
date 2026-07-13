@@ -181,6 +181,32 @@ TestCase {
         compare(zoneState.lastMutationRequest.mutation.target.endpoint, "https://new-sequencer.example/")
     }
 
+    function test_module_source_uses_layer_owned_module_without_user_input() {
+        const detail = findChild(page, "zoneDetail")
+        verify(detail.requestTab("sources"))
+        tryVerify(function () {
+            return findChild(detail, "channelSourcesSection") !== null
+        })
+        const sources = findChild(detail, "channelSourcesSection")
+        sources.beginEditor("indexer", null)
+        tryVerify(function () {
+            return findChild(sources, "channelSourceEditor") !== null
+        })
+        const editor = findChild(sources, "channelSourceEditor")
+        const endpoint = findChild(sources, "channelSourceEndpointField")
+        const moduleInfo = findChild(sources, "channelSourceModuleInfo")
+        editor.targetKind = "module"
+
+        tryVerify(function () { return editor.validDraft })
+        verify(!endpoint.visible)
+        verify(moduleInfo.visible)
+        compare(editor.moduleDefault(), "lez_indexer_module")
+        verify(editor.submit())
+        compare(zoneState.lastMutationRequest.mutation.kind, "set_indexer")
+        compare(zoneState.lastMutationRequest.mutation.target.kind, "module")
+        compare(zoneState.lastMutationRequest.mutation.target.module_id, "lez_indexer_module")
+    }
+
     function test_source_revision_conflict_keeps_unrebased_draft() {
         const detail = findChild(page, "zoneDetail")
         verify(detail.requestTab("sources"))

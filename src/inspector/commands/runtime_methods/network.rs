@@ -3,8 +3,7 @@ use serde_json::Value;
 use tokio::runtime::Runtime;
 
 use crate::{
-    channel_scan as inspect_channel_scan, channel_state as inspect_channel_state, raw_rpc_report,
-    source_routing::{CoreEndpointMode, SourceEndpoint},
+    source_routing::{CoreEndpointMode, SourceEndpoint, bedrock_layer},
     support::args::Args,
 };
 
@@ -21,7 +20,7 @@ pub(super) fn channel_scan(runtime: &Runtime, args: Value) -> Result<Value> {
     let args = Args::new(args)?;
     let source = args.source_endpoint(0, "node endpoint")?;
     require_rpc_source(&source, "channelScan")?;
-    to_value(runtime.block_on(inspect_channel_scan(
+    to_value(runtime.block_on(bedrock_layer::channel_scan(
         source.endpoint,
         args.u64(source.next_index, "slot from")?,
         args.u64(source.next_index + 1, "slot to")?,
@@ -32,7 +31,7 @@ pub(super) fn channel_state(runtime: &Runtime, args: Value) -> Result<Value> {
     let args = Args::new(args)?;
     let source = args.source_endpoint(0, "node endpoint")?;
     require_rpc_source(&source, "channelState")?;
-    to_value(runtime.block_on(inspect_channel_state(
+    to_value(runtime.block_on(bedrock_layer::channel_state(
         source.endpoint,
         args.string(source.next_index, "channel id")?,
     ))?)
@@ -40,7 +39,7 @@ pub(super) fn channel_state(runtime: &Runtime, args: Value) -> Result<Value> {
 
 pub(super) fn raw_rpc(runtime: &Runtime, args: Value) -> Result<Value> {
     let args = Args::new(args)?;
-    to_value(runtime.block_on(raw_rpc_report(
+    to_value(runtime.block_on(bedrock_layer::raw_rpc(
         args.string(0, "RPC endpoint")?,
         args.string(1, "RPC method")?,
         args.json_or_empty_array(2)?,

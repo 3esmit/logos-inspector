@@ -1,18 +1,16 @@
 use anyhow::{Context as _, Result, bail};
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use reqwest::Method;
 use serde_json::{Value, json};
 
 use crate::{
     source_routing::{
-        self, DeliveryStoreQuery, delivery_rest_source, delivery_store_query_url,
-        raw_http_json_url, require_mutating_diagnostics, rest_empty_request,
+        DeliveryStoreQuery, delivery_rest_source, messaging_layer, require_mutating_diagnostics,
     },
     support::args::Args,
 };
 
+use super::RuntimeOperationRequest;
 use super::spec::{OperationDefinition, OperationDomain, OperationMethod};
-use super::{RuntimeOperationRequest, blocking_module_call, blocking_module_dispatch};
 
 const MAX_DELIVERY_STORE_PAGE_SIZE: u64 = 100;
 
@@ -86,40 +84,20 @@ pub(super) async fn execute_delivery_subscription(
     module_method: &'static str,
 ) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
-    if let Some(module_args) =
-        source_routing::delivery_message_args(&args, "delivery message action")?
-    {
-        return blocking_module_call(
-            "delivery module message action",
-            source_routing::DELIVERY_MODULE,
-            module_method,
-            module_args.values,
-        )
-        .await;
+    if let Some(module_args) = messaging_layer::message_args(&args, "delivery message action")? {
+        return messaging_layer::module_call(module_method, module_args.values).await;
     }
     let source = delivery_rest_source(&args)?;
     require_mutating_diagnostics(&args, source.next_index, "delivery message action")?;
     let topic = args.string(source.next_index + 1, "content topic")?;
-    rest_empty_request(
-        method.clone(),
-        source.endpoint,
-        "/relay/v1/auto/subscriptions",
-        Some(json!([topic])),
-    )
-    .await
-    .with_context(|| format!("failed to update relay subscription for {topic}"))?;
-    Ok(json!({
-        "subscribed": method == Method::POST,
-        "contentTopic": topic,
-        "endpoint": source.endpoint,
-    }))
+    messaging_layer::update_subscription(source.endpoint, topic, method == Method::POST)
+        .await
+        .with_context(|| format!("failed to update relay subscription for {topic}"))
 }
 
 pub(super) async fn execute_delivery_send(request: &RuntimeOperationRequest) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
-    if let Some(module_args) =
-        source_routing::delivery_message_args(&args, "delivery message action")?
-    {
+    if let Some(module_args) = messaging_layer::message_args(&args, "delivery message action")? {
         let topic = module_args
             .values
             .first()
@@ -132,9 +110,7 @@ pub(super) async fn execute_delivery_send(request: &RuntimeOperationRequest) -> 
             .and_then(Value::as_str)
             .map(str::len)
             .unwrap_or(0);
-        return blocking_module_dispatch(
-            "delivery module send",
-            source_routing::DELIVERY_MODULE,
+        return messaging_layer::module_dispatch(
             "send",
             module_args.values,
             vec![("contentTopic", topic), ("bytes", payload_len.to_string())],
@@ -145,24 +121,9 @@ pub(super) async fn execute_delivery_send(request: &RuntimeOperationRequest) -> 
     require_mutating_diagnostics(&args, source.next_index, "delivery message action")?;
     let topic = args.string(source.next_index + 1, "content topic")?;
     let payload = args.string(source.next_index + 2, "message payload")?;
-    let body = json!({
-        "contentTopic": topic,
-        "payload": BASE64_STANDARD.encode(payload.as_bytes()),
-    });
-    rest_empty_request(
-        Method::POST,
-        source.endpoint,
-        "/relay/v1/auto/messages",
-        Some(body),
-    )
-    .await
-    .with_context(|| format!("failed to send relay message on {topic}"))?;
-    Ok(json!({
-        "sent": true,
-        "contentTopic": topic,
-        "bytes": payload.len(),
-        "endpoint": source.endpoint,
-    }))
+    messaging_layer::send(source.endpoint, topic, payload)
+        .await
+        .with_context(|| format!("failed to send relay message on {topic}"))
 }
 
 pub(super) async fn execute_delivery_module_action(
@@ -170,15 +131,8 @@ pub(super) async fn execute_delivery_module_action(
     method: &'static str,
 ) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
-    let call_args =
-        source_routing::delivery_lifecycle_args(&args, "delivery node lifecycle action")?;
-    blocking_module_call(
-        "delivery module node action",
-        source_routing::DELIVERY_MODULE,
-        method,
-        call_args,
-    )
-    .await
+    let call_args = messaging_layer::lifecycle_args(&args, "delivery node lifecycle action")?;
+    messaging_layer::module_call(method, call_args).await
 }
 
 pub(super) async fn execute_delivery_store_query(
@@ -197,7 +151,7 @@ pub(super) async fn execute_delivery_store_query(
         .clamp(1, MAX_DELIVERY_STORE_PAGE_SIZE);
     let ascending = args.optional_bool(source.next_index + 6);
     let include_data = args.optional_bool(source.next_index + 7);
-    let query = delivery_store_query_url(
+    let (query, value) = messaging_layer::store_query(
         source.endpoint,
         DeliveryStoreQuery {
             peer_addr,
@@ -208,15 +162,14 @@ pub(super) async fn execute_delivery_store_query(
             ascending,
             include_data,
         },
-    )?;
-    let value = raw_http_json_url(query.as_str())
-        .await
-        .context("failed to query Delivery Store")?;
+    )
+    .await
+    .context("failed to query Delivery Store")?;
     Ok(json!({
         "endpoint": source.endpoint,
         "includeData": include_data,
         "pageSize": page_size,
-        "query": query.as_str(),
+        "query": query,
         "value": value,
     }))
 }

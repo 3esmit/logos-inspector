@@ -137,7 +137,10 @@ async fn sequencer_module_probe_is_explicitly_unsupported() -> Result<()> {
         .health(
             ChannelSourceRole::Sequencer,
             ChannelSourceTarget::Module {
-                module_id: crate::source_routing::LEZ_CORE_MODULE.to_owned(),
+                module_id: super::super::layer::module_id_for_role(
+                    crate::source_routing::channel_sources::ChannelSourceRole::Sequencer,
+                )
+                .to_owned(),
             },
         )
         .await;

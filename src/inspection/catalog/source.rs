@@ -6,11 +6,7 @@ use serde_json::Value;
 
 use super::model::{CatalogBlockCheckpoint, CatalogBlockReference};
 use crate::{
-    blockchain::bedrock::{
-        blockchain_block_bounded, blockchain_cryptarchia_info_bounded,
-        blockchain_finalized_blocks_response, blockchain_time_info_bounded,
-    },
-    support::http_response::ensure_response_content_length,
+    source_routing::bedrock_layer, support::http_response::ensure_response_content_length,
 };
 
 pub const DEFAULT_CATALOG_L1_RANGE_BLOCKS: usize = 16;
@@ -204,7 +200,7 @@ impl DirectCatalogL1Source {
     }
 
     async fn fetch_chain_status(&self) -> CatalogL1SourceResult<CatalogL1ChainStatus> {
-        let value = blockchain_cryptarchia_info_bounded(
+        let value = bedrock_layer::catalog_chain_info(
             &self.client,
             &self.endpoint,
             self.limits.metadata_response_bytes,
@@ -215,7 +211,7 @@ impl DirectCatalogL1Source {
     }
 
     async fn fetch_time_status(&self) -> CatalogL1SourceResult<CatalogL1TimeStatus> {
-        let value = blockchain_time_info_bounded(
+        let value = bedrock_layer::catalog_time_info(
             &self.client,
             &self.endpoint,
             self.limits.metadata_response_bytes,
@@ -229,7 +225,7 @@ impl DirectCatalogL1Source {
         &self,
         request: CatalogL1RangeRequest,
     ) -> CatalogL1SourceResult<CatalogL1RangePage> {
-        let mut response = blockchain_finalized_blocks_response(
+        let mut response = bedrock_layer::catalog_finalized_blocks_response(
             &self.client,
             &self.endpoint,
             request.slot_from(),
@@ -255,7 +251,7 @@ impl DirectCatalogL1Source {
 
     async fn fetch_block(&self, block_id: String) -> CatalogL1SourceResult<Option<CatalogL1Block>> {
         let requested_id = canonical_hex_id(&block_id, "requested block id")?;
-        let value = blockchain_block_bounded(
+        let value = bedrock_layer::catalog_block(
             &self.client,
             &self.endpoint,
             &requested_id,

@@ -6,7 +6,8 @@ use crate::support::args::Args;
 use super::{
     CoreEndpointMode, CoreSourceMode, DEFAULT_DELIVERY_REST_ENDPOINT,
     DEFAULT_STORAGE_REST_ENDPOINT, DeliverySourceMode, SourceFamily, StorageSourceMode, core,
-    default_endpoint_for_domain, default_source_mode_for_domain, source_mode_is_token,
+    core::layer::BedrockAdapter, default_endpoint_for_domain, default_source_mode_for_domain,
+    source_mode_is_token,
 };
 
 pub(crate) struct SourceEndpoint<'a> {
@@ -14,6 +15,16 @@ pub(crate) struct SourceEndpoint<'a> {
     pub(crate) endpoint: &'a str,
     pub(crate) next_index: usize,
     pub(crate) module: &'static str,
+}
+
+impl<'a> SourceEndpoint<'a> {
+    #[must_use]
+    pub(crate) const fn adapter(&self) -> BedrockAdapter<'a> {
+        match self.mode {
+            CoreEndpointMode::Rpc => BedrockAdapter::rpc(self.endpoint),
+            CoreEndpointMode::Module => BedrockAdapter::module(),
+        }
+    }
 }
 
 pub(crate) struct RestSource<'a> {
@@ -44,19 +55,45 @@ impl Args {
     pub(crate) fn source_endpoint(&self, index: usize, label: &str) -> Result<SourceEndpoint<'_>> {
         let first = self.string(index, label)?;
         if let Some(mode) = CoreSourceMode::from_token(first) {
-            return Ok(SourceEndpoint {
-                mode: mode.effective(),
-                endpoint: self.string(index + 1, label)?,
-                next_index: index + 2,
-                module: source_module_for_label(label),
-            });
+            let adapter = match mode {
+                CoreSourceMode::Rpc => BedrockAdapter::rpc(self.string(index + 1, label)?),
+                CoreSourceMode::Module => BedrockAdapter::module(),
+            };
+            return Ok(source_endpoint_from_adapter(
+                adapter,
+                match mode {
+                    CoreSourceMode::Rpc => index + 2,
+                    CoreSourceMode::Module => index + 1,
+                },
+                source_module_for_label(label),
+            ));
         }
-        Ok(SourceEndpoint {
+        Ok(source_endpoint_from_adapter(
+            BedrockAdapter::rpc(first),
+            index + 1,
+            source_module_for_label(label),
+        ))
+    }
+}
+
+fn source_endpoint_from_adapter<'a>(
+    adapter: BedrockAdapter<'a>,
+    next_index: usize,
+    module: &'static str,
+) -> SourceEndpoint<'a> {
+    match adapter {
+        BedrockAdapter::Rpc { endpoint } => SourceEndpoint {
             mode: CoreEndpointMode::Rpc,
-            endpoint: first,
-            next_index: index + 1,
-            module: source_module_for_label(label),
-        })
+            endpoint,
+            next_index,
+            module,
+        },
+        BedrockAdapter::Module => SourceEndpoint {
+            mode: CoreEndpointMode::Module,
+            endpoint: "",
+            next_index,
+            module,
+        },
     }
 }
 
@@ -80,7 +117,11 @@ pub(crate) fn normalized_source_args(request: SourceArgsNormalization<'_>) -> Va
     } else {
         request.endpoint.to_owned()
     };
-    let mut normalized = vec![json!(mode), json!(endpoint)];
+    let module_source = mode == "module";
+    let mut normalized = vec![json!(mode)];
+    if !module_source {
+        normalized.push(json!(endpoint));
+    }
     if request.inserts_mutating_flag {
         normalized.push(json!(request.mutating_enabled));
     }
@@ -238,7 +279,7 @@ mod tests {
 
     #[test]
     fn normalized_source_args_keeps_existing_source_shape() -> Result<()> {
-        let args = json!(["module", "", true, "/topic", "hello"]);
+        let args = json!(["module", true, "/topic", "hello"]);
 
         let normalized = normalized_source_args(SourceArgsNormalization {
             domain: "delivery",

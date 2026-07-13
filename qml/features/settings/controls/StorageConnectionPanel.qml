@@ -29,10 +29,9 @@ SourceSettingsPanel {
         }
 
         FieldRow {
+            visible: root.storageRestEnabled()
             theme: root.theme
             label: qsTr("REST URL")
-            enabled: root.storageRestEnabled()
-            opacity: enabled ? 1 : 0.56
             sourceText: root.modelRef.storageRestUrl
             syncSourceText: true
             placeholderText: qsTr("http://127.0.0.1:8080/api/storage/v1")
@@ -40,10 +39,9 @@ SourceSettingsPanel {
         }
 
         FieldRow {
+            visible: root.storageMetricsEnabled()
             theme: root.theme
             label: qsTr("Metrics URL")
-            enabled: root.storageMetricsEnabled()
-            opacity: enabled ? 1 : 0.56
             sourceText: root.modelRef.storageMetricsUrl
             syncSourceText: true
             placeholderText: qsTr("http://127.0.0.1:8008/metrics")
@@ -79,10 +77,9 @@ SourceSettingsPanel {
         }
 
         FieldRow {
+            visible: root.storageDataEnabled()
             theme: root.theme
             label: qsTr("CID local exists")
-            enabled: root.storageDataEnabled()
-            opacity: enabled ? 1 : 0.56
             sourceText: root.modelRef.storageCidProbe
             syncSourceText: true
             placeholderText: qsTr("Optional CID")

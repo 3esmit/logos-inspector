@@ -101,7 +101,7 @@ fn bridge() -> anyhow::Result<&'static InspectorBridge> {
         return Ok(bridge);
     }
 
-    let bridge = InspectorBridge::new()?;
+    let bridge = InspectorBridge::standalone()?;
     let _ = BRIDGE.set(bridge);
     BRIDGE
         .get()

@@ -9,7 +9,6 @@ import "metrics/AppModelMetrics.js" as AppModelMetrics
 import "programs" as Programs
 import "programs/AppModelRegistry.js" as AppModelRegistry
 import "social/AppModelSocial.js" as AppModelSocial
-import "source_routing/ConnectorConfigAdapter.js" as ConnectorConfigAdapter
 import "programs/ProgramDecodeSession.js" as ProgramDecodeSession
 import "wallet" as Wallet
 
@@ -1325,7 +1324,9 @@ QtObject {
             wallet_connector_config: walletConnectorConfigPayload(),
             node_url: String(nodeUrl || ""),
             storage_rest_url: configuredStorageRestUrl(),
+            storage_metrics_url: String(storageMetricsUrl || ""),
             messaging_rest_url: configuredMessagingRestUrl(),
+	        messaging_metrics_url: String(messagingMetricsUrl || ""),
 	            storage_mutating_diagnostics_enabled: storageMutatingDiagnosticsEnabled === true,
             messaging_mutating_diagnostics_enabled: messagingMutatingDiagnosticsEnabled === true,
             wallet_profile_configured: walletProfileConfigured(),
@@ -1494,7 +1495,9 @@ QtObject {
 
     function setNetworkConnectorMode(scope, mode) {
         const key = String(scope || "")
-        const connectorId = ConnectorConfigAdapter.connectorIdForMode(key, mode)
+        const family = key === "l1" ? "core" : key
+        const descriptor = sourceRouting.sourceModeDescriptor(family, mode)
+        const connectorId = String(descriptor.connectorId || "")
         if (!connectorId.length) {
             return
         }
@@ -1505,7 +1508,7 @@ QtObject {
             provenance: "network_profile"
         }
         networkConnectorConfig = next
-        setSourceModeProperty(key, ConnectorConfigAdapter.sourceModeForConnector(connectorId))
+        setSourceModeProperty(key, String(descriptor.key || mode || ""))
     }
 
     function setSourceModeProperty(scope, mode) {

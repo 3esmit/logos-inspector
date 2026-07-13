@@ -1,8 +1,11 @@
 use serde::Serialize;
 
-use crate::{ProbeReport, source_routing::SourceProbeKey};
+use crate::{
+    ProbeReport,
+    source_routing::{SourceProbeKey, bedrock_layer, messaging_layer, storage_layer},
+};
 
-use super::{delivery_report, logos_core, storage_report};
+use super::logos_core;
 
 pub(super) const BLOCKCHAIN_MODULE: &str = "blockchain_module";
 pub(super) const STORAGE_MODULE: &str = "storage_module";
@@ -50,9 +53,9 @@ pub fn logoscore_status_report() -> ProbeReport {
 pub fn modules_report() -> LogosModulesReport {
     LogosModulesReport {
         status: logoscore_status_report(),
-        blockchain: blockchain_module_report(None),
-        storage: storage_report(None, false),
-        delivery: delivery_report(None),
+        blockchain: bedrock_layer::diagnostic_report(None),
+        storage: storage_layer::module_report(None, false),
+        delivery: messaging_layer::module_report(None),
         capabilities: capabilities_report(),
     }
 }

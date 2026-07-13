@@ -90,6 +90,10 @@ QtObject {
         return SourcePolicyProjection.sourceModeUsesEndpoint(root, family, value, endpointKind)
     }
 
+    function sourceModeUsesInput(family, value, inputKey) {
+        return SourcePolicyProjection.sourceModeUsesInput(root, family, value, inputKey)
+    }
+
     function sourceModeSupportsCidProbe(family, value) {
         return SourcePolicyProjection.sourceModeSupportsCidProbe(root, family, value)
     }

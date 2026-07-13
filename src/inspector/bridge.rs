@@ -7,13 +7,13 @@ use super::command_surface::{INSPECTOR_MODULE, InspectorCommandSurface};
 #[cfg(test)]
 use crate::source_routing::{
     self, CoreEndpointMode, DEFAULT_DELIVERY_REST_ENDPOINT, DEFAULT_STORAGE_REST_ENDPOINT,
-    DeliveryStoreQuery, delivery_rest_source, delivery_store_query_url, storage_rest_source,
+    DeliveryStoreQuery, delivery_rest_source, messaging_layer, storage_rest_source,
 };
 use crate::support::bridge_envelope::{bridge_error_response_json, bridge_response_json};
 #[cfg(test)]
 const BLOCKCHAIN_MODULE: &str = source_routing::BLOCKCHAIN_MODULE;
 #[cfg(test)]
-const INDEXER_MODULE: &str = source_routing::INDEXER_MODULE;
+const INDEXER_MODULE: &str = "lez_indexer_module";
 
 pub struct InspectorBridge {
     surface: InspectorCommandSurface,
@@ -21,6 +21,10 @@ pub struct InspectorBridge {
 
 impl InspectorBridge {
     pub fn new() -> Result<Self> {
+        Self::standalone()
+    }
+
+    pub fn standalone() -> Result<Self> {
         Ok(Self {
             surface: InspectorCommandSurface::new()?,
         })
@@ -97,7 +101,7 @@ mod tests {
 
         let value = bridge.call_module_value(INSPECTOR_MODULE, "sourcePolicy", json!([]))?;
 
-        if value.get("version").and_then(Value::as_u64) != Some(2)
+        if value.get("version").and_then(Value::as_u64) != Some(3)
             || value.pointer("/defaults/sequencer_endpoint").is_some()
             || value.pointer("/defaults/indexer_endpoint").is_some()
             || value
@@ -213,12 +217,12 @@ mod tests {
 
     #[test]
     fn source_endpoint_accepts_module_shape() -> Result<()> {
-        let args = Args::new(json!(["module", "http://127.0.0.1:8779", 42]))?;
+        let args = Args::new(json!(["module", 42]))?;
         let source = args.source_endpoint(0, "indexer endpoint")?;
 
         if source.mode != CoreEndpointMode::Module
-            || source.endpoint != "http://127.0.0.1:8779"
-            || source.next_index != 2
+            || !source.endpoint.is_empty()
+            || source.next_index != 1
             || source.module != INDEXER_MODULE
         {
             bail!("unexpected source endpoint");
@@ -260,7 +264,7 @@ mod tests {
 
     #[test]
     fn delivery_store_query_url_defaults_to_hashes_only_and_caps_page_size() -> Result<()> {
-        let url = delivery_store_query_url(
+        let url = messaging_layer::store_query_url(
             "http://127.0.0.1:8645/",
             DeliveryStoreQuery {
                 peer_addr: Some("/ip4/127.0.0.1/tcp/60001/p2p/peer-a"),
@@ -288,7 +292,7 @@ mod tests {
 
     #[test]
     fn delivery_store_query_url_supports_comment_cursor_and_payloads() -> Result<()> {
-        let url = delivery_store_query_url(
+        let url = messaging_layer::store_query_url(
             "http://127.0.0.1:8645/",
             DeliveryStoreQuery {
                 peer_addr: None,
@@ -735,15 +739,7 @@ mod tests {
                 "label": "Send message"
             }))?;
 
-        if request.args()
-            != &json!([
-                "module",
-                DEFAULT_DELIVERY_REST_ENDPOINT,
-                true,
-                "/waku/2/default/proto",
-                "hello"
-            ])
-        {
+        if request.args() != &json!(["module", true, "/waku/2/default/proto", "hello"]) {
             bail!("unexpected normalized args: {}", request.args());
         }
         Ok(())

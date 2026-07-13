@@ -666,7 +666,9 @@ mod tests {
     };
 
     use super::*;
-    use crate::source_routing::{INDEXER_MODULE, channel_sources::ChannelSourceTarget};
+    use crate::source_routing::channel_sources::{ChannelSourceRole, ChannelSourceTarget};
+
+    use super::super::layer::module_id_for_role;
 
     #[test]
     fn fresh_settings_have_no_global_l2_configuration() -> Result<()> {
@@ -787,7 +789,7 @@ mod tests {
             3,
             ChannelSourceConfigMutation::SetIndexer {
                 label: Some(" Indexer ".to_owned()),
-                target: module_target(INDEXER_MODULE),
+                target: module_target(module_id_for_role(ChannelSourceRole::Indexer)),
                 allow_insecure_http: false,
             },
         ))?;
@@ -802,7 +804,7 @@ mod tests {
             4,
             ChannelSourceConfigMutation::SetIndexer {
                 label: Some("Renamed".to_owned()),
-                target: module_target(INDEXER_MODULE),
+                target: module_target(module_id_for_role(ChannelSourceRole::Indexer)),
                 allow_insecure_http: false,
             },
         ))?;
@@ -1039,7 +1041,7 @@ mod tests {
         duplicate.indexer_source = Some(ConfiguredIndexerSource {
             source_id: first_sequencer_source(&duplicate)?.source_id.clone(),
             label: None,
-            target: module_target(INDEXER_MODULE),
+            target: module_target(module_id_for_role(ChannelSourceRole::Indexer)),
         });
         require_restore_error(&store, vec![duplicate], "duplicate source id")?;
 

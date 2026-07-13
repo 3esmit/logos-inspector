@@ -1,15 +1,13 @@
 use std::process::Command;
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use serde_json::{Value, json};
 
 use super::{NodeAction, NodeKind, process::spawn_detached};
-use crate::modules::logos_core;
-
-const BLOCKCHAIN_MODULE: &str = "blockchain_module";
-const INDEXER_MODULE: &str = "lez_indexer_module";
-const STORAGE_MODULE: &str = "storage_module";
-const DELIVERY_MODULE: &str = "delivery_module";
+use crate::{
+    modules::logos_core::LogoscoreCliRuntime,
+    source_routing::{bedrock_layer, execution_zone_layer, messaging_layer, storage_layer},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct LocalNodeCommandSpec {
@@ -22,11 +20,53 @@ pub(super) struct LocalNodeCommandSpec {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CommandBackend {
     LogosCore {
-        module: &'static str,
+        layer: ManagedNodeLayer,
         method: &'static str,
+        signature: &'static str,
         call_args: Vec<String>,
     },
     SpawnProcess,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ManagedNodeLayer {
+    Bedrock,
+    Storage,
+    Messaging,
+}
+
+impl ManagedNodeLayer {
+    const fn module_id(self) -> &'static str {
+        match self {
+            Self::Bedrock => bedrock_layer::module_id(),
+            Self::Storage => storage_layer::module_id(),
+            Self::Messaging => messaging_layer::module_id(),
+        }
+    }
+
+    fn ensure_loaded(self, runtime: &LogoscoreCliRuntime) -> Result<()> {
+        match self {
+            Self::Bedrock => bedrock_layer::ensure_managed_module(runtime),
+            Self::Storage => storage_layer::ensure_managed_module(runtime),
+            Self::Messaging => messaging_layer::ensure_managed_module(runtime),
+        }
+    }
+
+    fn call(
+        self,
+        runtime: &LogoscoreCliRuntime,
+        method: &str,
+        signature: &str,
+        args: &[String],
+    ) -> Result<Value> {
+        match self {
+            Self::Bedrock => bedrock_layer::call_managed_module(runtime, method, signature, args),
+            Self::Storage => storage_layer::call_managed_module(runtime, method, signature, args),
+            Self::Messaging => {
+                messaging_layer::call_managed_module(runtime, method, signature, args)
+            }
+        }
+    }
 }
 
 #[must_use]
@@ -34,73 +74,98 @@ pub(super) fn command_spec_for(
     kind: NodeKind,
     action: NodeAction,
     config_path: &str,
-    deployment: &str,
+    _deployment: &str,
 ) -> Option<LocalNodeCommandSpec> {
     let config = config_path.to_owned();
-    let deployment = deployment.to_owned();
     match (kind, action) {
         (NodeKind::Bedrock, NodeAction::Start) => Some(logoscore_spec(
-            BLOCKCHAIN_MODULE,
+            ManagedNodeLayer::Bedrock,
             "start",
-            vec![config, deployment],
+            "start(QString,QString)",
+            vec![config, String::new()],
         )),
-        (NodeKind::Bedrock, NodeAction::Stop) => {
-            Some(logoscore_spec(BLOCKCHAIN_MODULE, "stop", vec![config]))
-        }
-        (NodeKind::Indexer, NodeAction::Start) => Some(logoscore_spec(
-            INDEXER_MODULE,
-            "start_indexer",
-            vec![config],
+        (NodeKind::Bedrock, NodeAction::Stop) => Some(logoscore_spec(
+            ManagedNodeLayer::Bedrock,
+            "stop",
+            "stop()",
+            Vec::new(),
         )),
-        (NodeKind::Indexer, NodeAction::Stop) => {
-            Some(logoscore_spec(INDEXER_MODULE, "stop_indexer", vec![config]))
-        }
-        (NodeKind::Indexer, NodeAction::Purge | NodeAction::ResetNetwork) => Some(logoscore_spec(
-            INDEXER_MODULE,
-            "reset_storage",
-            vec![config],
+        (NodeKind::Storage, NodeAction::Initialize) => Some(logoscore_spec(
+            ManagedNodeLayer::Storage,
+            "init",
+            "init(QString)",
+            vec![file_argument(&config)],
         )),
-        (NodeKind::Storage, NodeAction::Install) => {
-            Some(logoscore_spec(STORAGE_MODULE, "init", vec![config]))
-        }
-        (NodeKind::Storage, NodeAction::Start) => {
-            Some(logoscore_spec(STORAGE_MODULE, "start", vec![config]))
-        }
-        (NodeKind::Storage, NodeAction::Stop) => {
-            Some(logoscore_spec(STORAGE_MODULE, "stop", vec![config]))
-        }
+        (NodeKind::Storage, NodeAction::Start) => Some(logoscore_spec(
+            ManagedNodeLayer::Storage,
+            "start",
+            "start()",
+            Vec::new(),
+        )),
+        (NodeKind::Storage, NodeAction::Stop) => Some(logoscore_spec(
+            ManagedNodeLayer::Storage,
+            "stop",
+            "stop()",
+            Vec::new(),
+        )),
         (NodeKind::Storage, NodeAction::Uninstall | NodeAction::DeleteNetwork) => {
-            Some(logoscore_spec(STORAGE_MODULE, "destroy", vec![config]))
+            Some(logoscore_spec(
+                ManagedNodeLayer::Storage,
+                "destroy",
+                "destroy()",
+                Vec::new(),
+            ))
         }
-        (NodeKind::Messaging, NodeAction::Install) => {
-            Some(logoscore_spec(DELIVERY_MODULE, "createNode", vec![config]))
-        }
-        (NodeKind::Messaging, NodeAction::Start) => {
-            Some(logoscore_spec(DELIVERY_MODULE, "start", vec![config]))
-        }
-        (NodeKind::Messaging, NodeAction::Stop) => {
-            Some(logoscore_spec(DELIVERY_MODULE, "stop", vec![config]))
-        }
-        (NodeKind::Sequencer, NodeAction::Start) => {
-            Some(spawn_spec("sequencer_service", vec![config]))
-        }
+        (NodeKind::Messaging, NodeAction::Initialize) => Some(logoscore_spec(
+            ManagedNodeLayer::Messaging,
+            "createNode",
+            "createNode(QString)",
+            vec![file_argument(&config)],
+        )),
+        (NodeKind::Messaging, NodeAction::Start) => Some(logoscore_spec(
+            ManagedNodeLayer::Messaging,
+            "start",
+            "start()",
+            Vec::new(),
+        )),
+        (NodeKind::Messaging, NodeAction::Stop) => Some(logoscore_spec(
+            ManagedNodeLayer::Messaging,
+            "stop",
+            "stop()",
+            Vec::new(),
+        )),
+        (NodeKind::Sequencer, NodeAction::Start) => Some(spawn_spec(
+            execution_zone_layer::managed_sequencer_program(),
+            vec![config],
+        )),
         _ => None,
     }
 }
 
-pub(super) fn execute_command_spec(spec: &LocalNodeCommandSpec) -> Result<Value> {
+pub(super) fn ensure_module_loaded(
+    spec: &LocalNodeCommandSpec,
+    runtime: Option<&LogoscoreCliRuntime>,
+) -> Result<()> {
+    let CommandBackend::LogosCore { layer, .. } = &spec.backend else {
+        return Ok(());
+    };
+    let runtime = runtime.context("an Inspector-managed logoscore runtime is required")?;
+    layer.ensure_loaded(runtime)
+}
+
+pub(super) fn execute_command_spec(
+    spec: &LocalNodeCommandSpec,
+    runtime: Option<&LogoscoreCliRuntime>,
+) -> Result<Value> {
     match &spec.backend {
         CommandBackend::LogosCore {
-            module,
+            layer,
             method,
+            signature,
             call_args,
         } => {
-            let output = logos_core::call(module, method, call_args)?;
-            Ok(json!({
-                "runner": output.runner,
-                "value": output.value,
-                "stderr": output.stderr,
-            }))
+            let runtime = runtime.context("an Inspector-managed logoscore runtime is required")?;
+            layer.call(runtime, method, signature, call_args)
         }
         CommandBackend::SpawnProcess => {
             let mut command = Command::new(&spec.program);
@@ -116,11 +181,17 @@ pub(super) fn execute_command_spec(spec: &LocalNodeCommandSpec) -> Result<Value>
     }
 }
 
+fn file_argument(path: &str) -> String {
+    format!("@{path}")
+}
+
 fn logoscore_spec(
-    module: &'static str,
+    layer: ManagedNodeLayer,
     method: &'static str,
+    signature: &'static str,
     call_args: Vec<String>,
 ) -> LocalNodeCommandSpec {
+    let module = layer.module_id();
     let mut args = vec!["call".to_owned(), module.to_owned(), method.to_owned()];
     args.extend(call_args.iter().cloned());
     args.push("--json".to_owned());
@@ -129,11 +200,17 @@ fn logoscore_spec(
         display: shell_display("logoscore", &args),
         args,
         backend: CommandBackend::LogosCore {
-            module,
+            layer,
             method,
+            signature,
             call_args,
         },
     }
+}
+
+#[must_use]
+pub(super) fn has_static_module_contract(kind: NodeKind) -> bool {
+    kind != NodeKind::Indexer
 }
 
 fn spawn_spec(program: &str, args: Vec<String>) -> LocalNodeCommandSpec {
