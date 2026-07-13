@@ -51,8 +51,8 @@ TestCase {
 
     function init() {
         fakeHost.reset()
-        model.storageSourceMode = "rest"
-        model.messagingSourceMode = "rest"
+        model.setNetworkConnectorMode("storage", "rest")
+        model.setNetworkConnectorMode("delivery", "rest")
         model.storageCidProbe = ""
         model.storageModuleReport = null
         model.messagingModuleReport = null

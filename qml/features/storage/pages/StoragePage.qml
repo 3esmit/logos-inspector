@@ -363,7 +363,7 @@ ColumnLayout {
             refreshActions: [
                 { text: qsTr("Refresh status"), width: 140, accessibleName: qsTr("Refresh Storage status") }
             ]
-            pending: root.sourceView.pending || !root.diagnosticsGateEnabled("storage")
+            pending: root.sourceView.pending
             statusText: root.diagnosticsStatusText("storage", root.sourceView.statusLine, qsTr("Storage diagnostics"))
             guardedTitle: qsTr("Guarded diagnostics")
             permissionEnabled: root.model.storageMutatingDiagnosticsEnabled && root.diagnosticsGateEnabled("storage")

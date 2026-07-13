@@ -141,7 +141,13 @@ TestCase {
         model.blockDetailError = ""
         model.transactionDetailValue = null
         model.transactionDetailError = ""
-        model.networkConnectorConfig = model.defaultNetworkConnectorConfig()
+        model.networkConnectorConfig = ({
+            scopes: {
+                l1: { connector_id: "direct_l1_rpc", provenance: "test" },
+                delivery: { connector_id: "direct_delivery_rest", provenance: "test" },
+                storage: { connector_id: "direct_storage_rest", provenance: "test" }
+            }
+        })
         model.blockchainSourceMode = "rpc"
         model.messagingSourceMode = "rest"
         model.storageSourceMode = "rest"
@@ -544,6 +550,50 @@ TestCase {
         compare(Object.keys(storageArgs[0].inputs).length, 0)
         compare(storageArgs[0].options.privileged_debug_enabled, false)
         compare(basecampModel.storageSourceTarget(), basecampModel.storageModule)
+    }
+
+    function test_standalone_defaults_to_logoscore_cli_and_hides_host_module_connector() {
+        const defaults = model.defaultNetworkConnectorConfig().scopes
+        compare(defaults.l1.connector_id, "logoscore_cli_blockchain_module")
+        compare(defaults.delivery.connector_id, "logoscore_cli_delivery_module")
+        compare(defaults.storage.connector_id, "logoscore_cli_storage_module")
+
+        const options = model.sourceModeOptions("storage")
+        verify(sourceOption(options, "logoscore_cli") !== null)
+        compare(String(sourceOption(options, "module").key || ""), "")
+
+        const basecampOptions = basecampModel.sourceModeOptions("storage")
+        verify(sourceOption(basecampOptions, "module") !== null)
+        verify(sourceOption(basecampOptions, "logoscore_cli") !== null)
+    }
+
+    function test_standalone_normalizes_persisted_host_modules_to_logoscore_cli() {
+        const persisted = {
+            scopes: {
+                l1: { connector_id: "blockchain_module", provenance: "network_profile" },
+                delivery: { connector_id: "delivery_module", provenance: "network_profile" },
+                storage: { connector_id: "storage_module", provenance: "network_profile" }
+            }
+        }
+
+        const standalone = model.normalizedNetworkConnectorConfig(persisted).scopes
+        compare(standalone.l1.connector_id, "logoscore_cli_blockchain_module")
+        compare(standalone.delivery.connector_id, "logoscore_cli_delivery_module")
+        compare(standalone.storage.connector_id, "logoscore_cli_storage_module")
+        compare(standalone.storage.provenance, "build_default")
+
+        const basecamp = basecampModel.normalizedNetworkConnectorConfig(persisted).scopes
+        compare(basecamp.l1.connector_id, "blockchain_module")
+        compare(basecamp.delivery.connector_id, "delivery_module")
+        compare(basecamp.storage.connector_id, "storage_module")
+    }
+
+    function test_local_network_profile_remains_selectable_when_endpoint_matches_default() {
+        const options = model.networkProfileOptions()
+        const local = options.find(function (option) { return option.key === "local" })
+
+        verify(local !== undefined)
+        compare(local.label, "Local node")
     }
 
     function test_source_policy_load_supplies_defaults_and_profile_matching() {
@@ -1670,41 +1720,49 @@ TestCase {
         verify(deliveryPayload.idl_json === undefined)
     }
 
-	    function test_publish_account_idl_blocks_storage_module_sync_upload_path() {
-	        setActiveZone("")
-	        model.storageSourceMode = "module"
-	        model.storageMutatingDiagnosticsEnabled = true
-	        model.messagingMutatingDiagnosticsEnabled = true
-	        fakeHost.responses = {
-	            socialZoneAccountIdlTopic: {
-	                ok: true,
-	                value: "/lez/account/" + "a".repeat(64) + "/idl",
-	                text: "OK",
-	                error: ""
-	            },
-	            storageUploadPayload: {
-	                ok: true,
-	                value: { cid: "cid-idl" },
-	                text: "OK",
-	                error: ""
-	            },
-	            deliverySend: {
-	                ok: true,
-	                value: { messageHash: "hash-1" },
-	                text: "OK",
-	                error: ""
-	            }
-	        }
+    function test_publish_account_idl_uploads_through_logoscore_cli() {
+        setActiveZone("")
+        model.setNetworkConnectorMode("storage", "logoscore_cli")
+        model.storageMutatingDiagnosticsEnabled = true
+        model.messagingMutatingDiagnosticsEnabled = true
+        fakeHost.responses = {
+            socialZoneAccountIdlTopic: {
+                ok: true,
+                value: "/lez/account/" + "a".repeat(64) + "/idl",
+                text: "OK",
+                error: ""
+            },
+            socialTopicValid: {
+                ok: true,
+                value: true,
+                text: "OK",
+                error: ""
+            },
+            storageUploadPayload: {
+                ok: true,
+                value: { cid: "cid-idl" },
+                text: "OK",
+                error: ""
+            },
+            deliverySend: {
+                ok: true,
+                value: { messageHash: "hash-1" },
+                text: "OK",
+                error: ""
+            }
+        }
 
-	        verify(!model.social.publishAccountIdl(
-	            zoneEntityRef("account", "account-1", "idx-a", "indexer"), "program-1", {
-	            name: "Shared",
-	            json: "{\"name\":\"Shared\",\"accounts\":[]}"
-	        }))
+        verify(model.social.publishAccountIdl(
+            zoneEntityRef("account", "account-1", "idx-a", "indexer"), "program-1", {
+                name: "Shared",
+                json: "{\"name\":\"Shared\",\"accounts\":[]}"
+            }))
 
-	        verify(!fakeHost.calls.some(function (call) { return call.method === "storageUploadPayload" }))
-	        verify(!fakeHost.calls.some(function (call) { return call.method === "deliverySend" }))
-	    }
+        const uploadIndex = callIndexFor("storageUploadPayload")
+        verify(uploadIndex >= 0)
+        compare(fakeHost.calls[uploadIndex].args[0].adapter.source_mode, "logoscore_cli")
+        verify(callIndexFor("deliverySend") > uploadIndex)
+    }
 
     function test_settings_backup_blocks_when_upload_gate_unavailable() {
         model.capabilityRegistryLoaded = true

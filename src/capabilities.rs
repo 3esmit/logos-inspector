@@ -212,14 +212,30 @@ mod tests {
     }
 
     #[test]
-    fn standalone_defaults_do_not_use_module_backed_connectors() -> Result<()> {
+    fn standalone_defaults_use_logoscore_cli_connectors() -> Result<()> {
         let value =
             serde_json::to_value(capability_registry_report(CapabilityBuildMode::Standalone))?;
 
-        for key in ["l1", "storage", "delivery"] {
-            let connector = default_connector_for(&value, key)?;
-            if connector.ends_with("_module") {
-                bail!("standalone capability `{key}` defaulted to module connector");
+        for (key, expected) in [
+            ("l1", "logoscore_cli_blockchain_module"),
+            ("storage", "logoscore_cli_storage_module"),
+            ("delivery", "logoscore_cli_delivery_module"),
+        ] {
+            if default_connector_for(&value, key)? != expected {
+                bail!("standalone capability `{key}` did not default to LogosCore CLI");
+            }
+            let provider_type = value
+                .get("provider_instances")
+                .and_then(Value::as_array)
+                .and_then(|providers| {
+                    providers.iter().find(|provider| {
+                        provider.get("id").and_then(Value::as_str) == Some(expected)
+                    })
+                })
+                .and_then(|provider| provider.get("provider_type"))
+                .and_then(Value::as_str);
+            if provider_type != Some("logoscore_cli") {
+                bail!("standalone capability `{key}` conflated CLI with host module");
             }
         }
         Ok(())
@@ -286,8 +302,15 @@ mod tests {
         let Some(standalone_storage) = capability_for(&standalone, "storage") else {
             bail!("standalone storage capability missing: {standalone}");
         };
-        if standalone_storage.get("status").and_then(Value::as_str) != Some("input_required") {
-            bail!("standalone storage should require endpoint input: {standalone_storage}");
+        if standalone_storage.get("status").and_then(Value::as_str) != Some("loading") {
+            bail!("standalone storage should wait for LogosCore CLI probe: {standalone_storage}");
+        }
+        if standalone_storage
+            .get("configured_connector")
+            .and_then(Value::as_str)
+            != Some("logoscore_cli_storage_module")
+        {
+            bail!("standalone storage should use LogosCore CLI: {standalone_storage}");
         }
         let Some(standalone_wallet) = capability_for(&standalone, "wallet.l1") else {
             bail!("standalone wallet capability missing: {standalone}");
@@ -697,7 +720,7 @@ mod tests {
     }
 
     #[test]
-    fn diagnostics_source_report_failure_marks_matching_sub_capability_unavailable() -> Result<()> {
+    fn diagnostics_source_report_failure_keeps_report_reader_available() -> Result<()> {
         let inputs = serde_json::json!({
             "diagnostics_reports": {
                 "source_reports": {
@@ -729,8 +752,8 @@ mod tests {
         if diagnostics.get("status").and_then(Value::as_str) != Some("degraded") {
             bail!("storage probe failure should degrade diagnostics: {diagnostics}");
         }
-        if !unavailable_contains(diagnostics, "diagnostics.storage.read") {
-            bail!("storage probe failure should block storage diagnostics: {diagnostics}");
+        if unavailable_contains(diagnostics, "diagnostics.storage.read") {
+            bail!("a completed report should keep storage diagnostics readable: {diagnostics}");
         }
         if !compact_errors_contain(diagnostics, "storage probe timed out") {
             bail!("storage probe error should be preserved: {diagnostics}");

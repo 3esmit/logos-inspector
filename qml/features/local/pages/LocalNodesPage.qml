@@ -126,13 +126,37 @@ ColumnLayout {
     }
 
     Panel {
-        visible: root.model.localMode()
+        objectName: "localDevnetConfiguration"
         theme: root.theme
         title: qsTr("Local Devnet")
 
         ColumnLayout {
             spacing: root.theme.gapSmall
             Layout.fillWidth: true
+
+            RowLayout {
+                visible: !root.model.localMode()
+                spacing: root.theme.gapSmall
+                Layout.fillWidth: true
+
+                StatusMessage {
+                    theme: root.theme
+                    tone: "info"
+                    title: qsTr("Local profile required")
+                    message: qsTr("Activate Local node profile to configure and control a Local Devnet.")
+                    Layout.fillWidth: true
+                }
+
+                ActionButton {
+                    objectName: "activateLocalProfileButton"
+                    theme: root.theme
+                    text: qsTr("Use Local profile")
+                    primary: true
+                    enabled: !root.model.busy
+                    Layout.preferredWidth: 176
+                    onClicked: root.model.activateLocalProfile()
+                }
+            }
 
             GridLayout {
                 columns: root.width < 840 ? 1 : 4
@@ -209,7 +233,7 @@ ColumnLayout {
     }
 
     Panel {
-        visible: root.model.localMode()
+        objectName: "logoscoreRuntimeConfiguration"
         theme: root.theme
         title: qsTr("LogosCore Runtime")
 

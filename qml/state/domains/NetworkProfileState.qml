@@ -20,11 +20,18 @@ QtObject {
     }
 
     function resolvedProfile(storedProfile, node) {
+        const stored = normalizedProfile(storedProfile)
+        if (stored !== "custom") {
+            const storedEndpoint = endpointForProfile(stored)
+            if (storedEndpoint.length > 0 && normalizeEndpoint(storedEndpoint) === normalizeEndpoint(node)) {
+                return stored
+            }
+        }
         const inferred = inferProfile(node)
         if (inferred !== "custom") {
             return inferred
         }
-        return normalizedProfile(storedProfile) === "custom" ? "custom" : inferred
+        return stored === "custom" ? "custom" : inferred
     }
 
     function inferProfile(node) {
@@ -50,7 +57,7 @@ QtObject {
         for (let i = 0; i < source.length; ++i) {
             const row = source[i] || ({})
             const endpoint = String(row.node_endpoint || "")
-            const key = normalizeEndpoint(endpoint)
+            const key = String(row.id || (rows.length === 0 ? "default" : "profile-" + rows.length))
             if (!key.length || seen[key] === true) {
                 continue
             }
@@ -77,11 +84,19 @@ QtObject {
     }
 
     function fallbackProfileRows() {
-        return [{
-            id: "default",
-            label: qsTr("Default"),
-            node_endpoint: sourcePolicyDefault("node_endpoint", "http://127.0.0.1:8080/")
-        }]
+        const endpoint = sourcePolicyDefault("node_endpoint", "http://127.0.0.1:8080/")
+        return [
+            {
+                id: "default",
+                label: qsTr("Default"),
+                node_endpoint: endpoint
+            },
+            {
+                id: "local",
+                label: qsTr("Local node"),
+                node_endpoint: endpoint
+            }
+        ]
     }
 
     function sourcePolicyDefault(key, fallback) {
@@ -137,9 +152,20 @@ QtObject {
 
     function settingsPayload(profile, node) {
         return {
-            network_profile: inferProfile(node),
+            network_profile: normalizedProfile(profile),
             node_url: String(node || "")
         }
+    }
+
+    function endpointForProfile(profile) {
+        const key = String(profile || "")
+        const rows = profileRows()
+        for (let i = 0; i < rows.length; ++i) {
+            if (String(rows[i].id || "") === key) {
+                return String(rows[i].node_endpoint || "")
+            }
+        }
+        return ""
     }
 
     function cacheScope(profile, node) {

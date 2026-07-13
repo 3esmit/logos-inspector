@@ -99,7 +99,7 @@ mod tests {
 
         let value = bridge.call_module_value(INSPECTOR_MODULE, "sourcePolicy", json!([]))?;
 
-        if value.get("version").and_then(Value::as_u64) != Some(3)
+        if value.get("version").and_then(Value::as_u64) != Some(4)
             || value.pointer("/defaults/sequencer_endpoint").is_some()
             || value.pointer("/defaults/indexer_endpoint").is_some()
             || value
@@ -147,6 +147,19 @@ mod tests {
             != Some("module")
         {
             bail!("source policy missing storage adapter facts: {value}");
+        }
+        let Some(cli_mode) = storage_modes
+            .iter()
+            .find(|mode| mode.get("key").and_then(Value::as_str) == Some("logoscore_cli"))
+        else {
+            bail!("source policy missing LogosCore CLI storage mode: {value}");
+        };
+        if cli_mode
+            .pointer("/adapter/connection_type")
+            .and_then(Value::as_str)
+            != Some("logoscore_cli")
+        {
+            bail!("source policy conflated LogosCore CLI with host module: {value}");
         }
         Ok(())
     }

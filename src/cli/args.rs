@@ -81,7 +81,7 @@ pub(super) enum CliCommand {
     Storage {
         #[arg(long)]
         cid: Option<String>,
-        #[arg(long, default_value = "rest")]
+        #[arg(long, default_value = "logoscore_cli")]
         source_mode: String,
         #[arg(long)]
         rest_url: Option<String>,
@@ -89,7 +89,7 @@ pub(super) enum CliCommand {
         metrics_url: Option<String>,
     },
     Messaging {
-        #[arg(long, default_value = "rest")]
+        #[arg(long, default_value = "logoscore_cli")]
         source_mode: String,
         #[arg(long)]
         rest_url: Option<String>,

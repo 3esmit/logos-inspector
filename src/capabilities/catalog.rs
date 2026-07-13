@@ -28,6 +28,10 @@ pub(super) fn provider_types() -> &'static [CapabilityProviderTypeReport] {
             label: "Basecamp module",
         },
         CapabilityProviderTypeReport {
+            key: "logoscore_cli",
+            label: "LogosCore CLI",
+        },
+        CapabilityProviderTypeReport {
             key: "direct_rpc",
             label: "Direct RPC endpoint",
         },
@@ -114,6 +118,7 @@ fn provider_from_mode(mode: &'static SourceModePolicy) -> CapabilityProviderInst
 const fn provider_type_for(connection_type: AdapterConnectionType) -> &'static str {
     match connection_type {
         AdapterConnectionType::Module => "module",
+        AdapterConnectionType::LogoscoreCli => "logoscore_cli",
         AdapterConnectionType::Rpc => "direct_rpc",
         AdapterConnectionType::Rest => "direct_rest",
         AdapterConnectionType::Metrics => "direct_metrics",
@@ -193,9 +198,9 @@ pub(super) fn default_connector(
         (CapabilityBuildMode::Basecamp, "delivery") => "delivery_module",
         (CapabilityBuildMode::Basecamp, "wallet.l2") => "lez_core",
         (_, "wallet") => "composed_wallet",
-        (_, "l1") => "direct_l1_rpc",
-        (_, "storage") => "direct_storage_rest",
-        (_, "delivery") => "direct_delivery_rest",
+        (_, "l1") => "logoscore_cli_blockchain_module",
+        (_, "storage") => "logoscore_cli_storage_module",
+        (_, "delivery") => "logoscore_cli_delivery_module",
         (_, "wallet.l1" | "wallet.l2") => "composed_wallet",
         (_, "local_nodes") => "local_node_control",
         (_, "diagnostics") => "module_diagnostics_metrics",

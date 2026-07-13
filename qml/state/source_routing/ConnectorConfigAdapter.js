@@ -62,6 +62,10 @@ function sourceModeForConnector(connectorId) {
     case "storage_module":
     case "delivery_module":
         return "module"
+    case "logoscore_cli_blockchain_module":
+    case "logoscore_cli_storage_module":
+    case "logoscore_cli_delivery_module":
+        return "logoscore_cli"
     case "direct_l1_rpc":
         return "rpc"
     case "direct_storage_rest":
