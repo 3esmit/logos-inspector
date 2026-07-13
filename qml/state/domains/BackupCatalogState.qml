@@ -50,8 +50,8 @@ QtObject {
         return null
     }
 
-    function previewLocalRestore(backupCatalogId, walletProfile, options) {
-        const response = gateway.call("previewLocalSettingsRestore", [String(backupCatalogId || ""), walletProfile || {}, options || {}], qsTr("Backup import plan"))
+    function previewImport(backupCatalogId, walletProfile, options) {
+        const response = gateway.call("settingsBackupImportPreview", [String(backupCatalogId || ""), walletProfile || {}, options || {}], qsTr("Backup import plan"))
         if (response && response.ok === true && response.value) {
             error = ""
             return response.value
@@ -61,8 +61,8 @@ QtObject {
         return null
     }
 
-    function restoreLocal(backupCatalogId, walletProfile, options) {
-        const response = gateway.call("restoreLocalSettingsBackup", [String(backupCatalogId || ""), walletProfile || {}, options || {}], qsTr("Local backup restore"))
+    function applyImport(backupCatalogId, walletProfile, options) {
+        const response = gateway.call("settingsBackupImportApply", [String(backupCatalogId || ""), walletProfile || {}, options || {}], qsTr("Local backup restore"))
         if (response && response.ok === true && response.value) {
             error = ""
             revision += 1
@@ -73,11 +73,13 @@ QtObject {
         return null
     }
 
-    function uploadLocal(backupCatalogId, storageArgs) {
-        const args = Array.isArray(storageArgs) ? storageArgs.slice(0) : []
-        args.push(String(backupCatalogId || ""))
-        args.push(65536)
-        const response = gateway.call("storageUploadBackupCatalogEntry", args, qsTr("Backup upload"))
+    function uploadLocal(backupCatalogId, storageRequest) {
+        const request = storageRequest && typeof storageRequest === "object" ? storageRequest : ({})
+        request.payload = {
+            backup_catalog_id: String(backupCatalogId || ""),
+            block_size: 65536
+        }
+        const response = gateway.call("storageUploadBackupCatalogEntry", [request], qsTr("Backup upload"))
         if (response && response.ok === true && response.value) {
             if (response.value.catalog_entry) {
                 upsertEntry(response.value.catalog_entry)

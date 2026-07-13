@@ -14,6 +14,13 @@ use crate::source_routing::channel_sources::{
 pub(super) fn linked_sequencer_zone() -> ZoneSummary {
     ZoneSummary {
         channel_id: repeated_id('8'),
+        active_zone_context_fields: context_fields(
+            repeated_id('8'),
+            ZoneKind::SequencerZone,
+            Some("seq-primary"),
+            Some("indexer-main"),
+            1,
+        ),
         display: ZoneDisplay {
             title: "Paradox Computer".to_owned(),
             alias: Some("Paradox Computer".to_owned()),
@@ -71,6 +78,13 @@ pub(super) fn linked_sequencer_zone() -> ZoneSummary {
 pub(super) fn l1_only_sequencer_zone() -> ZoneSummary {
     ZoneSummary {
         channel_id: repeated_id('1'),
+        active_zone_context_fields: context_fields(
+            repeated_id('1'),
+            ZoneKind::SequencerZone,
+            None,
+            None,
+            0,
+        ),
         display: ZoneDisplay {
             title: "0101...0101".to_owned(),
             alias: None,
@@ -128,6 +142,13 @@ pub(super) fn l1_only_sequencer_zone() -> ZoneSummary {
 pub(super) fn data_channel() -> ZoneSummary {
     ZoneSummary {
         channel_id: "d4f779ae00112233445566778899aabbccddeeff00112233445566778899bf63".to_owned(),
+        active_zone_context_fields: context_fields(
+            "d4f779ae00112233445566778899aabbccddeeff00112233445566778899bf63".to_owned(),
+            ZoneKind::DataChannel,
+            None,
+            None,
+            0,
+        ),
         display: ZoneDisplay {
             title: "Guest data drop".to_owned(),
             alias: Some("Guest data drop".to_owned()),
@@ -174,6 +195,13 @@ pub(super) fn data_channel() -> ZoneSummary {
 pub(super) fn unknown_l1_channel() -> ZoneSummary {
     ZoneSummary {
         channel_id: repeated_id('f'),
+        active_zone_context_fields: context_fields(
+            repeated_id('f'),
+            ZoneKind::Unknown,
+            None,
+            None,
+            0,
+        ),
         display: ZoneDisplay {
             title: "f0f0...f0f0".to_owned(),
             alias: None,
@@ -256,6 +284,25 @@ fn partial_provenance() -> ZoneProvenance {
 
 fn repeated_id(character: char) -> String {
     character.to_string().repeat(64)
+}
+
+fn context_fields(
+    channel_id: String,
+    zone_kind: ZoneKind,
+    selected_sequencer_source_id: Option<&str>,
+    indexer_source_id: Option<&str>,
+    source_config_revision: u64,
+) -> ActiveZoneContextFields {
+    ActiveZoneContextFields {
+        network_scope: NetworkScope::GenesisId {
+            genesis_id: repeated_id('e'),
+        },
+        channel_id,
+        zone_kind,
+        selected_sequencer_source_id: selected_sequencer_source_id.map(str::to_owned),
+        indexer_source_id: indexer_source_id.map(str::to_owned),
+        source_config_revision,
+    }
 }
 
 pub(super) fn complete_replay_catalog() -> CatalogSnapshot {

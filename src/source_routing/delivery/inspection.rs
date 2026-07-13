@@ -1,6 +1,9 @@
 use serde_json::Value;
 
-use super::layer::{self, MessagingAdapter};
+use super::{
+    layer::{self, MessagingAdapter},
+    transport,
+};
 use crate::{
     ProbeReport,
     modules::ModuleReport,
@@ -128,7 +131,7 @@ async fn http_json_probe(endpoint: &str, step: &DeliveryProbeStep) -> ProbeRepor
         step.key,
         step.label,
         http::rest_url(endpoint, &step.path),
-        layer::probe_value(endpoint, &step.path)
+        transport::probe_value(endpoint, &step.path)
             .await
             .map(|value| normalize_http_probe_value(value, step.normalizer)),
     )
@@ -296,7 +299,7 @@ async fn delivery_metrics_report(endpoint: &str) -> SourceReport {
             key: SourceProbeKey::DeliveryCollectOpenMetricsText,
             label: "delivery_metrics.collectOpenMetricsText",
         },
-        layer::probe_metrics(endpoint).await,
+        transport::probe_metrics(endpoint).await,
     )
 }
 
@@ -305,7 +308,7 @@ async fn delivery_metrics_probe(metrics_endpoint: &str) -> ProbeReport {
         SourceProbeKey::DeliveryCollectOpenMetricsText,
         "delivery_rest.collectOpenMetricsText",
         metrics_endpoint,
-        layer::probe_metrics(metrics_endpoint).await,
+        transport::probe_metrics(metrics_endpoint).await,
     )
 }
 
@@ -336,7 +339,7 @@ async fn delivery_network_monitor_report(
             SourceProbeKey::DeliveryCollectOpenMetricsText,
             "delivery_network_monitor.collectOpenMetricsText",
             metrics_endpoint,
-            layer::probe_metrics(metrics_endpoint).await,
+            transport::probe_metrics(metrics_endpoint).await,
         );
     }
     report.finish()

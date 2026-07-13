@@ -1,6 +1,5 @@
 import QtQml
-import "../backup/BackupImportPolicy.js" as BackupImportPolicy
-import "../backup/BackupImportTransaction.js" as BackupImportTransaction
+import "../source_operations/NodeOperationRequest.js" as NodeOperationRequest
 import "../settings/SettingsProfile.js" as SettingsProfile
 
 QtObject {
@@ -9,6 +8,7 @@ QtObject {
     required property var model
     required property var catalog
     required property var operationHistory
+    readonly property string backupCatalogError: String(catalog.error || "")
 
     function defaultSettingsBackupContents() {
         return SettingsProfile.defaultBackupContents()
@@ -26,159 +26,119 @@ QtObject {
         model.settingsBackupContents = SettingsProfile.updatedBackupContents(model.settingsBackupContents, area, enabled)
     }
 
-    function policyContext() {
-        return {
-            model: model,
-            operationHistory: operationHistory
-        }
-    }
-
     function previewLocalSettingsImportPlan(backupCatalogId, options) {
-        return BackupImportTransaction.previewLocalSettingsImportPlan(root, backupCatalogId, options)
+        return catalog.previewImport(
+            backupCatalogId,
+            model.walletProfile(),
+            options && typeof options === "object" ? options : ({})
+        )
     }
 
     function restoreLocalSettingsBackup(backupCatalogId, options) {
-        return BackupImportTransaction.restoreLocalSettingsBackup(root, backupCatalogId, options)
+        const result = catalog.applyImport(
+            backupCatalogId,
+            model.walletProfile(),
+            options && typeof options === "object" ? options : ({})
+        )
+        if (!result) {
+            model.settingsBackupStatus = backupCatalogError.length
+                ? backupCatalogError
+                : qsTr("Local backup restore failed.")
+            return null
+        }
+
+        recordOperationEvents(result)
+        if (result.applied !== true) {
+            const blockedLabel = String(result.blockedOperationLabel || "")
+            model.settingsBackupStatus = blockedLabel.length
+                ? qsTr("Backup import blocked by running operation %1.").arg(blockedLabel)
+                : qsTr("Backup import is blocked by an affected running operation.")
+            return null
+        }
+
+        const selectedAreas = Array.isArray(result.selectedAreas) ? result.selectedAreas : []
+        const touchesSettings = selectedAreas.indexOf("settings") >= 0
+            || selectedAreas.indexOf("favorites") >= 0
+        if (touchesSettings) {
+            model.loadSettingsState()
+            model.settingsBackupEncrypted = result.encrypted === true
+        }
+        if (selectedAreas.indexOf("idl_registry") >= 0) {
+            model.loadIdlState()
+        }
+        if (selectedAreas.indexOf("wallet_profile") >= 0) {
+            model.loadWalletState()
+            model.checkLocalWalletProfile(false)
+        }
+        if (touchesSettings || selectedAreas.indexOf("wallet_profile") >= 0) {
+            model.loadCapabilityRegistry()
+        }
+
+        operationHistory.append({
+            domain: "backup",
+            method: "settingsBackupImportApply",
+            status: "applied_for_import",
+            label: qsTr("Settings backup import"),
+            operationClass: "backup",
+            affectedInputs: affectedInputs(selectedAreas),
+            restartPolicy: "safe_read_polling",
+            confirmationRequired: true,
+            importId: String(result.importId || ""),
+            backupCatalogId: String(result.backupCatalogId || backupCatalogId || ""),
+            reason: "backup_import_applied_for_import",
+            provenance: ["backup_import_coordinator", "runtime_operation_registry", "local_backup_catalog"],
+            result: result
+        }, qsTr("Local backup import applied."))
+
+        model.settingsBackupStatus = result.encrypted === true
+            ? qsTr("Imported encrypted backup: %1 IDLs and %2 favorites.")
+                .arg(Number(result.idl_count || 0))
+                .arg(Number(result.favorites || 0))
+            : qsTr("Imported %1 IDLs and %2 favorites from local backup.")
+                .arg(Number(result.idl_count || 0))
+                .arg(Number(result.favorites || 0))
+        return result
     }
 
-    function backupImportPlan(options, summary, backupCatalogId) {
-        return BackupImportTransaction.backupImportPlan(root, options, summary, backupCatalogId)
-    }
-
-    function backupImportId(backupCatalogId) {
-        return BackupImportTransaction.backupImportId(backupCatalogId)
-    }
-
-    function backupImportPlanBase(summary) {
-        return BackupImportTransaction.backupImportPlanBase(summary)
-    }
-
-    function backupImportEnabledGate(provenance) {
-        return BackupImportPolicy.enabledGate(provenance)
-    }
-
-    function backupImportDisabledGate(status, dependency, label, provenance) {
-        return BackupImportPolicy.disabledGate(status, dependency, label, provenance)
-    }
-
-    function backupImportGateSummary(gate) {
-        return BackupImportPolicy.gateSummary(gate)
-    }
-
-    function backupImportSafeReadOperation(metadata) {
-        return BackupImportPolicy.safeReadOperation(metadata)
-    }
-
-    function backupImportRestartRequest(operation) {
-        return BackupImportPolicy.restartRequest(operation)
-    }
-
-    function backupImportOperationGate(operation, metadata) {
-        return BackupImportPolicy.operationGate(policyContext(), operation, metadata)
-    }
-
-    function backupImportCanRestartOperation(operation, metadata) {
-        return BackupImportPolicy.canRestartOperation(policyContext(), operation, metadata)
-    }
-
-    function backupImportDecisionWithAction(decision, action, restart) {
-        return BackupImportPolicy.decisionWithAction(decision, action, restart)
-    }
-
-    function backupImportDecisionActionLabel(decision) {
-        return BackupImportPolicy.decisionActionLabel(decision)
-    }
-
-    function backupImportDecisionGateText(decision) {
-        return BackupImportPolicy.decisionGateText(decision)
+    function recordOperationEvents(result) {
+        const events = result && Array.isArray(result.operation_events)
+            ? result.operation_events : []
+        for (let i = 0; i < events.length; ++i) {
+            const event = events[i] || {}
+            if (event.operation && typeof event.operation === "object") {
+                model.updateRuntimeOperation(event.operation)
+            }
+            operationHistory.append(event, String(event.detail || ""))
+        }
     }
 
     function backupImportDecisionSummaryText(decision) {
-        return BackupImportPolicy.decisionSummaryText(decision)
+        const value = decision || {}
+        return qsTr("%1: %2")
+            .arg(String(value.label || value.operationId || qsTr("operation")))
+            .arg(decisionActionLabel(value.action, value.restart === true))
     }
 
-    function backupImportOperationDecision(operation, selectedAreas) {
-        return BackupImportTransaction.backupImportOperationDecision(root, operation, selectedAreas)
+    function decisionActionLabel(action, restart) {
+        switch (String(action || "")) {
+        case "stop":
+            return restart ? qsTr("will stop and restart") : qsTr("will stop")
+        case "block":
+            return qsTr("blocks import")
+        case "restart":
+            return qsTr("restarted")
+        case "restart_failed":
+            return qsTr("restart failed")
+        default:
+            return qsTr("not affected")
+        }
     }
 
-    function selectedBackupImportAreas(options, summary) {
-        return BackupImportTransaction.selectedBackupImportAreas(options, summary)
-    }
-
-    function backupImportTouchesLocalSettings(selectedAreas) {
-        return BackupImportTransaction.backupImportTouchesLocalSettings(selectedAreas)
-    }
-
-    function runningBackupImportOperations() {
-        return BackupImportTransaction.runningBackupImportOperations(root)
-    }
-
-    function backupImportOperationAffected(operation, selectedAreas) {
-        return BackupImportPolicy.operationAffected(policyContext(), operation, selectedAreas)
-    }
-
-    function backupImportOperationConflictsWithImport(operation, metadata) {
-        return BackupImportPolicy.operationConflictsWithImport(policyContext(), operation, metadata)
-    }
-
-    function backupImportOperationAffectsArea(operation, area, metadata) {
-        return BackupImportPolicy.operationAffectsArea(policyContext(), operation, area, metadata)
-    }
-
-    function backupImportMetadataAffectsArea(metadata, area) {
-        return BackupImportPolicy.metadataAffectsArea(metadata, area)
-    }
-
-    function backupImportCanonicalArea(value) {
-        return BackupImportPolicy.canonicalArea(value)
-    }
-
-    function backupImportStoppedStatus(status) {
-        return BackupImportPolicy.stoppedStatus(status)
-    }
-
-    function backupImportTerminalStatus(status) {
-        return BackupImportPolicy.terminalStatus(status)
-    }
-
-    function backupImportOperationWithRestart(decision, operation) {
-        return BackupImportTransaction.backupImportOperationWithRestart(decision, operation)
-    }
-
-    function backupImportMarkLetFinish(decision) {
-        return BackupImportTransaction.backupImportMarkLetFinish(decision)
-    }
-
-    function backupImportStopState(decision, operation) {
-        return BackupImportTransaction.backupImportStopState(root, decision, operation)
-    }
-
-    function awaitBackupImportStoppedOperation(decision, initialOperation) {
-        return BackupImportTransaction.awaitBackupImportStoppedOperation(root, decision, initialOperation)
-    }
-
-    function stopBackupImportOperations(plan) {
-        return BackupImportTransaction.stopBackupImportOperations(root, plan)
-    }
-
-    function restartBackupImportOperations(plan) {
-        return BackupImportTransaction.restartBackupImportOperations(root, plan)
-    }
-
-    function recordBackupImportDecision(decision, detail) {
-        return BackupImportTransaction.recordBackupImportDecision(root, decision, detail)
-    }
-
-    function backupImportActionStatus(action) {
-        return BackupImportPolicy.actionStatus(action)
-    }
-
-    function backupImportActionReason(action) {
-        return BackupImportPolicy.actionReason(action)
-    }
-
-    function backupImportAffectedInputs(selectedAreas) {
-        return BackupImportTransaction.backupImportAffectedInputs(selectedAreas)
+    function affectedInputs(selectedAreas) {
+        const areas = Array.isArray(selectedAreas) ? selectedAreas : []
+        return areas.map(function (area) {
+            return { key: "backup_area", value: String(area || "") }
+        })
     }
 
     function uploadBackupCatalogEntry(backupCatalogId) {
@@ -186,11 +146,11 @@ QtObject {
             model.settingsBackupStatus = qsTr("Storage upload capability is required.")
             return null
         }
-        return catalog.uploadLocal(backupCatalogId, [
-            model.effectiveStorageSourceMode(model.storageSourceMode),
-            model.configuredStorageRestUrl(),
+        return catalog.uploadLocal(backupCatalogId, NodeOperationRequest.envelope(
+            model.sourceRouting.storageOperationAdapter(),
+            {},
             model.storageMutatingDiagnosticsEnabled === true
-        ])
+        ))
     }
 
     function backupCatalogRows() {
@@ -198,7 +158,10 @@ QtObject {
     }
 
     function recordSettingsBackupCatalogEntry(encrypted, cid) {
-        const entry = model.createLocalSettingsBackup(model.settingsBackupEncrypted ? qsTr("Encrypted settings backup") : qsTr("Settings backup"), encrypted === true, model.settingsBackupContents)
+        const label = model.settingsBackupEncrypted
+            ? qsTr("Encrypted settings backup") : qsTr("Settings backup")
+        const entry = model.createLocalSettingsBackup(
+            label, encrypted === true, model.settingsBackupContents)
         if (!entry || !String(entry.backup_catalog_id || "").length || !String(cid || "").length) {
             return entry
         }

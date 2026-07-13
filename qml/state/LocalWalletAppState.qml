@@ -47,6 +47,7 @@ WalletState {
         if (!gateway) {
             return null
         }
+        const requestedRevision = profileRevision
         statusError = ""
         gateway.setStatus(qsTr("Local wallet"))
         return gateway.request("localWalletProfileStatus", [profile(gateway.networkProfile(), gateway.prefersBasecampModules())], qsTr("Local wallet"), showResult === true, function (response) {
@@ -59,6 +60,8 @@ WalletState {
                 statusError = response.error || qsTr("Profile status failed.")
                 appendHistory(qsTr("Profile status"), "down", statusError)
             }
+        }, function () {
+            return profileRevision === requestedRevision
         })
     }
 

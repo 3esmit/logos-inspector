@@ -1,6 +1,5 @@
 import QtQuick
 import "../services"
-import "app/AppModelCompatibility.js" as AppModelCompatibility
 import "app/AppModelCore.js" as AppModelCore
 import "domains" as Domains
 import "identity/AppModelIdentity.js" as AppModelIdentity
@@ -8,7 +7,6 @@ import "network/AppModelNetwork.js" as AppModelNetwork
 import "metrics/AppModelMetrics.js" as AppModelMetrics
 import "programs" as Programs
 import "programs/AppModelRegistry.js" as AppModelRegistry
-import "social/AppModelSocial.js" as AppModelSocial
 import "programs/ProgramDecodeSession.js" as ProgramDecodeSession
 import "wallet" as Wallet
 
@@ -82,6 +80,9 @@ QtObject {
         id: appShellState
         model: root
     }
+    property Domains.MetricsState metrics: Domains.MetricsState {
+        model: root
+    }
     property AppRequestState requests: AppRequestState {
         id: appRequestState
 
@@ -95,14 +96,6 @@ QtObject {
             return root.updateNetworkConnectionStatusForMethod(method, response)
         }
     }
-    property alias currentView: appShellState.currentView
-    property alias statusText: appShellState.statusText
-    property alias busy: appShellState.busy
-    property alias resultTitle: appShellState.resultTitle
-    property alias resultText: appShellState.resultText
-    property alias resultValue: appShellState.resultValue
-    property alias resultIsError: appShellState.resultIsError
-    property alias resultOwner: appShellState.resultOwner
     property Domains.NetworkInspectionState chainPages: Domains.NetworkInspectionState {
         id: chainPageState
 
@@ -118,7 +111,7 @@ QtObject {
             }
 
             function setResult(title, text, isError, value, owner) {
-                return root.setResult(title, text, isError, value, owner)
+                return appShellState.setResult(title, text, isError, value, owner)
             }
 
             function blockchainArgs(extra) { return root.blockchainArgs(extra) }
@@ -175,19 +168,38 @@ QtObject {
     property bool messagingMutatingDiagnosticsEnabled: false
     property Domains.SocialCollaborationState social: Domains.SocialCollaborationState {
         id: socialState
+
+        bridge: root.bridge
+        inspectorModule: root.inspectorModule
+        sourceRouting: sourceRoutingState
+        registeredIdls: programDecodeState.registeredIdls
+        busy: appShellState.busy
+        messagingSourceMode: root.messagingSourceMode
+        messagingMutatingDiagnosticsEnabled: root.messagingMutatingDiagnosticsEnabled
+        storageMutatingDiagnosticsEnabled: root.storageMutatingDiagnosticsEnabled
+        gateway: QtObject {
+            function requestModule(moduleName, method, args, label, showResult, cacheResult) {
+                return root.requestModule(moduleName, method, args, label, showResult, cacheResult)
+            }
+
+            function callInspector(method, args, label) {
+                return root.callInspector(method, args, label)
+            }
+
+            function saveSettingsState() { return root.saveSettingsState() }
+            function saveIdlState() { return root.saveIdlState() }
+            function socialGate(action) { return root.socialGate(action) }
+            function effectiveMessagingSourceMode(value) { return root.effectiveMessagingSourceMode(value) }
+            function configuredStorageRestUrl() { return root.configuredStorageRestUrl() }
+            function normalizedIdlEntry(entry, fallbackIndex) { return root.normalizedIdlEntry(entry, fallbackIndex) }
+            function idlEntryForKey(key) { return root.idlEntryForKey(key) }
+            function idlNameFromJson(value) { return root.idlNameFromJson(value) }
+            function canonicalProgramIdHex(value) { return root.canonicalProgramIdHex(value) }
+            function normalizedHexText(value) { return root.normalizedHexText(value) }
+            function accountOwnerCacheKey(value) { return root.accountOwnerCacheKey(value) }
+            function zoneScopeKey() { return root.zoneScopeKey() }
+        }
     }
-    property alias socialCommentPageSize: socialState.commentPageSize
-    property alias socialIdentityDefaultMode: socialState.identityDefaultMode
-    property alias selectedSocialIdentityKey: socialState.selectedIdentityKey
-    property alias socialConversationIdentityKeys: socialState.conversationIdentityKeys
-    property alias socialIdentityRevision: socialState.identityRevision
-    property alias socialCommentState: socialState.commentState
-    property alias socialCommentRevision: socialState.commentRevision
-    property alias socialSharedIdls: socialState.sharedIdls
-    property alias sharedIdlPolicy: socialState.sharedIdlPolicy
-    property alias sharedIdlAutoShare: socialState.sharedIdlAutoShare
-    property alias socialAutoSharedIdls: socialState.autoSharedIdls
-    property alias sharedIdlRevision: socialState.sharedIdlRevision
     property string storageSourceMode: "rest"
     property string storageRestUrl: "http://127.0.0.1:8080/api/storage/v1"
     property string storageMetricsUrl: "http://127.0.0.1:8008/metrics"
@@ -244,7 +256,7 @@ QtObject {
     property var networkConnectionStatus: ({})
     property int networkConnectionStatusRevision: 0
     property int networkConfigurationRevision: 0
-    property var footerFieldSelections: defaultFooterFieldSelections()
+    property var footerFieldSelections: metrics.defaultFooterFieldSelections()
     property int footerFieldRevision: 0
     property var dashboardGraphSelections: defaultDashboardGraphSelections()
     property int dashboardGraphRevision: 0
@@ -279,7 +291,6 @@ QtObject {
     }
     property alias idlRegistry: programDecodeState.idlRegistry
     property alias registeredIdls: programDecodeState.registeredIdls
-    property alias socialIdentities: socialState.identities
     property alias idlStateLoaded: programDecodeState.loaded
     property LocalWalletAppState wallet: LocalWalletAppState {
         id: walletState
@@ -289,8 +300,8 @@ QtObject {
                 return root.bridge.callModule(root.inspectorModule, method, args || [])
             }
 
-            function request(method, args, label, showResult, callback) {
-                return root.requestModuleAsync(root.inspectorModule, method, args || [], label, showResult === true, callback)
+            function request(method, args, label, showResult, callback, acceptResponse) {
+                return root.requestModuleAsync(root.inspectorModule, method, args || [], label, showResult === true, callback, acceptResponse)
             }
 
             function requestBlocking(method, args, label, showResult) {
@@ -298,23 +309,23 @@ QtObject {
             }
 
             function setStatus(value) {
-                root.statusText = String(value || "")
+                appShellState.statusText = String(value || "")
             }
 
             function busy() {
-                return root.busy
+                return appShellState.busy
             }
 
             function setBusy(value) {
-                root.busy = value === true
+                appShellState.busy = value === true
             }
 
             function setResult(title, text, isError, value) {
-                root.setResult(title, text, isError, value)
+                appShellState.setResult(title, text, isError, value)
             }
 
             function openLocalWallet(wallet, tab) {
-                return root.openLocalWallet(wallet, tab)
+                return entityNavigationState.openLocalWallet(wallet, tab)
             }
 
             function networkProfile() {
@@ -393,11 +404,11 @@ QtObject {
             }
 
             function setResult(title, text, isError, value) {
-                return root.setResult(title, text, isError, value)
+                return appShellState.setResult(title, text, isError, value)
             }
 
             function clearResult() {
-                return root.clearResult()
+                return appShellState.clearResult()
             }
 
             function appendOperationHistory(operation, detail) {
@@ -412,7 +423,7 @@ QtObject {
                 return root.valueText(value)
             }
         }
-        busy: root.busy
+        busy: appShellState.busy
         sourceMode: root.storageSource.mode
         effectiveSourceMode: root.storageSource.effectiveMode
         sourceLabel: root.storageSource.label
@@ -421,21 +432,20 @@ QtObject {
         usesRestEndpoint: root.storageSource.usesRestEndpoint
         supportsMutatingDiagnostics: root.storageSource.supportsMutatingDiagnostics
         restEndpoint: root.storageSource.restEndpoint
+        adapterInitialization: root.sourceRouting.storageOperationAdapter()
         moduleName: root.storageSource.moduleName
         networkPreset: root.storageSource.networkPreset
         mutatingDiagnosticsEnabled: root.storageMutatingDiagnosticsEnabled
-        currentView: root.currentView
-        resultTitle: root.resultTitle
-        resultText: root.resultText
-        resultIsError: root.resultIsError
-        resultOwner: root.resultOwner
+        currentView: appShellState.currentView
+        resultTitle: appShellState.resultTitle
+        resultText: appShellState.resultText
+        resultIsError: appShellState.resultIsError
+        resultOwner: appShellState.resultOwner
         sourceReport: root.storageSourceReport
         gateFacade: root.capabilities
     }
     property alias storageAppTab: storageAppState.currentTab
     property alias storageCidProbe: storageAppState.cidProbe
-    property alias storageActiveOperation: storageAppState.activeOperation
-    property alias storageActiveOperationRevision: storageAppState.activeOperationRevision
     property DeliveryAppState deliveryApp: DeliveryAppState {
         id: deliveryAppState
 
@@ -456,7 +466,7 @@ QtObject {
                 return root.appendOperationHistory(operation, detail)
             }
         }
-        busy: root.busy
+        busy: appShellState.busy
         sourceMode: root.deliverySource.mode
         effectiveSourceMode: root.deliverySource.effectiveMode
         sourceLabel: root.deliverySource.label
@@ -465,14 +475,13 @@ QtObject {
         usesRestEndpoint: root.deliverySource.usesRestEndpoint
         supportsMutatingDiagnostics: root.deliverySource.supportsMutatingDiagnostics
         restEndpoint: root.deliverySource.restEndpoint
+        adapterInitialization: root.sourceRouting.deliveryOperationAdapter()
         moduleName: root.deliverySource.moduleName
         networkPreset: root.deliverySource.networkPreset
         mutatingDiagnosticsEnabled: root.messagingMutatingDiagnosticsEnabled
     }
     property alias deliveryAppTab: deliveryAppState.currentTab
     property alias deliveryActiveTopic: deliveryAppState.activeTopic
-    property alias deliveryActiveOperation: deliveryAppState.activeOperation
-    property alias deliveryActiveOperationRevision: deliveryAppState.activeOperationRevision
     property alias deliveryModuleEvents: deliveryAppState.deliveryModuleEvents
     property alias deliveryModuleEventRevision: deliveryAppState.deliveryModuleEventRevision
     property alias deliveryConnectionStatus: deliveryAppState.deliveryConnectionStatus
@@ -499,7 +508,7 @@ QtObject {
         prefersBasecampModules: root.prefersBasecampModules() === true
         gateway: QtObject {
             function openLocalWallet(tab) {
-                return root.openLocalWallet("", tab)
+                return entityNavigationState.openLocalWallet("", tab)
             }
         }
     }
@@ -529,15 +538,15 @@ QtObject {
             }
 
             function setBusy(value, label) {
-                root.busy = value === true
+                appShellState.busy = value === true
                 const labelText = String(label || "")
-                if (root.busy && labelText.length) {
-                    root.statusText = labelText
+                if (appShellState.busy && labelText.length) {
+                    appShellState.statusText = labelText
                 }
             }
 
             function setResult(title, text, isError, value) {
-                return root.setResult(title, text, isError, value)
+                return appShellState.setResult(title, text, isError, value)
             }
 
             function appendOperationHistory(operation, detail) {
@@ -545,7 +554,7 @@ QtObject {
             }
         }
         networkProfile: root.networkProfile
-        busy: root.busy
+        busy: appShellState.busy
     }
     property alias localNodesReport: localNodesState.report
     property alias localNodesError: localNodesState.error
@@ -563,19 +572,19 @@ QtObject {
             }
 
             function busy() {
-                return root.busy
+                return appShellState.busy
             }
 
             function setBusy(value) {
-                root.busy = value === true
+                appShellState.busy = value === true
             }
 
             function setStatus(value) {
-                root.statusText = String(value || "")
+                appShellState.statusText = String(value || "")
             }
 
             function setResult(title, text, isError, value) {
-                return root.setResult(title, text, isError, value)
+                return appShellState.setResult(title, text, isError, value)
             }
 
             function walletProfile() {
@@ -591,7 +600,7 @@ QtObject {
             }
 
             function openLocalWallet(tab) {
-                return root.openLocalWallet("", tab)
+                return entityNavigationState.openLocalWallet("", tab)
             }
 
             function appendOperationHistory(operation, detail) {
@@ -648,41 +657,70 @@ QtObject {
             Qt.callLater(entityNavigationState.resumePendingInspectionEntityRef)
             entityNavigationState.projectZoneDashboard()
         }
+    }
+
+    property Connections zoneL2BlockConnections: Connections {
+        target: zoneInspectionState.l2.blocks
 
         function onL2BlockRowsChanged() {
             entityNavigationState.projectZoneDashboard()
         }
 
         function onL2BlockDetailChanged() {
-            root.captureCurrentZoneEntityRef(zoneInspectionState.l2BlockEntityRef(
-                zoneInspectionState.l2BlockDetail))
+            root.captureCurrentZoneEntityRef(zoneInspectionState.l2.blocks.l2BlockEntityRef(
+                zoneInspectionState.l2.blocks.l2BlockDetail))
         }
 
         function onL2TransactionDetailChanged() {
-            root.captureCurrentZoneEntityRef(zoneInspectionState.l2TransactionEntityRef(
-                zoneInspectionState.l2TransactionDetail))
+            root.captureCurrentZoneEntityRef(zoneInspectionState.l2.blocks.l2TransactionEntityRef(
+                zoneInspectionState.l2.blocks.l2TransactionDetail))
         }
+    }
+
+    property Connections zoneL2AccountConnections: Connections {
+        target: zoneInspectionState.l2.accounts
 
         function onL2AccountFinalizedChanged() {
-            root.captureCurrentZoneEntityRef(zoneInspectionState.l2AccountEntityRef(
-                zoneInspectionState.l2AccountFinalized))
+            root.captureCurrentZoneEntityRef(zoneInspectionState.l2.accounts.l2AccountEntityRef(
+                zoneInspectionState.l2.accounts.l2AccountFinalized))
         }
 
         function onL2AccountProvisionalChanged() {
-            if (!zoneInspectionState.l2AccountFinalized) {
-                root.captureCurrentZoneEntityRef(zoneInspectionState.l2AccountEntityRef(
-                    zoneInspectionState.l2AccountProvisional))
-            }
-        }
-
-        function onL2ProgramsChanged() {
-            if (zoneInspectionState.l2ProgramsLoaded) {
-                root.updateKnownProgramIds(zoneInspectionState.l2Programs)
+            if (!zoneInspectionState.l2.accounts.l2AccountFinalized) {
+                root.captureCurrentZoneEntityRef(zoneInspectionState.l2.accounts.l2AccountEntityRef(
+                    zoneInspectionState.l2.accounts.l2AccountProvisional))
             }
         }
     }
 
-    onCurrentViewChanged: expandNavGroupForView(currentView)
+    property Connections zoneL2ToolConnections: Connections {
+        target: zoneInspectionState.l2.tools
+
+        function onL2ProgramsChanged() {
+            if (zoneInspectionState.l2.tools.l2ProgramsLoaded) {
+                root.updateKnownProgramIds(zoneInspectionState.l2.tools.l2Programs)
+            }
+        }
+    }
+
+    property Connections shellConnections: Connections {
+        target: appShellState
+
+        function onCurrentViewChanged() {
+            root.expandNavGroupForView(appShellState.currentView)
+        }
+    }
+
+    property Connections socialSettingsConnections: Connections {
+        target: socialState
+
+        function onSocialCommentPageSizeChanged() { root.saveSettingsState() }
+        function onSocialIdentityDefaultModeChanged() { root.saveSettingsState() }
+        function onSelectedSocialIdentityKeyChanged() { root.saveSettingsState() }
+        function onSharedIdlPolicyChanged() { root.saveSettingsState() }
+        function onSharedIdlAutoShareChanged() { root.saveSettingsState() }
+    }
+
     onNetworkProfileChanged: handleNetworkConfigurationChanged()
     onNodeUrlChanged: handleNetworkConfigurationChanged()
     onNetworkConnectorConfigChanged: {
@@ -700,11 +738,6 @@ QtObject {
         saveSettingsState()
         refreshCapabilityRegistryIfLoaded()
     }
-    onSocialCommentPageSizeChanged: saveSettingsState()
-    onSocialIdentityDefaultModeChanged: saveSettingsState()
-    onSelectedSocialIdentityKeyChanged: saveSettingsState()
-    onSharedIdlPolicyChanged: saveSettingsState()
-    onSharedIdlAutoShareChanged: saveSettingsState()
     onStorageSourceModeChanged: handleStorageConfigurationChanged()
     onStorageRestUrlChanged: handleStorageConfigurationChanged()
     onStorageMetricsUrlChanged: handleStorageConfigurationChanged()
@@ -791,10 +824,6 @@ QtObject {
     function selectView(view, recordHistory) { return appShellState.selectView(view, recordHistory) }
 
     function openSettings(section, subsection, recordHistory) { return appShellState.openSettings(section, subsection, recordHistory) }
-
-    function clearResult() { return appShellState.clearResult() }
-
-    function setResult(title, text, isError, value, owner) { return appShellState.setResult(title, text, isError, value, owner) }
 
     function pageHasOutput(view) { return appShellState.pageHasOutput(view) }
 
@@ -913,104 +942,6 @@ QtObject {
 
     function settingsStatePayload() { return AppModelIdentity.settingsStatePayload(root) }
 
-    function socialCommentTopic(layer, entity, id) { return AppModelSocial.socialCommentTopic(root, layer, entity, id) }
-
-    function socialZoneCommentTopic(entityRef) { return AppModelSocial.socialZoneCommentTopic(root, entityRef) }
-
-    function socialZoneAccountIdlTopic(entityRef) { return AppModelSocial.socialZoneAccountIdlTopic(root, entityRef) }
-
-    function zoneSocialScope(entityRef) { return AppModelSocial.zoneSocialScope(entityRef) }
-
-    function socialComments(topic) { return AppModelSocial.socialComments(root, topic) }
-
-    function socialCommentStateForTopic(topic) { return AppModelSocial.socialCommentState(root, topic) }
-
-    function loadSocialComments(topic, reset, pageSize, expectedAccountId) { return AppModelSocial.loadSocialComments(root, topic, reset, pageSize, expectedAccountId) }
-
-    function setSocialCommentState(topic, state) { return AppModelSocial.setSocialCommentState(root, topic, state) }
-
-    function applyIncomingSocialComment(event) { return AppModelSocial.applyIncomingComment(root, event) }
-
-    function applyIncomingSocialMessage(message) { return AppModelSocial.applyIncomingDeliveryMessage(root, message) }
-
-    function socialCommentRowsFromMessages(messages) { return AppModelSocial.socialCommentRowsFromMessages(root, messages) }
-
-    function mergeSocialCommentRows(existingRows, incomingRows) { return AppModelSocial.mergeSocialCommentRows(root, existingRows, incomingRows) }
-
-    function socialStoreCursor(value) { return AppModelSocial.socialStoreCursor(root, value) }
-
-    function lastSocialMessageCursor(messages) { return AppModelSocial.lastSocialMessageCursor(root, messages) }
-
-    function postSocialComment(topic, body, identityKey, entityRef) { return AppModelSocial.postSocialComment(root, topic, body, identityKey, entityRef) }
-
-    function socialDeliveryArgs(extra) { return AppModelSocial.socialDeliveryArgs(root, extra) }
-
-    function socialMessageSourceAvailable() { return AppModelSocial.socialMessageSourceAvailable(root) }
-
-    function socialStoreAvailable() { return AppModelSocial.socialStoreAvailable(root) }
-
-    function socialStoreGate() { return AppModelSocial.socialStoreGate(root) }
-
-    function socialGateDetailText(gate, fallback) { return AppModelSocial.socialGateDetailText(root, gate, fallback || "") }
-
-    function socialCommentReadGate(topic) { return AppModelSocial.socialCommentReadGate(root, topic) }
-
-    function socialCommentReadAvailable(topic) { return AppModelSocial.socialCommentReadAvailable(root, topic) }
-
-    function socialCommentWriteGate(topic) { return AppModelSocial.socialCommentWriteGate(root, topic) }
-
-    function socialCommentSendAvailable(topic) { return AppModelSocial.socialCommentSendAvailable(root, topic) }
-
-    function socialSharedIdlReadGate() { return AppModelSocial.socialSharedIdlReadGate(root) }
-
-    function socialSharedIdlReadAvailable() { return AppModelSocial.socialSharedIdlReadAvailable(root) }
-
-    function socialSharedIdlWriteGate(topic) { return AppModelSocial.socialSharedIdlWriteGate(root, topic) }
-
-    function socialSharedIdlWriteAvailable(topic) { return AppModelSocial.socialSharedIdlWriteAvailable(root, topic) }
-
-    function validSocialTopic(topic) { return AppModelSocial.validSocialTopic(root, topic) }
-
-    function socialPageSize(pageSize) { return AppModelSocial.socialPageSize(root, pageSize) }
-
-    function loadSocialSettings(value) { return AppModelSocial.loadSocialSettings(root, value) }
-
-    function socialSettingsPayload() { return AppModelSocial.socialSettingsPayload(root) }
-
-    function socialIdentityRows() { return AppModelSocial.socialIdentityRows(root) }
-
-    function createSocialIdentity(displayName) { return AppModelSocial.createSocialIdentity(root, displayName) }
-
-    function socialIdentityForKey(key) { return AppModelSocial.socialIdentityForKey(root, key) }
-
-    function socialIdentityForConversation(topic, key) { return AppModelSocial.socialIdentityForConversation(root, topic, key) }
-
-    function selectSocialIdentity(key) { return AppModelSocial.selectSocialIdentity(root, key) }
-
-    function setSocialIdentityDefaultMode(mode) { return AppModelSocial.setSocialIdentityDefaultMode(root, mode) }
-
-    function normalizedSocialIdentityDefaultMode(value) { return AppModelSocial.normalizedSocialIdentityDefaultMode(value) }
-
-    function socialIdentityPayload(identity) { return AppModelSocial.socialIdentityPayload(root, identity) }
-
-    function setSharedIdlPolicy(policy) { return AppModelSocial.setSharedIdlPolicy(root, policy) }
-
-    function normalizedSharedIdlPolicy(value) { return AppModelSocial.normalizedSharedIdlPolicy(value) }
-
-    function setSharedIdlAutoShare(enabled) { return AppModelSocial.setSharedIdlAutoShare(root, enabled) }
-
-    function refreshSharedIdlsForAccount(entityRef, dataHex, ownerProgramId) { return AppModelSocial.refreshSharedIdlsForAccount(root, entityRef, dataHex, ownerProgramId) }
-
-    function applySharedIdlPolicy(accountId, entry) { return AppModelSocial.applySharedIdlPolicy(root, accountId, entry) }
-
-    function sharedIdlSuggestions(accountId, ownerProgramId) { return AppModelSocial.sharedIdlSuggestions(root, accountId, ownerProgramId) }
-
-    function sharedIdlEntriesForAccount(accountId, ownerProgramId) { return AppModelSocial.sharedIdlEntriesForAccount(root, accountId, ownerProgramId) }
-
-    function publishAccountIdl(entityRef, ownerProgramId, idlEntry) { return AppModelSocial.publishAccountIdl(root, entityRef, ownerProgramId, idlEntry) }
-
-    function maybeAutoShareAccountIdl(entityRef, ownerProgramId, idlEntry) { return AppModelSocial.maybeAutoShareAccountIdl(root, entityRef, ownerProgramId, idlEntry) }
-
     function backupSettingsToStorage(encrypted, contents) { return AppModelIdentity.backupSettingsToStorage(root, encrypted, contents || settingsBackupContents) }
 
     function restoreSettingsFromStorage(cid, useWallet) { return AppModelIdentity.restoreSettingsFromStorage(root, cid, useWallet) }
@@ -1032,84 +963,6 @@ QtObject {
     function createLocalSettingsBackup(label, encrypted, contents) { return backupCatalogState.createLocal(label, encrypted === true, walletProfile(), backupImportState.normalizedBackupContents(contents || settingsBackupContents)) }
 
     function attachBackupRemote(backupCatalogId, cid, provider) { return backupCatalogState.attachRemote(backupCatalogId, cid, provider) }
-
-    function previewLocalSettingsRestore(backupCatalogId, options) { return backupCatalogState.previewLocalRestore(backupCatalogId, walletProfile(), options || {}) }
-
-    function previewLocalSettingsImportPlan(backupCatalogId, options) { return backupImportState.previewLocalSettingsImportPlan(backupCatalogId, options) }
-
-    function restoreLocalSettingsBackup(backupCatalogId, options) { return backupImportState.restoreLocalSettingsBackup(backupCatalogId, options) }
-
-    function backupImportPlan(options, summary, backupCatalogId) { return backupImportState.backupImportPlan(options, summary, backupCatalogId) }
-
-    function backupImportId(backupCatalogId) { return backupImportState.backupImportId(backupCatalogId) }
-
-    function backupImportPlanBase(summary) { return backupImportState.backupImportPlanBase(summary) }
-
-    function backupImportEnabledGate(provenance) { return backupImportState.backupImportEnabledGate(provenance) }
-
-    function backupImportDisabledGate(status, dependency, label, provenance) { return backupImportState.backupImportDisabledGate(status, dependency, label, provenance) }
-
-    function backupImportGateSummary(gate) { return backupImportState.backupImportGateSummary(gate) }
-
-    function backupImportSafeReadOperation(metadata) { return backupImportState.backupImportSafeReadOperation(metadata) }
-
-    function backupImportRestartRequest(operation) { return backupImportState.backupImportRestartRequest(operation) }
-
-    function backupImportOperationGate(operation, metadata) { return backupImportState.backupImportOperationGate(operation, metadata) }
-
-    function backupImportCanRestartOperation(operation, metadata) { return backupImportState.backupImportCanRestartOperation(operation, metadata) }
-
-    function backupImportDecisionWithAction(decision, action, restart) { return backupImportState.backupImportDecisionWithAction(decision, action, restart) }
-
-    function backupImportDecisionActionLabel(decision) { return backupImportState.backupImportDecisionActionLabel(decision) }
-
-    function backupImportDecisionGateText(decision) { return backupImportState.backupImportDecisionGateText(decision) }
-
-    function backupImportDecisionSummaryText(decision) { return backupImportState.backupImportDecisionSummaryText(decision) }
-
-    function backupImportOperationDecision(operation, selectedAreas) { return backupImportState.backupImportOperationDecision(operation, selectedAreas) }
-
-    function selectedBackupImportAreas(options, summary) { return backupImportState.selectedBackupImportAreas(options, summary) }
-
-    function backupImportTouchesLocalSettings(selectedAreas) { return backupImportState.backupImportTouchesLocalSettings(selectedAreas) }
-
-    function runningBackupImportOperations() { return backupImportState.runningBackupImportOperations() }
-
-    function backupImportOperationAffected(operation, selectedAreas) { return backupImportState.backupImportOperationAffected(operation, selectedAreas) }
-
-    function backupImportOperationConflictsWithImport(operation, metadata) { return backupImportState.backupImportOperationConflictsWithImport(operation, metadata) }
-
-    function backupImportOperationAffectsArea(operation, area, metadata) { return backupImportState.backupImportOperationAffectsArea(operation, area, metadata) }
-
-    function backupImportMetadataAffectsArea(metadata, area) { return backupImportState.backupImportMetadataAffectsArea(metadata, area) }
-
-    function backupImportCanonicalArea(value) { return backupImportState.backupImportCanonicalArea(value) }
-
-    function backupImportStoppedStatus(status) { return backupImportState.backupImportStoppedStatus(status) }
-
-    function backupImportTerminalStatus(status) { return backupImportState.backupImportTerminalStatus(status) }
-
-    function backupImportOperationWithRestart(decision, operation) { return backupImportState.backupImportOperationWithRestart(decision, operation) }
-
-    function backupImportMarkLetFinish(decision) { return backupImportState.backupImportMarkLetFinish(decision) }
-
-    function backupImportStopState(decision, operation) { return backupImportState.backupImportStopState(decision, operation) }
-
-    function awaitBackupImportStoppedOperation(decision, initialOperation) { return backupImportState.awaitBackupImportStoppedOperation(decision, initialOperation) }
-
-    function stopBackupImportOperations(plan) { return backupImportState.stopBackupImportOperations(plan) }
-
-    function restartBackupImportOperations(plan) { return backupImportState.restartBackupImportOperations(plan) }
-
-    function recordBackupImportDecision(decision, detail) { return backupImportState.recordBackupImportDecision(decision, detail) }
-
-    function backupImportActionStatus(action) { return backupImportState.backupImportActionStatus(action) }
-
-    function backupImportActionReason(action) { return backupImportState.backupImportActionReason(action) }
-
-    function backupImportAffectedInputs(selectedAreas) { return backupImportState.backupImportAffectedInputs(selectedAreas) }
-
-    function uploadBackupCatalogEntry(backupCatalogId) { return backupImportState.uploadBackupCatalogEntry(backupCatalogId) }
 
     function backupCatalogRows() { return backupImportState.backupCatalogRows() }
 
@@ -1152,14 +1005,6 @@ QtObject {
 
     function storageDisplayPath(path) { return AppModelIdentity.storageDisplayPath(root, path) }
 
-    function updateStorageActiveOperation(value) {
-        storageAppState.updateActiveOperation(value)
-    }
-
-    function clearStorageActiveOperation() {
-        storageAppState.clearActiveOperation()
-    }
-
     function deliveryModuleEventRows() { return deliveryAppState.moduleEventRows() }
 
     function deliveryModuleEventSummary() { return deliveryAppState.moduleEventSummary() }
@@ -1168,27 +1013,13 @@ QtObject {
 
     function checkedLocalWalletProfile() { return wallet.checkedProfile() }
 
-    function createWalletAccount() { return wallet.createAccount() }
-
-    function sendWalletTransaction() { return wallet.sendTransaction() }
-
-    function readIncomingWalletTransactions() { return wallet.readIncomingTransactions() }
-
-    function runWalletCommand(commandArgs) { return wallet.runCommand(commandArgs) }
-
     function walletCommandOperationDetail(value) { return wallet.commandOperationDetail(value) }
 
     function deployProgramBinary(programPath) { return programExecution.deployProgramBinary(programPath) }
 
     function deployProgramOperationDetail(value) { return programExecution.deployProgramOperationDetail(value) }
 
-    function syncPrivateWallet() { return wallet.syncPrivate() }
-
-    function queryLocalWalletAccounts(showResult) { return wallet.queryAccounts(showResult) }
-
     function privateSyncOperationDetail(value) { return wallet.privateSyncOperationDetail(value) }
-
-    function queryBedrockWalletBalance() { return wallet.queryBedrockBalance() }
 
     function isBedrockHexId(value) { return wallet.isBedrockHexId(value) }
 
@@ -1327,71 +1158,21 @@ QtObject {
             storage_metrics_url: String(storageMetricsUrl || ""),
             messaging_rest_url: configuredMessagingRestUrl(),
 	        messaging_metrics_url: String(messagingMetricsUrl || ""),
-	            storage_mutating_diagnostics_enabled: storageMutatingDiagnosticsEnabled === true,
+	        storage_mutating_diagnostics_enabled: storageMutatingDiagnosticsEnabled === true,
             messaging_mutating_diagnostics_enabled: messagingMutatingDiagnosticsEnabled === true,
             wallet_profile_configured: walletProfileConfigured(),
             wallet_home_configured: walletHomeConfigured(),
             local_nodes_enabled: localNodesEnabled === true,
-            local_devnet_enabled: localNodesEnabled === true && localDevnetEnabled === true,
-            source_reports: {
-                l1: capabilityNetworkSourceReport("blockchain", qsTr("L1 RPC")),
-                storage: storageSourceReport || null,
-                delivery: messagingSourceReport || null
-            },
-            diagnostics_reports: capabilityDiagnosticsReports()
-        }
-    }
-
-    function capabilityDiagnosticsReports() {
-        return {
-            module_reports: {
-                blockchain: blockchainModuleReport || null,
-                storage: storageModuleReport || null,
-                delivery: messagingModuleReport || null
-            },
-            source_reports: {
-                l1: capabilityNetworkSourceReport("blockchain", qsTr("L1 RPC")),
-                storage: storageSourceReport || null,
-                delivery: messagingSourceReport || null
-            },
-            last_known: {
-                local_nodes: localNodesError || "",
-                wallet: localWalletStatusError || ""
-            }
-        }
-    }
-
-    function capabilityNetworkSourceReport(kind, label) {
-        const key = String(kind || "")
-        const status = networkConnectionStatus && typeof networkConnectionStatus === "object"
-            ? networkConnectionStatus[key]
-            : null
-        if (!status || status.known !== true) {
-            return null
-        }
-        const ok = status.ok === true
-        const detail = String(status.detail || (ok ? qsTr("%1 reachable").arg(label) : qsTr("%1 unavailable").arg(label)))
-        return {
-            health: {
-                ready: ok,
-                reachable: ok,
-                status: ok ? "ready" : "unavailable",
-                detail: detail,
-                summary: detail
-            },
-            probe_facts: [{
-                key: key + ".connection",
-                ok: ok,
-                value: status.value !== undefined ? status.value : null,
-                error: ok ? "" : detail
-            }],
-            probes: []
+            local_devnet_enabled: localNodesEnabled === true && localDevnetEnabled === true
         }
     }
 
 	    function capabilityLocalAvailability() {
-	        const localIdentityReady = socialIdentities.count > 0 || selectedSocialIdentityKey.length > 0 || socialIdentityDefaultMode !== "manual"
-	        const storageSyncRest = root.effectiveStorageSourceMode(storageSourceMode) === "rest"
+	        const identity = socialState.identitiesView()
+	        const localIdentityReady = identity.rows.length > 0
+	            || identity.selectedKey.length > 0 || identity.defaultMode !== "manual"
+	        const storageSyncRest = sourceRouting.effectiveStorageSourceMode(
+	            storageSourceMode) === "rest"
 	        return {
 	            "social.identity.local": { status: localIdentityReady ? "available" : "input_required", provenance: "local_identity" },
 	            "storage.shared_idl.sync_read": {
@@ -1564,11 +1345,7 @@ QtObject {
 
     function moduleReportReachable(report) { return AppModelNetwork.moduleReportReachable(root, report) }
 
-    function sourceHealth(report) { return AppModelNetwork.sourceHealth(root, report) }
-
     function sourceHealthReady(report) { return AppModelNetwork.sourceHealthReady(root, report) }
-
-    function sourceCapability(report, key) { return AppModelNetwork.sourceCapability(root, report, key) }
 
     function sourceCapabilityAvailable(report, key) { return AppModelNetwork.sourceCapabilityAvailable(root, report, key) }
 
@@ -1577,8 +1354,6 @@ QtObject {
     function sourceCapabilityValue(report, key) { return AppModelNetwork.sourceCapabilityValue(root, report, key) }
 
     function sourceProbeFact(report, key) { return AppModelNetwork.sourceProbeFact(root, report, key) }
-
-    function sourceProbeValue(report, key) { return AppModelNetwork.sourceProbeValue(root, report, key) }
 
     function reportProbeValue(report, method) { return AppModelNetwork.reportProbeValue(root, report, method) }
 
@@ -1591,10 +1366,6 @@ QtObject {
     function deliveryHealthValueOk(value, unknownOk) { return AppModelNetwork.deliveryHealthValueOk(root, value, unknownOk) }
 
     function moduleReportError(report) { return AppModelNetwork.moduleReportError(root, report) }
-
-    function deliverySourceReportArgs() { return sourceRouting.deliverySourceReportArgs() }
-
-    function deliverySourceLabel() { return sourceRouting.deliverySourceLabel() }
 
     function deliverySourceTarget() { return sourceRouting.deliverySourceTarget() }
 
@@ -1612,17 +1383,11 @@ QtObject {
 
     function blockchainSourceTarget() { return sourceRouting.blockchainSourceTarget() }
 
-    function storageSourceReportArgs(includeCidProbe) { return sourceRouting.storageSourceReportArgs(includeCidProbe === true) }
-
-    function storageSourceLabel() { return sourceRouting.storageSourceLabel() }
-
     function storageSourceTarget() { return sourceRouting.storageSourceTarget() }
 
     function configuredStorageRestUrl() { return sourceRouting.configuredStorageRestUrl() }
 
     function normalizedStorageSourceMode(value) { return sourceRouting.normalizedStorageSourceMode(value) }
-
-    function effectiveStorageSourceMode(value) { return sourceRouting.effectiveStorageSourceMode(value === undefined ? storageSourceMode : value) }
 
     function networkConnectionState(kind) { return AppModelNetwork.networkConnectionState(root, kind) }
 
@@ -1711,9 +1476,9 @@ QtObject {
             + String(context.source_config_revision || 0)
     }
 
-    function zoneL2Capability(sourceRole) { return zoneInspection.l2Capability(sourceRole) }
+    function zoneL2Capability(sourceRole) { return zoneInspection.l2.l2Capability(sourceRole) }
 
-    function zoneCollaborationCapability() { return zoneInspection.collaborationCapability() }
+    function zoneCollaborationCapability() { return zoneInspection.l2.collaborationCapability() }
 
     function normalizedMessagingNetworkPreset(value) { return AppModelNetwork.normalizedMessagingNetworkPreset(root, value) }
 
@@ -1723,11 +1488,7 @@ QtObject {
 
     function valueToString(value) { return AppModelMetrics.valueToString(root, value) }
 
-    function moduleReport(kind) { return AppModelMetrics.moduleReport(root, kind) }
-
     function moduleProbe(kind, method) { return AppModelMetrics.moduleProbe(root, kind, method) }
-
-    function moduleProbeValue(kind, method) { return AppModelMetrics.moduleProbeValue(root, kind, method) }
 
     function moduleProbeError(kind, method) { return AppModelMetrics.moduleProbeError(root, kind, method) }
 
@@ -1736,8 +1497,6 @@ QtObject {
     function openMetricsText(kind) { return AppModelMetrics.openMetricsText(root, kind) }
 
     function openMetricsTextFromValue(value) { return AppModelMetrics.openMetricsTextFromValue(root, value) }
-
-    function openMetricValue(kind, names) { return AppModelMetrics.openMetricValue(root, kind, names) }
 
     function openMetricLabels(text) { return AppModelMetrics.openMetricLabels(root, text) }
 
@@ -1787,13 +1546,9 @@ QtObject {
 
     function dashboardMetricRawValue(key) { return AppModelMetrics.dashboardMetricRawValue(root, key) }
 
-    function dashboardMetricValue(key) { return AppModelMetrics.dashboardMetricValue(root, key) }
-
     function dashboardMetricUsesWindow(key) { return AppModelMetrics.dashboardMetricUsesWindow(root, key) }
 
     function dashboardMetricWindowDelta(key) { return AppModelMetrics.dashboardMetricWindowDelta(root, key) }
-
-    function dashboardMetricText(key) { return AppModelMetrics.dashboardMetricText(root, key) }
 
     function recordDashboardSnapshot() { return AppModelMetrics.recordDashboardSnapshot(root) }
 
@@ -1805,15 +1560,11 @@ QtObject {
 
     function windowDeltaFromSamples(samples, timestamp, windowMs) { return AppModelMetrics.windowDeltaFromSamples(root, samples, timestamp, windowMs) }
 
-    function defaultFooterFieldSelections() { return AppModelMetrics.defaultFooterFieldSelections(root) }
-
     function defaultDashboardGraphSelections() { return AppModelMetrics.defaultDashboardGraphSelections(root) }
 
     function refreshDashboard() { return entityNavigation.refreshDashboard() }
 
     function updateDashboardCache(method, value) { return entityNavigation.updateDashboardCache(method, value) }
-
-    function routeSearch(query) { return entityNavigation.routeSearch(query) }
 
     function resolveInspectionTarget(query) { return entityNavigation.resolveInspectionTarget(query) }
 
@@ -1836,8 +1587,6 @@ QtObject {
         }
     }
 
-    function openStorageCid(cid) { return entityNavigation.openStorageCid(cid) }
-
     function isStorageCid(value) { return entityNavigation.isStorageCid(value) }
 
     function routePrefixedSearch(query) { return entityNavigation.routePrefixedSearch(query) }
@@ -1854,11 +1603,7 @@ QtObject {
 
     function openReference(kind, value, payload) { return entityNavigation.openReference(kind, value, payload) }
 
-    function openMantleTransaction(hash) { return entityNavigation.openMantleTransaction(hash) }
-
     function openPrivateAccountReference(account) { return entityNavigation.openPrivateAccountReference(account) }
-
-    function openBlockchainBlock(blockOrId) { return entityNavigation.openBlockchainBlock(blockOrId) }
 
     function loadBlockchainBlockById(blockId) { return entityNavigation.loadBlockchainBlockById(blockId) }
 
@@ -1869,8 +1614,6 @@ QtObject {
     function transactionDetail(hash) { return entityNavigation.transactionDetail(hash) }
 
     function blockchainTransactionDetail(value, fallbackHash) { return entityNavigation.blockchainTransactionDetail(value, fallbackHash) }
-
-    function openLocalWallet(wallet, tab) { return entityNavigation.openLocalWallet(wallet, tab) }
 
     function showLocalWalletRequired(wallet) { return entityNavigation.showLocalWalletRequired(wallet) }
 
@@ -1888,11 +1631,4 @@ QtObject {
 
     function clearDashboardMetricHistoryForPrefix(prefix) { return AppModelMetrics.clearDashboardMetricHistoryForPrefix(root, prefix) }
 
-    function appModelCompatibilityContract() { return AppModelCompatibility.contract() }
-
-    function appModelCompatibilityGroup(key) { return AppModelCompatibility.groupFor(key) }
-
-    function appModelCompatibilityMemberGroup(member) { return AppModelCompatibility.memberGroup(member) }
-
-    function appModelCompatibilityReport() { return AppModelCompatibility.report(root) }
 }

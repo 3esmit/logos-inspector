@@ -5,7 +5,10 @@ use serde::Serialize;
 use serde_json::Value;
 
 use super::bedrock::blockchain_blocks;
-use crate::raw_http_json;
+use super::channel_operations::{
+    DecodedChannelOperation, DecodedChannelOperationKind, decode_channel_operation,
+};
+use crate::rpc::raw_http_json;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ChannelScanReport {
@@ -215,9 +218,21 @@ fn scan_value(
                 block_hash: block_hash.clone(),
                 tx_hash: tx_hash.clone(),
             };
+            let canonical_match = tx_hash
+                .as_deref()
+                .and_then(|transaction_hash| {
+                    decode_channel_operation(Some(transaction_hash), 0, value)
+                        .ok()
+                        .flatten()
+                })
+                .map(|operation| {
+                    canonical_channel_match(operation, path, slot, block_hash.clone(), value)
+                });
             let operation_key = channel_operation_key(object);
-            let matched_channel_object = is_channel_object(value);
-            if matched_channel_object {
+            let matched_channel_object = canonical_match.is_some() || is_channel_object(value);
+            if let Some(canonical_match) = canonical_match {
+                matches.push(canonical_match);
+            } else if matched_channel_object {
                 let payload = operation_key
                     .and_then(|key| object.get(key))
                     .or_else(|| object.get("payload"));
@@ -310,6 +325,55 @@ fn scan_value(
             }
         }
         Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+}
+
+fn canonical_channel_match(
+    operation: DecodedChannelOperation,
+    path: &str,
+    slot: Option<u64>,
+    block_hash: Option<String>,
+    value: &Value,
+) -> ChannelOperationMatch {
+    let operation_type = Some(operation.operation_name().to_owned());
+    let DecodedChannelOperation {
+        channel_id,
+        transaction_hash,
+        kind,
+        ..
+    } = operation;
+    let (withdraw_threshold, key_count, key_values, parent, signer) = match kind {
+        DecodedChannelOperationKind::Configuration {
+            keys,
+            withdraw_threshold,
+        } => (Some(withdraw_threshold), Some(keys.len()), keys, None, None),
+        DecodedChannelOperationKind::Inscription { parent, signer, .. } => (
+            None,
+            Some(1),
+            vec![signer.clone()],
+            Some(parent),
+            Some(signer),
+        ),
+        DecodedChannelOperationKind::Deposit | DecodedChannelOperationKind::Withdraw => {
+            (None, None, Vec::new(), None, None)
+        }
+    };
+    ChannelOperationMatch {
+        path: path.to_owned(),
+        operation_type,
+        channel_id: Some(channel_id),
+        slot,
+        block_hash,
+        tx_hash: Some(transaction_hash),
+        label: None,
+        balance: None,
+        tip: None,
+        withdraw_threshold,
+        key_count,
+        key_values,
+        parent,
+        signer,
+        value: value.clone(),
     }
 }
 
@@ -643,6 +707,56 @@ mod tests {
                 .and_then(|summary| summary.last_operation_type.as_deref()),
             Some("ChannelConfig")
         );
+    }
+
+    #[test]
+    fn canonical_scan_uses_strict_decoder_and_normalizes_identity() -> anyhow::Result<()> {
+        let channel = "A".repeat(64);
+        let transaction = "B".repeat(64);
+        let value = json!({
+            "blocks": [{
+                "header": { "slot": 51, "id": "block-c" },
+                "transactions": [{
+                    "mantle_tx": {
+                        "hash": format!("0x{transaction}"),
+                        "ops": [{
+                            "opcode": "0x10",
+                            "payload": {
+                                "channel": format!("0x{channel}"),
+                                "keys": ["key-a", "key-b"],
+                                "withdraw_threshold": 2
+                            }
+                        }]
+                    }
+                }]
+            }]
+        });
+
+        let matches = extract_channel_operations(&value);
+        let matched = matches
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("canonical Channel operation was not extracted"))?;
+        let expected_channel = "a".repeat(64);
+        let expected_transaction = "b".repeat(64);
+
+        anyhow::ensure!(matches.len() == 1, "unexpected canonical match count");
+        anyhow::ensure!(
+            matched.channel_id.as_deref() == Some(expected_channel.as_str()),
+            "Channel identity was not normalized"
+        );
+        anyhow::ensure!(
+            matched.tx_hash.as_deref() == Some(expected_transaction.as_str()),
+            "transaction identity was not normalized"
+        );
+        anyhow::ensure!(
+            matched.withdraw_threshold.as_deref() == Some("2"),
+            "withdraw threshold was not decoded"
+        );
+        anyhow::ensure!(
+            matched.key_values == ["key-a", "key-b"],
+            "configuration keys were not decoded"
+        );
+        Ok(())
     }
 
     #[test]

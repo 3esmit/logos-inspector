@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 use crate::support::time::now_millis;
 
 use super::policy::RuntimeOperationPolicy;
+use super::request::RuntimeOperationRequest;
 use super::spec::OperationExclusiveGroup;
 
 pub(super) type RuntimeOperationRegistry = Arc<Mutex<HashMap<String, RuntimeOperationRecord>>>;
@@ -56,6 +57,7 @@ pub(super) struct RuntimeOperationEvent {
 #[derive(Debug)]
 pub(super) struct RuntimeOperationRecord {
     pub(super) operation: RuntimeOperation,
+    pub(super) restart_request: Option<RuntimeOperationRequest>,
     pub(super) events: Vec<RuntimeOperationEvent>,
     pub(super) cancel_requested: Arc<AtomicBool>,
 }
@@ -313,6 +315,9 @@ pub(super) fn test_runtime_operation_record(
     exclusive_group: Option<OperationExclusiveGroup>,
     cancel_requested: Arc<AtomicBool>,
 ) -> RuntimeOperationRecord {
+    let restart_request = super::spec::OperationMethod::from_str(method).and_then(|method| {
+        RuntimeOperationRequest::from_call(method, Value::Array(Vec::new()), "Test operation").ok()
+    });
     RuntimeOperationRecord {
         operation: RuntimeOperation {
             operation_id: operation_id.to_owned(),
@@ -334,6 +339,7 @@ pub(super) fn test_runtime_operation_record(
             started_at: 1,
             updated_at: 1,
         },
+        restart_request,
         events: Vec::new(),
         cancel_requested,
     }

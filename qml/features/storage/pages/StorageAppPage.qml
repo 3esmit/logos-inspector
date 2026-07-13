@@ -95,8 +95,8 @@ ColumnLayout {
         StatusChip {
             theme: root.theme
             label: qsTr("Active")
-            value: root.model.activeStorageStatusText()
-            tone: root.model.activeStorageTone()
+            value: root.model.operation.statusText
+            tone: root.model.operation.tone
             Layout.fillWidth: true
         }
     }
@@ -289,7 +289,7 @@ ColumnLayout {
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Cache")
-                    enabled: !root.model.busy && !root.model.storageOperationBusy() && root.model.storageActionEnabled("cache", [{ key: "cid", label: qsTr("CID"), value: cidField.text.trim() }])
+                    enabled: !root.model.busy && !root.model.operation.busy && root.model.storageActionEnabled("cache", [{ key: "cid", label: qsTr("CID"), value: cidField.text.trim() }])
                     Layout.preferredWidth: 104
                     onClicked: {
                         root.model.confirmStorage("storageFetch", [cidField.text.trim()], qsTr("Cache CID"))
@@ -301,7 +301,7 @@ ColumnLayout {
                     theme: root.theme
                     text: qsTr("Download")
                     primary: true
-                    enabled: !root.model.busy && !root.model.storageOperationBusy() && root.model.storageActionEnabled("download", [{ key: "cid", label: qsTr("CID"), value: cidField.text.trim() }, { key: "path", label: qsTr("Save path"), value: cidDestination.text.trim() }])
+                    enabled: !root.model.busy && !root.model.operation.busy && root.model.storageActionEnabled("download", [{ key: "cid", label: qsTr("CID"), value: cidField.text.trim() }, { key: "path", label: qsTr("Save path"), value: cidDestination.text.trim() }])
                     Layout.preferredWidth: 124
                     onClicked: {
                         root.model.confirmStorage("storageDownloadToUrl", [cidField.text.trim(), cidDestination.text.trim(), localOnly.checked], qsTr("Download CID"))
@@ -415,7 +415,7 @@ ColumnLayout {
                     theme: root.theme
                     text: qsTr("Upload")
                     primary: true
-                    enabled: !root.model.busy && !root.model.storageOperationBusy() && root.model.storageActionEnabled("upload", [{ key: "path", label: qsTr("File path"), value: uploadPath.text.trim() }])
+                    enabled: !root.model.busy && !root.model.operation.busy && root.model.storageActionEnabled("upload", [{ key: "path", label: qsTr("File path"), value: uploadPath.text.trim() }])
                     Layout.preferredWidth: 112
                     onClicked: {
                         root.model.confirmStorage("storageUploadUrl", [uploadPath.text.trim(), root.model.chunkSizeValue(transferChunkSize.text)], qsTr("Upload file"))
@@ -426,7 +426,7 @@ ColumnLayout {
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Download")
-                    enabled: !root.model.busy && !root.model.storageOperationBusy() && root.model.storageActionEnabled("download", [{ key: "cid", label: qsTr("CID"), value: downloadCid.text.trim() }, { key: "path", label: qsTr("Download path"), value: downloadPath.text.trim() }])
+                    enabled: !root.model.busy && !root.model.operation.busy && root.model.storageActionEnabled("download", [{ key: "cid", label: qsTr("CID"), value: downloadCid.text.trim() }, { key: "path", label: qsTr("Download path"), value: downloadPath.text.trim() }])
                     Layout.preferredWidth: 124
                     onClicked: {
                         root.model.confirmStorage("storageDownloadToUrl", [downloadCid.text.trim(), downloadPath.text.trim(), false], qsTr("Download file"))
@@ -437,7 +437,7 @@ ColumnLayout {
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Remove")
-                    enabled: !root.model.busy && !root.model.storageOperationBusy() && root.model.storageActionEnabled("remove", [{ key: "cid", label: qsTr("CID"), value: downloadCid.text.trim() }])
+                    enabled: !root.model.busy && !root.model.operation.busy && root.model.storageActionEnabled("remove", [{ key: "cid", label: qsTr("CID"), value: downloadCid.text.trim() }])
                     Layout.preferredWidth: 112
                     onClicked: {
                         root.model.confirmStorage("storageRemove", [downloadCid.text.trim()], qsTr("Remove CID"))
@@ -451,24 +451,24 @@ ColumnLayout {
             }
 
             StatusMessage {
-                visible: root.model.activeStorageOperationKnown()
+                visible: root.model.operation.known
                 theme: root.theme
-                tone: root.model.activeStorageTone()
-                title: root.model.activeStorageStatusText()
+                tone: root.model.operation.tone
+                title: root.model.operation.statusText
                 message: root.model.activeStorageDetailText()
                 Layout.fillWidth: true
             }
 
             RowLayout {
-                visible: root.model.activeStorageOperationRunning()
+                visible: root.model.operation.running
                 spacing: root.theme.gapSmall
                 Layout.fillWidth: true
 
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Cancel")
-                    visible: root.model.activeStorageOperationCancelable()
-                    enabled: root.model.activeStorageOperationCancelable()
+                    visible: root.model.operation.cancelable
+                    enabled: root.model.operation.cancelable
                     Layout.preferredWidth: 112
                     onClicked: root.model.cancelStorageOperation()
                 }
@@ -497,7 +497,7 @@ ColumnLayout {
                 Layout.fillWidth: true
 
                 Repeater {
-                    model: root.model.operationRows()
+                    model: root.model.operation.rows
 
                     delegate: OperationHistoryRow {
                         required property var modelData
@@ -517,10 +517,10 @@ ColumnLayout {
         id: storageConfirm
 
         theme: root.theme
-        title: root.model.pendingLabel
+        title: root.model.pendingOperation.label
         message: qsTr("This will call the configured Storage source and may change local node state or local files.")
-        confirmText: root.model.pendingLabel
-        confirmEnabled: root.model.pendingMethod.length > 0
+        confirmText: root.model.pendingOperation.label
+        confirmEnabled: root.model.pendingOperation.method.length > 0
         onAccepted: root.model.runPendingStorage()
     }
 

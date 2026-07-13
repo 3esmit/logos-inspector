@@ -3,11 +3,11 @@ use serde_json::Value;
 use tokio::runtime::Runtime;
 
 use crate::{
-    bedrock_wallet_balance as inspect_bedrock_wallet_balance,
     local_wallet_instruction_plan as inspect_local_wallet_instruction_plan,
     local_wallet_instruction_preview as inspect_local_wallet_instruction_preview,
-    local_wallet_profile_status as inspect_local_wallet_profile_status, support::args::Args,
-    wallet::detected_wallet_profile,
+    local_wallet_profile_status as inspect_local_wallet_profile_status,
+    support::args::Args,
+    wallet::{bedrock_wallet_balance as inspect_bedrock_wallet_balance, detected_wallet_profile},
 };
 
 use super::super::value::to_value;

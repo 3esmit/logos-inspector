@@ -1,5 +1,6 @@
 use anyhow::{Result, bail};
 
+use super::adapters::{adapter_for, adapters_for_profile};
 use super::model::{LocalNodeActionRequest, LocalNodesState, NodeAction, NodeKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,22 +69,11 @@ impl LocalNodeWorkflow {
 
 #[must_use]
 pub(super) fn node_set_for_profile(profile: &str) -> Vec<NodeKind> {
-    if normalized_profile(profile) == "local" {
-        vec![
-            NodeKind::Bedrock,
-            NodeKind::Sequencer,
-            NodeKind::Indexer,
-            NodeKind::Storage,
-            NodeKind::Messaging,
-        ]
-    } else {
-        vec![
-            NodeKind::Bedrock,
-            NodeKind::Indexer,
-            NodeKind::Storage,
-            NodeKind::Messaging,
-        ]
-    }
+    let profile = normalized_profile(profile);
+    adapters_for_profile(profile)
+        .into_iter()
+        .map(|adapter| adapter.kind())
+        .collect()
 }
 
 #[must_use]
@@ -115,24 +105,7 @@ pub(super) fn available_actions_for(
         return Vec::new();
     }
 
-    let mut actions = match kind {
-        NodeKind::Sequencer => vec![
-            NodeAction::Install,
-            NodeAction::Start,
-            NodeAction::Stop,
-            NodeAction::Uninstall,
-        ],
-        NodeKind::Storage | NodeKind::Messaging => vec![
-            NodeAction::Initialize,
-            NodeAction::Start,
-            NodeAction::Stop,
-            NodeAction::Uninstall,
-        ],
-        NodeKind::Bedrock => vec![NodeAction::Start, NodeAction::Stop],
-        NodeKind::Indexer => Vec::new(),
-    };
-    actions.push(NodeAction::Purge);
-    actions
+    adapter_for(kind).workflow_actions().to_vec()
 }
 
 #[must_use]

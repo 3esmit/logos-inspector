@@ -18,12 +18,150 @@ use crate::inspection::catalog::{
     CatalogSnapshot, CatalogSnapshotOrigin, ZoneCatalogRecord, ZoneEvidenceKind,
 };
 use crate::{
-    inspection::sources::{ZoneSourceAgreement, project_zone_sources},
+    inspection::sources::{ZoneSourceAgreement, ZoneSourceProjection, project_zone_sources},
     source_routing::channel_sources::{
         ChannelSourceConfig, ChannelSourceMonitorSnapshot, ChannelSourceTarget,
         PersistedSequencerAttestation,
     },
 };
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ZoneProjectionSnapshot {
+    network_scope: Option<NetworkScope>,
+    verification: CatalogVerificationState,
+    configs: Vec<ChannelSourceConfig>,
+    observations: ChannelSourceMonitorSnapshot,
+    zones: BTreeMap<String, ProjectedZone>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProjectedZone {
+    summary: ZoneSummary,
+    detail: ZoneDetail,
+    sources: ZoneSourceProjection,
+}
+
+impl Default for ZoneProjectionSnapshot {
+    fn default() -> Self {
+        Self {
+            network_scope: None,
+            verification: CatalogVerificationState::Empty,
+            configs: Vec::new(),
+            observations: ChannelSourceMonitorSnapshot::default(),
+            zones: BTreeMap::new(),
+        }
+    }
+}
+
+impl ZoneProjectionSnapshot {
+    #[must_use]
+    pub(crate) fn project(
+        catalog: Option<&CatalogSnapshot>,
+        configs: Vec<ChannelSourceConfig>,
+        observations: ChannelSourceMonitorSnapshot,
+        verification: CatalogVerificationState,
+    ) -> Self {
+        let Some(catalog) = catalog else {
+            return Self {
+                network_scope: None,
+                verification,
+                configs,
+                observations,
+                zones: BTreeMap::new(),
+            };
+        };
+        let configs_by_channel = configs
+            .iter()
+            .filter(|config| config.network_scope == catalog.metadata.network_scope)
+            .map(|config| (config.channel_id.as_str(), config))
+            .collect::<BTreeMap<_, _>>();
+        let records_by_channel = catalog
+            .zones
+            .iter()
+            .map(|record| (record.channel_id.as_str(), record))
+            .collect::<BTreeMap<_, _>>();
+        let zones = project_catalog_zones(catalog, &configs, verification)
+            .into_iter()
+            .map(|mut summary| {
+                let channel_id = summary.channel_id.clone();
+                let config = configs_by_channel.get(channel_id.as_str()).copied();
+                let record = records_by_channel.get(channel_id.as_str()).copied();
+                let sources =
+                    project_zone_sources(summary.kind(), &channel_id, config, &observations);
+                if let ZoneFacts::SequencerZone { l2_zone, .. } = &mut summary.facts {
+                    sources.apply_to_l2_zone(l2_zone);
+                    summary.activity_detail.last_l2_block_id = l2_zone.latest_block_id;
+                }
+                let detail =
+                    project_joined_detail(catalog, summary.clone(), record, config, &sources, 0);
+                (
+                    channel_id,
+                    ProjectedZone {
+                        summary,
+                        detail,
+                        sources,
+                    },
+                )
+            })
+            .collect();
+        Self {
+            network_scope: Some(catalog.metadata.network_scope.clone()),
+            verification,
+            configs,
+            observations,
+            zones,
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn network_scope(&self) -> Option<&NetworkScope> {
+        self.network_scope.as_ref()
+    }
+
+    #[must_use]
+    pub(crate) const fn verification(&self) -> CatalogVerificationState {
+        self.verification
+    }
+
+    #[must_use]
+    pub(crate) fn configs(&self) -> &[ChannelSourceConfig] {
+        &self.configs
+    }
+
+    #[must_use]
+    pub(crate) const fn observations(&self) -> &ChannelSourceMonitorSnapshot {
+        &self.observations
+    }
+
+    pub(crate) fn summaries(&self) -> impl Iterator<Item = &ZoneSummary> {
+        self.zones.values().map(|zone| &zone.summary)
+    }
+
+    #[must_use]
+    pub(crate) fn summary(&self, channel_id: &str) -> Option<&ZoneSummary> {
+        self.zones.get(channel_id).map(|zone| &zone.summary)
+    }
+
+    #[must_use]
+    pub(crate) fn summary_map(&self) -> BTreeMap<String, ZoneSummary> {
+        self.zones
+            .iter()
+            .map(|(channel_id, zone)| (channel_id.clone(), zone.summary.clone()))
+            .collect()
+    }
+
+    #[must_use]
+    pub(crate) fn detail(&self, channel_id: &str, detail_revision: u64) -> Option<ZoneDetail> {
+        let mut detail = self.zones.get(channel_id)?.detail.clone();
+        detail.detail_revision = detail_revision;
+        Some(detail)
+    }
+
+    #[must_use]
+    pub(crate) fn sources(&self, channel_id: &str) -> Option<&ZoneSourceProjection> {
+        self.zones.get(channel_id).map(|zone| &zone.sources)
+    }
+}
 
 #[must_use]
 pub fn project_catalog_zones(
@@ -77,20 +215,15 @@ pub fn project_catalog_zones_with_sources(
     source_observations: &ChannelSourceMonitorSnapshot,
     verification_state: CatalogVerificationState,
 ) -> Vec<ZoneSummary> {
-    let mut zones = project_catalog_zones(snapshot, source_configs, verification_state);
-    for zone in &mut zones {
-        let config = source_configs.iter().find(|config| {
-            config.network_scope == snapshot.metadata.network_scope
-                && config.channel_id == zone.channel_id
-        });
-        let projection =
-            project_zone_sources(zone.kind(), &zone.channel_id, config, source_observations);
-        if let ZoneFacts::SequencerZone { l2_zone, .. } = &mut zone.facts {
-            projection.apply_to_l2_zone(l2_zone);
-            zone.activity_detail.last_l2_block_id = l2_zone.latest_block_id;
-        }
-    }
-    zones
+    ZoneProjectionSnapshot::project(
+        Some(snapshot),
+        source_configs.to_vec(),
+        source_observations.clone(),
+        verification_state,
+    )
+    .summaries()
+    .cloned()
+    .collect()
 }
 
 #[must_use]
@@ -102,23 +235,23 @@ pub fn project_catalog_zone_detail(
     channel_id: &str,
     detail_revision: u64,
 ) -> Option<ZoneDetail> {
-    let summary = project_catalog_zones_with_sources(
-        snapshot,
-        source_configs,
-        source_observations,
+    ZoneProjectionSnapshot::project(
+        Some(snapshot),
+        source_configs.to_vec(),
+        source_observations.clone(),
         verification_state,
     )
-    .into_iter()
-    .find(|summary| summary.channel_id == channel_id)?;
-    let record = snapshot
-        .zones
-        .iter()
-        .find(|record| record.channel_id == channel_id);
-    let config = source_configs.iter().find(|config| {
-        config.network_scope == snapshot.metadata.network_scope && config.channel_id == channel_id
-    });
-    let source_projection =
-        project_zone_sources(summary.kind(), channel_id, config, source_observations);
+    .detail(channel_id, detail_revision)
+}
+
+fn project_joined_detail(
+    snapshot: &CatalogSnapshot,
+    summary: ZoneSummary,
+    record: Option<&ZoneCatalogRecord>,
+    config: Option<&ChannelSourceConfig>,
+    source_projection: &ZoneSourceProjection,
+    detail_revision: u64,
+) -> ZoneDetail {
     let l1_keys = summary
         .sequencer_committee()
         .map_or_else(Vec::new, |committee| committee.members.clone());
@@ -140,15 +273,15 @@ pub fn project_catalog_zone_detail(
             .evidence
         },
     );
-    Some(ZoneDetail {
+    ZoneDetail {
         l1_channel_snapshot: L1ChannelSnapshot {
             channel_tip: record.and_then(|record| record.l1_channel.tip_hash.clone()),
             keys: l1_keys,
             observed_at_slot: record.map(|record| record.snapshot_provenance.observed_slot),
         },
         channel_source_config: project_source_config(config),
-        source_observations: source_projection.observations,
-        source_agreement: source_projection.agreement,
+        source_observations: source_projection.observations.clone(),
+        source_agreement: source_projection.agreement.clone(),
         classification_evidence,
         activity_counts: ZoneActivityCounts {
             l1_operations: record.map_or(0, |record| record.classification.channel_operations),
@@ -158,7 +291,7 @@ pub fn project_catalog_zone_detail(
         },
         summary,
         detail_revision,
-    })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -170,8 +303,19 @@ pub enum ZoneKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActiveZoneContextFields {
+    pub network_scope: NetworkScope,
+    pub channel_id: String,
+    pub zone_kind: ZoneKind,
+    pub selected_sequencer_source_id: Option<String>,
+    pub indexer_source_id: Option<String>,
+    pub source_config_revision: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ZoneSummary {
     pub channel_id: String,
+    pub active_zone_context_fields: ActiveZoneContextFields,
     pub display: ZoneDisplay,
     pub l1_channel: L1ChannelSummary,
     pub settlement_link: SettlementLinkSummary,
@@ -633,6 +777,12 @@ fn project_catalog_record(
     };
     ZoneSummary {
         channel_id: record.channel_id.clone(),
+        active_zone_context_fields: project_active_zone_context_fields(
+            snapshot,
+            &record.channel_id,
+            classification.kind,
+            config,
+        ),
         display: project_display(&record.channel_id, record.observed_label.as_deref()),
         settlement_link: project_settlement_link(classification.kind, config),
         activity_state: project_activity_state(classification.kind, config, &l1_channel),
@@ -678,6 +828,12 @@ fn project_configured_channel(
     };
     ZoneSummary {
         channel_id: config.channel_id.clone(),
+        active_zone_context_fields: project_active_zone_context_fields(
+            snapshot,
+            &config.channel_id,
+            kind,
+            Some(config),
+        ),
         display: project_display(&config.channel_id, None),
         settlement_link: project_settlement_link(kind, Some(config)),
         activity_state: project_activity_state(kind, Some(config), &l1_channel),
@@ -685,6 +841,25 @@ fn project_configured_channel(
         provenance: project_provenance(snapshot, verification_state, None),
         l1_channel,
         facts,
+    }
+}
+
+fn project_active_zone_context_fields(
+    snapshot: &CatalogSnapshot,
+    channel_id: &str,
+    zone_kind: ZoneKind,
+    config: Option<&ChannelSourceConfig>,
+) -> ActiveZoneContextFields {
+    ActiveZoneContextFields {
+        network_scope: snapshot.metadata.network_scope.clone(),
+        channel_id: channel_id.to_owned(),
+        zone_kind,
+        selected_sequencer_source_id: config
+            .and_then(|config| config.selected_sequencer_source_id.clone()),
+        indexer_source_id: config
+            .and_then(|config| config.indexer_source.as_ref())
+            .map(|source| source.source_id.clone()),
+        source_config_revision: config.map_or(0, |config| config.config_revision),
     }
 }
 

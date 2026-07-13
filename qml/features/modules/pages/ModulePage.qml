@@ -6,6 +6,7 @@ import QtQuick.Layouts
 import "../../../components"
 import "../../../state"
 import "../../../state/modules/ModuleReportPresentation.js" as ModuleReportPresentation
+import "../../../state/source_operations/NodeOperationRequest.js" as NodeOperationRequest
 import "../../../theme"
 import "../../../utils/UiFormat.js" as UiFormat
 
@@ -18,7 +19,7 @@ ColumnLayout {
     property string title: ""
     property string subtitle: ""
     readonly property bool hasResponse: root.model.pageHasOutput(root.moduleKind)
-    readonly property var responseValue: root.hasResponse ? root.model.resultValue : null
+    readonly property var responseValue: root.hasResponse ? root.model.shell.resultValue : null
     readonly property var responseProbeModel: root.responseProbeRows()
 
     width: parent ? parent.width : 900
@@ -96,15 +97,15 @@ ColumnLayout {
     Panel {
         visible: root.hasResponse
         theme: root.theme
-        title: root.model.resultIsError ? qsTr("Module error") : qsTr("Module response")
+        title: root.model.shell.resultIsError ? qsTr("Module error") : qsTr("Module response")
 
         RowLayout {
             spacing: root.theme.gapSmall
             Layout.fillWidth: true
 
             Text {
-                text: root.model.resultTitle
-                color: root.model.resultIsError ? root.theme.error : root.theme.textMuted
+                text: root.model.shell.resultTitle
+                color: root.model.shell.resultIsError ? root.theme.error : root.theme.textMuted
                 textFormat: Text.PlainText
                 font.pixelSize: root.theme.secondaryText
                 font.weight: Font.Medium
@@ -115,23 +116,23 @@ ColumnLayout {
             ActionButton {
                 theme: root.theme
                 text: qsTr("Clear")
-                enabled: root.model.resultText.length > 0 || root.model.resultValue !== null
+                enabled: root.model.shell.resultText.length > 0 || root.model.shell.resultValue !== null
                 Layout.preferredWidth: 84
-                onClicked: root.model.clearResult()
+                onClicked: root.model.shell.clearResult()
             }
         }
 
         StatusMessage {
-            visible: root.model.resultIsError
+            visible: root.model.shell.resultIsError
             theme: root.theme
             tone: "warning"
             title: qsTr("Call failed")
-            message: root.model.resultText
+            message: root.model.shell.resultText
             Layout.fillWidth: true
         }
 
         GridLayout {
-            visible: !root.model.resultIsError
+            visible: !root.model.shell.resultIsError
             columns: root.width < 760 ? 2 : 4
             columnSpacing: root.theme.gap
             rowSpacing: root.theme.gap
@@ -173,16 +174,16 @@ ColumnLayout {
         }
 
         ProbeList {
-            visible: !root.model.resultIsError && root.responseProbeModel.length > 0
+            visible: !root.model.shell.resultIsError && root.responseProbeModel.length > 0
             theme: root.theme
             rows: root.responseProbeModel
         }
 
         TextArea {
             readOnly: true
-            text: root.model.resultText.length ? root.model.resultText : qsTr("No response body.")
+            text: root.model.shell.resultText.length ? root.model.shell.resultText : qsTr("No response body.")
             wrapMode: TextArea.Wrap
-            color: root.model.resultText.length ? root.theme.text : root.theme.textMuted
+            color: root.model.shell.resultText.length ? root.theme.text : root.theme.textMuted
             selectedTextColor: root.theme.selectedText
             selectionColor: root.theme.accent
             textFormat: Text.PlainText
@@ -193,13 +194,13 @@ ColumnLayout {
             topPadding: 10
             bottomPadding: 10
             Layout.fillWidth: true
-            Layout.preferredHeight: root.model.resultIsError ? 120 : 220
+            Layout.preferredHeight: root.model.shell.resultIsError ? 120 : 220
 
             background: Rectangle {
-                color: root.model.resultIsError ? root.theme.errorMuted : root.theme.field
+                color: root.model.shell.resultIsError ? root.theme.errorMuted : root.theme.field
                 radius: root.theme.radius
                 border.width: 1
-                border.color: root.model.resultIsError ? root.theme.error : root.theme.outline
+                border.color: root.model.shell.resultIsError ? root.theme.error : root.theme.outline
             }
         }
     }
@@ -263,7 +264,7 @@ ColumnLayout {
                     theme: root.theme
                     text: qsTr("Refresh node")
                     primary: true
-                    enabled: !root.model.busy
+                    enabled: !root.model.shell.busy
                     Layout.fillWidth: true
                     accessibleName: qsTr("Refresh blockchain node")
                     onClicked: root.model.callInspector("blockchainNode", root.model.blockchainArgs([]), qsTr("Blockchain node"))
@@ -272,7 +273,7 @@ ColumnLayout {
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Load blocks")
-                    enabled: !root.model.busy && slotFrom.text.trim().length > 0 && slotTo.text.trim().length > 0
+                    enabled: !root.model.shell.busy && slotFrom.text.trim().length > 0 && slotTo.text.trim().length > 0
                     Layout.fillWidth: true
                     accessibleName: qsTr("Load blockchain blocks")
                     onClicked: root.model.callInspector("blockchainBlocks", root.model.blockchainArgs([slotFrom.text, slotTo.text]), qsTr("Blockchain blocks"))
@@ -281,7 +282,7 @@ ColumnLayout {
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Load block")
-                    enabled: !root.model.busy && blockId.text.trim().length > 0
+                    enabled: !root.model.shell.busy && blockId.text.trim().length > 0
                     Layout.fillWidth: true
                     accessibleName: qsTr("Load blockchain block")
                     onClicked: root.model.callInspector("blockchainBlock", root.model.blockchainArgs([blockId.text.trim()]), qsTr("Blockchain block"))
@@ -313,11 +314,12 @@ ColumnLayout {
                     theme: root.theme
                     text: qsTr("REST report")
                     primary: true
-                    enabled: !root.model.busy
+                    enabled: !root.model.shell.busy
                     Layout.fillWidth: true
                     accessibleName: qsTr("Run storage source report")
                     onClicked: root.model.callInspector("storageSourceReport", [
-                        root.model.effectiveStorageSourceMode(root.model.storageSourceMode),
+                        root.model.sourceRouting.effectiveStorageSourceMode(
+                            root.model.storageSourceMode),
                         root.model.configuredStorageRestUrl(),
                         root.model.storageMetricsUrl,
                         cid.text.trim(),
@@ -328,7 +330,7 @@ ColumnLayout {
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Check")
-                    enabled: !root.model.busy
+                    enabled: !root.model.shell.busy
                     Layout.fillWidth: true
                     accessibleName: qsTr("Query storage status")
                     onClicked: root.model.queryNetworkConnection("storage", true, cid.text.trim().length > 0)
@@ -337,10 +339,16 @@ ColumnLayout {
                 ActionButton {
                     theme: root.theme
                     text: qsTr("CID exists")
-                    enabled: !root.model.busy && cid.text.trim().length > 0
+                    enabled: !root.model.shell.busy && cid.text.trim().length > 0
                     Layout.fillWidth: true
                     accessibleName: qsTr("Check storage CID existence")
-                    onClicked: root.model.callInspector("storageExists", [root.model.effectiveStorageSourceMode(root.model.storageSourceMode), root.model.configuredStorageRestUrl(), cid.text.trim()], qsTr("Storage CID"))
+                    onClicked: {
+                        root.model.callInspector("storageExists", [NodeOperationRequest.envelope(
+                            root.model.sourceRouting.storageOperationAdapter(),
+                            { cid: cid.text.trim() },
+                            false
+                        )], qsTr("Storage CID"))
+                    }
                 }
             }
         }
@@ -362,16 +370,18 @@ ColumnLayout {
                     theme: root.theme
                     text: qsTr("REST report")
                     primary: true
-                    enabled: !root.model.busy
+                    enabled: !root.model.shell.busy
                     Layout.fillWidth: true
                     accessibleName: qsTr("Run delivery source report")
-                    onClicked: root.model.callInspector("deliverySourceReport", root.model.deliverySourceReportArgs(), qsTr("Messaging report"))
+                    onClicked: root.model.callInspector("deliverySourceReport",
+                        root.model.sourceRouting.deliverySourceReportArgs(),
+                        qsTr("Messaging report"))
                 }
 
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Check")
-                    enabled: !root.model.busy
+                    enabled: !root.model.shell.busy
                     Layout.fillWidth: true
                     accessibleName: qsTr("Query delivery status")
                     onClicked: root.model.queryNetworkConnection("messaging", true)
@@ -380,7 +390,7 @@ ColumnLayout {
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Settings")
-                    enabled: !root.model.busy
+                    enabled: !root.model.shell.busy
                     Layout.fillWidth: true
                     accessibleName: qsTr("Open delivery settings")
                     onClicked: root.model.openSettings("network", "messaging")
@@ -402,7 +412,7 @@ ColumnLayout {
                 theme: root.theme
                 text: qsTr("Core status")
                 primary: true
-                enabled: !root.model.busy
+                enabled: !root.model.shell.busy
                 Layout.fillWidth: true
                 accessibleName: qsTr("Fetch LogosCore status")
                 onClicked: root.model.callInspector("logoscoreStatus", [], qsTr("LogosCore status"))
@@ -411,7 +421,7 @@ ColumnLayout {
             ActionButton {
                 theme: root.theme
                 text: qsTr("Settings")
-                enabled: !root.model.busy
+                enabled: !root.model.shell.busy
                 Layout.fillWidth: true
                 accessibleName: qsTr("Open network settings")
                 onClicked: root.model.openSettings("network", "blockchain")

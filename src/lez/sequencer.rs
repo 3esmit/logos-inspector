@@ -5,13 +5,10 @@ use sequencer_service_rpc::{RpcClient as _, SequencerClientBuilder};
 use serde_json::{Value, json};
 
 use super::{
-    BlockSummary, ProgramIdEntry, TransactionIdlInspectionReport, TransactionInspectionReport,
-    TransactionSummary, TransactionTraceReport, block::verify_block_content_hash,
-    decode_sequencer_block, inspect_transaction, inspect_transaction_summary_with_idl,
-    programs::program_entries, summarize_block, summarize_transaction, trace_transaction_summary,
-    trace_transaction_summary_with_idl,
+    BlockSummary, ProgramIdEntry, TransactionSummary, block::verify_block_content_hash,
+    decode_sequencer_block, programs::program_entries, summarize_block, summarize_transaction,
 };
-use crate::{parse_hash, raw_json_rpc_optional_result};
+use crate::{parse_hash, rpc::raw_json_rpc_optional_result};
 
 pub async fn sequencer_health(endpoint: &str) -> Result<()> {
     sequencer_client(endpoint)?
@@ -144,46 +141,6 @@ pub async fn sequencer_transaction(
 ) -> Result<Option<TransactionSummary>> {
     let tx = fetch_sequencer_transaction(endpoint, tx_hash).await?;
     Ok(tx.as_ref().map(summarize_transaction))
-}
-
-pub async fn sequencer_transaction_inspection(
-    endpoint: &str,
-    tx_hash: &str,
-) -> Result<Option<TransactionInspectionReport>> {
-    let tx = fetch_sequencer_transaction(endpoint, tx_hash).await?;
-    Ok(tx.as_ref().map(inspect_transaction))
-}
-
-pub async fn sequencer_transaction_inspection_with_idl(
-    endpoint: &str,
-    tx_hash: &str,
-    idl_json: &str,
-) -> Result<Option<TransactionIdlInspectionReport>> {
-    let tx = fetch_sequencer_transaction(endpoint, tx_hash).await?;
-    tx.as_ref()
-        .map(|tx| inspect_transaction_summary_with_idl(&summarize_transaction(tx), idl_json))
-        .transpose()
-}
-
-pub async fn sequencer_transaction_trace(
-    endpoint: &str,
-    tx_hash: &str,
-) -> Result<Option<TransactionTraceReport>> {
-    let tx = fetch_sequencer_transaction(endpoint, tx_hash).await?;
-    Ok(tx
-        .as_ref()
-        .map(|tx| trace_transaction_summary(&summarize_transaction(tx))))
-}
-
-pub async fn sequencer_transaction_trace_with_idl(
-    endpoint: &str,
-    tx_hash: &str,
-    idl_json: &str,
-) -> Result<Option<TransactionTraceReport>> {
-    let tx = fetch_sequencer_transaction(endpoint, tx_hash).await?;
-    tx.as_ref()
-        .map(|tx| trace_transaction_summary_with_idl(&summarize_transaction(tx), idl_json))
-        .transpose()
 }
 
 pub(crate) fn sequencer_client(endpoint: &str) -> Result<sequencer_service_rpc::SequencerClient> {

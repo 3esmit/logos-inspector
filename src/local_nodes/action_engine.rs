@@ -8,7 +8,7 @@ use anyhow::{Context as _, Result};
 use crate::support::{confirmation::ConfirmationPolicy, state_store::config_dir};
 
 use super::action_workspace::LocalNodeActionWorkspace;
-use super::commands::has_static_module_contract;
+use super::adapters::{NodeStatusContext, adapter_for};
 use super::lifecycle::{
     LifecycleTarget, acquire_state_lock, apply_event, cancel_event_watch, has_event_contract,
     start_event_watch,
@@ -210,72 +210,43 @@ impl LocalNodeReportProjector {
         tools: &LocalNodeTools,
         kind: NodeKind,
     ) -> LocalNodeStatus {
+        let adapter = adapter_for(kind);
         let config = active.and_then(|devnet| node_config(devnet, kind));
         let process_id = config.and_then(|node| node.process_id);
         let process_running = process_id.is_some_and(|pid| self.process_is_alive(pid));
-        let runtime_running = runtime.is_some_and(LogoscoreRuntimeProfile::is_running);
-        let installed = match kind {
-            NodeKind::Sequencer => {
-                config.is_some_and(|node| node.installed)
-                    || self.tool_backing_available(tools, kind)
-            }
-            NodeKind::Indexer => false,
-            _ => runtime_running && config.is_some_and(|node| node.installed),
-        };
-        let install_state = if installed {
-            "installed"
-        } else {
-            "needs_configuration"
-        };
-        let run_state = if kind == NodeKind::Sequencer {
-            if process_running {
-                "running"
-            } else if process_id.is_some() {
-                "stale_pid"
-            } else {
-                "stopped"
-            }
-        } else if !runtime_running {
-            if config.is_some_and(|node| node.installed) {
-                "stopped"
-            } else {
-                "not_initialized"
-            }
-        } else {
-            config
-                .map(|node| node.lifecycle_state.as_str())
-                .unwrap_or("not_initialized")
-        };
+        let executable_available = adapter
+            .required_executable()
+            .is_some_and(|command| find_command(command).is_some());
+        let status = adapter.project_status(NodeStatusContext {
+            config,
+            runtime,
+            tools,
+            process_running,
+            executable_available,
+            workflow_actions: workflow.node_actions(kind),
+        });
         let last_action = last_operation_for(state, kind);
         LocalNodeStatus {
             kind,
             key: kind.as_str().to_owned(),
-            label: kind.label().to_owned(),
-            install_state: install_state.to_owned(),
-            run_state: run_state.to_owned(),
+            label: adapter.label().to_owned(),
+            install_state: status.install_state.to_owned(),
+            run_state: status.run_state.to_owned(),
             endpoint: config
                 .and_then(|node| node.endpoint.clone())
-                .or_else(|| kind.endpoint(kind.default_port())),
+                .or_else(|| adapter.endpoint(adapter.default_port())),
             data_dir: config.map(|node| node.data_dir.clone()),
             config_path: config.map(|node| node.config_path.clone()),
             package_path: config.and_then(|node| node.package_path.clone()),
             process_id,
             last_action,
-            available_actions: available_node_actions(workflow, kind, config, runtime),
-            detail: node_status_detail(kind, install_state, run_state, runtime, tools),
+            available_actions: status.available_actions,
+            detail: status.detail,
         }
     }
 
     fn process_is_alive(self, pid: u32) -> bool {
         process_is_alive(pid)
-    }
-
-    fn tool_backing_available(self, tools: &LocalNodeTools, kind: NodeKind) -> bool {
-        match kind {
-            NodeKind::Sequencer => find_command("sequencer_service").is_some(),
-            NodeKind::Indexer => false,
-            _ => tools.logoscore.available,
-        }
     }
 
     fn tool_statuses(self, runtime: Option<&LogoscoreRuntimeProfile>) -> LocalNodeTools {
@@ -312,71 +283,6 @@ fn runtime_actions(profile: &str, runtime: Option<&LogoscoreRuntimeProfile>) -> 
         Some(runtime) if runtime.is_managed() => vec![NodeAction::StartRuntime],
         None => vec![NodeAction::StartRuntime],
         Some(_) => Vec::new(),
-    }
-}
-
-fn available_node_actions(
-    workflow: LocalNodeWorkflow,
-    kind: NodeKind,
-    config: Option<&LocalNodeConfigRecord>,
-    runtime: Option<&LogoscoreRuntimeProfile>,
-) -> Vec<NodeAction> {
-    if !has_static_module_contract(kind) {
-        return Vec::new();
-    }
-    if kind == NodeKind::Sequencer {
-        return workflow.node_actions(kind);
-    }
-    if !runtime.is_some_and(|profile| profile.is_managed() && profile.is_running())
-        || config.is_none()
-        || config.is_some_and(|node| node.lifecycle_state.is_pending())
-    {
-        return Vec::new();
-    }
-    let mut actions = workflow.node_actions(kind);
-    if matches!(kind, NodeKind::Storage | NodeKind::Messaging) {
-        if config.is_some_and(|node| node.installed) {
-            actions.retain(|action| *action != NodeAction::Initialize);
-        } else {
-            actions.retain(|action| *action == NodeAction::Initialize);
-        }
-    }
-    actions
-}
-
-fn node_status_detail(
-    kind: NodeKind,
-    install_state: &str,
-    run_state: &str,
-    runtime: Option<&LogoscoreRuntimeProfile>,
-    tools: &LocalNodeTools,
-) -> String {
-    if install_state == "needs_configuration" {
-        if !has_static_module_contract(kind) {
-            return "no verified logoscore module lifecycle contract".to_owned();
-        }
-        if kind == NodeKind::Sequencer {
-            return "sequencer_service not found".to_owned();
-        }
-        if !tools.logoscore.available {
-            return "logoscore not found".to_owned();
-        }
-        if runtime.is_none() {
-            return "start an Inspector-managed logoscore runtime".to_owned();
-        }
-        if !runtime.is_some_and(LogoscoreRuntimeProfile::is_running) {
-            return "Inspector-managed logoscore daemon is stopped".to_owned();
-        }
-        return "module context is not initialized".to_owned();
-    }
-    if run_state == "stale_pid" {
-        return "recorded process id is not running".to_owned();
-    }
-    match run_state {
-        "starting" | "stopping" => "waiting for module lifecycle event".to_owned(),
-        "unknown" => "module dispatch has no verified lifecycle observer".to_owned(),
-        "failed" => "latest module lifecycle event reported failure".to_owned(),
-        _ => "ready".to_owned(),
     }
 }
 

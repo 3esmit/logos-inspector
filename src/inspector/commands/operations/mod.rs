@@ -14,6 +14,7 @@ use tokio::runtime::Runtime;
 
 use crate::support::time::now_millis;
 
+mod backup_import;
 mod blockchain;
 mod delivery;
 mod dispatch;
@@ -28,6 +29,7 @@ mod storage;
 mod wallet;
 mod wallet_args;
 
+use backup_import::{BackupImportCoordinator, LocalBackupImportStore};
 use dispatch::execute_runtime_operation;
 #[cfg(test)]
 pub(crate) use entrypoint::operation_bridge_command_names;
@@ -52,6 +54,7 @@ use record::test_runtime_operation_record;
 pub(crate) struct RuntimeOperations {
     registry: RuntimeOperationRegistry,
     next_operation_id: AtomicU64,
+    backup_import: BackupImportCoordinator,
 }
 
 impl Default for RuntimeOperations {
@@ -59,6 +62,7 @@ impl Default for RuntimeOperations {
         Self {
             registry: Arc::new(Mutex::new(HashMap::new())),
             next_operation_id: AtomicU64::new(1),
+            backup_import: BackupImportCoordinator::new(Arc::new(LocalBackupImportStore)),
         }
     }
 }
@@ -74,6 +78,7 @@ impl RuntimeOperations {
         runtime: &Runtime,
         request: RuntimeOperationRequest,
     ) -> Result<Value> {
+        let operation_permit = self.backup_import.operation_permit(request.method())?;
         let operation_id = format!(
             "{}-{}-{}",
             request.domain,
@@ -118,11 +123,13 @@ impl RuntimeOperations {
                 operation_id.clone(),
                 RuntimeOperationRecord {
                     operation,
+                    restart_request: Some(request.clone()),
                     events: Vec::new(),
                     cancel_requested: Arc::clone(&cancel_requested),
                 },
             );
         }
+        drop(operation_permit);
         update_runtime_operation(&self.registry, &operation_id, |record| {
             push_runtime_operation_event_locked(
                 record,
@@ -152,6 +159,27 @@ impl RuntimeOperations {
 
     pub(crate) fn status(&self, operation_id: &str) -> Result<Value> {
         self.value(operation_id)
+    }
+
+    fn preview_backup_import(
+        &self,
+        backup_catalog_id: &str,
+        wallet_profile: Option<&Value>,
+        options: Option<&Value>,
+    ) -> Result<Value> {
+        self.backup_import
+            .preview(self, backup_catalog_id, wallet_profile, options)
+    }
+
+    fn apply_backup_import(
+        &self,
+        runtime: &Runtime,
+        backup_catalog_id: &str,
+        wallet_profile: Option<&Value>,
+        options: Option<&Value>,
+    ) -> Result<Value> {
+        self.backup_import
+            .apply(runtime, self, backup_catalog_id, wallet_profile, options)
     }
 
     pub(crate) fn events(&self, operation_id: &str, after_seq: u64) -> Result<Value> {
@@ -220,7 +248,7 @@ impl RuntimeOperations {
     ) -> Result<Value> {
         let operation = self.start(
             runtime,
-            RuntimeOperationRequest::from_call(method, args, label),
+            RuntimeOperationRequest::from_call(method, args, label)?,
         )?;
         let operation_id = operation
             .get("operationId")
@@ -289,6 +317,15 @@ impl RuntimeOperations {
     fn remove(&self, operation_id: &str) {
         if let Ok(mut operations) = self.registry.lock() {
             operations.remove(operation_id);
+        }
+    }
+
+    #[cfg(test)]
+    fn with_backup_import_store(store: Arc<dyn backup_import::BackupImportStore>) -> Self {
+        Self {
+            registry: Arc::new(Mutex::new(HashMap::new())),
+            next_operation_id: AtomicU64::new(1),
+            backup_import: BackupImportCoordinator::new(store),
         }
     }
 
@@ -369,7 +406,31 @@ impl OperationRunner for RuntimeOperationRunner<'_> {
     fn start_operation(&self, method: OperationMethod, args: Value, label: &str) -> Result<Value> {
         self.operations.start(
             self.runtime,
-            RuntimeOperationRequest::from_call(method, args, label),
+            RuntimeOperationRequest::from_call(method, args, label)?,
+        )
+    }
+
+    fn preview_backup_import(
+        &self,
+        backup_catalog_id: &str,
+        wallet_profile: Option<&Value>,
+        options: Option<&Value>,
+    ) -> Result<Value> {
+        self.operations
+            .preview_backup_import(backup_catalog_id, wallet_profile, options)
+    }
+
+    fn apply_backup_import(
+        &self,
+        backup_catalog_id: &str,
+        wallet_profile: Option<&Value>,
+        options: Option<&Value>,
+    ) -> Result<Value> {
+        self.operations.apply_backup_import(
+            self.runtime,
+            backup_catalog_id,
+            wallet_profile,
+            options,
         )
     }
 }

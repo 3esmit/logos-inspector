@@ -1,6 +1,8 @@
 use serde_json::Value;
 
-use super::{CapabilityBuildMode, catalog::default_connector, runtime_evidence};
+use super::{
+    CapabilityBuildMode, catalog::default_connector, evidence::CapabilityEvidenceSnapshot,
+};
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct CapabilityRuntimeInputs {
@@ -18,8 +20,7 @@ pub(super) struct CapabilityRuntimeInputs {
     pub(super) wallet_home_configured: bool,
     pub(super) local_nodes_enabled: bool,
     pub(super) local_devnet_enabled: bool,
-    source_reports: Option<Value>,
-    diagnostics_reports: Option<Value>,
+    evidence: CapabilityEvidenceSnapshot,
 }
 
 impl CapabilityRuntimeInputs {
@@ -31,8 +32,18 @@ impl CapabilityRuntimeInputs {
     }
 
     pub(super) fn from_value(value: Option<&Value>) -> Self {
+        Self::from_value_with_evidence(value, CapabilityEvidenceSnapshot::default())
+    }
+
+    pub(super) fn from_value_with_evidence(
+        value: Option<&Value>,
+        evidence: CapabilityEvidenceSnapshot,
+    ) -> Self {
         let Some(value) = value.filter(|value| value.is_object()) else {
-            return Self::default();
+            return Self {
+                evidence,
+                ..Self::default()
+            };
         };
         Self {
             provided: true,
@@ -55,8 +66,7 @@ impl CapabilityRuntimeInputs {
             wallet_home_configured: bool_input(value, "wallet_home_configured"),
             local_nodes_enabled: bool_input(value, "local_nodes_enabled"),
             local_devnet_enabled: bool_input(value, "local_devnet_enabled"),
-            source_reports: value.get("source_reports").cloned(),
-            diagnostics_reports: value.get("diagnostics_reports").cloned(),
+            evidence,
         }
     }
 
@@ -126,26 +136,15 @@ impl CapabilityRuntimeInputs {
     }
 
     pub(super) fn source_report_for(&self, scope: &str) -> Option<&Value> {
-        let reports = self.source_reports.as_ref()?.as_object()?;
-        let keys: &[&str] = match scope {
-            "l1" => &["l1", "blockchain", "node"],
-            "storage" => &["storage", "storage_source"],
-            "delivery" => &[
-                "delivery",
-                "delivery_source",
-                "messaging",
-                "messaging_source",
-            ],
-            _ => &[scope],
-        };
-        keys.iter()
-            .find_map(|key| reports.get(*key).filter(|value| value.is_object()))
+        self.evidence
+            .source_report(scope)
+            .filter(|value| value.is_object())
     }
 
-    pub(super) fn diagnostics_report(&self) -> Option<&Value> {
-        self.diagnostics_reports
-            .as_ref()
-            .filter(|value| runtime_evidence::report_has_runtime_evidence(value))
+    pub(super) fn diagnostics_report(&self) -> Option<Value> {
+        self.evidence
+            .diagnostics_report()
+            .filter(super::runtime_evidence::report_has_runtime_evidence)
     }
 }
 

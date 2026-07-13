@@ -15,6 +15,7 @@ ColumnLayout {
     required property Theme theme
     required property AppModel model
     readonly property var deliveryState: root.model.deliveryApp
+    readonly property var socialIdentityView: root.model.social.identitiesView()
 
     width: parent ? parent.width : 900
     spacing: root.theme.gapLarge
@@ -53,7 +54,7 @@ ColumnLayout {
         StatusChip {
             theme: root.theme
             label: qsTr("Source")
-            value: root.model.deliverySourceLabel()
+            value: root.model.sourceRouting.deliverySourceLabel()
             tone: root.deliveryDataSource() ? "success" : "warning"
             Layout.fillWidth: true
         }
@@ -86,7 +87,7 @@ ColumnLayout {
             theme: root.theme
             label: qsTr("Last")
             value: root.deliveryState.lastOperation
-            tone: root.model.resultIsError && root.model.resultOwner === root.model.currentView ? "error" : "neutral"
+            tone: root.model.shell.resultIsError && root.model.shell.resultOwner === root.model.shell.currentView ? "error" : "neutral"
             Layout.fillWidth: true
         }
     }
@@ -108,15 +109,15 @@ ColumnLayout {
     Panel {
         visible: root.model.pageHasOutput("messaging")
         theme: root.theme
-        title: root.model.resultIsError ? qsTr("Operation error") : qsTr("Operation result")
+        title: root.model.shell.resultIsError ? qsTr("Operation error") : qsTr("Operation result")
 
         RowLayout {
             spacing: root.theme.gapSmall
             Layout.fillWidth: true
 
             Text {
-                text: root.model.resultTitle
-                color: root.model.resultIsError ? root.theme.error : root.theme.textMuted
+                text: root.model.shell.resultTitle
+                color: root.model.shell.resultIsError ? root.theme.error : root.theme.textMuted
                 textFormat: Text.PlainText
                 font.pixelSize: root.theme.secondaryText
                 font.weight: Font.Medium
@@ -128,15 +129,15 @@ ColumnLayout {
                 theme: root.theme
                 text: qsTr("Clear")
                 Layout.preferredWidth: 84
-                onClicked: root.model.clearResult()
+                onClicked: root.model.shell.clearResult()
             }
         }
 
         TextArea {
             readOnly: true
-            text: root.model.resultText.length ? root.model.resultText : qsTr("No response body.")
+            text: root.model.shell.resultText.length ? root.model.shell.resultText : qsTr("No response body.")
             wrapMode: TextArea.Wrap
-            color: root.model.resultIsError ? root.theme.warning : root.theme.text
+            color: root.model.shell.resultIsError ? root.theme.warning : root.theme.text
             selectedTextColor: root.theme.selectedText
             selectionColor: root.theme.accent
             textFormat: Text.PlainText
@@ -150,10 +151,10 @@ ColumnLayout {
             Layout.preferredHeight: 220
 
             background: Rectangle {
-                color: root.model.resultIsError ? root.theme.errorMuted : root.theme.field
+                color: root.model.shell.resultIsError ? root.theme.errorMuted : root.theme.field
                 radius: root.theme.radius
                 border.width: 1
-                border.color: root.model.resultIsError ? root.theme.error : root.theme.outline
+                border.color: root.model.shell.resultIsError ? root.theme.error : root.theme.outline
             }
         }
     }
@@ -245,10 +246,10 @@ ColumnLayout {
         id: deliveryConfirm
 
         theme: root.theme
-        title: root.deliveryState.pendingLabel
+        title: root.deliveryState.pendingOperation.label
         message: qsTr("This will call the configured Delivery source and may change node relay state.")
-        confirmText: root.deliveryState.pendingLabel
-        confirmEnabled: root.deliveryState.pendingMethod.length > 0
+        confirmText: root.deliveryState.pendingOperation.label
+        confirmEnabled: root.deliveryState.pendingOperation.method.length > 0
         onAccepted: root.runPendingDelivery()
     }
 
@@ -277,7 +278,7 @@ ColumnLayout {
                     theme: root.theme
                     text: qsTr("Create")
                     primary: true
-                    enabled: !root.model.busy && !root.activeDeliveryOperationRunning() && root.deliveryModuleSource() && nodeConfig.text.trim().length > 0
+                    enabled: !root.model.shell.busy && !root.activeDeliveryOperationRunning() && root.deliveryModuleSource() && nodeConfig.text.trim().length > 0
                     Layout.preferredWidth: 112
                     onClicked: root.confirmDelivery("deliveryCreateNode", [nodeConfig.text.trim()], qsTr("Create node"))
                 }
@@ -285,7 +286,7 @@ ColumnLayout {
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Start")
-                    enabled: !root.model.busy && !root.activeDeliveryOperationRunning() && root.deliveryModuleSource()
+                    enabled: !root.model.shell.busy && !root.activeDeliveryOperationRunning() && root.deliveryModuleSource()
                     Layout.preferredWidth: 96
                     onClicked: root.confirmDelivery("deliveryStart", [], qsTr("Start node"))
                 }
@@ -293,7 +294,7 @@ ColumnLayout {
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Stop")
-                    enabled: !root.model.busy && !root.activeDeliveryOperationRunning() && root.deliveryModuleSource()
+                    enabled: !root.model.shell.busy && !root.activeDeliveryOperationRunning() && root.deliveryModuleSource()
                     Layout.preferredWidth: 96
                     onClicked: root.confirmDelivery("deliveryStop", [], qsTr("Stop node"))
                 }
@@ -301,7 +302,7 @@ ColumnLayout {
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Settings")
-                    enabled: !root.model.busy
+                    enabled: !root.model.shell.busy
                     Layout.preferredWidth: 112
                     onClicked: root.model.openSettings("network", "messaging")
                 }
@@ -346,17 +347,18 @@ ColumnLayout {
                         primary: true
                         Layout.preferredWidth: 104
                         onClicked: {
-                            root.model.createSocialIdentity(identityName.text)
+                            root.model.social.createIdentity(identityName.text)
                             identityName.text = ""
                         }
                     }
 
                     ActionButton {
                         theme: root.theme
-                        text: root.model.socialIdentityDefaultMode === "manual" ? qsTr("Manual default") : qsTr("Per-topic default")
-                        selected: root.model.socialIdentityDefaultMode !== "manual"
+                        text: root.socialIdentityView.defaultMode === "manual" ? qsTr("Manual default") : qsTr("Per-topic default")
+                        selected: root.socialIdentityView.defaultMode !== "manual"
                         Layout.preferredWidth: 172
-                        onClicked: root.model.setSocialIdentityDefaultMode(root.model.socialIdentityDefaultMode === "manual" ? "perConversation" : "manual")
+                        onClicked: root.model.social.setIdentityDefaultMode(
+                            root.socialIdentityView.defaultMode === "manual" ? "perConversation" : "manual")
                     }
 
                     Item {
@@ -392,7 +394,7 @@ ColumnLayout {
                             color: root.theme.field
                             radius: root.theme.radius
                             border.width: 1
-                            border.color: root.model.selectedSocialIdentityKey === String(identityFrame.modelData.key || "") ? root.theme.accent : root.theme.outlineMuted
+                            border.color: root.model.social.selectedSocialIdentityKey === String(identityFrame.modelData.key || "") ? root.theme.accent : root.theme.outlineMuted
                         }
 
                         contentItem: RowLayout {
@@ -425,10 +427,10 @@ ColumnLayout {
 
                             ActionButton {
                                 theme: root.theme
-                                text: root.model.selectedSocialIdentityKey === String(identityFrame.modelData.key || "") ? qsTr("Selected") : qsTr("Use")
-                                selected: root.model.selectedSocialIdentityKey === String(identityFrame.modelData.key || "")
+                                text: root.model.social.selectedSocialIdentityKey === String(identityFrame.modelData.key || "") ? qsTr("Selected") : qsTr("Use")
+                                selected: root.model.social.selectedSocialIdentityKey === String(identityFrame.modelData.key || "")
                                 Layout.preferredWidth: 104
-                                onClicked: root.model.selectSocialIdentity(identityFrame.modelData.key)
+                                onClicked: root.model.social.selectIdentity(identityFrame.modelData.key)
                             }
                         }
                     }
@@ -526,7 +528,7 @@ ColumnLayout {
                     theme: root.theme
                     text: qsTr("Query Store")
                     primary: true
-                    enabled: !root.model.busy && root.deliveryRestSource()
+                    enabled: !root.model.shell.busy && root.deliveryRestSource()
                     Layout.preferredWidth: 132
                     onClicked: root.runDelivery("deliveryStoreQuery", [
                         storePeer.text.trim(),
@@ -567,7 +569,7 @@ ColumnLayout {
                 }
 
                 Repeater {
-                    model: root.deliveryState.operationRows()
+                    model: root.deliveryState.operation.rows
 
                     delegate: OperationHistoryRow {
                         required property var modelData
@@ -626,12 +628,11 @@ ColumnLayout {
     }
 
     function identityRows() {
-        const revision = root.model.socialIdentityRevision
-        return root.model.socialIdentityRows()
+        return root.socialIdentityView.rows
     }
 
     function identityStatusText() {
-        if (root.model.socialIdentityDefaultMode === "manual") {
+        if (root.socialIdentityView.defaultMode === "manual") {
             return qsTr("Manual mode reuses the selected pseudonym until changed.")
         }
         return qsTr("Per-topic mode creates a new pseudonym for each new conversation and reuses it for that topic.")
@@ -667,7 +668,7 @@ ColumnLayout {
     }
 
     function activeDeliveryOperationRunning() {
-        return root.deliveryState.activeDeliveryOperationRunning()
+        return root.deliveryState.operation.running
     }
 
     function messageControlsEnabled(topic) {

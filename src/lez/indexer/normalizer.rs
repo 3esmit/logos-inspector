@@ -95,6 +95,7 @@ pub(crate) fn verified_indexer_block_report(value: &Value) -> anyhow::Result<Ind
     Ok(report)
 }
 
+#[cfg(test)]
 pub(crate) fn next_indexer_blocks_cursor(blocks: &[IndexerBlockReport]) -> Option<u64> {
     blocks.iter().filter_map(|block| block.block_id).min()
 }

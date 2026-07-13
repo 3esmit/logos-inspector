@@ -1,4 +1,5 @@
 .import "SharedIdlTransport.js" as SharedIdlTransport
+.import "../source_operations/NodeOperationRequest.js" as NodeOperationRequest
 
 function socialCommentTopic(root, layer, entity, id) {
     return socialRuntimeString(root, "socialCommentTopic", [String(layer || ""), String(entity || ""), String(id || "")])
@@ -38,6 +39,16 @@ function socialRuntimeString(root, method, args) {
     return response && response.ok === true && typeof response.value === "string" ? response.value : ""
 }
 
+function copyMap(value) {
+    const result = ({})
+    const source = value && typeof value === "object" ? value : ({})
+    const keys = Object.keys(source)
+    for (let i = 0; i < keys.length; ++i) {
+        result[keys[i]] = source[keys[i]]
+    }
+    return result
+}
+
 function socialComments(root, topic) {
     const state = socialCommentState(root, topic)
     return Array.isArray(state.rows) ? state.rows : []
@@ -55,67 +66,81 @@ function socialCommentState(root, topic) {
     }
 }
 
+function commentView(root, topic) {
+    const revision = root.socialCommentRevision
+    const state = socialCommentState(root, topic)
+    const readGate = socialCommentReadGate(root, topic)
+    const writeGate = socialCommentWriteGate(root, topic)
+    return {
+        revision: revision,
+        state: state,
+        rows: Array.isArray(state.rows) ? state.rows : [],
+        readGate: readGate,
+        writeGate: writeGate,
+        readError: socialGateDetailText(root, readGate, qsTr("Comments are unavailable.")),
+        writeError: socialGateDetailText(root, writeGate, qsTr("Posting is unavailable."))
+    }
+}
+
 function loadSocialComments(root, topic, reset, pageSize, expectedAccountId) {
-    with (root) {
-        const key = String(topic || "").trim()
-        if (!key.length || !root.socialCommentReadAvailable(key)) {
-            return false
-        }
-        const current = root.socialCommentStateForTopic(key)
-        const cursor = reset === true ? "" : String(current.cursor || "")
-        setSocialCommentState(key, {
-            rows: reset === true ? [] : root.socialComments(key),
+    const key = String(topic || "").trim()
+    if (!key.length || !socialCommentReadAvailable(root, key)) {
+        return false
+    }
+    const current = socialCommentState(root, key)
+    const cursor = reset === true ? "" : String(current.cursor || "")
+    setSocialCommentState(root, key, {
+        rows: reset === true ? [] : socialComments(root, key),
+        cursor: cursor,
+        loading: true,
+        error: "",
+        exhausted: false
+    })
+
+    const response = querySocialStore(root, key, cursor, pageSize, qsTr("Comments"))
+    if (!response.ok) {
+        setSocialCommentState(root, key, {
+            rows: reset === true ? [] : socialComments(root, key),
             cursor: cursor,
-            loading: true,
-            error: "",
+            loading: false,
+            error: response.error || qsTr("Comment query failed."),
+            exhausted: response.storeUnavailable === true
+        })
+        return false
+    }
+
+    const page = root.gateway.requestModule(
+        root.inspectorModule,
+        "socialCommentPageFromStore",
+        [key, response.value, String(expectedAccountId || "")],
+        qsTr("Comments"),
+        false,
+        false
+    )
+    if (!page.ok) {
+        setSocialCommentState(root, key, {
+            rows: reset === true ? [] : socialComments(root, key),
+            cursor: cursor,
+            loading: false,
+            error: page.error || qsTr("Comment decode failed."),
             exhausted: false
         })
-
-        const response = querySocialStore(root, key, cursor, pageSize, qsTr("Comments"))
-        if (!response.ok) {
-            setSocialCommentState(key, {
-                rows: reset === true ? [] : root.socialComments(key),
-                cursor: cursor,
-                loading: false,
-                error: response.error || qsTr("Comment query failed."),
-                exhausted: response.storeUnavailable === true
-            })
-            return false
-        }
-
-        const page = root.requestModule(
-            inspectorModule,
-            "socialCommentPageFromStore",
-            [key, response.value, String(expectedAccountId || "")],
-            qsTr("Comments"),
-            false,
-            false
-        )
-        if (!page.ok) {
-            setSocialCommentState(key, {
-                rows: reset === true ? [] : root.socialComments(key),
-                cursor: cursor,
-                loading: false,
-                error: page.error || qsTr("Comment decode failed."),
-                exhausted: false
-            })
-            return false
-        }
-
-        const pageValue = page.value && typeof page.value === "object" ? page.value : ({})
-        const incoming = Array.isArray(pageValue.rows) ? pageValue.rows : []
-        const existing = reset === true ? [] : root.socialComments(key)
-        const merged = root.mergeSocialCommentRows(existing, incoming)
-        const nextCursor = String(pageValue.cursor || "")
-        setSocialCommentState(key, {
-            rows: merged,
-            cursor: nextCursor,
-            loading: false,
-            error: "",
-            exhausted: incoming.length === 0 || !nextCursor.length || nextCursor === cursor
-        })
-        return true
+        return false
     }
+
+    const pageValue = page.value && typeof page.value === "object" ? page.value : ({})
+    const incoming = Array.isArray(pageValue.rows) ? pageValue.rows : []
+    const existing = reset === true ? [] : socialComments(root, key)
+    const merged = mergeSocialCommentRows(existing, incoming)
+    const nextCursor = String(pageValue.cursor || "")
+    setSocialCommentState(root, key, {
+        rows: merged,
+        cursor: nextCursor,
+        loading: false,
+        error: "",
+        exhausted: incoming.length === 0 || !nextCursor.length || nextCursor === cursor
+    })
+    return true
 }
 
 function setSocialCommentState(root, topic, state) {
@@ -123,7 +148,7 @@ function setSocialCommentState(root, topic, state) {
     if (!key.length) {
         return
     }
-    const next = root.copyMap(root.socialCommentState || {})
+    const next = copyMap(root.socialCommentState || {})
     next[key] = state || {}
     root.socialCommentState = next
     root.socialCommentRevision += 1
@@ -139,13 +164,13 @@ function applyIncomingComment(root, event) {
     if (!topic.length) {
         return false
     }
-    const current = root.socialCommentStateForTopic(topic)
+    const current = socialCommentState(root, topic)
     const row = socialCommentRowFromIncomingEvent(root, incoming)
     if (!row) {
         return false
     }
-    root.setSocialCommentState(topic, {
-        rows: root.mergeSocialCommentRows(current.rows || [], [row]),
+    setSocialCommentState(root, topic, {
+        rows: mergeSocialCommentRows(current.rows || [], [row]),
         cursor: String(current.cursor || ""),
         loading: false,
         error: "",
@@ -218,7 +243,7 @@ function socialCommentRowsFromMessages(root, messages) {
     return rows
 }
 
-function mergeSocialCommentRows(root, existingRows, incomingRows) {
+function mergeSocialCommentRows(existingRows, incomingRows) {
     const rows = Array.isArray(existingRows) ? existingRows.slice(0) : []
     const seen = {}
     for (let i = 0; i < rows.length; ++i) {
@@ -258,7 +283,7 @@ function socialMessageRowKey(message) {
     ].join("|")
 }
 
-function socialStoreCursor(root, value) {
+function socialStoreCursor(value) {
     return firstStoreCursor(value, 0)
 }
 
@@ -295,7 +320,7 @@ function firstStoreCursor(value, depth) {
     return ""
 }
 
-function lastSocialMessageCursor(root, messages) {
+function lastSocialMessageCursor(messages) {
     const rows = Array.isArray(messages) ? messages : []
     for (let i = rows.length - 1; i >= 0; --i) {
         const cursor = String(rows[i] && rows[i].cursor ? rows[i].cursor : "")
@@ -307,72 +332,76 @@ function lastSocialMessageCursor(root, messages) {
 }
 
 function postSocialComment(root, topic, body, identityKey, entityRef) {
-    with (root) {
-        const key = String(topic || "").trim()
-        const text = String(body || "").trim()
-        if (!key.length || !text.length || !root.socialCommentSendAvailable(key)) {
-            return false
-        }
-        const identity = root.socialIdentityForConversation(key, identityKey)
-        if (!identity || !String(identity.key || "").length) {
-            return false
-        }
-        const createdAt = new Date().toISOString()
-        const zoneScope = root.zoneSocialScope(entityRef)
-        if (key.indexOf("/lez/") === 0 && !zoneScope) {
-            return false
-        }
-        const payload = {
-            kind: "comment",
-            version: zoneScope ? 2 : 1,
-            identity: root.socialIdentityPayload(identity),
-            body: text,
-            created_at: createdAt,
-            conversation_id: key
-        }
-        if (zoneScope) {
-            payload.scope = zoneScope
-        }
-        const response = root.callInspector(
-            "deliverySend",
-            root.socialDeliveryArgs([key, JSON.stringify(payload)]),
-            qsTr("Post comment")
-        )
-        if (!response.ok) {
-            return false
-        }
-        const current = root.socialCommentStateForTopic(key)
-        const row = {
-            key: "local|" + createdAt + "|" + String(identity.key || ""),
-            cursor: "",
-            topic: key,
-            identity: payload.identity,
-            displayName: socialIdentityDisplayName(payload.identity),
-            body: text,
-            createdAt: createdAt,
-            conversationId: key
-        }
-        setSocialCommentState(root, key, {
-            rows: root.mergeSocialCommentRows(current.rows || [], [row]),
-            cursor: String(current.cursor || ""),
-            loading: false,
-            error: "",
-            exhausted: current.exhausted === true
-        })
-        return true
+    const key = String(topic || "").trim()
+    const text = String(body || "").trim()
+    if (!key.length || !text.length || !socialCommentSendAvailable(root, key)) {
+        return false
     }
+    const identity = socialIdentityForConversation(root, key, identityKey)
+    if (!identity || !String(identity.key || "").length) {
+        return false
+    }
+    const createdAt = new Date().toISOString()
+    const zoneScope = zoneSocialScope(entityRef)
+    if (key.indexOf("/lez/") === 0 && !zoneScope) {
+        return false
+    }
+    const payload = {
+        kind: "comment",
+        version: zoneScope ? 2 : 1,
+        identity: socialIdentityPayload(identity),
+        body: text,
+        created_at: createdAt,
+        conversation_id: key
+    }
+    if (zoneScope) {
+        payload.scope = zoneScope
+    }
+    const response = root.gateway.callInspector(
+        "deliverySend",
+        socialDeliveryArgs(root, "deliverySend", [key, JSON.stringify(payload)]),
+        qsTr("Post comment")
+    )
+    if (!response.ok) {
+        return false
+    }
+    const current = socialCommentState(root, key)
+    const localOrdinal = Array.isArray(current.rows) ? current.rows.length : 0
+    const row = {
+        key: [
+            "local",
+            createdAt,
+            String(identity.key || ""),
+            String(localOrdinal)
+        ].join("|"),
+        cursor: "",
+        topic: key,
+        identity: payload.identity,
+        displayName: socialIdentityDisplayName(payload.identity),
+        body: text,
+        createdAt: createdAt,
+        conversationId: key
+    }
+    setSocialCommentState(root, key, {
+        rows: mergeSocialCommentRows(current.rows || [], [row]),
+        cursor: String(current.cursor || ""),
+        loading: false,
+        error: "",
+        exhausted: current.exhausted === true
+    })
+    return true
 }
 
-function socialDeliveryArgs(root, extra) {
-    return [
-        root.effectiveMessagingSourceMode(root.messagingSourceMode),
-        root.configuredMessagingRestUrl(),
+function socialDeliveryArgs(root, method, extra) {
+    return [NodeOperationRequest.envelope(
+        root.sourceRouting.deliveryOperationAdapter(),
+        NodeOperationRequest.deliveryPayload(method, extra),
         root.messagingMutatingDiagnosticsEnabled === true
-    ].concat(extra || [])
+    )]
 }
 
 function socialMessageSourceAvailable(root) {
-    const mode = String(root.effectiveMessagingSourceMode(root.messagingSourceMode) || "").toLowerCase()
+    const mode = String(root.gateway.effectiveMessagingSourceMode(root.messagingSourceMode) || "").toLowerCase()
     return mode === "rest" || mode === "module"
 }
 
@@ -415,14 +444,14 @@ function socialGateWithTopic(root, gate, topic) {
     if (!state.enabled) {
         return state
     }
-    if (!root.validSocialTopic(key)) {
+    if (!validSocialTopic(root, key)) {
         return socialGateWithInputMissing(state, "social.topic.valid", qsTr("Valid social topic"))
     }
     return state
 }
 
 function socialStoreGate(root) {
-    return normalizedSocialGate(root.socialGate("comments.read"))
+    return normalizedSocialGate(root.gateway.socialGate("comments.read"))
 }
 
 function socialCommentReadGate(root, topic) {
@@ -430,15 +459,15 @@ function socialCommentReadGate(root, topic) {
 }
 
 function socialCommentWriteGate(root, topic) {
-    return socialGateWithTopic(root, root.socialGate("comments.write"), topic)
+    return socialGateWithTopic(root, root.gateway.socialGate("comments.write"), topic)
 }
 
 function socialSharedIdlReadGate(root) {
-    return normalizedSocialGate(root.socialGate("shared_idl.read"))
+    return normalizedSocialGate(root.gateway.socialGate("shared_idl.read"))
 }
 
 function socialSharedIdlWriteGate(root, topic) {
-    return socialGateWithTopic(root, root.socialGate("shared_idl.write"), topic)
+    return socialGateWithTopic(root, root.gateway.socialGate("shared_idl.write"), topic)
 }
 
 function socialMissingDependencyText(row) {
@@ -483,10 +512,10 @@ function querySocialStore(root, topic, cursor, pageSize, label) {
             storeUnavailable: true
         }
     }
-    return root.requestModule(
+    return root.gateway.requestModule(
         root.inspectorModule,
         "deliveryStoreQuery",
-        root.socialDeliveryArgs(["", String(topic || ""), "", String(cursor || ""), root.socialPageSize(pageSize), true, true]),
+        socialDeliveryArgs(root, "deliveryStoreQuery", ["", String(topic || ""), "", String(cursor || ""), socialPageSize(root, pageSize), true, true]),
         String(label || qsTr("Delivery Store")),
         false,
         false
@@ -581,6 +610,16 @@ function socialIdentityRows(root) {
     return rows
 }
 
+function identityView(root) {
+    const revision = root.socialIdentityRevision
+    return {
+        revision: revision,
+        rows: socialIdentityRows(root),
+        defaultMode: normalizedSocialIdentityDefaultMode(root.socialIdentityDefaultMode),
+        selectedKey: String(root.selectedSocialIdentityKey || "")
+    }
+}
+
 function createSocialIdentity(root, displayName) {
     const createdAt = new Date().toISOString()
     const index = root.socialIdentities.count + 1
@@ -595,7 +634,7 @@ function createSocialIdentity(root, displayName) {
     root.socialIdentities.append(entry)
     root.selectedSocialIdentityKey = entry.key
     root.socialIdentityRevision += 1
-    root.saveSettingsState()
+    root.gateway.saveSettingsState()
     return entry
 }
 
@@ -642,10 +681,10 @@ function socialIdentityForConversation(root, topic, key) {
         return currentIdentity
     }
     const entry = createSocialIdentity(root, "")
-    const next = root.copyMap(current)
+    const next = copyMap(current)
     next[conversation] = entry.key
     root.socialConversationIdentityKeys = next
-    root.saveSettingsState()
+    root.gateway.saveSettingsState()
     return entry
 }
 
@@ -659,13 +698,13 @@ function selectSocialIdentity(root, key) {
         return false
     }
     root.selectedSocialIdentityKey = entry.key
-    root.saveSettingsState()
+    root.gateway.saveSettingsState()
     return true
 }
 
 function setSocialIdentityDefaultMode(root, mode) {
     root.socialIdentityDefaultMode = normalizedSocialIdentityDefaultMode(mode)
-    root.saveSettingsState()
+    root.gateway.saveSettingsState()
 }
 
 function normalizedSocialIdentityDefaultMode(value) {
@@ -673,7 +712,7 @@ function normalizedSocialIdentityDefaultMode(value) {
     return text === "manual" ? "manual" : "perConversation"
 }
 
-function socialIdentityPayload(root, identity) {
+function socialIdentityPayload(identity) {
     const entry = identity || {}
     return {
         display_name: String(entry.displayName || entry.display_name || ""),
@@ -688,7 +727,7 @@ function socialIdentityDisplayName(identity) {
 
 function setSharedIdlPolicy(root, policy) {
     root.sharedIdlPolicy = normalizedSharedIdlPolicy(policy)
-    root.saveSettingsState()
+    root.gateway.saveSettingsState()
 }
 
 function normalizedSharedIdlPolicy(value) {
@@ -707,11 +746,26 @@ function normalizedSharedIdlPolicy(value) {
 
 function setSharedIdlAutoShare(root, enabled) {
     root.sharedIdlAutoShare = enabled === true
-    root.saveSettingsState()
+    root.gateway.saveSettingsState()
 }
 
 function refreshSharedIdlsForAccount(root, entityRef, dataHex, ownerProgramId) {
-    return SharedIdlTransport.refreshSharedIdlsForAccount(root, entityRef, dataHex, ownerProgramId)
+    const account = String(entityRef && entityRef.canonical_key || "").trim()
+    const entries = SharedIdlTransport.acceptedEntries(root, {
+        policy: normalizedSharedIdlPolicy(root.sharedIdlPolicy),
+        accountId: account,
+        dataHex: String(dataHex || "").trim(),
+        ownerProgramId: String(ownerProgramId || ""),
+        topic: socialZoneAccountIdlTopic(root, entityRef),
+        readEnabled: socialSharedIdlReadAvailable(root)
+    })
+    let accepted = 0
+    for (let i = 0; i < entries.length; ++i) {
+        if (applySharedIdlPolicy(root, account, entries[i])) {
+            accepted += 1
+        }
+    }
+    return accepted > 0
 }
 
 function applySharedIdlPolicy(root, accountId, entry) {
@@ -726,7 +780,7 @@ function applySharedIdlPolicy(root, accountId, entry) {
     if (policy === "autoRegister") {
         if (!idlEntryExists(root, acceptedEntry.key)) {
             root.registeredIdls.append(acceptedEntry)
-            root.saveIdlState()
+            root.gateway.saveIdlState()
         }
         root.sharedIdlRevision += 1
         return true
@@ -740,7 +794,7 @@ function acceptedSharedIdlEntryForAccount(root, accountId, entry) {
     if (!account.length || !entry) {
         return null
     }
-    const normalized = root.normalizedIdlEntry(entry, 0)
+    const normalized = root.gateway.normalizedIdlEntry(entry, 0)
     if (!normalized || String(normalized.source || "") !== "shared") {
         return null
     }
@@ -755,18 +809,18 @@ function acceptedSharedIdlEntryForAccount(root, accountId, entry) {
 }
 
 function idlEntryExists(root, key) {
-    return root.idlEntryForKey(key) !== null
+    return root.gateway.idlEntryForKey(key) !== null
 }
 
 function storeSharedIdl(root, accountId, entry) {
     const owner = String(entry && entry.programIdHex || "")
-        || root.canonicalProgramIdHex(entry && entry.programId)
-        || root.normalizedHexText(entry && entry.programId)
+        || root.gateway.canonicalProgramIdHex(entry && entry.programId)
+        || root.gateway.normalizedHexText(entry && entry.programId)
     const cacheKey = sharedIdlCacheKey(root, accountId, owner)
     if (!cacheKey.length || !entry || !String(entry.key || "").length) {
         return
     }
-    const next = root.copyMap(root.socialSharedIdls || {})
+    const next = copyMap(root.socialSharedIdls || {})
     const rows = Array.isArray(next[cacheKey]) ? next[cacheKey].slice(0) : []
     for (let i = 0; i < rows.length; ++i) {
         if (String(rows[i].key || "") === String(entry.key || "")) {
@@ -792,12 +846,12 @@ function sharedIdlEntriesForAccount(root, accountId, ownerProgramId) {
     if (policy !== "sessionOnly") {
         return []
     }
-    const owner = root.accountOwnerCacheKey(ownerProgramId)
+    const owner = root.gateway.accountOwnerCacheKey(ownerProgramId)
     const rows = sharedIdlSuggestions(root, accountId, owner)
     const result = []
     for (let i = 0; i < rows.length; ++i) {
         const entry = rows[i] || {}
-        const program = String(entry.programIdHex || "") || root.canonicalProgramIdHex(entry.programId) || root.normalizedHexText(entry.programId)
+        const program = String(entry.programIdHex || "") || root.gateway.canonicalProgramIdHex(entry.programId) || root.gateway.normalizedHexText(entry.programId)
         if (!owner.length || program === owner) {
             result.push(entry)
         }
@@ -806,9 +860,9 @@ function sharedIdlEntriesForAccount(root, accountId, ownerProgramId) {
 }
 
 function sharedIdlCacheKey(root, accountId, ownerProgramId) {
-    const zoneScope = root.zoneScopeKey()
+    const zoneScope = root.gateway.zoneScopeKey()
     const account = String(accountId || "").trim()
-    const owner = root.accountOwnerCacheKey(ownerProgramId)
+    const owner = root.gateway.accountOwnerCacheKey(ownerProgramId)
     if (!zoneScope.length || !account.length || !owner.length) {
         return ""
     }
@@ -816,7 +870,7 @@ function sharedIdlCacheKey(root, accountId, ownerProgramId) {
 }
 
 function trimZoneSharedIdls(root, values, limit) {
-    const zoneScope = root.zoneScopeKey()
+    const zoneScope = root.gateway.zoneScopeKey()
     const keys = Object.keys(values).filter(function (key) {
         return String(key).indexOf(zoneScope + "|") === 0
     }).sort()
@@ -835,9 +889,36 @@ function trimZoneSharedIdls(root, values, limit) {
 }
 
 function publishAccountIdl(root, entityRef, ownerProgramId, idlEntry) {
-    return SharedIdlTransport.publishAccountIdl(root, entityRef, ownerProgramId, idlEntry)
+    const entry = idlEntry || {}
+    const topic = socialZoneAccountIdlTopic(root, entityRef)
+    const identity = socialIdentityForConversation(root, topic, "")
+    const idlJson = String(entry.json || "")
+    return SharedIdlTransport.publish(root, {
+        accountId: String(entityRef && entityRef.canonical_key || "").trim(),
+        topic: topic,
+        scope: zoneSocialScope(entityRef),
+        identity: socialIdentityPayload(identity),
+        programId: String(ownerProgramId || entry.programIdHex || entry.programId || ""),
+        idlName: String(entry.name || root.gateway.idlNameFromJson(idlJson) || qsTr("IDL")),
+        idlJson: idlJson,
+        writeEnabled: socialSharedIdlWriteAvailable(root, topic)
+    })
 }
 
 function maybeAutoShareAccountIdl(root, entityRef, ownerProgramId, idlEntry) {
-    return SharedIdlTransport.maybeAutoShareAccountIdl(root, entityRef, ownerProgramId, idlEntry)
+    if (root.sharedIdlAutoShare !== true || !idlEntry || String(idlEntry.source || "") === "shared") {
+        return false
+    }
+    const topic = socialZoneAccountIdlTopic(root, entityRef)
+    const key = [String(entityRef && entityRef.canonical_key || ""), topic,
+        String(idlEntry.key || "")].join("|")
+    if (!topic.length || (root.socialAutoSharedIdls || {})[key] === true
+            || !publishAccountIdl(root, entityRef, ownerProgramId, idlEntry)) {
+        return false
+    }
+    const next = copyMap(root.socialAutoSharedIdls || {})
+    next[key] = true
+    root.socialAutoSharedIdls = next
+    root.gateway.saveSettingsState()
+    return true
 }

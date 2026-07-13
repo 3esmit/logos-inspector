@@ -24,6 +24,11 @@ QtObject {
         return wallet && typeof wallet.homeConfigured === "function" && wallet.homeConfigured()
     }
 
+    function actionReady(action) {
+        return wallet && typeof wallet.actionReady === "function"
+            && wallet.actionReady(String(action || "command"))
+    }
+
     function openLocalWallet(tab) {
         if (gateway && typeof gateway.openLocalWallet === "function") {
             return gateway.openLocalWallet(String(tab || "profiles"))

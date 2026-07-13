@@ -348,8 +348,9 @@ ColumnLayout {
 
     function commentTopic() {
         return root.appModel && root.entityRef
-            && typeof root.appModel.socialZoneCommentTopic === "function"
-            ? root.appModel.socialZoneCommentTopic(root.entityRef) : ""
+            && root.appModel.social
+            && typeof root.appModel.social.zoneCommentTopic === "function"
+            ? root.appModel.social.zoneCommentTopic(root.entityRef) : ""
     }
 
     function historicalTitle() {

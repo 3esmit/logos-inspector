@@ -82,11 +82,12 @@ function metadata(operationClass, affectedInputs, restartPolicy, confirmationReq
 
 function affectedInputs(operation) {
     const inputs = []
+    const adapter = operation && operation.adapter && typeof operation.adapter === "object" ? operation.adapter : ({})
+    const adapterInputs = adapter.inputs && typeof adapter.inputs === "object" ? adapter.inputs : ({})
     pushInput(inputs, "domain", operation.domain)
     pushInput(inputs, "method", operation.method)
-    pushInput(inputs, "sourceMode", operation.sourceMode)
-    pushInput(inputs, "endpoint", operation.endpoint)
-    pushInput(inputs, "module", operation.module)
+    pushInput(inputs, "sourceMode", adapter.source_mode)
+    pushInput(inputs, "endpoint", adapterInputs.rest_endpoint || adapterInputs.rpc_endpoint)
     pushInput(inputs, "cid", operation.cid)
     pushInput(inputs, "path", operation.path)
     return inputs

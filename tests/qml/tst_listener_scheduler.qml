@@ -12,10 +12,7 @@ TestCase {
 
         property bool running: false
         property int polls: 0
-
-        function activeStorageOperationRunning() {
-            return running
-        }
+        readonly property var operation: ({ running: storageState.running })
 
         function pollStorageOperation(showResult) {
             polls += 1
@@ -28,10 +25,7 @@ TestCase {
 
         property bool running: false
         property int polls: 0
-
-        function activeDeliveryOperationRunning() {
-            return running
-        }
+        readonly property var operation: ({ running: deliveryState.running })
 
         function pollDeliveryOperation(showResult) {
             polls += 1
@@ -66,7 +60,9 @@ TestCase {
         property int blockchainRefreshRate: 30
         property int messagingRefreshRate: 0
         property int storageRefreshRate: 0
-        property string currentView: "overview"
+        property QtObject shell: QtObject {
+            property string currentView: "overview"
+        }
         property bool blocksLiveEnabled: false
         property QtObject storageApp: storageState
         property QtObject deliveryApp: deliveryState
@@ -110,7 +106,7 @@ TestCase {
         fakeModel.blockchainRefreshRate = 30
         fakeModel.messagingRefreshRate = 0
         fakeModel.storageRefreshRate = 0
-        fakeModel.currentView = "overview"
+        fakeModel.shell.currentView = "overview"
         fakeModel.blocksLiveEnabled = false
         fakeModel.queriedKinds = []
         fakeModel.dashboardCalls = 0
@@ -148,7 +144,7 @@ TestCase {
         storageState.running = true
         verify(scheduler.enabled("storageOperation"))
         verify(scheduler.enabled("dashboard"))
-        fakeModel.currentView = "blocks"
+        fakeModel.shell.currentView = "blocks"
         verify(!scheduler.enabled("dashboard"))
         fakeModel.blocksLiveEnabled = true
         verify(scheduler.enabled("liveBlocks"))

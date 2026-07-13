@@ -481,6 +481,52 @@ fn configured_channels_overlay_catalog_and_materialize_before_discovery() -> Res
     Ok(())
 }
 
+#[test]
+fn joined_projection_keeps_summary_detail_and_source_context_identical() -> Result<()> {
+    let snapshot = complete_replay_catalog();
+    let channel_id = snapshot
+        .zones
+        .first()
+        .map(|record| record.channel_id.clone())
+        .ok_or_else(|| anyhow::anyhow!("catalog fixture omitted Zone"))?;
+    let config = sequencer_source_config(&snapshot.metadata.network_scope, &channel_id);
+    let projection = ZoneProjectionSnapshot::project(
+        Some(&snapshot),
+        vec![config.clone()],
+        ChannelSourceMonitorSnapshot::default(),
+        CatalogVerificationState::Verified,
+    );
+
+    let summary = projection
+        .summary(&channel_id)
+        .ok_or_else(|| anyhow::anyhow!("joined projection omitted summary"))?;
+    let detail = projection
+        .detail(&channel_id, 9)
+        .ok_or_else(|| anyhow::anyhow!("joined projection omitted detail"))?;
+    let sources = projection
+        .sources(&channel_id)
+        .ok_or_else(|| anyhow::anyhow!("joined projection omitted sources"))?;
+
+    require_equal(&detail.summary, summary, "joined detail summary")?;
+    require_equal(&detail.detail_revision, &9, "joined detail revision")?;
+    require_equal(
+        &summary.active_zone_context_fields.source_config_revision,
+        &config.config_revision,
+        "joined Active Zone config revision",
+    )?;
+    require_equal(
+        &detail.channel_source_config.config_revision,
+        &config.config_revision,
+        "joined detail config revision",
+    )?;
+    require_equal(
+        &sources.config_revision,
+        &Some(config.config_revision),
+        "joined source config revision",
+    )?;
+    Ok(())
+}
+
 fn require(condition: bool, context: &str) -> Result<()> {
     if !condition {
         bail!("unexpected {context}");

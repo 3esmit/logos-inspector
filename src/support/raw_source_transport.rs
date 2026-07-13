@@ -34,6 +34,7 @@ pub(crate) fn json_rpc_optional_result(response: &Value, method: &str) -> Result
     json_rpc_result_value(response, method).cloned()
 }
 
+#[cfg(test)]
 pub(crate) fn json_rpc_required_result(response: &Value, method: &str) -> Result<Value> {
     let value = json_rpc_result_value(response, method)?;
     if value.is_null() {

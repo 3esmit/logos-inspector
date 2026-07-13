@@ -56,7 +56,7 @@ Pane {
                 }
 
                 Text {
-                    text: root.model.statusText
+                    text: root.model.shell.statusText
                     color: root.theme.textMuted
                     elide: Text.ElideRight
                     textFormat: Text.PlainText

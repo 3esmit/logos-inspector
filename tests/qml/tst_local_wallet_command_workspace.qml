@@ -8,7 +8,9 @@ TestCase {
     QtObject {
         id: model
 
-        property bool busy: false
+        property QtObject shell: QtObject {
+            property bool busy: false
+        }
         property string walletSendFrom: "from"
         property string walletSendAmount: "5"
         property string walletSendTo: "to"
@@ -18,11 +20,11 @@ TestCase {
         property string walletAdvancedCommand: ""
         property var localWalletOperations: []
 
-        function walletProfileConfigured() { return !busy }
+        function walletProfileConfigured() { return !shell.busy }
     }
 
     function init() {
-        model.busy = false
+        model.shell.busy = false
         model.walletSendFrom = "from"
         model.walletSendAmount = "5"
         model.walletSendTo = "to"

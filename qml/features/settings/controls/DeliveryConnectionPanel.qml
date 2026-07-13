@@ -12,7 +12,7 @@ SourceSettingsPanel {
     property AppModel modelRef
     property var sourceOptions
 
-    busy: root.modelRef ? root.modelRef.busy : false
+    busy: root.modelRef ? root.modelRef.shell.busy : false
     queryAccessibleName: qsTr("Query Delivery status")
 
     SourceSettingsGrid {

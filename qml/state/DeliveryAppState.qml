@@ -17,33 +17,27 @@ QtObject {
     property bool usesRestEndpoint: false
     property bool supportsMutatingDiagnostics: false
     property string restEndpoint: ""
+    property var adapterInitialization: ({
+        source_mode: effectiveSourceMode,
+        inputs: usesRestEndpoint ? ({ rest_endpoint: restEndpoint }) : ({})
+    })
     property string moduleName: "delivery_module"
     property string networkPreset: "logos.test"
     property bool mutatingDiagnosticsEnabled: false
     property string currentTab: "messages"
     property string activeTopic: "/logos-inspector/1/chat/proto"
 
-    property string lastOperation: qsTr("None")
-    property alias pendingMethod: deliveryOperations.pendingMethod
-    property alias pendingLabel: deliveryOperations.pendingLabel
-    property alias pendingArgs: deliveryOperations.pendingArgs
-    property alias activeOperation: deliveryOperations.activeOperation
-    property alias activeOperationRevision: deliveryOperations.activeOperationRevision
-    property alias terminalOperationId: deliveryOperations.terminalOperationId
-    property alias operationLog: deliveryOperations.operationLog
-    property alias operationLogRevision: deliveryOperations.operationLogRevision
+    property alias lastOperation: deliveryOperations.lastOperation
+    readonly property var pendingOperation: deliveryOperations.confirmation
+    readonly property var operation: deliveryOperations.view
 
-    property SourceOperationFlow operationClient: SourceOperationFlow {
+    property SourceOperationSession operationSession: SourceOperationSession {
         id: deliveryOperations
 
         gateway: root.gateway
         domain: "delivery"
-        moduleName: root.moduleName
-        effectiveSourceMode: root.effectiveSourceMode
-        restEndpoint: root.restEndpoint
-        usesRestEndpoint: root.usesRestEndpoint
+        adapterInitialization: root.adapterInitialization
         mutatingDiagnosticsEnabled: root.mutatingDiagnosticsEnabled
-        sourceArgsIncludeMutatingFlag: true
         defaultLabel: qsTr("Delivery operation")
         busyError: qsTr("A delivery operation is already running.")
 
@@ -77,16 +71,16 @@ QtObject {
         return sourceTargetKind !== "none"
     }
 
-    function deliveryArgs(extra) {
-        return deliveryOperations.sourceArgs(extra)
+    function deliveryArgs(method, extra) {
+        return deliveryOperations.requestArgs(method, extra)
     }
 
     function confirmDelivery(method, args, label) {
-        deliveryOperations.confirm(method, args, label, false)
+        deliveryOperations.confirm(method, args, label)
     }
 
     function runPendingDelivery() {
-        return deliveryOperations.runPending(function (method, args, label) {
+        return deliveryOperations.runConfirmed(function (method, args, label) {
             return root.runDelivery(method, args, label)
         })
     }
@@ -96,15 +90,15 @@ QtObject {
         if (command.runtime) {
             return startDeliveryOperation(method, args, label)
         }
-        const response = gateway.call(method, deliveryArgs(args), label)
-        appendOperation(label, response)
+        const response = gateway.call(method, deliveryArgs(method, args), label)
+        deliveryOperations.appendResult(label, response)
         lastOperation = response && response.ok ? String(label || "") : qsTr("Error")
         return response
     }
 
     function startDeliveryOperation(method, args, label) {
         lastOperation = qsTr("Starting")
-        const started = deliveryOperations.startOperation(method, args, label, function (response) {
+        const started = deliveryOperations.start(method, args, label, function (response) {
             lastOperation = response && response.ok ? qsTr("Started") : qsTr("Error")
             if (response && response.ok) {
                 currentTab = "operations"
@@ -118,44 +112,12 @@ QtObject {
     }
 
     function pollDeliveryOperation(showResult) {
-        return deliveryOperations.pollOperation(showResult === true)
-    }
-
-    function appendTerminalDeliveryOperation(operation) {
-        deliveryOperations.appendTerminalOperation(operation, operationSummary(operation))
+        return deliveryOperations.poll(showResult === true)
     }
 
     function completeTerminalDeliveryOperation(operation) {
         const ok = String(operation.status || "") === "completed"
         lastOperation = ok ? qsTr("Complete") : qsTr("Stopped")
-    }
-
-    function updateActiveOperation(value) {
-        deliveryOperations.updateActiveOperation(value)
-    }
-
-    function activeDeliveryOperationRunning() {
-        return deliveryOperations.running()
-    }
-
-    function activeDeliveryOperationTerminal(operation) {
-        return deliveryOperations.terminal(operation)
-    }
-
-    function appendOperation(label, response) {
-        deliveryOperations.appendOperation(label, response)
-    }
-
-    function operationRows() {
-        return deliveryOperations.rows()
-    }
-
-    function operationPayload(value) {
-        return deliveryOperations.operationPayload(value)
-    }
-
-    function operationSummary(value) {
-        return deliveryOperations.operationSummary(value)
     }
 
     function applyModuleEvent(eventName, args) {
@@ -286,7 +248,8 @@ QtObject {
     }
 
     function messageControlsEnabled(topic) {
-        return !busy && !activeDeliveryOperationRunning() && deliveryMessageSource() && mutatingDiagnosticsEnabled && validContentTopic(topic)
+        return !busy && !deliveryOperations.view.running && deliveryMessageSource()
+            && mutatingDiagnosticsEnabled && validContentTopic(topic)
     }
 
     function validContentTopic(topic) {

@@ -6,7 +6,7 @@ function refreshTransactionsPage(root, beforeBlock) {
         const node = requestModule(inspectorModule, "blockchainNode", root.blockchainArgs([]), qsTr("Transactions node state"), false)
         if (!node.ok) {
             transactionsPageError = node.error
-            setResult(qsTr("Transactions"), transactionsPageError, true)
+            shell.setResult(qsTr("Transactions"), transactionsPageError, true)
             return
         }
 
@@ -16,7 +16,7 @@ function refreshTransactionsPage(root, beforeBlock) {
         const blocks = requestModule(inspectorModule, "blockchainBlocks", root.blockchainArgs([slotFrom, slotTo]), qsTr("Transactions"), false)
         if (!blocks.ok) {
             transactionsPageError = blocks.error
-            setResult(qsTr("Transactions"), transactionsPageError, true)
+            shell.setResult(qsTr("Transactions"), transactionsPageError, true)
             return
         }
 
@@ -25,13 +25,13 @@ function refreshTransactionsPage(root, beforeBlock) {
             transactionsPageRows = []
             transactionsPageNextBeforeBlock = 0
             transactionsPageError = qsTr("Response shape unknown. Raw JSON remains available.")
-            setResult(qsTr("Transactions"), BridgeHelpers.formatValue(blocks.value), false, blocks.value)
+            shell.setResult(qsTr("Transactions"), BridgeHelpers.formatValue(blocks.value), false, blocks.value)
             return
         }
         transactionsPageRows = root.transactionRowsFromBlocks(blocks.value).slice(0, transactionsPageLimit)
         transactionsPageNextBeforeBlock = slotFrom > 0 ? slotFrom - 1 : 0
         transactionsPageError = ""
-        setResult(qsTr("Transactions"), BridgeHelpers.formatValue(transactionsPageRows), false, transactionsPageRows)
+        shell.setResult(qsTr("Transactions"), BridgeHelpers.formatValue(transactionsPageRows), false, transactionsPageRows)
     }
 }
 

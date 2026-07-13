@@ -30,7 +30,7 @@ function accountDecodeCandidates(root, accountId, ownerProgramId) {
             shared: true
         })
     }
-    const sharedEntries = root.sharedIdlEntriesForAccount(accountId, ownerProgramId)
+    const sharedEntries = root.social.sharedIdlEntriesForAccount(accountId, ownerProgramId)
     for (let sharedIndex = 0; sharedIndex < sharedEntries.length; ++sharedIndex) {
         const sharedEntry = sharedEntries[sharedIndex]
         if (!candidateListHasEntry(candidates, sharedEntry.key)) {
@@ -49,7 +49,7 @@ function cachedIdlEntryForAccount(root, accountId, ownerProgramId) {
     const selection = root.accountIdlSelection(accountId, ownerProgramId)
     let entry = selection ? root.idlEntryForKey(selection.idlKey) : null
     if (!entry && selection) {
-        const sharedRows = root.sharedIdlEntriesForAccount(accountId, ownerProgramId)
+        const sharedRows = root.social.sharedIdlEntriesForAccount(accountId, ownerProgramId)
         for (let i = 0; i < sharedRows.length; ++i) {
             if (String(sharedRows[i].key || "") === String(selection.idlKey || "")) {
                 entry = sharedRows[i]

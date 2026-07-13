@@ -42,7 +42,7 @@ function moduleReport(root, kind) {
 
 function moduleProbe(root, kind, method) {
     with (root) {
-        const report = root.moduleReport(kind)
+        const report = moduleReport(root, kind)
         const probes = report && Array.isArray(report.probes) ? report.probes : []
         const wanted = String(method || "")
         if (report && report.module_info && String(report.module_info.probe_key || "") === wanted) {
@@ -82,7 +82,7 @@ function moduleProbeError(root, kind, method) {
 
 function moduleLastError(root, kind) {
     with (root) {
-        const report = root.moduleReport(kind)
+        const report = moduleReport(root, kind)
         if (!report) {
             return ""
         }
@@ -102,7 +102,8 @@ function moduleLastError(root, kind) {
 
 function openMetricsText(root, kind) {
     with (root) {
-        const value = root.moduleProbeValue(kind, kind === "storage" ? "collectMetrics" : "collectOpenMetricsText")
+        const value = moduleProbeValue(root, kind,
+            kind === "storage" ? "collectMetrics" : "collectOpenMetricsText")
         return root.openMetricsTextFromValue(value)
     }
 }
@@ -120,7 +121,8 @@ function openMetricsTextFromValue(root, value) {
 function openMetricValue(root, kind, names) {
     with (root) {
         const wanted = Array.isArray(names) ? names : [names]
-        const value = root.moduleProbeValue(kind, kind === "storage" ? "collectMetrics" : "collectOpenMetricsText")
+        const value = moduleProbeValue(root, kind,
+            kind === "storage" ? "collectMetrics" : "collectOpenMetricsText")
         const jsonMetric = root.metricJsonValue(value, wanted)
         if (jsonMetric !== null) {
             return jsonMetric
@@ -377,7 +379,7 @@ function indexerLag(root) {
 
 function moduleMetricValue(root, kind, names) {
     with (root) {
-        const metric = root.openMetricValue(kind, names)
+        const metric = openMetricValue(root, kind, names)
         if (metric !== null) {
             return metric
         }
@@ -403,7 +405,7 @@ function moduleMetricSum(root, kind, names) {
 
 function storageManifestCount(root) {
     with (root) {
-        const manifests = root.moduleProbeValue("storage", "manifests")
+        const manifests = moduleProbeValue(root, "storage", "manifests")
         if (Array.isArray(manifests)) {
             return manifests.length
         }

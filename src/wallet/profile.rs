@@ -1,5 +1,5 @@
 use std::{
-    env,
+    env, fs,
     path::{Path, PathBuf},
 };
 
@@ -7,7 +7,7 @@ use anyhow::{Context as _, Result, bail};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::LOCAL_WALLET_HOME_ENV;
+use super::{LOCAL_WALLET_HOME_ENV, LocalWalletReadiness};
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub(super) struct LocalWalletProfileInput {
@@ -191,6 +191,41 @@ pub(super) fn wallet_home_is_configured(path: &Path) -> bool {
     path.is_dir() && path.join("wallet_config.json").is_file()
 }
 
+pub(super) fn local_wallet_readiness(
+    profile: &LocalWalletProfileInput,
+    env_wallet_home: &str,
+) -> LocalWalletReadiness {
+    let binary = profile.wallet_binary.trim();
+    let wallet_binary_ready = !binary.is_empty()
+        && (!local_wallet_binary_is_path_like(binary) || Path::new(binary).is_file());
+    let explicit_home = profile.wallet_home.trim();
+    let home = if explicit_home.is_empty() {
+        env_wallet_home.trim()
+    } else {
+        explicit_home
+    };
+    let home_path = Path::new(home);
+    let wallet_home_ready = !home.is_empty() && home_path.is_dir();
+    let config_path = home_path.join("wallet_config.json");
+    let wallet_config_ready = wallet_home_ready && config_path.is_file();
+    let wallet_storage_ready = wallet_home_ready && home_path.join("storage.json").is_file();
+    let backup_encryption_ready = wallet_config_ready
+        && fs::metadata(config_path)
+            .map(|metadata| metadata.len() > 0)
+            .unwrap_or(false);
+
+    LocalWalletReadiness {
+        wallet_binary_ready,
+        wallet_home_ready,
+        wallet_config_ready,
+        wallet_storage_ready,
+        command_ready: wallet_binary_ready && wallet_home_ready,
+        accounts_ready: wallet_binary_ready && wallet_config_ready,
+        instruction_submit_ready: wallet_config_ready && wallet_storage_ready,
+        backup_encryption_ready,
+    }
+}
+
 fn find_binary_in_path(binary: &str) -> Option<PathBuf> {
     let binary = binary_name(binary);
     env::var_os("PATH")
@@ -210,7 +245,11 @@ fn binary_name(binary: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{env, fs, path::PathBuf};
+    use std::{
+        env, fs,
+        path::PathBuf,
+        sync::atomic::{AtomicU64, Ordering},
+    };
 
     use anyhow::{Result, bail};
     use serde_json::json;
@@ -222,10 +261,15 @@ mod tests {
         path: PathBuf,
     }
 
+    static NEXT_TEMP_HOME: AtomicU64 = AtomicU64::new(1);
+
     impl TempWalletHome {
         fn new() -> Result<Self> {
-            let path =
-                env::temp_dir().join(format!("logos-inspector-wallet-profile-{}", now_millis()));
+            let path = env::temp_dir().join(format!(
+                "logos-inspector-wallet-profile-{}-{}",
+                now_millis(),
+                NEXT_TEMP_HOME.fetch_add(1, Ordering::Relaxed)
+            ));
             fs::create_dir_all(&path)?;
             fs::write(path.join("wallet_config.json"), "{}")?;
             fs::write(path.join("storage.json"), "{}")?;
@@ -248,6 +292,29 @@ mod tests {
 
         if resolved != home.path {
             bail!("unexpected wallet home: {}", resolved.display());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn readiness_distinguishes_command_accounts_instruction_and_backup_requirements() -> Result<()>
+    {
+        let home = TempWalletHome::new()?;
+        let binary = home.path.join("wallet");
+        fs::write(&binary, "binary")?;
+        let profile = parse_local_wallet_profile(json!({
+            "wallet_binary": binary.display().to_string(),
+            "wallet_home": home.path.display().to_string()
+        }))?;
+
+        let readiness = local_wallet_readiness(&profile, "");
+
+        if !readiness.command_ready
+            || !readiness.accounts_ready
+            || !readiness.instruction_submit_ready
+            || !readiness.backup_encryption_ready
+        {
+            bail!("fully configured wallet should be ready: {readiness:?}");
         }
         Ok(())
     }

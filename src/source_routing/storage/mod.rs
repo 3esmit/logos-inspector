@@ -1,7 +1,16 @@
-pub(crate) mod adapters;
 mod inspection;
-pub(crate) mod layer;
+mod layer;
+mod operations;
 mod plan;
+mod transport;
 
 pub use inspection::storage_source_report;
+pub(crate) use layer::{
+    STORAGE_SOURCE_MODES, managed_config, managed_contract, module_report, report_inputs,
+};
+pub(crate) use operations::{
+    StorageBackupUploadRequest, StorageClient, StorageDownloadRequest, StorageExistsRequest,
+    StorageOperation, StorageOperationOutput, StorageOperationRequest, StoragePayloadUploadRequest,
+    StorageRestoreRequest, download_response, execute_operation,
+};
 pub(crate) use plan::storage_module_probe_plan;

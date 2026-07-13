@@ -18,7 +18,7 @@ function handleNewBlock(root, args) {
         const wallet = String(walletPublicKeyProbe || "").trim()
         if (wallet.length > 0 && ModuleEventUtils.valueContainsText(block, wallet)) {
             refreshBedrockWalletModule(wallet)
-            queryBedrockWalletBalance()
+            wallet.queryBedrockBalance()
         }
         return true
     }

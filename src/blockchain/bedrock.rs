@@ -659,40 +659,6 @@ fn chain_state_for_block(
     })
 }
 
-pub async fn mantle_status(endpoint: &str, item_ids: Value) -> Result<Value> {
-    post_json(endpoint, "/mantle/status", &item_ids).await
-}
-
-pub async fn storage_block(endpoint: &str, header_id: Value) -> Result<Value> {
-    post_json(endpoint, "/storage/block", &header_id).await
-}
-
-async fn post_json(endpoint: &str, path: &str, body: &Value) -> Result<Value> {
-    let endpoint = endpoint.trim_end_matches('/');
-    let path = path.trim_start_matches('/');
-    let url = format!("{endpoint}/{path}");
-    let response = reqwest::Client::new()
-        .post(&url)
-        .json(body)
-        .send()
-        .await
-        .with_context(|| format!("failed to call {url}"))?;
-    let status = response.status();
-    let text = response
-        .text()
-        .await
-        .context("failed to read http response body")?;
-    if !status.is_success() {
-        bail!(
-            "http call `{url}` failed with status {status}: {}",
-            response_excerpt(&text)
-        );
-    }
-    let value: Value = serde_json::from_str(&text)
-        .with_context(|| format!("invalid JSON response: {}", response_excerpt(&text)))?;
-    Ok(value)
-}
-
 fn normalize_cryptarchia_info(raw: Value) -> Value {
     let source = raw
         .get("cryptarchia_info")

@@ -416,7 +416,7 @@ ColumnLayout {
         title: root.confirmTitle()
         message: root.confirmMessage()
         confirmText: root.model.actionLabel(root.model.pendingAction)
-        confirmEnabled: !root.model.busy && root.model.pendingAction.length > 0
+        confirmEnabled: !root.model.shell.busy && root.model.pendingAction.length > 0
         onAccepted: root.acceptPendingAction()
     }
 

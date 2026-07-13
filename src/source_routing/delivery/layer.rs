@@ -1,9 +1,6 @@
 use anyhow::{Context as _, Result};
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
-use reqwest::Method;
 use serde_json::{Value, json};
 
-use super::adapters::DELIVERY_MODULE;
 use crate::{
     modules::ModuleReport,
     modules::logos_core::LogoscoreCliRuntime,
@@ -11,29 +8,31 @@ use crate::{
         DEFAULT_DELIVERY_METRICS_ENDPOINT, DEFAULT_DELIVERY_REST_ENDPOINT,
         adapter::{
             AdapterConnectionType, AdapterInitialization, AdapterInputPolicy,
-            ManagedLifecycleOutcome, ManagedModuleCallSpec, ManagedNodeAction, SourceAdapterPolicy,
-            SourceModePolicy,
+            ManagedLifecycleOutcome, ManagedModuleCallSpec, ManagedNodeAction, ManagedNodeContract,
+            SourceAdapterPolicy, SourceModePolicy,
         },
     },
 };
 
+const DELIVERY_MODULE: &str = "delivery_module";
+
+static MANAGED_CONTRACT: ManagedNodeContract = ManagedNodeContract::new(
+    DELIVERY_MODULE,
+    ensure_managed_module,
+    call_managed_module,
+    managed_call_spec,
+    Some(managed_lifecycle_event),
+    Some(decode_managed_lifecycle_event),
+);
+
+#[must_use]
+pub(crate) const fn managed_contract() -> &'static ManagedNodeContract {
+    &MANAGED_CONTRACT
+}
+
 #[must_use]
 pub(crate) const fn module_id() -> &'static str {
     DELIVERY_MODULE
-}
-
-pub(crate) fn message_args(
-    args: &crate::support::args::Args,
-    action_label: &str,
-) -> Result<Option<crate::source_routing::shared::module_bridge::ModuleCallArgs>> {
-    super::adapters::delivery_message_args(args, action_label)
-}
-
-pub(crate) fn lifecycle_args(
-    args: &crate::support::args::Args,
-    action_label: &str,
-) -> Result<Vec<Value>> {
-    super::adapters::delivery_lifecycle_args(args, action_label)
 }
 
 pub(crate) fn ensure_managed_module(runtime: &LogoscoreCliRuntime) -> Result<()> {
@@ -102,6 +101,12 @@ pub(crate) fn managed_lifecycle_outcome(
         .unwrap_or_default()
         .to_owned();
     Ok(ManagedLifecycleOutcome { success, detail })
+}
+
+fn decode_managed_lifecycle_event(
+    data: &serde_json::Map<String, Value>,
+) -> Result<ManagedLifecycleOutcome> {
+    managed_lifecycle_outcome(data.get("arg0"), data.get("arg1"))
 }
 
 const REST_INPUTS: &[AdapterInputPolicy] = &[
@@ -353,122 +358,15 @@ pub(crate) fn module_report(content_topic: Option<&str>) -> ModuleReport {
     crate::modules::delivery_report(content_topic)
 }
 
-pub(crate) async fn module_call(method: &'static str, args: Vec<Value>) -> Result<Value> {
-    blocking_module_call("Messaging module call", move || {
-        crate::source_routing::shared::module_bridge::call_value(DELIVERY_MODULE, method, &args)
-    })
-    .await
-}
-
-pub(crate) async fn module_dispatch(
-    method: &'static str,
-    args: Vec<Value>,
-    context: Vec<(&'static str, String)>,
-) -> Result<Value> {
-    let value = module_call(method, args).await?;
-    Ok(
-        crate::source_routing::shared::module_bridge::dispatch_result(
-            DELIVERY_MODULE,
-            method,
-            value,
-            &context,
-        ),
-    )
-}
-
-pub(crate) async fn update_subscription(
-    endpoint: &str,
-    topic: &str,
-    subscribe: bool,
-) -> Result<Value> {
-    let method = if subscribe {
-        Method::POST
-    } else {
-        Method::DELETE
-    };
-    crate::source_routing::shared::http::rest_empty_request(
-        method,
-        endpoint,
-        "/relay/v1/auto/subscriptions",
-        Some(json!([topic])),
-    )
-    .await?;
-    Ok(json!({
-        "subscribed": subscribe,
-        "contentTopic": topic,
-        "endpoint": endpoint,
-    }))
-}
-
-pub(crate) async fn send(endpoint: &str, topic: &str, payload: &str) -> Result<Value> {
-    crate::source_routing::shared::http::rest_empty_request(
-        Method::POST,
-        endpoint,
-        "/relay/v1/auto/messages",
-        Some(json!({
-            "contentTopic": topic,
-            "payload": BASE64_STANDARD.encode(payload.as_bytes()),
-        })),
-    )
-    .await?;
-    Ok(json!({
-        "sent": true,
-        "contentTopic": topic,
-        "bytes": payload.len(),
-        "endpoint": endpoint,
-    }))
-}
-
-pub(crate) async fn probe_value(endpoint: &str, path: &str) -> Result<Value> {
-    let url = crate::source_routing::shared::http::rest_url(endpoint, path);
-    let text = crate::source_routing::shared::http::raw_http_text_url(&url).await?;
-    Ok(parse_probe_text(&text))
-}
-
-pub(crate) async fn probe_metrics(endpoint: &str) -> Result<String> {
-    crate::source_routing::shared::http::raw_http_text_url(endpoint).await
-}
-
-pub(crate) async fn store_query(
-    endpoint: &str,
-    query: crate::source_routing::DeliveryStoreQuery<'_>,
-) -> Result<(String, Value)> {
-    let url = store_query_url(endpoint, query)?;
-    let value = crate::source_routing::shared::http::raw_http_json_url(url.as_str()).await?;
-    Ok((url.to_string(), value))
-}
-
-pub(crate) fn store_query_url(
-    endpoint: &str,
-    query: crate::source_routing::DeliveryStoreQuery<'_>,
-) -> Result<url::Url> {
-    super::adapters::delivery_store_query_url(endpoint, query)
-}
-
-async fn blocking_module_call<T, F>(label: &'static str, call: F) -> Result<T>
-where
-    T: Send + 'static,
-    F: FnOnce() -> Result<T> + Send + 'static,
-{
-    tokio::task::spawn_blocking(call)
-        .await
-        .with_context(|| format!("{label} worker failed"))?
-}
-
-fn parse_probe_text(text: &str) -> Value {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return Value::Null;
-    }
-    serde_json::from_str(trimmed).unwrap_or_else(|_| Value::String(trimmed.to_owned()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::source_routing::adapter::{
         ManagedNodeAction,
-        contract_tests::{assert_layer_contract, assert_managed_module_contract},
+        contract_tests::{
+            EndpointAdapterBehavior, assert_endpoint_adapter_contract, assert_layer_contract,
+            assert_managed_lifecycle_behavior, assert_managed_module_contract,
+        },
     };
 
     #[test]
@@ -480,13 +378,60 @@ mod tests {
     fn messaging_managed_calls_satisfy_shared_contract() {
         assert_managed_module_contract(
             "messaging",
-            module_id(),
+            managed_contract(),
             &[
                 ManagedNodeAction::Initialize,
                 ManagedNodeAction::Start,
                 ManagedNodeAction::Stop,
             ],
-            managed_call_spec,
+        );
+    }
+
+    #[test]
+    fn messaging_lifecycle_events_satisfy_shared_behavior_contract() -> Result<()> {
+        assert_managed_lifecycle_behavior(
+            "messaging",
+            managed_contract(),
+            ManagedNodeAction::Start,
+            "nodeStarted",
+            json!({ "arg0": true, "arg1": "started" }),
+            true,
+            "started",
+        )
+    }
+
+    #[test]
+    fn messaging_endpoint_adapters_satisfy_shared_behavior_contract() {
+        assert_endpoint_adapter_contract(
+            "messaging",
+            MESSAGING_SOURCE_MODES,
+            |mode, rest, metrics| match MessagingAdapter::select(mode, rest, metrics) {
+                MessagingAdapter::Module => EndpointAdapterBehavior::Module {
+                    module_id: module_id(),
+                },
+                MessagingAdapter::Rest {
+                    endpoint,
+                    metrics_endpoint,
+                } => EndpointAdapterBehavior::Endpoint {
+                    connection_type: AdapterConnectionType::Rest,
+                    endpoint: endpoint.to_owned(),
+                    metrics_endpoint: metrics_endpoint.map(ToOwned::to_owned),
+                },
+                MessagingAdapter::Metrics { endpoint } => EndpointAdapterBehavior::Endpoint {
+                    connection_type: AdapterConnectionType::Metrics,
+                    endpoint: endpoint.to_owned(),
+                    metrics_endpoint: None,
+                },
+                MessagingAdapter::NetworkMonitor {
+                    endpoint,
+                    metrics_endpoint,
+                } => EndpointAdapterBehavior::Endpoint {
+                    connection_type: AdapterConnectionType::NetworkMonitor,
+                    endpoint: endpoint.to_owned(),
+                    metrics_endpoint: metrics_endpoint.map(ToOwned::to_owned),
+                },
+                MessagingAdapter::Unsupported { .. } => EndpointAdapterBehavior::Unsupported,
+            },
         );
     }
 

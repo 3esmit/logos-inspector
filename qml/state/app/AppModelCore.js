@@ -23,8 +23,7 @@ function handleNetworkConfigurationChanged(root) {
         messagingModuleReport = null
         storageSourceReport = null
         messagingSourceReport = null
-        storageActiveOperation = null
-        storageActiveOperationRevision += 1
+        storageApp.operationSession.clearActive()
         localNodesReport = null
         localNodesError = ""
         localNodesRevision += 1
@@ -57,9 +56,9 @@ function navTreeItems(root) {
 
 function navRows(root) {
     with (root) {
-        const revision = navRevision
+        const revision = shell.navRevision
         const rows = []
-        const parentKey = parentNavKeyForView(currentView)
+        const parentKey = parentNavKeyForView(shell.currentView)
         const tree = navTreeItems()
         for (let i = 0; i < tree.length; ++i) {
             const item = tree[i]
@@ -88,7 +87,7 @@ function navRows(root) {
                         token: child.token,
                         layer: child.layer,
                         parentKey: item.key,
-                        active: currentView === child.view,
+                        active: shell.currentView === child.view,
                         depth: 1
                     })
                 }
@@ -101,7 +100,7 @@ function navRows(root) {
                 label: item.label,
                 token: item.token,
                 layer: item.layer,
-                active: currentView === item.view,
+                active: shell.currentView === item.view,
                 depth: 0
             })
         }
@@ -111,8 +110,8 @@ function navRows(root) {
 
 function navGroupExpanded(root, key) {
     with (root) {
-        const revision = navRevision
-        return navExpanded[String(key || "")] === true
+        const revision = shell.navRevision
+        return shell.navExpanded[String(key || "")] === true
     }
 }
 
@@ -122,23 +121,23 @@ function toggleNavGroup(root, key) {
         if (!groupKey.length) {
             return
         }
-        const next = copyMap(navExpanded)
+        const next = copyMap(shell.navExpanded)
         next[groupKey] = next[groupKey] !== true
-        navExpanded = next
-        navRevision += 1
+        shell.navExpanded = next
+        shell.navRevision += 1
     }
 }
 
 function expandNavGroupForView(root, view) {
     with (root) {
         const parentKey = parentNavKeyForView(view)
-        if (!parentKey || navExpanded[parentKey] === true) {
+        if (!parentKey || shell.navExpanded[parentKey] === true) {
             return
         }
-        const next = copyMap(navExpanded)
+        const next = copyMap(shell.navExpanded)
         next[parentKey] = true
-        navExpanded = next
-        navRevision += 1
+        shell.navExpanded = next
+        shell.navRevision += 1
     }
 }
 
@@ -194,12 +193,12 @@ function cloneNavigationValue(root, value) {
 
 function navigationSnapshot(root) {
     const values = {
-        statusText: String(root.statusText || ""),
-        resultTitle: String(root.resultTitle || ""),
-        resultText: String(root.resultText || ""),
-        resultValue: cloneNavigationValue(root, root.resultValue),
-        resultIsError: root.resultIsError === true,
-        resultOwner: String(root.resultOwner || ""),
+        statusText: String(root.shell.statusText || ""),
+        resultTitle: String(root.shell.resultTitle || ""),
+        resultText: String(root.shell.resultText || ""),
+        resultValue: cloneNavigationValue(root, root.shell.resultValue),
+        resultIsError: root.shell.resultIsError === true,
+        resultOwner: String(root.shell.resultOwner || ""),
         blockDetailValue: cloneNavigationValue(root, root.blockDetailValue),
         blockDetailError: String(root.blockDetailError || ""),
         transactionDetailValue: cloneNavigationValue(root, root.transactionDetailValue),
@@ -211,14 +210,14 @@ function navigationSnapshot(root) {
         localWalletLookupTarget: String(root.localWalletLookupTarget || ""),
         walletPublicKeyProbe: String(root.walletPublicKeyProbe || ""),
         storageCidProbe: String(root.storageCidProbe || ""),
-        settingsSection: String(root.settingsSection || ""),
-        settingsNetworkSection: String(root.settingsNetworkSection || ""),
-        settingsUiSection: String(root.settingsUiSection || "")
+        settingsSection: String(root.shell.settingsSection || ""),
+        settingsNetworkSection: String(root.shell.settingsNetworkSection || ""),
+        settingsUiSection: String(root.shell.settingsUiSection || "")
     }
-    values.inspectionEntityRef = String(root.currentView || "") === "zones"
+    values.inspectionEntityRef = String(root.shell.currentView || "") === "zones"
         ? cloneNavigationValue(root, root.currentInspectionEntityRef) : null
     const snapshot = {
-        view: normalizedNavigationView(root, root.currentView),
+        view: normalizedNavigationView(root, root.shell.currentView),
         values: values,
         label: ""
     }
@@ -249,25 +248,26 @@ function navigationSnapshotsEqual(root, left, right) {
 }
 
 function pushNavigationHistory(root) {
-    if (root.navigationRestoring) {
+    if (root.shell.navigationRestoring) {
         return
     }
     const snapshot = navigationSnapshot(root)
     if (!String(snapshot.view || "").length) {
         return
     }
-    const back = Array.isArray(root.navigationBackStack) ? root.navigationBackStack.slice(0) : []
+    const back = Array.isArray(root.shell.navigationBackStack)
+        ? root.shell.navigationBackStack.slice(0) : []
     const previous = back.length > 0 ? back[back.length - 1] : null
     if (previous && navigationSnapshotsEqual(root, previous, snapshot)) {
         return
     }
     back.push(snapshot)
-    while (back.length > root.navigationHistoryLimit) {
+    while (back.length > root.shell.navigationHistoryLimit) {
         back.shift()
     }
-    root.navigationBackStack = back
-    root.navigationForwardStack = []
-    root.navigationRevision += 1
+    root.shell.navigationBackStack = back
+    root.shell.navigationForwardStack = []
+    root.shell.navigationRevision += 1
 }
 
 function restoreNavigationSnapshot(root, snapshot) {
@@ -276,14 +276,14 @@ function restoreNavigationSnapshot(root, snapshot) {
     }
     const values = snapshot.values && typeof snapshot.values === "object" ? snapshot.values : ({})
     const targetView = normalizedNavigationView(root, snapshot.view).length ? normalizedNavigationView(root, snapshot.view) : "overview"
-    root.navigationRestoring = true
+    root.shell.navigationRestoring = true
     try {
-        root.statusText = String(values.statusText || qsTr("Ready"))
-        root.resultTitle = String(values.resultTitle || qsTr("Output"))
-        root.resultText = String(values.resultText || "")
-        root.resultValue = cloneNavigationValue(root, values.resultValue)
-        root.resultIsError = values.resultIsError === true
-        root.resultOwner = String(values.resultOwner || "")
+        root.shell.statusText = String(values.statusText || qsTr("Ready"))
+        root.shell.resultTitle = String(values.resultTitle || qsTr("Output"))
+        root.shell.resultText = String(values.resultText || "")
+        root.shell.resultValue = cloneNavigationValue(root, values.resultValue)
+        root.shell.resultIsError = values.resultIsError === true
+        root.shell.resultOwner = String(values.resultOwner || "")
         root.blockDetailValue = cloneNavigationValue(root, values.blockDetailValue)
         root.blockDetailError = String(values.blockDetailError || "")
         root.transactionDetailValue = cloneNavigationValue(root, values.transactionDetailValue)
@@ -295,11 +295,13 @@ function restoreNavigationSnapshot(root, snapshot) {
         root.localWalletLookupTarget = String(values.localWalletLookupTarget || "")
         root.walletPublicKeyProbe = String(values.walletPublicKeyProbe || "")
         root.storageCidProbe = String(values.storageCidProbe || "")
-        root.settingsSection = String(values.settingsSection || root.settingsSection)
-        root.settingsNetworkSection = String(values.settingsNetworkSection || root.settingsNetworkSection)
-        root.settingsUiSection = String(values.settingsUiSection || root.settingsUiSection)
+        root.shell.settingsSection = String(values.settingsSection || root.shell.settingsSection)
+        root.shell.settingsNetworkSection = String(values.settingsNetworkSection
+            || root.shell.settingsNetworkSection)
+        root.shell.settingsUiSection = String(values.settingsUiSection
+            || root.shell.settingsUiSection)
         expandNavGroupForView(root, targetView)
-        root.currentView = targetView
+        root.shell.currentView = targetView
         if (values.inspectionEntityRef) {
             const entity = cloneNavigationValue(root, values.inspectionEntityRef)
             Qt.callLater(function () {
@@ -309,66 +311,74 @@ function restoreNavigationSnapshot(root, snapshot) {
             root.currentInspectionEntityRef = null
         }
     } finally {
-        root.navigationRestoring = false
+        root.shell.navigationRestoring = false
     }
 }
 
 function canNavigateBack(root) {
-    const revision = root.navigationRevision
-    return Array.isArray(root.navigationBackStack) && root.navigationBackStack.length > 0
+    const revision = root.shell.navigationRevision
+    return Array.isArray(root.shell.navigationBackStack)
+        && root.shell.navigationBackStack.length > 0
 }
 
 function canNavigateForward(root) {
-    const revision = root.navigationRevision
-    return Array.isArray(root.navigationForwardStack) && root.navigationForwardStack.length > 0
+    const revision = root.shell.navigationRevision
+    return Array.isArray(root.shell.navigationForwardStack)
+        && root.shell.navigationForwardStack.length > 0
 }
 
 function navigateBack(root) {
-    const back = Array.isArray(root.navigationBackStack) ? root.navigationBackStack.slice(0) : []
+    const back = Array.isArray(root.shell.navigationBackStack)
+        ? root.shell.navigationBackStack.slice(0) : []
     if (!back.length) {
         return
     }
     const target = back.pop()
     const current = navigationSnapshot(root)
-    const forward = Array.isArray(root.navigationForwardStack) ? root.navigationForwardStack.slice(0) : []
+    const forward = Array.isArray(root.shell.navigationForwardStack)
+        ? root.shell.navigationForwardStack.slice(0) : []
     if (!navigationSnapshotsEqual(root, current, target)) {
         forward.push(current)
     }
-    root.navigationBackStack = back
-    root.navigationForwardStack = forward
-    root.navigationRevision += 1
+    root.shell.navigationBackStack = back
+    root.shell.navigationForwardStack = forward
+    root.shell.navigationRevision += 1
     restoreNavigationSnapshot(root, target)
 }
 
 function navigateForward(root) {
-    const forward = Array.isArray(root.navigationForwardStack) ? root.navigationForwardStack.slice(0) : []
+    const forward = Array.isArray(root.shell.navigationForwardStack)
+        ? root.shell.navigationForwardStack.slice(0) : []
     if (!forward.length) {
         return
     }
     const target = forward.pop()
     const current = navigationSnapshot(root)
-    const back = Array.isArray(root.navigationBackStack) ? root.navigationBackStack.slice(0) : []
+    const back = Array.isArray(root.shell.navigationBackStack)
+        ? root.shell.navigationBackStack.slice(0) : []
     if (!navigationSnapshotsEqual(root, current, target)) {
         back.push(current)
     }
-    while (back.length > root.navigationHistoryLimit) {
+    while (back.length > root.shell.navigationHistoryLimit) {
         back.shift()
     }
-    root.navigationBackStack = back
-    root.navigationForwardStack = forward
-    root.navigationRevision += 1
+    root.shell.navigationBackStack = back
+    root.shell.navigationForwardStack = forward
+    root.shell.navigationRevision += 1
     restoreNavigationSnapshot(root, target)
 }
 
 function navigationBackLabel(root) {
-    const revision = root.navigationRevision
-    const stack = Array.isArray(root.navigationBackStack) ? root.navigationBackStack : []
+    const revision = root.shell.navigationRevision
+    const stack = Array.isArray(root.shell.navigationBackStack)
+        ? root.shell.navigationBackStack : []
     return stack.length ? navigationSnapshotDisplayLabel(root, stack[stack.length - 1]) : ""
 }
 
 function navigationForwardLabel(root) {
-    const revision = root.navigationRevision
-    const stack = Array.isArray(root.navigationForwardStack) ? root.navigationForwardStack : []
+    const revision = root.shell.navigationRevision
+    const stack = Array.isArray(root.shell.navigationForwardStack)
+        ? root.shell.navigationForwardStack : []
     return stack.length ? navigationSnapshotDisplayLabel(root, stack[stack.length - 1]) : ""
 }
 
@@ -438,12 +448,12 @@ function selectView(root, requestedView, recordHistory) {
         if (!targetView.length) {
             return
         }
-        if (recordHistory !== false && currentView !== targetView) {
+        if (recordHistory !== false && shell.currentView !== targetView) {
             pushNavigationHistory()
         }
         expandNavGroupForView(targetView)
-        currentView = targetView
-        statusText = qsTr("Ready")
+        shell.currentView = targetView
+        shell.statusText = qsTr("Ready")
     }
 }
 
@@ -451,50 +461,55 @@ function openSettings(root, section, subsection, recordHistory) {
     with (root) {
         const targetSection = String(section || "")
         const targetSubsection = String(subsection || "")
-        const sectionChanged = targetSection.length > 0 && settingsSection !== targetSection
-        const networkChanged = targetSection === "network" && targetSubsection.length > 0 && settingsNetworkSection !== targetSubsection
-        const uiChanged = targetSection === "ui" && targetSubsection.length > 0 && settingsUiSection !== targetSubsection
-        if (recordHistory !== false && (currentView !== "settings" || sectionChanged || networkChanged || uiChanged)) {
+        const sectionChanged = targetSection.length > 0
+            && shell.settingsSection !== targetSection
+        const networkChanged = targetSection === "network" && targetSubsection.length > 0
+            && shell.settingsNetworkSection !== targetSubsection
+        const uiChanged = targetSection === "ui" && targetSubsection.length > 0
+            && shell.settingsUiSection !== targetSubsection
+        if (recordHistory !== false && (shell.currentView !== "settings"
+                || sectionChanged || networkChanged || uiChanged)) {
             pushNavigationHistory()
         }
         selectView("settings", false)
         if (targetSection.length) {
-            settingsSection = targetSection
+            shell.settingsSection = targetSection
         }
         if (targetSection === "network" && targetSubsection.length) {
-            settingsNetworkSection = targetSubsection
+            shell.settingsNetworkSection = targetSubsection
         }
         if (targetSection === "ui" && targetSubsection.length) {
-            settingsUiSection = targetSubsection
+            shell.settingsUiSection = targetSubsection
         }
-        statusText = qsTr("Ready")
+        shell.statusText = qsTr("Ready")
     }
 }
 
 function clearResult(root) {
     with (root) {
-        resultTitle = qsTr("Output")
-        resultText = ""
-        resultValue = null
-        resultIsError = false
-        resultOwner = ""
+        shell.resultTitle = qsTr("Output")
+        shell.resultText = ""
+        shell.resultValue = null
+        shell.resultIsError = false
+        shell.resultOwner = ""
     }
 }
 
 function setResult(root, title, text, isError, value, owner) {
     with (root) {
-        resultTitle = title
-        resultText = text
-        resultValue = value === undefined ? null : value
-        resultIsError = isError
-        resultOwner = owner === undefined ? currentView : String(owner || "")
-        statusText = isError ? qsTr("Error") : qsTr("Ready")
+        shell.resultTitle = title
+        shell.resultText = text
+        shell.resultValue = value === undefined ? null : value
+        shell.resultIsError = isError
+        shell.resultOwner = owner === undefined ? shell.currentView : String(owner || "")
+        shell.statusText = isError ? qsTr("Error") : qsTr("Ready")
     }
 }
 
 function pageHasOutput(root, view) {
     with (root) {
-        return resultOwner === view && (resultText.length > 0 || resultValue !== null)
+        return shell.resultOwner === view
+            && (shell.resultText.length > 0 || shell.resultValue !== null)
     }
 }
 
@@ -520,14 +535,6 @@ function updateRuntimeOperation(root, operation) {
 
 function coreUpdateRuntimeOperation(root, operation) {
     return RuntimeOperationLifecycle.coreUpdateRuntimeOperation(root, operation)
-}
-
-function operationWithPreviousRestartRequest(root, operationId, operation) {
-    return RuntimeOperationLifecycle.operationWithPreviousRestartRequest(root, operationId, operation)
-}
-
-function operationWithRestartRequest(operation, restartRequest) {
-    return RuntimeOperationLifecycle.operationWithRestartRequest(operation, restartRequest)
 }
 
 function runtimeOperationTerminal(root, operation) {
@@ -596,7 +603,7 @@ function runtimeOperationDetail(root, operation) {
 
 function decodeAccountData(root, dataHex, idlJson, accountType) {
     with (root) {
-        if (busy) {
+        if (shell.busy) {
             return {
                 ok: false,
                 text: "",

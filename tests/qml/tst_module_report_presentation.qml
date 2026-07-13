@@ -19,9 +19,11 @@ TestCase {
     QtObject {
         id: model
 
-        property string resultTitle: "Storage report"
-        property bool resultIsError: false
-        property string resultText: ""
+        property QtObject shell: QtObject {
+            property string resultTitle: "Storage report"
+            property bool resultIsError: false
+            property string resultText: ""
+        }
         property string nodeUrl: "http://127.0.0.1:4000"
         property string storageModule: "logos_storage"
         property string deliveryModule: "logos_delivery"

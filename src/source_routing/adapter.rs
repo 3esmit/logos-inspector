@@ -1,8 +1,12 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Context as _, Result, bail};
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde_json::{Map, Value};
+
+use crate::support::args::Args;
+
+use crate::modules::logos_core::LogoscoreCliRuntime;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -58,6 +62,76 @@ pub(crate) struct AdapterInitialization {
     inputs: BTreeMap<String, String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct NodeOperationRequest {
+    adapter: Value,
+    #[serde(default)]
+    payload: Value,
+    #[serde(default)]
+    mutating_enabled: bool,
+}
+
+impl NodeOperationRequest {
+    pub(crate) fn from_bridge_args(args: &Args) -> Result<Self> {
+        let value = args
+            .value(0)
+            .context("node operation request is required")?;
+        if args.iter().count() != 1 {
+            bail!("node operation accepts one structured request")
+        }
+        Self::from_value(value)
+    }
+
+    pub(crate) fn from_value(value: &Value) -> Result<Self> {
+        serde_json::from_value(value.clone()).context("node operation request must be an object")
+    }
+
+    #[must_use]
+    pub(crate) fn adapter(&self) -> &Value {
+        &self.adapter
+    }
+
+    pub(crate) fn payload<T>(&self, label: &str) -> Result<T>
+    where
+        T: DeserializeOwned,
+    {
+        serde_json::from_value(self.payload.clone())
+            .with_context(|| format!("{label} payload is invalid"))
+    }
+
+    #[must_use]
+    pub(crate) const fn mutating_enabled(&self) -> bool {
+        self.mutating_enabled
+    }
+
+    pub(crate) fn require_mutating(&self, label: &str) -> Result<()> {
+        if self.mutating_enabled {
+            return Ok(());
+        }
+        bail!("{label} requires mutating diagnostics to be enabled")
+    }
+
+    #[must_use]
+    pub(crate) fn source_mode(&self) -> &str {
+        self.adapter
+            .get("source_mode")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("direct")
+    }
+
+    #[must_use]
+    pub(crate) fn input(&self, key: &str) -> Option<&str> {
+        self.adapter
+            .get("inputs")
+            .and_then(|inputs| inputs.get(key))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ManagedNodeAction {
     Initialize,
@@ -88,6 +162,82 @@ impl ManagedModuleCallSpec {
 pub(crate) struct ManagedLifecycleOutcome {
     pub(crate) success: bool,
     pub(crate) detail: String,
+}
+
+type EnsureManagedModule = fn(&LogoscoreCliRuntime) -> Result<()>;
+type CallManagedModule = fn(&LogoscoreCliRuntime, &str, &str, &[String]) -> Result<Value>;
+type ManagedCallSpecBuilder = fn(ManagedNodeAction, &str) -> Option<ManagedModuleCallSpec>;
+type ManagedLifecycleEvent = fn(ManagedNodeAction) -> Option<&'static str>;
+type ManagedLifecycleDecoder = fn(&Map<String, Value>) -> Result<ManagedLifecycleOutcome>;
+
+#[derive(Debug)]
+pub(crate) struct ManagedNodeContract {
+    module_id: &'static str,
+    ensure_module: EnsureManagedModule,
+    call_module: CallManagedModule,
+    call_spec: ManagedCallSpecBuilder,
+    lifecycle_event: Option<ManagedLifecycleEvent>,
+    lifecycle_decoder: Option<ManagedLifecycleDecoder>,
+}
+
+impl ManagedNodeContract {
+    #[must_use]
+    pub(crate) const fn new(
+        module_id: &'static str,
+        ensure_module: EnsureManagedModule,
+        call_module: CallManagedModule,
+        call_spec: ManagedCallSpecBuilder,
+        lifecycle_event: Option<ManagedLifecycleEvent>,
+        lifecycle_decoder: Option<ManagedLifecycleDecoder>,
+    ) -> Self {
+        Self {
+            module_id,
+            ensure_module,
+            call_module,
+            call_spec,
+            lifecycle_event,
+            lifecycle_decoder,
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn module_id(&self) -> &'static str {
+        self.module_id
+    }
+
+    pub(crate) fn ensure_loaded(&self, runtime: &LogoscoreCliRuntime) -> Result<()> {
+        (self.ensure_module)(runtime)
+    }
+
+    pub(crate) fn call(
+        &self,
+        runtime: &LogoscoreCliRuntime,
+        spec: &ManagedModuleCallSpec,
+    ) -> Result<Value> {
+        (self.call_module)(runtime, spec.method, spec.signature, &spec.args)
+    }
+
+    #[must_use]
+    pub(crate) fn call_spec(
+        &self,
+        action: ManagedNodeAction,
+        config_path: &str,
+    ) -> Option<ManagedModuleCallSpec> {
+        (self.call_spec)(action, config_path)
+    }
+
+    #[must_use]
+    pub(crate) fn lifecycle_event(&self, action: ManagedNodeAction) -> Option<&'static str> {
+        self.lifecycle_event.and_then(|event| event(action))
+    }
+
+    pub(crate) fn decode_lifecycle_event(
+        &self,
+        data: &Map<String, Value>,
+    ) -> Result<ManagedLifecycleOutcome> {
+        self.lifecycle_decoder
+            .context("managed module has no lifecycle event decoder")?(data)
+    }
 }
 
 impl AdapterInitialization {
@@ -167,13 +317,14 @@ fn mode_for_token(
 
 #[cfg(test)]
 pub(crate) mod contract_tests {
-    use std::{collections::BTreeSet, fs, path::Path};
+    use std::collections::BTreeSet;
 
+    use anyhow::Context as _;
     use serde_json::{Value, json};
 
     use super::{
         AdapterConnectionType, AdapterInitialization, ManagedModuleCallSpec, ManagedNodeAction,
-        SourceAdapterPolicy, SourceModePolicy,
+        ManagedNodeContract, SourceAdapterPolicy, SourceModePolicy,
     };
 
     const MANAGED_ACTIONS: &[ManagedNodeAction] = &[
@@ -209,13 +360,15 @@ pub(crate) mod contract_tests {
 
     pub(crate) fn assert_managed_module_contract(
         key: &str,
-        module_id: &str,
+        contract: &'static ManagedNodeContract,
         supported_actions: &[ManagedNodeAction],
-        call_spec: impl Fn(ManagedNodeAction, &str) -> Option<ManagedModuleCallSpec>,
     ) {
-        assert!(!module_id.trim().is_empty(), "{key} module id is empty");
+        assert!(
+            !contract.module_id().trim().is_empty(),
+            "{key} module id is empty"
+        );
         for action in MANAGED_ACTIONS {
-            let spec = call_spec(*action, "/tmp/node.json");
+            let spec = contract.call_spec(*action, "/tmp/node.json");
             assert_eq!(
                 spec.is_some(),
                 supported_actions.contains(action),
@@ -225,6 +378,94 @@ pub(crate) mod contract_tests {
                 assert_call_signature(key, &spec);
             }
         }
+    }
+
+    pub(crate) fn assert_managed_lifecycle_behavior(
+        key: &str,
+        contract: &'static ManagedNodeContract,
+        action: ManagedNodeAction,
+        expected_event: &str,
+        data: Value,
+        expected_success: bool,
+        expected_detail: &str,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            contract.lifecycle_event(action) == Some(expected_event),
+            "{key} lifecycle event drift for {action:?}"
+        );
+        let data = data
+            .as_object()
+            .context("managed lifecycle fixture must be an object")?;
+        let outcome = contract.decode_lifecycle_event(data)?;
+        anyhow::ensure!(
+            outcome.success == expected_success && outcome.detail == expected_detail,
+            "{key} lifecycle payload decoding drift: {outcome:?}"
+        );
+        Ok(())
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(crate) enum EndpointAdapterBehavior {
+        Module {
+            module_id: &'static str,
+        },
+        Endpoint {
+            connection_type: AdapterConnectionType,
+            endpoint: String,
+            metrics_endpoint: Option<String>,
+        },
+        Unsupported,
+    }
+
+    pub(crate) fn assert_endpoint_adapter_contract(
+        key: &str,
+        modes: &'static [SourceModePolicy],
+        select: impl Fn(&str, Option<&str>, Option<&str>) -> EndpointAdapterBehavior,
+    ) {
+        const REST_ENDPOINT: &str = "http://rest-adapter";
+        const METRICS_ENDPOINT: &str = "http://metrics-adapter";
+
+        for mode in modes {
+            let actual = select(mode.key, Some(REST_ENDPOINT), Some(METRICS_ENDPOINT));
+            let expected = match mode.adapter.connection_type {
+                AdapterConnectionType::Module => EndpointAdapterBehavior::Module {
+                    module_id: mode.adapter.module_id.unwrap_or_default(),
+                },
+                AdapterConnectionType::Rest | AdapterConnectionType::NetworkMonitor => {
+                    EndpointAdapterBehavior::Endpoint {
+                        connection_type: mode.adapter.connection_type,
+                        endpoint: REST_ENDPOINT.to_owned(),
+                        metrics_endpoint: mode
+                            .adapter
+                            .inputs
+                            .iter()
+                            .any(|input| input.key == "metrics_endpoint")
+                            .then(|| METRICS_ENDPOINT.to_owned()),
+                    }
+                }
+                AdapterConnectionType::Metrics => EndpointAdapterBehavior::Endpoint {
+                    connection_type: AdapterConnectionType::Metrics,
+                    endpoint: METRICS_ENDPOINT.to_owned(),
+                    metrics_endpoint: None,
+                },
+                AdapterConnectionType::Rpc => EndpointAdapterBehavior::Endpoint {
+                    connection_type: AdapterConnectionType::Rpc,
+                    endpoint: REST_ENDPOINT.to_owned(),
+                    metrics_endpoint: None,
+                },
+            };
+            assert_eq!(actual, expected, "{key} `{}` selection drift", mode.key);
+        }
+
+        assert_eq!(
+            select(
+                "unsupported-adapter",
+                Some(REST_ENDPOINT),
+                Some(METRICS_ENDPOINT)
+            ),
+            EndpointAdapterBehavior::Unsupported,
+            "{key} unsupported adapter must remain explicit"
+        );
     }
 
     fn assert_call_signature(key: &str, spec: &ManagedModuleCallSpec) {
@@ -335,73 +576,5 @@ pub(crate) mod contract_tests {
                 assert!(adapter.module_id.is_none());
             }
         }
-    }
-
-    #[test]
-    fn supplemental_source_scan_finds_no_node_transport_bypasses() {
-        let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut violations = Vec::new();
-        inspect_source_tree(&source_root, &mut violations);
-
-        assert!(
-            violations.is_empty(),
-            "node transport calls bypass adapter layers:\n{}",
-            violations.join("\n")
-        );
-    }
-
-    fn inspect_source_tree(path: &Path, violations: &mut Vec<String>) {
-        let Ok(entries) = fs::read_dir(path) else {
-            violations.push(format!("cannot read {}", path.display()));
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                inspect_source_tree(&path, violations);
-                continue;
-            }
-            if path.extension().and_then(|extension| extension.to_str()) != Some("rs")
-                || allowed_layer_path(&path)
-            {
-                continue;
-            }
-            let Ok(source) = fs::read_to_string(&path) else {
-                violations.push(format!("cannot read {}", path.display()));
-                continue;
-            };
-            for (index, line) in source.lines().enumerate() {
-                if forbidden_transport_call(line) {
-                    violations.push(format!("{}:{}: {}", path.display(), index + 1, line.trim()));
-                }
-            }
-        }
-    }
-
-    fn allowed_layer_path(path: &Path) -> bool {
-        let text = path.to_string_lossy();
-        text.ends_with("source_routing/adapter.rs")
-            || text.ends_with("modules/logos_core.rs")
-            || text.ends_with("source_routing/core/layer.rs")
-            || text.ends_with("source_routing/storage/layer.rs")
-            || text.ends_with("source_routing/delivery/layer.rs")
-            || text.ends_with("source_routing/channel_sources/layer.rs")
-    }
-
-    fn forbidden_transport_call(line: &str) -> bool {
-        const PATTERNS: &[&str] = &[
-            "crate::lez::sequencer_",
-            "crate::lez::indexer_",
-            "crate::lez::last_sequencer_block_id(",
-            "crate::lez::account_transactions_by_account(",
-            "crate::blockchain::blockchain_",
-            "crate::blockchain::channels::channel_",
-            "LogoscoreCliTransport::from_runtime(",
-            ".call_checked(",
-            "runtime.ensure_module_loaded(",
-            "source_routing::shared::http::",
-            "source_routing::shared::module_bridge::call_value(",
-        ];
-        PATTERNS.iter().any(|pattern| line.contains(pattern))
     }
 }

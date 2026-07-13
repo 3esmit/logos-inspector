@@ -88,8 +88,8 @@ TestCase {
         model.deliveryModuleEventRevision = 0
         model.deliveryConnectionStatus = ""
         model.deliveryNodeStatus = ""
-        model.socialCommentState = ({})
-        model.socialCommentRevision = 0
+        model.social.socialCommentState = ({})
+        model.social.socialCommentRevision = 0
         model.blocksPageRows = []
         model.blocksPageSlotFrom = 0
         model.blocksPageSlotTo = 0
@@ -151,8 +151,8 @@ TestCase {
         ]))
 
         compare(model.deliveryModuleEventRows()[0].label, "messageReceived")
-        compare(model.socialComments(topic).length, 1)
-        compare(model.socialComments(topic)[0].body, "hello")
+        compare(model.social.commentsView(topic).rows.length, 1)
+        compare(model.social.commentsView(topic).rows[0].body, "hello")
     }
 
     function test_ingest_blockchain_event_updates_live_rows() {

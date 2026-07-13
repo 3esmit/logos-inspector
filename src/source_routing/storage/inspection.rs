@@ -1,6 +1,9 @@
 use serde_json::{Value, json};
 
-use super::layer::{self, StorageAdapter};
+use super::{
+    layer::{self, StorageAdapter},
+    transport,
+};
 use crate::{
     ProbeReport,
     modules::ModuleReport,
@@ -145,7 +148,7 @@ async fn http_json_probe(endpoint: &str, step: &StorageProbeStep) -> ProbeReport
         step.key,
         step.label,
         http::rest_url(endpoint, &step.path),
-        layer::probe_value(endpoint, &step.path)
+        transport::probe_value(endpoint, &step.path)
             .await
             .map(|value| normalize_http_probe_value(value, &step.normalizer)),
     )
@@ -230,7 +233,7 @@ async fn storage_metrics_report(endpoint: &str) -> SourceReport {
             key: SourceProbeKey::StorageCollectMetrics,
             label: "storage_metrics.collectMetrics",
         },
-        layer::probe_metrics(endpoint).await,
+        transport::probe_metrics(endpoint).await,
     )
 }
 
@@ -239,7 +242,7 @@ async fn storage_metrics_probe(metrics_endpoint: &str) -> ProbeReport {
         SourceProbeKey::StorageCollectMetrics,
         "storage_rest.collectMetrics",
         metrics_endpoint,
-        layer::probe_metrics(metrics_endpoint).await,
+        transport::probe_metrics(metrics_endpoint).await,
     )
 }
 

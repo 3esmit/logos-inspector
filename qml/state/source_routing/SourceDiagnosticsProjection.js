@@ -7,7 +7,7 @@ function probe(model, family, report, method) {
 
 function probeValue(model, family, report, method) {
     const value = model.reportProbeValue(report, method)
-    return value !== null ? value : model.moduleProbeValue(family, method)
+    return value !== null ? value : model.metrics.moduleProbeValue(family, method)
 }
 
 function probeKnown(page, family, method) {
@@ -24,17 +24,17 @@ function probeSkipped(item) {
 }
 
 function metricDisplay(model, key) {
-    const value = model.dashboardMetricValue(key)
+    const value = model.metrics.dashboardMetricValue(key)
     return value === null || value === undefined ? qsTr("n/a") : model.valueText(value)
 }
 
 function metricKnown(model, key) {
-    const value = model.dashboardMetricValue(key)
+    const value = model.metrics.dashboardMetricValue(key)
     return value !== null && value !== undefined
 }
 
 function metricTone(theme, model, key) {
-    const value = Number(model.dashboardMetricValue(key))
+    const value = Number(model.metrics.dashboardMetricValue(key))
     if (!Number.isFinite(value)) {
         return theme.textMuted
     }

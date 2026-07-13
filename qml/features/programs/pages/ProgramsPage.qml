@@ -18,7 +18,7 @@ ColumnLayout {
     required property Theme theme
     required property AppModel model
     readonly property bool hasResponse: root.model.pageHasOutput("programs")
-    readonly property var responseValue: root.hasResponse ? root.model.resultValue : null
+    readonly property var responseValue: root.hasResponse ? root.model.shell.resultValue : null
 
     width: parent ? parent.width : 900
     spacing: 16
@@ -152,15 +152,15 @@ ColumnLayout {
     Panel {
         visible: root.hasResponse
         theme: root.theme
-        title: root.model.resultIsError ? qsTr("Program error") : qsTr("Program response")
+        title: root.model.shell.resultIsError ? qsTr("Program error") : qsTr("Program response")
 
         RowLayout {
             spacing: root.theme.gapSmall
             Layout.fillWidth: true
 
             Text {
-                text: root.model.resultTitle
-                color: root.model.resultIsError ? root.theme.error : root.theme.textMuted
+                text: root.model.shell.resultTitle
+                color: root.model.shell.resultIsError ? root.theme.error : root.theme.textMuted
                 textFormat: Text.PlainText
                 font.pixelSize: root.theme.secondaryText
                 font.weight: Font.Medium
@@ -171,23 +171,23 @@ ColumnLayout {
             ActionButton {
                 theme: root.theme
                 text: qsTr("Clear")
-                enabled: root.model.resultText.length > 0 || root.model.resultValue !== null
+                enabled: root.model.shell.resultText.length > 0 || root.model.shell.resultValue !== null
                 Layout.preferredWidth: 84
-                onClicked: root.model.clearResult()
+                onClicked: root.model.shell.clearResult()
             }
         }
 
         StatusMessage {
-            visible: root.model.resultIsError
+            visible: root.model.shell.resultIsError
             theme: root.theme
             tone: "warning"
             title: qsTr("Call failed")
-            message: root.model.resultText
+            message: root.model.shell.resultText
             Layout.fillWidth: true
         }
 
         GridLayout {
-            visible: !root.model.resultIsError
+            visible: !root.model.shell.resultIsError
             columns: root.width < 760 ? 2 : 4
             columnSpacing: root.theme.gap
             rowSpacing: root.theme.gap
@@ -198,7 +198,7 @@ ColumnLayout {
                 compact: true
                 label: qsTr("Status")
                 value: qsTr("OK")
-                delta: root.model.resultTitle
+                delta: root.model.shell.resultTitle
                 deltaColor: root.theme.success
             }
 
@@ -254,9 +254,9 @@ ColumnLayout {
         TextArea {
             visible: true
             readOnly: true
-            text: root.model.resultText.length ? root.model.resultText : qsTr("No response body.")
+            text: root.model.shell.resultText.length ? root.model.shell.resultText : qsTr("No response body.")
             wrapMode: TextArea.Wrap
-            color: root.model.resultText.length ? root.theme.text : root.theme.textMuted
+            color: root.model.shell.resultText.length ? root.theme.text : root.theme.textMuted
             selectedTextColor: root.theme.selectedText
             selectionColor: root.theme.accent
             textFormat: Text.PlainText
@@ -267,13 +267,13 @@ ColumnLayout {
             topPadding: 10
             bottomPadding: 10
             Layout.fillWidth: true
-            Layout.preferredHeight: root.model.resultIsError ? 120 : 220
+            Layout.preferredHeight: root.model.shell.resultIsError ? 120 : 220
 
             background: Rectangle {
-                color: root.model.resultIsError ? root.theme.errorMuted : root.theme.field
+                color: root.model.shell.resultIsError ? root.theme.errorMuted : root.theme.field
                 radius: root.theme.radius
                 border.width: 1
-                border.color: root.model.resultIsError ? root.theme.error : root.theme.outline
+                border.color: root.model.shell.resultIsError ? root.theme.error : root.theme.outline
             }
         }
     }
@@ -355,7 +355,7 @@ ColumnLayout {
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Summarize")
-                    enabled: !root.model.busy && idlJson.text.trim().length > 0
+                    enabled: !root.model.shell.busy && idlJson.text.trim().length > 0
                     Layout.fillWidth: true
                     onClicked: root.model.callInspector("spelIdl", [idlJson.text], qsTr("SPEL IDL"))
                 }
@@ -429,7 +429,7 @@ ColumnLayout {
                     ActionButton {
                         theme: root.theme
                         text: qsTr("Browse")
-                        enabled: !root.model.busy
+                        enabled: !root.model.shell.busy
                         Layout.preferredWidth: 96
                         onClicked: programFileDialog.open()
                     }
@@ -444,7 +444,7 @@ ColumnLayout {
                     theme: root.theme
                     text: qsTr("Inspect")
                     primary: true
-                    enabled: !root.model.busy && programPath.text.trim().length > 0
+                    enabled: !root.model.shell.busy && programPath.text.trim().length > 0
                     Layout.preferredWidth: 124
                     onClicked: root.model.callInspector("programFile", [programPath.text], qsTr("Program file"))
                 }
@@ -452,7 +452,7 @@ ColumnLayout {
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Deploy")
-                    enabled: !root.model.busy && programPath.text.trim().length > 0 && root.model.walletProfileConfigured()
+                    enabled: !root.model.shell.busy && programPath.text.trim().length > 0 && root.model.walletProfileConfigured()
                     Layout.preferredWidth: 124
                     onClicked: deployProgramConfirm.open()
                 }
@@ -460,7 +460,7 @@ ColumnLayout {
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Wallet")
-                    enabled: !root.model.busy
+                    enabled: !root.model.shell.busy
                     Layout.preferredWidth: 104
                     onClicked: root.model.entityNavigation.openLocalWallet("", "profiles")
                 }
@@ -487,7 +487,7 @@ ColumnLayout {
                 title: qsTr("Deploy program")
                 message: qsTr("This runs the configured local wallet deploy-program command for %1.").arg(root.shortPath(programPath.text))
                 confirmText: qsTr("Deploy")
-                confirmEnabled: !root.model.busy && programPath.text.trim().length > 0 && root.model.walletProfileConfigured()
+                confirmEnabled: !root.model.shell.busy && programPath.text.trim().length > 0 && root.model.walletProfileConfigured()
                 onAccepted: root.model.deployProgramBinary(programPath.text)
             }
         }
@@ -501,7 +501,7 @@ ColumnLayout {
 
             StatusMessage {
                 theme: root.theme
-                tone: root.model.sharedIdlPolicy === "disabled" ? "warning" : "info"
+                tone: root.model.social.sharedIdlPolicy === "disabled" ? "warning" : "info"
                 title: qsTr("Shared IDLs")
                 message: root.sharedPolicyText()
                 Layout.fillWidth: true
@@ -516,33 +516,33 @@ ColumnLayout {
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Suggest")
-                    selected: root.model.sharedIdlPolicy === "suggestion"
+                    selected: root.model.social.sharedIdlPolicy === "suggestion"
                     Layout.fillWidth: true
-                    onClicked: root.model.setSharedIdlPolicy("suggestion")
+                    onClicked: root.model.social.setSharedIdlPolicy("suggestion")
                 }
 
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Session")
-                    selected: root.model.sharedIdlPolicy === "sessionOnly"
+                    selected: root.model.social.sharedIdlPolicy === "sessionOnly"
                     Layout.fillWidth: true
-                    onClicked: root.model.setSharedIdlPolicy("sessionOnly")
+                    onClicked: root.model.social.setSharedIdlPolicy("sessionOnly")
                 }
 
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Auto-register")
-                    selected: root.model.sharedIdlPolicy === "autoRegister"
+                    selected: root.model.social.sharedIdlPolicy === "autoRegister"
                     Layout.fillWidth: true
-                    onClicked: root.model.setSharedIdlPolicy("autoRegister")
+                    onClicked: root.model.social.setSharedIdlPolicy("autoRegister")
                 }
 
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Disabled")
-                    selected: root.model.sharedIdlPolicy === "disabled"
+                    selected: root.model.social.sharedIdlPolicy === "disabled"
                     Layout.fillWidth: true
-                    onClicked: root.model.setSharedIdlPolicy("disabled")
+                    onClicked: root.model.social.setSharedIdlPolicy("disabled")
                 }
             }
 
@@ -550,9 +550,9 @@ ColumnLayout {
                 id: autoShare
 
                 text: qsTr("Auto-share verified local IDLs")
-                checked: root.model.sharedIdlAutoShare
+                checked: root.model.social.sharedIdlAutoShare
                 palette.text: root.theme.text
-                onToggled: root.model.setSharedIdlAutoShare(checked)
+                onToggled: root.model.social.setSharedIdlAutoShare(checked)
                 Layout.fillWidth: true
             }
         }
@@ -589,7 +589,7 @@ ColumnLayout {
                 theme: root.theme
                 text: qsTr("Decode event")
                 primary: true
-                enabled: !root.model.busy && eventData.text.trim().length > 0 && eventIdl.text.trim().length > 0
+                enabled: !root.model.shell.busy && eventData.text.trim().length > 0 && eventIdl.text.trim().length > 0
                 Layout.preferredWidth: 140
                 onClicked: root.model.callInspector("decodeEvent", [eventData.text, eventIdl.text, eventName.text], qsTr("Event decode"))
             }

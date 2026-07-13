@@ -1,37 +1,37 @@
-use anyhow::{Context as _, Result};
-use serde_json::{Value, json};
+use anyhow::{Context as _, Result, bail};
+use serde_json::{Map, Value, json};
 
-use crate::source_routing::{SourceArgsNormalization, normalized_source_args};
+use crate::{source_routing::NodeOperationRequest, support::args::Args};
 
+use super::delivery;
 use super::spec::{OperationDomain, OperationExclusiveGroup, OperationMethod};
 use super::storage;
-
-#[derive(Debug, Clone, Default)]
-pub(super) struct OperationSourceSelection {
-    source_mode: String,
-    endpoint: String,
-    module: String,
-    mutating_enabled: bool,
-}
 
 #[derive(Debug, Clone)]
 pub(crate) struct RuntimeOperationRequest {
     pub(super) domain: String,
     pub(super) method: OperationMethod,
-    pub(super) source: OperationSourceSelection,
+    node_request: Option<NodeOperationRequest>,
     pub(super) args: Value,
     pub(super) label: String,
 }
 
 impl RuntimeOperationRequest {
-    pub(crate) fn from_call(method: OperationMethod, args: Value, label: &str) -> Self {
-        Self {
+    pub(crate) fn from_call(method: OperationMethod, args: Value, label: &str) -> Result<Self> {
+        let node_request = if node_domain(method.domain()) {
+            Some(NodeOperationRequest::from_bridge_args(&Args::new(
+                args.clone(),
+            )?)?)
+        } else {
+            None
+        };
+        Ok(Self {
             domain: method.domain().as_str().to_owned(),
             method,
-            source: OperationSourceSelection::default(),
+            node_request,
             args,
             label: label.to_owned(),
-        }
+        })
     }
 
     pub(crate) fn method_name(&self) -> &'static str {
@@ -54,6 +54,12 @@ impl RuntimeOperationRequest {
         self.method.exclusive_group()
     }
 
+    pub(super) fn node_request(&self) -> Result<&NodeOperationRequest> {
+        self.node_request
+            .as_ref()
+            .context("typed node operation request is required")
+    }
+
     #[cfg(test)]
     pub(crate) fn args(&self) -> &Value {
         &self.args
@@ -71,28 +77,35 @@ pub(crate) fn runtime_operation_request_from_value(
         .context("runtime operation method is required")?;
     let method = OperationMethod::from_str(&method)
         .with_context(|| format!("unknown runtime operation method `{method}`"))?;
-    let domain =
-        object_string(object, "domain").unwrap_or_else(|| method.domain().as_str().to_owned());
+    if let Some(domain) = object_string(object, "domain")
+        && domain != method.domain().as_str()
+    {
+        bail!(
+            "runtime operation domain `{domain}` does not match method `{}`",
+            method.as_str()
+        );
+    }
+    let node_request = if node_domain(method.domain()) {
+        Some(NodeOperationRequest::from_value(&value)?)
+    } else {
+        None
+    };
     let args = object
         .get("args")
         .cloned()
         .unwrap_or_else(|| Value::Array(Vec::new()));
-    let label = object_string(object, "label").unwrap_or_else(|| method.label().to_owned());
-    let source = OperationSourceSelection::from_object(object);
-    let mut request = RuntimeOperationRequest {
-        domain,
+    let request = RuntimeOperationRequest {
+        domain: method.domain().as_str().to_owned(),
         method,
-        source,
+        node_request,
         args,
-        label,
+        label: object_string(object, "label").unwrap_or_else(|| method.label().to_owned()),
     };
-    request.args = request
-        .source
-        .normalized_args(&request.domain, request.method, &request.args);
+    validate_node_request(&request)?;
     Ok(request)
 }
 
-fn object_string(object: &serde_json::Map<String, Value>, key: &str) -> Option<String> {
+fn object_string(object: &Map<String, Value>, key: &str) -> Option<String> {
     object
         .get(key)
         .and_then(Value::as_str)
@@ -101,71 +114,51 @@ fn object_string(object: &serde_json::Map<String, Value>, key: &str) -> Option<S
         .map(ToOwned::to_owned)
 }
 
-impl OperationSourceSelection {
-    fn from_object(object: &serde_json::Map<String, Value>) -> Self {
-        Self {
-            source_mode: object_string(object, "sourceMode").unwrap_or_default(),
-            endpoint: object_string(object, "endpoint").unwrap_or_default(),
-            module: object_string(object, "module").unwrap_or_default(),
-            mutating_enabled: object
-                .get("mutatingEnabled")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-        }
-    }
+fn node_domain(domain: OperationDomain) -> bool {
+    matches!(domain, OperationDomain::Storage | OperationDomain::Delivery)
+}
 
-    fn normalized_args(&self, domain: &str, method: OperationMethod, args: &Value) -> Value {
-        normalized_source_args(SourceArgsNormalization {
-            domain,
-            source_mode: &self.source_mode,
-            endpoint: &self.endpoint,
-            args,
-            inserts_mutating_flag: method.uses_mutating_flag(),
-            mutating_enabled: self.mutating_enabled,
-        })
-    }
-
-    fn backend_from_args(&self, args: &Value) -> String {
-        if !self.source_mode.is_empty() {
-            return self.source_mode.clone();
-        }
-        if !self.module.is_empty() {
-            return self.module.clone();
-        }
-        if !self.endpoint.is_empty() {
-            return self.endpoint.clone();
-        }
-        args.as_array()
-            .and_then(|values| values.first())
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("direct")
-            .to_owned()
-    }
-
-    fn add_context_fields(&self, context: &mut serde_json::Map<String, Value>) {
-        if !self.endpoint.is_empty() {
-            context.insert("endpoint".to_owned(), json!(self.endpoint));
-        }
-        if !self.source_mode.is_empty() {
-            context.insert("source".to_owned(), json!(self.source_mode));
-        }
-        if self.mutating_enabled {
-            context.insert("mutatingEnabled".to_owned(), json!(true));
-        }
+fn validate_node_request(request: &RuntimeOperationRequest) -> Result<()> {
+    match request.method.domain() {
+        OperationDomain::Storage => storage::validate(request),
+        OperationDomain::Delivery => delivery::validate(request),
+        _ => Ok(()),
     }
 }
 
 pub(super) fn runtime_operation_backend(request: &RuntimeOperationRequest) -> String {
-    request.source.backend_from_args(&request.args)
+    if let Some(node_request) = &request.node_request {
+        return node_request.source_mode().to_owned();
+    }
+    request
+        .args
+        .as_array()
+        .and_then(|values| values.first())
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("direct")
+        .to_owned()
 }
 
 pub(super) fn runtime_operation_context(request: &RuntimeOperationRequest) -> Value {
-    let mut context = serde_json::Map::new();
-    request.source.add_context_fields(&mut context);
-    if request.method.domain() == OperationDomain::Storage {
-        storage::add_operation_context(request, &mut context);
+    let mut context = Map::new();
+    if let Some(node_request) = &request.node_request {
+        context.insert("source".to_owned(), json!(node_request.source_mode()));
+        if let Some(endpoint) = node_request
+            .input("rest_endpoint")
+            .or_else(|| node_request.input("rpc_endpoint"))
+        {
+            context.insert("endpoint".to_owned(), json!(endpoint));
+        }
+        if node_request.mutating_enabled() {
+            context.insert("mutatingEnabled".to_owned(), json!(true));
+        }
+    }
+    match request.method.domain() {
+        OperationDomain::Storage => storage::add_operation_context(request, &mut context),
+        OperationDomain::Delivery => delivery::add_operation_context(request, &mut context),
+        _ => {}
     }
     Value::Object(context)
 }
@@ -178,29 +171,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn runtime_operation_request_normalizes_storage_source_and_context() -> Result<()> {
+    fn runtime_operation_request_parses_typed_storage_source_and_context() -> Result<()> {
         let request = runtime_operation_request_from_value(json!({
             "domain": "storage",
             "method": "storageDownloadToUrl",
-            "sourceMode": "rest",
-            "endpoint": "http://storage.local/api",
-            "mutatingEnabled": true,
-            "args": ["cid-a", "/tmp/cid-a.bin", false],
+            "adapter": {
+                "source_mode": "rest",
+                "inputs": { "rest_endpoint": "http://storage.local/api" }
+            },
+            "mutating_enabled": true,
+            "payload": {
+                "cid": "cid-a",
+                "path": "/tmp/cid-a.bin",
+                "local_only": false
+            },
             "label": "Download"
         }))?;
 
-        if request.args
-            != json!([
-                "rest",
-                "http://storage.local/api",
-                true,
-                "cid-a",
-                "/tmp/cid-a.bin",
-                false
-            ])
-        {
-            bail!("unexpected normalized args: {:?}", request.args);
-        }
         if runtime_operation_context(&request)
             != json!({
                 "endpoint": "http://storage.local/api",
@@ -216,21 +203,25 @@ mod tests {
     }
 
     #[test]
-    fn runtime_operation_context_keeps_non_storage_context_generic() -> Result<()> {
+    fn runtime_operation_context_keeps_delivery_context_typed() -> Result<()> {
         let request = runtime_operation_request_from_value(json!({
             "domain": "delivery",
             "method": "deliverySend",
-            "sourceMode": "rest",
-            "endpoint": "http://delivery.local",
-            "mutatingEnabled": true,
-            "args": ["/topic", "hello"]
+            "adapter": {
+                "source_mode": "rest",
+                "inputs": { "rest_endpoint": "http://delivery.local" }
+            },
+            "mutating_enabled": true,
+            "payload": { "topic": "/topic", "payload": "hello" }
         }))?;
 
         if runtime_operation_context(&request)
             != json!({
                 "endpoint": "http://delivery.local",
                 "source": "rest",
-                "mutatingEnabled": true
+                "mutatingEnabled": true,
+                "contentTopic": "/topic",
+                "bytes": "5"
             })
         {
             bail!("unexpected delivery context");

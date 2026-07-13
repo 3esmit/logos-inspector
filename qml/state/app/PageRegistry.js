@@ -150,7 +150,7 @@ function navItemMatches(item, normalized) {
 }
 
 function viewTitle(root) {
-    const item = navItemForView(root, root.currentView)
+    const item = navItemForView(root, root.shell.currentView)
     if (item) {
         return item.label
     }

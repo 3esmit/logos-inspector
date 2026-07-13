@@ -12,6 +12,7 @@ TestCase {
 
         property int footerFieldRevision: 0
         property string storageNetworkPreset: ""
+        readonly property var metrics: model
 
         function footerFieldEnabled(key) {
             return key === "overall.status"

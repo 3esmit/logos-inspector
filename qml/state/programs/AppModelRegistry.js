@@ -75,13 +75,13 @@ function updateKnownProgramIds(root, value) {
 function registerIdl(root, name, programId, json, programBinary) {
     with (root) {
         if (!json.trim().length) {
-            setResult(qsTr("IDL registry"), qsTr("IDL JSON is required."), true)
+            shell.setResult(qsTr("IDL registry"), qsTr("IDL JSON is required."), true)
             return
         }
 
         const parsed = BridgeHelpers.parseJson(json)
         if (!parsed.ok) {
-            setResult(qsTr("IDL registry"), qsTr("Invalid IDL JSON: %1").arg(parsed.error), true)
+            shell.setResult(qsTr("IDL registry"), qsTr("Invalid IDL JSON: %1").arg(parsed.error), true)
             return
         }
 
@@ -90,11 +90,11 @@ function registerIdl(root, name, programId, json, programBinary) {
         const resolvedProgramId = programId.trim()
         const resolvedProgramIdHex = resolvedProgramId.length ? root.canonicalProgramIdHex(resolvedProgramId) : ""
         if (!resolvedProgramId.length) {
-            setResult(qsTr("IDL registry"), qsTr("Program ID is required for automatic decode."), true)
+            shell.setResult(qsTr("IDL registry"), qsTr("Program ID is required for automatic decode."), true)
             return
         }
         if (resolvedProgramId.length && !resolvedProgramIdHex.length) {
-            setResult(qsTr("IDL registry"), qsTr("Program ID must be hex or base58."), true)
+            shell.setResult(qsTr("IDL registry"), qsTr("Program ID must be hex or base58."), true)
             return
         }
         registeredIdls.append({
@@ -110,7 +110,7 @@ function registerIdl(root, name, programId, json, programBinary) {
             sharedAccountId: ""
         })
         saveIdlState()
-        setResult(qsTr("IDL registry"), qsTr("Saved %1.").arg(resolvedName), false)
+        shell.setResult(qsTr("IDL registry"), qsTr("Saved %1.").arg(resolvedName), false)
     }
 }
 

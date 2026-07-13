@@ -6,7 +6,6 @@ function runtimeOperationStart(root, request, showResult, callback) {
         const label = String(operationRequest.label || operationRequest.method || qsTr("Runtime operation"))
         return requestModuleAsync(inspectorModule, "runtimeOperationStart", [operationRequest], label, showResult === true, function (response) {
             if (response && response.ok) {
-                response.value = operationWithRestartRequest(response.value, operationRequest)
                 coreUpdateRuntimeOperation(root, response.value)
             }
             if (callback) {
@@ -24,7 +23,6 @@ function runtimeOperationStatus(root, operationId, showResult, callback) {
         }
         return requestModuleAsync(inspectorModule, "runtimeOperationStatus", [id], qsTr("Runtime operation"), showResult === true, function (response) {
             if (response && response.ok) {
-                response.value = operationWithPreviousRestartRequest(root, id, response.value)
                 coreUpdateRuntimeOperation(root, response.value)
             }
             if (callback) {
@@ -66,7 +64,6 @@ function runtimeOperationCancel(root, operationId, showResult, callback) {
         }
         return requestModuleAsync(inspectorModule, "runtimeOperationCancel", [id], qsTr("Cancel operation"), showResult === true, function (response) {
             if (response && response.ok) {
-                response.value = operationWithPreviousRestartRequest(root, id, response.value)
                 coreUpdateRuntimeOperation(root, response.value)
             }
             if (callback) {
@@ -82,7 +79,7 @@ function updateRuntimeOperation(root, operation) {
 
 function coreUpdateRuntimeOperation(root, operation) {
     with (root) {
-        const value = operationWithPreviousRestartRequest(root, "", operation || null)
+        const value = operation || null
         const operationId = String(value && value.operationId ? value.operationId : "")
         if (!operationId.length) {
             return
@@ -96,29 +93,6 @@ function coreUpdateRuntimeOperation(root, operation) {
         runtimeOperations = next
         runtimeOperationsRevision += 1
     }
-}
-
-function operationWithPreviousRestartRequest(root, operationId, operation) {
-    const value = operation || null
-    if (!value || value.restartRequest !== undefined || value.restart_request !== undefined) {
-        return value
-    }
-    const id = String(operationId || value.operationId || "")
-    const previous = id.length && root.runtimeOperations ? root.runtimeOperations[id] : null
-    if (!previous || previous.restartRequest === undefined) {
-        return value
-    }
-    return operationWithRestartRequest(value, previous.restartRequest)
-}
-
-function operationWithRestartRequest(operation, restartRequest) {
-    const value = operation || null
-    if (!value || !restartRequest || value.restartRequest !== undefined || value.restart_request !== undefined) {
-        return value
-    }
-    const next = copyObject(value)
-    next.restartRequest = copyObject(restartRequest)
-    return next
 }
 
 function runtimeOperationTerminal(root, operation) {

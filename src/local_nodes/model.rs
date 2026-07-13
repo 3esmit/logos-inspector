@@ -25,33 +25,6 @@ impl NodeKind {
             Self::Messaging => "messaging",
         }
     }
-
-    pub(super) fn label(self) -> &'static str {
-        match self {
-            Self::Bedrock => "Bedrock",
-            Self::Sequencer => "Local Sequencer",
-            Self::Indexer => "Indexer",
-            Self::Storage => "Storage",
-            Self::Messaging => "Messaging",
-        }
-    }
-
-    pub(super) fn default_port(self) -> Option<u16> {
-        match self {
-            Self::Bedrock => Some(8080),
-            Self::Sequencer => Some(3040),
-            Self::Indexer => Some(8779),
-            Self::Storage => None,
-            Self::Messaging => Some(8645),
-        }
-    }
-
-    pub(super) fn endpoint(self, port: Option<u16>) -> Option<String> {
-        if self == Self::Storage {
-            return None;
-        }
-        port.map(|value| format!("http://127.0.0.1:{value}/"))
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -7,7 +7,7 @@ function refreshBlocksPage(root, anchorSlot) {
         const node = requestModule(inspectorModule, "blockchainNode", root.blockchainArgs([]), qsTr("Blocks node state"), false)
         if (!node.ok) {
             blocksPageError = node.error
-            setResult(qsTr("Blocks"), blocksPageError, true)
+            shell.setResult(qsTr("Blocks"), blocksPageError, true)
             return
         }
 
@@ -18,7 +18,7 @@ function refreshBlocksPage(root, anchorSlot) {
         const blocks = requestModule(inspectorModule, "blockchainBlocks", root.blockchainArgs([slotFrom, slotTo, blockLimit]), qsTr("Blocks"), false)
         if (!blocks.ok) {
             blocksPageError = blocks.error
-            setResult(qsTr("Blocks"), blocksPageError, true)
+            shell.setResult(qsTr("Blocks"), blocksPageError, true)
             return
         }
 
@@ -28,12 +28,12 @@ function refreshBlocksPage(root, anchorSlot) {
         if (!Array.isArray(blocks.value)) {
             blocksPageRows = []
             blocksPageError = qsTr("Response shape unknown. Raw JSON remains available.")
-            setResult(qsTr("Blocks"), BridgeHelpers.formatValue(blocks.value), false, blocks.value)
+            shell.setResult(qsTr("Blocks"), BridgeHelpers.formatValue(blocks.value), false, blocks.value)
             return
         }
         blocksPageRows = sortedBlocks(blocks.value).slice(0, blocksPageLimit)
         blocksPageError = ""
-        setResult(qsTr("Blocks"), BridgeHelpers.formatValue(blocksPageRows), false, blocksPageRows)
+        shell.setResult(qsTr("Blocks"), BridgeHelpers.formatValue(blocksPageRows), false, blocksPageRows)
     }
 }
 
@@ -163,7 +163,7 @@ function applyLiveBlockReport(root, report, options) {
         blocksPageError = ""
         if (opts.updateResult === true) {
             const title = String(opts.resultTitle || qsTr("Live blocks"))
-            setResult(title, BridgeHelpers.formatValue(liveReport), false, liveReport)
+            shell.setResult(title, BridgeHelpers.formatValue(liveReport), false, liveReport)
         }
         return liveReport
     }

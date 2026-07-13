@@ -12,9 +12,23 @@ use crate::{
     rpc::RawRpcReport,
     source_routing::adapter::{
         AdapterConnectionType, AdapterInputPolicy, ManagedModuleCallSpec, ManagedNodeAction,
-        SourceAdapterPolicy, SourceModePolicy,
+        ManagedNodeContract, SourceAdapterPolicy, SourceModePolicy,
     },
 };
+
+static MANAGED_CONTRACT: ManagedNodeContract = ManagedNodeContract::new(
+    BLOCKCHAIN_MODULE,
+    ensure_managed_module,
+    call_managed_module,
+    managed_call_spec,
+    None,
+    None,
+);
+
+#[must_use]
+pub(crate) const fn managed_contract() -> &'static ManagedNodeContract {
+    &MANAGED_CONTRACT
+}
 
 #[must_use]
 pub(crate) const fn module_id() -> &'static str {
@@ -264,6 +278,19 @@ pub(crate) async fn raw_rpc(endpoint: &str, method: &str, params: Value) -> Resu
     crate::rpc::raw_rpc_report(endpoint, method, params).await
 }
 
+pub(crate) async fn wallet_balance(
+    endpoint: &str,
+    public_key: &str,
+    tip: Option<&str>,
+) -> Result<Value> {
+    let mut path = format!("/wallet/{public_key}/balance");
+    if let Some(tip) = tip {
+        path.push_str("?tip=");
+        path.push_str(tip);
+    }
+    crate::rpc::raw_http_json(endpoint, &path).await
+}
+
 pub(crate) async fn catalog_chain_info(
     client: &Client,
     endpoint: &str,
@@ -337,9 +364,8 @@ mod tests {
     fn bedrock_managed_calls_satisfy_shared_contract() {
         assert_managed_module_contract(
             "bedrock",
-            module_id(),
+            managed_contract(),
             &[ManagedNodeAction::Start, ManagedNodeAction::Stop],
-            managed_call_spec,
         );
     }
 

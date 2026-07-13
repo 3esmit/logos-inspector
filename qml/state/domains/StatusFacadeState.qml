@@ -89,7 +89,7 @@ QtObject {
 	        }
 	        for (let i = 0; i < rows.length; ++i) {
 	            const row = rows[i] || {}
-	            if (String(row.method || "") === "restoreLocalSettingsBackup") {
+	            if (String(row.method || "") === "settingsBackupImportApply") {
 	                if (String(row.status || "") === "applied_for_import") {
 	                    summary.applies += 1
 	                }

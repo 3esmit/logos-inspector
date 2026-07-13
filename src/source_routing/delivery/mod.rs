@@ -1,7 +1,14 @@
-pub(crate) mod adapters;
 mod inspection;
-pub(crate) mod layer;
+mod layer;
+mod operations;
 mod plan;
+mod transport;
 
 pub use inspection::delivery_source_report;
+pub(crate) use layer::{
+    MESSAGING_SOURCE_MODES, managed_config, managed_contract, module_report, report_inputs,
+};
+pub(crate) use operations::{DeliveryOperation, DeliveryOperationRequest, execute_operation};
+#[cfg(test)]
+pub(crate) use operations::{DeliveryStoreQuery, store_query_url};
 pub(crate) use plan::delivery_module_probe_plan;

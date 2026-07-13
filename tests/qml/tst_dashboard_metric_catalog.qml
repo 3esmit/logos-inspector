@@ -14,6 +14,11 @@ TestCase {
         property int dashboardMetricHistoryRevision: 0
         property int storageRollingWindow: 60
         property int messagingRollingWindow: 60
+        property QtObject metrics: QtObject {
+            function dashboardMetricValue(key) {
+                return model.dashboardMetricValue(key)
+            }
+        }
 
         function copyMap(value) {
             const copy = {}

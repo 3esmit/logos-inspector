@@ -23,9 +23,18 @@ QtObject {
     property var connectorConfig: ({})
     property var status: null
     property string statusError: ""
+    property int profileRevision: 0
     property var operations: []
     property var accountsValue: null
     property string accountsError: ""
+
+    onBinaryChanged: invalidateProfileReadiness()
+    onHomeChanged: invalidateProfileReadiness()
+
+    function invalidateProfileReadiness() {
+        profileRevision += 1
+        clearStatus()
+    }
 
     function load(value) {
         loaded = true
@@ -110,21 +119,37 @@ QtObject {
     }
 
     function homeConfigured() {
-        if (String(home || "").trim().length > 0) {
-            return true
-        }
-        const source = String(status && status.home_source ? status.home_source : "")
-        return source.length > 0 && source !== "none"
+        return actionReady("backup_encryption")
     }
 
     function profileConfigured() {
-        return String(binary || "").trim().length > 0 && homeConfigured()
+        return actionReady("command")
     }
 
     function profileUsable() {
         return profileConfigured()
             && status
             && String(status.status || "") === "ok"
+    }
+
+    function actionReady(action) {
+        const readiness = status && status.readiness && typeof status.readiness === "object"
+            ? status.readiness : null
+        if (!readiness) {
+            return false
+        }
+        switch (String(action || "command")) {
+        case "accounts":
+            return readiness.accounts_ready === true
+        case "instruction_submit":
+            return readiness.instruction_submit_ready === true
+        case "backup_encryption":
+            return readiness.backup_encryption_ready === true
+        case "wallet_home":
+            return readiness.wallet_home_ready === true
+        default:
+            return readiness.command_ready === true
+        }
     }
 
     function operationStatus(statusText) {

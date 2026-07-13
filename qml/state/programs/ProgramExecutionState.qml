@@ -80,7 +80,7 @@ QtObject {
             setResult(qsTr("IDL instruction"), qsTr("Another inspection is already running."), true, null)
             return null
         }
-        if (!walletHomeConfigured()) {
+        if (!walletInstructionSubmitReady()) {
             openLocalWallet("profiles")
             setResult(qsTr("IDL instruction"), qsTr("Configure wallet home before sending an IDL instruction."), true, null)
             return null
@@ -172,6 +172,13 @@ QtObject {
             return walletCapability.homeConfigured()
         }
         return gateway && typeof gateway.walletHomeConfigured === "function" && gateway.walletHomeConfigured()
+    }
+
+    function walletInstructionSubmitReady() {
+        if (walletCapability && typeof walletCapability.actionReady === "function") {
+            return walletCapability.actionReady("instruction_submit")
+        }
+        return walletHomeConfigured()
     }
 
     function openLocalWallet(tab) {

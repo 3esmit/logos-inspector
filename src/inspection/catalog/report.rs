@@ -3,9 +3,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     inspection::{
-        CatalogCoverageStatus, CatalogVerificationState, CoveragePrefixStatus,
-        FinalizedBlockCheckpoint, NetworkScope, ZoneDetail, ZoneSourceObservation, ZoneSummary,
-        sources::ZoneSourceAgreement,
+        ActiveZoneContextFields, CatalogCoverageStatus, CatalogVerificationState,
+        CoveragePrefixStatus, FinalizedBlockCheckpoint, NetworkScope, ZoneDetail,
+        ZoneSourceObservation, ZoneSummary, sources::ZoneSourceAgreement,
     },
     source_routing::channel_sources::{ChannelSourceConfig, ChannelSourceConfigApplyRequest},
 };
@@ -363,6 +363,7 @@ pub struct ChannelSourceConfigReport {
     pub source_config_epoch: u64,
     pub observation_revision: u64,
     pub summary_revision: u64,
+    pub active_zone_context_fields: ActiveZoneContextFields,
     pub config: ChannelSourceConfig,
     pub observations: Vec<ZoneSourceObservation>,
     pub agreement: ZoneSourceAgreement,

@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, VecDeque},
-    sync::Mutex,
+    sync::{Arc, Mutex},
 };
 
 use anyhow::{Context as _, Result, bail};
@@ -9,8 +9,8 @@ use serde_json::json;
 use super::*;
 use crate::{
     inspection::{
-        CatalogCoverageStatus, CoveragePrefixStatus, L1FinalityState, NetworkScope,
-        RawActivitySummary, ZoneFacts,
+        CatalogCoverageStatus, CatalogVerificationState, CoveragePrefixStatus, L1FinalityState,
+        NetworkScope, RawActivitySummary, ZoneFacts, ZoneKind,
         catalog::{CatalogFrontier, CatalogIdentityAssurance, CatalogMetadata, CatalogSnapshot},
         l2::{
             InspectionEntityRef, InspectionResolveTargetRequest, InspectionTargetCandidate,
@@ -22,8 +22,8 @@ use crate::{
     },
     lez::{IndexerBlockReport, ProgramIdEntry, TransactionSummary},
     source_routing::channel_sources::{
-        ChannelSourceMonitorSnapshot, ChannelSourceTarget, ConfiguredIndexerSource,
-        ConfiguredSequencerSource,
+        ChannelSourceConfig, ChannelSourceMonitorSnapshot, ChannelSourceTarget,
+        ConfiguredIndexerSource, ConfiguredSequencerSource, PersistedSequencerAttestation,
     },
 };
 
@@ -33,6 +33,14 @@ type CommitmentProof = Option<(u64, Vec<String>)>;
 #[derive(Default)]
 struct ScriptedAdapter {
     state: Mutex<ScriptedState>,
+}
+
+struct ScriptedSequencerAdapter {
+    scripts: Arc<ScriptedAdapter>,
+}
+
+struct ScriptedIndexerAdapter {
+    scripts: Arc<ScriptedAdapter>,
 }
 
 #[derive(Default)]
@@ -81,92 +89,203 @@ impl ScriptedAdapter {
         state.calls.push(call);
         select(&mut state).unwrap_or_else(|| Err(L2SourceError::capability()))
     }
+
+    fn head(&self, source_id: String) -> Script<Option<NormalizedL2Block>> {
+        self.take(format!("head:{source_id}"), |state| {
+            state.heads.get_mut(&source_id)?.pop_front()
+        })
+    }
+
+    fn blocks(
+        &self,
+        source_id: String,
+        before: Option<u64>,
+        limit: u64,
+    ) -> Script<Vec<NormalizedL2Block>> {
+        self.take(format!("blocks:{source_id}:{before:?}:{limit}"), |state| {
+            state.block_pages.get_mut(&source_id)?.pop_front()
+        })
+    }
+
+    fn block_by_id(&self, source_id: String, block_id: u64) -> Script<Option<NormalizedL2Block>> {
+        let key = (source_id.clone(), block_id);
+        self.take(format!("block_id:{source_id}:{block_id}"), |state| {
+            state.blocks_by_id.get_mut(&key)?.pop_front()
+        })
+    }
+
+    fn transaction(
+        &self,
+        source_id: String,
+        transaction_id: String,
+    ) -> Script<Option<TransactionSummary>> {
+        self.take(format!("tx:{source_id}:{transaction_id}"), |state| {
+            state.transactions.get_mut(&source_id)?.pop_front()
+        })
+    }
 }
 
-impl ZoneL2SourceAdapter for ScriptedAdapter {
+impl SequencerL2SourceAdapter for ScriptedSequencerAdapter {
     fn head<'a>(
         &'a self,
-        source: L2SourceDescriptor,
+        source: SequencerL2Source,
     ) -> L2SourceFuture<'a, Option<NormalizedL2Block>> {
-        let source_id = source.source_id;
-        let result = self.take(format!("head:{source_id}"), |state| {
-            state.heads.get_mut(&source_id)?.pop_front()
-        });
+        let result = self.scripts.head(source.source_id().to_owned());
         Box::pin(async move { result })
     }
 
     fn blocks<'a>(
         &'a self,
-        source: L2SourceDescriptor,
+        source: SequencerL2Source,
         before: Option<u64>,
         limit: u64,
     ) -> L2SourceFuture<'a, Vec<NormalizedL2Block>> {
-        let source_id = source.source_id;
-        let result = self.take(format!("blocks:{source_id}:{before:?}:{limit}"), |state| {
-            state.block_pages.get_mut(&source_id)?.pop_front()
-        });
+        let result = self
+            .scripts
+            .blocks(source.source_id().to_owned(), before, limit);
         Box::pin(async move { result })
     }
 
     fn block_by_id<'a>(
         &'a self,
-        source: L2SourceDescriptor,
+        source: SequencerL2Source,
         block_id: u64,
     ) -> L2SourceFuture<'a, Option<NormalizedL2Block>> {
-        let source_id = source.source_id;
-        let key = (source_id.clone(), block_id);
-        let result = self.take(format!("block_id:{source_id}:{block_id}"), |state| {
-            state.blocks_by_id.get_mut(&key)?.pop_front()
-        });
+        let result = self
+            .scripts
+            .block_by_id(source.source_id().to_owned(), block_id);
         Box::pin(async move { result })
     }
 
     fn transaction<'a>(
         &'a self,
-        source: L2SourceDescriptor,
+        source: SequencerL2Source,
         transaction_id: String,
     ) -> L2SourceFuture<'a, Option<TransactionSummary>> {
-        let source_id = source.source_id;
-        let result = self.take(format!("tx:{source_id}:{transaction_id}"), |state| {
-            state.transactions.get_mut(&source_id)?.pop_front()
-        });
-        Box::pin(async move { result })
-    }
-
-    fn block_by_hash<'a>(
-        &'a self,
-        source: L2SourceDescriptor,
-        block_hash: String,
-    ) -> L2SourceFuture<'a, Option<NormalizedL2Block>> {
-        let source_id = source.source_id;
-        let result = self.take(format!("block_hash:{source_id}:{block_hash}"), |state| {
-            state.blocks_by_hash.get_mut(&source_id)?.pop_front()
-        });
+        let result = self
+            .scripts
+            .transaction(source.source_id().to_owned(), transaction_id);
         Box::pin(async move { result })
     }
 
     fn current_account<'a>(
         &'a self,
-        source: L2SourceDescriptor,
+        source: SequencerL2Source,
         account_id: String,
     ) -> L2SourceFuture<'a, L2AccountValue> {
-        let source_id = source.source_id;
-        let result = self.take(
+        let source_id = source.source_id().to_owned();
+        let result = self.scripts.take(
             format!("current_account:{source_id}:{account_id}"),
             |state| state.current_accounts.get_mut(&source_id)?.pop_front(),
         );
         Box::pin(async move { result })
     }
 
+    fn programs<'a>(
+        &'a self,
+        source: SequencerL2Source,
+    ) -> L2SourceFuture<'a, Vec<ProgramIdEntry>> {
+        let source_id = source.source_id().to_owned();
+        let result = self.scripts.take(format!("programs:{source_id}"), |state| {
+            state.programs.get_mut(&source_id)?.pop_front()
+        });
+        Box::pin(async move { result })
+    }
+
+    fn commitment_proof<'a>(
+        &'a self,
+        source: SequencerL2Source,
+        commitment_hex: String,
+    ) -> L2SourceFuture<'a, Option<(u64, Vec<String>)>> {
+        let source_id = source.source_id().to_owned();
+        let result = self
+            .scripts
+            .take(format!("proof:{source_id}:{commitment_hex}"), |state| {
+                state.proofs.get_mut(&source_id)?.pop_front()
+            });
+        Box::pin(async move { result })
+    }
+
+    fn account_nonces<'a>(
+        &'a self,
+        source: SequencerL2Source,
+        account_ids: Vec<String>,
+    ) -> L2SourceFuture<'a, Vec<String>> {
+        let source_id = source.source_id().to_owned();
+        let result = self.scripts.take(
+            format!("nonces:{source_id}:{}", account_ids.len()),
+            |state| state.nonces.get_mut(&source_id)?.pop_front(),
+        );
+        Box::pin(async move { result })
+    }
+}
+
+impl IndexerL2SourceAdapter for ScriptedIndexerAdapter {
+    fn head<'a>(
+        &'a self,
+        source: IndexerL2Source,
+    ) -> L2SourceFuture<'a, Option<NormalizedL2Block>> {
+        let result = self.scripts.head(source.source_id().to_owned());
+        Box::pin(async move { result })
+    }
+
+    fn blocks<'a>(
+        &'a self,
+        source: IndexerL2Source,
+        before: Option<u64>,
+        limit: u64,
+    ) -> L2SourceFuture<'a, Vec<NormalizedL2Block>> {
+        let result = self
+            .scripts
+            .blocks(source.source_id().to_owned(), before, limit);
+        Box::pin(async move { result })
+    }
+
+    fn block_by_id<'a>(
+        &'a self,
+        source: IndexerL2Source,
+        block_id: u64,
+    ) -> L2SourceFuture<'a, Option<NormalizedL2Block>> {
+        let result = self
+            .scripts
+            .block_by_id(source.source_id().to_owned(), block_id);
+        Box::pin(async move { result })
+    }
+
+    fn block_by_hash<'a>(
+        &'a self,
+        source: IndexerL2Source,
+        block_hash: String,
+    ) -> L2SourceFuture<'a, Option<NormalizedL2Block>> {
+        let source_id = source.source_id().to_owned();
+        let result = self
+            .scripts
+            .take(format!("block_hash:{source_id}:{block_hash}"), |state| {
+                state.blocks_by_hash.get_mut(&source_id)?.pop_front()
+            });
+        Box::pin(async move { result })
+    }
+
+    fn transaction<'a>(
+        &'a self,
+        source: IndexerL2Source,
+        transaction_id: String,
+    ) -> L2SourceFuture<'a, Option<TransactionSummary>> {
+        let result = self
+            .scripts
+            .transaction(source.source_id().to_owned(), transaction_id);
+        Box::pin(async move { result })
+    }
+
     fn account_at_block<'a>(
         &'a self,
-        source: L2SourceDescriptor,
+        source: IndexerL2Source,
         account_id: String,
         block_id: u64,
     ) -> L2SourceFuture<'a, L2AccountValue> {
-        let source_id = source.source_id;
+        let source_id = source.source_id().to_owned();
         let key = (source_id.clone(), block_id);
-        let result = self.take(
+        let result = self.scripts.take(
             format!("account_at:{source_id}:{account_id}:{block_id}"),
             |state| state.accounts_at_block.get_mut(&key)?.pop_front(),
         );
@@ -175,68 +294,41 @@ impl ZoneL2SourceAdapter for ScriptedAdapter {
 
     fn account_activity<'a>(
         &'a self,
-        source: L2SourceDescriptor,
+        source: IndexerL2Source,
         account_id: String,
         offset: usize,
         limit: usize,
     ) -> L2SourceFuture<'a, Vec<L2AccountActivityRow>> {
-        let source_id = source.source_id;
-        let result = self.take(
+        let source_id = source.source_id().to_owned();
+        let result = self.scripts.take(
             format!("activity:{source_id}:{account_id}:{offset}:{limit}"),
             |state| state.activities.get_mut(&source_id)?.pop_front(),
         );
         Box::pin(async move { result })
     }
 
-    fn programs<'a>(
-        &'a self,
-        source: L2SourceDescriptor,
-    ) -> L2SourceFuture<'a, Vec<ProgramIdEntry>> {
-        let source_id = source.source_id;
-        let result = self.take(format!("programs:{source_id}"), |state| {
-            state.programs.get_mut(&source_id)?.pop_front()
-        });
-        Box::pin(async move { result })
-    }
-
-    fn commitment_proof<'a>(
-        &'a self,
-        source: L2SourceDescriptor,
-        commitment_hex: String,
-    ) -> L2SourceFuture<'a, Option<(u64, Vec<String>)>> {
-        let source_id = source.source_id;
-        let result = self.take(format!("proof:{source_id}:{commitment_hex}"), |state| {
-            state.proofs.get_mut(&source_id)?.pop_front()
-        });
-        Box::pin(async move { result })
-    }
-
-    fn account_nonces<'a>(
-        &'a self,
-        source: L2SourceDescriptor,
-        account_ids: Vec<String>,
-    ) -> L2SourceFuture<'a, Vec<String>> {
-        let source_id = source.source_id;
-        let result = self.take(
-            format!("nonces:{source_id}:{}", account_ids.len()),
-            |state| state.nonces.get_mut(&source_id)?.pop_front(),
-        );
-        Box::pin(async move { result })
-    }
-
     fn transfer_blocks<'a>(
         &'a self,
-        source: L2SourceDescriptor,
+        source: IndexerL2Source,
         before: Option<u64>,
         limit: u64,
     ) -> L2SourceFuture<'a, Vec<IndexerBlockReport>> {
-        let source_id = source.source_id;
-        let result = self.take(
+        let source_id = source.source_id().to_owned();
+        let result = self.scripts.take(
             format!("transfer_blocks:{source_id}:{before:?}:{limit}"),
             |state| state.transfer_blocks.get_mut(&source_id)?.pop_front(),
         );
         Box::pin(async move { result })
     }
+}
+
+fn scripted_router(scripts: Arc<ScriptedAdapter>) -> ZoneL2Router {
+    ZoneL2Router::new(
+        Arc::new(ScriptedSequencerAdapter {
+            scripts: scripts.clone(),
+        }),
+        Arc::new(ScriptedIndexerAdapter { scripts }),
+    )
 }
 
 #[tokio::test]
@@ -265,7 +357,7 @@ async fn composite_blocks_preserve_conflicts_and_pin_heads() -> Result<()> {
             .or_default()
             .push_back(Ok(vec![block(12, 'c'), block(11, 'b'), block(10, 'd')]));
     })?;
-    let report = ZoneL2Router::new(adapter)
+    let report = scripted_router(adapter)
         .blocks(
             &facts,
             request(
@@ -329,7 +421,7 @@ async fn composite_blocks_degrade_only_when_one_planned_source_returns() -> Resu
             .or_default()
             .push_back(Ok(vec![block(2, '2'), block(1, '1')]));
     })?;
-    let report = ZoneL2Router::new(adapter)
+    let report = scripted_router(adapter)
         .blocks(
             &facts,
             request(
@@ -372,7 +464,7 @@ async fn changed_block_anchor_invalidates_cursor() -> Result<()> {
             .or_default()
             .push_back(Ok(Some(block(3, 'f'))));
     })?;
-    let router = ZoneL2Router::new(adapter);
+    let router = scripted_router(adapter);
     let first = router
         .blocks(
             &facts,
@@ -427,7 +519,7 @@ async fn transactions_fallback_only_after_confirmed_not_found() -> Result<()> {
             .or_default()
             .push_back(Ok(Some(transaction.clone())));
     })?;
-    let report = ZoneL2Router::new(adapter.clone())
+    let report = scripted_router(adapter.clone())
         .transaction(
             &facts,
             request(
@@ -471,7 +563,7 @@ async fn transaction_error_never_falls_back() -> Result<()> {
             .or_default()
             .push_back(Ok(Some(transaction.clone())));
     })?;
-    let result = ZoneL2Router::new(adapter.clone())
+    let result = scripted_router(adapter.clone())
         .transaction(
             &facts,
             request(
@@ -509,7 +601,7 @@ async fn exact_transaction_uses_verified_memory_cache() -> Result<()> {
             .or_default()
             .push_back(Ok(Some(transaction.clone())));
     })?;
-    let router = ZoneL2Router::new(adapter.clone());
+    let router = scripted_router(adapter.clone());
     for expected in [L2Retrieval::Live, L2Retrieval::MemoryCache] {
         let report = router
             .transaction(
@@ -585,7 +677,7 @@ async fn conflicting_numeric_block_is_ambiguous() -> Result<()> {
             .or_default()
             .push_back(Ok(Some(block(5, '6'))));
     })?;
-    let report = ZoneL2Router::new(adapter)
+    let report = scripted_router(adapter)
         .block_detail(
             &facts,
             request(
@@ -628,7 +720,7 @@ async fn provisional_account_retries_moving_head_once() -> Result<()> {
                 Ok(account(&canonical_account, "2")),
             ]);
     })?;
-    let report = ZoneL2Router::new(adapter)
+    let report = scripted_router(adapter)
         .account(
             &facts,
             request(
@@ -672,7 +764,7 @@ async fn historical_account_cache_keeps_exact_anchor() -> Result<()> {
             .or_default()
             .push_back(Ok(account(&canonical_account, "9")));
     })?;
-    let router = ZoneL2Router::new(adapter);
+    let router = scripted_router(adapter);
     for expected in [L2Retrieval::Live, L2Retrieval::MemoryCache] {
         let report = router
             .account(
@@ -725,7 +817,7 @@ async fn activity_and_transfer_pages_use_independent_opaque_cursors() -> Result<
             .or_default()
             .push_back(Ok(vec![indexer_block(4, '4'), indexer_block(3, '3')]));
     })?;
-    let router = ZoneL2Router::new(adapter);
+    let router = scripted_router(adapter);
     let activity = router
         .account_activity(
             &facts,
@@ -792,7 +884,7 @@ async fn selected_sequencer_serves_programs_proofs_and_nonces() -> Result<()> {
             .or_default()
             .push_back(Ok(vec!["8".to_owned()]));
     })?;
-    let router = ZoneL2Router::new(adapter);
+    let router = scripted_router(adapter);
     let programs = router
         .programs(
             &facts,
@@ -840,7 +932,7 @@ async fn selected_sequencer_serves_programs_proofs_and_nonces() -> Result<()> {
 #[tokio::test]
 async fn context_gates_unverified_stale_and_data_channel_reads() -> Result<()> {
     let (mut facts, config) = facts(false, true);
-    let router = ZoneL2Router::new(Arc::new(ScriptedAdapter::default()));
+    let router = scripted_router(Arc::new(ScriptedAdapter::default()));
     let query = || ZoneL2ProgramsQuery {
         exact_source_id: None,
     };
@@ -900,7 +992,7 @@ async fn exact_source_cannot_cross_channels() -> Result<()> {
         .clone()
         .context("foreign source is missing")?;
     facts.configs.push(foreign);
-    let result = ZoneL2Router::new(Arc::new(ScriptedAdapter::default()))
+    let result = scripted_router(Arc::new(ScriptedAdapter::default()))
         .programs(
             &facts,
             request(
@@ -932,7 +1024,7 @@ async fn transaction_not_found_is_not_cached() -> Result<()> {
             .or_default()
             .extend([Ok(None), Ok(Some(transaction.clone()))]);
     })?;
-    let router = ZoneL2Router::new(adapter.clone());
+    let router = scripted_router(adapter.clone());
     let first = router
         .transaction(
             &facts,
@@ -983,7 +1075,7 @@ async fn source_config_revision_invalidates_cached_transaction() -> Result<()> {
             .or_default()
             .push_back(Ok(Some(transaction.clone())));
     })?;
-    let router = ZoneL2Router::new(adapter);
+    let router = scripted_router(adapter);
     let first = router
         .transaction(
             &facts,
@@ -1035,7 +1127,7 @@ async fn hash_only_fallback_reports_sequencer_capability_limit() -> Result<()> {
             .or_default()
             .push_back(Ok(None));
     })?;
-    let result = ZoneL2Router::new(adapter)
+    let result = scripted_router(adapter)
         .block_detail(
             &facts,
             request(
@@ -1082,7 +1174,7 @@ async fn advertised_head_with_empty_page_is_protocol_failure() -> Result<()> {
             .or_default()
             .push_back(Ok(Vec::new()));
     })?;
-    let result = ZoneL2Router::new(adapter)
+    let result = scripted_router(adapter)
         .blocks(
             &facts,
             request(
@@ -1106,7 +1198,7 @@ async fn advertised_head_with_empty_page_is_protocol_failure() -> Result<()> {
 #[tokio::test]
 async fn target_resolution_keeps_cross_layer_and_exact_source_candidates() -> Result<()> {
     let adapter = Arc::new(ScriptedAdapter::default());
-    let router = ZoneL2Router::new(adapter.clone());
+    let router = scripted_router(adapter.clone());
     let (facts, config) = facts(true, true);
     adapter.edit(|state| {
         state
@@ -1165,7 +1257,7 @@ async fn target_resolution_keeps_cross_layer_and_exact_source_candidates() -> Re
 #[tokio::test]
 async fn target_resolution_without_zone_omits_implicit_l2_and_recovers_explicit_l2() -> Result<()> {
     let adapter = Arc::new(ScriptedAdapter::default());
-    let router = ZoneL2Router::new(adapter.clone());
+    let router = scripted_router(adapter.clone());
     let (facts, _) = facts(true, true);
 
     let numeric = router
@@ -1203,7 +1295,7 @@ async fn target_resolution_without_zone_omits_implicit_l2_and_recovers_explicit_
 #[tokio::test]
 async fn explicit_account_resolution_never_probes_default_account_state() -> Result<()> {
     let adapter = Arc::new(ScriptedAdapter::default());
-    let router = ZoneL2Router::new(adapter.clone());
+    let router = scripted_router(adapter.clone());
     let (facts, config) = facts(true, true);
     let account_id = crate::parse_account_id(&identity('4'))?.to_string();
 

@@ -120,9 +120,9 @@ TestCase {
         compare(catalog.rows()[0].remote.cid, "z-cid")
     }
 
-    function test_restore_local_calls_catalog_restore_method() {
+    function test_apply_import_calls_transaction_method() {
         gateway.callResponses = ({
-            restoreLocalSettingsBackup: {
+            settingsBackupImportApply: {
                 ok: true,
                 value: {
                     restored: true,
@@ -135,14 +135,36 @@ TestCase {
             }
         })
 
-        const summary = catalog.restoreLocal("backup-1", { wallet_home: "/tmp/wallet" }, { favorites: "merge" })
+        const summary = catalog.applyImport("backup-1", { wallet_home: "/tmp/wallet" }, { favorites: "merge" })
 
         verify(summary !== null)
-        compare(gateway.lastMethod, "restoreLocalSettingsBackup")
+        compare(gateway.lastMethod, "settingsBackupImportApply")
         compare(gateway.lastArgs[0], "backup-1")
         compare(gateway.lastArgs[1].wallet_home, "/tmp/wallet")
         compare(gateway.lastArgs[2].favorites, "merge")
         compare(summary.favorites, 2)
+    }
+
+    function test_preview_import_calls_transaction_method() {
+        gateway.callResponses = ({
+            settingsBackupImportPreview: {
+                ok: true,
+                value: {
+                    import_plan: true,
+                    blocked: false,
+                    selectedAreas: ["settings"]
+                },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        const plan = catalog.previewImport("backup-1", {}, { settings: "replace" })
+
+        verify(plan !== null)
+        compare(gateway.lastMethod, "settingsBackupImportPreview")
+        compare(gateway.lastArgs[0], "backup-1")
+        compare(gateway.lastArgs[2].settings, "replace")
     }
 
     function test_upload_local_appends_catalog_id_to_storage_args() {
@@ -161,13 +183,21 @@ TestCase {
             }
         })
 
-        const upload = catalog.uploadLocal("backup-1", ["rest", "http://storage", true])
+        const upload = catalog.uploadLocal("backup-1", {
+            adapter: {
+                source_mode: "rest",
+                inputs: { rest_endpoint: "http://storage" }
+            },
+            payload: {},
+            mutating_enabled: true
+        })
 
         verify(upload !== null)
         compare(gateway.lastMethod, "storageUploadBackupCatalogEntry")
-        compare(gateway.lastArgs[0], "rest")
-        compare(gateway.lastArgs[3], "backup-1")
-        compare(gateway.lastArgs[4], 65536)
+        compare(gateway.lastArgs[0].adapter.source_mode, "rest")
+        compare(gateway.lastArgs[0].adapter.inputs.rest_endpoint, "http://storage")
+        compare(gateway.lastArgs[0].payload.backup_catalog_id, "backup-1")
+        compare(gateway.lastArgs[0].payload.block_size, 65536)
         compare(catalog.rows()[0].remote.cid, "z-cid")
     }
 }

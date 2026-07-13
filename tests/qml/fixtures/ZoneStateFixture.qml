@@ -4,6 +4,13 @@ import "ZoneFixtureData.js" as FixtureData
 QtObject {
     id: root
 
+    readonly property var l2: root
+    readonly property var blocks: root
+    readonly property var accounts: root
+    readonly property var tools: root
+    readonly property var evidence: root
+    readonly property var sourceEditor: root
+
     property double sourceRevision: 3
     property double catalogRevision: 19
     property string verification: "verified"

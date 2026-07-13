@@ -1,11 +1,8 @@
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 use serde_json::Value;
 use tokio::runtime::Runtime;
 
 use crate::{
-    capabilities::{
-        CapabilityBuildMode, capability_registry_report_with_value as inspect_capability_registry,
-    },
     modules::{
         capabilities_report as inspect_capabilities_report, logoscore_status_report, modules_report,
     },
@@ -24,7 +21,6 @@ pub(super) const METHOD_CATALOG: &[RuntimeMethodEntry] = &[
     RuntimeMethodEntry::no_args("sourcePolicy", source_policy),
     RuntimeMethodEntry::no_args("modules", modules),
     RuntimeMethodEntry::no_args("capabilitiesReport", capabilities_report),
-    RuntimeMethodEntry::sync("capabilityRegistryReport", capability_registry_report),
     RuntimeMethodEntry::no_args("logoscoreStatus", logoscore_status),
     RuntimeMethodEntry::sync("blockchainModuleReport", blockchain_module_report),
     RuntimeMethodEntry::sync("storageReport", storage_report),
@@ -43,19 +39,6 @@ pub(super) fn modules() -> Result<Value> {
 
 pub(super) fn capabilities_report() -> Result<Value> {
     to_value(inspect_capabilities_report())
-}
-
-pub(super) fn capability_registry_report(args: Value) -> Result<Value> {
-    let args = Args::new(args)?;
-    let build_mode = CapabilityBuildMode::from_prefers_basecamp(args.optional_bool(0));
-    let runtime_inputs = args
-        .value(1)
-        .filter(|value| value.is_object())
-        .context("capability runtime inputs are required")?;
-    to_value(inspect_capability_registry(
-        build_mode,
-        Some(runtime_inputs),
-    ))
 }
 
 pub(super) fn logoscore_status() -> Result<Value> {

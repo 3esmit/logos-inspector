@@ -8,6 +8,12 @@ TestCase {
     name: "ZoneInspectionState"
 
     property var zoneState: null
+    property var l2State: null
+    property var l2BlockState: null
+    property var l2AccountState: null
+    property var l2ToolState: null
+    property var evidenceState: null
+    property var sourceEditorState: null
     property var mutationCallbackResponse: null
     property string activeZoneSeenOnSummaryChange: ""
 
@@ -97,6 +103,12 @@ TestCase {
             gateway: gateway
         })
         verify(zoneState !== null)
+        l2State = zoneState.l2
+        l2BlockState = l2State.blocks
+        l2AccountState = l2State.accounts
+        l2ToolState = l2State.tools
+        evidenceState = zoneState.evidence
+        sourceEditorState = zoneState.sourceEditor
         statusRefreshSpy.target = zoneState
         statusRefreshSpy.clear()
         zoneState.zoneSummariesChanged.connect(function () {
@@ -106,6 +118,12 @@ TestCase {
 
     function cleanup() {
         statusRefreshSpy.target = null
+        l2State = null
+        l2BlockState = null
+        l2AccountState = null
+        l2ToolState = null
+        evidenceState = null
+        sourceEditorState = null
         if (zoneState) {
             zoneState.destroy()
             zoneState = null
@@ -198,10 +216,21 @@ TestCase {
         return report
     }
 
-    function zoneRow(channelId, kind, selectedSourceId, indexerSourceId) {
+    function zoneRow(channelId, kind, selectedSourceId, indexerSourceId, configRevision) {
+        const zoneKind = String(kind || "sequencer_zone")
         const row = {
             channel_id: String(channelId),
-            kind: String(kind || "sequencer_zone"),
+            active_zone_context_fields: {
+                network_scope: scope("network-a"),
+                channel_id: String(channelId),
+                zone_kind: zoneKind,
+                selected_sequencer_source_id: selectedSourceId || null,
+                indexer_source_id: indexerSourceId || null,
+                source_config_revision: configRevision === undefined
+                    ? (selectedSourceId || indexerSourceId ? 1 : 0)
+                    : Number(configRevision)
+            },
+            kind: zoneKind,
             display: {
                 title: String(channelId),
                 short_channel_id: String(channelId)
@@ -341,11 +370,11 @@ TestCase {
 
     function loadConfiguredL2Zone() {
         configure("https://l1.example", 1)
-        const row = zoneRow("zone-a", "sequencer_zone", "seq-a", "idx-a")
+        const row = zoneRow("zone-a", "sequencer_zone", "seq-a", "idx-a", 7)
         loadOneZone(row)
         verify(zoneState.activateZone("zone-a"))
         gateway.respondNext("zoneDetail", ok(detailReport(row, configuredSourceConfig())))
-        verify(zoneState.l2ReadEnabled)
+        verify(l2State.l2ReadEnabled)
         compare(zoneState.activeZoneContext.source_config_revision, 7)
         return row
     }
@@ -726,7 +755,7 @@ TestCase {
         compare(zoneState.activeZoneContext.source_config_revision, 1)
         const contextBeforeMutation = zoneState.contextRevision
 
-        zoneState.applyChannelSourceConfig({
+        sourceEditorState.applyChannelSourceConfig({
             expected_config_revision: 1,
             mutation: {
                 kind: "select_sequencer",
@@ -735,7 +764,7 @@ TestCase {
         }, function (response) {
             mutationCallbackResponse = response
         })
-        verify(zoneState.sourceMutationInFlight)
+        verify(sourceEditorState.sourceMutationInFlight)
         compare(zoneState.activeZoneContext.selected_sequencer_source_id, "src-a")
 
         gateway.respondNext("channelSourceConfigApply", ok({
@@ -746,6 +775,14 @@ TestCase {
             source_config_epoch: 2,
             observation_revision: 1,
             summary_revision: 2,
+            active_zone_context_fields: {
+                network_scope: scope("network-a"),
+                channel_id: "zone-a",
+                zone_kind: "sequencer_zone",
+                selected_sequencer_source_id: null,
+                indexer_source_id: "idx-a",
+                source_config_revision: 2
+            },
             config: {
                 network_scope: scope("network-a"),
                 channel_id: "zone-a",
@@ -768,14 +805,14 @@ TestCase {
         verify(zoneState.summaryStale)
 
         const contextAfterSuccess = zoneState.contextRevision
-        zoneState.applyChannelSourceConfig({
+        sourceEditorState.applyChannelSourceConfig({
             expected_config_revision: 2,
             mutation: { kind: "remove_indexer" }
         })
         gateway.respondNext("channelSourceConfigApply", failed("revision conflict"))
         compare(zoneState.contextRevision, contextAfterSuccess)
         compare(zoneState.activeZoneContext.indexer_source_id, "idx-a")
-        compare(zoneState.sourceMutationError, "revision conflict")
+        compare(sourceEditorState.sourceMutationError, "revision conflict")
     }
 
     function test_control_and_resume_request_immediate_status_refresh() {
@@ -804,7 +841,7 @@ TestCase {
         verify(zoneState.activateZone("zone-a"))
         gateway.respondNext("zoneDetail", ok(detailReport(row, null)))
 
-        verify(zoneState.loadEvidence("all"))
+        verify(evidenceState.loadEvidence("all"))
         const firstRequest = gateway.lastRequest("zoneEvidencePage")
         compare(firstRequest.args[0].channel_id, "zone-a")
         compare(firstRequest.args[0].catalog_revision, 1)
@@ -812,22 +849,22 @@ TestCase {
         const evidenceA = evidenceRow("evidence-a", 10, "channel_configuration")
         const evidenceB = evidenceRow("evidence-b", 12, "raw_inscription")
         gateway.respondNext("zoneEvidencePage", ok(evidencePageReport([evidenceA], "cursor-2", "all")))
-        compare(zoneState.evidenceRows.length, 1)
-        compare(zoneState.evidenceNextCursor, "cursor-2")
+        compare(evidenceState.evidenceRows.length, 1)
+        compare(evidenceState.evidenceNextCursor, "cursor-2")
 
-        verify(zoneState.loadMoreEvidence())
+        verify(evidenceState.loadMoreEvidence())
         compare(gateway.lastRequest("zoneEvidencePage").args[0].cursor, "cursor-2")
         gateway.respondNext("zoneEvidencePage", ok(evidencePageReport([evidenceB], null, "all")))
-        compare(zoneState.evidenceRows.length, 2)
-        compare(zoneState.evidenceNextCursor, "")
+        compare(evidenceState.evidenceRows.length, 2)
+        compare(evidenceState.evidenceNextCursor, "")
 
-        verify(zoneState.openEvidence(evidenceB))
+        verify(evidenceState.openEvidence(evidenceB))
         compare(gateway.lastRequest("zoneEvidenceDetail").args[0].reference.evidence_id, "evidence-b")
         gateway.respondNext("zoneEvidenceDetail", ok(evidenceDetailReport(evidenceB, "session-b")))
-        compare(zoneState.evidenceDetail.row.reference.evidence_id, "evidence-b")
-        verify(!zoneState.evidencePayloadDone)
+        compare(evidenceState.evidenceDetail.row.reference.evidence_id, "evidence-b")
+        verify(!evidenceState.evidencePayloadDone)
 
-        verify(zoneState.loadNextEvidencePayloadChunk())
+        verify(evidenceState.loadNextEvidencePayloadChunk())
         compare(gateway.lastRequest("zoneEvidencePayloadChunk").args[0].offset, 0)
         gateway.respondNext("zoneEvidencePayloadChunk", ok({
             report_kind: "zones.evidence_payload_chunk",
@@ -841,13 +878,13 @@ TestCase {
             text: "hello",
             base64: null
         }))
-        compare(zoneState.evidencePayloadChunks.length, 1)
-        compare(zoneState.evidencePayloadChunks[0].text, "hello")
-        compare(zoneState.evidencePayloadOffset, 5)
-        verify(zoneState.evidencePayloadDone)
+        compare(evidenceState.evidencePayloadChunks.length, 1)
+        compare(evidenceState.evidencePayloadChunks[0].text, "hello")
+        compare(evidenceState.evidencePayloadOffset, 5)
+        verify(evidenceState.evidencePayloadDone)
 
-        zoneState.closeEvidenceDetail()
-        compare(zoneState.evidenceDetail, null)
+        evidenceState.closeEvidenceDetail()
+        compare(evidenceState.evidenceDetail, null)
         compare(gateway.requestCount("zoneEvidencePayloadRelease"), 1)
         compare(gateway.lastRequest("zoneEvidencePayloadRelease").args[0].session_id, "session-b")
     }
@@ -855,7 +892,7 @@ TestCase {
     function test_l2_block_pages_carry_context_and_preserve_conflicts() {
         loadConfiguredL2Zone()
 
-        verify(zoneState.refreshL2Blocks() !== null)
+        verify(l2BlockState.refreshL2Blocks() !== null)
         const request = gateway.lastRequest("zoneL2Blocks")
         const payload = request.args[0]
         compare(payload.context.channel_id, "zone-a")
@@ -863,7 +900,7 @@ TestCase {
         compare(payload.context.indexer_source_id, "idx-a")
         compare(payload.context.source_config_revision, 7)
         compare(payload.context.context_revision, zoneState.activeZoneContext.context_revision)
-        compare(payload.request_revision, zoneState.l2BlocksRequestRevision)
+        compare(payload.request_revision, l2BlockState.l2BlocksRequestRevision)
         compare(payload.query.cursor, null)
         compare(payload.query.limit, 25)
         verify(JSON.stringify(payload).indexOf("endpoint") < 0)
@@ -885,15 +922,15 @@ TestCase {
             }
         })))
 
-        compare(zoneState.l2BlockRows.length, 2)
-        compare(zoneState.l2BlockRows[0].summary.block_id, 12)
-        verify(zoneState.l2BlockRows[0].summary.block_hash !== zoneState.l2BlockRows[1].summary.block_hash)
-        compare(zoneState.l2BlockRows[0].observations[0].source_id, "idx-a")
-        compare(zoneState.l2BlockRows[1].observations[0].finality, "provisional")
-        compare(zoneState.l2BlocksDistinctCount, 1)
-        verify(zoneState.l2BlocksHasMore)
+        compare(l2BlockState.l2BlockRows.length, 2)
+        compare(l2BlockState.l2BlockRows[0].summary.block_id, 12)
+        verify(l2BlockState.l2BlockRows[0].summary.block_hash !== l2BlockState.l2BlockRows[1].summary.block_hash)
+        compare(l2BlockState.l2BlockRows[0].observations[0].source_id, "idx-a")
+        compare(l2BlockState.l2BlockRows[1].observations[0].finality, "provisional")
+        compare(l2BlockState.l2BlocksDistinctCount, 1)
+        verify(l2BlockState.l2BlocksHasMore)
 
-        verify(zoneState.loadMoreL2Blocks() !== null)
+        verify(l2BlockState.loadMoreL2Blocks() !== null)
         const nextRequest = gateway.lastRequest("zoneL2Blocks")
         compare(nextRequest.args[0].query.cursor, "opaque-next")
         gateway.respondNext("zoneL2Blocks", ok(l2Report(nextRequest, "lez.blocks", {
@@ -906,9 +943,9 @@ TestCase {
                 source_heads: []
             }
         })))
-        compare(zoneState.l2BlockRows.length, 3)
-        compare(zoneState.l2BlocksDistinctCount, 2)
-        verify(!zoneState.l2BlocksHasMore)
+        compare(l2BlockState.l2BlockRows.length, 3)
+        compare(l2BlockState.l2BlocksDistinctCount, 2)
+        verify(!l2BlockState.l2BlocksHasMore)
     }
 
     function test_l2_block_detail_rejects_superseded_reply_and_resolves_exact_source() {
@@ -916,9 +953,9 @@ TestCase {
         const firstSummary = l2Block(12, "a".repeat(64), []).summary
         const secondSummary = l2Block(12, "b".repeat(64), []).summary
 
-        verify(zoneState.openL2Block(firstSummary, "idx-a") !== null)
+        verify(l2BlockState.openL2Block(firstSummary, "idx-a") !== null)
         const firstRequest = gateway.lastRequest("zoneL2BlockDetail")
-        verify(zoneState.openL2Block(secondSummary, "seq-a") !== null)
+        verify(l2BlockState.openL2Block(secondSummary, "seq-a") !== null)
         const secondRequest = gateway.lastRequest("zoneL2BlockDetail")
         verify(firstRequest.args[0].request_revision < secondRequest.args[0].request_revision)
 
@@ -930,7 +967,7 @@ TestCase {
                 source: l2Source("idx-a", "indexer", "finalized")
             }
         })))
-        compare(zoneState.l2BlockDetail, null)
+        compare(l2BlockState.l2BlockDetail, null)
 
         gateway.respondNext("zoneL2BlockDetail", ok(l2Report(secondRequest, "lez.block_detail", {
             outcome: "ambiguous",
@@ -940,8 +977,8 @@ TestCase {
                 canonical_key: "block:12:" + secondSummary.block_hash
             }]
         })))
-        compare(zoneState.l2BlockCandidates.length, 1)
-        verify(zoneState.resolveL2BlockCandidate(zoneState.l2BlockCandidates[0]) !== null)
+        compare(l2BlockState.l2BlockCandidates.length, 1)
+        verify(l2BlockState.resolveL2BlockCandidate(l2BlockState.l2BlockCandidates[0]) !== null)
         const exactRequest = gateway.lastRequest("zoneL2BlockDetail")
         compare(exactRequest.args[0].query.exact_source_id, "seq-a")
         compare(exactRequest.args[0].query.target.kind, "identity")
@@ -955,16 +992,16 @@ TestCase {
                 source: l2Source("seq-a", "sequencer", "provisional", "memory_cache")
             }
         })))
-        compare(zoneState.l2BlockDetail.source.source_id, "seq-a")
-        compare(zoneState.l2BlockDetail.source.retrieval, "memory_cache")
-        compare(zoneState.l2BlockDetail.transactions.length, 1)
+        compare(l2BlockState.l2BlockDetail.source.source_id, "seq-a")
+        compare(l2BlockState.l2BlockDetail.source.retrieval, "memory_cache")
+        compare(l2BlockState.l2BlockDetail.transactions.length, 1)
     }
 
     function test_l2_transaction_detail_auto_traces_same_source_and_fences_trace_race() {
         loadConfiguredL2Zone()
         const transaction = l2Transaction("e".repeat(64))
 
-        verify(zoneState.openL2Transaction(transaction.hash, "seq-a") !== null)
+        verify(l2BlockState.openL2Transaction(transaction.hash, "seq-a") !== null)
         const detailRequest = gateway.lastRequest("zoneL2Transaction")
         compare(detailRequest.args[0].query.exact_source_id, "seq-a")
         gateway.respondNext("zoneL2Transaction", ok(l2Report(detailRequest, "lez.transaction", {
@@ -981,14 +1018,14 @@ TestCase {
             }
         })))
 
-        compare(zoneState.l2TransactionDetail.source.source_id, "seq-a")
+        compare(l2BlockState.l2TransactionDetail.source.source_id, "seq-a")
         const firstTraceRequest = gateway.lastRequest("zoneL2TransactionTrace")
         verify(firstTraceRequest !== null)
         compare(firstTraceRequest.args[0].query.transaction_id, transaction.hash)
         compare(firstTraceRequest.args[0].query.exact_source_id, "seq-a")
         compare(firstTraceRequest.args[0].query.idl_program_id, null)
 
-        verify(zoneState.requestL2TransactionTrace(transaction.hash, "seq-a", "") !== null)
+        verify(l2BlockState.requestL2TransactionTrace(transaction.hash, "seq-a", "") !== null)
         const secondTraceRequest = gateway.lastRequest("zoneL2TransactionTrace")
         verify(firstTraceRequest.args[0].request_revision < secondTraceRequest.args[0].request_revision)
         const staleTrace = {
@@ -1000,7 +1037,7 @@ TestCase {
             outcome: "found",
             value: staleTrace
         })))
-        compare(zoneState.l2TransactionTrace, null)
+        compare(l2BlockState.l2TransactionTrace, null)
 
         const currentTrace = {
             transaction: transaction,
@@ -1020,16 +1057,16 @@ TestCase {
             outcome: "found",
             value: currentTrace
         })))
-        compare(zoneState.l2TransactionTrace.trace.hash, transaction.hash)
-        compare(zoneState.l2TransactionTrace.source.source_id, "seq-a")
-        compare(zoneState.l2TransactionTrace.source.retrieval, "memory_cache")
-        compare(zoneState.l2TransactionTrace.trace.steps.length, 1)
+        compare(l2BlockState.l2TransactionTrace.trace.hash, transaction.hash)
+        compare(l2BlockState.l2TransactionTrace.source.source_id, "seq-a")
+        compare(l2BlockState.l2TransactionTrace.source.retrieval, "memory_cache")
+        compare(l2BlockState.l2TransactionTrace.trace.steps.length, 1)
     }
 
     function test_l2_trace_rejects_different_source_provenance() {
         loadConfiguredL2Zone()
         const transaction = l2Transaction("9".repeat(64))
-        verify(zoneState.requestL2TransactionTrace(transaction.hash, "seq-a", "") !== null)
+        verify(l2BlockState.requestL2TransactionTrace(transaction.hash, "seq-a", "") !== null)
         const request = gateway.lastRequest("zoneL2TransactionTrace")
         gateway.respondNext("zoneL2TransactionTrace", ok(l2Report(request, "lez.transaction_trace", {
             outcome: "found",
@@ -1048,16 +1085,16 @@ TestCase {
                 source: l2Source("idx-a", "indexer", "finalized")
             }
         })))
-        compare(zoneState.l2TransactionTrace, null)
-        compare(zoneState.l2TransactionTraceError,
+        compare(l2BlockState.l2TransactionTrace, null)
+        compare(l2BlockState.l2TransactionTraceError,
             "Transaction trace returned different source provenance.")
     }
 
     function test_l2_success_with_mismatched_context_never_replaces_visible_rows() {
         loadConfiguredL2Zone()
-        verify(zoneState.refreshL2Blocks() !== null)
+        verify(l2BlockState.refreshL2Blocks() !== null)
         const request = gateway.lastRequest("zoneL2Blocks")
-        const wrongContext = zoneState.l2RequestContext()
+        const wrongContext = l2State.l2RequestContext()
         wrongContext.context_revision += 1
         gateway.respondNext("zoneL2Blocks", ok(l2Report(request, "lez.blocks", {
             outcome: "found",
@@ -1071,13 +1108,13 @@ TestCase {
         }, {
             context: wrongContext
         })))
-        compare(zoneState.l2BlockRows.length, 0)
-        verify(!zoneState.l2BlocksLoaded)
+        compare(l2BlockState.l2BlockRows.length, 0)
+        verify(!l2BlockState.l2BlocksLoaded)
     }
 
     function test_l2_account_snapshots_are_independent_and_historical_is_exact() {
         loadConfiguredL2Zone()
-        verify(zoneState.inspectL2Account("account-a"))
+        verify(l2AccountState.inspectL2Account("account-a"))
         compare(gateway.requestCount("zoneL2Account"), 2)
         compare(gateway.requestCount("zoneL2AccountActivity"), 1)
 
@@ -1096,13 +1133,13 @@ TestCase {
             outcome: "found",
             value: provisional
         })))
-        compare(zoneState.l2AccountProvisional.account.balance, "19")
-        compare(zoneState.l2AccountProvisional.anchor_state, "moving")
-        compare(zoneState.l2AccountFinalized, null)
+        compare(l2AccountState.l2AccountProvisional.account.balance, "19")
+        compare(l2AccountState.l2AccountProvisional.anchor_state, "moving")
+        compare(l2AccountState.l2AccountFinalized, null)
 
         gateway.respondNext("zoneL2AccountActivity", failed("activity unavailable"))
-        compare(zoneState.l2AccountActivityError, "activity unavailable")
-        compare(zoneState.l2AccountProvisional.account.balance, "19")
+        compare(l2AccountState.l2AccountActivityError, "activity unavailable")
+        compare(l2AccountState.l2AccountProvisional.account.balance, "19")
 
         const finalized = l2AccountSnapshot("account-a", "17",
             l2Source("idx-a", "indexer", "finalized"), "exact", 12)
@@ -1110,12 +1147,12 @@ TestCase {
             outcome: "found",
             value: finalized
         })))
-        compare(zoneState.l2AccountFinalized.account.balance, "17")
-        compare(zoneState.l2AccountProvisional.account.balance, "19")
-        compare(zoneState.l2AccountFinalized.source.source_role, "indexer")
-        compare(zoneState.l2AccountProvisional.source.source_role, "sequencer")
+        compare(l2AccountState.l2AccountFinalized.account.balance, "17")
+        compare(l2AccountState.l2AccountProvisional.account.balance, "19")
+        compare(l2AccountState.l2AccountFinalized.source.source_role, "indexer")
+        compare(l2AccountState.l2AccountProvisional.source.source_role, "sequencer")
 
-        verify(zoneState.requestL2HistoricalAccount(9, "9".repeat(64)) !== null)
+        verify(l2AccountState.requestL2HistoricalAccount(9, "9".repeat(64)) !== null)
         const historicalRequest = l2AccountRequest("historical")
         compare(historicalRequest.args[0].query.snapshot.block_id, 9)
         compare(historicalRequest.args[0].query.snapshot.block_hash, "9".repeat(64))
@@ -1126,15 +1163,15 @@ TestCase {
             outcome: "found",
             value: historical
         })))
-        compare(zoneState.l2AccountHistorical.account.balance, "11")
-        compare(zoneState.l2AccountHistorical.source.retrieval, "memory_cache")
-        compare(zoneState.l2AccountFinalized.account.balance, "17")
-        compare(zoneState.l2AccountProvisional.account.balance, "19")
+        compare(l2AccountState.l2AccountHistorical.account.balance, "11")
+        compare(l2AccountState.l2AccountHistorical.source.retrieval, "memory_cache")
+        compare(l2AccountState.l2AccountFinalized.account.balance, "17")
+        compare(l2AccountState.l2AccountProvisional.account.balance, "19")
     }
 
     function test_l2_account_activity_appends_oldest_first_without_touching_snapshots() {
         loadConfiguredL2Zone()
-        verify(zoneState.inspectL2Account("account-a"))
+        verify(l2AccountState.inspectL2Account("account-a"))
         const activityRequest = gateway.lastRequest("zoneL2AccountActivity")
         compare(activityRequest.args[0].query.order, "oldest_first")
         compare(activityRequest.args[0].query.limit, 25)
@@ -1148,12 +1185,12 @@ TestCase {
                 has_more: true
             }
         })))
-        compare(zoneState.l2AccountActivityRows.length, 2)
-        compare(zoneState.l2AccountActivityRows[0].transaction_id, "tx-oldest")
-        compare(zoneState.l2AccountActivityRows[1].transaction_id, "tx-next")
-        verify(zoneState.l2AccountActivityHasMore)
+        compare(l2AccountState.l2AccountActivityRows.length, 2)
+        compare(l2AccountState.l2AccountActivityRows[0].transaction_id, "tx-oldest")
+        compare(l2AccountState.l2AccountActivityRows[1].transaction_id, "tx-next")
+        verify(l2AccountState.l2AccountActivityHasMore)
 
-        verify(zoneState.loadMoreL2AccountActivity())
+        verify(l2AccountState.loadMoreL2AccountActivity())
         const nextRequest = gateway.lastRequest("zoneL2AccountActivity")
         compare(nextRequest.args[0].query.cursor, "activity-next")
         gateway.respond(nextRequest, ok(l2Report(nextRequest, "lez.account_activity", {
@@ -1166,16 +1203,16 @@ TestCase {
                 has_more: false
             }
         })))
-        compare(zoneState.l2AccountActivityRows.length, 3)
-        compare(zoneState.l2AccountActivityRows[2].transaction_id, "tx-newest")
-        verify(!zoneState.l2AccountActivityHasMore)
-        compare(zoneState.l2AccountFinalized, null)
-        compare(zoneState.l2AccountProvisional, null)
+        compare(l2AccountState.l2AccountActivityRows.length, 3)
+        compare(l2AccountState.l2AccountActivityRows[2].transaction_id, "tx-newest")
+        verify(!l2AccountState.l2AccountActivityHasMore)
+        compare(l2AccountState.l2AccountFinalized, null)
+        compare(l2AccountState.l2AccountProvisional, null)
     }
 
     function test_l2_sequencer_tools_use_selected_exact_source_and_isolated_slots() {
         loadConfiguredL2Zone()
-        verify(zoneState.refreshL2Programs() !== null)
+        verify(l2ToolState.refreshL2Programs() !== null)
         const programsRequest = gateway.lastRequest("zoneL2Programs")
         compare(programsRequest.args[0].query.exact_source_id, "seq-a")
         gateway.respond(programsRequest, ok(l2Report(programsRequest, "lez.programs", {
@@ -1185,9 +1222,9 @@ TestCase {
                 source: l2Source("seq-a", "sequencer", "provisional")
             }
         })))
-        compare(zoneState.l2Programs.length, 1)
+        compare(l2ToolState.l2Programs.length, 1)
 
-        verify(zoneState.requestL2CommitmentProof("cd".repeat(32)) !== null)
+        verify(l2ToolState.requestL2CommitmentProof("cd".repeat(32)) !== null)
         const proofRequest = gateway.lastRequest("zoneL2CommitmentProof")
         compare(proofRequest.args[0].query.exact_source_id, "seq-a")
         gateway.respond(proofRequest, ok(l2Report(proofRequest, "lez.commitment_proof", {
@@ -1199,10 +1236,10 @@ TestCase {
                 source: l2Source("seq-a", "sequencer", "provisional")
             }
         })))
-        compare(zoneState.l2CommitmentProof.leaf_index, 4)
-        compare(zoneState.l2Programs.length, 1)
+        compare(l2ToolState.l2CommitmentProof.leaf_index, 4)
+        compare(l2ToolState.l2Programs.length, 1)
 
-        verify(zoneState.requestL2AccountNonces(["account-a", "account-b"]) !== null)
+        verify(l2ToolState.requestL2AccountNonces(["account-a", "account-b"]) !== null)
         const nonceRequest = gateway.lastRequest("zoneL2AccountNonces")
         compare(nonceRequest.args[0].query.exact_source_id, "seq-a")
         gateway.respond(nonceRequest, ok(l2Report(nonceRequest, "lez.account_nonces", {
@@ -1213,14 +1250,14 @@ TestCase {
                 source: l2Source("seq-a", "sequencer", "provisional")
             }
         })))
-        compare(zoneState.l2AccountNonces.length, 2)
-        compare(zoneState.l2CommitmentProof.leaf_index, 4)
-        compare(zoneState.l2Programs.length, 1)
+        compare(l2ToolState.l2AccountNonces.length, 2)
+        compare(l2ToolState.l2CommitmentProof.leaf_index, 4)
+        compare(l2ToolState.l2Programs.length, 1)
     }
 
     function test_l2_transfer_pages_replace_window_and_restore_newer_page() {
         loadConfiguredL2Zone()
-        verify(zoneState.refreshL2Transfers() !== null)
+        verify(l2ToolState.refreshL2Transfers() !== null)
         const firstRequest = gateway.lastRequest("zoneL2Transfers")
         compare(firstRequest.args[0].query.cursor, null)
         compare(firstRequest.args[0].query.block_limit, 25)
@@ -1237,14 +1274,14 @@ TestCase {
                 finalized: true
             }
         })))
-        compare(zoneState.l2TransferRecipients[0].received, "10")
-        compare(zoneState.l2TransferRecipients[0].source,
+        compare(l2ToolState.l2TransferRecipients[0].received, "10")
+        compare(l2ToolState.l2TransferRecipients[0].source,
             "transfer_outputs_and_account_refs")
-        compare(zoneState.l2TransfersNewestBlock, 20)
-        compare(zoneState.l2TransfersOldestBlock, 16)
+        compare(l2ToolState.l2TransfersNewestBlock, 20)
+        compare(l2ToolState.l2TransfersOldestBlock, 16)
 
-        verify(zoneState.loadOlderL2Transfers() !== null)
-        compare(zoneState.l2TransferRecipients[0].received, "10")
+        verify(l2ToolState.loadOlderL2Transfers() !== null)
+        compare(l2ToolState.l2TransferRecipients[0].received, "10")
         const olderRequest = gateway.lastRequest("zoneL2Transfers")
         compare(olderRequest.args[0].query.cursor, "transfers-older")
         gateway.respond(olderRequest, ok(l2Report(olderRequest, "lez.transfers", {
@@ -1259,17 +1296,17 @@ TestCase {
                 finalized: true
             }
         })))
-        compare(zoneState.l2TransferRecipients.length, 1)
-        compare(zoneState.l2TransferRecipients[0].received, "3")
-        compare(zoneState.l2TransfersHistory.length, 1)
-        compare(zoneState.l2TransfersNewestBlock, 15)
-        compare(zoneState.l2TransfersOldestBlock, 11)
+        compare(l2ToolState.l2TransferRecipients.length, 1)
+        compare(l2ToolState.l2TransferRecipients[0].received, "3")
+        compare(l2ToolState.l2TransfersHistory.length, 1)
+        compare(l2ToolState.l2TransfersNewestBlock, 15)
+        compare(l2ToolState.l2TransfersOldestBlock, 11)
 
-        verify(zoneState.loadNewerL2Transfers())
-        compare(zoneState.l2TransferRecipients[0].received, "10")
-        compare(zoneState.l2TransfersNewestBlock, 20)
-        compare(zoneState.l2TransfersOldestBlock, 16)
-        compare(zoneState.l2TransfersHistory.length, 0)
+        verify(l2ToolState.loadNewerL2Transfers())
+        compare(l2ToolState.l2TransferRecipients[0].received, "10")
+        compare(l2ToolState.l2TransfersNewestBlock, 20)
+        compare(l2ToolState.l2TransfersOldestBlock, 16)
+        compare(l2ToolState.l2TransfersHistory.length, 0)
     }
 
     function test_target_resolution_is_request_and_context_fenced() {
@@ -1334,8 +1371,8 @@ TestCase {
 
     function test_zone_capabilities_gate_provisional_collaboration_only() {
         loadConfiguredL2Zone()
-        verify(zoneState.l2Capability("").enabled)
-        verify(zoneState.collaborationCapability().enabled)
+        verify(l2State.l2Capability("").enabled)
+        verify(l2State.collaborationCapability().enabled)
 
         zoneState.activeZoneContext = Object.assign({}, zoneState.activeZoneContext, {
             network_scope: {
@@ -1348,9 +1385,9 @@ TestCase {
             context_revision: zoneState.activeZoneContext.context_revision + 1
         })
 
-        verify(zoneState.l2Capability("").enabled)
-        verify(!zoneState.collaborationCapability().enabled)
-        verify(zoneState.collaborationCapability().reason.indexOf("genesis") >= 0)
+        verify(l2State.l2Capability("").enabled)
+        verify(!l2State.collaborationCapability().enabled)
+        verify(l2State.collaborationCapability().reason.indexOf("genesis") >= 0)
     }
 
     function targetResolutionReport(request, status, candidates) {

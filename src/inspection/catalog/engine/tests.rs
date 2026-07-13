@@ -5,6 +5,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use serde_json::{Value, json};
 
 use super::*;
+use crate::blockchain::channel_operations::classify_inscription;
 use crate::inspection::catalog::{
     CatalogL1ChainSnapshot, CatalogL1ChainStatus, CatalogL1RangeRequest, CatalogL1SourceFuture,
     CatalogL1TimeStatus, CatalogMetadata, ZoneCatalog,
@@ -463,25 +464,22 @@ fn malformed_known_channel_operation_rejects_entire_reduction() -> Result<()> {
 #[test]
 fn inscription_decoder_distinguishes_valid_raw_and_hash_conflict() -> Result<()> {
     let bytes = BASE64_STANDARD.decode(TESTNET_SEQUENCER_BLOCK)?;
-    let valid = Value::String(hex::encode(&bytes));
-    let raw = Value::String(hex::encode(b"plain data"));
-    let mut corrupt = bytes;
+    let mut corrupt = bytes.clone();
     let hash_byte = corrupt
         .get_mut(40)
         .context("fixture is shorter than header hash")?;
     *hash_byte ^= 1;
 
     ensure!(
-        classify_inscription(&valid)? == (ZoneEvidenceKind::SequencerBlock, false),
+        classify_inscription(&bytes)? == InscriptionClassification::SequencerBlock,
         "valid Sequencer block was not recognized"
     );
     ensure!(
-        classify_inscription(&raw)? == (ZoneEvidenceKind::RawInscription, false),
+        classify_inscription(b"plain data")? == InscriptionClassification::Raw,
         "raw inscription was not preserved"
     );
     ensure!(
-        classify_inscription(&Value::String(hex::encode(corrupt)))?
-            == (ZoneEvidenceKind::RawInscription, true),
+        classify_inscription(&corrupt)? == InscriptionClassification::Conflicting,
         "hash-conflicting block was not marked conflicting"
     );
     Ok(())

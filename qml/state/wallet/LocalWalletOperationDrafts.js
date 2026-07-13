@@ -30,8 +30,11 @@ function busyDraft(root, title) {
     return null
 }
 
-function profileDraft(root, title, message, tab) {
-    if (root.profileConfigured()) {
+function profileDraft(root, title, message, tab, action) {
+    const ready = typeof root.actionReady === "function"
+        ? root.actionReady(String(action || "command"))
+        : root.profileConfigured()
+    if (ready) {
         return null
     }
     return invalid(title, message, tab || "profiles")
@@ -174,7 +177,10 @@ function queryAccounts(root, showResult) {
     if (busy) {
         return busy
     }
-    if (!root.profileConfigured()) {
+    const accountsReady = typeof root.actionReady === "function"
+        ? root.actionReady("accounts")
+        : root.profileConfigured()
+    if (!accountsReady) {
         return invalid(title, qsTr("Configure wallet binary and wallet home, or check a profile that resolves $LEE_WALLET_HOME_DIR."))
     }
     const draft = request(

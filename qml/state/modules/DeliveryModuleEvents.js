@@ -7,7 +7,7 @@ function handle(root, event) {
         root.queryNetworkConnection("messaging", false)
     }
     if (effect.deliveryMessage) {
-        root.applyIncomingSocialMessage(effect.deliveryMessage)
+        root.social.applyIncomingDeliveryMessage(effect.deliveryMessage)
     }
     return true
 }

@@ -412,7 +412,7 @@ ColumnLayout {
     }
 
     function dashboardMetricValue(key) {
-        return root.model.dashboardMetricValue(key)
+        return root.model.metrics.dashboardMetricValue(key)
     }
 
     function dashboardMetricText(value) {

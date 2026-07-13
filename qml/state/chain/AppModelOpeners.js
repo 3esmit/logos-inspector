@@ -14,7 +14,7 @@ function openMantleTransaction(root, hash) {
         if (detail) {
             transactionDetailValue = detail
             transactionsPageError = ""
-            setResult(qsTr("Mantle transaction"), BridgeHelpers.formatValue(detail), false, detail)
+            shell.setResult(qsTr("Mantle transaction"), BridgeHelpers.formatValue(detail), false, detail)
             return
         }
 
@@ -23,13 +23,13 @@ function openMantleTransaction(root, hash) {
             const fetched = root.blockchainTransactionDetail(response.value, value)
             transactionDetailValue = fetched
             transactionsPageError = ""
-            setResult(qsTr("Mantle transaction"), BridgeHelpers.formatValue(fetched), false, fetched)
+            shell.setResult(qsTr("Mantle transaction"), BridgeHelpers.formatValue(fetched), false, fetched)
             return
         }
 
         transactionDetailValue = null
         transactionDetailError = response.error || qsTr("Mantle transaction %1 was not found.").arg(value)
-        setResult(qsTr("Mantle transaction"), transactionDetailError, true, null, "transactionDetail")
+        shell.setResult(qsTr("Mantle transaction"), transactionDetailError, true, null, "transactionDetail")
     }
 }
 
@@ -45,7 +45,7 @@ function openPrivateAccountReference(root, account) {
             account_id: localWalletLookupTarget,
             source: "local_wallet_required"
         }
-        setResult(qsTr("Private account reference"), qsTr("Private account state is local wallet state. Sync the configured local wallet profile to inspect local private state."), !walletProfileConfigured(), detail)
+        root.shell.setResult(qsTr("Private account reference"), qsTr("Private account state is local wallet state. Sync the configured local wallet profile to inspect local private state."), !walletProfileConfigured(), detail)
         if (walletProfileConfigured()) {
             checkLocalWalletProfile(false)
         }
@@ -74,7 +74,7 @@ function openBlockchainBlock(root, blockOrId) {
         selectView("blockDetail", false)
         blockDetailValue = detail
         blockDetailError = ""
-        setResult(qsTr("Block"), BridgeHelpers.formatValue(detail), false, detail)
+        shell.setResult(qsTr("Block"), BridgeHelpers.formatValue(detail), false, detail)
     }
 }
 
@@ -93,7 +93,7 @@ function loadBlockchainBlockById(root, blockId) {
             blockDetailValue = root.chainPages.blockchainBlockDetail(response.value)
             blockDetailError = ""
             blocksPageError = ""
-            setResult(qsTr("Block"), BridgeHelpers.formatValue(blockDetailValue), false, blockDetailValue)
+            shell.setResult(qsTr("Block"), BridgeHelpers.formatValue(blockDetailValue), false, blockDetailValue)
             return
         }
         const normalized = root.chainPages.normalizedHashOrValue(value)
@@ -104,14 +104,14 @@ function loadBlockchainBlockById(root, blockId) {
                 blockDetailValue = root.chainPages.blockchainBlockDetail(retry.value)
                 blockDetailError = ""
                 blocksPageError = ""
-                setResult(qsTr("Block"), BridgeHelpers.formatValue(blockDetailValue), false, blockDetailValue)
+                shell.setResult(qsTr("Block"), BridgeHelpers.formatValue(blockDetailValue), false, blockDetailValue)
                 return
             }
         }
         selectView("blockDetail", false)
         blockDetailValue = null
         blockDetailError = qsTr("L1 block %1 was not found.").arg(value)
-        setResult(qsTr("Block"), blockDetailError, true, null, "blockDetail")
+        shell.setResult(qsTr("Block"), blockDetailError, true, null, "blockDetail")
     }
 }
 
@@ -128,16 +128,16 @@ function loadBlockchainBlockBySlot(root, slot) {
             if (blocks.length > 0) {
                 blockDetailValue = root.chainPages.blockchainBlockDetail(blocks[0])
                 blockDetailError = ""
-                setResult(qsTr("Block"), BridgeHelpers.formatValue(blockDetailValue), false, blockDetailValue)
+                shell.setResult(qsTr("Block"), BridgeHelpers.formatValue(blockDetailValue), false, blockDetailValue)
                 return
             }
             blockDetailError = qsTr("No block found at slot %1.").arg(value)
             blockDetailValue = null
-            setResult(qsTr("Block"), blockDetailError, true, null, "blockDetail")
+            shell.setResult(qsTr("Block"), blockDetailError, true, null, "blockDetail")
         } else {
             blockDetailError = response.error
             blockDetailValue = null
-            setResult(qsTr("Block"), response.error, true, null, "blockDetail")
+            shell.setResult(qsTr("Block"), response.error, true, null, "blockDetail")
         }
     }
 }
@@ -159,7 +159,7 @@ function openBlockchainTransaction(root, transaction, block) {
         selectView("transactionDetail", false)
         transactionDetailValue = detail
         transactionDetailError = ""
-        setResult(qsTr("Transaction"), BridgeHelpers.formatValue(detail), false, detail)
+        shell.setResult(qsTr("Transaction"), BridgeHelpers.formatValue(detail), false, detail)
     }
 }
 
@@ -214,17 +214,17 @@ function openLocalWallet(root, wallet, tab) {
         localWalletTab = targetTab
         localWalletLookupTarget = target
         if (bedrockOnly && !bedrockWalletSourceConfigured()) {
-            setResult(qsTr("Bedrock wallet"), qsTr("Configure a Bedrock node endpoint before querying wallet balance."), true, null)
+            shell.setResult(qsTr("Bedrock wallet"), qsTr("Configure a Bedrock node endpoint before querying wallet balance."), true, null)
             return
         }
         if (!bedrockOnly && !walletProfileConfigured()) {
-            setResult(qsTr("Local wallet"), qsTr("Configure wallet binary and wallet home before inspecting local wallet state."), true, null)
+            shell.setResult(qsTr("Local wallet"), qsTr("Configure wallet binary and wallet home before inspecting local wallet state."), true, null)
             return
         }
         if (!bedrockOnly) {
             const status = root.checkedLocalWalletProfile()
             if (!status.ok) {
-                setResult(qsTr("Local wallet"), status.detail.length ? status.detail : qsTr("Local wallet profile is not usable."), true, null)
+                shell.setResult(qsTr("Local wallet"), status.detail.length ? status.detail : qsTr("Local wallet profile is not usable."), true, null)
                 return
             }
         }
@@ -235,7 +235,7 @@ function openLocalWallet(root, wallet, tab) {
             bedrockWalletBalanceValue = null
             bedrockWalletBalanceError = ""
         }
-        setResult(
+        shell.setResult(
             bedrockOnly ? qsTr("Bedrock wallet") : qsTr("Local wallet"),
             target.length ? (bedrockOnly ? qsTr("Bedrock wallet context: %1").arg(target) : qsTr("Local wallet context: %1").arg(target)) : (bedrockOnly ? qsTr("Bedrock wallet source configured.") : qsTr("Local wallet profile configured.")),
             false,
@@ -246,6 +246,6 @@ function openLocalWallet(root, wallet, tab) {
 
 function showLocalWalletRequired(root, wallet) {
     with (root) {
-        openLocalWallet(wallet, "profiles")
+        openLocalWallet(root, wallet, "profiles")
     }
 }

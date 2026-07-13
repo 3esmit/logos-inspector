@@ -14,8 +14,8 @@ function refreshDashboard(root) {
         const requests = [
             { module: inspectorModule, method: "blockchainNode", args: root.blockchainArgs([]), label: qsTr("Blockchain node") },
             { module: inspectorModule, method: "blockchainLiveBlocks", args: root.blockchainArgs([0, 9007199254740991, 5]), label: qsTr("Latest L1 blocks") },
-            { module: inspectorModule, method: "storageSourceReport", args: root.storageSourceReportArgs(false), label: qsTr("Storage source") },
-            { module: inspectorModule, method: "deliverySourceReport", args: root.deliverySourceReportArgs(), label: qsTr("Delivery source") }
+            { module: inspectorModule, method: "storageSourceReport", args: root.sourceRouting.storageSourceReportArgs(false), label: qsTr("Storage source") },
+            { module: inspectorModule, method: "deliverySourceReport", args: root.sourceRouting.deliverySourceReportArgs(), label: qsTr("Delivery source") }
         ]
         const errors = []
         let remaining = requests.length
@@ -46,7 +46,7 @@ function refreshDashboard(root) {
                     dashboardError = errors.join("\n")
                     root.recordDashboardSnapshot()
                     if (okCount > 0) {
-                        setResult(qsTr("Dashboard"), BridgeHelpers.formatValue({
+                        shell.setResult(qsTr("Dashboard"), BridgeHelpers.formatValue({
                             overview: dashboardOverview || null,
                             node: dashboardNode || null,
                             l1Blocks: dashboardL1Blocks || [],
@@ -55,7 +55,7 @@ function refreshDashboard(root) {
                             messaging: messagingSourceReport || null
                         }), false)
                     } else {
-                        setResult(qsTr("Dashboard"), dashboardError, true)
+                        shell.setResult(qsTr("Dashboard"), dashboardError, true)
                     }
                 }
             }, function () {
@@ -126,7 +126,7 @@ function projectZoneDashboard(root) {
                 source: "summary",
                 source_roles: ["sequencer"],
                 entity_ref: String(l2.latest_block_hash || "").length > 0
-                    ? state.l2EntityRef("block", "block:" + String(latestBlock)
+                    ? state.l2.l2EntityRef("block", "block:" + String(latestBlock)
                         + ":" + String(l2.latest_block_hash), null) : null
             }
             dashboardLezBlockRows = [synthetic]
@@ -173,7 +173,9 @@ function zoneDashboardSummary(state) {
 }
 
 function zoneDashboardRows(state) {
-    const rows = Array.isArray(state.l2BlockRows) ? state.l2BlockRows : []
+    const blockState = state.l2 && state.l2.blocks ? state.l2.blocks : null
+    const rows = blockState && Array.isArray(blockState.l2BlockRows)
+        ? blockState.l2BlockRows : []
     const result = []
     for (let i = 0; i < rows.length; ++i) {
         const row = rows[i] || ({})
@@ -196,7 +198,7 @@ function zoneDashboardRows(state) {
             bedrock_status: String(summary.bedrock_status || ""),
             source: String(observation && observation.source_role || ""),
             source_roles: sourceRoles,
-            entity_ref: state.l2EntityRef("block", "block:" + String(summary.block_id)
+            entity_ref: state.l2.l2EntityRef("block", "block:" + String(summary.block_id)
                 + ":" + String(summary.block_hash || ""), observation)
         })
     }
@@ -249,7 +251,7 @@ function routeSearch(root, query) {
         }
 
         if (root.isStorageCid(value)) {
-            openStorageCid(value)
+            openStorageCid(root, value)
             return
         }
 
@@ -271,10 +273,10 @@ function resolveInspectionTarget(root, query) {
             return
         }
         pushNavigationHistory()
-        statusText = qsTr("Search")
+        shell.statusText = qsTr("Search")
         zoneInspection.resolveTarget(value, function (report, error) {
             if (!report) {
-                setResult(qsTr("Search"), error || qsTr("Target resolution failed."), true, null)
+                shell.setResult(qsTr("Search"), error || qsTr("Target resolution failed."), true, null)
                 return
             }
             const candidates = Array.isArray(report.candidates)
@@ -283,7 +285,7 @@ function resolveInspectionTarget(root, query) {
                     && root.programIdKnown(value) && zoneInspection.activeZoneContext) {
                 const canonicalProgram = root.canonicalProgramIdHex(value)
                 const localProgramRef = canonicalProgram.length > 0
-                    ? zoneInspection.l2EntityRef("program", canonicalProgram, null) : null
+                    ? zoneInspection.l2.l2EntityRef("program", canonicalProgram, null) : null
                 if (localProgramRef) {
                     candidates.push({ entity_ref: Object.assign({ layer: "l2" }, localProgramRef) })
                 }
@@ -299,16 +301,16 @@ function resolveInspectionTarget(root, query) {
                 zoneInspection.targetResolutionStatus = "ambiguous"
                 zoneInspection.requestedDetailTab = "overview"
                 selectView("zones", false)
-                setResult(qsTr("Search candidates"), qsTr("Select one typed candidate."), false, report)
+                shell.setResult(qsTr("Search candidates"), qsTr("Select one typed candidate."), false, report)
                 return
             }
             if (String(report.status || "") === "recovery") {
                 zoneInspection.requestedDetailTab = "sources"
                 selectView("zones", false)
-                setResult(qsTr("Search"), qsTr("Select an Active Zone before resolving this L2 target."), true, report)
+                shell.setResult(qsTr("Search"), qsTr("Select an Active Zone before resolving this L2 target."), true, report)
                 return
             }
-            setResult(qsTr("Search"), qsTr("No matching inspection target found."), true, report)
+            shell.setResult(qsTr("Search"), qsTr("No matching inspection target found."), true, report)
         })
     }
 }
@@ -348,7 +350,7 @@ function openInspectionEntityRef(root, entity, recordHistory) {
         const layer = String(entity.layer || "")
         if (layer === "zone") {
             if (!inspectionEntityRefMatchesCatalog(root, entity)) {
-                setResult(qsTr("Open reference"), qsTr("Stored Zone reference does not match the current network catalog."), true, entity)
+                shell.setResult(qsTr("Open reference"), qsTr("Stored Zone reference does not match the current network catalog."), true, entity)
                 selectView("zones", false)
                 return false
             }
@@ -359,17 +361,17 @@ function openInspectionEntityRef(root, entity, recordHistory) {
         }
         if (layer === "l1") {
             if (!inspectionNetworkScopeMatches(root, entity.network_scope)) {
-                setResult(qsTr("Open reference"), qsTr("Stored L1 reference belongs to another network."), true, entity)
+                shell.setResult(qsTr("Open reference"), qsTr("Stored L1 reference belongs to another network."), true, entity)
                 return false
             }
             currentInspectionEntityRef = entity
             const target = entity.block_id !== undefined && entity.block_id !== null
                 ? entity.block_id : entity.block_hash
-            openBlockchainBlock(target)
+            entityNavigation.openBlockchainBlock(target)
             return true
         }
         if (layer !== "l2" || !inspectionEntityRefMatchesCatalog(root, entity)) {
-            setResult(qsTr("Open reference"), qsTr("Stored reference does not match current network or Zone catalog."), true, entity)
+            shell.setResult(qsTr("Open reference"), qsTr("Stored reference does not match current network or Zone catalog."), true, entity)
             selectView("zones", false)
             return false
         }
@@ -444,11 +446,11 @@ function openInspectionEntityInActiveZone(root, entity) {
         const sourceId = String(source.source_id || "")
         if (String(source.kind || "policy") === "exact") {
             const role = String(source.source_role || "")
-            const currentId = role === "indexer" ? zoneInspection.l2IndexerSourceId()
-                : (role === "sequencer" ? zoneInspection.l2SequencerSourceId() : "")
+            const currentId = role === "indexer" ? zoneInspection.l2.l2IndexerSourceId()
+                : (role === "sequencer" ? zoneInspection.l2.l2SequencerSourceId() : "")
             if (!sourceId.length || sourceId !== currentId) {
                 zoneInspection.requestedDetailTab = "sources"
-                setResult(qsTr("Open reference"), qsTr("Exact source is no longer configured for this Zone."), true, entity)
+                shell.setResult(qsTr("Open reference"), qsTr("Exact source is no longer configured for this Zone."), true, entity)
                 return false
             }
         }
@@ -457,13 +459,13 @@ function openInspectionEntityInActiveZone(root, entity) {
         let opened = false
         if (kind === "block") {
             const block = inspectionBlockTarget(key)
-            opened = block ? zoneInspection.openL2Block(block, sourceId) !== null : false
+            opened = block ? zoneInspection.l2.blocks.openL2Block(block, sourceId) !== null : false
         } else if (kind === "transaction") {
-            opened = zoneInspection.openL2Transaction(key, sourceId) !== null
+            opened = zoneInspection.l2.blocks.openL2Transaction(key, sourceId) !== null
         } else if (kind === "account") {
-            opened = zoneInspection.inspectL2AccountReference(key, source)
+            opened = zoneInspection.l2.accounts.inspectL2AccountReference(key, source)
         } else if (kind === "program") {
-            opened = zoneInspection.refreshL2Programs() !== null
+            opened = zoneInspection.l2.tools.refreshL2Programs() !== null
         }
         if (opened) {
             currentInspectionEntityRef = entity
@@ -510,7 +512,7 @@ function routePrefixedSearch(root, query) {
         const target = parsed.target
         if (prefix === "mantle") {
             if (target.length > 0) {
-                openMantleTransaction(target)
+                entityNavigation.openMantleTransaction(target)
             } else {
                 selectView("transactions")
             }
@@ -521,19 +523,19 @@ function routePrefixedSearch(root, query) {
             return true
         }
         if (prefix === "wallet") {
-            openLocalWallet(target, "lezAccounts")
+            entityNavigation.openLocalWallet(target, "lezAccounts")
             return true
         }
         if (prefix === "cid" || prefix === "storage") {
             if (target.length > 0) {
-                openStorageCid(target)
+                openStorageCid(root, target)
             } else {
                 selectView("storage")
             }
             return true
         }
         if (prefix === "l1-wallet" || prefix === "note") {
-            openLocalWallet(target, "bedrockNotes")
+            entityNavigation.openLocalWallet(target, "bedrockNotes")
             return true
         }
         if (prefix === "module") {
@@ -579,7 +581,7 @@ function openStorageCid(root, cid) {
         storageCidProbe = value
         storageAppTab = "cid"
         selectView("storage", false)
-        setResult(qsTr("Storage CID"), qsTr("Storage CID context: %1").arg(value), false, {
+        shell.setResult(qsTr("Storage CID"), qsTr("Storage CID context: %1").arg(value), false, {
             cid: value,
             source: root.storageSourceTarget()
         })

@@ -112,16 +112,7 @@ TestCase {
         state.resultOwner = ""
         state.sourceReport = null
         state.manifests = []
-        state.lastOperation = "None"
-        state.pendingMethod = ""
-        state.pendingLabel = ""
-        state.pendingArgs = []
-        state.terminalOperationId = ""
-        state.operationStartPending = false
-        state.activeOperation = null
-        state.activeOperationRevision = 0
-        state.operationLog = []
-        state.operationLogRevision = 0
+        state.operationSession.reset()
 
         stateWithoutGate.busy = false
         stateWithoutGate.effectiveSourceMode = "rest"
@@ -130,7 +121,7 @@ TestCase {
         stateWithoutGate.supportsMutatingDiagnostics = true
         stateWithoutGate.mutatingDiagnosticsEnabled = true
         stateWithoutGate.manifests = []
-        stateWithoutGate.lastOperation = "None"
+        stateWithoutGate.operationSession.reset()
     }
 
     function test_refresh_manifests_updates_local_state() {
@@ -151,12 +142,12 @@ TestCase {
 
         compare(gateway.callCount, 1)
         compare(gateway.lastMethod, "storageManifests")
-        compare(gateway.lastArgs[0], "rest")
-        compare(gateway.lastArgs[1], "http://storage")
+        compare(gateway.lastArgs[0].adapter.source_mode, "rest")
+        compare(gateway.lastArgs[0].adapter.inputs.rest_endpoint, "http://storage")
         compare(state.manifests.length, 1)
         compare(state.manifestRows()[0].cid, "z-cid")
         compare(state.lastOperation, "List")
-        compare(state.operationLog.length, 1)
+        compare(state.operation.rows.length, 1)
     }
 
     function test_run_storage_exists_uses_sync_call_and_log() {
@@ -173,10 +164,10 @@ TestCase {
 
         verify(response.ok)
         compare(gateway.lastMethod, "storageExists")
-        compare(gateway.lastArgs[0], "rest")
-        compare(gateway.lastArgs[2], "z-cid")
+        compare(gateway.lastArgs[0].adapter.source_mode, "rest")
+        compare(gateway.lastArgs[0].payload.cid, "z-cid")
         compare(state.lastOperation, "Storage exists")
-        compare(state.operationRows()[0].label, "Storage exists")
+        compare(state.operation.rows[0].label, "Storage exists")
     }
 
     function test_pending_mutation_starts_node_operation() {
@@ -202,14 +193,14 @@ TestCase {
         compare(gateway.requestCount, 1)
         compare(gateway.lastMethod, "runtimeOperationStart")
         compare(gateway.lastArgs[0].domain, "storage")
-        compare(gateway.lastArgs[0].sourceMode, "rest")
-        compare(gateway.lastArgs[0].args[0], "rest")
-        compare(gateway.lastArgs[0].args[2], true)
-        compare(gateway.lastArgs[0].args[3], "/tmp/file.bin")
-        compare(state.activeOperation.operationId, "storage-upload-1")
+        compare(gateway.lastArgs[0].adapter.source_mode, "rest")
+        compare(gateway.lastArgs[0].adapter.inputs.rest_endpoint, "http://storage")
+        compare(gateway.lastArgs[0].mutating_enabled, true)
+        compare(gateway.lastArgs[0].payload.path, "/tmp/file.bin")
+        compare(state.operation.active.operationId, "storage-upload-1")
         compare(state.currentTab, "operations")
-        compare(state.pendingMethod, "")
-        verify(!state.operationStartPending)
+        compare(state.pendingOperation.method, "")
+        verify(!state.operation.startPending)
     }
 
     function test_start_dispatch_ack_becomes_running_module_operation() {
@@ -239,11 +230,11 @@ TestCase {
         state.startStorageOperation("storageUploadUrl", ["/tmp/file.bin", 65536], "Upload file")
 
         compare(gateway.requestCount, 1)
-        compare(state.activeOperation.operationId, "storage-upload-ack")
-        compare(state.activeOperation.status, "running")
-        compare(state.activeOperation.externalSessionId, "session-1")
-        compare(state.activeOperation.requestId, "request-1")
-        compare(state.activeOperation.path, "/tmp/file.bin")
+        compare(state.operation.active.operationId, "storage-upload-ack")
+        compare(state.operation.active.status, "running")
+        compare(state.operation.active.externalSessionId, "session-1")
+        compare(state.operation.active.requestId, "request-1")
+        compare(state.operation.active.path, "/tmp/file.bin")
         compare(state.lastOperation, "Running")
         compare(state.currentTab, "operations")
         compare(gateway.history.length, 0)
@@ -275,27 +266,27 @@ TestCase {
 
         state.startStorageOperation("storageUploadUrl", ["/tmp/file.bin", 65536], "Upload file")
 
-        compare(state.activeOperation.status, "running")
-        compare(state.operationLog.length, 1)
+        compare(state.operation.active.status, "running")
+        compare(state.operation.rows.length, 1)
 
         verify(state.applyStorageModuleEvent("storageUploadDone", [
             JSON.stringify({ sessionId: "session-1", requestId: "request-1", success: true, cid: "z-done" })
         ]))
 
-        compare(state.activeOperation.status, "completed")
-        compare(state.activeOperation.cid, "z-done")
+        compare(state.operation.active.status, "completed")
+        compare(state.operation.active.cid, "z-done")
         compare(gateway.history.length, 1)
-        compare(state.operationLog.length, 2)
+        compare(state.operation.rows.length, 2)
 
         verify(!state.applyStorageModuleEvent("storageUploadDone", [
             JSON.stringify({ sessionId: "session-1", requestId: "request-1", success: true, cid: "z-done" })
         ]))
         compare(gateway.history.length, 1)
-        compare(state.operationLog.length, 2)
+        compare(state.operation.rows.length, 2)
     }
 
     function test_terminal_operation_sets_result_and_history_once() {
-        state.updateActiveOperation({
+        state.operationSession.acceptUpdate({
             operationId: "storage-download-1",
             domain: "storage",
             method: "storageDownloadToUrl",
@@ -327,9 +318,9 @@ TestCase {
         })
 
         state.pollStorageOperation(false)
-        state.appendTerminalStorageOperation(state.activeOperation)
+        state.appendTerminalStorageOperation(state.operation.active)
 
-        compare(state.activeOperation.status, "completed")
+        compare(state.operation.active.status, "completed")
         compare(gateway.history.length, 1)
         compare(gateway.history[0].operation.operationId, "storage-download-1")
         compare(gateway.resultTitle, "Download CID")
@@ -338,7 +329,7 @@ TestCase {
     }
 
     function test_busy_operation_rejects_second_start() {
-        state.updateActiveOperation({
+        state.operationSession.acceptUpdate({
             operationId: "storage-download-1",
             domain: "storage",
             method: "storageDownloadToUrl",
@@ -351,7 +342,7 @@ TestCase {
         verify(!response.ok)
         compare(gateway.requestCount, 0)
         compare(state.lastOperation, "Busy")
-        compare(state.operationRows()[0].status, "error")
+        compare(state.operation.rows[0].status, "error")
     }
 
     function test_source_and_cid_helpers() {
@@ -384,7 +375,7 @@ TestCase {
         compare(gateway.callCount, 0)
         compare(state.lastOperation, "Blocked")
         compare(state.manifestRows()[0].cid, "z-old")
-        compare(state.operationRows()[0].status, "error")
+        compare(state.operation.rows[0].status, "error")
         verify(response.error.indexOf("storage.manifests.read") >= 0)
     }
 
@@ -437,13 +428,14 @@ TestCase {
         state.refreshManifests(true)
 
         compare(gateway.lastMethod, "storageManifests")
-        compare(gateway.lastArgs[0], "module")
+        compare(gateway.lastArgs[0].adapter.source_mode, "module")
+        verify(gateway.lastArgs[0].adapter.inputs.rest_endpoint === undefined)
         compare(gateway.lastArgs.length, 1)
         compare(state.manifestRows()[0].cid, "z-module")
     }
 
     function test_storage_module_dispatch_ack_stays_running() {
-        state.updateActiveOperation({
+        state.operationSession.acceptUpdate({
             operationId: "op-1",
             domain: "storage",
             backend: "module",
@@ -471,14 +463,14 @@ TestCase {
 
         state.pollStorageOperation(false)
 
-        compare(state.activeOperation.status, "running")
-        compare(state.activeOperation.externalSessionId, "1")
-        compare(state.activeOperation.cancellable, false)
+        compare(state.operation.active.status, "running")
+        compare(state.operation.active.externalSessionId, "1")
+        compare(state.operation.active.cancellable, false)
         compare(gateway.history.length, 0)
     }
 
     function test_storage_module_stale_dispatch_ack_does_not_reopen_terminal_operation() {
-        state.updateActiveOperation({
+        state.operationSession.acceptUpdate({
             operationId: "op-1",
             domain: "storage",
             backend: "module",
@@ -488,7 +480,7 @@ TestCase {
             cid: "z-done",
             result: { cid: "z-done" }
         })
-        state.terminalOperationId = "op-1"
+        state.operationSession.terminalOperationId = "op-1"
         gateway.requestResponses = ({
             runtimeOperationStatus: {
                 ok: true,
@@ -509,13 +501,13 @@ TestCase {
 
         state.pollStorageOperation(false)
 
-        compare(state.activeOperation.status, "completed")
-        compare(state.activeOperation.cid, "z-done")
-        compare(state.terminalOperationId, "op-1")
+        compare(state.operation.active.status, "completed")
+        compare(state.operation.active.cid, "z-done")
+        compare(state.operationSession.terminalOperationId, "op-1")
     }
 
     function test_storage_module_events_correlate_before_mutating_operation() {
-        state.updateActiveOperation({
+        state.operationSession.acceptUpdate({
             operationId: "op-1",
             domain: "storage",
             backend: "module",
@@ -530,24 +522,24 @@ TestCase {
         verify(!state.applyStorageModuleEvent("storageUploadProgress", [
             JSON.stringify({ sessionId: "2", bytes: 8 })
         ]))
-        compare(state.activeOperation.bytesWritten, 0)
+        compare(state.operation.active.bytesWritten, 0)
 
         verify(state.applyStorageModuleEvent("storageUploadProgress", [
             JSON.stringify({ sessionId: "1", bytes: 8, totalBytes: 16 })
         ]))
 
-        compare(state.activeOperation.status, "running")
-        compare(state.activeOperation.bytesWritten, 8)
+        compare(state.operation.active.status, "running")
+        compare(state.operation.active.bytesWritten, 8)
 
         verify(state.applyStorageModuleEvent("storageUploadDone", [
             JSON.stringify({ sessionId: "1", success: true, cid: "z-done", bytes: 8 })
         ]))
 
-        compare(state.activeOperation.status, "completed")
-        compare(state.activeOperation.cid, "z-done")
+        compare(state.operation.active.status, "completed")
+        compare(state.operation.active.cid, "z-done")
         compare(state.lastOperation, "Complete")
         compare(gateway.history.length, 1)
-        compare(state.operationLog.length, 1)
+        compare(state.operation.rows.length, 1)
 
         verify(!state.applyStorageModuleEvent("storageUploadDone", [
             JSON.stringify({ sessionId: "1", success: true, cid: "z-done", bytes: 8 })

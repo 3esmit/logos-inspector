@@ -17,6 +17,12 @@ ColumnLayout {
     property string currentTab: initialTab
     property string pendingTab: ""
     property string l2InitialView: String(root.zoneState.requestedL2View || "blocks")
+    readonly property var l2Context: root.zoneState.l2
+    readonly property var l2BlockState: root.l2Context.blocks
+    readonly property var l2AccountState: root.l2Context.accounts
+    readonly property var l2ToolState: root.l2Context.tools
+    readonly property var evidenceState: root.zoneState.evidence
+    readonly property var sourceEditorState: root.zoneState.sourceEditor
     readonly property var detail: root.zoneState.zoneDetail
     readonly property var zone: root.detail && root.detail.summary ? root.detail.summary : ({})
     readonly property bool hasDirtyDraft: sourceLoader.section !== null
@@ -124,7 +130,7 @@ ColumnLayout {
         Layout.fillWidth: true
         sourceComponent: ZoneL2Inspector {
             theme: root.theme
-            zoneState: root.zoneState
+            zoneState: root.l2BlockState
             initialView: root.l2InitialView
             onConfigureSourcesRequested: root.requestTab("sources")
         }
@@ -136,7 +142,7 @@ ColumnLayout {
         Layout.fillWidth: true
         sourceComponent: ZoneL2Accounts {
             theme: root.theme
-            zoneState: root.zoneState
+            zoneState: root.l2AccountState
             onConfigureSourcesRequested: root.requestTab("sources")
             onTransactionRequested: function (transactionId, exactSourceId) {
                 root.inspectL2Transaction(transactionId, exactSourceId)
@@ -150,7 +156,7 @@ ColumnLayout {
         Layout.fillWidth: true
         sourceComponent: ZoneL2Programs {
             theme: root.theme
-            zoneState: root.zoneState
+            zoneState: root.l2ToolState
             onConfigureSourcesRequested: root.requestTab("sources")
         }
     }
@@ -161,7 +167,7 @@ ColumnLayout {
         Layout.fillWidth: true
         sourceComponent: ZoneL2Transfers {
             theme: root.theme
-            zoneState: root.zoneState
+            zoneState: root.l2ToolState
             onConfigureSourcesRequested: root.requestTab("sources")
             onTransactionRequested: function (transactionId, exactSourceId) {
                 root.inspectL2Transaction(transactionId, exactSourceId)
@@ -179,7 +185,7 @@ ColumnLayout {
         Layout.fillWidth: true
         sourceComponent: ChannelSourcesSection {
             theme: root.theme
-            zoneState: root.zoneState
+            zoneState: root.sourceEditorState
             detail: root.detail
         }
         onLoaded: {
@@ -195,7 +201,7 @@ ColumnLayout {
         Layout.fillWidth: true
         sourceComponent: ZoneEvidenceViewer {
             theme: root.theme
-            zoneState: root.zoneState
+            zoneState: root.evidenceState
             detail: root.detail
         }
     }
@@ -232,16 +238,16 @@ ColumnLayout {
     }
 
     function inspectL2Transaction(transactionId, exactSourceId) {
-        zoneState.openL2Transaction(transactionId, exactSourceId)
+        l2BlockState.openL2Transaction(transactionId, exactSourceId)
         l2InitialView = "transaction"
         currentTab = "l2"
     }
 
     function l2ViewForState() {
-        if (String(zoneState.l2TransactionId || "").length > 0) {
+        if (String(l2BlockState.l2TransactionId || "").length > 0) {
             return "transaction"
         }
-        if (zoneState.l2BlockDetail !== null) {
+        if (l2BlockState.l2BlockDetail !== null) {
             return "block"
         }
         return "blocks"

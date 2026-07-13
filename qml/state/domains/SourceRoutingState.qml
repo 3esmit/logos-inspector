@@ -3,6 +3,7 @@ import "../source_routing/ConnectorConfigAdapter.js" as ConnectorConfigAdapter
 import "../source_routing/SourcePolicyCatalog.js" as SourcePolicyCatalog
 import "../source_routing/SourcePolicyProjection.js" as SourcePolicyProjection
 import "../source_routing/SourceRoutingUi.js" as SourceRoutingUi
+import "../source_routing/SourceHealthProjection.js" as SourceHealthProjection
 
 QtObject {
     id: root
@@ -132,6 +133,30 @@ QtObject {
         )
     }
 
+    function deliveryOperationAdapter() {
+        return SourcePolicyProjection.adapterInitialization(
+            root,
+            "delivery",
+            connectorSourceMode("delivery", messagingSourceMode),
+            {
+                rest_endpoint: configuredMessagingRestUrl(),
+                metrics_endpoint: messagingMetricsUrl
+            }
+        )
+    }
+
+    function storageOperationAdapter() {
+        return SourcePolicyProjection.adapterInitialization(
+            root,
+            "storage",
+            connectorSourceMode("storage", storageSourceMode),
+            {
+                rest_endpoint: configuredStorageRestUrl(),
+                metrics_endpoint: storageMetricsUrl
+            }
+        )
+    }
+
     function sourceTarget(family, sourceMode, targets) {
         return SourcePolicyProjection.sourceTarget(root, family, sourceMode, targets)
     }
@@ -238,6 +263,18 @@ QtObject {
 
     function storageSourceView() {
         return SourceRoutingUi.storageSourceView(root)
+    }
+
+    function sourceHealth(report) {
+        return SourceHealthProjection.sourceHealth(report)
+    }
+
+    function sourceCapability(report, key) {
+        return SourceHealthProjection.sourceCapability(report, key)
+    }
+
+    function sourceProbeValue(report, key) {
+        return SourceHealthProjection.sourceProbeValue(report, key)
     }
 
     function sourceFamilyView(family, role, report) {

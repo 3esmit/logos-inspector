@@ -21,14 +21,14 @@ pub(super) fn diagnostics_state(
     };
     let mut unavailable = all_sub_capabilities(sub_capabilities);
     let mut warnings = string_list(report.get("warnings"));
-    let mut compact_errors = runtime_evidence::source_report_error(report);
-    mark_diagnostics_runtime_evidence(report, &mut unavailable);
+    let mut compact_errors = runtime_evidence::source_report_error(&report);
+    mark_diagnostics_runtime_evidence(&report, &mut unavailable);
     append_unique(
         &mut unavailable,
         string_list(report.get("unavailable_sub_capabilities")),
     );
     append_diagnostics_report_constraints(
-        report,
+        &report,
         &mut unavailable,
         &mut warnings,
         &mut compact_errors,

@@ -14,14 +14,15 @@ TestCase {
         property string storageCidProbe: ""
         property string storageDataDir: "/tmp/storage"
         property bool storageMutatingDiagnosticsEnabled: false
-        property var metrics: ({
+        property var metricValues: ({
             "storage.active_uploads": 4,
             "storage.active_downloads": 2,
             "storage.failed_transfers_recent": 0,
             "storage.local_storage_used": 1024
         })
+        readonly property var metrics: storageModel
 
-        function dashboardMetricValue(key) { return metrics[String(key || "")] }
+        function dashboardMetricValue(key) { return metricValues[String(key || "")] }
         function valueText(value) { return String(value) }
         function storageSourceTarget() { return "http://storage" }
         function storageDisplayPath(value) { return String(value || "") }
@@ -84,14 +85,15 @@ TestCase {
 
         property int messagingRollingWindow: 45
         property string messagingNetworkPreset: "logos.test"
-        property var metrics: ({
+        property var metricValues: ({
             "messaging.store_peers": 2,
             "messaging.filter_peers": 1,
             "messaging.lightpush_peers": 3,
             "messaging.content_topics": 5
         })
+        readonly property var metrics: deliveryModel
 
-        function dashboardMetricValue(key) { return metrics[String(key || "")] }
+        function dashboardMetricValue(key) { return metricValues[String(key || "")] }
         function dashboardMetricUsesWindow(key) { return true }
         function deliveryHealthValueOk(value, fallback) { return String(value || "") === "ready" }
         function normalizedMessagingNetworkPreset(value) { return value }

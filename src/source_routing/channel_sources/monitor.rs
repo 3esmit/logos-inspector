@@ -891,6 +891,9 @@ fn apply_probe_task_result(
 }
 
 fn normalize_probe_channel_id(output: &mut ChannelSourceProbeOutput) {
+    let ChannelSourceProbeOutput::Sequencer(output) = output else {
+        return;
+    };
     let ChannelSourceProbeFact::Observed(channel_id) = &output.channel_id else {
         return;
     };
@@ -911,14 +914,9 @@ fn apply_regular_output(
     latency_millis: u64,
     now_millis: u64,
 ) {
-    apply_binding_state(owner_channel_id, source, &output.channel_id);
+    apply_binding_state(owner_channel_id, source, &output);
     let failure = output_failure(&output);
-    let complete = complete_observation(
-        source.request.role,
-        &output,
-        observed_at_unix,
-        latency_millis,
-    );
+    let complete = complete_observation(&output, observed_at_unix, latency_millis);
     if let Some(last_good) = complete {
         source.last_good = Some(last_good);
         source.comparison_blocks.clear();
@@ -945,12 +943,12 @@ fn apply_regular_output(
 fn apply_binding_state(
     owner_channel_id: &str,
     source: &mut SourceRuntime,
-    channel_id: &ChannelSourceProbeFact<String>,
+    output: &ChannelSourceProbeOutput,
 ) {
-    if source.request.role != ChannelSourceRole::Sequencer {
+    let ChannelSourceProbeOutput::Sequencer(output) = output else {
         return;
-    }
-    let ChannelSourceProbeFact::Observed(channel_id) = channel_id else {
+    };
+    let ChannelSourceProbeFact::Observed(channel_id) = &output.channel_id else {
         return;
     };
     if channel_id != owner_channel_id {
@@ -963,30 +961,30 @@ fn apply_binding_state(
 }
 
 fn complete_observation(
-    role: ChannelSourceRole,
     output: &ChannelSourceProbeOutput,
     observed_at_unix: u64,
     latency_millis: u64,
 ) -> Option<ChannelSourceLastGood> {
-    let health_ok = matches!(output.health, ChannelSourceProbeFact::Observed(()));
-    let (reported_channel_id, head) = match role {
-        ChannelSourceRole::Sequencer => {
+    let (health_ok, reported_channel_id, head) = match output {
+        ChannelSourceProbeOutput::Sequencer(output) => {
             let ChannelSourceProbeFact::Observed(channel_id) = &output.channel_id else {
                 return None;
             };
-            let ChannelSourceProbeFact::Observed(Some(head)) = &output.head else {
-                return None;
-            };
-            (
-                Some(channel_id.clone()),
-                Some(block_observation(head, observed_at_unix)),
-            )
-        }
-        ChannelSourceRole::Indexer => {
             let ChannelSourceProbeFact::Observed(head) = &output.head else {
                 return None;
             };
             (
+                matches!(output.health, ChannelSourceProbeFact::Observed(())),
+                Some(channel_id.clone()),
+                Some(block_observation(head, observed_at_unix)),
+            )
+        }
+        ChannelSourceProbeOutput::Indexer(output) => {
+            let ChannelSourceProbeFact::Observed(head) = &output.head else {
+                return None;
+            };
+            (
+                matches!(output.health, ChannelSourceProbeFact::Observed(())),
                 None,
                 head.as_ref()
                     .map(|head| block_observation(head, observed_at_unix)),
@@ -1005,25 +1003,39 @@ fn complete_observation(
 fn output_failure(
     output: &ChannelSourceProbeOutput,
 ) -> Option<(ChannelSourceProbeStage, ChannelSourceProbeFailure)> {
-    output
-        .head
-        .failure()
-        .cloned()
-        .map(|failure| (ChannelSourceProbeStage::Head, failure))
-        .or_else(|| {
-            output
-                .channel_id
-                .failure()
-                .cloned()
-                .map(|failure| (ChannelSourceProbeStage::ChannelIdentity, failure))
-        })
-        .or_else(|| {
-            output
-                .health
-                .failure()
-                .cloned()
-                .map(|failure| (ChannelSourceProbeStage::Health, failure))
-        })
+    match output {
+        ChannelSourceProbeOutput::Sequencer(output) => output
+            .head
+            .failure()
+            .cloned()
+            .map(|failure| (ChannelSourceProbeStage::Head, failure))
+            .or_else(|| {
+                output
+                    .channel_id
+                    .failure()
+                    .cloned()
+                    .map(|failure| (ChannelSourceProbeStage::ChannelIdentity, failure))
+            })
+            .or_else(|| {
+                output
+                    .health
+                    .failure()
+                    .cloned()
+                    .map(|failure| (ChannelSourceProbeStage::Health, failure))
+            }),
+        ChannelSourceProbeOutput::Indexer(output) => output
+            .head
+            .failure()
+            .cloned()
+            .map(|failure| (ChannelSourceProbeStage::Head, failure))
+            .or_else(|| {
+                output
+                    .health
+                    .failure()
+                    .cloned()
+                    .map(|failure| (ChannelSourceProbeStage::Health, failure))
+            }),
+    }
 }
 
 fn apply_block_output(

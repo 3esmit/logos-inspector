@@ -14,12 +14,17 @@ TestCase {
         property string localWalletTab: "profiles"
         property string localWalletLookupTarget: ""
         property string routedQuery: ""
-        property var resultValue: null
+        property QtObject shell: QtObject {
+            property var resultValue: null
+
+            function setResult(title, text, isError, value, owner) {
+                resultValue = value
+            }
+        }
 
         function valueToString(value) { return value === undefined || value === null ? "" : String(value) }
         function pushNavigationHistory() {}
         function selectView(view, recordHistory) { currentView = String(view || "") }
-        function setResult(title, text, isError, value, owner) { resultValue = value }
         function walletProfileConfigured() { return false }
         function checkLocalWalletProfile(showResult) {}
         function routeSearch(query) { routedQuery = String(query || "") }
@@ -36,7 +41,7 @@ TestCase {
         fakeModel.localWalletTab = "profiles"
         fakeModel.localWalletLookupTarget = ""
         fakeModel.routedQuery = ""
-        fakeModel.resultValue = null
+        fakeModel.shell.resultValue = null
     }
 
     function test_private_account_opens_local_wallet_sync() {
@@ -45,7 +50,7 @@ TestCase {
         compare(fakeModel.currentView, "localWallet")
         compare(fakeModel.localWalletTab, "privateSync")
         compare(fakeModel.localWalletLookupTarget, "Private/account-1")
-        compare(fakeModel.resultValue.account_id, "Private/account-1")
+        compare(fakeModel.shell.resultValue.account_id, "Private/account-1")
     }
 
 }

@@ -305,7 +305,7 @@ ColumnLayout {
                             theme: root.theme
                             text: qsTr("Create")
                             primary: true
-                            enabled: !root.model.busy && root.model.walletProfileConfigured()
+                            enabled: !root.model.shell.busy && root.model.walletProfileConfigured()
                             Layout.preferredWidth: 112
                             Layout.fillWidth: root.width < 760
                             onClicked: createAccountConfirm.open()
@@ -416,7 +416,7 @@ ColumnLayout {
                         ActionButton {
                             theme: root.theme
                             text: qsTr("Settings")
-                            enabled: !root.model.busy
+                            enabled: !root.model.shell.busy
                             Layout.preferredWidth: 112
                             onClicked: root.model.openSettings("wallet", "")
                         }
@@ -441,7 +441,7 @@ ColumnLayout {
                         theme: root.theme
                         text: qsTr("Read incoming")
                         primary: true
-                        enabled: !root.model.busy && root.model.walletProfileConfigured()
+                        enabled: !root.model.shell.busy && root.model.walletProfileConfigured()
                         Layout.preferredWidth: 144
                         onClicked: readIncomingConfirm.open()
                     }
@@ -449,9 +449,9 @@ ColumnLayout {
                     ActionButton {
                         theme: root.theme
                         text: qsTr("List accounts")
-                        enabled: !root.model.busy && root.model.walletProfileConfigured()
+                        enabled: !root.model.shell.busy && root.model.walletProfileConfigured()
                         Layout.preferredWidth: 132
-                        onClicked: root.model.queryLocalWalletAccounts(true)
+                        onClicked: root.model.wallet.queryAccounts(true)
                     }
 
                     Item {
@@ -491,7 +491,7 @@ ColumnLayout {
                             theme: root.theme
                             text: qsTr("Run")
                             primary: true
-                            enabled: !root.model.busy && root.model.walletProfileConfigured() && root.walletCommandArgs().length > 0
+                            enabled: !root.model.shell.busy && root.model.walletProfileConfigured() && root.walletCommandArgs().length > 0
                             Layout.preferredWidth: 96
                             onClicked: root.openAdvancedWalletConfirm()
                         }
@@ -536,15 +536,15 @@ ColumnLayout {
                             theme: root.theme
                             text: qsTr("List accounts")
                             primary: true
-                            enabled: !root.model.busy && root.model.walletProfileConfigured()
+                            enabled: !root.model.shell.busy && root.model.walletProfileConfigured()
                             Layout.preferredWidth: 132
-                            onClicked: root.model.queryLocalWalletAccounts(false)
+                            onClicked: root.model.wallet.queryAccounts(false)
                         }
 
                         ActionButton {
                             theme: root.theme
                             text: qsTr("Settings")
-                            enabled: !root.model.busy
+                            enabled: !root.model.shell.busy
                             Layout.preferredWidth: 112
                             onClicked: root.model.openSettings("wallet", "")
                         }
@@ -571,7 +571,8 @@ ColumnLayout {
                         rows: root.walletAccountRows()
                         onCellActivated: function (row, column, cell, rowData) {
                             if (rowData.typedId.length > 0) {
-                                root.model.routeSearch("account:" + rowData.typedId)
+                                root.model.entityNavigation.routeSearch(
+                                    "account:" + rowData.typedId)
                             }
                         }
                     }
@@ -626,7 +627,7 @@ ColumnLayout {
                             theme: root.theme
                             text: qsTr("Sync private")
                             primary: true
-                            enabled: !root.model.busy && root.model.walletProfileConfigured()
+                            enabled: !root.model.shell.busy && root.model.walletProfileConfigured()
                             Layout.preferredWidth: 132
                             onClicked: privateSyncConfirm.open()
                         }
@@ -634,7 +635,7 @@ ColumnLayout {
                         ActionButton {
                             theme: root.theme
                             text: qsTr("Settings")
-                            enabled: !root.model.busy
+                            enabled: !root.model.shell.busy
                             Layout.preferredWidth: 112
                             onClicked: root.model.openSettings("wallet", "")
                         }
@@ -701,7 +702,7 @@ ColumnLayout {
                         primary: true
                         onClicked: {
                             root.model.saveWalletState()
-                            root.model.queryBedrockWalletBalance()
+                            root.model.wallet.queryBedrockBalance()
                         }
                     }
 
@@ -758,8 +759,8 @@ ColumnLayout {
         title: qsTr("Sync private wallet")
         message: qsTr("This runs the configured local wallet sync-private command and may update local wallet state.")
         confirmText: qsTr("Sync private")
-        confirmEnabled: !root.model.busy && root.model.walletProfileConfigured()
-        onAccepted: root.model.syncPrivateWallet()
+        confirmEnabled: !root.model.shell.busy && root.model.walletProfileConfigured()
+        onAccepted: root.model.wallet.syncPrivate()
     }
 
     ConfirmActionPopup {
@@ -770,8 +771,8 @@ ColumnLayout {
         title: qsTr("Create account")
         message: qsTr("This runs wallet account new %1.").arg(root.model.walletCreatePrivacy === "private" ? qsTr("private") : qsTr("public"))
         confirmText: qsTr("Create")
-        confirmEnabled: !root.model.busy && root.model.walletProfileConfigured()
-        onAccepted: root.model.createWalletAccount()
+        confirmEnabled: !root.model.shell.busy && root.model.walletProfileConfigured()
+        onAccepted: root.model.wallet.createAccount()
     }
 
     ConfirmActionPopup {
@@ -783,7 +784,7 @@ ColumnLayout {
         message: qsTr("This runs wallet auth-transfer send from %1.").arg(root.shortText(root.model.walletSendFrom, 32))
         confirmText: qsTr("Send")
         confirmEnabled: root.sendReady()
-        onAccepted: root.model.sendWalletTransaction()
+        onAccepted: root.model.wallet.sendTransaction()
     }
 
     ConfirmActionPopup {
@@ -794,8 +795,8 @@ ColumnLayout {
         title: qsTr("Read incoming")
         message: qsTr("This runs wallet account sync-private and updates local wallet state.")
         confirmText: qsTr("Read")
-        confirmEnabled: !root.model.busy && root.model.walletProfileConfigured()
-        onAccepted: root.model.readIncomingWalletTransactions()
+        confirmEnabled: !root.model.shell.busy && root.model.walletProfileConfigured()
+        onAccepted: root.model.wallet.readIncomingTransactions()
     }
 
     ConfirmActionPopup {
@@ -806,7 +807,7 @@ ColumnLayout {
         title: qsTr("Run wallet command")
         message: qsTr("This runs wallet %1.").arg(root.shortText(root.walletCommandArgs().join(" "), 54))
         confirmText: qsTr("Run")
-        confirmEnabled: !root.model.busy && root.model.walletProfileConfigured() && root.walletCommandArgs().length > 0
+        confirmEnabled: !root.model.shell.busy && root.model.walletProfileConfigured() && root.walletCommandArgs().length > 0
         onAccepted: root.acceptAdvancedWalletCommand()
     }
 
@@ -986,7 +987,7 @@ ColumnLayout {
     function openAdvancedWalletConfirm() {
         const error = LocalWalletCommandWorkspace.advancedCommandError(root.model)
         if (error.length) {
-            root.model.setResult(qsTr("Wallet command"), error, true)
+            root.model.shell.setResult(qsTr("Wallet command"), error, true)
             return
         }
         advancedWalletConfirm.open()
@@ -995,7 +996,7 @@ ColumnLayout {
     function acceptAdvancedWalletCommand() {
         const parsed = root.walletCommandArgs()
         if (parsed !== null && parsed.length > 0) {
-            root.model.runWalletCommand(parsed)
+            root.model.wallet.runCommand(parsed)
         }
     }
 

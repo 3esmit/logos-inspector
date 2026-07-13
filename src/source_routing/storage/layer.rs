@@ -1,9 +1,7 @@
 use anyhow::{Context as _, Result};
-use reqwest::{Method, Response};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::adapters::STORAGE_MODULE;
 use crate::{
     modules::ModuleReport,
     modules::logos_core::LogoscoreCliRuntime,
@@ -11,28 +9,31 @@ use crate::{
         DEFAULT_STORAGE_METRICS_ENDPOINT, DEFAULT_STORAGE_REST_ENDPOINT,
         adapter::{
             AdapterConnectionType, AdapterInitialization, AdapterInputPolicy,
-            ManagedLifecycleOutcome, ManagedModuleCallSpec, ManagedNodeAction, SourceAdapterPolicy,
-            SourceModePolicy,
+            ManagedLifecycleOutcome, ManagedModuleCallSpec, ManagedNodeAction, ManagedNodeContract,
+            SourceAdapterPolicy, SourceModePolicy,
         },
     },
-    support::raw_source_transport::request_success,
 };
+
+const STORAGE_MODULE: &str = "storage_module";
+
+static MANAGED_CONTRACT: ManagedNodeContract = ManagedNodeContract::new(
+    STORAGE_MODULE,
+    ensure_managed_module,
+    call_managed_module,
+    managed_call_spec,
+    Some(managed_lifecycle_event),
+    Some(decode_managed_lifecycle_event),
+);
+
+#[must_use]
+pub(crate) const fn managed_contract() -> &'static ManagedNodeContract {
+    &MANAGED_CONTRACT
+}
 
 #[must_use]
 pub(crate) const fn module_id() -> &'static str {
     STORAGE_MODULE
-}
-
-pub(crate) fn is_module_source(args: &crate::support::args::Args) -> bool {
-    super::adapters::is_storage_module_source(args)
-}
-
-pub(crate) fn operation_args(
-    args: &crate::support::args::Args,
-    uses_mutating_flag: bool,
-    action_label: &str,
-) -> Result<Option<crate::source_routing::shared::module_bridge::ModuleCallArgs>> {
-    super::adapters::storage_args(args, uses_mutating_flag, action_label)
 }
 
 pub(crate) fn ensure_managed_module(runtime: &LogoscoreCliRuntime) -> Result<()> {
@@ -104,6 +105,12 @@ pub(crate) fn managed_lifecycle_outcome(
         success: payload.success,
         detail: payload.message,
     })
+}
+
+fn decode_managed_lifecycle_event(
+    data: &serde_json::Map<String, Value>,
+) -> Result<ManagedLifecycleOutcome> {
+    managed_lifecycle_outcome(data.get("arg0"))
 }
 
 #[derive(Debug, Deserialize)]
@@ -345,137 +352,15 @@ pub(crate) fn module_report(cid: Option<&str>, privileged_debug_enabled: bool) -
     crate::modules::storage_report(cid, privileged_debug_enabled)
 }
 
-pub(crate) async fn module_call(method: &'static str, args: Vec<Value>) -> Result<Value> {
-    blocking_module_call("Storage module call", move || {
-        crate::source_routing::shared::module_bridge::call_value(STORAGE_MODULE, method, &args)
-    })
-    .await
-}
-
-pub(crate) async fn module_dispatch(
-    method: &'static str,
-    args: Vec<Value>,
-    context: Vec<(&'static str, String)>,
-) -> Result<Value> {
-    let value = module_call(method, args).await?;
-    Ok(
-        crate::source_routing::shared::module_bridge::dispatch_result(
-            STORAGE_MODULE,
-            method,
-            value,
-            &context,
-        ),
-    )
-}
-
-pub(crate) async fn manifests(endpoint: &str) -> Result<Value> {
-    crate::raw_http_json(endpoint, "/data").await
-}
-
-pub(crate) async fn manifest(endpoint: &str, cid: &str) -> Result<Value> {
-    crate::raw_http_json(endpoint, &format!("/data/{cid}/network/manifest")).await
-}
-
-pub(crate) async fn exists(endpoint: &str, cid: &str) -> Result<Value> {
-    crate::raw_http_json(endpoint, &format!("/data/{cid}/exists")).await
-}
-
-pub(crate) async fn probe_value(endpoint: &str, path: &str) -> Result<Value> {
-    let url = crate::source_routing::shared::http::rest_url(endpoint, path);
-    let text = crate::source_routing::shared::http::raw_http_text_url(&url).await?;
-    Ok(parse_probe_text(&text))
-}
-
-pub(crate) async fn probe_metrics(endpoint: &str) -> Result<String> {
-    crate::source_routing::shared::http::raw_http_text_url(endpoint).await
-}
-
-pub(crate) async fn fetch(endpoint: &str, cid: &str) -> Result<Value> {
-    crate::source_routing::shared::http::rest_json_request(
-        Method::POST,
-        endpoint,
-        &format!("/data/{cid}/network"),
-        None,
-    )
-    .await
-}
-
-pub(crate) async fn upload(endpoint: &str, path: &str, block_size: u64) -> Result<Value> {
-    super::adapters::storage_rest_upload(endpoint, path, block_size).await
-}
-
-pub(crate) async fn upload_bytes(
-    endpoint: &str,
-    filename: &str,
-    bytes: &[u8],
-    block_size: u64,
-) -> Result<Value> {
-    super::adapters::storage_rest_upload_bytes(endpoint, filename, bytes, block_size).await
-}
-
-pub(crate) async fn download_bytes(endpoint: &str, cid: &str, local_only: bool) -> Result<Vec<u8>> {
-    super::adapters::storage_rest_download_bytes(endpoint, cid, local_only).await
-}
-
-pub(crate) async fn download_response(
-    endpoint: &str,
-    cid: &str,
-    local_only: bool,
-) -> Result<Response> {
-    let route = if local_only {
-        format!("/data/{cid}")
-    } else {
-        format!("/data/{cid}/network/stream")
-    };
-    let url = crate::source_routing::shared::http::rest_url(endpoint, &route);
-    request_success(
-        reqwest::Client::new().get(&url),
-        &url,
-        "storage download",
-        "failed to read storage download error body",
-    )
-    .await
-}
-
-pub(crate) async fn remove(endpoint: &str, cid: &str) -> Result<Value> {
-    crate::source_routing::shared::http::rest_empty_request(
-        Method::DELETE,
-        endpoint,
-        &format!("/data/{cid}"),
-        None,
-    )
-    .await?;
-    Ok(json!({
-        "removed": true,
-        "cid": cid,
-        "endpoint": endpoint,
-    }))
-}
-
-async fn blocking_module_call<T, F>(label: &'static str, call: F) -> Result<T>
-where
-    T: Send + 'static,
-    F: FnOnce() -> Result<T> + Send + 'static,
-{
-    tokio::task::spawn_blocking(call)
-        .await
-        .with_context(|| format!("{label} worker failed"))?
-}
-
-fn parse_probe_text(text: &str) -> Value {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return Value::Null;
-    }
-    serde_json::from_str(trimmed).unwrap_or_else(|_| Value::String(trimmed.to_owned()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::source_routing::adapter::{
         ManagedNodeAction,
-        contract_tests::{assert_layer_contract, assert_managed_module_contract},
+        contract_tests::{
+            EndpointAdapterBehavior, assert_endpoint_adapter_contract, assert_layer_contract,
+            assert_managed_lifecycle_behavior, assert_managed_module_contract,
+        },
     };
 
     #[test]
@@ -487,15 +372,52 @@ mod tests {
     fn storage_managed_calls_satisfy_shared_contract() {
         assert_managed_module_contract(
             "storage",
-            module_id(),
+            managed_contract(),
             &[
                 ManagedNodeAction::Initialize,
                 ManagedNodeAction::Start,
                 ManagedNodeAction::Stop,
                 ManagedNodeAction::Destroy,
             ],
-            managed_call_spec,
         );
+    }
+
+    #[test]
+    fn storage_lifecycle_events_satisfy_shared_behavior_contract() -> Result<()> {
+        assert_managed_lifecycle_behavior(
+            "storage",
+            managed_contract(),
+            ManagedNodeAction::Start,
+            "storageStart",
+            json!({ "arg0": "{\"success\":true,\"message\":\"started\"}" }),
+            true,
+            "started",
+        )
+    }
+
+    #[test]
+    fn storage_endpoint_adapters_satisfy_shared_behavior_contract() {
+        assert_endpoint_adapter_contract("storage", STORAGE_SOURCE_MODES, |mode, rest, metrics| {
+            match StorageAdapter::select(mode, rest, metrics) {
+                StorageAdapter::Module => EndpointAdapterBehavior::Module {
+                    module_id: module_id(),
+                },
+                StorageAdapter::Rest {
+                    endpoint,
+                    metrics_endpoint,
+                } => EndpointAdapterBehavior::Endpoint {
+                    connection_type: AdapterConnectionType::Rest,
+                    endpoint: endpoint.to_owned(),
+                    metrics_endpoint: metrics_endpoint.map(ToOwned::to_owned),
+                },
+                StorageAdapter::Metrics { endpoint } => EndpointAdapterBehavior::Endpoint {
+                    connection_type: AdapterConnectionType::Metrics,
+                    endpoint: endpoint.to_owned(),
+                    metrics_endpoint: None,
+                },
+                StorageAdapter::Unsupported { .. } => EndpointAdapterBehavior::Unsupported,
+            }
+        });
     }
 
     #[test]

@@ -7,13 +7,11 @@ use super::command_surface::{INSPECTOR_MODULE, InspectorCommandSurface};
 #[cfg(test)]
 use crate::source_routing::{
     self, CoreEndpointMode, DEFAULT_DELIVERY_REST_ENDPOINT, DEFAULT_STORAGE_REST_ENDPOINT,
-    DeliveryStoreQuery, delivery_rest_source, messaging_layer, storage_rest_source,
+    messaging_layer,
 };
 use crate::support::bridge_envelope::{bridge_error_response_json, bridge_response_json};
 #[cfg(test)]
 const BLOCKCHAIN_MODULE: &str = source_routing::BLOCKCHAIN_MODULE;
-#[cfg(test)]
-const INDEXER_MODULE: &str = "lez_indexer_module";
 
 pub struct InspectorBridge {
     surface: InspectorCommandSurface,
@@ -223,41 +221,9 @@ mod tests {
         if source.mode != CoreEndpointMode::Module
             || !source.endpoint.is_empty()
             || source.next_index != 1
-            || source.module != INDEXER_MODULE
+            || source.module != BLOCKCHAIN_MODULE
         {
             bail!("unexpected source endpoint");
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn storage_rest_source_rejects_module_mode_for_rest_actions() -> Result<()> {
-        let args = Args::new(json!([
-            "module",
-            "http://127.0.0.1:8080/api/storage/v1",
-            "cid"
-        ]))?;
-        let result = storage_rest_source(&args);
-
-        let Err(error) = result else {
-            bail!("expected module source to fail");
-        };
-        if !error.to_string().contains("require storage REST source") {
-            bail!("unexpected error: {error:#}");
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn delivery_rest_source_rejects_metrics_for_message_actions() -> Result<()> {
-        let args = Args::new(json!(["metrics", "http://127.0.0.1:8008/metrics", "topic"]))?;
-        let result = delivery_rest_source(&args);
-
-        let Err(error) = result else {
-            bail!("expected metrics source to fail");
-        };
-        if !error.to_string().contains("require delivery REST source") {
-            bail!("unexpected error: {error:#}");
         }
         Ok(())
     }
@@ -266,7 +232,7 @@ mod tests {
     fn delivery_store_query_url_defaults_to_hashes_only_and_caps_page_size() -> Result<()> {
         let url = messaging_layer::store_query_url(
             "http://127.0.0.1:8645/",
-            DeliveryStoreQuery {
+            messaging_layer::DeliveryStoreQuery {
                 peer_addr: Some("/ip4/127.0.0.1/tcp/60001/p2p/peer-a"),
                 content_topics: Some("/app/1/chat/proto"),
                 pubsub_topic: None,
@@ -294,7 +260,7 @@ mod tests {
     fn delivery_store_query_url_supports_comment_cursor_and_payloads() -> Result<()> {
         let url = messaging_layer::store_query_url(
             "http://127.0.0.1:8645/",
-            DeliveryStoreQuery {
+            messaging_layer::DeliveryStoreQuery {
                 peer_addr: None,
                 content_topics: Some("/lez/account/account-1/comments"),
                 pubsub_topic: None,
@@ -322,13 +288,14 @@ mod tests {
         let result = bridge.call_module_value(
             INSPECTOR_MODULE,
             "deliverySend",
-            json!([
-                "rest",
-                "http://127.0.0.1:8645",
-                false,
-                "/app/1/chat/proto",
-                "hello"
-            ]),
+            json!([{
+                "adapter": {
+                    "source_mode": "rest",
+                    "inputs": { "rest_endpoint": "http://127.0.0.1:8645" }
+                },
+                "mutating_enabled": false,
+                "payload": { "topic": "/app/1/chat/proto", "payload": "hello" }
+            }]),
         );
 
         let Err(error) = result else {
@@ -349,12 +316,14 @@ mod tests {
         let result = bridge.call_module_value(
             INSPECTOR_MODULE,
             "storageFetch",
-            json!([
-                "rest",
-                "http://127.0.0.1:8080/api/storage/v1",
-                false,
-                "zDvtest"
-            ]),
+            json!([{
+                "adapter": {
+                    "source_mode": "rest",
+                    "inputs": { "rest_endpoint": "http://127.0.0.1:8080/api/storage/v1" }
+                },
+                "mutating_enabled": false,
+                "payload": { "cid": "zDvtest" }
+            }]),
         );
 
         let Err(error) = result else {
@@ -598,11 +567,13 @@ mod tests {
             "nodeOperationStart",
             json!([{
                 "domain": "storage",
-                "sourceMode": "rest",
-                "endpoint": "http://127.0.0.1:8080/api/storage/v1",
                 "method": "storageDownloadToUrl",
-                "args": ["cid-b", "/tmp/b", false],
-                "mutatingEnabled": true,
+                "adapter": {
+                    "source_mode": "rest",
+                    "inputs": { "rest_endpoint": "http://127.0.0.1:8080/api/storage/v1" }
+                },
+                "payload": { "cid": "cid-b", "path": "/tmp/b", "local_only": false },
+                "mutating_enabled": true,
                 "label": "Storage download"
             }]),
         )?;
@@ -618,74 +589,67 @@ mod tests {
     }
 
     #[test]
-    fn runtime_operation_request_normalizes_storage_endpoint_first_args() -> Result<()> {
+    fn runtime_operation_request_accepts_typed_storage_payload() -> Result<()> {
         let request =
             crate::inspector::commands::operations::runtime_operation_request_from_value(json!({
                 "domain": "storage",
-                "sourceMode": "rest",
-                "endpoint": "http://127.0.0.1:8080/api/storage/v1",
                 "method": "storageDownloadManifest",
-                "args": ["http://127.0.0.1:8080/api/storage/v1", "z-storage"]
+                "adapter": {
+                    "source_mode": "rest",
+                    "inputs": { "rest_endpoint": "http://127.0.0.1:8080/api/storage/v1" }
+                },
+                "payload": { "cid": "z-storage" }
             }))?;
 
-        if request.args() != &json!(["rest", "http://127.0.0.1:8080/api/storage/v1", "z-storage"]) {
-            bail!("unexpected normalized args: {}", request.args());
+        if request.method_name() != "storageDownloadManifest" || request.args() != &json!([]) {
+            bail!("unexpected typed request");
         }
         Ok(())
     }
 
     #[test]
-    fn runtime_operation_request_normalizes_delivery_endpoint_first_args() -> Result<()> {
+    fn runtime_operation_request_accepts_typed_delivery_payload() -> Result<()> {
         let request =
             crate::inspector::commands::operations::runtime_operation_request_from_value(json!({
                 "domain": "delivery",
-                "sourceMode": "rest",
-                "endpoint": "http://127.0.0.1:8645",
                 "method": "deliverySend",
-                "mutatingEnabled": true,
-                "args": ["http://127.0.0.1:8645", "/waku/2/default/proto", "hello"]
+                "adapter": {
+                    "source_mode": "rest",
+                    "inputs": { "rest_endpoint": "http://127.0.0.1:8645" }
+                },
+                "mutating_enabled": true,
+                "payload": { "topic": "/waku/2/default/proto", "payload": "hello" }
             }))?;
 
-        if request.args()
-            != &json!([
-                "rest",
-                "http://127.0.0.1:8645",
-                true,
-                "/waku/2/default/proto",
-                "hello"
-            ])
-        {
-            bail!("unexpected normalized args: {}", request.args());
+        if request.method_name() != "deliverySend" || request.args() != &json!([]) {
+            bail!("unexpected typed request");
         }
         Ok(())
     }
 
     #[test]
-    fn runtime_operation_request_keeps_delivery_store_query_read_only_args() -> Result<()> {
-        let request = crate::inspector::commands::operations::runtime_operation_request_from_value(
-            json!({
+    fn runtime_operation_request_accepts_typed_delivery_store_query() -> Result<()> {
+        let request =
+            crate::inspector::commands::operations::runtime_operation_request_from_value(json!({
                 "domain": "delivery",
-                "sourceMode": "rest",
-                "endpoint": "http://127.0.0.1:8645",
                 "method": "deliveryStoreQuery",
-                "args": ["peer-a", "/topic/1/a/proto", "/waku/2/default-waku/proto", "cursor-a", 10, true, true]
-            }),
-        )?;
+                "adapter": {
+                    "source_mode": "rest",
+                    "inputs": { "rest_endpoint": "http://127.0.0.1:8645" }
+                },
+                "payload": {
+                    "peer_addr": "peer-a",
+                    "content_topics": "/topic/1/a/proto",
+                    "pubsub_topic": "/waku/2/default-waku/proto",
+                    "cursor": "cursor-a",
+                    "page_size": 10,
+                    "ascending": true,
+                    "include_data": true
+                }
+            }))?;
 
-        if request.args()
-            != &json!([
-                "rest",
-                "http://127.0.0.1:8645",
-                "peer-a",
-                "/topic/1/a/proto",
-                "/waku/2/default-waku/proto",
-                "cursor-a",
-                10,
-                true,
-                true
-            ])
-        {
-            bail!("unexpected normalized args: {}", request.args());
+        if request.method_name() != "deliveryStoreQuery" || request.args() != &json!([]) {
+            bail!("unexpected typed request");
         }
         Ok(())
     }
@@ -708,11 +672,13 @@ mod tests {
             "nodeOperationStart",
             json!([{
                 "domain": "storage",
-                "sourceMode": "rest",
-                "endpoint": "http://127.0.0.1:8080/api/storage/v1",
                 "method": "storageDownloadToUrl",
-                "args": ["cid-c", "/tmp/c", false],
-                "mutatingEnabled": true,
+                "adapter": {
+                    "source_mode": "rest",
+                    "inputs": { "rest_endpoint": "http://127.0.0.1:8080/api/storage/v1" }
+                },
+                "payload": { "cid": "cid-c", "path": "/tmp/c", "local_only": false },
+                "mutating_enabled": true,
                 "label": "Storage download"
             }]),
         );
@@ -727,20 +693,19 @@ mod tests {
     }
 
     #[test]
-    fn runtime_operation_request_normalizes_module_delivery_send_args() -> Result<()> {
+    fn runtime_operation_request_accepts_module_delivery_adapter() -> Result<()> {
         let request =
             crate::inspector::commands::operations::runtime_operation_request_from_value(json!({
                 "domain": "delivery",
-                "sourceMode": "module",
-                "endpoint": "",
                 "method": "deliverySend",
-                "args": ["/waku/2/default/proto", "hello"],
-                "mutatingEnabled": true,
+                "adapter": { "source_mode": "module", "inputs": {} },
+                "payload": { "topic": "/waku/2/default/proto", "payload": "hello" },
+                "mutating_enabled": true,
                 "label": "Send message"
             }))?;
 
-        if request.args() != &json!(["module", true, "/waku/2/default/proto", "hello"]) {
-            bail!("unexpected normalized args: {}", request.args());
+        if request.method_name() != "deliverySend" || request.args() != &json!([]) {
+            bail!("unexpected typed request");
         }
         Ok(())
     }

@@ -7,9 +7,11 @@ use super::{
 use crate::{
     inspection::ZoneSourceRole,
     lez::{IndexerBlockReport, ProgramIdEntry, TransactionSummary},
-    source_routing::{
-        channel_sources::{ChannelSourceRole, ChannelSourceTarget},
-        execution_zone_layer,
+    source_routing::channel_sources::{
+        ChannelSourceTarget,
+        indexer::IndexerAdapter,
+        layer::{ExecutionZoneReadError, ExecutionZoneReadErrorKind},
+        sequencer::SequencerAdapter,
     },
 };
 
@@ -59,179 +61,212 @@ pub(crate) struct L2SourceDescriptor {
     pub source_config_revision: u64,
 }
 
-pub(crate) trait ZoneL2SourceAdapter: Send + Sync {
-    fn head<'a>(
-        &'a self,
-        _source: L2SourceDescriptor,
-    ) -> L2SourceFuture<'a, Option<NormalizedL2Block>> {
-        Box::pin(async { Err(L2SourceError::capability()) })
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SequencerL2Source {
+    descriptor: L2SourceDescriptor,
+}
+
+impl SequencerL2Source {
+    pub(crate) fn parse(descriptor: L2SourceDescriptor) -> Result<Self, L2SourceError> {
+        if descriptor.role != ZoneSourceRole::Sequencer {
+            return Err(L2SourceError::capability());
+        }
+        Ok(Self { descriptor })
     }
 
-    fn blocks<'a>(
-        &'a self,
-        _source: L2SourceDescriptor,
-        _before: Option<u64>,
-        _limit: u64,
-    ) -> L2SourceFuture<'a, Vec<NormalizedL2Block>> {
-        Box::pin(async { Err(L2SourceError::capability()) })
+    #[must_use]
+    #[cfg(test)]
+    pub(crate) fn source_id(&self) -> &str {
+        &self.descriptor.source_id
     }
 
-    fn block_by_id<'a>(
-        &'a self,
-        _source: L2SourceDescriptor,
-        _block_id: u64,
-    ) -> L2SourceFuture<'a, Option<NormalizedL2Block>> {
-        Box::pin(async { Err(L2SourceError::capability()) })
-    }
-
-    fn block_by_hash<'a>(
-        &'a self,
-        _source: L2SourceDescriptor,
-        _block_hash: String,
-    ) -> L2SourceFuture<'a, Option<NormalizedL2Block>> {
-        Box::pin(async { Err(L2SourceError::capability()) })
-    }
-
-    fn transaction<'a>(
-        &'a self,
-        _source: L2SourceDescriptor,
-        _transaction_id: String,
-    ) -> L2SourceFuture<'a, Option<TransactionSummary>> {
-        Box::pin(async { Err(L2SourceError::capability()) })
-    }
-
-    fn current_account<'a>(
-        &'a self,
-        _source: L2SourceDescriptor,
-        _account_id: String,
-    ) -> L2SourceFuture<'a, L2AccountValue> {
-        Box::pin(async { Err(L2SourceError::capability()) })
-    }
-
-    fn account_at_block<'a>(
-        &'a self,
-        _source: L2SourceDescriptor,
-        _account_id: String,
-        _block_id: u64,
-    ) -> L2SourceFuture<'a, L2AccountValue> {
-        Box::pin(async { Err(L2SourceError::capability()) })
-    }
-
-    fn account_activity<'a>(
-        &'a self,
-        _source: L2SourceDescriptor,
-        _account_id: String,
-        _offset: usize,
-        _limit: usize,
-    ) -> L2SourceFuture<'a, Vec<L2AccountActivityRow>> {
-        Box::pin(async { Err(L2SourceError::capability()) })
-    }
-
-    fn programs<'a>(
-        &'a self,
-        _source: L2SourceDescriptor,
-    ) -> L2SourceFuture<'a, Vec<ProgramIdEntry>> {
-        Box::pin(async { Err(L2SourceError::capability()) })
-    }
-
-    fn commitment_proof<'a>(
-        &'a self,
-        _source: L2SourceDescriptor,
-        _commitment_hex: String,
-    ) -> L2SourceFuture<'a, Option<(u64, Vec<String>)>> {
-        Box::pin(async { Err(L2SourceError::capability()) })
-    }
-
-    fn account_nonces<'a>(
-        &'a self,
-        _source: L2SourceDescriptor,
-        _account_ids: Vec<String>,
-    ) -> L2SourceFuture<'a, Vec<String>> {
-        Box::pin(async { Err(L2SourceError::capability()) })
-    }
-
-    fn transfer_blocks<'a>(
-        &'a self,
-        _source: L2SourceDescriptor,
-        _before: Option<u64>,
-        _limit: u64,
-    ) -> L2SourceFuture<'a, Vec<IndexerBlockReport>> {
-        Box::pin(async { Err(L2SourceError::capability()) })
+    #[must_use]
+    fn target(&self) -> &ChannelSourceTarget {
+        &self.descriptor.target
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct DirectZoneL2SourceAdapter;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct IndexerL2Source {
+    descriptor: L2SourceDescriptor,
+}
 
-impl ZoneL2SourceAdapter for DirectZoneL2SourceAdapter {
+impl IndexerL2Source {
+    pub(crate) fn parse(descriptor: L2SourceDescriptor) -> Result<Self, L2SourceError> {
+        if descriptor.role != ZoneSourceRole::Indexer {
+            return Err(L2SourceError::capability());
+        }
+        Ok(Self { descriptor })
+    }
+
+    #[must_use]
+    #[cfg(test)]
+    pub(crate) fn source_id(&self) -> &str {
+        &self.descriptor.source_id
+    }
+
+    #[must_use]
+    fn target(&self) -> &ChannelSourceTarget {
+        &self.descriptor.target
+    }
+}
+
+pub(crate) trait SequencerL2SourceAdapter: Send + Sync {
     fn head<'a>(
         &'a self,
-        source: L2SourceDescriptor,
+        source: SequencerL2Source,
+    ) -> L2SourceFuture<'a, Option<NormalizedL2Block>>;
+
+    fn blocks<'a>(
+        &'a self,
+        source: SequencerL2Source,
+        before: Option<u64>,
+        limit: u64,
+    ) -> L2SourceFuture<'a, Vec<NormalizedL2Block>>;
+
+    fn block_by_id<'a>(
+        &'a self,
+        source: SequencerL2Source,
+        block_id: u64,
+    ) -> L2SourceFuture<'a, Option<NormalizedL2Block>>;
+
+    fn transaction<'a>(
+        &'a self,
+        source: SequencerL2Source,
+        transaction_id: String,
+    ) -> L2SourceFuture<'a, Option<TransactionSummary>>;
+
+    fn current_account<'a>(
+        &'a self,
+        source: SequencerL2Source,
+        account_id: String,
+    ) -> L2SourceFuture<'a, L2AccountValue>;
+
+    fn programs<'a>(&'a self, source: SequencerL2Source)
+    -> L2SourceFuture<'a, Vec<ProgramIdEntry>>;
+
+    fn commitment_proof<'a>(
+        &'a self,
+        source: SequencerL2Source,
+        commitment_hex: String,
+    ) -> L2SourceFuture<'a, Option<(u64, Vec<String>)>>;
+
+    fn account_nonces<'a>(
+        &'a self,
+        source: SequencerL2Source,
+        account_ids: Vec<String>,
+    ) -> L2SourceFuture<'a, Vec<String>>;
+}
+
+pub(crate) trait IndexerL2SourceAdapter: Send + Sync {
+    fn head<'a>(&'a self, source: IndexerL2Source)
+    -> L2SourceFuture<'a, Option<NormalizedL2Block>>;
+
+    fn blocks<'a>(
+        &'a self,
+        source: IndexerL2Source,
+        before: Option<u64>,
+        limit: u64,
+    ) -> L2SourceFuture<'a, Vec<NormalizedL2Block>>;
+
+    fn block_by_id<'a>(
+        &'a self,
+        source: IndexerL2Source,
+        block_id: u64,
+    ) -> L2SourceFuture<'a, Option<NormalizedL2Block>>;
+
+    fn block_by_hash<'a>(
+        &'a self,
+        source: IndexerL2Source,
+        block_hash: String,
+    ) -> L2SourceFuture<'a, Option<NormalizedL2Block>>;
+
+    fn transaction<'a>(
+        &'a self,
+        source: IndexerL2Source,
+        transaction_id: String,
+    ) -> L2SourceFuture<'a, Option<TransactionSummary>>;
+
+    fn account_at_block<'a>(
+        &'a self,
+        source: IndexerL2Source,
+        account_id: String,
+        block_id: u64,
+    ) -> L2SourceFuture<'a, L2AccountValue>;
+
+    fn account_activity<'a>(
+        &'a self,
+        source: IndexerL2Source,
+        account_id: String,
+        offset: usize,
+        limit: usize,
+    ) -> L2SourceFuture<'a, Vec<L2AccountActivityRow>>;
+
+    fn transfer_blocks<'a>(
+        &'a self,
+        source: IndexerL2Source,
+        before: Option<u64>,
+        limit: u64,
+    ) -> L2SourceFuture<'a, Vec<IndexerBlockReport>>;
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct DirectSequencerL2SourceAdapter;
+
+impl SequencerL2SourceAdapter for DirectSequencerL2SourceAdapter {
+    fn head<'a>(
+        &'a self,
+        source: SequencerL2Source,
     ) -> L2SourceFuture<'a, Option<NormalizedL2Block>> {
         Box::pin(async move {
-            execution_zone_adapter(&source)
+            sequencer_adapter(&source)?
                 .head()
                 .await
                 .map_err(map_execution_zone_error)?
-                .map(normalize_execution_zone_block)
+                .map(normalize_sequencer_block)
                 .transpose()
         })
     }
 
     fn blocks<'a>(
         &'a self,
-        source: L2SourceDescriptor,
+        source: SequencerL2Source,
         before: Option<u64>,
         limit: u64,
     ) -> L2SourceFuture<'a, Vec<NormalizedL2Block>> {
         Box::pin(async move {
-            execution_zone_adapter(&source)
+            sequencer_adapter(&source)?
                 .blocks(before, limit)
                 .await
                 .map_err(map_execution_zone_error)?
                 .into_iter()
-                .map(normalize_execution_zone_block)
+                .map(normalize_sequencer_block)
                 .collect()
         })
     }
 
     fn block_by_id<'a>(
         &'a self,
-        source: L2SourceDescriptor,
+        source: SequencerL2Source,
         block_id: u64,
     ) -> L2SourceFuture<'a, Option<NormalizedL2Block>> {
         Box::pin(async move {
-            execution_zone_adapter(&source)
+            sequencer_adapter(&source)?
                 .block_by_id(block_id)
                 .await
                 .map_err(map_execution_zone_error)?
-                .map(normalize_execution_zone_block)
-                .transpose()
-        })
-    }
-
-    fn block_by_hash<'a>(
-        &'a self,
-        source: L2SourceDescriptor,
-        block_hash: String,
-    ) -> L2SourceFuture<'a, Option<NormalizedL2Block>> {
-        Box::pin(async move {
-            execution_zone_adapter(&source)
-                .block_by_hash(&block_hash)
-                .await
-                .map_err(map_execution_zone_error)?
-                .map(normalize_execution_zone_block)
+                .map(normalize_sequencer_block)
                 .transpose()
         })
     }
 
     fn transaction<'a>(
         &'a self,
-        source: L2SourceDescriptor,
+        source: SequencerL2Source,
         transaction_id: String,
     ) -> L2SourceFuture<'a, Option<TransactionSummary>> {
         Box::pin(async move {
-            execution_zone_adapter(&source)
+            sequencer_adapter(&source)?
                 .transaction(&transaction_id)
                 .await
                 .map_err(map_execution_zone_error)
@@ -240,11 +275,11 @@ impl ZoneL2SourceAdapter for DirectZoneL2SourceAdapter {
 
     fn current_account<'a>(
         &'a self,
-        source: L2SourceDescriptor,
+        source: SequencerL2Source,
         account_id: String,
     ) -> L2SourceFuture<'a, L2AccountValue> {
         Box::pin(async move {
-            execution_zone_adapter(&source)
+            sequencer_adapter(&source)?
                 .current_account(&account_id)
                 .await
                 .map(normalize_account)
@@ -252,14 +287,131 @@ impl ZoneL2SourceAdapter for DirectZoneL2SourceAdapter {
         })
     }
 
+    fn programs<'a>(
+        &'a self,
+        source: SequencerL2Source,
+    ) -> L2SourceFuture<'a, Vec<ProgramIdEntry>> {
+        Box::pin(async move {
+            sequencer_adapter(&source)?
+                .programs()
+                .await
+                .map_err(map_execution_zone_error)
+        })
+    }
+
+    fn commitment_proof<'a>(
+        &'a self,
+        source: SequencerL2Source,
+        commitment_hex: String,
+    ) -> L2SourceFuture<'a, Option<(u64, Vec<String>)>> {
+        Box::pin(async move {
+            sequencer_adapter(&source)?
+                .commitment_proof(&commitment_hex)
+                .await
+                .map_err(map_execution_zone_error)
+        })
+    }
+
+    fn account_nonces<'a>(
+        &'a self,
+        source: SequencerL2Source,
+        account_ids: Vec<String>,
+    ) -> L2SourceFuture<'a, Vec<String>> {
+        Box::pin(async move {
+            sequencer_adapter(&source)?
+                .account_nonces(&account_ids)
+                .await
+                .map_err(map_execution_zone_error)
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct DirectIndexerL2SourceAdapter;
+
+impl IndexerL2SourceAdapter for DirectIndexerL2SourceAdapter {
+    fn head<'a>(
+        &'a self,
+        source: IndexerL2Source,
+    ) -> L2SourceFuture<'a, Option<NormalizedL2Block>> {
+        Box::pin(async move {
+            indexer_adapter(&source)?
+                .head()
+                .await
+                .map_err(map_execution_zone_error)?
+                .map(normalize_indexer_block)
+                .transpose()
+        })
+    }
+
+    fn blocks<'a>(
+        &'a self,
+        source: IndexerL2Source,
+        before: Option<u64>,
+        limit: u64,
+    ) -> L2SourceFuture<'a, Vec<NormalizedL2Block>> {
+        Box::pin(async move {
+            indexer_adapter(&source)?
+                .blocks(before, limit)
+                .await
+                .map_err(map_execution_zone_error)?
+                .into_iter()
+                .map(normalize_indexer_block)
+                .collect()
+        })
+    }
+
+    fn block_by_id<'a>(
+        &'a self,
+        source: IndexerL2Source,
+        block_id: u64,
+    ) -> L2SourceFuture<'a, Option<NormalizedL2Block>> {
+        Box::pin(async move {
+            indexer_adapter(&source)?
+                .block_by_id(block_id)
+                .await
+                .map_err(map_execution_zone_error)?
+                .map(normalize_indexer_block)
+                .transpose()
+        })
+    }
+
+    fn block_by_hash<'a>(
+        &'a self,
+        source: IndexerL2Source,
+        block_hash: String,
+    ) -> L2SourceFuture<'a, Option<NormalizedL2Block>> {
+        Box::pin(async move {
+            indexer_adapter(&source)?
+                .block_by_hash(&block_hash)
+                .await
+                .map_err(map_execution_zone_error)?
+                .map(normalize_indexer_block)
+                .transpose()
+        })
+    }
+
+    fn transaction<'a>(
+        &'a self,
+        source: IndexerL2Source,
+        transaction_id: String,
+    ) -> L2SourceFuture<'a, Option<TransactionSummary>> {
+        Box::pin(async move {
+            indexer_adapter(&source)?
+                .transaction(&transaction_id)
+                .await
+                .map_err(map_execution_zone_error)
+        })
+    }
+
     fn account_at_block<'a>(
         &'a self,
-        source: L2SourceDescriptor,
+        source: IndexerL2Source,
         account_id: String,
         block_id: u64,
     ) -> L2SourceFuture<'a, L2AccountValue> {
         Box::pin(async move {
-            execution_zone_adapter(&source)
+            indexer_adapter(&source)?
                 .account_at_block(&account_id, block_id)
                 .await
                 .map(normalize_account)
@@ -269,13 +421,13 @@ impl ZoneL2SourceAdapter for DirectZoneL2SourceAdapter {
 
     fn account_activity<'a>(
         &'a self,
-        source: L2SourceDescriptor,
+        source: IndexerL2Source,
         account_id: String,
         offset: usize,
         limit: usize,
     ) -> L2SourceFuture<'a, Vec<L2AccountActivityRow>> {
         Box::pin(async move {
-            execution_zone_adapter(&source)
+            indexer_adapter(&source)?
                 .account_activity(&account_id, offset, limit)
                 .await
                 .map(|rows| rows.into_iter().map(normalize_activity_row).collect())
@@ -283,89 +435,34 @@ impl ZoneL2SourceAdapter for DirectZoneL2SourceAdapter {
         })
     }
 
-    fn programs<'a>(
-        &'a self,
-        source: L2SourceDescriptor,
-    ) -> L2SourceFuture<'a, Vec<ProgramIdEntry>> {
-        Box::pin(async move {
-            execution_zone_adapter(&source)
-                .programs()
-                .await
-                .map_err(map_execution_zone_error)
-        })
-    }
-
-    fn commitment_proof<'a>(
-        &'a self,
-        source: L2SourceDescriptor,
-        commitment_hex: String,
-    ) -> L2SourceFuture<'a, Option<(u64, Vec<String>)>> {
-        Box::pin(async move {
-            execution_zone_adapter(&source)
-                .commitment_proof(&commitment_hex)
-                .await
-                .map_err(map_execution_zone_error)
-        })
-    }
-
-    fn account_nonces<'a>(
-        &'a self,
-        source: L2SourceDescriptor,
-        account_ids: Vec<String>,
-    ) -> L2SourceFuture<'a, Vec<String>> {
-        Box::pin(async move {
-            execution_zone_adapter(&source)
-                .account_nonces(&account_ids)
-                .await
-                .map_err(map_execution_zone_error)
-        })
-    }
-
     fn transfer_blocks<'a>(
         &'a self,
-        source: L2SourceDescriptor,
+        source: IndexerL2Source,
         before: Option<u64>,
         limit: u64,
     ) -> L2SourceFuture<'a, Vec<IndexerBlockReport>> {
         Box::pin(async move {
-            execution_zone_adapter(&source)
-                .transfer_blocks(before, limit)
+            indexer_adapter(&source)?
+                .blocks(before, limit)
                 .await
                 .map_err(map_execution_zone_error)
         })
     }
 }
 
-fn execution_zone_adapter(
-    source: &L2SourceDescriptor,
-) -> execution_zone_layer::ExecutionZoneAdapter<'_> {
-    let role = match source.role {
-        ZoneSourceRole::Sequencer => ChannelSourceRole::Sequencer,
-        ZoneSourceRole::Indexer => ChannelSourceRole::Indexer,
-    };
-    execution_zone_layer::ExecutionZoneAdapter::select(role, &source.target)
+fn sequencer_adapter(source: &SequencerL2Source) -> Result<SequencerAdapter<'_>, L2SourceError> {
+    SequencerAdapter::connect(source.target()).map_err(map_execution_zone_error)
 }
 
-fn normalize_execution_zone_block(
-    block: execution_zone_layer::ExecutionZoneBlock,
-) -> Result<NormalizedL2Block, L2SourceError> {
-    match block {
-        execution_zone_layer::ExecutionZoneBlock::Sequencer(block) => {
-            normalize_sequencer_block(block)
-        }
-        execution_zone_layer::ExecutionZoneBlock::Indexer(block) => normalize_indexer_block(block),
-    }
+fn indexer_adapter(source: &IndexerL2Source) -> Result<IndexerAdapter<'_>, L2SourceError> {
+    IndexerAdapter::connect(source.target()).map_err(map_execution_zone_error)
 }
 
-fn map_execution_zone_error(error: execution_zone_layer::ExecutionZoneReadError) -> L2SourceError {
+fn map_execution_zone_error(error: ExecutionZoneReadError) -> L2SourceError {
     match error.kind {
-        execution_zone_layer::ExecutionZoneReadErrorKind::Unavailable => {
-            L2SourceError::unavailable()
-        }
-        execution_zone_layer::ExecutionZoneReadErrorKind::Protocol => {
-            L2SourceError::protocol_error()
-        }
-        execution_zone_layer::ExecutionZoneReadErrorKind::Capability => L2SourceError::capability(),
+        ExecutionZoneReadErrorKind::Unavailable => L2SourceError::unavailable(),
+        ExecutionZoneReadErrorKind::Protocol => L2SourceError::protocol_error(),
+        ExecutionZoneReadErrorKind::Capability => L2SourceError::capability(),
     }
 }
 
@@ -377,21 +474,19 @@ mod tests {
     fn adapter_error_mapping_preserves_all_error_classes() {
         for (source, expected) in [
             (
-                execution_zone_layer::ExecutionZoneReadErrorKind::Unavailable,
+                ExecutionZoneReadErrorKind::Unavailable,
                 L2SourceErrorKind::Unavailable,
             ),
             (
-                execution_zone_layer::ExecutionZoneReadErrorKind::Protocol,
+                ExecutionZoneReadErrorKind::Protocol,
                 L2SourceErrorKind::Protocol,
             ),
             (
-                execution_zone_layer::ExecutionZoneReadErrorKind::Capability,
+                ExecutionZoneReadErrorKind::Capability,
                 L2SourceErrorKind::Capability,
             ),
         ] {
-            let mapped = map_execution_zone_error(execution_zone_layer::ExecutionZoneReadError {
-                kind: source,
-            });
+            let mapped = map_execution_zone_error(ExecutionZoneReadError { kind: source });
             assert_eq!(mapped.kind, expected);
         }
     }
