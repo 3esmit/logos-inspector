@@ -16,6 +16,10 @@ QtObject {
         if (!operationId.length) {
             return false
         }
+        const current = runtimeOperations[operationId] || null
+        if (!OperationHistoryVocabulary.runtimeSnapshotIsNewer(current, value)) {
+            return false
+        }
         const next = copyObject(runtimeOperations)
         next[operationId] = value
         runtimeOperations = next
@@ -28,8 +32,17 @@ QtObject {
         if (!id.length) {
             return false
         }
+        const candidate = Number(seq)
+        if (!Number.isFinite(candidate) || candidate < 0) {
+            return false
+        }
+        const currentValue = runtimeOperationEventSeq[id]
+        const current = Number(currentValue)
+        if (currentValue !== undefined && Number.isFinite(current) && candidate <= current) {
+            return false
+        }
         const next = copyObject(runtimeOperationEventSeq)
-        next[id] = Number(seq || 0)
+        next[id] = candidate
         runtimeOperationEventSeq = next
         runtimeOperationsRevision += 1
         return true
@@ -82,6 +95,25 @@ QtObject {
         }
         if (operation && operation.result !== undefined) {
             record.result = operation.result
+        }
+        const conversationFields = [
+            "clientRequestId",
+            "bridgeCallbackId",
+            "moduleSessionId",
+            "moduleRequestId",
+            "externalSessionId",
+            "requestId",
+            "eventCursor",
+            "externalCorrelation",
+            "terminalEventContract",
+            "acknowledgement",
+            "terminalReason"
+        ]
+        for (let i = 0; i < conversationFields.length; ++i) {
+            const field = conversationFields[i]
+            if (operation && operation[field] !== undefined) {
+                record[field] = operation[field]
+            }
         }
         return record
     }

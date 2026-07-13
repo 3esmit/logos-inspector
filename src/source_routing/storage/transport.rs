@@ -7,6 +7,7 @@ use tokio_util::io::ReaderStream;
 
 use crate::{
     source_routing::shared::{http, module_bridge},
+    source_routing::{ModuleDispatchIdentityRole, ModuleDispatchReceipt},
     support::raw_source_transport::{request_bytes, request_success},
 };
 
@@ -20,14 +21,16 @@ pub(super) async fn module_call(method: &'static str, args: Vec<Value>) -> Resul
 pub(super) async fn module_dispatch(
     method: &'static str,
     args: Vec<Value>,
-    context: Vec<(&'static str, String)>,
-) -> Result<Value> {
+    context: &[(&'static str, String)],
+    identity_role: ModuleDispatchIdentityRole,
+) -> Result<ModuleDispatchReceipt> {
     let value = module_call(method, args).await?;
     Ok(module_bridge::dispatch_result(
         super::layer::module_id(),
         method,
         value,
-        &context,
+        context,
+        identity_role,
     ))
 }
 

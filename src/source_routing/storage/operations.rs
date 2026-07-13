@@ -3,7 +3,11 @@ use reqwest::Response;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use crate::source_routing::{AdapterInitialization, NodeOperationRequest, StorageSourceMode};
+use crate::source_routing::{
+    AdapterInitialization, ModuleCorrelation, ModuleDispatchIdentityRole, ModuleDispatchReceipt,
+    ModuleEventCorrelationKind, ModuleTerminalEventContract, NodeOperationOutcome,
+    NodeOperationRequest, ObservableOperationAcceptance, StorageSourceMode,
+};
 use crate::support::args::Args;
 
 use super::{layer::STORAGE_SOURCE_MODES, transport};
@@ -41,7 +45,7 @@ impl StorageOperation {
 }
 
 pub(crate) enum StorageOperationOutput {
-    Complete(Value),
+    Outcome(NodeOperationOutcome),
     Download(StorageDownloadRequest),
 }
 
@@ -280,7 +284,7 @@ fn operation_plan(
         StorageOperation::Fetch => {
             let payload: CidPayload = request.payload("storage fetch")?;
             let cid = required_text(payload.cid, "CID")?;
-            plan_for_client(client, "fetch", vec![json!(cid)], vec![("cid", cid)], true)
+            plan_for_client(client, "fetch", vec![json!(cid)], vec![("cid", cid)], false)
         }
         StorageOperation::Upload => {
             let payload: UploadPayload = request.payload("storage upload")?;
@@ -406,12 +410,22 @@ async fn execute_plan(plan: StorageOperationPlan) -> Result<StorageOperationOutp
             context,
             dispatch,
         } => {
-            let value = if dispatch {
-                transport::module_dispatch(method, args, context).await?
+            if dispatch {
+                let identity_role = match method {
+                    "uploadUrl" => ModuleDispatchIdentityRole::Session,
+                    _ => ModuleDispatchIdentityRole::None,
+                };
+                let receipt =
+                    transport::module_dispatch(method, args, &context, identity_role).await?;
+                return Ok(StorageOperationOutput::Outcome(
+                    storage_module_dispatch_outcome(method, receipt)?,
+                ));
             } else {
-                transport::module_call(method, args).await?
-            };
-            return Ok(StorageOperationOutput::Complete(value));
+                let value = transport::module_call(method, args).await?;
+                return Ok(StorageOperationOutput::Outcome(
+                    NodeOperationOutcome::Completed(value),
+                ));
+            }
         }
         StorageOperationPlan::Rest(StorageRestOperation::Manifests { endpoint }) => {
             transport::manifests(&endpoint).await?
@@ -420,9 +434,12 @@ async fn execute_plan(plan: StorageOperationPlan) -> Result<StorageOperationOutp
             transport::manifest(&endpoint, &cid).await?
         }
         StorageOperationPlan::Rest(StorageRestOperation::Fetch { endpoint, cid }) => {
-            transport::fetch(&endpoint, &cid)
+            let acknowledgement = transport::fetch(&endpoint, &cid)
                 .await
-                .with_context(|| format!("failed to start storage network fetch for {cid}"))?
+                .with_context(|| format!("failed to start storage network fetch for {cid}"))?;
+            return Ok(StorageOperationOutput::Outcome(
+                NodeOperationOutcome::Dispatched(acknowledgement),
+            ));
         }
         StorageOperationPlan::Rest(StorageRestOperation::Upload {
             endpoint,
@@ -440,7 +457,40 @@ async fn execute_plan(plan: StorageOperationPlan) -> Result<StorageOperationOutp
                 .with_context(|| format!("failed to remove storage CID {cid}"))?
         }
     };
-    Ok(StorageOperationOutput::Complete(value))
+    Ok(StorageOperationOutput::Outcome(
+        NodeOperationOutcome::Completed(value),
+    ))
+}
+
+fn storage_module_dispatch_outcome(
+    method: &str,
+    receipt: ModuleDispatchReceipt,
+) -> Result<NodeOperationOutcome> {
+    let accepted = match method {
+        "uploadUrl" => receipt.session_id().map(|session_id| {
+            (
+                ModuleCorrelation::with_session(session_id),
+                ModuleTerminalEventContract::new(
+                    super::layer::module_id(),
+                    Some("storageUploadProgress"),
+                    "storageUploadDone",
+                    None,
+                    ModuleEventCorrelationKind::Session,
+                ),
+            )
+        }),
+        _ => None,
+    };
+    let acknowledgement = receipt.into_acknowledgement();
+    match accepted {
+        Some((correlation, terminal_event)) => Ok(NodeOperationOutcome::Accepted(Box::new(
+            ObservableOperationAcceptance::new(acknowledgement, correlation, terminal_event),
+        ))),
+        None if method == "uploadUrl" => {
+            bail!("storage module `{method}` returned no session ID")
+        }
+        None => Ok(NodeOperationOutcome::Dispatched(acknowledgement)),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -675,6 +725,98 @@ mod tests {
             dispatch: true,
         };
         anyhow::ensure!(request.plan == expected, "unexpected Storage upload plan");
+        Ok(())
+    }
+
+    #[test]
+    fn module_fetch_plan_is_an_observed_call() -> Result<()> {
+        let request = request(json!({
+            "adapter": { "source_mode": "module", "inputs": {} },
+            "mutating_enabled": true,
+            "payload": { "cid": "cid-a" }
+        }))?;
+
+        let request = StorageOperationRequest::parse(&request, StorageOperation::Fetch)?;
+
+        let expected = StorageOperationPlan::Module {
+            method: "fetch",
+            args: vec![json!("cid-a")],
+            context: vec![("cid", "cid-a".to_owned())],
+            dispatch: false,
+        };
+        anyhow::ensure!(request.plan == expected, "unexpected Storage fetch plan");
+        Ok(())
+    }
+
+    #[test]
+    fn module_dispatch_outcomes_keep_session_role_and_unobservable_actions_distinct() -> Result<()>
+    {
+        let upload = storage_module_dispatch_outcome(
+            "uploadUrl",
+            ModuleDispatchReceipt::new(
+                json!({ "dispatched": true }),
+                &json!("session-1"),
+                ModuleDispatchIdentityRole::Session,
+            ),
+        )?;
+        let NodeOperationOutcome::Accepted(acceptance) = upload else {
+            anyhow::bail!("module upload was not accepted");
+        };
+        anyhow::ensure!(
+            acceptance.correlation().session_id().map(|id| id.as_str()) == Some("session-1")
+                && acceptance.correlation().request_id().is_none()
+                && acceptance.terminal_event().correlation()
+                    == &ModuleEventCorrelationKind::Session,
+            "module upload identity role drifted"
+        );
+
+        let manifest = storage_module_dispatch_outcome(
+            "downloadManifest",
+            ModuleDispatchReceipt::new(
+                json!({ "dispatched": true }),
+                &Value::Null,
+                ModuleDispatchIdentityRole::None,
+            ),
+        )?;
+        anyhow::ensure!(
+            matches!(manifest, NodeOperationOutcome::Dispatched(_)),
+            "reusable CID correlation was treated as operation-unique"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn download_cid_is_not_accepted_as_unique_session() -> Result<()> {
+        let outcome = storage_module_dispatch_outcome(
+            "downloadToUrl",
+            ModuleDispatchReceipt::new(
+                json!({ "dispatched": true, "value": "cid-1" }),
+                &json!("cid-1"),
+                ModuleDispatchIdentityRole::None,
+            ),
+        )?;
+
+        anyhow::ensure!(
+            matches!(outcome, NodeOperationOutcome::Dispatched(_)),
+            "download CID labelled as a session was treated as operation-unique"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn observable_storage_dispatch_rejects_missing_session_identity() -> Result<()> {
+        let Err(error) = storage_module_dispatch_outcome(
+            "uploadUrl",
+            ModuleDispatchReceipt::new(
+                json!({ "dispatched": true }),
+                &Value::Null,
+                ModuleDispatchIdentityRole::Session,
+            ),
+        ) else {
+            anyhow::bail!("observable storage dispatch accepted no correlation identity");
+        };
+
+        anyhow::ensure!(error.to_string() == "storage module `uploadUrl` returned no session ID");
         Ok(())
     }
 

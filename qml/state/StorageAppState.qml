@@ -183,11 +183,9 @@ QtObject {
             return blockedStorageResponse(label, gate, true)
         }
         lastOperation = qsTr("Starting")
-        const started = storageOperations.start(method, args, label, function (response) {
+        const started = storageOperations.start(method, args, label, function (response, operation) {
             if (response && response.ok) {
-                if (!StorageTransfer.applyStatusUpdate(storageOperations, response.value)) {
-                    lastOperation = qsTr("Started")
-                }
+                lastOperation = operationStatusText(operation || response.value)
                 currentTab = "operations"
             } else {
                 lastOperation = qsTr("Error")
@@ -202,12 +200,7 @@ QtObject {
     }
 
     function pollStorageOperation(showResult) {
-        return storageOperations.poll(showResult === true, function (response) {
-            if (response && response.ok && StorageTransfer.applyStatusUpdate(storageOperations, response.value)) {
-                return true
-            }
-            return false
-        })
+        return storageOperations.poll(showResult === true)
     }
 
     function cancelStorageOperation() {
@@ -219,14 +212,20 @@ QtObject {
     }
 
     function completeTerminalStorageOperation(operation) {
-        const ok = String(operation.status || "") === "completed"
+        const ok = isSuccessfulTerminal(operation)
         setStorageOperationResult(operation)
-        lastOperation = ok ? qsTr("Complete") : qsTr("Stopped")
+        if (terminalRefreshesStorageObservations(operation)
+                && gateway && typeof gateway.refreshStorageObservations === "function") {
+            gateway.refreshStorageObservations()
+        }
+        lastOperation = String(operation && operation.status || "") === "dispatched"
+            ? qsTr("Dispatched")
+            : (ok ? qsTr("Complete") : qsTr("Stopped"))
     }
 
     function setStorageOperationResult(operation) {
         const label = String(operation && operation.label ? operation.label : qsTr("Storage operation"))
-        const ok = String(operation && operation.status ? operation.status : "") === "completed"
+        const ok = isSuccessfulTerminal(operation)
         if (ok) {
             const value = operation && operation.result !== undefined && operation.result !== null ? operation.result : operation
             gateway.setResult(label, BridgeHelpers.formatValue(value), false, value)
@@ -277,8 +276,13 @@ QtObject {
         return detail.join(" / ")
     }
 
-    function applyStorageModuleEvent(eventName, args) {
-        return StorageTransfer.applyModuleEvent(storageOperations, eventName, args)
+    function applyStorageModuleEvent(eventName, args, onResponse) {
+        const event = args && args.__moduleEventEnvelope === true ? args : {
+            moduleName: moduleName,
+            eventName: String(eventName || ""),
+            args: Array.isArray(args) ? args : (args === undefined || args === null ? [] : [args])
+        }
+        return storageOperations.ingestModuleEvent(event, onResponse)
     }
 
     function storageSpaceSummary() {
@@ -370,6 +374,32 @@ QtObject {
 
     function valueText(value) {
         return gateway.valueText(value)
+    }
+
+    function isSuccessfulTerminal(operation) {
+        const status = String(operation && operation.status || "")
+        return status === "completed" || status === "dispatched"
+    }
+
+    function terminalRefreshesStorageObservations(operation) {
+        return String(operation && operation.status || "") === "completed"
+            && String(operation && operation.method || "") === "storageUploadUrl"
+    }
+
+    function operationStatusText(operation) {
+        switch (String(operation && operation.status || "")) {
+        case "awaiting_external":
+            return qsTr("Waiting")
+        case "running":
+        case "canceling":
+            return qsTr("Running")
+        case "completed":
+            return qsTr("Complete")
+        case "dispatched":
+            return qsTr("Dispatched")
+        default:
+            return qsTr("Started")
+        }
     }
 
     function timeText() {

@@ -24,6 +24,7 @@ function handleNetworkConfigurationChanged(root) {
         storageSourceReport = null
         messagingSourceReport = null
         storageApp.operationSession.clearActive()
+        deliveryApp.operationSession.clearActive()
         localNodesReport = null
         localNodesError = ""
         localNodesRevision += 1
@@ -527,6 +528,10 @@ function runtimeOperationEvents(root, operationId, afterSeq, showResult, callbac
 
 function runtimeOperationCancel(root, operationId, showResult, callback) {
     return RuntimeOperationLifecycle.runtimeOperationCancel(root, operationId, showResult, callback)
+}
+
+function runtimeOperationModuleEvent(root, event, showResult, callback) {
+    return RuntimeOperationLifecycle.runtimeOperationModuleEvent(root, event, showResult, callback)
 }
 
 function updateRuntimeOperation(root, operation) {

@@ -15,10 +15,86 @@ TestCase {
         compare(OperationHistoryVocabulary.runtimeStatusText({ status: "completed" }), "Complete")
         compare(OperationHistoryVocabulary.runtimeTone({ status: "completed" }), "success")
 
+        compare(OperationHistoryVocabulary.runtimeStatusText({ status: "awaiting_external" }), "Waiting for completion")
+        compare(OperationHistoryVocabulary.runtimeTone({ status: "awaiting_external" }), "warning")
+        verify(OperationHistoryVocabulary.isRuntimeActiveStatus("awaiting_external"))
+        verify(!OperationHistoryVocabulary.isRuntimeTerminalStatus("awaiting_external"))
+
+        compare(OperationHistoryVocabulary.runtimeStatusText({ status: "dispatched" }), "Dispatched")
+        compare(OperationHistoryVocabulary.runtimeTone({ status: "dispatched" }), "warning")
+        verify(OperationHistoryVocabulary.isRuntimeTerminalStatus("dispatched"))
+        verify(OperationHistoryVocabulary.isRuntimeSuccessfulTerminalStatus("dispatched"))
+
         compare(OperationHistoryVocabulary.runtimeStatusText({ status: "failed" }), "Failed")
         compare(OperationHistoryVocabulary.runtimeTone({ status: "failed" }), "error")
 
         compare(OperationHistoryVocabulary.runtimeStatusText(null), "Idle")
         compare(OperationHistoryVocabulary.runtimeTone(null), "neutral")
+    }
+
+    function test_runtime_snapshot_freshness_uses_cursor_with_legacy_compatibility() {
+        verify(OperationHistoryVocabulary.runtimeSnapshotIsNewer(null, {
+            operationId: "operation-1",
+            status: "running"
+        }))
+        verify(OperationHistoryVocabulary.runtimeSnapshotIsNewer({
+            operationId: "operation-1",
+            status: "running"
+        }, {
+            operationId: "operation-1",
+            status: "awaiting_external"
+        }))
+        verify(OperationHistoryVocabulary.runtimeSnapshotIsNewer({
+            operationId: "operation-1",
+            status: "running"
+        }, {
+            operationId: "operation-1",
+            status: "awaiting_external",
+            eventCursor: 1
+        }))
+        verify(!OperationHistoryVocabulary.runtimeSnapshotIsNewer({
+            operationId: "operation-1",
+            status: "awaiting_external",
+            eventCursor: 2
+        }, {
+            operationId: "operation-1",
+            status: "canceling"
+        }))
+        verify(!OperationHistoryVocabulary.runtimeSnapshotIsNewer({
+            operationId: "operation-1",
+            status: "awaiting_external",
+            eventCursor: 2
+        }, {
+            operationId: "operation-1",
+            status: "canceling",
+            eventCursor: 2
+        }))
+        verify(!OperationHistoryVocabulary.runtimeSnapshotIsNewer({
+            operationId: "operation-1",
+            status: "awaiting_external",
+            eventCursor: 2
+        }, {
+            operationId: "operation-1",
+            status: "running",
+            eventCursor: 1
+        }))
+        verify(OperationHistoryVocabulary.runtimeSnapshotIsNewer({
+            operationId: "operation-1",
+            status: "awaiting_external",
+            eventCursor: 2
+        }, {
+            operationId: "operation-1",
+            status: "canceling",
+            eventCursor: 3
+        }))
+        verify(!OperationHistoryVocabulary.runtimeSnapshotIsNewer({
+            operationId: "operation-1",
+            status: "completed",
+            eventCursor: 3
+        }, {
+            operationId: "operation-1",
+            status: "awaiting_external",
+            eventCursor: 4
+        }))
     }
 }

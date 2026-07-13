@@ -3,7 +3,10 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use reqwest::{Method, Url};
 use serde_json::{Value, json};
 
-use crate::source_routing::shared::{http, module_bridge};
+use crate::source_routing::{
+    ModuleDispatchIdentityRole, ModuleDispatchReceipt,
+    shared::{http, module_bridge},
+};
 
 use super::operations::DeliveryStoreQuery;
 
@@ -17,14 +20,16 @@ pub(super) async fn module_call(method: &'static str, args: Vec<Value>) -> Resul
 pub(super) async fn module_dispatch(
     method: &'static str,
     args: Vec<Value>,
-    context: Vec<(&'static str, String)>,
-) -> Result<Value> {
+    context: &[(&'static str, String)],
+    identity_role: ModuleDispatchIdentityRole,
+) -> Result<ModuleDispatchReceipt> {
     let value = module_call(method, args).await?;
     Ok(module_bridge::dispatch_result(
         super::layer::module_id(),
         method,
         value,
-        &context,
+        context,
+        identity_role,
     ))
 }
 

@@ -15,6 +15,12 @@ TestCase {
         property var lastArgs: []
         property var responses: ({})
         property var history: []
+        property bool holdStatusCallbacks: false
+        property var statusCallbacks: []
+        property bool holdStartCallbacks: false
+        property var startCallbacks: []
+        property bool holdModuleEventCallbacks: false
+        property var moduleEventCallbacks: []
 
         function reset() {
             requestCount = 0
@@ -22,6 +28,12 @@ TestCase {
             lastArgs = []
             responses = ({})
             history = []
+            holdStatusCallbacks = false
+            statusCallbacks = []
+            holdStartCallbacks = false
+            startCallbacks = []
+            holdModuleEventCallbacks = false
+            moduleEventCallbacks = []
         }
 
         function request(method, args, label, showResult, callback) {
@@ -29,10 +41,58 @@ TestCase {
             lastMethod = String(method || "")
             lastArgs = args || []
             const response = responses[lastMethod]
+            if (lastMethod === "runtimeOperationStart" && holdStartCallbacks) {
+                startCallbacks = startCallbacks.concat([callback])
+                return response
+            }
+            if (lastMethod === "runtimeOperationStatus" && holdStatusCallbacks) {
+                statusCallbacks = statusCallbacks.concat([callback])
+                return response
+            }
+            if (lastMethod === "runtimeOperationModuleEvent" && holdModuleEventCallbacks) {
+                moduleEventCallbacks = moduleEventCallbacks.concat([callback])
+                return response
+            }
             if (callback) {
                 callback(response)
             }
             return response
+        }
+
+        function completeStatusResponse(response) {
+            if (statusCallbacks.length === 0) {
+                return false
+            }
+            const callback = statusCallbacks[0]
+            statusCallbacks = statusCallbacks.slice(1)
+            if (callback) {
+                callback(response)
+            }
+            return true
+        }
+
+        function completeStartResponse(response) {
+            if (startCallbacks.length === 0) {
+                return false
+            }
+            const callback = startCallbacks[0]
+            startCallbacks = startCallbacks.slice(1)
+            if (callback) {
+                callback(response)
+            }
+            return true
+        }
+
+        function completeModuleEventResponse(response) {
+            if (moduleEventCallbacks.length === 0) {
+                return false
+            }
+            const callback = moduleEventCallbacks[0]
+            moduleEventCallbacks = moduleEventCallbacks.slice(1)
+            if (callback) {
+                callback(response)
+            }
+            return true
         }
 
         function appendOperationHistory(operation, detail) {
@@ -173,5 +233,390 @@ TestCase {
             ["/logos/1/chat/proto", "hello"],
             { topic: "/logos/1/chat/proto", payload: "hello" }
         )
+    }
+
+    function test_awaiting_external_is_active_and_dispatched_is_successful_terminal() {
+        storageSession.acceptUpdate({
+            operationId: "storage-operation-1",
+            domain: "storage",
+            method: "storageUploadUrl",
+            status: "awaiting_external",
+            moduleSessionId: "session-1"
+        })
+
+        verify(storageSession.view.running)
+        verify(storageSession.view.busy)
+        verify(!storageSession.view.terminal)
+
+        verify(storageSession.acceptUpdate({
+            operationId: "storage-operation-2",
+            domain: "storage",
+            method: "storageRemove",
+            status: "dispatched",
+            acknowledgement: { dispatched: true }
+        }))
+        verify(storageSession.acceptTerminal(storageSession.activeOperation))
+
+        verify(storageSession.view.terminal)
+        verify(!storageSession.view.running)
+        compare(gateway.history.length, 1)
+        compare(storageSession.operationLog[0].status, "ok")
+    }
+
+    function test_poll_transport_error_does_not_fabricate_terminal_state() {
+        storageSession.acceptUpdate({
+            operationId: "storage-operation-1",
+            domain: "storage",
+            method: "storageUploadUrl",
+            status: "awaiting_external"
+        })
+        gateway.responses = ({
+            runtimeOperationStatus: {
+                ok: false,
+                value: null,
+                text: "",
+                error: "status transport unavailable"
+            }
+        })
+
+        storageSession.poll(false)
+
+        compare(storageSession.activeOperation.status, "awaiting_external")
+        verify(!storageSession.view.terminal)
+        compare(gateway.history.length, 0)
+        compare(storageSession.operationLog[0].status, "error")
+    }
+
+    function test_poll_rejects_wrong_operation_identity_and_terminal_regression() {
+        storageSession.acceptUpdate({
+            operationId: "storage-operation-1",
+            domain: "storage",
+            method: "storageUploadUrl",
+            status: "completed",
+            result: { cid: "cid-complete" }
+        })
+        storageSession.acceptTerminal(storageSession.activeOperation)
+        gateway.responses = ({
+            runtimeOperationStatus: {
+                ok: true,
+                value: {
+                    operationId: "storage-operation-2",
+                    domain: "storage",
+                    method: "storageUploadUrl",
+                    status: "awaiting_external"
+                }
+            }
+        })
+
+        storageSession.poll(false)
+
+        compare(storageSession.activeOperation.operationId, "storage-operation-1")
+        compare(storageSession.activeOperation.status, "completed")
+        compare(storageSession.activeOperation.result.cid, "cid-complete")
+        compare(gateway.history.length, 1)
+    }
+
+    function test_only_one_status_poll_can_be_in_flight() {
+        storageSession.acceptUpdate({
+            operationId: "storage-operation-1",
+            domain: "storage",
+            method: "storageUploadUrl",
+            status: "awaiting_external"
+        })
+        gateway.holdStatusCallbacks = true
+        gateway.responses = ({
+            runtimeOperationStatus: {
+                ok: true,
+                value: {
+                    operationId: "storage-operation-1",
+                    domain: "storage",
+                    method: "storageUploadUrl",
+                    status: "awaiting_external"
+                }
+            }
+        })
+
+        verify(storageSession.poll(false) !== null)
+        compare(storageSession.poll(false), null)
+        compare(gateway.requestCount, 1)
+        verify(storageSession.view.pollPending)
+
+        verify(gateway.completeStatusResponse(gateway.responses.runtimeOperationStatus))
+        verify(!storageSession.view.pollPending)
+    }
+
+    function test_clear_active_invalidates_stale_start_response() {
+        gateway.holdStartCallbacks = true
+        gateway.responses = ({
+            runtimeOperationStart: {
+                ok: true,
+                value: {
+                    operationId: "stale-operation",
+                    domain: "storage",
+                    method: "storageUploadUrl",
+                    status: "awaiting_external"
+                }
+            }
+        })
+
+        storageSession.start("storageUploadUrl", ["/tmp/file.bin"], "Upload")
+        verify(storageSession.view.startPending)
+        storageSession.clearActive()
+        verify(!storageSession.view.startPending)
+
+        verify(gateway.completeStartResponse(gateway.responses.runtimeOperationStart))
+        verify(storageSession.activeOperation === null)
+        compare(storageSession.operationLog.length, 0)
+    }
+
+    function test_stale_poll_cannot_clear_new_operation_poll_guard() {
+        storageSession.acceptUpdate({
+            operationId: "old-operation",
+            domain: "storage",
+            method: "storageUploadUrl",
+            status: "awaiting_external"
+        })
+        gateway.holdStatusCallbacks = true
+        gateway.responses = ({
+            runtimeOperationStatus: {
+                ok: true,
+                value: {
+                    operationId: "old-operation",
+                    domain: "storage",
+                    method: "storageUploadUrl",
+                    status: "completed"
+                }
+            }
+        })
+        storageSession.poll(false)
+        storageSession.clearActive()
+        storageSession.acceptUpdate({
+            operationId: "new-operation",
+            domain: "storage",
+            method: "storageUploadUrl",
+            status: "awaiting_external"
+        })
+        gateway.responses = ({
+            runtimeOperationStatus: {
+                ok: true,
+                value: {
+                    operationId: "new-operation",
+                    domain: "storage",
+                    method: "storageUploadUrl",
+                    status: "awaiting_external"
+                }
+            }
+        })
+        storageSession.poll(false)
+        verify(storageSession.view.pollPending)
+
+        verify(gateway.completeStatusResponse({
+            ok: true,
+            value: {
+                operationId: "old-operation",
+                status: "completed"
+            }
+        }))
+        verify(storageSession.view.pollPending)
+        compare(storageSession.activeOperation.operationId, "new-operation")
+
+        verify(gateway.completeStatusResponse(gateway.responses.runtimeOperationStatus))
+        verify(!storageSession.view.pollPending)
+        compare(storageSession.activeOperation.operationId, "new-operation")
+    }
+
+    function test_stale_poll_cannot_regress_newer_cancel_snapshot() {
+        storageSession.acceptUpdate({
+            operationId: "ordered-operation",
+            domain: "storage",
+            method: "storageUploadUrl",
+            status: "awaiting_external",
+            eventCursor: 1,
+            cancellable: true
+        })
+        gateway.holdStatusCallbacks = true
+        gateway.responses = ({
+            runtimeOperationStatus: {
+                ok: true,
+                value: {
+                    operationId: "ordered-operation",
+                    status: "awaiting_external",
+                    eventCursor: 2
+                }
+            },
+            runtimeOperationCancel: {
+                ok: true,
+                value: {
+                    operationId: "ordered-operation",
+                    status: "canceling",
+                    eventCursor: 3
+                }
+            }
+        })
+
+        storageSession.poll(false)
+        storageSession.cancel()
+        compare(storageSession.activeOperation.status, "canceling")
+        compare(storageSession.activeOperation.eventCursor, 3)
+
+        verify(gateway.completeStatusResponse(gateway.responses.runtimeOperationStatus))
+        compare(storageSession.activeOperation.status, "canceling")
+        compare(storageSession.activeOperation.eventCursor, 3)
+        verify(!storageSession.view.pollPending)
+    }
+
+    function test_module_terminal_event_before_start_response_remains_authoritative() {
+        gateway.holdStartCallbacks = true
+        let projectedStart = null
+        gateway.responses = ({
+            runtimeOperationStart: {
+                ok: true,
+                value: {
+                    operationId: "early-terminal-operation",
+                    domain: "storage",
+                    method: "storageUploadUrl",
+                    status: "awaiting_external",
+                    eventCursor: 1
+                }
+            },
+            runtimeOperationModuleEvent: {
+                ok: true,
+                value: {
+                    disposition: "applied",
+                    operation: {
+                        operationId: "early-terminal-operation",
+                        domain: "storage",
+                        method: "storageUploadUrl",
+                        status: "completed",
+                        eventCursor: 3,
+                        result: { cid: "cid-complete" }
+                    }
+                }
+            }
+        })
+
+        storageSession.start("storageUploadUrl", ["/tmp/file.bin"], "Upload", function (response, operation) {
+            projectedStart = operation
+        })
+        verify(storageSession.view.startPending)
+        storageSession.ingestModuleEvent({
+            moduleName: "storage_module",
+            eventName: "uploadCompleted",
+            args: ["cid-complete"]
+        })
+        verify(storageSession.activeOperation === null)
+
+        verify(gateway.completeStartResponse(gateway.responses.runtimeOperationStart))
+        compare(storageSession.activeOperation.status, "completed")
+        compare(storageSession.activeOperation.eventCursor, 3)
+        compare(storageSession.activeOperation.result.cid, "cid-complete")
+        compare(projectedStart.status, "completed")
+        compare(projectedStart.eventCursor, 3)
+        verify(storageSession.view.terminal)
+        compare(gateway.history.length, 1)
+    }
+
+    function test_module_terminal_event_after_start_response_remains_authoritative() {
+        gateway.holdStartCallbacks = true
+        gateway.holdModuleEventCallbacks = true
+        gateway.responses = ({
+            runtimeOperationStart: {
+                ok: true,
+                value: {
+                    operationId: "late-terminal-operation",
+                    domain: "storage",
+                    method: "storageUploadUrl",
+                    status: "awaiting_external",
+                    eventCursor: 1
+                }
+            },
+            runtimeOperationModuleEvent: {
+                ok: true,
+                value: {
+                    disposition: "applied",
+                    operation: {
+                        operationId: "late-terminal-operation",
+                        domain: "storage",
+                        method: "storageUploadUrl",
+                        status: "completed",
+                        eventCursor: 3,
+                        result: { cid: "cid-late" }
+                    }
+                }
+            }
+        })
+
+        storageSession.start("storageUploadUrl", ["/tmp/file.bin"], "Upload")
+        storageSession.ingestModuleEvent({
+            moduleName: "storage_module",
+            eventName: "storageUploadDone",
+            args: ["cid-late"]
+        })
+
+        verify(gateway.completeStartResponse(gateway.responses.runtimeOperationStart))
+        compare(storageSession.activeOperation.status, "awaiting_external")
+        verify(gateway.completeModuleEventResponse(gateway.responses.runtimeOperationModuleEvent))
+        compare(storageSession.activeOperation.status, "completed")
+        compare(storageSession.activeOperation.result.cid, "cid-late")
+        compare(gateway.history.length, 1)
+    }
+
+    function test_unrelated_event_cannot_poison_pending_start_reconciliation() {
+        gateway.holdStartCallbacks = true
+        gateway.responses = ({
+            runtimeOperationStart: {
+                ok: true,
+                value: {
+                    operationId: "wanted-operation",
+                    domain: "storage",
+                    method: "storageUploadUrl",
+                    status: "awaiting_external",
+                    eventCursor: 1
+                }
+            },
+            runtimeOperationModuleEvent: {
+                ok: true,
+                value: {
+                    disposition: "stale",
+                    operation: {
+                        operationId: "unrelated-operation",
+                        status: "completed",
+                        eventCursor: 8
+                    }
+                }
+            }
+        })
+
+        storageSession.start("storageUploadUrl", ["/tmp/file.bin"], "Upload")
+        storageSession.ingestModuleEvent({
+            moduleName: "storage_module",
+            eventName: "storageUploadDone",
+            args: ["unrelated"]
+        })
+        gateway.responses.runtimeOperationModuleEvent = {
+            ok: true,
+            value: {
+                disposition: "applied",
+                operation: {
+                    operationId: "wanted-operation",
+                    domain: "storage",
+                    method: "storageUploadUrl",
+                    status: "completed",
+                    eventCursor: 3,
+                    result: { cid: "cid-wanted" }
+                }
+            }
+        }
+        storageSession.ingestModuleEvent({
+            moduleName: "storage_module",
+            eventName: "storageUploadDone",
+            args: ["wanted"]
+        })
+
+        verify(gateway.completeStartResponse(gateway.responses.runtimeOperationStart))
+        compare(storageSession.activeOperation.operationId, "wanted-operation")
+        compare(storageSession.activeOperation.status, "completed")
+        compare(storageSession.activeOperation.result.cid, "cid-wanted")
+        compare(gateway.history.length, 1)
     }
 }

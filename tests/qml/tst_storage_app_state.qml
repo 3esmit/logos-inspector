@@ -1,6 +1,7 @@
 import QtQuick
 import QtTest
 import "../../qml/state"
+import "../../qml/state/modules/StorageModuleEvents.js" as StorageModuleEvents
 import "fixtures"
 
 TestCase {
@@ -150,6 +151,23 @@ TestCase {
         compare(state.operation.rows.length, 1)
     }
 
+    function test_operation_status_text_keeps_reconciled_terminal_state() {
+        compare(state.operationStatusText({ status: "awaiting_external" }), "Waiting")
+        compare(state.operationStatusText({ status: "completed" }), "Complete")
+        compare(state.operationStatusText({ status: "dispatched" }), "Dispatched")
+        verify(state.terminalRefreshesStorageObservations({
+            method: "storageUploadUrl",
+            status: "completed"
+        }))
+        verify(!state.terminalRefreshesStorageObservations({
+            method: "storageRemove",
+            status: "dispatched"
+        }))
+        verify(StorageModuleEvents.rawEventInvalidatesStorageObservations("storageDownloadDone"))
+        verify(StorageModuleEvents.rawEventInvalidatesStorageObservations("storageRemoveDone"))
+        verify(!StorageModuleEvents.rawEventInvalidatesStorageObservations("storageUploadDone"))
+    }
+
     function test_run_storage_exists_uses_sync_call_and_log() {
         gateway.callResponses = ({
             storageExists: {
@@ -203,21 +221,23 @@ TestCase {
         verify(!state.operation.startPending)
     }
 
-    function test_start_dispatch_ack_becomes_running_module_operation() {
+    function test_start_accepted_operation_preserves_authoritative_awaiting_state() {
         gateway.requestResponses = ({
             runtimeOperationStart: {
                 ok: true,
                 value: {
                     operationId: "storage-upload-ack",
+                    clientRequestId: "client-1",
+                    bridgeCallbackId: 7,
+                    moduleSessionId: "session-1",
+                    moduleRequestId: "request-1",
                     domain: "storage",
                     backend: "module",
                     method: "storageUploadUrl",
-                    status: "completed",
+                    status: "awaiting_external",
                     label: "Upload file",
-                    result: {
+                    acknowledgement: {
                         dispatched: true,
-                        sessionId: "session-1",
-                        requestId: "request-1",
                         path: "/tmp/file.bin"
                     },
                     error: ""
@@ -231,33 +251,53 @@ TestCase {
 
         compare(gateway.requestCount, 1)
         compare(state.operation.active.operationId, "storage-upload-ack")
-        compare(state.operation.active.status, "running")
-        compare(state.operation.active.externalSessionId, "session-1")
-        compare(state.operation.active.requestId, "request-1")
-        compare(state.operation.active.path, "/tmp/file.bin")
-        compare(state.lastOperation, "Running")
+        compare(state.operation.active.status, "awaiting_external")
+        compare(state.operation.active.clientRequestId, "client-1")
+        compare(state.operation.active.bridgeCallbackId, 7)
+        compare(state.operation.active.moduleSessionId, "session-1")
+        compare(state.operation.active.moduleRequestId, "request-1")
+        verify(state.operation.running)
+        compare(state.lastOperation, "Waiting")
         compare(state.currentTab, "operations")
         compare(gateway.history.length, 0)
     }
 
-    function test_storage_dispatch_ack_and_module_terminal_share_history() {
+    function test_module_event_projects_only_authoritative_backend_operation() {
         gateway.requestResponses = ({
             runtimeOperationStart: {
                 ok: true,
                 value: {
                     operationId: "storage-upload-ack",
+                    moduleSessionId: "session-1",
+                    moduleRequestId: "request-1",
                     domain: "storage",
                     backend: "module",
                     method: "storageUploadUrl",
-                    status: "completed",
+                    status: "awaiting_external",
                     label: "Upload file",
-                    result: {
-                        dispatched: true,
-                        sessionId: "session-1",
-                        requestId: "request-1",
-                        path: "/tmp/file.bin"
-                    },
+                    acknowledgement: { dispatched: true },
                     error: ""
+                },
+                text: "OK",
+                error: ""
+            },
+            runtimeOperationModuleEvent: {
+                ok: true,
+                value: {
+                    disposition: "applied",
+                    operation: {
+                        operationId: "storage-upload-ack",
+                        moduleSessionId: "session-1",
+                        moduleRequestId: "request-1",
+                        domain: "storage",
+                        backend: "module",
+                        method: "storageUploadUrl",
+                        status: "completed",
+                        label: "Upload file",
+                        result: { cid: "z-done" },
+                        cid: "z-done",
+                        error: ""
+                    }
                 },
                 text: "OK",
                 error: ""
@@ -266,7 +306,7 @@ TestCase {
 
         state.startStorageOperation("storageUploadUrl", ["/tmp/file.bin", 65536], "Upload file")
 
-        compare(state.operation.active.status, "running")
+        compare(state.operation.active.status, "awaiting_external")
         compare(state.operation.rows.length, 1)
 
         verify(state.applyStorageModuleEvent("storageUploadDone", [
@@ -277,10 +317,13 @@ TestCase {
         compare(state.operation.active.cid, "z-done")
         compare(gateway.history.length, 1)
         compare(state.operation.rows.length, 2)
+        compare(gateway.lastMethod, "runtimeOperationModuleEvent")
+        compare(gateway.lastArgs[0].moduleName, "storage_module")
+        compare(gateway.lastArgs[0].eventName, "storageUploadDone")
 
-        verify(!state.applyStorageModuleEvent("storageUploadDone", [
+        verify(state.applyStorageModuleEvent("storageUploadDone", [
             JSON.stringify({ sessionId: "session-1", requestId: "request-1", success: true, cid: "z-done" })
-        ]))
+        ]) !== null)
         compare(gateway.history.length, 1)
         compare(state.operation.rows.length, 2)
     }
@@ -434,7 +477,7 @@ TestCase {
         compare(state.manifestRows()[0].cid, "z-module")
     }
 
-    function test_storage_module_dispatch_ack_stays_running() {
+    function test_legacy_completed_dispatch_envelope_is_never_reopened() {
         state.operationSession.acceptUpdate({
             operationId: "op-1",
             domain: "storage",
@@ -454,6 +497,7 @@ TestCase {
                     status: "completed",
                     label: "Upload",
                     result: { dispatched: true, sessionId: "1" },
+                    cancellable: false,
                     error: ""
                 },
                 text: "OK",
@@ -463,13 +507,13 @@ TestCase {
 
         state.pollStorageOperation(false)
 
-        compare(state.operation.active.status, "running")
-        compare(state.operation.active.externalSessionId, "1")
+        compare(state.operation.active.status, "completed")
+        verify(state.operation.active.externalSessionId === undefined)
         compare(state.operation.active.cancellable, false)
-        compare(gateway.history.length, 0)
+        compare(gateway.history.length, 1)
     }
 
-    function test_storage_module_stale_dispatch_ack_does_not_reopen_terminal_operation() {
+    function test_stale_nonterminal_backend_record_does_not_reopen_terminal_operation() {
         state.operationSession.acceptUpdate({
             operationId: "op-1",
             domain: "storage",
@@ -489,9 +533,9 @@ TestCase {
                     domain: "storage",
                     backend: "module",
                     method: "storageUploadUrl",
-                    status: "completed",
+                    status: "awaiting_external",
                     label: "Upload",
-                    result: { dispatched: true, sessionId: "1" },
+                    moduleSessionId: "1",
                     error: ""
                 },
                 text: "OK",
@@ -506,34 +550,94 @@ TestCase {
         compare(state.operationSession.terminalOperationId, "op-1")
     }
 
-    function test_storage_module_events_correlate_before_mutating_operation() {
+    function test_raw_module_event_requires_authoritative_backend_projection() {
         state.operationSession.acceptUpdate({
             operationId: "op-1",
             domain: "storage",
             backend: "module",
             method: "storageUploadUrl",
-            status: "running",
+            status: "awaiting_external",
             label: "Upload",
-            externalSessionId: "1",
+            moduleSessionId: "1",
             bytesWritten: 0,
             contentLength: 16
         })
+        gateway.requestResponses = ({
+            runtimeOperationModuleEvent: {
+                ok: true,
+                value: {
+                    disposition: "uncorrelated",
+                    operation: null
+                },
+                text: "OK",
+                error: ""
+            }
+        })
 
-        verify(!state.applyStorageModuleEvent("storageUploadProgress", [
+        verify(state.applyStorageModuleEvent("storageUploadProgress", [
             JSON.stringify({ sessionId: "2", bytes: 8 })
-        ]))
+        ]) !== null)
         compare(state.operation.active.bytesWritten, 0)
+        compare(state.operation.active.status, "awaiting_external")
+
+        gateway.requestResponses = ({
+            runtimeOperationModuleEvent: {
+                ok: true,
+                value: {
+                    disposition: "applied",
+                    operation: {
+                        operationId: "op-1",
+                        domain: "storage",
+                        backend: "module",
+                        method: "storageUploadUrl",
+                        status: "awaiting_external",
+                        label: "Upload",
+                        moduleSessionId: "1",
+                        bytesWritten: 8,
+                        contentLength: 16,
+                        progress: 0.5
+                    }
+                },
+                text: "OK",
+                error: ""
+            }
+        })
 
         verify(state.applyStorageModuleEvent("storageUploadProgress", [
             JSON.stringify({ sessionId: "1", bytes: 8, totalBytes: 16 })
-        ]))
+        ]) !== null)
 
-        compare(state.operation.active.status, "running")
+        compare(state.operation.active.status, "awaiting_external")
         compare(state.operation.active.bytesWritten, 8)
+
+        gateway.requestResponses = ({
+            runtimeOperationModuleEvent: {
+                ok: true,
+                value: {
+                    disposition: "applied",
+                    operation: {
+                        operationId: "op-1",
+                        domain: "storage",
+                        backend: "module",
+                        method: "storageUploadUrl",
+                        status: "completed",
+                        label: "Upload",
+                        moduleSessionId: "1",
+                        bytesWritten: 8,
+                        contentLength: 16,
+                        progress: 1,
+                        cid: "z-done",
+                        result: { cid: "z-done", bytes: 8 }
+                    }
+                },
+                text: "OK",
+                error: ""
+            }
+        })
 
         verify(state.applyStorageModuleEvent("storageUploadDone", [
             JSON.stringify({ sessionId: "1", success: true, cid: "z-done", bytes: 8 })
-        ]))
+        ]) !== null)
 
         compare(state.operation.active.status, "completed")
         compare(state.operation.active.cid, "z-done")
@@ -541,9 +645,9 @@ TestCase {
         compare(gateway.history.length, 1)
         compare(state.operation.rows.length, 1)
 
-        verify(!state.applyStorageModuleEvent("storageUploadDone", [
+        verify(state.applyStorageModuleEvent("storageUploadDone", [
             JSON.stringify({ sessionId: "1", success: true, cid: "z-done", bytes: 8 })
-        ]))
+        ]) !== null)
         compare(gateway.history.length, 1)
     }
 

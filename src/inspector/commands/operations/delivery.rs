@@ -1,7 +1,7 @@
 use anyhow::Result;
 use serde_json::Value;
 
-use crate::source_routing::messaging_layer;
+use crate::source_routing::{NodeOperationOutcome, messaging_layer};
 
 use super::RuntimeOperationRequest;
 use super::spec::{
@@ -113,7 +113,7 @@ pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
 pub(super) async fn execute(
     command: DeliveryCommand,
     request: &RuntimeOperationRequest,
-) -> Result<Value> {
+) -> Result<NodeOperationOutcome> {
     let request = messaging_layer::DeliveryOperationRequest::parse(
         request.node_request()?,
         command.operation(),

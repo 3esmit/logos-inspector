@@ -10,5 +10,5 @@ pub(crate) use layer::{
 };
 pub(crate) use operations::{DeliveryOperation, DeliveryOperationRequest, execute_operation};
 #[cfg(test)]
-pub(crate) use operations::{DeliveryStoreQuery, store_query_url};
+pub(crate) use operations::{DeliveryStoreQuery, execute_module_adapter_fixture, store_query_url};
 pub(crate) use plan::delivery_module_probe_plan;

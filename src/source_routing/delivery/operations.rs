@@ -2,7 +2,11 @@ use anyhow::{Context as _, Result, bail};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
-use crate::source_routing::{AdapterInitialization, DeliverySourceMode, NodeOperationRequest};
+use crate::source_routing::{
+    AdapterInitialization, DeliverySourceMode, ModuleCorrelation, ModuleDispatchIdentityRole,
+    ModuleDispatchReceipt, ModuleEventCorrelationKind, ModuleTerminalEventContract,
+    NodeOperationOutcome, NodeOperationRequest, ObservableOperationAcceptance,
+};
 
 use super::{layer::MESSAGING_SOURCE_MODES, transport};
 
@@ -75,7 +79,9 @@ impl DeliveryOperationRequest {
     }
 }
 
-pub(crate) async fn execute_operation(request: DeliveryOperationRequest) -> Result<Value> {
+pub(crate) async fn execute_operation(
+    request: DeliveryOperationRequest,
+) -> Result<NodeOperationOutcome> {
     execute_plan(request.plan).await
 }
 
@@ -250,7 +256,7 @@ fn operation_plan(
                     },
                     args: Vec::new(),
                     context: Vec::new(),
-                    dispatch: false,
+                    dispatch: true,
                 },
                 Map::new(),
             ))
@@ -283,7 +289,7 @@ fn operation_plan(
     }
 }
 
-async fn execute_plan(plan: DeliveryOperationPlan) -> Result<Value> {
+async fn execute_plan(plan: DeliveryOperationPlan) -> Result<NodeOperationOutcome> {
     match plan {
         DeliveryOperationPlan::Module {
             method,
@@ -291,26 +297,33 @@ async fn execute_plan(plan: DeliveryOperationPlan) -> Result<Value> {
             context,
             dispatch,
         } => {
-            if dispatch {
-                transport::module_dispatch(method, args, context).await
-            } else {
-                transport::module_call(method, args).await
-            }
+            execute_module_plan(
+                &ProductionDeliveryModuleTransport,
+                method,
+                args,
+                context,
+                dispatch,
+            )
+            .await
         }
         DeliveryOperationPlan::Rest(DeliveryRestOperation::Subscription {
             endpoint,
             topic,
             subscribe,
-        }) => transport::update_subscription(&endpoint, &topic, subscribe)
-            .await
-            .with_context(|| format!("failed to update relay subscription for {topic}")),
+        }) => Ok(NodeOperationOutcome::Completed(
+            transport::update_subscription(&endpoint, &topic, subscribe)
+                .await
+                .with_context(|| format!("failed to update relay subscription for {topic}"))?,
+        )),
         DeliveryOperationPlan::Rest(DeliveryRestOperation::Send {
             endpoint,
             topic,
             payload,
-        }) => transport::send(&endpoint, &topic, &payload)
-            .await
-            .with_context(|| format!("failed to send relay message on {topic}")),
+        }) => Ok(NodeOperationOutcome::Completed(
+            transport::send(&endpoint, &topic, &payload)
+                .await
+                .with_context(|| format!("failed to send relay message on {topic}"))?,
+        )),
         DeliveryOperationPlan::Rest(DeliveryRestOperation::StoreQuery {
             endpoint,
             peer_addr,
@@ -335,14 +348,147 @@ async fn execute_plan(plan: DeliveryOperationPlan) -> Result<Value> {
             )
             .await
             .context("failed to query Delivery Store")?;
-            Ok(json!({
+            Ok(NodeOperationOutcome::Completed(json!({
                 "endpoint": endpoint,
                 "includeData": include_data,
                 "pageSize": page_size,
                 "query": query,
                 "value": value,
-            }))
+            })))
         }
+    }
+}
+
+trait DeliveryModuleTransport {
+    async fn call(&self, method: &'static str, args: Vec<Value>) -> Result<Value>;
+
+    async fn dispatch(
+        &self,
+        method: &'static str,
+        args: Vec<Value>,
+        context: Vec<(&'static str, String)>,
+        identity_role: ModuleDispatchIdentityRole,
+    ) -> Result<ModuleDispatchReceipt>;
+}
+
+struct ProductionDeliveryModuleTransport;
+
+impl DeliveryModuleTransport for ProductionDeliveryModuleTransport {
+    async fn call(&self, method: &'static str, args: Vec<Value>) -> Result<Value> {
+        transport::module_call(method, args).await
+    }
+
+    async fn dispatch(
+        &self,
+        method: &'static str,
+        args: Vec<Value>,
+        context: Vec<(&'static str, String)>,
+        identity_role: ModuleDispatchIdentityRole,
+    ) -> Result<ModuleDispatchReceipt> {
+        transport::module_dispatch(method, args, &context, identity_role).await
+    }
+}
+
+async fn execute_module_plan<T>(
+    transport: &T,
+    method: &'static str,
+    args: Vec<Value>,
+    context: Vec<(&'static str, String)>,
+    dispatch: bool,
+) -> Result<NodeOperationOutcome>
+where
+    T: DeliveryModuleTransport,
+{
+    if !dispatch {
+        return transport
+            .call(method, args)
+            .await
+            .map(NodeOperationOutcome::Completed);
+    }
+
+    let identity_role = if method == "send" {
+        ModuleDispatchIdentityRole::Request
+    } else {
+        ModuleDispatchIdentityRole::None
+    };
+    let receipt = transport
+        .dispatch(method, args, context, identity_role)
+        .await?;
+    delivery_module_dispatch_outcome(method, receipt)
+}
+
+#[cfg(test)]
+pub(crate) async fn execute_module_adapter_fixture(
+    method: &'static str,
+    dispatch: bool,
+    value: Value,
+) -> Result<NodeOperationOutcome> {
+    execute_module_plan(
+        &FakeDeliveryModuleTransport { value },
+        method,
+        Vec::new(),
+        Vec::new(),
+        dispatch,
+    )
+    .await
+}
+
+#[cfg(test)]
+struct FakeDeliveryModuleTransport {
+    value: Value,
+}
+
+#[cfg(test)]
+impl DeliveryModuleTransport for FakeDeliveryModuleTransport {
+    async fn call(&self, _method: &'static str, _args: Vec<Value>) -> Result<Value> {
+        Ok(self.value.clone())
+    }
+
+    async fn dispatch(
+        &self,
+        method: &'static str,
+        _args: Vec<Value>,
+        context: Vec<(&'static str, String)>,
+        identity_role: ModuleDispatchIdentityRole,
+    ) -> Result<ModuleDispatchReceipt> {
+        Ok(
+            crate::source_routing::shared::module_bridge::dispatch_result(
+                super::layer::module_id(),
+                method,
+                self.value.clone(),
+                &context,
+                identity_role,
+            ),
+        )
+    }
+}
+
+fn delivery_module_dispatch_outcome(
+    method: &str,
+    receipt: ModuleDispatchReceipt,
+) -> Result<NodeOperationOutcome> {
+    let accepted = (method == "send")
+        .then(|| receipt.request_id())
+        .flatten()
+        .map(|request_id| {
+            (
+                ModuleCorrelation::with_request(request_id),
+                ModuleTerminalEventContract::new(
+                    super::layer::module_id(),
+                    Some("messagePropagated"),
+                    "messageSent",
+                    Some("messageError"),
+                    ModuleEventCorrelationKind::Request,
+                ),
+            )
+        });
+    let acknowledgement = receipt.into_acknowledgement();
+    match accepted {
+        Some((correlation, terminal_event)) => Ok(NodeOperationOutcome::Accepted(Box::new(
+            ObservableOperationAcceptance::new(acknowledgement, correlation, terminal_event),
+        ))),
+        None if method == "send" => bail!("delivery module `send` returned no request ID"),
+        None => Ok(NodeOperationOutcome::Dispatched(acknowledgement)),
     }
 }
 
@@ -433,6 +579,62 @@ mod tests {
             dispatch: true,
         };
         anyhow::ensure!(request.plan == expected, "unexpected Messaging send plan");
+        Ok(())
+    }
+
+    #[test]
+    fn module_send_uses_request_identity_only() -> Result<()> {
+        let outcome = delivery_module_dispatch_outcome(
+            "send",
+            ModuleDispatchReceipt::new(
+                json!({ "dispatched": true }),
+                &json!("request-1"),
+                ModuleDispatchIdentityRole::Request,
+            ),
+        )?;
+
+        let NodeOperationOutcome::Accepted(acceptance) = outcome else {
+            anyhow::bail!("module send was not accepted");
+        };
+        anyhow::ensure!(
+            acceptance.correlation().request_id().map(|id| id.as_str()) == Some("request-1")
+                && acceptance.correlation().session_id().is_none()
+                && acceptance.terminal_event().correlation()
+                    == &ModuleEventCorrelationKind::Request,
+            "Delivery request identity role drifted"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn uncorrelated_delivery_lifecycle_is_dispatched() -> Result<()> {
+        let outcome = delivery_module_dispatch_outcome(
+            "start",
+            ModuleDispatchReceipt::new(
+                json!({ "dispatched": true }),
+                &json!(true),
+                ModuleDispatchIdentityRole::None,
+            ),
+        )?;
+
+        anyhow::ensure!(matches!(outcome, NodeOperationOutcome::Dispatched(_)));
+        Ok(())
+    }
+
+    #[test]
+    fn observable_delivery_dispatch_rejects_missing_request_identity() -> Result<()> {
+        let Err(error) = delivery_module_dispatch_outcome(
+            "send",
+            ModuleDispatchReceipt::new(
+                json!({ "dispatched": true }),
+                &Value::Null,
+                ModuleDispatchIdentityRole::Request,
+            ),
+        ) else {
+            anyhow::bail!("observable delivery dispatch accepted no correlation identity");
+        };
+
+        anyhow::ensure!(error.to_string() == "delivery module `send` returned no request ID");
         Ok(())
     }
 

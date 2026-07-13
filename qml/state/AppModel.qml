@@ -409,6 +409,27 @@ QtObject {
                 return root.requestModuleAsync(root.inspectorModule, method, args, label, showResult === true, callback)
             }
 
+            function startRuntimeOperation(request, showResult, callback) {
+                return root.runtimeOperationStart(request, showResult === true, callback)
+            }
+
+            function runtimeOperationStatus(operationId, showResult, callback) {
+                return root.runtimeOperationStatus(operationId, showResult === true, callback)
+            }
+
+            function runtimeOperationCancel(operationId, showResult, callback) {
+                return root.runtimeOperationCancel(operationId, showResult === true, callback)
+            }
+
+            function runtimeOperationModuleEvent(event, showResult, callback) {
+                return root.runtimeOperationModuleEvent(event, showResult === true, callback)
+            }
+
+            function refreshStorageObservations() {
+                root.queryNetworkConnection("storage", false)
+                return root.storageApp.refreshManifests(false)
+            }
+
             function setResult(title, text, isError, value) {
                 return appShellState.setResult(title, text, isError, value)
             }
@@ -466,6 +487,14 @@ QtObject {
 
             function runtimeOperationStatus(operationId, showResult, callback) {
                 return root.runtimeOperationStatus(operationId, showResult === true, callback)
+            }
+
+            function runtimeOperationCancel(operationId, showResult, callback) {
+                return root.runtimeOperationCancel(operationId, showResult === true, callback)
+            }
+
+            function runtimeOperationModuleEvent(event, showResult, callback) {
+                return root.runtimeOperationModuleEvent(event, showResult === true, callback)
             }
 
             function appendOperationHistory(operation, detail) {
@@ -868,6 +897,8 @@ QtObject {
     function runtimeOperationEvents(operationId, afterSeq, showResult, callback) { return AppModelCore.runtimeOperationEvents(root, operationId, afterSeq, showResult, callback) }
 
     function runtimeOperationCancel(operationId, showResult, callback) { return AppModelCore.runtimeOperationCancel(root, operationId, showResult, callback) }
+
+    function runtimeOperationModuleEvent(event, showResult, callback) { return AppModelCore.runtimeOperationModuleEvent(root, event, showResult, callback) }
 
     function updateRuntimeOperation(operation) { return AppModelCore.updateRuntimeOperation(root, operation) }
 

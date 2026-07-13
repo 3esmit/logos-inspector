@@ -1,31 +1,33 @@
 use std::{
-    collections::HashMap,
     sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
+        atomic::{AtomicBool, AtomicU64},
     },
     thread,
     time::Duration,
 };
 
 use anyhow::{Context as _, Result, bail};
-use serde_json::{Value, json};
+use serde_json::Value;
 use tokio::runtime::Runtime;
 
-use crate::support::time::now_millis;
+use crate::{source_routing::ModuleEventEnvelope, support::time::now_millis};
 
 mod backup_import;
 mod blockchain;
 mod delivery;
 mod dispatch;
 mod entrypoint;
+mod identity;
 mod lez;
 mod local_nodes;
+mod outcome;
 mod policy;
 mod record;
 mod request;
 mod spec;
 mod storage;
+mod transition;
 mod wallet;
 mod wallet_args;
 
@@ -35,15 +37,12 @@ use dispatch::execute_runtime_operation;
 pub(crate) use entrypoint::operation_bridge_command_names;
 pub(crate) use entrypoint::{OperationBridgeCommand, operation_bridge_command};
 use entrypoint::{OperationRunner, handle_operation_command};
-use record::{
-    RuntimeOperationRegistry, RuntimeOperationStatus, active_operation_in_exclusive_group,
-    finish_runtime_operation, push_runtime_operation_event_locked,
-    running_runtime_operation_record, runtime_operation_event_value, runtime_operation_value,
-    update_runtime_operation,
-};
+use identity::{EventCursor, RuntimeOperationId, allocate_sequence};
+use record::{RuntimeOperationRegistry, RuntimeOperationStatus, running_runtime_operation_record};
 pub(crate) use request::{RuntimeOperationRequest, runtime_operation_request_from_value};
 pub(crate) use spec::OperationMethod;
-use spec::{OperationExclusiveGroup, normalized_operation_method};
+use spec::normalized_operation_method;
+use transition::RuntimeOperationTransition;
 
 #[derive(Debug)]
 pub(crate) struct RuntimeOperations {
@@ -55,7 +54,7 @@ pub(crate) struct RuntimeOperations {
 impl Default for RuntimeOperations {
     fn default() -> Self {
         Self {
-            registry: Arc::new(Mutex::new(HashMap::new())),
+            registry: RuntimeOperationRegistry::default(),
             next_operation_id: AtomicU64::new(1),
             backup_import: BackupImportCoordinator::new(Arc::new(LocalBackupImportStore)),
         }
@@ -74,49 +73,27 @@ impl RuntimeOperations {
         request: RuntimeOperationRequest,
     ) -> Result<Value> {
         let operation_permit = self.backup_import.operation_permit(&request)?;
-        let operation_id = format!(
-            "{}-{}-{}",
+        let operation_id = RuntimeOperationId::allocated(
             request.domain_name(),
-            normalized_operation_method(request.method_name()),
-            self.next_operation_id.fetch_add(1, Ordering::Relaxed)
+            &normalized_operation_method(request.method_name()),
+            allocate_sequence(&self.next_operation_id)?,
         );
         let now = now_millis();
         let cancel_requested = Arc::new(AtomicBool::new(false));
         let record = running_runtime_operation_record(
-            &operation_id,
+            operation_id.clone(),
             &request,
             Arc::clone(&cancel_requested),
             now,
         )?;
-        {
-            let mut operations = self
-                .registry
-                .lock()
-                .map_err(|_| anyhow::anyhow!("runtime operation registry is unavailable"))?;
-            if let Some(group) = request.exclusive_group()
-                && operations
-                    .values()
-                    .any(|record| active_operation_in_exclusive_group(record, group))
-            {
-                bail!("{}", exclusive_operation_message(group));
-            }
-            operations.insert(operation_id.clone(), record);
-        }
+        self.registry.insert(record)?;
         drop(operation_permit);
-        update_runtime_operation(&self.registry, &operation_id, |record| {
-            push_runtime_operation_event_locked(
-                record,
-                "started",
-                "operation started",
-                Some(0.0),
-                None,
-                None,
-            );
-        });
+        self.registry
+            .transition(&operation_id, RuntimeOperationTransition::Started)?;
 
-        let registry = Arc::clone(&self.registry);
+        let registry = self.registry.clone();
         let task_operation_id = operation_id.clone();
-        runtime.spawn(async move {
+        let _detached_task = runtime.spawn(async move {
             let result = execute_runtime_operation(
                 request,
                 &registry,
@@ -124,10 +101,13 @@ impl RuntimeOperations {
                 &cancel_requested,
             )
             .await;
-            finish_runtime_operation(&registry, &task_operation_id, &cancel_requested, result);
+            registry.transition(
+                &task_operation_id,
+                RuntimeOperationTransition::Resolved(result.map_err(|error| error.to_string())),
+            )
         });
 
-        self.value(&operation_id)
+        self.registry.value(&operation_id)
     }
 
     pub(crate) fn status(&self, operation_id: &str) -> Result<Value> {
@@ -156,60 +136,17 @@ impl RuntimeOperations {
     }
 
     pub(crate) fn events(&self, operation_id: &str, after_seq: u64) -> Result<Value> {
-        let operations = self
-            .registry
-            .lock()
-            .map_err(|_| anyhow::anyhow!("runtime operation registry is unavailable"))?;
-        let record = operations
-            .get(operation_id)
-            .with_context(|| format!("runtime operation `{operation_id}` was not found"))?;
-        let events = record
-            .events
-            .iter()
-            .filter(|event| event.seq > after_seq)
-            .map(runtime_operation_event_value)
-            .collect::<Vec<_>>();
-        let next_seq = record.events.last().map_or(after_seq, |event| event.seq);
-        Ok(json!({
-            "operation": runtime_operation_value(&record.operation),
-            "events": events,
-            "nextSeq": next_seq,
-        }))
+        self.registry.events(
+            &RuntimeOperationId::parse(operation_id)?,
+            EventCursor::new(after_seq),
+        )
     }
 
     pub(crate) fn cancel(&self, operation_id: &str) -> Result<Value> {
-        {
-            let mut operations = self
-                .registry
-                .lock()
-                .map_err(|_| anyhow::anyhow!("runtime operation registry is unavailable"))?;
-            let record = operations
-                .get_mut(operation_id)
-                .with_context(|| format!("runtime operation `{operation_id}` was not found"))?;
-            if !record.operation.status.is_terminal() && record.operation.cancellable {
-                record.cancel_requested.store(true, Ordering::Relaxed);
-                record.operation.status = RuntimeOperationStatus::Canceling;
-                record.operation.updated_at = now_millis();
-                push_runtime_operation_event_locked(
-                    record,
-                    "canceling",
-                    "cancel requested",
-                    None,
-                    None,
-                    None,
-                );
-            } else if !record.operation.status.is_terminal() {
-                push_runtime_operation_event_locked(
-                    record,
-                    "cancel_ignored",
-                    "operation is not cancellable",
-                    None,
-                    None,
-                    None,
-                );
-            }
-        }
-        self.value(operation_id)
+        let operation_id = RuntimeOperationId::parse(operation_id)?;
+        self.registry
+            .transition(&operation_id, RuntimeOperationTransition::CancelRequested)?;
+        self.registry.value(&operation_id)
     }
 
     pub(crate) fn run_blocking(
@@ -229,74 +166,93 @@ impl RuntimeOperations {
             .context("runtime operation id is missing")?
             .to_owned();
         let result = self.wait_for_result(&operation_id);
-        self.remove(&operation_id);
+        self.finish_blocking_result(&operation_id, result)
+    }
+
+    fn finish_blocking_result(&self, operation_id: &str, result: Result<Value>) -> Result<Value> {
+        let operation_id = RuntimeOperationId::parse(operation_id)?;
+        let should_remove = self.registry.inspect(|records| {
+            records.get(&operation_id).is_some_and(|record| {
+                record.operation.status.is_terminal()
+                    && record.operation.bridge_callback_id.is_none()
+                    && record.operation.module_session_id.is_none()
+                    && record.operation.module_request_id.is_none()
+                    && record.operation.terminal_event.is_none()
+            })
+        })?;
+        if should_remove {
+            self.registry.remove(&operation_id)?;
+        }
         result
     }
 
     pub(crate) fn wait_for_result(&self, operation_id: &str) -> Result<Value> {
+        let operation_id = RuntimeOperationId::parse(operation_id)?;
         loop {
-            let operation = {
-                let operations = self
-                    .registry
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("runtime operation registry is unavailable"))?;
-                operations
-                    .get(operation_id)
-                    .with_context(|| format!("runtime operation `{operation_id}` was not found"))?
-                    .operation
-                    .clone()
-            };
-            if operation.status.is_terminal() {
-                return match operation.status {
-                    RuntimeOperationStatus::Completed => {
-                        Ok(operation.result.unwrap_or(Value::Null))
-                    }
-                    RuntimeOperationStatus::Canceled => {
-                        bail!(
-                            "{}",
-                            operation
-                                .error
-                                .unwrap_or_else(|| "runtime operation canceled".to_owned())
-                        )
-                    }
-                    RuntimeOperationStatus::Failed => {
-                        bail!(
-                            "{}",
-                            operation
-                                .error
-                                .unwrap_or_else(|| "runtime operation failed".to_owned())
-                        )
-                    }
-                    RuntimeOperationStatus::Running | RuntimeOperationStatus::Canceling => {
-                        bail!("runtime operation is still running")
-                    }
-                };
+            let operation = self
+                .registry
+                .inspect(|records| {
+                    records
+                        .get(&operation_id)
+                        .map(|record| record.operation.clone())
+                })?
+                .with_context(|| {
+                    format!(
+                        "runtime operation `{}` was not found",
+                        operation_id.as_str()
+                    )
+                })?;
+            match operation.status {
+                RuntimeOperationStatus::Completed => {
+                    return Ok(operation.result.unwrap_or(Value::Null));
+                }
+                RuntimeOperationStatus::AwaitingExternal | RuntimeOperationStatus::Dispatched => {
+                    return Ok(operation.acknowledgement.unwrap_or(Value::Null));
+                }
+                RuntimeOperationStatus::Canceled => {
+                    bail!(
+                        "{}",
+                        operation
+                            .error
+                            .unwrap_or_else(|| "runtime operation canceled".to_owned())
+                    )
+                }
+                RuntimeOperationStatus::Failed => {
+                    bail!(
+                        "{}",
+                        operation
+                            .error
+                            .unwrap_or_else(|| "runtime operation failed".to_owned())
+                    )
+                }
+                RuntimeOperationStatus::TimedOut => {
+                    bail!(
+                        "{}",
+                        operation
+                            .error
+                            .unwrap_or_else(|| "runtime operation timed out".to_owned())
+                    )
+                }
+                RuntimeOperationStatus::Running | RuntimeOperationStatus::Canceling => {}
             }
             thread::sleep(Duration::from_millis(25));
         }
     }
 
     pub(crate) fn value(&self, operation_id: &str) -> Result<Value> {
-        let operations = self
-            .registry
-            .lock()
-            .map_err(|_| anyhow::anyhow!("runtime operation registry is unavailable"))?;
-        let record = operations
-            .get(operation_id)
-            .with_context(|| format!("runtime operation `{operation_id}` was not found"))?;
-        Ok(runtime_operation_value(&record.operation))
+        self.registry
+            .value(&RuntimeOperationId::parse(operation_id)?)
     }
 
-    fn remove(&self, operation_id: &str) {
-        if let Ok(mut operations) = self.registry.lock() {
-            operations.remove(operation_id);
-        }
+    pub(crate) fn ingest_module_event(&self, value: Value) -> Result<Value> {
+        let event = ModuleEventEnvelope::from_value(&value)?;
+        self.registry.ingest_module_event(event)
     }
 
     #[cfg(test)]
     fn with_backup_import_store(store: Arc<dyn backup_import::BackupImportStore>) -> Self {
         Self {
-            registry: Arc::new(Mutex::new(HashMap::new())),
+            registry: RuntimeOperationRegistry::default(),
             next_operation_id: AtomicU64::new(1),
             backup_import: BackupImportCoordinator::new(store),
         }
@@ -310,33 +266,18 @@ impl RuntimeOperations {
     ) -> Result<Arc<AtomicBool>> {
         let cancel_requested = Arc::new(AtomicBool::new(false));
         let record = running_runtime_operation_record(
-            operation_id,
+            RuntimeOperationId::parse(operation_id)?,
             &request,
             Arc::clone(&cancel_requested),
             1,
         )?;
-        self.registry
-            .lock()
-            .map_err(|_| anyhow::anyhow!("runtime operation registry is unavailable"))?
-            .insert(operation_id.to_owned(), record);
+        self.registry.insert(record)?;
         Ok(cancel_requested)
     }
 
     #[cfg(test)]
     pub(crate) fn len(&self) -> Result<usize> {
-        Ok(self
-            .registry
-            .lock()
-            .map_err(|_| anyhow::anyhow!("runtime operation registry is unavailable"))?
-            .len())
-    }
-}
-
-fn exclusive_operation_message(group: OperationExclusiveGroup) -> &'static str {
-    match group {
-        OperationExclusiveGroup::StorageDownload => {
-            "a storage download operation is already running"
-        }
+        self.registry.len()
     }
 }
 
@@ -353,6 +294,10 @@ struct RuntimeOperationRunner<'a> {
 impl OperationRunner for RuntimeOperationRunner<'_> {
     fn start_from_value(&self, value: Value) -> Result<Value> {
         self.operations.start_from_value(self.runtime, value)
+    }
+
+    fn ingest_module_event(&self, event: Value) -> Result<Value> {
+        self.operations.ingest_module_event(event)
     }
 
     fn status(&self, operation_id: &str) -> Result<Value> {
@@ -431,5 +376,99 @@ impl RuntimeOperationInterface {
     #[cfg(test)]
     pub(crate) fn len(&self) -> Result<usize> {
         self.operations.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use anyhow::{Context as _, Result};
+    use serde_json::json;
+
+    use super::*;
+    use crate::source_routing::{
+        ModuleCorrelation, ModuleEventCorrelationKind, ModuleSessionId,
+        ModuleTerminalEventContract, ObservableOperationAcceptance,
+    };
+
+    #[test]
+    fn blocking_acknowledgement_retains_observable_conversation() -> Result<()> {
+        let operations = RuntimeOperations::default();
+        let request = runtime_operation_request_from_value(json!({
+            "domain": "storage",
+            "method": "storageUploadUrl",
+            "adapter": { "source_mode": "module", "inputs": {} },
+            "mutating_enabled": true,
+            "payload": { "path": "/tmp/runtime-operation-retention-test" }
+        }))?;
+        operations.insert_test_running_operation("retained-operation", request)?;
+        let operation_id = RuntimeOperationId::parse("retained-operation")?;
+        let session_id = ModuleSessionId::parse("session-retained").context("session id")?;
+        operations.registry.transition(
+            &operation_id,
+            RuntimeOperationTransition::Resolved(Ok(outcome::RuntimeOperationOutcome::Accepted(
+                Box::new(ObservableOperationAcceptance::new(
+                    json!({ "dispatched": true, "value": "session-retained" }),
+                    ModuleCorrelation::with_session(session_id),
+                    ModuleTerminalEventContract::new(
+                        "storage_module",
+                        Some("storageUploadProgress"),
+                        "storageUploadDone",
+                        None,
+                        ModuleEventCorrelationKind::Session,
+                    ),
+                )),
+            ))),
+        )?;
+
+        let acknowledgement = operations.wait_for_result(operation_id.as_str());
+        let acknowledgement =
+            operations.finish_blocking_result(operation_id.as_str(), acknowledgement)?;
+
+        anyhow::ensure!(acknowledgement.get("dispatched") == Some(&json!(true)));
+        anyhow::ensure!(operations.len()? == 1);
+        Ok(())
+    }
+
+    #[test]
+    fn blocking_terminal_result_retains_external_correlation_tombstone() -> Result<()> {
+        let operations = RuntimeOperations::default();
+        let request = runtime_operation_request_from_value(json!({
+            "domain": "storage",
+            "method": "storageUploadUrl",
+            "adapter": { "source_mode": "module", "inputs": {} },
+            "mutating_enabled": true,
+            "payload": { "path": "/tmp/runtime-operation-terminal-retention-test" }
+        }))?;
+        operations.insert_test_running_operation("terminal-operation", request)?;
+        let operation_id = RuntimeOperationId::parse("terminal-operation")?;
+        let session_id = ModuleSessionId::parse("session-terminal").context("session id")?;
+        operations.registry.transition(
+            &operation_id,
+            RuntimeOperationTransition::Resolved(Ok(outcome::RuntimeOperationOutcome::Accepted(
+                Box::new(ObservableOperationAcceptance::new(
+                    json!({ "dispatched": true }),
+                    ModuleCorrelation::with_session(session_id),
+                    ModuleTerminalEventContract::new(
+                        "storage_module",
+                        Some("storageUploadProgress"),
+                        "storageUploadDone",
+                        None,
+                        ModuleEventCorrelationKind::Session,
+                    ),
+                )),
+            ))),
+        )?;
+        operations.ingest_module_event(json!({
+            "moduleName": "storage_module",
+            "eventName": "storageUploadDone",
+            "args": [{ "sessionId": "session-terminal", "cid": "cid-terminal" }]
+        }))?;
+
+        let result = operations.wait_for_result(operation_id.as_str());
+        let result = operations.finish_blocking_result(operation_id.as_str(), result)?;
+
+        anyhow::ensure!(result.get("cid") == Some(&json!("cid-terminal")));
+        anyhow::ensure!(operations.len()? == 1);
+        Ok(())
     }
 }

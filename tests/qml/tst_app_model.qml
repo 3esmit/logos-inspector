@@ -987,6 +987,88 @@ TestCase {
         compare(model.runtimeOperations["op-2"].domain, "delivery")
     }
 
+    function test_storage_operation_session_projects_through_runtime_gateway() {
+        fakeHost.responses = {
+            runtimeOperationStart: {
+                ok: true,
+                value: {
+                    operationId: "storage-op-1",
+                    domain: "storage",
+                    method: "storageUploadUrl",
+                    status: "awaiting_external",
+                    label: "Upload",
+                    moduleSessionId: "session-1"
+                },
+                text: "OK",
+                error: ""
+            },
+            runtimeOperationStatus: {
+                ok: true,
+                value: {
+                    operationId: "storage-op-1",
+                    domain: "storage",
+                    method: "storageUploadUrl",
+                    status: "completed",
+                    label: "Upload",
+                    result: { cid: "cid-1" }
+                },
+                text: "OK",
+                error: ""
+            }
+        }
+
+        model.storageApp.operationSession.start(
+            "storageUploadUrl",
+            ["/tmp/file.bin", 65536],
+            "Upload"
+        )
+        tryVerify(function () {
+            return model.runtimeOperations["storage-op-1"] !== undefined
+        })
+        compare(model.runtimeOperations["storage-op-1"].status, "awaiting_external")
+
+        model.storageApp.operationSession.poll(false)
+        tryVerify(function () {
+            return model.runtimeOperations["storage-op-1"].status === "completed"
+        })
+    }
+
+    function test_runtime_module_event_projects_only_returned_operation() {
+        fakeHost.responses = {
+            runtimeOperationModuleEvent: {
+                ok: true,
+                value: {
+                    disposition: "applied",
+                    operation: {
+                        operationId: "op-event",
+                        domain: "storage",
+                        method: "storageUploadUrl",
+                        status: "completed",
+                        moduleSessionId: "session-1"
+                    }
+                },
+                text: "OK",
+                error: ""
+            }
+        }
+        let seen = null
+
+        model.runtimeOperationModuleEvent({
+            moduleName: "storage_module",
+            eventName: "storageUploadDone",
+            args: [JSON.stringify({ sessionId: "session-1", success: true })]
+        }, false, function (response) {
+            seen = response
+        })
+
+        tryVerify(function () { return seen !== null })
+        compare(fakeHost.lastMethod, "runtimeOperationModuleEvent")
+        compare(fakeHost.lastArgs[0].moduleName, "storage_module")
+        compare(fakeHost.lastArgs[0].eventName, "storageUploadDone")
+        compare(model.runtimeOperations["op-event"].status, "completed")
+        compare(model.runtimeOperations["op-event"].moduleSessionId, "session-1")
+    }
+
     function test_node_operation_history_filters_by_domain() {
         const storageOperation = {
             operationId: "op-storage",

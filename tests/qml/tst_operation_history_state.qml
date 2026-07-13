@@ -32,6 +32,63 @@ TestCase {
         compare(history.runtimeOperationsRevision, 2)
     }
 
+    function test_terminal_operation_dominates_late_nonterminal_projection() {
+        verify(history.updateOperation({
+            operationId: "op-terminal",
+            domain: "storage",
+            method: "storageUploadUrl",
+            status: "completed",
+            result: { cid: "cid-complete" }
+        }))
+
+        verify(!history.updateOperation({
+            operationId: "op-terminal",
+            domain: "storage",
+            method: "storageUploadUrl",
+            status: "awaiting_external"
+        }))
+
+        compare(history.runtimeOperations["op-terminal"].status, "completed")
+        compare(history.runtimeOperations["op-terminal"].result.cid, "cid-complete")
+        compare(history.runtimeOperationsRevision, 1)
+    }
+
+    function test_update_operation_rejects_stale_event_cursor_projection() {
+        verify(history.updateOperation({
+            operationId: "op-ordered",
+            status: "awaiting_external",
+            eventCursor: 4
+        }))
+        verify(!history.updateOperation({
+            operationId: "op-ordered",
+            status: "running",
+            eventCursor: 3
+        }))
+        verify(!history.updateOperation({
+            operationId: "op-ordered",
+            status: "canceling"
+        }))
+        verify(history.updateOperation({
+            operationId: "op-ordered",
+            status: "canceling",
+            eventCursor: 5
+        }))
+
+        compare(history.runtimeOperations["op-ordered"].status, "canceling")
+        compare(history.runtimeOperations["op-ordered"].eventCursor, 5)
+        compare(history.runtimeOperationsRevision, 2)
+    }
+
+    function test_event_sequence_never_regresses_under_reversed_callbacks() {
+        verify(history.setEventSeq("op-events", 7))
+        verify(!history.setEventSeq("op-events", 3))
+        verify(!history.setEventSeq("op-events", 7))
+        verify(history.setEventSeq("op-events", 8))
+
+        compare(history.runtimeOperationEventSeq["op-events"], 8)
+        compare(history.runtimeOperationsRevision, 2)
+    }
+
     function test_rows_filter_by_domain_and_reverse_newest_first() {
         history.append({
             domain: "storage",
@@ -156,5 +213,33 @@ TestCase {
 
         compare(row.result.action, "restart")
         compare(row.result.operation_id, "op-read")
+    }
+
+    function test_history_preserves_distinct_conversation_identities() {
+        history.append({
+            operationId: "operation-1",
+            clientRequestId: "client-1",
+            bridgeCallbackId: 7,
+            moduleSessionId: "session-1",
+            moduleRequestId: "request-1",
+            externalSessionId: "session-1",
+            requestId: "request-1",
+            eventCursor: 9,
+            status: "dispatched",
+            acknowledgement: { dispatched: true },
+            terminalReason: "completion_unobservable"
+        }, "dispatched")
+
+        const row = history.rows("")[0]
+        compare(row.operationId, "operation-1")
+        compare(row.clientRequestId, "client-1")
+        compare(row.bridgeCallbackId, 7)
+        compare(row.moduleSessionId, "session-1")
+        compare(row.moduleRequestId, "request-1")
+        compare(row.externalSessionId, "session-1")
+        compare(row.requestId, "request-1")
+        compare(row.eventCursor, 9)
+        verify(row.acknowledgement.dispatched)
+        compare(row.terminalReason, "completion_unobservable")
     }
 }

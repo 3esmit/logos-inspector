@@ -22,7 +22,7 @@ function runtimeOperationStatus(root, operationId, showResult, callback) {
             return null
         }
         return requestModuleAsync(inspectorModule, "runtimeOperationStatus", [id], qsTr("Runtime operation"), showResult === true, function (response) {
-            if (response && response.ok) {
+            if (response && response.ok && matchesOperationId(response.value, id)) {
                 coreUpdateRuntimeOperation(root, response.value)
             }
             if (callback) {
@@ -39,14 +39,20 @@ function runtimeOperationEvents(root, operationId, afterSeq, showResult, callbac
             return null
         }
         return requestModuleAsync(inspectorModule, "runtimeOperationEvents", [id, Number(afterSeq || 0)], qsTr("Runtime operation events"), showResult === true, function (response) {
-            if (response && response.ok && response.value) {
+            if (response && response.ok && response.value
+                    && matchesOperationId(response.value.operation, id)) {
                 coreUpdateRuntimeOperation(root, response.value.operation)
+                const eventCursor = responseEventCursor(response.value)
                 if (root.operationHistory && typeof root.operationHistory.setEventSeq === "function") {
-                    root.operationHistory.setEventSeq(id, response.value.nextSeq || 0)
+                    root.operationHistory.setEventSeq(id, eventCursor)
                 } else {
-                    const next = copyObject(runtimeOperationEventSeq)
-                    next[id] = response.value.nextSeq || 0
-                    runtimeOperationEventSeq = next
+                    const currentValue = runtimeOperationEventSeq[id]
+                    const current = Number(currentValue)
+                    if (currentValue === undefined || !Number.isFinite(current) || eventCursor > current) {
+                        const next = copyObject(runtimeOperationEventSeq)
+                        next[id] = eventCursor
+                        runtimeOperationEventSeq = next
+                    }
                 }
             }
             if (callback) {
@@ -63,8 +69,33 @@ function runtimeOperationCancel(root, operationId, showResult, callback) {
             return null
         }
         return requestModuleAsync(inspectorModule, "runtimeOperationCancel", [id], qsTr("Cancel operation"), showResult === true, function (response) {
-            if (response && response.ok) {
+            if (response && response.ok && matchesOperationId(response.value, id)) {
                 coreUpdateRuntimeOperation(root, response.value)
+            }
+            if (callback) {
+                callback(response)
+            }
+        })
+    }
+}
+
+function runtimeOperationModuleEvent(root, event, showResult, callback) {
+    with (root) {
+        const value = event && typeof event === "object" ? event : ({})
+        const envelope = {
+            moduleName: String(value.moduleName || ""),
+            eventName: String(value.eventName || ""),
+            args: Array.isArray(value.args) ? value.args.slice(0) : []
+        }
+        if (!envelope.moduleName.length || !envelope.eventName.length) {
+            return null
+        }
+        return requestModuleAsync(inspectorModule, "runtimeOperationModuleEvent", [envelope], qsTr("Runtime module event"), showResult === true, function (response) {
+            const operation = response && response.ok && response.value
+                ? response.value.operation || null
+                : null
+            if (operation) {
+                coreUpdateRuntimeOperation(root, operation)
             }
             if (callback) {
                 callback(response)
@@ -88,6 +119,10 @@ function coreUpdateRuntimeOperation(root, operation) {
             root.operationHistory.updateOperation(value)
             return
         }
+        const current = runtimeOperations[operationId] || null
+        if (!OperationHistoryVocabulary.runtimeSnapshotIsNewer(current, value)) {
+            return
+        }
         const next = copyObject(runtimeOperations)
         next[operationId] = value
         runtimeOperations = next
@@ -101,7 +136,7 @@ function runtimeOperationTerminal(root, operation) {
 
 function runtimeOperationResponse(root, operation) {
     const status = String(operation && operation.status ? operation.status : "")
-    const ok = status === "completed"
+    const ok = OperationHistoryVocabulary.isRuntimeSuccessfulTerminalStatus(status)
     return {
         ok: ok,
         value: operation && operation.result !== undefined && operation.result !== null ? operation.result : operation,
@@ -161,4 +196,18 @@ function copyObject(value) {
         next[keys[i]] = source[keys[i]]
     }
     return next
+}
+
+function matchesOperationId(operation, expectedOperationId) {
+    const operationId = String(operation && operation.operationId ? operation.operationId : "")
+    return operationId.length > 0 && operationId === String(expectedOperationId || "")
+}
+
+function responseEventCursor(value) {
+    const response = value && typeof value === "object" ? value : ({})
+    const raw = response.eventCursor !== undefined && response.eventCursor !== null
+        ? response.eventCursor
+        : response.nextSeq
+    const cursor = Number(raw)
+    return Number.isFinite(cursor) && cursor >= 0 ? cursor : 0
 }

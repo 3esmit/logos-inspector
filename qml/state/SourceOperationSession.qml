@@ -19,6 +19,12 @@ QtObject {
     property string pendingLabel: ""
     property var pendingArgs: []
     property bool startPending: false
+    property bool pollPending: false
+    property int callbackEpoch: 0
+    property int nextPollToken: 0
+    property int activePollToken: 0
+    property string activePollOperationId: ""
+    property var pendingStartOperations: ({})
     property var activeOperation: null
     property int activeOperationRevision: 0
     property string terminalOperationId: ""
@@ -85,19 +91,31 @@ QtObject {
         request.domain = domain
         request.method = String(method || "")
         request.label = operationLabel
+        invalidateInFlightRequests()
+        const requestEpoch = callbackEpoch
         startPending = true
         const callback = function (response) {
+            if (requestEpoch !== callbackEpoch) {
+                return
+            }
             startPending = false
             appendResult(operationLabel, response)
+            let projectedOperation = null
             if (response && response.ok) {
                 terminalOperationId = ""
-                acceptUpdate(response.value)
-                started(response.value)
+                projectedOperation = reconcileStartOperation(response.value)
+                if (acceptUpdate(projectedOperation)) {
+                    started(projectedOperation)
+                    if (isTerminal(projectedOperation)) {
+                        acceptTerminal(projectedOperation)
+                    }
+                }
             } else {
+                pendingStartOperations = ({})
                 startFailed(response)
             }
             if (onResponse) {
-                onResponse(response)
+                onResponse(response, projectedOperation)
             }
         }
 
@@ -123,28 +141,34 @@ QtObject {
     function poll(showResult, onResponse) {
         const operation = activeOperation || null
         const operationId = String(operation && operation.operationId || "")
-        if (!operationId.length) {
+        if (!operationId.length || pollPending) {
             return null
         }
+        nextPollToken += 1
+        const pollToken = nextPollToken
+        const requestEpoch = callbackEpoch
+        activePollToken = pollToken
+        activePollOperationId = operationId
+        pollPending = true
         const callback = function (response) {
+            if (!releasePoll(requestEpoch, pollToken, operationId)
+                    || !isCurrentOperationId(operationId)) {
+                return
+            }
             if (onResponse && onResponse(response, operation) === true) {
                 return
             }
             if (!response || !response.ok) {
-                const failedOperation = {
-                    operationId: operationId,
-                    domain: String(operation && operation.domain || root.domain),
-                    method: String(operation && operation.method || ""),
-                    status: "failed",
-                    label: String(operation && operation.label || defaultLabel),
-                    error: String(response && response.error || qsTr("Runtime operation status failed."))
-                }
-                acceptUpdate(failedOperation)
-                acceptTerminal(failedOperation)
+                appendResult(qsTr("Runtime operation status"), response || {
+                    ok: false,
+                    error: qsTr("Runtime operation status failed.")
+                })
                 return
             }
-            acceptUpdate(response.value)
-            if (isTerminal(response.value)) {
+            if (!matchesOperationId(response.value, operationId)) {
+                return
+            }
+            if (acceptUpdate(response.value) && isTerminal(response.value)) {
                 acceptTerminal(response.value)
             }
         }
@@ -158,6 +182,7 @@ QtObject {
         if (gateway && typeof gateway.request === "function") {
             return gateway.request("runtimeOperationStatus", [operationId], qsTr("Runtime operation"), showResult === true, callback)
         }
+        releasePoll(requestEpoch, pollToken, operationId)
         return null
     }
 
@@ -166,9 +191,16 @@ QtObject {
         if (!operationId.length) {
             return null
         }
+        const requestEpoch = callbackEpoch
         const callback = function (response) {
-            if (response && response.ok) {
-                acceptUpdate(response.value)
+            if (requestEpoch !== callbackEpoch) {
+                return
+            }
+            if (response && response.ok && isCurrentOperationId(operationId)
+                    && matchesOperationId(response.value, operationId)) {
+                if (acceptUpdate(response.value) && isTerminal(response.value)) {
+                    acceptTerminal(response.value)
+                }
             }
             appendResult(qsTr("Cancel operation"), response)
             if (onResponse) {
@@ -188,25 +220,144 @@ QtObject {
         return null
     }
 
+    function ingestModuleEvent(event, onResponse) {
+        const envelope = moduleEventEnvelope(event)
+        if (!envelope.moduleName.length || !envelope.eventName.length) {
+            return null
+        }
+        const expectedOperationId = startPending
+            ? ""
+            : String(activeOperation && activeOperation.operationId || "")
+        const requestEpoch = callbackEpoch
+        const callback = function (response) {
+            if (requestEpoch !== callbackEpoch) {
+                return
+            }
+            const operation = response && response.ok && response.value
+                ? response.value.operation || null
+                : null
+            const currentOperationId = String(activeOperation && activeOperation.operationId || "")
+            let applied = false
+            if (operation && currentOperationId.length
+                    && matchesOperationId(operation, currentOperationId)
+                    && (!expectedOperationId.length || expectedOperationId === currentOperationId)) {
+                applied = acceptUpdate(operation)
+                if (applied && isTerminal(operation)) {
+                    acceptTerminal(operation)
+                }
+            } else if (operation && startPending) {
+                rememberPendingStartOperation(operation)
+            }
+            if (onResponse) {
+                onResponse(response, operation, applied)
+            }
+        }
+
+        if (gateway && typeof gateway.runtimeOperationModuleEvent === "function") {
+            return gateway.runtimeOperationModuleEvent(envelope, false, callback)
+        }
+        if (gateway && typeof gateway.request === "function") {
+            return gateway.request(
+                "runtimeOperationModuleEvent",
+                [envelope],
+                qsTr("Runtime module event"),
+                false,
+                callback
+            )
+        }
+        return null
+    }
+
     function acceptUpdate(value) {
-        activeOperation = value || null
+        const operation = value || null
+        const operationId = String(operation && operation.operationId || "")
+        if (!operationId.length) {
+            return false
+        }
+        const currentId = String(activeOperation && activeOperation.operationId || "")
+        if (terminalOperationId === operationId
+                || (currentId === operationId
+                    && !OperationHistoryVocabulary.runtimeSnapshotIsNewer(activeOperation, operation))) {
+            return false
+        }
+        activeOperation = operation
         activeOperationRevision += 1
+        return true
     }
 
     function clearActive() {
+        invalidateInFlightRequests()
         activeOperation = null
         activeOperationRevision += 1
     }
 
     function reset() {
         clearConfirmation()
-        startPending = false
+        invalidateInFlightRequests()
         activeOperation = null
         activeOperationRevision += 1
         terminalOperationId = ""
         operationLog = []
         operationLogRevision += 1
         lastOperation = qsTr("None")
+    }
+
+    function invalidateInFlightRequests() {
+        callbackEpoch += 1
+        startPending = false
+        pollPending = false
+        activePollToken = 0
+        activePollOperationId = ""
+        pendingStartOperations = ({})
+    }
+
+    function rememberPendingStartOperation(operation) {
+        const operationId = String(operation && operation.operationId || "")
+        if (!operationId.length) {
+            return false
+        }
+        const pending = pendingStartOperations && typeof pendingStartOperations === "object"
+            ? pendingStartOperations
+            : ({})
+        const current = pending[operationId] || null
+        if (!OperationHistoryVocabulary.runtimeSnapshotIsNewer(current, operation)) {
+            return false
+        }
+        const next = ({})
+        const keys = Object.keys(pending)
+        for (let i = 0; i < keys.length; ++i) {
+            next[keys[i]] = pending[keys[i]]
+        }
+        next[operationId] = operation
+        pendingStartOperations = next
+        return true
+    }
+
+    function reconcileStartOperation(operation) {
+        const startedOperation = operation || null
+        const operationId = String(startedOperation && startedOperation.operationId || "")
+        const pending = operationId.length && pendingStartOperations
+            ? pendingStartOperations[operationId] || null
+            : null
+        pendingStartOperations = ({})
+        if (!startedOperation || !pending) {
+            return startedOperation
+        }
+        return OperationHistoryVocabulary.runtimeSnapshotIsNewer(startedOperation, pending)
+            ? pending
+            : startedOperation
+    }
+
+    function releasePoll(requestEpoch, pollToken, operationId) {
+        if (requestEpoch !== callbackEpoch
+                || activePollToken !== pollToken
+                || activePollOperationId !== operationId) {
+            return false
+        }
+        pollPending = false
+        activePollToken = 0
+        activePollOperationId = ""
+        return true
     }
 
     function appendResult(label, response) {
@@ -227,7 +378,7 @@ QtObject {
             return false
         }
         terminalOperationId = operationId
-        const ok = String(operation.status || "") === "completed"
+        const ok = OperationHistoryVocabulary.isRuntimeSuccessfulTerminalStatus(operation.status)
         appendResult(String(operation.label || defaultLabel), {
             ok: ok,
             value: operation.result || operation,
@@ -245,12 +396,13 @@ QtObject {
         const logRevision = operationLogRevision
         const operation = activeOperation || null
         const status = String(operation && operation.status || "")
-        const running = status === "running" || status === "canceling"
+        const running = OperationHistoryVocabulary.isRuntimeActiveStatus(status)
         return {
             activeRevision: activeRevision,
             logRevision: logRevision,
             active: operation,
             startPending: startPending,
+            pollPending: pollPending,
             known: operation !== null && String(operation.operationId || "").length > 0,
             running: running,
             busy: startPending || running,
@@ -264,6 +416,25 @@ QtObject {
 
     function isTerminal(operation) {
         return OperationHistoryVocabulary.isRuntimeTerminalStatus(operation && operation.status)
+    }
+
+    function matchesOperationId(operation, expectedOperationId) {
+        const operationId = String(operation && operation.operationId || "")
+        return operationId.length > 0 && operationId === String(expectedOperationId || "")
+    }
+
+    function isCurrentOperationId(expectedOperationId) {
+        return String(activeOperation && activeOperation.operationId || "")
+            === String(expectedOperationId || "")
+    }
+
+    function moduleEventEnvelope(event) {
+        const value = event && typeof event === "object" ? event : ({})
+        return {
+            moduleName: String(value.moduleName || ""),
+            eventName: String(value.eventName || ""),
+            args: Array.isArray(value.args) ? value.args.slice(0) : []
+        }
     }
 
     function terminalDetail(operation, detail) {

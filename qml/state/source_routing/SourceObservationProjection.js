@@ -140,11 +140,11 @@ function storageActiveDownloadRow(page) {
         return page.statusRow(qsTr("Network download"), qsTr("idle"), qsTr("No active background download."), "success")
     }
     let tone = "neutral"
-    if (status === "running" || status === "canceling") {
+    if (status === "running" || status === "awaiting_external" || status === "canceling" || status === "dispatched") {
         tone = "warning"
     } else if (status === "completed") {
         tone = "success"
-    } else if (status === "failed") {
+    } else if (status === "failed" || status === "timed_out") {
         tone = "error"
     }
     return page.statusRow(qsTr("Network download"), status, page.activeStorageOperationDetail(operation), tone)
