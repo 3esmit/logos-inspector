@@ -8,71 +8,126 @@ use crate::source_routing::storage_layer;
 
 use super::record::update_runtime_operation_progress;
 use super::spec::{
-    OperationClass, OperationDefinition, OperationDomain, OperationExclusiveGroup, OperationMethod,
+    AffectedContextField, AffectedContextKey, OperationClass, OperationCommand,
+    OperationDefinition, OperationExclusiveGroup, OperationMethod,
 };
 use super::{RuntimeOperationRegistry, RuntimeOperationRequest};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum StorageCommand {
+    Manifests,
+    DownloadManifest,
+    Fetch,
+    UploadUrl,
+    DownloadToUrl,
+    Remove,
+}
+
+impl StorageCommand {
+    pub(super) const fn method(self) -> OperationMethod {
+        match self {
+            Self::Manifests => OperationMethod::StorageManifests,
+            Self::DownloadManifest => OperationMethod::StorageDownloadManifest,
+            Self::Fetch => OperationMethod::StorageFetch,
+            Self::UploadUrl => OperationMethod::StorageUploadUrl,
+            Self::DownloadToUrl => OperationMethod::StorageDownloadToUrl,
+            Self::Remove => OperationMethod::StorageRemove,
+        }
+    }
+
+    const fn operation(self) -> storage_layer::StorageOperation {
+        match self {
+            Self::Manifests => storage_layer::StorageOperation::Manifests,
+            Self::DownloadManifest => storage_layer::StorageOperation::DownloadManifest,
+            Self::Fetch => storage_layer::StorageOperation::Fetch,
+            Self::UploadUrl => storage_layer::StorageOperation::Upload,
+            Self::DownloadToUrl => storage_layer::StorageOperation::Download,
+            Self::Remove => storage_layer::StorageOperation::Remove,
+        }
+    }
+}
+
 pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
     OperationDefinition::new(
-        OperationMethod::StorageManifests,
+        OperationCommand::Storage(StorageCommand::Manifests),
         "storageManifests",
-        OperationDomain::Storage,
         "Storage manifests",
         OperationClass::ReadPoll,
     )
-    .with_context_inputs(&["source", "endpoint"]),
+    .with_context_inputs(&[
+        AffectedContextField::required(AffectedContextKey::Source),
+        AffectedContextField::optional(AffectedContextKey::Endpoint),
+    ]),
     OperationDefinition::new(
-        OperationMethod::StorageDownloadManifest,
+        OperationCommand::Storage(StorageCommand::DownloadManifest),
         "storageDownloadManifest",
-        OperationDomain::Storage,
         "Storage manifest",
         OperationClass::ReadPoll,
     )
-    .with_context_inputs(&["source", "endpoint", "cid"]),
+    .with_context_inputs(&[
+        AffectedContextField::required(AffectedContextKey::Source),
+        AffectedContextField::optional(AffectedContextKey::Endpoint),
+        AffectedContextField::required(AffectedContextKey::Cid),
+    ]),
     OperationDefinition::new(
-        OperationMethod::StorageFetch,
+        OperationCommand::Storage(StorageCommand::Fetch),
         "storageFetch",
-        OperationDomain::Storage,
         "Storage fetch",
         OperationClass::Mutating,
     )
-    .with_context_inputs(&["source", "endpoint", "cid"]),
+    .with_context_inputs(&[
+        AffectedContextField::required(AffectedContextKey::Source),
+        AffectedContextField::optional(AffectedContextKey::Endpoint),
+        AffectedContextField::required(AffectedContextKey::Cid),
+    ]),
     OperationDefinition::new(
-        OperationMethod::StorageUploadUrl,
+        OperationCommand::Storage(StorageCommand::UploadUrl),
         "storageUploadUrl",
-        OperationDomain::Storage,
         "Storage upload",
         OperationClass::Mutating,
     )
-    .with_context_inputs(&["source", "endpoint", "path"]),
+    .with_context_inputs(&[
+        AffectedContextField::required(AffectedContextKey::Source),
+        AffectedContextField::optional(AffectedContextKey::Endpoint),
+        AffectedContextField::required(AffectedContextKey::Path),
+    ]),
     OperationDefinition::new(
-        OperationMethod::StorageDownloadToUrl,
+        OperationCommand::Storage(StorageCommand::DownloadToUrl),
         "storageDownloadToUrl",
-        OperationDomain::Storage,
         "Storage download",
         OperationClass::Mutating,
     )
-    .with_context_inputs(&["source", "endpoint", "cid", "path"])
+    .with_context_inputs(&[
+        AffectedContextField::required(AffectedContextKey::Source),
+        AffectedContextField::optional(AffectedContextKey::Endpoint),
+        AffectedContextField::required(AffectedContextKey::Cid),
+        AffectedContextField::required(AffectedContextKey::Path),
+    ])
     .cancellable(OperationExclusiveGroup::StorageDownload),
     OperationDefinition::new(
-        OperationMethod::StorageRemove,
+        OperationCommand::Storage(StorageCommand::Remove),
         "storageRemove",
-        OperationDomain::Storage,
         "Storage remove",
         OperationClass::Destructive,
     )
-    .with_context_inputs(&["source", "endpoint", "cid"]),
+    .with_context_inputs(&[
+        AffectedContextField::required(AffectedContextKey::Source),
+        AffectedContextField::optional(AffectedContextKey::Endpoint),
+        AffectedContextField::required(AffectedContextKey::Cid),
+    ]),
 ];
 
 pub(super) async fn execute(
+    command: StorageCommand,
     request: &RuntimeOperationRequest,
     registry: &RuntimeOperationRegistry,
     operation_id: &str,
     cancel_requested: &AtomicBool,
 ) -> Result<Value> {
-    let operation = storage_operation(request)?;
-    let request =
-        storage_layer::StorageOperationRequest::parse(request.node_request()?, operation)?;
+    let request = storage_layer::StorageOperationRequest::parse(
+        request.node_request()?,
+        command.operation(),
+    )?;
     match storage_layer::execute_operation(request).await? {
         storage_layer::StorageOperationOutput::Complete(value) => Ok(value),
         storage_layer::StorageOperationOutput::Download(download) => {
@@ -86,37 +141,21 @@ pub(super) async fn execute(
 }
 
 pub(super) fn add_operation_context(
+    command: StorageCommand,
     request: &RuntimeOperationRequest,
     context: &mut serde_json::Map<String, Value>,
-) {
-    let Ok(operation) = storage_operation(request) else {
-        return;
-    };
-    if let Ok(node_request) = request.node_request()
-        && let Ok(operation_request) =
-            storage_layer::StorageOperationRequest::parse(node_request, operation)
-    {
-        context.extend(operation_request.context().clone());
-    }
+) -> Result<()> {
+    let operation_request = storage_layer::StorageOperationRequest::parse(
+        request.node_request()?,
+        command.operation(),
+    )?;
+    context.extend(operation_request.context().clone());
+    Ok(())
 }
 
-pub(super) fn validate(request: &RuntimeOperationRequest) -> Result<()> {
-    let operation = storage_operation(request)?;
-    storage_layer::StorageOperationRequest::parse(request.node_request()?, operation).map(|_| ())
-}
-
-fn storage_operation(request: &RuntimeOperationRequest) -> Result<storage_layer::StorageOperation> {
-    match request.method() {
-        OperationMethod::StorageManifests => Ok(storage_layer::StorageOperation::Manifests),
-        OperationMethod::StorageDownloadManifest => {
-            Ok(storage_layer::StorageOperation::DownloadManifest)
-        }
-        OperationMethod::StorageFetch => Ok(storage_layer::StorageOperation::Fetch),
-        OperationMethod::StorageUploadUrl => Ok(storage_layer::StorageOperation::Upload),
-        OperationMethod::StorageDownloadToUrl => Ok(storage_layer::StorageOperation::Download),
-        OperationMethod::StorageRemove => Ok(storage_layer::StorageOperation::Remove),
-        _ => bail!("`{}` is not a Storage operation", request.method_name()),
-    }
+pub(super) fn validate(command: StorageCommand, request: &RuntimeOperationRequest) -> Result<()> {
+    storage_layer::StorageOperationRequest::parse(request.node_request()?, command.operation())
+        .map(|_| ())
 }
 
 pub(super) async fn storage_rest_download_tracked(

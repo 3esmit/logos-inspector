@@ -1,4 +1,4 @@
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result};
 use serde_json::Value;
 
 use crate::{
@@ -9,60 +9,73 @@ use crate::{
 
 use super::super::value::{blocking_value, to_value};
 use super::RuntimeOperationRequest;
-use super::spec::{OperationClass, OperationDefinition, OperationDomain, OperationMethod};
+use super::spec::{OperationClass, OperationCommand, OperationDefinition, OperationMethod};
 use super::wallet_args::{confirmed_wallet_args, wallet_profile_arg};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum WalletCommand {
+    CreateAccount,
+    SendTransaction,
+    Command,
+    SyncPrivate,
+    Accounts,
+}
+
+impl WalletCommand {
+    pub(super) const fn method(self) -> OperationMethod {
+        match self {
+            Self::CreateAccount => OperationMethod::LocalWalletCreateAccount,
+            Self::SendTransaction => OperationMethod::LocalWalletSendTransaction,
+            Self::Command => OperationMethod::LocalWalletCommand,
+            Self::SyncPrivate => OperationMethod::LocalWalletSyncPrivate,
+            Self::Accounts => OperationMethod::LocalWalletAccounts,
+        }
+    }
+}
 
 pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
     OperationDefinition::new(
-        OperationMethod::LocalWalletCreateAccount,
+        OperationCommand::Wallet(WalletCommand::CreateAccount),
         "localWalletCreateAccount",
-        OperationDomain::Wallet,
         "Wallet account",
         OperationClass::SigningSubmission,
     ),
     OperationDefinition::new(
-        OperationMethod::LocalWalletSendTransaction,
+        OperationCommand::Wallet(WalletCommand::SendTransaction),
         "localWalletSendTransaction",
-        OperationDomain::Wallet,
         "Wallet send",
         OperationClass::SigningSubmission,
     ),
     OperationDefinition::new(
-        OperationMethod::LocalWalletCommand,
+        OperationCommand::Wallet(WalletCommand::Command),
         "localWalletCommand",
-        OperationDomain::Wallet,
         "Wallet command",
         OperationClass::SigningSubmission,
     ),
     OperationDefinition::new(
-        OperationMethod::LocalWalletSyncPrivate,
+        OperationCommand::Wallet(WalletCommand::SyncPrivate),
         "localWalletSyncPrivate",
-        OperationDomain::Wallet,
         "Private sync",
         OperationClass::SigningSubmission,
     ),
     OperationDefinition::new(
-        OperationMethod::LocalWalletAccounts,
+        OperationCommand::Wallet(WalletCommand::Accounts),
         "localWalletAccounts",
-        OperationDomain::Wallet,
         "Wallet accounts",
         OperationClass::ReadPoll,
     ),
 ];
 
-pub(super) async fn execute(request: &RuntimeOperationRequest) -> Result<Value> {
-    match request.method() {
-        OperationMethod::LocalWalletCreateAccount => execute_wallet_create_account(request).await,
-        OperationMethod::LocalWalletSendTransaction => {
-            execute_wallet_send_transaction(request).await
-        }
-        OperationMethod::LocalWalletCommand => execute_wallet_command(request).await,
-        OperationMethod::LocalWalletSyncPrivate => execute_wallet_sync_private(request).await,
-        OperationMethod::LocalWalletAccounts => execute_wallet_accounts(request).await,
-        _ => bail!(
-            "`{}` is not a Wallet Operations operation",
-            request.method_name()
-        ),
+pub(super) async fn execute(
+    command: WalletCommand,
+    request: &RuntimeOperationRequest,
+) -> Result<Value> {
+    match command {
+        WalletCommand::CreateAccount => execute_wallet_create_account(request).await,
+        WalletCommand::SendTransaction => execute_wallet_send_transaction(request).await,
+        WalletCommand::Command => execute_wallet_command(request).await,
+        WalletCommand::SyncPrivate => execute_wallet_sync_private(request).await,
+        WalletCommand::Accounts => execute_wallet_accounts(request).await,
     }
 }
 

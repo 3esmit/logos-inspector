@@ -1,109 +1,140 @@
-use anyhow::{Result, bail};
+use anyhow::Result;
 use serde_json::Value;
 
 use crate::source_routing::messaging_layer;
 
 use super::RuntimeOperationRequest;
-use super::spec::{OperationClass, OperationDefinition, OperationDomain, OperationMethod};
+use super::spec::{
+    AffectedContextField, AffectedContextKey, OperationClass, OperationCommand,
+    OperationDefinition, OperationMethod,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum DeliveryCommand {
+    Subscribe,
+    Unsubscribe,
+    Send,
+    CreateNode,
+    Start,
+    Stop,
+    StoreQuery,
+}
+
+impl DeliveryCommand {
+    pub(super) const fn method(self) -> OperationMethod {
+        match self {
+            Self::Subscribe => OperationMethod::DeliverySubscribe,
+            Self::Unsubscribe => OperationMethod::DeliveryUnsubscribe,
+            Self::Send => OperationMethod::DeliverySend,
+            Self::CreateNode => OperationMethod::DeliveryCreateNode,
+            Self::Start => OperationMethod::DeliveryStart,
+            Self::Stop => OperationMethod::DeliveryStop,
+            Self::StoreQuery => OperationMethod::DeliveryStoreQuery,
+        }
+    }
+
+    const fn operation(self) -> messaging_layer::DeliveryOperation {
+        match self {
+            Self::Subscribe => messaging_layer::DeliveryOperation::Subscribe,
+            Self::Unsubscribe => messaging_layer::DeliveryOperation::Unsubscribe,
+            Self::Send => messaging_layer::DeliveryOperation::Send,
+            Self::CreateNode => messaging_layer::DeliveryOperation::CreateNode,
+            Self::Start => messaging_layer::DeliveryOperation::Start,
+            Self::Stop => messaging_layer::DeliveryOperation::Stop,
+            Self::StoreQuery => messaging_layer::DeliveryOperation::StoreQuery,
+        }
+    }
+}
 
 pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
     OperationDefinition::new(
-        OperationMethod::DeliverySubscribe,
+        OperationCommand::Delivery(DeliveryCommand::Subscribe),
         "deliverySubscribe",
-        OperationDomain::Delivery,
         "Delivery subscribe",
         OperationClass::Mutating,
     )
-    .with_context_inputs(&["source", "endpoint"]),
+    .with_context_inputs(&[
+        AffectedContextField::required(AffectedContextKey::Source),
+        AffectedContextField::optional(AffectedContextKey::Endpoint),
+    ]),
     OperationDefinition::new(
-        OperationMethod::DeliveryUnsubscribe,
+        OperationCommand::Delivery(DeliveryCommand::Unsubscribe),
         "deliveryUnsubscribe",
-        OperationDomain::Delivery,
         "Delivery unsubscribe",
         OperationClass::Mutating,
     )
-    .with_context_inputs(&["source", "endpoint"]),
+    .with_context_inputs(&[
+        AffectedContextField::required(AffectedContextKey::Source),
+        AffectedContextField::optional(AffectedContextKey::Endpoint),
+    ]),
     OperationDefinition::new(
-        OperationMethod::DeliverySend,
+        OperationCommand::Delivery(DeliveryCommand::Send),
         "deliverySend",
-        OperationDomain::Delivery,
         "Delivery send",
         OperationClass::Mutating,
     )
-    .with_context_inputs(&["source", "endpoint"]),
+    .with_context_inputs(&[
+        AffectedContextField::required(AffectedContextKey::Source),
+        AffectedContextField::optional(AffectedContextKey::Endpoint),
+    ]),
     OperationDefinition::new(
-        OperationMethod::DeliveryCreateNode,
+        OperationCommand::Delivery(DeliveryCommand::CreateNode),
         "deliveryCreateNode",
-        OperationDomain::Delivery,
         "Delivery create node",
         OperationClass::Lifecycle,
     )
-    .with_context_inputs(&["source", "endpoint"]),
+    .with_context_inputs(&[AffectedContextField::required(AffectedContextKey::Source)]),
     OperationDefinition::new(
-        OperationMethod::DeliveryStart,
+        OperationCommand::Delivery(DeliveryCommand::Start),
         "deliveryStart",
-        OperationDomain::Delivery,
         "Delivery start",
         OperationClass::Lifecycle,
     )
-    .with_context_inputs(&["source", "endpoint"]),
+    .with_context_inputs(&[AffectedContextField::required(AffectedContextKey::Source)]),
     OperationDefinition::new(
-        OperationMethod::DeliveryStop,
+        OperationCommand::Delivery(DeliveryCommand::Stop),
         "deliveryStop",
-        OperationDomain::Delivery,
         "Delivery stop",
         OperationClass::Lifecycle,
     )
-    .with_context_inputs(&["source", "endpoint"]),
+    .with_context_inputs(&[AffectedContextField::required(AffectedContextKey::Source)]),
     OperationDefinition::new(
-        OperationMethod::DeliveryStoreQuery,
+        OperationCommand::Delivery(DeliveryCommand::StoreQuery),
         "deliveryStoreQuery",
-        OperationDomain::Delivery,
         "Delivery store query",
         OperationClass::ReadPoll,
     )
-    .with_context_inputs(&["source", "endpoint"]),
+    .with_context_inputs(&[
+        AffectedContextField::required(AffectedContextKey::Source),
+        AffectedContextField::required(AffectedContextKey::Endpoint),
+    ]),
 ];
 
-pub(super) async fn execute(request: &RuntimeOperationRequest) -> Result<Value> {
-    let operation = delivery_operation(request)?;
-    let request =
-        messaging_layer::DeliveryOperationRequest::parse(request.node_request()?, operation)?;
+pub(super) async fn execute(
+    command: DeliveryCommand,
+    request: &RuntimeOperationRequest,
+) -> Result<Value> {
+    let request = messaging_layer::DeliveryOperationRequest::parse(
+        request.node_request()?,
+        command.operation(),
+    )?;
     messaging_layer::execute_operation(request).await
 }
 
 pub(super) fn add_operation_context(
+    command: DeliveryCommand,
     request: &RuntimeOperationRequest,
     context: &mut serde_json::Map<String, Value>,
-) {
-    let Ok(operation) = delivery_operation(request) else {
-        return;
-    };
-    if let Ok(node_request) = request.node_request()
-        && let Ok(operation_request) =
-            messaging_layer::DeliveryOperationRequest::parse(node_request, operation)
-    {
-        context.extend(operation_request.context().clone());
-    }
+) -> Result<()> {
+    let operation_request = messaging_layer::DeliveryOperationRequest::parse(
+        request.node_request()?,
+        command.operation(),
+    )?;
+    context.extend(operation_request.context().clone());
+    Ok(())
 }
 
-pub(super) fn validate(request: &RuntimeOperationRequest) -> Result<()> {
-    let operation = delivery_operation(request)?;
-    messaging_layer::DeliveryOperationRequest::parse(request.node_request()?, operation).map(|_| ())
-}
-
-fn delivery_operation(
-    request: &RuntimeOperationRequest,
-) -> Result<messaging_layer::DeliveryOperation> {
-    let operation = match request.method() {
-        OperationMethod::DeliverySubscribe => messaging_layer::DeliveryOperation::Subscribe,
-        OperationMethod::DeliveryUnsubscribe => messaging_layer::DeliveryOperation::Unsubscribe,
-        OperationMethod::DeliverySend => messaging_layer::DeliveryOperation::Send,
-        OperationMethod::DeliveryCreateNode => messaging_layer::DeliveryOperation::CreateNode,
-        OperationMethod::DeliveryStart => messaging_layer::DeliveryOperation::Start,
-        OperationMethod::DeliveryStop => messaging_layer::DeliveryOperation::Stop,
-        OperationMethod::DeliveryStoreQuery => messaging_layer::DeliveryOperation::StoreQuery,
-        _ => bail!("`{}` is not a Delivery operation", request.method_name()),
-    };
-    Ok(operation)
+pub(super) fn validate(command: DeliveryCommand, request: &RuntimeOperationRequest) -> Result<()> {
+    messaging_layer::DeliveryOperationRequest::parse(request.node_request()?, command.operation())
+        .map(|_| ())
 }

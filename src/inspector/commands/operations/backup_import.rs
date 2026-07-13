@@ -729,10 +729,12 @@ mod tests {
         let operations = RuntimeOperations::with_backup_import_store(store);
         operations.insert_test_running_operation(
             "wallet-1",
-            "wallet",
-            "localWalletAccounts",
-            false,
-        );
+            RuntimeOperationRequest::from_call(
+                OperationMethod::LocalWalletAccounts,
+                json!(["default"]),
+                "Wallet accounts",
+            )?,
+        )?;
 
         let plan = operations.backup_import.preview(
             &operations,

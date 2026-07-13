@@ -12,7 +12,9 @@ use serde_json::{Value, json};
 use crate::support::time::now_millis;
 
 use super::policy::RuntimeOperationPolicy;
-use super::request::RuntimeOperationRequest;
+use super::request::{
+    RuntimeOperationRequest, runtime_operation_backend, runtime_operation_context,
+};
 use super::spec::OperationExclusiveGroup;
 
 pub(super) type RuntimeOperationRegistry = Arc<Mutex<HashMap<String, RuntimeOperationRecord>>>;
@@ -69,6 +71,41 @@ pub(super) enum RuntimeOperationStatus {
     Completed,
     Failed,
     Canceled,
+}
+
+pub(super) fn running_runtime_operation_record(
+    operation_id: &str,
+    request: &RuntimeOperationRequest,
+    cancel_requested: Arc<AtomicBool>,
+    now: u64,
+) -> Result<RuntimeOperationRecord> {
+    let context = runtime_operation_context(request)?;
+    let policy = RuntimeOperationPolicy::from_request(request, &context)?;
+    Ok(RuntimeOperationRecord {
+        operation: RuntimeOperation {
+            operation_id: operation_id.to_owned(),
+            domain: request.domain_name().to_owned(),
+            backend: runtime_operation_backend(request),
+            method: request.method_name().to_owned(),
+            status: RuntimeOperationStatus::Running,
+            label: request.label().to_owned(),
+            policy,
+            context,
+            external_session_id: None,
+            progress: None,
+            bytes_written: 0,
+            content_length: None,
+            result: None,
+            error: None,
+            cancellable: request.cancellable(),
+            exclusive_group: request.exclusive_group(),
+            started_at: now,
+            updated_at: now,
+        },
+        restart_request: Some(request.clone()),
+        events: Vec::new(),
+        cancel_requested,
+    })
 }
 
 impl RuntimeOperationStatus {
@@ -306,63 +343,26 @@ pub(super) fn runtime_operation_event_value(event: &RuntimeOperationEvent) -> Va
 }
 
 #[cfg(test)]
-pub(super) fn test_runtime_operation_record(
-    operation_id: &str,
-    domain: &str,
-    method: &str,
-    status: RuntimeOperationStatus,
-    cancellable: bool,
-    exclusive_group: Option<OperationExclusiveGroup>,
-    cancel_requested: Arc<AtomicBool>,
-) -> RuntimeOperationRecord {
-    let restart_request = super::spec::OperationMethod::from_str(method).and_then(|method| {
-        RuntimeOperationRequest::from_call(method, Value::Array(Vec::new()), "Test operation").ok()
-    });
-    RuntimeOperationRecord {
-        operation: RuntimeOperation {
-            operation_id: operation_id.to_owned(),
-            domain: domain.to_owned(),
-            backend: "test".to_owned(),
-            method: method.to_owned(),
-            status,
-            label: "Test operation".to_owned(),
-            policy: RuntimeOperationPolicy::from_method(domain, method),
-            context: Value::Null,
-            external_session_id: None,
-            progress: None,
-            bytes_written: 0,
-            content_length: None,
-            result: None,
-            error: None,
-            cancellable,
-            exclusive_group,
-            started_at: 1,
-            updated_at: 1,
-        },
-        restart_request,
-        events: Vec::new(),
-        cancel_requested,
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use anyhow::{Result, bail};
     use serde_json::json;
 
     use super::*;
+    use crate::inspector::commands::operations::runtime_operation_request_from_value;
 
     #[test]
     fn runtime_record_serializes_definition_policy_facts() -> Result<()> {
-        let record = test_runtime_operation_record(
+        let request = RuntimeOperationRequest::from_call(
+            super::super::spec::OperationMethod::LocalWalletAccounts,
+            json!(["default"]),
+            "Wallet accounts",
+        )?;
+        let record = running_runtime_operation_record(
             "wallet-read-1",
-            "wallet",
-            "localWalletAccounts",
-            RuntimeOperationStatus::Running,
-            false,
-            None,
+            &request,
             Arc::new(AtomicBool::new(false)),
-        );
+            1,
+        )?;
 
         let value = runtime_operation_value(&record.operation);
 
@@ -379,6 +379,55 @@ mod tests {
             }))
         {
             bail!("runtime record policy facts drifted: {value}");
+        }
+        if record.restart_request.is_none()
+            || record.operation.domain != request.domain_name()
+            || record.operation.method != request.method_name()
+            || record.operation.cancellable != request.cancellable()
+            || record.operation.exclusive_group != request.exclusive_group()
+        {
+            bail!("running record facts did not originate from request: {value}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn running_record_keeps_valid_node_request_facts() -> Result<()> {
+        let request = runtime_operation_request_from_value(json!({
+            "domain": "storage",
+            "method": "storageDownloadToUrl",
+            "adapter": {
+                "source_mode": "rest",
+                "inputs": { "rest_endpoint": "http://storage.local/api" }
+            },
+            "mutating_enabled": true,
+            "payload": {
+                "cid": "cid-a",
+                "path": "/tmp/cid-a.bin",
+                "local_only": false
+            }
+        }))?;
+        let record = running_runtime_operation_record(
+            "storage-download-1",
+            &request,
+            Arc::new(AtomicBool::new(false)),
+            1,
+        )?;
+
+        if record.restart_request.is_none()
+            || record.operation.backend != "rest"
+            || record.operation.context
+                != json!({
+                    "endpoint": "http://storage.local/api",
+                    "source": "network",
+                    "mutatingEnabled": true,
+                    "cid": "cid-a",
+                    "path": "/tmp/cid-a.bin"
+                })
+            || !record.operation.cancellable
+            || record.operation.exclusive_group != Some(OperationExclusiveGroup::StorageDownload)
+        {
+            bail!("node record facts did not originate from typed request");
         }
         Ok(())
     }

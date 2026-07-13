@@ -1,58 +1,76 @@
-use anyhow::{Result, bail};
+use anyhow::Result;
 use serde_json::Value;
 
 use crate::{source_routing::bedrock_layer, support::args::Args};
 
 use super::super::value::to_value;
 use super::RuntimeOperationRequest;
-use super::spec::{OperationClass, OperationDefinition, OperationDomain, OperationMethod};
+use super::spec::{OperationClass, OperationCommand, OperationDefinition, OperationMethod};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BlockchainCommand {
+    Node,
+    Blocks,
+    LiveBlocks,
+    Block,
+    Transaction,
+}
+
+impl BlockchainCommand {
+    pub(super) const fn method(self) -> OperationMethod {
+        match self {
+            Self::Node => OperationMethod::BlockchainNode,
+            Self::Blocks => OperationMethod::BlockchainBlocks,
+            Self::LiveBlocks => OperationMethod::BlockchainLiveBlocks,
+            Self::Block => OperationMethod::BlockchainBlock,
+            Self::Transaction => OperationMethod::BlockchainTransaction,
+        }
+    }
+}
 
 pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
     OperationDefinition::new(
-        OperationMethod::BlockchainNode,
+        OperationCommand::Blockchain(BlockchainCommand::Node),
         "blockchainNode",
-        OperationDomain::Blockchain,
         "Blockchain node",
         OperationClass::ReadPoll,
     ),
     OperationDefinition::new(
-        OperationMethod::BlockchainBlocks,
+        OperationCommand::Blockchain(BlockchainCommand::Blocks),
         "blockchainBlocks",
-        OperationDomain::Blockchain,
         "Blockchain blocks",
         OperationClass::ReadPoll,
     ),
     OperationDefinition::new(
-        OperationMethod::BlockchainLiveBlocks,
+        OperationCommand::Blockchain(BlockchainCommand::LiveBlocks),
         "blockchainLiveBlocks",
-        OperationDomain::Blockchain,
         "Blockchain live blocks",
         OperationClass::ReadPoll,
     ),
     OperationDefinition::new(
-        OperationMethod::BlockchainBlock,
+        OperationCommand::Blockchain(BlockchainCommand::Block),
         "blockchainBlock",
-        OperationDomain::Blockchain,
         "Blockchain block",
         OperationClass::ReadPoll,
     ),
     OperationDefinition::new(
-        OperationMethod::BlockchainTransaction,
+        OperationCommand::Blockchain(BlockchainCommand::Transaction),
         "blockchainTransaction",
-        OperationDomain::Blockchain,
         "Blockchain transaction",
         OperationClass::ReadPoll,
     ),
 ];
 
-pub(super) async fn execute(request: &RuntimeOperationRequest) -> Result<Value> {
-    match request.method() {
-        OperationMethod::BlockchainNode => execute_blockchain_node(request).await,
-        OperationMethod::BlockchainBlocks => execute_blockchain_blocks(request).await,
-        OperationMethod::BlockchainLiveBlocks => execute_blockchain_live_blocks(request).await,
-        OperationMethod::BlockchainBlock => execute_blockchain_block(request).await,
-        OperationMethod::BlockchainTransaction => execute_blockchain_transaction(request).await,
-        _ => bail!("`{}` is not a Blockchain operation", request.method_name()),
+pub(super) async fn execute(
+    command: BlockchainCommand,
+    request: &RuntimeOperationRequest,
+) -> Result<Value> {
+    match command {
+        BlockchainCommand::Node => execute_blockchain_node(request).await,
+        BlockchainCommand::Blocks => execute_blockchain_blocks(request).await,
+        BlockchainCommand::LiveBlocks => execute_blockchain_live_blocks(request).await,
+        BlockchainCommand::Block => execute_blockchain_block(request).await,
+        BlockchainCommand::Transaction => execute_blockchain_transaction(request).await,
     }
 }
 
