@@ -37,6 +37,7 @@ Item {
 
     AppModel {
         id: appModel
+        objectName: "appModel"
         bridge: bridge
     }
 
@@ -144,6 +145,7 @@ Item {
 
                     Loader {
                         id: pageLoader
+                        objectName: "pageLoader"
                         active: true
                         asynchronous: true
                         width: pageScroll.availableWidth
@@ -166,7 +168,7 @@ Item {
     }
 
     Connections {
-        target: appModel
+        target: appModel.shell
 
         function onCurrentViewChanged() {
             root.schedulePageLoaderUpdate()

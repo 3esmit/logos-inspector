@@ -446,7 +446,7 @@ function blockchainSourceState(root) {
         if (status.known === true && status.ok !== true) {
             return "unavailable"
         }
-        const info = root.cryptarchiaInfo()
+        const info = root.cryptarchiaInfo() || {}
         const state = String(info.mode || info.sync_state || info.syncState || "").toLowerCase()
         if (state.indexOf("sync") >= 0 || state.indexOf("catch") >= 0 || state.indexOf("start") >= 0) {
             return "syncing"
