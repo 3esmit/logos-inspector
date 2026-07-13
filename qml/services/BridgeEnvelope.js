@@ -6,7 +6,9 @@ function prefersBasecampModules(host) {
 }
 
 function hasAsyncCalls(host) {
-    return host && host["callModuleJsonAsync"]
+    return !!(host
+        && (host["callModuleJsonAsync"]
+            || (prefersBasecampModules(host) && host["callModuleAsync"])))
 }
 
 function callModule(host, moduleName, method, args) {
@@ -40,7 +42,7 @@ function callBasecampModule(host, moduleName, method, args) {
     try {
         if (moduleName === "logos_inspector" && method !== "moduleVersion") {
             const raw = host.callModule(moduleName, "call", [method, JSON.stringify(args || [])])
-            return BridgeHelpers.parseModuleResponseJson(raw)
+            return parseBasecampResponseJson(raw)
         }
         const value = host.callModule(moduleName, method, args || [])
         return {
@@ -58,16 +60,65 @@ function dispatchAsync(host, requestId, moduleName, method, args, finish) {
     if (!hasAsyncCalls(host)) {
         return false
     }
+    if (host["callModuleJsonAsync"]) {
+        try {
+            host["callModuleJsonAsync"](requestId, moduleName, method, JSON.stringify(args || []))
+            return true
+        } catch (error) {
+            finish(callError(error))
+            return true
+        }
+    }
+
+    let completed = false
+    const complete = function (response) {
+        if (completed) {
+            return
+        }
+        completed = true
+        finish(response)
+    }
     try {
-        host["callModuleJsonAsync"](requestId, moduleName, method, JSON.stringify(args || []))
+        if (moduleName === "logos_inspector" && method !== "moduleVersion") {
+            host["callModuleAsync"](
+                moduleName,
+                "call",
+                [method, JSON.stringify(args || [])],
+                function (responseJson) {
+                    complete(parseBasecampResponseJson(responseJson))
+                }
+            )
+        } else {
+            host["callModuleAsync"](moduleName, method, args || [], function (responseJson) {
+                complete(parseBasecampResponseJson(responseJson))
+            })
+        }
         return true
     } catch (error) {
-        finish(callError(error))
+        complete(callError(error))
         return true
     }
 }
 
 function parseResponseJson(responseJson) {
+    return BridgeHelpers.parseModuleResponseJson(responseJson)
+}
+
+function parseBasecampResponseJson(responseJson) {
+    const decoded = BridgeHelpers.parseJson(responseJson)
+    if (decoded.ok
+            && decoded.value
+            && typeof decoded.value === "object"
+            && !Array.isArray(decoded.value)
+            && typeof decoded.value.ok !== "boolean"
+            && typeof decoded.value.error === "string") {
+        return {
+            ok: false,
+            value: null,
+            text: "",
+            error: "Logos bridge call failed: " + decoded.value.error
+        }
+    }
     return BridgeHelpers.parseModuleResponseJson(responseJson)
 }
 
