@@ -5,13 +5,14 @@ use crate::{LocalNodeActionRequest, local_nodes_action, support::args::Args};
 
 use super::super::value::{blocking_value, to_value};
 use super::RuntimeOperationRequest;
-use super::spec::{OperationDefinition, OperationDomain, OperationMethod};
+use super::spec::{OperationClass, OperationDefinition, OperationDomain, OperationMethod};
 
 pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[OperationDefinition::new(
     OperationMethod::LocalNodesAction,
     "localNodesAction",
     OperationDomain::LocalNodes,
     "Local node action",
+    OperationClass::Lifecycle,
 )];
 
 pub(super) async fn execute(request: &RuntimeOperationRequest) -> Result<Value> {

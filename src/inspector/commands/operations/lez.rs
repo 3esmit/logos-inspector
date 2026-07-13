@@ -5,7 +5,7 @@ use crate::{support::confirmation::ConfirmationPolicy, wallet};
 
 use super::super::value::{blocking_value, to_value};
 use super::RuntimeOperationRequest;
-use super::spec::{OperationDefinition, OperationDomain, OperationMethod};
+use super::spec::{OperationClass, OperationDefinition, OperationDomain, OperationMethod};
 use super::wallet_args::{confirmed_wallet_args, wallet_profile_arg};
 
 pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
@@ -14,12 +14,14 @@ pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
         "localWalletDeployProgram",
         OperationDomain::Execution,
         "Program deploy",
+        OperationClass::SigningSubmission,
     ),
     OperationDefinition::new(
         OperationMethod::LocalWalletInstructionSubmit,
         "localWalletInstructionSubmit",
         OperationDomain::Execution,
         "IDL instruction",
+        OperationClass::SigningSubmission,
     ),
 ];
 

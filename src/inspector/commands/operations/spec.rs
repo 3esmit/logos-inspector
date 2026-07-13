@@ -20,8 +20,21 @@ pub(super) enum OperationExecutor {
     Lez,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OperationMethod {
+macro_rules! define_operation_methods {
+    ($($method:ident),+ $(,)?) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub(crate) enum OperationMethod {
+            $($method),+
+        }
+
+        impl OperationMethod {
+            #[cfg(test)]
+            pub(super) const ALL: &'static [Self] = &[$(Self::$method),+];
+        }
+    };
+}
+
+define_operation_methods!(
     StorageManifests,
     StorageDownloadManifest,
     StorageFetch,
@@ -48,11 +61,34 @@ pub(crate) enum OperationMethod {
     BlockchainLiveBlocks,
     BlockchainBlock,
     BlockchainTransaction,
-}
+);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OperationExclusiveGroup {
     StorageDownload,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum OperationClass {
+    Destructive,
+    Lifecycle,
+    Mutating,
+    ReadPoll,
+    SigningSubmission,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RestartPolicy {
+    ManualRequired,
+    SafeReadPolling,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct OperationPolicyDefinition {
+    class: OperationClass,
+    affected_context_keys: &'static [&'static str],
+    restart_policy: RestartPolicy,
+    confirmation_required: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,6 +108,7 @@ pub(super) struct OperationDefinition {
     label: &'static str,
     cancellable: bool,
     exclusive_group: Option<OperationExclusiveGroup>,
+    policy: OperationPolicyDefinition,
 }
 
 impl OperationDefinition {
@@ -80,6 +117,7 @@ impl OperationDefinition {
         name: &'static str,
         domain: OperationDomain,
         label: &'static str,
+        class: OperationClass,
     ) -> Self {
         Self {
             method,
@@ -89,42 +127,54 @@ impl OperationDefinition {
             label,
             cancellable: false,
             exclusive_group: None,
+            policy: OperationPolicyDefinition::new(class),
         }
     }
 
-    pub(super) const fn mutating(
-        method: OperationMethod,
-        name: &'static str,
-        domain: OperationDomain,
-        label: &'static str,
+    pub(super) const fn with_context_inputs(
+        mut self,
+        affected_context_keys: &'static [&'static str],
     ) -> Self {
-        Self {
-            method,
-            name,
-            domain,
-            executor: OperationExecutor::for_domain(domain),
-            label,
-            cancellable: false,
-            exclusive_group: None,
-        }
+        self.policy.affected_context_keys = affected_context_keys;
+        self
     }
 
-    pub(super) const fn cancellable(
-        method: OperationMethod,
-        name: &'static str,
-        domain: OperationDomain,
-        label: &'static str,
-        exclusive_group: OperationExclusiveGroup,
-    ) -> Self {
-        Self {
-            method,
-            name,
-            domain,
-            executor: OperationExecutor::for_domain(domain),
-            label,
-            cancellable: true,
-            exclusive_group: Some(exclusive_group),
-        }
+    pub(super) const fn cancellable(mut self, exclusive_group: OperationExclusiveGroup) -> Self {
+        self.cancellable = true;
+        self.exclusive_group = Some(exclusive_group);
+        self
+    }
+
+    pub(super) const fn method(self) -> OperationMethod {
+        self.method
+    }
+
+    pub(super) const fn name(self) -> &'static str {
+        self.name
+    }
+
+    pub(super) const fn domain(self) -> OperationDomain {
+        self.domain
+    }
+
+    pub(super) const fn executor(self) -> OperationExecutor {
+        self.executor
+    }
+
+    pub(super) const fn label(self) -> &'static str {
+        self.label
+    }
+
+    pub(super) const fn is_cancellable(self) -> bool {
+        self.cancellable
+    }
+
+    pub(super) const fn exclusive_group(self) -> Option<OperationExclusiveGroup> {
+        self.exclusive_group
+    }
+
+    pub(super) const fn policy(self) -> OperationPolicyDefinition {
+        self.policy
     }
 
     fn route(self, start_async: bool) -> OperationRoute {
@@ -134,6 +184,40 @@ impl OperationDefinition {
             label: self.label,
             start_async,
         }
+    }
+}
+
+impl OperationPolicyDefinition {
+    pub(super) const fn new(class: OperationClass) -> Self {
+        let (restart_policy, confirmation_required) = match class {
+            OperationClass::ReadPoll => (RestartPolicy::SafeReadPolling, false),
+            OperationClass::Destructive
+            | OperationClass::Lifecycle
+            | OperationClass::Mutating
+            | OperationClass::SigningSubmission => (RestartPolicy::ManualRequired, true),
+        };
+        Self {
+            class,
+            affected_context_keys: &[],
+            restart_policy,
+            confirmation_required,
+        }
+    }
+
+    pub(super) const fn class(self) -> OperationClass {
+        self.class
+    }
+
+    pub(super) const fn affected_context_keys(self) -> &'static [&'static str] {
+        self.affected_context_keys
+    }
+
+    pub(super) const fn restart_policy(self) -> RestartPolicy {
+        self.restart_policy
+    }
+
+    pub(super) const fn confirmation_required(self) -> bool {
+        self.confirmation_required
     }
 }
 
@@ -154,13 +238,10 @@ fn operation_definitions() -> impl Iterator<Item = &'static OperationDefinition>
         .flat_map(|catalog| catalog.iter())
 }
 
-fn operation_definition(method: OperationMethod) -> OperationDefinition {
-    for entry in operation_definitions() {
-        if entry.method == method {
-            return *entry;
-        }
-    }
-    OperationDefinition::new(method, "operation", OperationDomain::Execution, "Operation")
+pub(super) fn operation_definition(method: OperationMethod) -> Option<OperationDefinition> {
+    operation_definitions()
+        .find(|entry| entry.method == method)
+        .copied()
 }
 
 impl OperationDomain {
@@ -189,6 +270,27 @@ impl OperationExecutor {
     }
 }
 
+impl OperationClass {
+    pub(super) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Destructive => "destructive",
+            Self::Lifecycle => "lifecycle",
+            Self::Mutating => "mutating",
+            Self::ReadPoll => "read_poll",
+            Self::SigningSubmission => "signing_submission",
+        }
+    }
+}
+
+impl RestartPolicy {
+    pub(super) const fn as_str(self) -> &'static str {
+        match self {
+            Self::ManualRequired => "manual_required",
+            Self::SafeReadPolling => "safe_read_polling",
+        }
+    }
+}
+
 impl OperationMethod {
     pub(crate) fn from_str(method: &str) -> Option<Self> {
         operation_definitions()
@@ -196,37 +298,19 @@ impl OperationMethod {
             .map(|entry| entry.method)
     }
 
-    pub(crate) fn as_str(self) -> &'static str {
-        operation_definition(self).name
-    }
-
-    pub(crate) fn domain(self) -> OperationDomain {
-        operation_definition(self).domain
-    }
-
-    pub(super) fn executor(self) -> OperationExecutor {
-        operation_definition(self).executor
-    }
-
-    pub(crate) fn label(self) -> &'static str {
-        operation_definition(self).label
-    }
-
-    pub(crate) fn cancellable(self) -> bool {
-        operation_definition(self).cancellable
-    }
-
-    pub(crate) fn exclusive_group(self) -> Option<OperationExclusiveGroup> {
-        operation_definition(self).exclusive_group
+    #[cfg(test)]
+    pub(super) fn definition(self) -> Option<OperationDefinition> {
+        operation_definition(self)
     }
 }
 
 pub(crate) fn operation_route(method: &str) -> Option<OperationRoute> {
     if method == STORAGE_DOWNLOAD_START_ALIAS {
-        return Some(operation_definition(OperationMethod::StorageDownloadToUrl).route(true));
+        return operation_definition(OperationMethod::StorageDownloadToUrl)
+            .map(|definition| definition.route(true));
     }
     let method = OperationMethod::from_str(method)?;
-    Some(operation_definition(method).route(false))
+    operation_definition(method).map(|definition| definition.route(false))
 }
 
 #[cfg(test)]
@@ -291,7 +375,9 @@ mod tests {
             let Some(route) = operation_route(name) else {
                 bail!("operation route missing for {name}");
             };
-            if route.domain != domain || route.method.as_str() != name || route.label != label {
+            let definition = operation_definition(route.method)
+                .with_context(|| format!("definition missing for {name}"))?;
+            if route.domain != domain || definition.name() != name || route.label != label {
                 bail!("unexpected route for {name}: {route:?}");
             }
         }
@@ -318,16 +404,18 @@ mod tests {
     #[test]
     fn operation_flags_are_owned_by_method_definition() -> Result<()> {
         let storage_download = OperationMethod::from_str("storageDownloadToUrl")
+            .and_then(operation_definition)
             .context("storageDownloadToUrl should exist")?;
-        if !storage_download.cancellable() {
+        if !storage_download.is_cancellable() {
             bail!("storageDownloadToUrl should be cancellable");
         }
         if storage_download.exclusive_group() != Some(OperationExclusiveGroup::StorageDownload) {
             bail!("storageDownloadToUrl should own the storage download exclusive group");
         }
         let storage_upload = OperationMethod::from_str("storageUploadUrl")
+            .and_then(operation_definition)
             .context("storageUploadUrl should exist")?;
-        if storage_upload.cancellable() {
+        if storage_upload.is_cancellable() {
             bail!("storageUploadUrl should not be cancellable");
         }
         if storage_upload.exclusive_group().is_some() {
@@ -348,13 +436,14 @@ mod tests {
         ];
 
         for (method, executor) in cases {
-            let method = OperationMethod::from_str(method)
+            let definition = OperationMethod::from_str(method)
+                .and_then(operation_definition)
                 .with_context(|| format!("{method} should exist"))?;
-            if method.executor() != executor {
+            if definition.executor() != executor {
                 bail!(
                     "unexpected executor for {}: {:?}",
-                    method.as_str(),
-                    method.executor()
+                    definition.name(),
+                    definition.executor()
                 );
             }
         }
@@ -371,6 +460,11 @@ mod tests {
                 OperationDomain::LocalNodes,
             ),
             (wallet::OPERATION_DEFINITIONS, OperationDomain::Wallet),
+            (
+                blockchain::OPERATION_DEFINITIONS,
+                OperationDomain::Blockchain,
+            ),
+            (lez::OPERATION_DEFINITIONS, OperationDomain::Execution),
         ];
         for (catalog, domain) in cases {
             for entry in catalog {
@@ -396,11 +490,13 @@ mod tests {
                     definition.name
                 );
             }
-            if definition.method.as_str() != definition.name {
+            let resolved = operation_definition(definition.method)
+                .with_context(|| format!("definition missing for `{}`", definition.name))?;
+            if resolved.name() != definition.name {
                 bail!(
                     "operation method {:?} reports `{}` instead of `{}`",
                     definition.method,
-                    definition.method.as_str(),
+                    resolved.name(),
                     definition.name
                 );
             }
@@ -408,6 +504,246 @@ mod tests {
 
         if names.contains(STORAGE_DOWNLOAD_START_ALIAS) {
             bail!("storage download alias collides with a direct operation name");
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn operation_definitions_cover_every_method_once_and_match_policy_contract() -> Result<()> {
+        let expected = [
+            (
+                OperationMethod::StorageManifests,
+                OperationExecutor::Storage,
+                OperationClass::ReadPoll,
+                false,
+                None,
+            ),
+            (
+                OperationMethod::StorageDownloadManifest,
+                OperationExecutor::Storage,
+                OperationClass::ReadPoll,
+                false,
+                None,
+            ),
+            (
+                OperationMethod::StorageFetch,
+                OperationExecutor::Storage,
+                OperationClass::Mutating,
+                false,
+                None,
+            ),
+            (
+                OperationMethod::StorageUploadUrl,
+                OperationExecutor::Storage,
+                OperationClass::Mutating,
+                false,
+                None,
+            ),
+            (
+                OperationMethod::StorageDownloadToUrl,
+                OperationExecutor::Storage,
+                OperationClass::Mutating,
+                true,
+                Some(OperationExclusiveGroup::StorageDownload),
+            ),
+            (
+                OperationMethod::StorageRemove,
+                OperationExecutor::Storage,
+                OperationClass::Destructive,
+                false,
+                None,
+            ),
+            (
+                OperationMethod::DeliverySubscribe,
+                OperationExecutor::Delivery,
+                OperationClass::Mutating,
+                false,
+                None,
+            ),
+            (
+                OperationMethod::DeliveryUnsubscribe,
+                OperationExecutor::Delivery,
+                OperationClass::Mutating,
+                false,
+                None,
+            ),
+            (
+                OperationMethod::DeliverySend,
+                OperationExecutor::Delivery,
+                OperationClass::Mutating,
+                false,
+                None,
+            ),
+            (
+                OperationMethod::DeliveryCreateNode,
+                OperationExecutor::Delivery,
+                OperationClass::Lifecycle,
+                false,
+                None,
+            ),
+            (
+                OperationMethod::DeliveryStart,
+                OperationExecutor::Delivery,
+                OperationClass::Lifecycle,
+                false,
+                None,
+            ),
+            (
+                OperationMethod::DeliveryStop,
+                OperationExecutor::Delivery,
+                OperationClass::Lifecycle,
+                false,
+                None,
+            ),
+            (
+                OperationMethod::DeliveryStoreQuery,
+                OperationExecutor::Delivery,
+                OperationClass::ReadPoll,
+                false,
+                None,
+            ),
+            (
+                OperationMethod::LocalNodesAction,
+                OperationExecutor::LocalNodes,
+                OperationClass::Lifecycle,
+                false,
+                None,
+            ),
+            (
+                OperationMethod::LocalWalletCreateAccount,
+                OperationExecutor::Wallet,
+                OperationClass::SigningSubmission,
+                false,
+                None,
+            ),
+            (
+                OperationMethod::LocalWalletSendTransaction,
+                OperationExecutor::Wallet,
+                OperationClass::SigningSubmission,
+                false,
+                None,
+            ),
+            (
+                OperationMethod::LocalWalletInstructionSubmit,
+                OperationExecutor::Lez,
+                OperationClass::SigningSubmission,
+                false,
+                None,
+            ),
+            (
+                OperationMethod::LocalWalletCommand,
+                OperationExecutor::Wallet,
+                OperationClass::SigningSubmission,
+                false,
+                None,
+            ),
+            (
+                OperationMethod::LocalWalletDeployProgram,
+                OperationExecutor::Lez,
+                OperationClass::SigningSubmission,
+                false,
+                None,
+            ),
+            (
+                OperationMethod::LocalWalletSyncPrivate,
+                OperationExecutor::Wallet,
+                OperationClass::SigningSubmission,
+                false,
+                None,
+            ),
+            (
+                OperationMethod::LocalWalletAccounts,
+                OperationExecutor::Wallet,
+                OperationClass::ReadPoll,
+                false,
+                None,
+            ),
+            (
+                OperationMethod::BlockchainNode,
+                OperationExecutor::Blockchain,
+                OperationClass::ReadPoll,
+                false,
+                None,
+            ),
+            (
+                OperationMethod::BlockchainBlocks,
+                OperationExecutor::Blockchain,
+                OperationClass::ReadPoll,
+                false,
+                None,
+            ),
+            (
+                OperationMethod::BlockchainLiveBlocks,
+                OperationExecutor::Blockchain,
+                OperationClass::ReadPoll,
+                false,
+                None,
+            ),
+            (
+                OperationMethod::BlockchainBlock,
+                OperationExecutor::Blockchain,
+                OperationClass::ReadPoll,
+                false,
+                None,
+            ),
+            (
+                OperationMethod::BlockchainTransaction,
+                OperationExecutor::Blockchain,
+                OperationClass::ReadPoll,
+                false,
+                None,
+            ),
+        ];
+
+        if expected.len() != OperationMethod::ALL.len()
+            || operation_definitions().count() != OperationMethod::ALL.len()
+        {
+            bail!(
+                "operation inventory drifted: {} expected rows, {} methods, {} definitions",
+                expected.len(),
+                OperationMethod::ALL.len(),
+                operation_definitions().count()
+            );
+        }
+
+        for &method in OperationMethod::ALL {
+            let expected_rows = expected
+                .iter()
+                .filter(|(expected_method, ..)| *expected_method == method)
+                .count();
+            let definition_rows = operation_definitions()
+                .filter(|definition| definition.method() == method)
+                .count();
+            if expected_rows != 1 || definition_rows != 1 {
+                bail!(
+                    "{method:?} has {expected_rows} expected rows and {definition_rows} definitions"
+                );
+            }
+        }
+
+        for &(method, executor, class, cancellable, exclusive_group) in &expected {
+            let definition = operation_definition(method)
+                .with_context(|| format!("definition missing for {method:?}"))?;
+            let policy = definition.policy();
+            if definition.executor() != executor
+                || definition.is_cancellable() != cancellable
+                || definition.exclusive_group() != exclusive_group
+                || policy.class() != class
+            {
+                bail!("unexpected operation facts for {method:?}: {definition:?}");
+            }
+            let read_poll = class == OperationClass::ReadPoll;
+            if policy.restart_policy()
+                != if read_poll {
+                    RestartPolicy::SafeReadPolling
+                } else {
+                    RestartPolicy::ManualRequired
+                }
+                || policy.confirmation_required() == read_poll
+            {
+                bail!("inconsistent derived policy facts for {method:?}: {policy:?}");
+            }
         }
 
         Ok(())

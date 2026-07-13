@@ -5,7 +5,7 @@ use crate::{source_routing::bedrock_layer, support::args::Args};
 
 use super::super::value::to_value;
 use super::RuntimeOperationRequest;
-use super::spec::{OperationDefinition, OperationDomain, OperationMethod};
+use super::spec::{OperationClass, OperationDefinition, OperationDomain, OperationMethod};
 
 pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
     OperationDefinition::new(
@@ -13,30 +13,35 @@ pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
         "blockchainNode",
         OperationDomain::Blockchain,
         "Blockchain node",
+        OperationClass::ReadPoll,
     ),
     OperationDefinition::new(
         OperationMethod::BlockchainBlocks,
         "blockchainBlocks",
         OperationDomain::Blockchain,
         "Blockchain blocks",
+        OperationClass::ReadPoll,
     ),
     OperationDefinition::new(
         OperationMethod::BlockchainLiveBlocks,
         "blockchainLiveBlocks",
         OperationDomain::Blockchain,
         "Blockchain live blocks",
+        OperationClass::ReadPoll,
     ),
     OperationDefinition::new(
         OperationMethod::BlockchainBlock,
         "blockchainBlock",
         OperationDomain::Blockchain,
         "Blockchain block",
+        OperationClass::ReadPoll,
     ),
     OperationDefinition::new(
         OperationMethod::BlockchainTransaction,
         "blockchainTransaction",
         OperationDomain::Blockchain,
         "Blockchain transaction",
+        OperationClass::ReadPoll,
     ),
 ];
 

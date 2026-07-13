@@ -78,10 +78,10 @@ impl RuntimeOperations {
         runtime: &Runtime,
         request: RuntimeOperationRequest,
     ) -> Result<Value> {
-        let operation_permit = self.backup_import.operation_permit(request.method())?;
+        let operation_permit = self.backup_import.operation_permit(&request)?;
         let operation_id = format!(
             "{}-{}-{}",
-            request.domain,
+            request.domain_name(),
             normalized_operation_method(request.method_name()),
             self.next_operation_id.fetch_add(1, Ordering::Relaxed)
         );
@@ -89,7 +89,7 @@ impl RuntimeOperations {
         let cancel_requested = Arc::new(AtomicBool::new(false));
         let operation = RuntimeOperation {
             operation_id: operation_id.clone(),
-            domain: request.domain.clone(),
+            domain: request.domain_name().to_owned(),
             backend: runtime_operation_backend(&request),
             method: request.method_name().to_owned(),
             status: RuntimeOperationStatus::Running,
@@ -344,7 +344,9 @@ impl RuntimeOperations {
             method,
             RuntimeOperationStatus::Running,
             cancellable,
-            OperationMethod::from_str(method).and_then(OperationMethod::exclusive_group),
+            OperationMethod::from_str(method)
+                .and_then(OperationMethod::definition)
+                .and_then(|definition| definition.exclusive_group()),
             Arc::clone(&cancel_requested),
         );
         if let Ok(mut operations) = self.registry.lock() {
