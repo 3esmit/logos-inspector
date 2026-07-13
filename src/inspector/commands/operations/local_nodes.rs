@@ -1,27 +1,38 @@
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result};
 use serde_json::Value;
 
 use crate::{LocalNodeActionRequest, local_nodes_action, support::args::Args};
 
 use super::super::value::{blocking_value, to_value};
 use super::RuntimeOperationRequest;
-use super::spec::{OperationClass, OperationDefinition, OperationDomain, OperationMethod};
+use super::spec::{OperationClass, OperationCommand, OperationDefinition, OperationMethod};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum LocalNodesCommand {
+    Action,
+}
+
+impl LocalNodesCommand {
+    pub(super) const fn method(self) -> OperationMethod {
+        match self {
+            Self::Action => OperationMethod::LocalNodesAction,
+        }
+    }
+}
 
 pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[OperationDefinition::new(
-    OperationMethod::LocalNodesAction,
+    OperationCommand::LocalNodes(LocalNodesCommand::Action),
     "localNodesAction",
-    OperationDomain::LocalNodes,
     "Local node action",
     OperationClass::Lifecycle,
 )];
 
-pub(super) async fn execute(request: &RuntimeOperationRequest) -> Result<Value> {
-    match request.method() {
-        OperationMethod::LocalNodesAction => execute_local_nodes_action(request).await,
-        _ => bail!(
-            "`{}` is not a Local Operations operation",
-            request.method_name()
-        ),
+pub(super) async fn execute(
+    command: LocalNodesCommand,
+    request: &RuntimeOperationRequest,
+) -> Result<Value> {
+    match command {
+        LocalNodesCommand::Action => execute_local_nodes_action(request).await,
     }
 }
 

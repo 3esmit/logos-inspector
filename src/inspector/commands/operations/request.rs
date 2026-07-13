@@ -5,7 +5,7 @@ use crate::{source_routing::NodeOperationRequest, support::args::Args};
 
 use super::delivery;
 use super::spec::{
-    OperationDefinition, OperationDomain, OperationExclusiveGroup, OperationExecutor,
+    OperationCommand, OperationDefinition, OperationDomain, OperationExclusiveGroup,
     OperationMethod, OperationPolicyDefinition, operation_definition,
 };
 use super::storage;
@@ -29,12 +29,14 @@ impl RuntimeOperationRequest {
         } else {
             None
         };
-        Ok(Self {
+        let request = Self {
             definition,
             node_request,
             args,
             label: label.to_owned(),
-        })
+        };
+        validate_node_request(&request)?;
+        Ok(request)
     }
 
     pub(crate) fn method_name(&self) -> &'static str {
@@ -45,16 +47,12 @@ impl RuntimeOperationRequest {
         self.definition.method()
     }
 
-    pub(super) fn domain(&self) -> OperationDomain {
-        self.definition.domain()
-    }
-
     pub(super) fn domain_name(&self) -> &'static str {
         self.definition.domain().as_str()
     }
 
-    pub(super) fn executor(&self) -> OperationExecutor {
-        self.definition.executor()
+    pub(super) fn command(&self) -> OperationCommand {
+        self.definition.command()
     }
 
     pub(super) fn policy_definition(&self) -> OperationPolicyDefinition {
@@ -139,9 +137,9 @@ fn node_domain(domain: OperationDomain) -> bool {
 }
 
 fn validate_node_request(request: &RuntimeOperationRequest) -> Result<()> {
-    match request.domain() {
-        OperationDomain::Storage => storage::validate(request),
-        OperationDomain::Delivery => delivery::validate(request),
+    match request.command() {
+        OperationCommand::Storage(command) => storage::validate(command, request),
+        OperationCommand::Delivery(command) => delivery::validate(command, request),
         _ => Ok(()),
     }
 }
@@ -161,7 +159,7 @@ pub(super) fn runtime_operation_backend(request: &RuntimeOperationRequest) -> St
         .to_owned()
 }
 
-pub(super) fn runtime_operation_context(request: &RuntimeOperationRequest) -> Value {
+pub(super) fn runtime_operation_context(request: &RuntimeOperationRequest) -> Result<Value> {
     let mut context = Map::new();
     if let Some(node_request) = &request.node_request {
         context.insert("source".to_owned(), json!(node_request.source_mode()));
@@ -175,12 +173,16 @@ pub(super) fn runtime_operation_context(request: &RuntimeOperationRequest) -> Va
             context.insert("mutatingEnabled".to_owned(), json!(true));
         }
     }
-    match request.domain() {
-        OperationDomain::Storage => storage::add_operation_context(request, &mut context),
-        OperationDomain::Delivery => delivery::add_operation_context(request, &mut context),
+    match request.command() {
+        OperationCommand::Storage(command) => {
+            storage::add_operation_context(command, request, &mut context)?;
+        }
+        OperationCommand::Delivery(command) => {
+            delivery::add_operation_context(command, request, &mut context)?;
+        }
         _ => {}
     }
-    Value::Object(context)
+    Ok(Value::Object(context))
 }
 
 #[cfg(test)]
@@ -208,7 +210,7 @@ mod tests {
             "label": "Download"
         }))?;
 
-        if runtime_operation_context(&request)
+        if runtime_operation_context(&request)?
             != json!({
                 "endpoint": "http://storage.local/api",
                 "source": "network",
@@ -235,7 +237,7 @@ mod tests {
             "payload": { "topic": "/topic", "payload": "hello" }
         }))?;
 
-        if runtime_operation_context(&request)
+        if runtime_operation_context(&request)?
             != json!({
                 "endpoint": "http://delivery.local",
                 "source": "rest",
@@ -245,6 +247,73 @@ mod tests {
             })
         {
             bail!("unexpected delivery context");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_operation_request_rejects_unknown_method() -> Result<()> {
+        let result = runtime_operation_request_from_value(json!({
+            "domain": "wallet",
+            "method": "unknownWalletMethod",
+            "args": []
+        }));
+
+        let Err(error) = result else {
+            bail!("unknown operation method should fail");
+        };
+        if !error
+            .to_string()
+            .contains("unknown runtime operation method `unknownWalletMethod`")
+        {
+            bail!("unexpected unknown-method error: {error:#}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_operation_request_rejects_domain_method_mismatch() -> Result<()> {
+        let result = runtime_operation_request_from_value(json!({
+            "domain": "storage",
+            "method": "localWalletAccounts",
+            "args": ["default"]
+        }));
+
+        let Err(error) = result else {
+            bail!("domain and operation command mismatch should fail");
+        };
+        if !error
+            .to_string()
+            .contains("domain `storage` does not match method `localWalletAccounts`")
+        {
+            bail!("unexpected domain-method error: {error:#}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_operation_call_rejects_invalid_node_request() -> Result<()> {
+        let result = RuntimeOperationRequest::from_call(
+            OperationMethod::StorageFetch,
+            json!([{
+                "adapter": {
+                    "source_mode": "rest",
+                    "inputs": { "rest_endpoint": "http://storage.local/api" }
+                },
+                "mutating_enabled": false,
+                "payload": { "cid": "cid-a" }
+            }]),
+            "Storage fetch",
+        );
+
+        let Err(error) = result else {
+            bail!("invalid node operation call should fail during request construction");
+        };
+        if !error
+            .to_string()
+            .contains("requires mutating diagnostics to be enabled")
+        {
+            bail!("unexpected node request error: {error:#}");
         }
         Ok(())
     }

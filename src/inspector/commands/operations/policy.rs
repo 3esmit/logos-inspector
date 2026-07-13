@@ -1,9 +1,13 @@
+use anyhow::{Context as _, Result, bail};
 use serde_json::{Value, json};
 
-use super::request::{RuntimeOperationRequest, runtime_operation_context};
-use super::spec::{OperationClass, RestartPolicy};
+use super::request::RuntimeOperationRequest;
+use super::spec::{AffectedContextField, ContextPresence, OperationClass, RestartPolicy};
 #[cfg(test)]
-use super::spec::{OperationMethod, OperationPolicyDefinition};
+use super::{
+    request::runtime_operation_context,
+    spec::{AffectedContextKey, OperationMethod},
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct RuntimeOperationPolicy {
@@ -20,31 +24,18 @@ struct AffectedInput {
 }
 
 impl RuntimeOperationPolicy {
-    pub(super) fn from_request(request: &RuntimeOperationRequest) -> Self {
+    pub(super) fn from_request(request: &RuntimeOperationRequest, context: &Value) -> Result<Self> {
         let definition = request.policy_definition();
-        Self {
+        Ok(Self {
             class: definition.class(),
-            affected_inputs: affected_inputs(request, definition.affected_context_keys()),
+            affected_inputs: affected_inputs(
+                request,
+                context,
+                definition.affected_context_fields(),
+            )?,
             restart_policy: definition.restart_policy(),
             confirmation_required: definition.confirmation_required(),
-        }
-    }
-
-    #[cfg(test)]
-    pub(super) fn from_method(domain: &str, method: &str) -> Self {
-        let definition = OperationMethod::from_str(method)
-            .and_then(OperationMethod::definition)
-            .map(|definition| definition.policy())
-            .unwrap_or_else(|| OperationPolicyDefinition::new(OperationClass::ReadPoll));
-        let mut affected_inputs = Vec::new();
-        push_input(&mut affected_inputs, "domain", domain);
-        push_input(&mut affected_inputs, "method", method);
-        Self {
-            class: definition.class(),
-            affected_inputs,
-            restart_policy: definition.restart_policy(),
-            confirmation_required: definition.confirmation_required(),
-        }
+        })
     }
 
     pub(super) fn as_value(&self) -> Value {
@@ -90,19 +81,32 @@ impl AffectedInput {
 
 fn affected_inputs(
     request: &RuntimeOperationRequest,
-    affected_context_keys: &[&'static str],
-) -> Vec<AffectedInput> {
+    context: &Value,
+    affected_context_fields: &[AffectedContextField],
+) -> Result<Vec<AffectedInput>> {
     let mut inputs = Vec::new();
     push_input(&mut inputs, "domain", request.domain_name());
     push_input(&mut inputs, "method", request.method_name());
-    if let Value::Object(context) = runtime_operation_context(request) {
-        for &key in affected_context_keys {
-            if let Some(value) = context.get(key).and_then(Value::as_str) {
-                push_input(&mut inputs, key, value);
+    let context = context
+        .as_object()
+        .context("runtime operation context must be a JSON object")?;
+    for &field in affected_context_fields {
+        let key = field.key().as_str();
+        let Some(value) = context.get(key) else {
+            if field.presence() == ContextPresence::Optional {
+                continue;
             }
+            bail!("runtime operation context is missing required affected input `{key}`");
+        };
+        let value = value.as_str().with_context(|| {
+            format!("runtime operation affected input `{key}` must be a string")
+        })?;
+        if value.trim().is_empty() {
+            bail!("runtime operation affected input `{key}` must not be empty");
         }
+        push_input(&mut inputs, key, value);
     }
-    inputs
+    Ok(inputs)
 }
 
 fn push_input(inputs: &mut Vec<AffectedInput>, key: &'static str, value: &str) {
@@ -135,7 +139,8 @@ mod tests {
             "payload": {}
         }))?;
 
-        let policy = RuntimeOperationPolicy::from_request(&request).as_value();
+        let context = runtime_operation_context(&request)?;
+        let policy = RuntimeOperationPolicy::from_request(&request, &context)?.as_value();
 
         if policy.get("operationClass").and_then(Value::as_str) != Some("read_poll")
             || policy.get("restartPolicy").and_then(Value::as_str) != Some("safe_read_polling")
@@ -159,7 +164,8 @@ mod tests {
             "payload": { "path": "/tmp/file.bin" }
         }))?;
 
-        let policy = RuntimeOperationPolicy::from_request(&request).as_value();
+        let context = runtime_operation_context(&request)?;
+        let policy = RuntimeOperationPolicy::from_request(&request, &context)?.as_value();
 
         if policy.get("operationClass").and_then(Value::as_str) != Some("mutating")
             || policy.get("restartPolicy").and_then(Value::as_str) != Some("manual_required")
@@ -183,9 +189,13 @@ mod tests {
 
     #[test]
     fn policy_marks_wallet_submission_operations_manual() -> Result<()> {
-        let policy =
-            RuntimeOperationPolicy::from_method("execution", "localWalletInstructionSubmit")
-                .as_value();
+        let request = RuntimeOperationRequest::from_call(
+            OperationMethod::LocalWalletInstructionSubmit,
+            json!([]),
+            "IDL instruction",
+        )?;
+        let context = runtime_operation_context(&request)?;
+        let policy = RuntimeOperationPolicy::from_request(&request, &context)?.as_value();
 
         if policy.get("operationClass").and_then(Value::as_str) != Some("signing_submission")
             || policy.get("restartPolicy").and_then(Value::as_str) != Some("manual_required")
@@ -196,41 +206,82 @@ mod tests {
     }
 
     #[test]
-    fn policy_projection_matches_every_operation_definition() -> Result<()> {
-        for &method in OperationMethod::ALL {
-            let definition = method
-                .definition()
-                .with_context(|| format!("definition missing for {method:?}"))?;
-            let expected = definition.policy();
+    fn optional_affected_context_absence_is_intentional() -> Result<()> {
+        let request = runtime_operation_request_from_value(json!({
+            "domain": "delivery",
+            "method": "deliverySend",
+            "adapter": { "source_mode": "module", "inputs": {} },
+            "mutating_enabled": true,
+            "payload": { "topic": "/topic", "payload": "hello" }
+        }))?;
+        let context = runtime_operation_context(&request)?;
+        let policy = RuntimeOperationPolicy::from_request(&request, &context)?.as_value();
+        let inputs = policy
+            .get("affectedInputs")
+            .and_then(Value::as_array)
+            .context("affectedInputs must be an array")?;
 
-            let policy = RuntimeOperationPolicy::from_method(
-                definition.domain().as_str(),
-                definition.name(),
-            )
-            .as_value();
+        if inputs
+            .iter()
+            .any(|input| input.get("key").and_then(Value::as_str) == Some("endpoint"))
+            || !inputs
+                .iter()
+                .any(|input| input.get("key").and_then(Value::as_str) == Some("source"))
+        {
+            bail!("optional endpoint contract drifted: {policy}");
+        }
+        Ok(())
+    }
 
-            if policy.get("operationClass").and_then(Value::as_str)
-                != Some(expected.class().as_str())
-                || policy.get("restartPolicy").and_then(Value::as_str)
-                    != Some(expected.restart_policy().as_str())
-                || policy.get("confirmationRequired").and_then(Value::as_bool)
-                    != Some(expected.confirmation_required())
-                || policy.get("provenance") != Some(&json!(["runtime_operation_policy"]))
-            {
-                bail!("policy projection drifted for {method:?}: {policy}");
-            }
-            let affected_inputs = policy
-                .get("affectedInputs")
-                .and_then(Value::as_array)
-                .context("affectedInputs must be an array")?;
-            if affected_inputs.first().and_then(|input| input.get("key")) != Some(&json!("domain"))
-                || affected_inputs.get(1).and_then(|input| input.get("key"))
-                    != Some(&json!("method"))
-            {
-                bail!("base affected inputs drifted for {method:?}: {policy}");
+    #[test]
+    fn required_affected_context_absence_is_rejected_for_every_key() -> Result<()> {
+        let request = RuntimeOperationRequest::from_call(
+            OperationMethod::LocalWalletAccounts,
+            json!(["default"]),
+            "Wallet accounts",
+        )?;
+        for key in [
+            AffectedContextKey::Source,
+            AffectedContextKey::Endpoint,
+            AffectedContextKey::Cid,
+            AffectedContextKey::Path,
+        ] {
+            let result =
+                affected_inputs(&request, &json!({}), &[AffectedContextField::required(key)]);
+
+            let Err(error) = result else {
+                bail!("missing required affected context should fail for {key:?}");
+            };
+            let expected = format!("missing required affected input `{}`", key.as_str());
+            if !error.to_string().contains(&expected) {
+                bail!("unexpected required-context error for {key:?}: {error:#}");
             }
         }
+        Ok(())
+    }
 
+    #[test]
+    fn present_optional_affected_context_must_be_valid() -> Result<()> {
+        let request = RuntimeOperationRequest::from_call(
+            OperationMethod::LocalWalletAccounts,
+            json!(["default"]),
+            "Wallet accounts",
+        )?;
+        let result = affected_inputs(
+            &request,
+            &json!({ "endpoint": 42 }),
+            &[AffectedContextField::optional(AffectedContextKey::Endpoint)],
+        );
+
+        let Err(error) = result else {
+            bail!("invalid optional affected context should fail");
+        };
+        if !error
+            .to_string()
+            .contains("affected input `endpoint` must be a string")
+        {
+            bail!("unexpected optional-context error: {error:#}");
+        }
         Ok(())
     }
 }

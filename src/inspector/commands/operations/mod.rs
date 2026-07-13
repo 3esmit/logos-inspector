@@ -35,20 +35,15 @@ use dispatch::execute_runtime_operation;
 pub(crate) use entrypoint::operation_bridge_command_names;
 pub(crate) use entrypoint::{OperationBridgeCommand, operation_bridge_command};
 use entrypoint::{OperationRunner, handle_operation_command};
-use policy::RuntimeOperationPolicy;
 use record::{
-    RuntimeOperation, RuntimeOperationRecord, RuntimeOperationRegistry, RuntimeOperationStatus,
-    active_operation_in_exclusive_group, finish_runtime_operation,
-    push_runtime_operation_event_locked, runtime_operation_event_value, runtime_operation_value,
+    RuntimeOperationRegistry, RuntimeOperationStatus, active_operation_in_exclusive_group,
+    finish_runtime_operation, push_runtime_operation_event_locked,
+    running_runtime_operation_record, runtime_operation_event_value, runtime_operation_value,
     update_runtime_operation,
 };
 pub(crate) use request::{RuntimeOperationRequest, runtime_operation_request_from_value};
-use request::{runtime_operation_backend, runtime_operation_context};
 pub(crate) use spec::OperationMethod;
 use spec::{OperationExclusiveGroup, normalized_operation_method};
-
-#[cfg(test)]
-use record::test_runtime_operation_record;
 
 #[derive(Debug)]
 pub(crate) struct RuntimeOperations {
@@ -87,26 +82,12 @@ impl RuntimeOperations {
         );
         let now = now_millis();
         let cancel_requested = Arc::new(AtomicBool::new(false));
-        let operation = RuntimeOperation {
-            operation_id: operation_id.clone(),
-            domain: request.domain_name().to_owned(),
-            backend: runtime_operation_backend(&request),
-            method: request.method_name().to_owned(),
-            status: RuntimeOperationStatus::Running,
-            label: request.label().to_owned(),
-            policy: RuntimeOperationPolicy::from_request(&request),
-            context: runtime_operation_context(&request),
-            external_session_id: None,
-            progress: None,
-            bytes_written: 0,
-            content_length: None,
-            result: None,
-            error: None,
-            cancellable: request.cancellable(),
-            exclusive_group: request.exclusive_group(),
-            started_at: now,
-            updated_at: now,
-        };
+        let record = running_runtime_operation_record(
+            &operation_id,
+            &request,
+            Arc::clone(&cancel_requested),
+            now,
+        )?;
         {
             let mut operations = self
                 .registry
@@ -119,15 +100,7 @@ impl RuntimeOperations {
             {
                 bail!("{}", exclusive_operation_message(group));
             }
-            operations.insert(
-                operation_id.clone(),
-                RuntimeOperationRecord {
-                    operation,
-                    restart_request: Some(request.clone()),
-                    events: Vec::new(),
-                    cancel_requested: Arc::clone(&cancel_requested),
-                },
-            );
+            operations.insert(operation_id.clone(), record);
         }
         drop(operation_permit);
         update_runtime_operation(&self.registry, &operation_id, |record| {
@@ -333,26 +306,20 @@ impl RuntimeOperations {
     pub(crate) fn insert_test_running_operation(
         &self,
         operation_id: &str,
-        domain: &str,
-        method: &str,
-        cancellable: bool,
-    ) -> Arc<AtomicBool> {
+        request: RuntimeOperationRequest,
+    ) -> Result<Arc<AtomicBool>> {
         let cancel_requested = Arc::new(AtomicBool::new(false));
-        let record = test_runtime_operation_record(
+        let record = running_runtime_operation_record(
             operation_id,
-            domain,
-            method,
-            RuntimeOperationStatus::Running,
-            cancellable,
-            OperationMethod::from_str(method)
-                .and_then(OperationMethod::definition)
-                .and_then(|definition| definition.exclusive_group()),
+            &request,
             Arc::clone(&cancel_requested),
-        );
-        if let Ok(mut operations) = self.registry.lock() {
-            operations.insert(operation_id.to_owned(), record);
-        }
-        cancel_requested
+            1,
+        )?;
+        self.registry
+            .lock()
+            .map_err(|_| anyhow::anyhow!("runtime operation registry is unavailable"))?
+            .insert(operation_id.to_owned(), record);
+        Ok(cancel_requested)
     }
 
     #[cfg(test)]
@@ -455,12 +422,10 @@ impl RuntimeOperationInterface {
     pub(crate) fn insert_test_running_operation(
         &self,
         operation_id: &str,
-        domain: &str,
-        method: &str,
-        cancellable: bool,
-    ) -> Arc<AtomicBool> {
+        request: RuntimeOperationRequest,
+    ) -> Result<Arc<AtomicBool>> {
         self.operations
-            .insert_test_running_operation(operation_id, domain, method, cancellable)
+            .insert_test_running_operation(operation_id, request)
     }
 
     #[cfg(test)]

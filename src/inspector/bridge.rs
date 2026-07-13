@@ -53,7 +53,24 @@ mod tests {
     use anyhow::bail;
 
     use super::*;
+    use crate::inspector::commands::operations::{
+        RuntimeOperationRequest, runtime_operation_request_from_value,
+    };
     use crate::support::args::Args;
+
+    fn storage_download_request(cid: &str, path: &str) -> Result<RuntimeOperationRequest> {
+        runtime_operation_request_from_value(json!({
+            "domain": "storage",
+            "method": "storageDownloadToUrl",
+            "adapter": {
+                "source_mode": "rest",
+                "inputs": { "rest_endpoint": "http://127.0.0.1:8080/api/storage/v1" }
+            },
+            "payload": { "cid": cid, "path": path, "local_only": false },
+            "mutating_enabled": true,
+            "label": "Storage download"
+        }))
+    }
 
     #[test]
     fn call_module_response_json_wraps_parse_errors() -> Result<()> {
@@ -555,7 +572,10 @@ mod tests {
         let cancel_requested = bridge
             .surface
             .operations_for_test()
-            .insert_test_running_operation("existing", "storage", "storageDownloadToUrl", true);
+            .insert_test_running_operation(
+                "existing",
+                storage_download_request("cid-existing", "/tmp/existing")?,
+            )?;
 
         let value = bridge.call_module_value(
             INSPECTOR_MODULE,
@@ -675,10 +695,8 @@ mod tests {
             .operations_for_test()
             .insert_test_running_operation(
                 "storage-download-existing",
-                "storage",
-                "storageDownloadToUrl",
-                true,
-            );
+                storage_download_request("cid-existing", "/tmp/existing")?,
+            )?;
 
         let result = bridge.call_module_value(
             INSPECTOR_MODULE,

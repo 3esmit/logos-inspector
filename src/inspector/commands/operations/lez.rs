@@ -1,40 +1,50 @@
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result};
 use serde_json::Value;
 
 use crate::{support::confirmation::ConfirmationPolicy, wallet};
 
 use super::super::value::{blocking_value, to_value};
 use super::RuntimeOperationRequest;
-use super::spec::{OperationClass, OperationDefinition, OperationDomain, OperationMethod};
+use super::spec::{OperationClass, OperationCommand, OperationDefinition, OperationMethod};
 use super::wallet_args::{confirmed_wallet_args, wallet_profile_arg};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ExecutionCommand {
+    DeployProgram,
+    SubmitInstruction,
+}
+
+impl ExecutionCommand {
+    pub(super) const fn method(self) -> OperationMethod {
+        match self {
+            Self::DeployProgram => OperationMethod::LocalWalletDeployProgram,
+            Self::SubmitInstruction => OperationMethod::LocalWalletInstructionSubmit,
+        }
+    }
+}
 
 pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
     OperationDefinition::new(
-        OperationMethod::LocalWalletDeployProgram,
+        OperationCommand::Execution(ExecutionCommand::DeployProgram),
         "localWalletDeployProgram",
-        OperationDomain::Execution,
         "Program deploy",
         OperationClass::SigningSubmission,
     ),
     OperationDefinition::new(
-        OperationMethod::LocalWalletInstructionSubmit,
+        OperationCommand::Execution(ExecutionCommand::SubmitInstruction),
         "localWalletInstructionSubmit",
-        OperationDomain::Execution,
         "IDL instruction",
         OperationClass::SigningSubmission,
     ),
 ];
 
-pub(super) async fn execute(request: &RuntimeOperationRequest) -> Result<Value> {
-    match request.method() {
-        OperationMethod::LocalWalletDeployProgram => execute_program_deployment(request).await,
-        OperationMethod::LocalWalletInstructionSubmit => {
-            execute_instruction_submission(request).await
-        }
-        _ => bail!(
-            "`{}` is not a program wallet operation",
-            request.method_name()
-        ),
+pub(super) async fn execute(
+    command: ExecutionCommand,
+    request: &RuntimeOperationRequest,
+) -> Result<Value> {
+    match command {
+        ExecutionCommand::DeployProgram => execute_program_deployment(request).await,
+        ExecutionCommand::SubmitInstruction => execute_instruction_submission(request).await,
     }
 }
 
