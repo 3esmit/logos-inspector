@@ -43,7 +43,7 @@ function storageReliabilityText(page) {
         return qsTr("Degraded")
     }
     if (page.metricKnown("storage.failed_transfers_recent")) {
-        return Number(page.model.dashboardMetricValue("storage.failed_transfers_recent")) > 0 ? qsTr("Recent failures") : qsTr("No failures")
+        return Number(page.model.metrics.dashboardMetricValue("storage.failed_transfers_recent")) > 0 ? qsTr("Recent failures") : qsTr("No failures")
     }
     return qsTr("Unknown")
 }
@@ -53,7 +53,7 @@ function storageReliabilityTone(page) {
         return page.theme.error
     }
     if (page.metricKnown("storage.failed_transfers_recent")) {
-        return Number(page.model.dashboardMetricValue("storage.failed_transfers_recent")) > 0 ? page.theme.error : page.theme.success
+        return Number(page.model.metrics.dashboardMetricValue("storage.failed_transfers_recent")) > 0 ? page.theme.error : page.theme.success
     }
     return page.theme.textMuted
 }
@@ -62,7 +62,7 @@ function storageTransferFailureTone(page) {
     if (!page.metricKnown("storage.failed_transfers_recent")) {
         return page.theme.textMuted
     }
-    return Number(page.model.dashboardMetricValue("storage.failed_transfers_recent")) > 0 ? page.theme.error : page.theme.success
+    return Number(page.model.metrics.dashboardMetricValue("storage.failed_transfers_recent")) > 0 ? page.theme.error : page.theme.success
 }
 
 function storageHealthRows(page) {
@@ -77,7 +77,7 @@ function storageHealthRows(page) {
         page.statusRow(qsTr("DHT / discovery"), debugKnown ? qsTr("observed") : qsTr("unknown"), debugKnown ? page.sourceFactEvidence("debug", page.valueSummary(page.probeValue("debug"))) : qsTr("Debug source unavailable."), debugKnown ? "success" : "neutral"),
         page.statusRow(qsTr("Connected peers"), page.metricKnown("storage.peer_count") ? qsTr("observed") : qsTr("unknown"), page.metricDisplay("storage.peer_count"), page.metricKnown("storage.peer_count") ? "success" : "neutral"),
         page.statusRow(qsTr("Repository and host disk"), spaceKnown ? qsTr("observed") : qsTr("unknown"), storageCapacitySummary(page), spaceKnown ? "success" : "neutral"),
-        page.statusRow(qsTr("Recent transfer failures"), page.metricKnown("storage.failed_transfers_recent") ? page.metricDisplay("storage.failed_transfers_recent") : qsTr("unknown"), page.metricKnown("storage.failed_transfers_recent") ? qsTr("%1 s window").arg(page.model.storageRollingWindow) : qsTr("Metric not exposed by current source."), page.metricKnown("storage.failed_transfers_recent") ? (Number(page.model.dashboardMetricValue("storage.failed_transfers_recent")) > 0 ? "error" : "success") : "neutral"),
+        page.statusRow(qsTr("Recent transfer failures"), page.metricKnown("storage.failed_transfers_recent") ? page.metricDisplay("storage.failed_transfers_recent") : qsTr("unknown"), page.metricKnown("storage.failed_transfers_recent") ? qsTr("%1 s window").arg(page.model.storageRollingWindow) : qsTr("Metric not exposed by current source."), page.metricKnown("storage.failed_transfers_recent") ? (Number(page.model.metrics.dashboardMetricValue("storage.failed_transfers_recent")) > 0 ? "error" : "success") : "neutral"),
         page.statusRow(qsTr("Mix / private queries"), qsTr("not queried"), qsTr("No passive metric selected."), "neutral")
     ]
 }
@@ -208,7 +208,7 @@ function storageIdentityRows(page) {
 
 function storageMetricRow(page, label, key) {
     const known = page.metricKnown(key)
-    const tone = known && String(key || "") === "storage.failed_transfers_recent" && Number(page.model.dashboardMetricValue(key)) > 0 ? "error" : (known ? "success" : "neutral")
+    const tone = known && String(key || "") === "storage.failed_transfers_recent" && Number(page.model.metrics.dashboardMetricValue(key)) > 0 ? "error" : (known ? "success" : "neutral")
     return page.statusRow(label, known ? page.metricDisplay(key) : qsTr("n/a"), known ? page.metricEvidence(key) : qsTr("Metric not exposed by current source."), tone)
 }
 
@@ -702,7 +702,7 @@ function deliveryNetworkMonitorTopicCount(page) {
     if (count !== null) {
         return count
     }
-    const metric = page.model.dashboardMetricValue("messaging.content_topics")
+    const metric = page.model.metrics.dashboardMetricValue("messaging.content_topics")
     return metric === null || metric === undefined ? null : Number(metric)
 }
 
@@ -711,7 +711,7 @@ function deliveryServicePeerCount(page) {
     let found = false
     const keys = ["messaging.store_peers", "messaging.filter_peers", "messaging.lightpush_peers"]
     for (let i = 0; i < keys.length; ++i) {
-        const value = Number(page.model.dashboardMetricValue(keys[i]))
+        const value = Number(page.model.metrics.dashboardMetricValue(keys[i]))
         if (Number.isFinite(value)) {
             total += value
             found = true

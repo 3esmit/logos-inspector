@@ -471,7 +471,7 @@ Pane {
     }
 
     function portStatus(kind, metricNames) {
-        const value = root.model.openMetricValue(kind, metricNames)
+        const value = root.model.metrics.openMetricValue(kind, metricNames)
         if (value === null) {
             return qsTr("n/a")
         }

@@ -8,10 +8,9 @@ use super::{
     programs::{program_id_base58, program_id_hex},
     sequencer::sequencer_client,
 };
-use crate::{
-    ACCOUNT_TRANSACTION_LIMIT, AccountIdlDecodeReport, decode_account_data_hex_with_idl,
-    parse_account_id, raw_json_rpc_optional_result,
-};
+#[cfg(test)]
+use crate::decode_account_data_hex_with_idl;
+use crate::{AccountIdlDecodeReport, parse_account_id, rpc::raw_json_rpc_optional_result};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AccountReport {
@@ -82,85 +81,6 @@ fn account_report(
     })
 }
 
-pub async fn account_lookup(
-    sequencer_endpoint: &str,
-    indexer_endpoint: &str,
-    account_id: &str,
-) -> Result<AccountReport> {
-    let mut account = sequencer_account(sequencer_endpoint, account_id).await?;
-    match account_transactions_by_account(
-        indexer_endpoint,
-        &account.account_id_base58,
-        0,
-        ACCOUNT_TRANSACTION_LIMIT,
-    )
-    .await
-    {
-        Ok(transactions) => {
-            account.related_transactions = Some(transactions);
-        }
-        Err(error) => {
-            account.related_transactions = Some(Vec::new());
-            account.related_transactions_error = Some(format!("{error:#}"));
-        }
-    }
-    Ok(account)
-}
-
-pub async fn sequencer_account_with_idl(
-    endpoint: &str,
-    account_id: &str,
-    idl_json: &str,
-    account_type: Option<&str>,
-) -> Result<SequencerAccountIdlReport> {
-    let account = sequencer_account(endpoint, account_id).await?;
-    Ok(account_report_with_optional_idl_decode(
-        account,
-        idl_json,
-        account_type,
-    ))
-}
-
-pub async fn account_lookup_with_idl(
-    sequencer_endpoint: &str,
-    indexer_endpoint: &str,
-    account_id: &str,
-    idl_json: &str,
-    account_type: Option<&str>,
-) -> Result<SequencerAccountIdlReport> {
-    let account = account_lookup(sequencer_endpoint, indexer_endpoint, account_id).await?;
-    Ok(account_report_with_optional_idl_decode(
-        account,
-        idl_json,
-        account_type,
-    ))
-}
-
-pub(crate) fn account_report_with_optional_idl_decode(
-    account: AccountReport,
-    idl_json: &str,
-    account_type: Option<&str>,
-) -> SequencerAccountIdlReport {
-    let decode = decode_account_data_hex_with_idl(
-        idl_json,
-        account_type,
-        &account.data_hex,
-        Some(&account.account_id),
-    );
-    match decode {
-        Ok(decode) => SequencerAccountIdlReport {
-            account,
-            decode: Some(decode),
-            decode_error: None,
-        },
-        Err(error) => SequencerAccountIdlReport {
-            account,
-            decode: None,
-            decode_error: Some(format!("{error:#}")),
-        },
-    }
-}
-
 pub async fn account_transactions_by_account(
     indexer_endpoint: &str,
     account_id: &str,
@@ -188,6 +108,31 @@ pub async fn account_transactions_by_account(
             summarize_account_transaction(transaction, offset + index, &account_id)
         })
         .collect())
+}
+
+#[cfg(test)]
+fn account_report_with_optional_idl_decode(
+    account: AccountReport,
+    idl_json: &str,
+    account_type: Option<&str>,
+) -> SequencerAccountIdlReport {
+    match decode_account_data_hex_with_idl(
+        idl_json,
+        account_type,
+        &account.data_hex,
+        Some(&account.account_id),
+    ) {
+        Ok(decode) => SequencerAccountIdlReport {
+            account,
+            decode: Some(decode),
+            decode_error: None,
+        },
+        Err(error) => SequencerAccountIdlReport {
+            account,
+            decode: None,
+            decode_error: Some(format!("{error:#}")),
+        },
+    }
 }
 
 pub(crate) fn summarize_account_transaction(

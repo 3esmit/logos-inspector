@@ -136,7 +136,7 @@ ColumnLayout {
     Backup.BackupImportDialogState {
         id: backupRestoreDialog
 
-        model: settingsRoot.model
+        model: settingsRoot.model.backupImport
     }
 
     Connections {
@@ -417,7 +417,7 @@ ColumnLayout {
                         theme: settingsRoot.theme
                         text: qsTr("Create Local")
                         primary: true
-                        enabled: !settingsRoot.model.busy
+                        enabled: !settingsRoot.model.shell.busy
                             && settingsRoot.model.backupContentsSelected(settingsRoot.model.settingsBackupContents)
                             && (!settingsRoot.model.settingsBackupEncrypted || settingsRoot.model.walletHomeConfigured())
                         Layout.preferredWidth: 128
@@ -425,14 +425,14 @@ ColumnLayout {
                             const entry = settingsRoot.model.createLocalSettingsBackup(settingsRoot.model.settingsBackupEncrypted ? qsTr("Encrypted settings backup") : qsTr("Settings backup"), settingsRoot.model.settingsBackupEncrypted, settingsRoot.model.settingsBackupContents)
                             settingsRoot.model.settingsBackupStatus = entry
                                 ? qsTr("Local backup %1 created.").arg(entry.backup_version_label || entry.backup_catalog_id)
-                                : settingsRoot.model.backupCatalogError
+                                : settingsRoot.model.backupImport.backupCatalogError
                         }
                     }
 
                     ActionButton {
                         theme: settingsRoot.theme
                         text: qsTr("Upload")
-                        enabled: !settingsRoot.model.busy
+                        enabled: !settingsRoot.model.shell.busy
                             && settingsRoot.model.settingsBackupAvailable()
                             && settingsRoot.model.backupContentsSelected(settingsRoot.model.settingsBackupContents)
                             && (!settingsRoot.model.settingsBackupEncrypted || settingsRoot.model.walletHomeConfigured())
@@ -443,7 +443,7 @@ ColumnLayout {
                     ActionButton {
                         theme: settingsRoot.theme
                         text: qsTr("Download")
-                        enabled: !settingsRoot.model.busy
+                        enabled: !settingsRoot.model.shell.busy
                             && settingsRoot.model.settingsBackupDownloadAvailable()
                             && settingsBackupCidField.text.trim().length > 0
                         Layout.preferredWidth: 116
@@ -456,7 +456,7 @@ ColumnLayout {
                     ActionButton {
                         theme: settingsRoot.theme
                         text: qsTr("Storage")
-                        enabled: !settingsRoot.model.busy
+                        enabled: !settingsRoot.model.shell.busy
                         Layout.preferredWidth: 104
                         onClicked: settingsRoot.model.openSettings("network", "storage")
                     }
@@ -469,7 +469,7 @@ ColumnLayout {
                 StatusMessage {
                     visible: settingsRoot.model.settingsBackupStatus.length > 0
                     theme: settingsRoot.theme
-                    tone: settingsRoot.model.resultIsError && settingsRoot.model.resultOwner === settingsRoot.model.currentView ? "error" : "info"
+                    tone: settingsRoot.model.shell.resultIsError && settingsRoot.model.shell.resultOwner === settingsRoot.model.shell.currentView ? "error" : "info"
                     title: qsTr("Backup status")
                     message: settingsRoot.model.settingsBackupStatus
                     Layout.fillWidth: true
@@ -518,7 +518,7 @@ ColumnLayout {
                             ActionButton {
                                 theme: settingsRoot.theme
                                 text: qsTr("Restore")
-                                enabled: !settingsRoot.model.busy
+                                enabled: !settingsRoot.model.shell.busy
                                 Layout.preferredWidth: 96
                                 onClicked: {
                                     settingsRoot.pendingSettingsRestoreBackupId = String(backupCatalogRow.modelData.backup_catalog_id || "")
@@ -531,13 +531,14 @@ ColumnLayout {
                             ActionButton {
                                 theme: settingsRoot.theme
                                 text: qsTr("Upload")
-                                enabled: !settingsRoot.model.busy && settingsRoot.model.settingsBackupAvailable()
+                                enabled: !settingsRoot.model.shell.busy && settingsRoot.model.settingsBackupAvailable()
                                 Layout.preferredWidth: 88
                                 onClicked: {
-                                    const result = settingsRoot.model.uploadBackupCatalogEntry(String(backupCatalogRow.modelData.backup_catalog_id || ""))
+                                    const result = settingsRoot.model.backupImport.uploadBackupCatalogEntry(
+                                        String(backupCatalogRow.modelData.backup_catalog_id || ""))
                                     settingsRoot.model.settingsBackupStatus = result && result.cid
                                         ? qsTr("Backup uploaded as %1.").arg(result.cid)
-                                        : settingsRoot.model.backupCatalogError
+                                        : settingsRoot.model.backupImport.backupCatalogError
                                 }
                             }
                         }
@@ -847,7 +848,8 @@ ColumnLayout {
                         onClicked: {
                             const options = settingsRoot.copyPendingSettingsRestoreOptions()
                             localSettingsRestoreConfirm.close()
-                            settingsRoot.model.restoreLocalSettingsBackup(settingsRoot.pendingSettingsRestoreBackupId, options)
+                            settingsRoot.model.backupImport.restoreLocalSettingsBackup(
+                                settingsRoot.pendingSettingsRestoreBackupId, options)
                         }
                     }
                 }
@@ -1054,7 +1056,7 @@ ColumnLayout {
             subtitle: qsTr("Source used for node health, consensus, blocks, and Bedrock RPC inspection.")
             kind: "blockchain"
             pageWidth: settingsRoot.width
-            busy: settingsRoot.model.busy
+            busy: settingsRoot.model.shell.busy
             connectionType: settingsRoot.model.blockchainSourceLabel()
             endpointLabel: qsTr("RPC URL")
             endpoint: settingsRoot.model.nodeUrl

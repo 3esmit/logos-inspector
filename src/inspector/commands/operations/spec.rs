@@ -70,7 +70,6 @@ pub(super) struct OperationDefinition {
     domain: OperationDomain,
     executor: OperationExecutor,
     label: &'static str,
-    uses_mutating_flag: bool,
     cancellable: bool,
     exclusive_group: Option<OperationExclusiveGroup>,
 }
@@ -88,7 +87,6 @@ impl OperationDefinition {
             domain,
             executor: OperationExecutor::for_domain(domain),
             label,
-            uses_mutating_flag: false,
             cancellable: false,
             exclusive_group: None,
         }
@@ -106,7 +104,6 @@ impl OperationDefinition {
             domain,
             executor: OperationExecutor::for_domain(domain),
             label,
-            uses_mutating_flag: true,
             cancellable: false,
             exclusive_group: None,
         }
@@ -125,7 +122,6 @@ impl OperationDefinition {
             domain,
             executor: OperationExecutor::for_domain(domain),
             label,
-            uses_mutating_flag: true,
             cancellable: true,
             exclusive_group: Some(exclusive_group),
         }
@@ -214,10 +210,6 @@ impl OperationMethod {
 
     pub(crate) fn label(self) -> &'static str {
         operation_definition(self).label
-    }
-
-    pub(crate) fn uses_mutating_flag(self) -> bool {
-        operation_definition(self).uses_mutating_flag
     }
 
     pub(crate) fn cancellable(self) -> bool {
@@ -325,11 +317,6 @@ mod tests {
 
     #[test]
     fn operation_flags_are_owned_by_method_definition() -> Result<()> {
-        let delivery_send =
-            OperationMethod::from_str("deliverySend").context("deliverySend should exist")?;
-        if !delivery_send.uses_mutating_flag() {
-            bail!("deliverySend should require mutating flag");
-        }
         let storage_download = OperationMethod::from_str("storageDownloadToUrl")
             .context("storageDownloadToUrl should exist")?;
         if !storage_download.cancellable() {

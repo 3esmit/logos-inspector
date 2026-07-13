@@ -1,17 +1,11 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use serde_json::Map;
-
 use anyhow::{Context as _, Result, bail};
 use serde_json::{Value, json};
 use tokio::io::AsyncWriteExt as _;
 
-use crate::{
-    source_routing::{require_mutating_diagnostics, storage_layer, storage_rest_source},
-    support::args::Args,
-};
+use crate::source_routing::storage_layer;
 
-use super::super::value::to_value;
 use super::record::update_runtime_operation_progress;
 use super::spec::{OperationDefinition, OperationDomain, OperationExclusiveGroup, OperationMethod};
 use super::{RuntimeOperationRegistry, RuntimeOperationRequest};
@@ -62,241 +56,57 @@ pub(super) async fn execute(
     operation_id: &str,
     cancel_requested: &AtomicBool,
 ) -> Result<Value> {
-    match request.method() {
-        OperationMethod::StorageManifests => execute_storage_manifests(request).await,
-        OperationMethod::StorageDownloadManifest => {
-            execute_storage_download_manifest(request).await
+    let operation = storage_operation(request)?;
+    let request =
+        storage_layer::StorageOperationRequest::parse(request.node_request()?, operation)?;
+    match storage_layer::execute_operation(request).await? {
+        storage_layer::StorageOperationOutput::Complete(value) => Ok(value),
+        storage_layer::StorageOperationOutput::Download(download) => {
+            let cid = download.cid().to_owned();
+            let path = download.path().to_owned();
+            storage_rest_download_tracked(&download, registry, operation_id, cancel_requested)
+                .await
+                .with_context(|| format!("failed to download storage CID {cid} to `{path}`"))
         }
-        OperationMethod::StorageFetch => execute_storage_fetch(request).await,
-        OperationMethod::StorageUploadUrl => execute_storage_upload(request).await,
-        OperationMethod::StorageDownloadToUrl => {
-            execute_storage_download(request, registry, operation_id, cancel_requested).await
-        }
-        OperationMethod::StorageRemove => execute_storage_remove(request).await,
-        _ => bail!("`{}` is not a Storage operation", request.method_name()),
     }
 }
 
 pub(super) fn add_operation_context(
     request: &RuntimeOperationRequest,
-    context: &mut Map<String, Value>,
+    context: &mut serde_json::Map<String, Value>,
 ) {
-    let Ok(args) = Args::new(request.args.clone()) else {
+    let Ok(operation) = storage_operation(request) else {
         return;
     };
-    let Ok(source) = storage_rest_source(&args) else {
-        return;
-    };
-    context.insert("endpoint".to_owned(), json!(source.endpoint));
+    if let Ok(node_request) = request.node_request()
+        && let Ok(operation_request) =
+            storage_layer::StorageOperationRequest::parse(node_request, operation)
+    {
+        context.extend(operation_request.context().clone());
+    }
+}
+
+pub(super) fn validate(request: &RuntimeOperationRequest) -> Result<()> {
+    let operation = storage_operation(request)?;
+    storage_layer::StorageOperationRequest::parse(request.node_request()?, operation).map(|_| ())
+}
+
+fn storage_operation(request: &RuntimeOperationRequest) -> Result<storage_layer::StorageOperation> {
     match request.method() {
-        OperationMethod::StorageDownloadToUrl => {
-            if let Some(cid) = args.optional_string(source.next_index + 1) {
-                context.insert("cid".to_owned(), json!(cid));
-            }
-            if let Some(path) = args.optional_string(source.next_index + 2) {
-                context.insert("path".to_owned(), json!(path));
-            }
-            context.insert(
-                "source".to_owned(),
-                json!(if args.optional_bool(source.next_index + 3) {
-                    "local"
-                } else {
-                    "network"
-                }),
-            );
-        }
-        OperationMethod::StorageUploadUrl => {
-            if let Some(path) = args.optional_string(source.next_index + 1) {
-                context.insert("path".to_owned(), json!(path));
-            }
-        }
-        OperationMethod::StorageFetch | OperationMethod::StorageRemove => {
-            if let Some(cid) = args.optional_string(source.next_index + 1) {
-                context.insert("cid".to_owned(), json!(cid));
-            }
-        }
+        OperationMethod::StorageManifests => Ok(storage_layer::StorageOperation::Manifests),
         OperationMethod::StorageDownloadManifest => {
-            let cid_index = if matches!(args.value(source.next_index), Some(Value::Bool(_))) {
-                source.next_index + 1
-            } else {
-                source.next_index
-            };
-            if let Some(cid) = args.optional_string(cid_index) {
-                context.insert("cid".to_owned(), json!(cid));
-            }
+            Ok(storage_layer::StorageOperation::DownloadManifest)
         }
-        _ => {}
+        OperationMethod::StorageFetch => Ok(storage_layer::StorageOperation::Fetch),
+        OperationMethod::StorageUploadUrl => Ok(storage_layer::StorageOperation::Upload),
+        OperationMethod::StorageDownloadToUrl => Ok(storage_layer::StorageOperation::Download),
+        OperationMethod::StorageRemove => Ok(storage_layer::StorageOperation::Remove),
+        _ => bail!("`{}` is not a Storage operation", request.method_name()),
     }
-}
-
-pub(super) async fn execute_storage_manifests(request: &RuntimeOperationRequest) -> Result<Value> {
-    let args = Args::new(request.args.clone())?;
-    if let Some(module_args) = storage_layer::operation_args(&args, false, "storage manifests")? {
-        return storage_layer::module_call("manifests", module_args.values).await;
-    }
-    let source = storage_rest_source(&args)?;
-    to_value(storage_layer::manifests(source.endpoint).await?)
-}
-
-pub(super) async fn execute_storage_download_manifest(
-    request: &RuntimeOperationRequest,
-) -> Result<Value> {
-    let args = Args::new(request.args.clone())?;
-    if let Some(module_args) =
-        storage_layer::operation_args(&args, false, "storage manifest download")?
-    {
-        let cid = module_args
-            .values
-            .first()
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned();
-        return storage_layer::module_dispatch(
-            "downloadManifest",
-            module_args.values,
-            vec![("cid", cid)],
-        )
-        .await;
-    }
-    let source = storage_rest_source(&args)?;
-    let cid_index = if matches!(args.value(source.next_index), Some(Value::Bool(_))) {
-        source.next_index + 1
-    } else {
-        source.next_index
-    };
-    let cid = args.string(cid_index, "CID")?;
-    to_value(storage_layer::manifest(source.endpoint, cid).await?)
-}
-
-pub(super) async fn execute_storage_fetch(request: &RuntimeOperationRequest) -> Result<Value> {
-    let args = Args::new(request.args.clone())?;
-    if let Some(module_args) = storage_layer::operation_args(&args, true, "storage network action")?
-    {
-        let cid = module_args
-            .values
-            .first()
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned();
-        return storage_layer::module_dispatch("fetch", module_args.values, vec![("cid", cid)])
-            .await;
-    }
-    let source = storage_rest_source(&args)?;
-    require_mutating_diagnostics(&args, source.next_index, "storage network action")?;
-    let cid = args.string(source.next_index + 1, "CID")?;
-    storage_layer::fetch(source.endpoint, cid)
-        .await
-        .with_context(|| format!("failed to start storage network fetch for {cid}"))
-}
-
-pub(super) async fn execute_storage_upload(request: &RuntimeOperationRequest) -> Result<Value> {
-    let args = Args::new(request.args.clone())?;
-    if let Some(module_args) = storage_layer::operation_args(&args, true, "storage upload action")?
-    {
-        let mut values = module_args.values;
-        if values.len() < 2 {
-            values.push(json!(65_536));
-        }
-        let path = values
-            .first()
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned();
-        return storage_layer::module_dispatch("uploadUrl", values, vec![("path", path)]).await;
-    }
-    let source = storage_rest_source(&args)?;
-    require_mutating_diagnostics(&args, source.next_index, "storage upload action")?;
-    let path = args.string(source.next_index + 1, "file path")?;
-    if path.starts_with("http://") || path.starts_with("https://") {
-        bail!("storage REST upload expects a local file path");
-    }
-    let block_size = args
-        .value(source.next_index + 2)
-        .and_then(Value::as_u64)
-        .unwrap_or(65_536);
-    storage_layer::upload(source.endpoint, path, block_size)
-        .await
-        .with_context(|| format!("failed to upload `{path}` through storage REST"))
-}
-
-pub(super) async fn execute_storage_download(
-    request: &RuntimeOperationRequest,
-    registry: &RuntimeOperationRegistry,
-    operation_id: &str,
-    cancel_requested: &AtomicBool,
-) -> Result<Value> {
-    let args = Args::new(request.args.clone())?;
-    if let Some(module_args) =
-        storage_layer::operation_args(&args, true, "storage download action")?
-    {
-        let mut values = module_args.values;
-        if values.len() < 3 {
-            values.push(json!(false));
-        }
-        if values.len() < 4 {
-            values.push(json!(65_536));
-        }
-        let cid = values
-            .first()
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned();
-        let path = values
-            .get(1)
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned();
-        return storage_layer::module_dispatch(
-            "downloadToUrl",
-            values,
-            vec![("cid", cid), ("path", path)],
-        )
-        .await;
-    }
-    let source = storage_rest_source(&args)?;
-    require_mutating_diagnostics(&args, source.next_index, "storage download action")?;
-    let cid = args.string(source.next_index + 1, "CID")?;
-    let path = args.string(source.next_index + 2, "download path")?;
-    let local_only = args.optional_bool(source.next_index + 3);
-    storage_rest_download_tracked(
-        source.endpoint,
-        cid,
-        path,
-        local_only,
-        registry,
-        operation_id,
-        cancel_requested,
-    )
-    .await
-    .with_context(|| format!("failed to download storage CID {cid} to `{path}`"))
-}
-
-pub(super) async fn execute_storage_remove(request: &RuntimeOperationRequest) -> Result<Value> {
-    let args = Args::new(request.args.clone())?;
-    if let Some(module_args) = storage_layer::operation_args(&args, true, "storage remove action")?
-    {
-        let cid = module_args
-            .values
-            .first()
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned();
-        return storage_layer::module_dispatch("remove", module_args.values, vec![("cid", cid)])
-            .await;
-    }
-    let source = storage_rest_source(&args)?;
-    require_mutating_diagnostics(&args, source.next_index, "storage remove action")?;
-    let cid = args.string(source.next_index + 1, "CID")?;
-    storage_layer::remove(source.endpoint, cid)
-        .await
-        .with_context(|| format!("failed to remove storage CID {cid}"))
 }
 
 pub(super) async fn storage_rest_download_tracked(
-    endpoint: &str,
-    cid: &str,
-    path: &str,
-    local_only: bool,
+    request: &storage_layer::StorageDownloadRequest,
     registry: &RuntimeOperationRegistry,
     operation_id: &str,
     cancel_requested: &AtomicBool,
@@ -304,8 +114,9 @@ pub(super) async fn storage_rest_download_tracked(
     if cancel_requested.load(Ordering::Relaxed) {
         bail!("storage download canceled");
     }
-    let response = storage_layer::download_response(endpoint, cid, local_only).await?;
+    let response = storage_layer::download_response(request).await?;
     update_runtime_operation_progress(registry, operation_id, 0, response.content_length());
+    let path = request.path();
     let temp_path = format!("{path}.part");
     let mut file = tokio::fs::File::create(&temp_path)
         .await
@@ -346,10 +157,10 @@ pub(super) async fn storage_rest_download_tracked(
         .await
         .with_context(|| format!("failed to move `{temp_path}` to `{path}`"))?;
     Ok(json!({
-        "cid": cid,
+        "cid": request.cid(),
         "path": path,
         "bytes": bytes,
-        "source": if local_only { "local" } else { "network" },
-        "endpoint": endpoint,
+        "source": if request.local_only() { "local" } else { "network" },
+        "endpoint": request.endpoint(),
     }))
 }

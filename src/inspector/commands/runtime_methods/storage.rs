@@ -1,9 +1,9 @@
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result};
 use serde_json::{Value, json};
 use tokio::runtime::Runtime;
 
 use crate::{
-    source_routing::{require_mutating_diagnostics, storage_layer, storage_rest_source},
+    source_routing::storage_layer,
     support::args::Args,
     support::backup_catalog::{
         attach_remote_backup_metadata, backup_payload_bytes, record_remote_settings_backup_payload,
@@ -25,38 +25,27 @@ pub(super) const METHOD_CATALOG: &[RuntimeMethodEntry] = &[
 
 pub(super) fn storage_exists(runtime: &Runtime, args: Value) -> Result<Value> {
     let args = Args::new(args)?;
-    if storage_layer::is_module_source(&args) {
-        let cid = args.string(1, "CID")?;
-        return to_value(runtime.block_on(storage_layer::module_call("exists", vec![json!(cid)]))?);
-    }
-    let source = storage_rest_source(&args)?;
-    let cid = args.string(source.next_index, "CID")?;
-    to_value(runtime.block_on(storage_layer::exists(source.endpoint, cid))?)
+    let request = storage_layer::StorageExistsRequest::parse(&args)?;
+    to_value(runtime.block_on(request.execute())?)
 }
 
 pub(super) fn storage_upload_backup_catalog_entry(runtime: &Runtime, args: Value) -> Result<Value> {
     let args = Args::new(args)?;
-    if storage_layer::is_module_source(&args) {
-        bail!(
-            "settings backup through storage_module needs storageUploadDone event correlation to return the final CID; use the Storage app upload flow or Direct REST source for synchronous settings backup"
-        );
-    }
-    let source = storage_rest_source(&args)?;
-    require_mutating_diagnostics(&args, source.next_index, "settings backup action")?;
-    let backup_catalog_id = args.string(source.next_index + 1, "backup catalog id")?;
-    let block_size = args
-        .value(source.next_index + 2)
-        .and_then(Value::as_u64)
-        .unwrap_or(65_536);
+    let request = storage_layer::StorageBackupUploadRequest::parse(&args)?;
+    let backup_catalog_id = request.backup_catalog_id();
     let bytes = backup_payload_bytes(backup_catalog_id)?;
     let upload = runtime
-        .block_on(storage_layer::upload_bytes(
-            source.endpoint,
+        .block_on(request.client().upload_bytes(
             "logos-inspector-settings-backup.json",
             &bytes,
-            block_size,
+            request.block_size(),
+            "settings backup through storage_module needs storageUploadDone event correlation to return the final CID; use the Storage app upload flow or Direct REST source for synchronous settings backup",
         ))
         .context("failed to upload settings backup through storage REST")?;
+    let endpoint = request
+        .client()
+        .endpoint()
+        .context("settings backup requires storage REST source")?;
     let cid = upload
         .get("cid")
         .and_then(Value::as_str)
@@ -74,7 +63,7 @@ pub(super) fn storage_upload_backup_catalog_entry(runtime: &Runtime, args: Value
     Ok(json!({
         "cid": cid,
         "bytes": bytes.len(),
-        "endpoint": source.endpoint,
+        "endpoint": endpoint,
         "backup_catalog_id": backup_catalog_id,
         "catalog_entry": entry,
         "upload": upload,
@@ -83,31 +72,21 @@ pub(super) fn storage_upload_backup_catalog_entry(runtime: &Runtime, args: Value
 
 pub(super) fn storage_upload_payload(runtime: &Runtime, args: Value) -> Result<Value> {
     let args = Args::new(args)?;
-    if storage_layer::is_module_source(&args) {
-        bail!(
-            "payload upload through storage_module needs storageUploadDone event correlation to return the final CID; use Direct REST source for synchronous payload upload"
-        );
-    }
-    let source = storage_rest_source(&args)?;
-    require_mutating_diagnostics(&args, source.next_index, "storage payload upload")?;
-    let filename = args.string(source.next_index + 1, "payload filename")?;
-    let payload = args
-        .value(source.next_index + 2)
-        .context("payload JSON is required")?;
-    let block_size = args
-        .value(source.next_index + 3)
-        .and_then(Value::as_u64)
-        .unwrap_or(65_536);
-    let bytes =
-        serde_json::to_vec_pretty(payload).context("failed to serialize storage payload")?;
+    let request = storage_layer::StoragePayloadUploadRequest::parse(&args)?;
+    let bytes = serde_json::to_vec_pretty(request.payload())
+        .context("failed to serialize storage payload")?;
     let upload = runtime
-        .block_on(storage_layer::upload_bytes(
-            source.endpoint,
-            filename,
+        .block_on(request.client().upload_bytes(
+            request.filename(),
             &bytes,
-            block_size,
+            request.block_size(),
+            "payload upload through storage_module needs storageUploadDone event correlation to return the final CID; use Direct REST source for synchronous payload upload",
         ))
         .context("failed to upload payload through storage REST")?;
+    let endpoint = request
+        .client()
+        .endpoint()
+        .context("payload upload requires storage REST source")?;
     let cid = upload
         .get("cid")
         .and_then(Value::as_str)
@@ -116,37 +95,28 @@ pub(super) fn storage_upload_payload(runtime: &Runtime, args: Value) -> Result<V
     Ok(json!({
         "cid": cid,
         "bytes": bytes.len(),
-        "endpoint": source.endpoint,
-        "filename": filename,
+        "endpoint": endpoint,
+        "filename": request.filename(),
         "upload": upload,
     }))
 }
 
 pub(super) fn storage_restore_settings(runtime: &Runtime, args: Value) -> Result<Value> {
     let args = Args::new(args)?;
-    if storage_layer::is_module_source(&args) {
-        bail!(
-            "settings restore through storage_module needs storageDownloadDone chunk correlation; use Direct REST source for synchronous settings restore"
-        );
-    }
-    let source = storage_rest_source(&args)?;
-    let mut cid_index = source.next_index;
-    if args.value(cid_index).is_some_and(Value::is_boolean) {
-        cid_index += 1;
-    }
-    let cid = args.string(cid_index, "backup CID")?;
-    let local_only = if args.value(cid_index + 1).is_some_and(Value::is_boolean) {
-        args.optional_bool(cid_index + 1)
-    } else {
-        args.optional_bool(cid_index + 2)
-    };
+    let request = storage_layer::StorageRestoreRequest::parse(&args)?;
+    let cid = request.cid();
+    let local_only = request.local_only();
     let bytes = runtime
-        .block_on(storage_layer::download_bytes(
-            source.endpoint,
+        .block_on(request.client().download_bytes(
             cid,
             local_only,
+            "settings restore through storage_module needs storageDownloadDone chunk correlation; use Direct REST source for synchronous settings restore",
         ))
         .with_context(|| format!("failed to download settings backup CID {cid}"))?;
+    let endpoint = request
+        .client()
+        .endpoint()
+        .context("settings restore requires storage REST source")?;
     let payload: Value = serde_json::from_slice(&bytes)
         .with_context(|| format!("settings backup CID {cid} did not contain JSON"))?;
     let entry = record_remote_settings_backup_payload(
@@ -164,7 +134,7 @@ pub(super) fn storage_restore_settings(runtime: &Runtime, args: Value) -> Result
         "payload_id": entry.payload_id,
         "catalog_entry": entry,
         "bytes": bytes.len(),
-        "endpoint": source.endpoint,
+        "endpoint": endpoint,
         "source": if local_only { "local" } else { "network" },
         "encrypted": payload.get("encrypted").and_then(Value::as_bool).unwrap_or(false),
     }))

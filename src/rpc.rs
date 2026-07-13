@@ -5,7 +5,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::support::raw_source_transport::{
-    json_rpc_body, json_rpc_optional_result, json_rpc_required_result, request_json, rest_url,
+    json_rpc_body, json_rpc_optional_result, request_json, rest_url,
 };
 
 const JSON_RPC_TIMEOUT: Duration = Duration::from_secs(8);
@@ -31,11 +31,6 @@ pub async fn raw_json_rpc(endpoint: &str, method: &str, params: Value) -> Result
         false,
     )
     .await
-}
-
-pub async fn raw_json_rpc_result(endpoint: &str, method: &str, params: Value) -> Result<Value> {
-    let response = raw_json_rpc(endpoint, method, params).await?;
-    json_rpc_required_result(&response, method)
 }
 
 pub async fn raw_json_rpc_optional_result(

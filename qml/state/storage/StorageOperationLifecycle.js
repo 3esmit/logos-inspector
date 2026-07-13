@@ -211,13 +211,13 @@ function commitReduction(root, reduction) {
         return false
     }
     if (reduction.operation) {
-        root.updateActiveOperation(reduction.operation)
+        root.acceptUpdate(reduction.operation)
     }
     if (reduction.logLabel) {
-        root.appendOperation(reduction.logLabel, reduction.logResponse)
+        root.appendResult(reduction.logLabel, reduction.logResponse)
     }
     if (reduction.terminal === true && reduction.operation) {
-        root.appendTerminalStorageOperation(reduction.operation)
+        root.acceptTerminal(reduction.operation)
     }
     if (reduction.lastOperation !== undefined) {
         root.lastOperation = reduction.lastOperation

@@ -140,9 +140,9 @@ function networkConnectionRequest(root, kind, includeSensitiveProbe) {
         case "blockchain":
             return { module: inspectorModule, method: "blockchainNode", args: root.blockchainArgs([]), label: qsTr("Blockchain node") }
         case "messaging":
-            return { module: inspectorModule, method: "deliverySourceReport", args: root.deliverySourceReportArgs(), label: qsTr("Delivery source") }
+            return { module: inspectorModule, method: "deliverySourceReport", args: root.sourceRouting.deliverySourceReportArgs(), label: qsTr("Delivery source") }
         case "storage":
-            return { module: inspectorModule, method: "storageSourceReport", args: root.storageSourceReportArgs(includeSensitiveProbe), label: qsTr("Storage source") }
+            return { module: inspectorModule, method: "storageSourceReport", args: root.sourceRouting.storageSourceReportArgs(includeSensitiveProbe), label: qsTr("Storage source") }
         default:
             return null
         }

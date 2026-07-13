@@ -127,7 +127,7 @@ function footerFieldValue(root, key) {
     case "lez.rejected_tx_count_recent":
     case "lez.blocks_produced_recent":
     case "lez.pending_blocks_count":
-        return root.valueOrNa(root.model.dashboardMetricValue(key))
+        return root.valueOrNa(root.model.metrics.dashboardMetricValue(key))
     case "lez.publish_to_bedrock_status":
         return root.valueOrNa(root.latestSequencerBlockValue("bedrock_status"))
     case "lez.last_published_channel_update":
@@ -159,7 +159,7 @@ function footerFieldValue(root, key) {
     case "storage.node_reachable":
         return root.connectionReachableStatus("storage")
     case "storage.nat_mode":
-        return root.valueOrNa(root.model.openMetricValue("storage", ["storage_nat_mode", "nat_mode"]))
+        return root.valueOrNa(root.model.metrics.openMetricValue("storage", ["storage_nat_mode", "nat_mode"]))
     case "storage.udp_discovery_port":
         return root.portStatus("storage", ["storage_udp_discovery_port_open", "udp_discovery_port_open"])
     case "storage.tcp_transfer_port":
@@ -172,11 +172,12 @@ function footerFieldValue(root, key) {
     case "storage.active_downloads":
     case "storage.failed_transfers_recent":
     case "storage.failed_transfers_total":
-        return root.valueOrNa(root.model.dashboardMetricValue(key))
+        return root.valueOrNa(root.model.metrics.dashboardMetricValue(key))
     case "storage.dht_connected":
-        return root.yesNo(root.model.openMetricValue("storage", ["storage_dht_connected", "dht_connected"]))
+        return root.yesNo(root.model.metrics.openMetricValue("storage", ["storage_dht_connected", "dht_connected"]))
     case "storage.cid_fetch_test":
-        return root.valueOrNa(root.model.reportProbeValue(root.model.moduleReport("storage"), "exists"))
+        return root.valueOrNa(root.model.reportProbeValue(
+            root.model.metrics.moduleReport("storage"), "exists"))
     case "storage.last_error":
         return root.valueOrNa(root.model.moduleLastError("storage"))
     case "messaging.module":
@@ -193,7 +194,7 @@ function footerFieldValue(root, key) {
     case "messaging.message_error_events_recent":
     case "messaging.publish_latency_ms":
     case "messaging.receive_latency_ms":
-        return root.valueOrNa(root.model.dashboardMetricValue(key))
+        return root.valueOrNa(root.model.metrics.dashboardMetricValue(key))
     case "messaging.bootstrap_connected":
         return qsTr("n/a")
     case "messaging.last_error":

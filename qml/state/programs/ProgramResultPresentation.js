@@ -42,13 +42,13 @@ function activeTabMessage(page) {
 }
 
 function sharedPolicyText(page) {
-    if (page.model.sharedIdlPolicy === "disabled") {
+    if (page.model.social.sharedIdlPolicy === "disabled") {
         return qsTr("Shared account IDLs are ignored.")
     }
-    if (page.model.sharedIdlPolicy === "autoRegister") {
+    if (page.model.social.sharedIdlPolicy === "autoRegister") {
         return qsTr("Verified shared IDLs are saved to the local registry with shared source metadata.")
     }
-    if (page.model.sharedIdlPolicy === "sessionOnly") {
+    if (page.model.social.sharedIdlPolicy === "sessionOnly") {
         return qsTr("Verified shared IDLs are usable for this session without saving them.")
     }
     return qsTr("Verified shared IDLs are shown as suggestions; local IDLs stay preferred.")
@@ -63,21 +63,21 @@ function lastResultText(page) {
     if (!page.hasResponse) {
         return qsTr("Idle")
     }
-    return page.model.resultIsError ? qsTr("Error") : qsTr("OK")
+    return page.model.shell.resultIsError ? qsTr("Error") : qsTr("OK")
 }
 
 function lastResultDelta(page) {
     if (!page.hasResponse) {
         return qsTr("No output")
     }
-    return page.model.resultTitle.length ? page.model.resultTitle : qsTr("Program call")
+    return page.model.shell.resultTitle.length ? page.model.shell.resultTitle : qsTr("Program call")
 }
 
 function lastResultColor(page) {
     if (!page.hasResponse) {
         return page.theme.textMuted
     }
-    return page.model.resultIsError ? page.theme.warning : page.theme.success
+    return page.model.shell.resultIsError ? page.theme.warning : page.theme.success
 }
 
 function responsePayloadText(page) {

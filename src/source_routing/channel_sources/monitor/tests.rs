@@ -6,6 +6,7 @@ use std::sync::{
 use anyhow::{Result, bail, ensure};
 use tokio::sync::{Notify, mpsc, oneshot};
 
+use super::super::probe::{IndexerSourceProbeOutput, SequencerSourceProbeOutput};
 use super::*;
 
 #[tokio::test]
@@ -497,6 +498,7 @@ impl ChannelSourceProbe for ScriptedProbe {
         self: Arc<Self>,
         request: ChannelSourceProbeRequest,
     ) -> super::super::probe::ChannelSourceProbeFuture<ChannelSourceProbeOutput> {
+        let role = request.role;
         let (response, result) = oneshot::channel();
         let call = ProbeCall {
             source_id: request.source_id,
@@ -506,10 +508,13 @@ impl ChannelSourceProbe for ScriptedProbe {
         let sent = self.calls.send(call).is_ok();
         Box::pin(async move {
             if !sent {
-                return failed_output(super::super::ChannelSourceFailureKind::Unavailable);
+                return failed_output_for(
+                    role,
+                    super::super::ChannelSourceFailureKind::Unavailable,
+                );
             }
             result.await.unwrap_or_else(|_| {
-                failed_output(super::super::ChannelSourceFailureKind::Unavailable)
+                failed_output_for(role, super::super::ChannelSourceFailureKind::Unavailable)
             })
         })
     }
@@ -643,18 +648,33 @@ fn first_observation(snapshot: &ChannelSourceMonitorSnapshot) -> Option<&Channel
 }
 
 fn success_output(channel_id: &str, block_id: u64, hash: &str) -> ChannelSourceProbeOutput {
-    ChannelSourceProbeOutput {
+    ChannelSourceProbeOutput::Sequencer(SequencerSourceProbeOutput {
         health: ChannelSourceProbeFact::Observed(()),
         channel_id: ChannelSourceProbeFact::Observed(channel_id.to_owned()),
-        head: ChannelSourceProbeFact::Observed(Some(block(block_id, hash))),
-    }
+        head: ChannelSourceProbeFact::Observed(block(block_id, hash)),
+    })
 }
 
 fn failed_output(kind: super::super::ChannelSourceFailureKind) -> ChannelSourceProbeOutput {
-    ChannelSourceProbeOutput {
-        health: ChannelSourceProbeFact::Failed(probe_failure(kind)),
-        channel_id: ChannelSourceProbeFact::Failed(probe_failure(kind)),
-        head: ChannelSourceProbeFact::Failed(probe_failure(kind)),
+    failed_output_for(ChannelSourceRole::Sequencer, kind)
+}
+
+fn failed_output_for(
+    role: ChannelSourceRole,
+    kind: super::super::ChannelSourceFailureKind,
+) -> ChannelSourceProbeOutput {
+    match role {
+        ChannelSourceRole::Sequencer => {
+            ChannelSourceProbeOutput::Sequencer(SequencerSourceProbeOutput {
+                health: ChannelSourceProbeFact::Failed(probe_failure(kind)),
+                channel_id: ChannelSourceProbeFact::Failed(probe_failure(kind)),
+                head: ChannelSourceProbeFact::Failed(probe_failure(kind)),
+            })
+        }
+        ChannelSourceRole::Indexer => ChannelSourceProbeOutput::Indexer(IndexerSourceProbeOutput {
+            health: ChannelSourceProbeFact::Failed(probe_failure(kind)),
+            head: ChannelSourceProbeFact::Failed(probe_failure(kind)),
+        }),
     }
 }
 

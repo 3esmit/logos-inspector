@@ -58,14 +58,15 @@ function applySettingsState(root, value) {
         messagingRefreshRate = root.canonicalRefreshRate(root.numberSetting(value, "messaging_refresh_rate", messagingRefreshRate))
         storageRefreshRate = root.canonicalRefreshRate(root.numberSetting(value, "storage_refresh_rate", storageRefreshRate))
         if (value.footer_fields && typeof value.footer_fields === "object" && !Array.isArray(value.footer_fields)) {
-            footerFieldSelections = root.mergeMap(root.defaultFooterFieldSelections(), value.footer_fields)
+            footerFieldSelections = root.mergeMap(
+                root.metrics.defaultFooterFieldSelections(), value.footer_fields)
             footerFieldRevision += 1
         }
         if (value.dashboard_graphs && typeof value.dashboard_graphs === "object" && !Array.isArray(value.dashboard_graphs)) {
             dashboardGraphSelections = root.mergeMap(root.defaultDashboardGraphSelections(), value.dashboard_graphs)
             dashboardGraphRevision += 1
         }
-        root.loadSocialSettings(value)
+        root.social.loadSettings(value)
         root.favoriteStore.load(value.favorites)
         settingsStateLoaded = true
     }
@@ -73,7 +74,7 @@ function applySettingsState(root, value) {
 
 function settingsStatePayload(root) {
     with (root) {
-        const social = root.socialSettingsPayload()
+        const social = root.social.settingsPayload()
         const network = root.networkProfileSettingsPayload()
         return Object.assign({
             version: 2,

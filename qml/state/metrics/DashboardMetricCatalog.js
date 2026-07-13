@@ -57,7 +57,7 @@ function selectedDashboardGraphItems(model) {
 }
 
 function dashboardGraphItem(model, key) {
-    const raw = model.dashboardMetricValue(key)
+    const raw = model.metrics.dashboardMetricValue(key)
     const numeric = Number(raw)
     const gate = model.dashboardGate ? model.dashboardGate(key) : null
     const blocked = gate && gate.enabled === false

@@ -1,79 +1,66 @@
-function refreshSharedIdlsForAccount(root, entityRef, dataHex, ownerProgramId) {
-    const policy = root.normalizedSharedIdlPolicy(root.sharedIdlPolicy)
-    const account = String(entityRef && entityRef.canonical_key || "").trim()
-    const data = String(dataHex || "").trim()
-    const topic = root.socialZoneAccountIdlTopic(entityRef)
-    if (policy === "disabled" || !topic.length || !data.length || !root.socialSharedIdlReadAvailable()) {
-        return false
+.import "../source_operations/NodeOperationRequest.js" as NodeOperationRequest
+
+function acceptedEntries(root, request) {
+    const value = request || {}
+    if (String(value.policy || "") === "disabled"
+            || !String(value.topic || "").length
+            || !String(value.dataHex || "").length
+            || value.readEnabled !== true) {
+        return []
     }
-    const response = querySharedIdlStore(root, topic, "", 20, qsTr("Shared IDLs"))
+    const response = queryStore(root, value.topic, "", 20, qsTr("Shared IDLs"))
     if (!response.ok) {
-        return false
+        return []
     }
-    const acceptedResponse = root.requestModule(
+    const acceptedResponse = root.gateway.requestModule(
         root.inspectorModule,
         "acceptedSharedIdlEntriesFromStoreWithStorage",
         [
-            topic,
+            value.topic,
             response.value,
-            account,
-            data,
-            String(ownerProgramId || ""),
-            root.effectiveStorageSourceMode(root.storageSourceMode),
-            root.configuredStorageRestUrl(),
+            String(value.accountId || ""),
+            value.dataHex,
+            String(value.ownerProgramId || ""),
+            root.sourceRouting.storageOperationAdapter(),
             false
         ],
         qsTr("Shared IDLs"),
         false,
         false
     )
-    if (!acceptedResponse.ok || !Array.isArray(acceptedResponse.value)) {
-        return false
-    }
-    let accepted = 0
-    for (let i = 0; i < acceptedResponse.value.length; ++i) {
-        const entry = acceptedResponse.value[i] || null
-        if (entry && root.applySharedIdlPolicy(account, entry)) {
-            accepted += 1
-        }
-    }
-    return accepted > 0
+    return acceptedResponse.ok && Array.isArray(acceptedResponse.value)
+        ? acceptedResponse.value : []
 }
 
-function publishAccountIdl(root, entityRef, ownerProgramId, idlEntry) {
-    const account = String(entityRef && entityRef.canonical_key || "").trim()
-    const topic = root.socialZoneAccountIdlTopic(entityRef)
-    const scope = root.zoneSocialScope(entityRef)
-    const entry = idlEntry || {}
-    const idlJson = String(entry.json || "")
-    if (!topic.length || !scope || !idlJson.length
-            || !root.socialSharedIdlWriteAvailable(topic)) {
+function publish(root, request) {
+    const value = request || {}
+    const idlJson = String(value.idlJson || "")
+    if (!String(value.topic || "").length || !value.scope || !idlJson.length
+            || value.writeEnabled !== true) {
         return false
     }
-    const identity = root.socialIdentityForConversation(topic, "")
-    const programId = String(ownerProgramId || entry.programIdHex || entry.programId || "")
     const createdAt = new Date().toISOString()
-    const idlName = String(entry.name || root.idlNameFromJson(idlJson) || qsTr("IDL"))
     const artifact = {
         kind: "lez_account_idl_artifact",
         version: 2,
-        account_id: account,
-        program_id: programId,
-        idl_name: idlName,
+        account_id: String(value.accountId || ""),
+        program_id: String(value.programId || ""),
+        idl_name: String(value.idlName || qsTr("IDL")),
         idl_json: idlJson,
         created_at: createdAt,
-        scope: scope
+        scope: value.scope
     }
-    const upload = root.callInspector(
+    const upload = root.gateway.callInspector(
         "storageUploadPayload",
-        [
-            root.effectiveStorageSourceMode(root.storageSourceMode),
-            root.configuredStorageRestUrl(),
-            root.storageMutatingDiagnosticsEnabled === true,
-            "logos-inspector-shared-idl.json",
-            artifact,
-            65536
-        ],
+        [NodeOperationRequest.envelope(
+            root.sourceRouting.storageOperationAdapter(),
+            {
+                filename: "logos-inspector-shared-idl.json",
+                payload: artifact,
+                block_size: 65536
+            },
+            root.storageMutatingDiagnosticsEnabled === true
+        )],
         qsTr("Upload shared IDL")
     )
     if (!upload.ok || !upload.value || !String(upload.value.cid || "").length) {
@@ -83,54 +70,50 @@ function publishAccountIdl(root, entityRef, ownerProgramId, idlEntry) {
     const payload = {
         kind: "lez_account_idl",
         version: 2,
-        identity: root.socialIdentityPayload(identity),
-        account_id: account,
-        program_id: programId,
-        idl_name: idlName,
+        identity: value.identity || {},
+        account_id: String(value.accountId || ""),
+        program_id: String(value.programId || ""),
+        idl_name: String(value.idlName || qsTr("IDL")),
         idl_cid: cid,
         storage: {
             cid: cid,
             provider: "logos_storage",
-            endpoint: root.configuredStorageRestUrl()
+            endpoint: root.gateway.configuredStorageRestUrl()
         },
         created_at: createdAt,
-        scope: scope
+        scope: value.scope
     }
-    const response = root.callInspector(
+    const response = root.gateway.callInspector(
         "deliverySend",
-        root.socialDeliveryArgs([topic, JSON.stringify(payload)]),
+        deliveryArgs(root, "deliverySend", [value.topic, JSON.stringify(payload)]),
         qsTr("Share IDL")
     )
     return response.ok === true
 }
 
-function maybeAutoShareAccountIdl(root, entityRef, ownerProgramId, idlEntry) {
-    if (root.sharedIdlAutoShare !== true || !idlEntry || String(idlEntry.source || "") === "shared") {
-        return false
-    }
-    const topic = root.socialZoneAccountIdlTopic(entityRef)
-    const key = [String(entityRef && entityRef.canonical_key || ""), topic,
-        String(idlEntry.key || "")].join("|")
-    if (!topic.length || (root.socialAutoSharedIdls || {})[key] === true) {
-        return false
-    }
-    if (!publishAccountIdl(root, entityRef, ownerProgramId, idlEntry)) {
-        return false
-    }
-    const next = root.copyMap(root.socialAutoSharedIdls || {})
-    next[key] = true
-    root.socialAutoSharedIdls = next
-    root.saveSettingsState()
-    return true
-}
-
-function querySharedIdlStore(root, topic, cursor, pageSize, label) {
-    return root.requestModule(
+function queryStore(root, topic, cursor, pageSize, label) {
+    return root.gateway.requestModule(
         root.inspectorModule,
         "deliveryStoreQuery",
-        root.socialDeliveryArgs(["", String(topic || ""), "", String(cursor || ""), root.socialPageSize(pageSize), true, true]),
+        deliveryArgs(root, "deliveryStoreQuery", [
+            "",
+            String(topic || ""),
+            "",
+            String(cursor || ""),
+            pageSize,
+            true,
+            true
+        ]),
         String(label || qsTr("Delivery Store")),
         false,
         false
     )
+}
+
+function deliveryArgs(root, method, extra) {
+    return [NodeOperationRequest.envelope(
+        root.sourceRouting.deliveryOperationAdapter(),
+        NodeOperationRequest.deliveryPayload(method, extra),
+        root.messagingMutatingDiagnosticsEnabled === true
+    )]
 }

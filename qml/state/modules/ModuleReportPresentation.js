@@ -73,7 +73,7 @@ function moduleStatusText(root) {
     if (!root.hasResponse) {
         return qsTr("Idle")
     }
-    if (root.model.resultIsError) {
+    if (root.model.shell.resultIsError) {
         return qsTr("Error")
     }
     return responseStatusText(root)
@@ -83,8 +83,8 @@ function moduleStatusDelta(root) {
     if (!root.hasResponse) {
         return qsTr("Awaiting call")
     }
-    if (root.model.resultIsError) {
-        return root.model.resultText
+    if (root.model.shell.resultIsError) {
+        return root.model.shell.resultText
     }
     return responseSourceText(root)
 }
@@ -93,7 +93,7 @@ function moduleStatusColor(root) {
     if (!root.hasResponse) {
         return root.theme.textMuted
     }
-    if (root.model.resultIsError) {
+    if (root.model.shell.resultIsError) {
         return root.theme.warning
     }
     return responseStatusColor(root)
@@ -127,7 +127,7 @@ function expectedProbeText(root) {
 }
 
 function responseStatusText(root) {
-    if (root.model.resultIsError) {
+    if (root.model.shell.resultIsError) {
         return qsTr("Error")
     }
     const rows = root.responseProbeModel
@@ -156,7 +156,7 @@ function responseStatusColor(root) {
 }
 
 function responseSourceText(root) {
-    return root.model.resultTitle.length ? root.model.resultTitle : moduleLabel(root, root.moduleKind)
+    return root.model.shell.resultTitle.length ? root.model.shell.resultTitle : moduleLabel(root, root.moduleKind)
 }
 
 function responseProbeOkCount(root) {
@@ -173,7 +173,7 @@ function responseProbeOkCount(root) {
 function responseProbeOkText(root) {
     const rows = root.responseProbeModel
     if (!rows.length) {
-        return root.hasResponse && !root.model.resultIsError ? qsTr("Yes") : "-"
+        return root.hasResponse && !root.model.shell.resultIsError ? qsTr("Yes") : "-"
     }
     return qsTr("%1/%2").arg(responseProbeOkCount(root)).arg(rows.length)
 }

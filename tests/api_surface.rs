@@ -1,12 +1,11 @@
 #[test]
 fn primary_domain_modules_expose_boundaries() {
     let _ = logos_inspector::bridge::InspectorBridge::error_json("probe");
+    let _ = logos_inspector::logoscore::status;
     let _ = logos_inspector::program_decode::spel_idl_report;
-    fn accepts_program_info(_: Option<logos_inspector::lez::ProgramFileInfo>) {}
+    fn accepts_program_info(_: Option<logos_inspector::ProgramFileInfo>) {}
     accepts_program_info(None);
     let _ = logos_inspector::probe::ProbeReport::ok("label", "source", true);
-    let _ = logos_inspector::blockchain::logos_node_cryptarchia_info;
-    let _ = logos_inspector::rpc::raw_rpc_report;
     let _ = logos_inspector::wallet::LOCAL_WALLET_HOME_ENV;
 }
 
@@ -29,9 +28,7 @@ fn source_routing_exposes_adapter_boundaries() {
 }
 
 #[test]
-fn network_inspection_exposes_legacy_and_zone_boundaries() {
-    let _ = logos_inspector::inspection::l1::channels::channel_scan;
-    let _ = logos_inspector::inspection::l2::lez::sequencer_health;
+fn network_inspection_exposes_zone_boundaries() {
     let _ = logos_inspector::inspection::zones::classify_zone;
     let _ = logos_inspector::inspection::classify_zone;
     let _ = logos_inspector::inspection::classify_catalog_zone;
@@ -51,13 +48,14 @@ fn network_inspection_exposes_legacy_and_zone_boundaries() {
 }
 
 #[test]
-fn legacy_root_and_network_shims_still_compile() {
+fn root_models_and_network_helpers_still_compile() {
     let _ = logos_inspector::decode::spel_idl_report;
     let _ = logos_inspector::idl_decode::spel_idl_report;
     let _ = logos_inspector::network_profiles;
     let _ = logos_inspector::resolve_network_endpoints;
     let _ = logos_inspector::network::network_profiles;
-    let _ = logos_inspector::logos_node_cryptarchia_info;
-    let _ = logos_inspector::raw_rpc_report;
-    let _ = logos_inspector::sequencer_health;
+    let _ = logos_inspector::summarize_channel_operations;
+    let _ = logos_inspector::summarize_transaction;
+    fn accepts_rpc_report(_: Option<logos_inspector::RawRpcReport>) {}
+    accepts_rpc_report(None);
 }

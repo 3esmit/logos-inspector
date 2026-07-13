@@ -61,7 +61,7 @@ Item {
             appModel.loadCapabilityRegistry()
             appModel.loadBackupCatalog()
             root.schedulePageLoaderUpdate()
-            if (appModel.currentView === "overview" && appModel.dashboardRefreshInterval() > 0 && appModel.bridgeSupportsAsync()) {
+            if (appModel.shell.currentView === "overview" && appModel.dashboardRefreshInterval() > 0 && appModel.bridgeSupportsAsync()) {
                 Qt.callLater(function () {
                     appModel.refreshDashboard()
                 })
@@ -69,11 +69,12 @@ Item {
             Qt.callLater(function () {
                 appModel.loadIdlState()
                 appModel.loadWalletState()
+                appModel.checkLocalWalletProfile(false)
                 appModel.loadCapabilityRegistry()
                 moduleEventIntake.install()
                 if (initialReference.length > 0) {
                     Qt.callLater(function () {
-                        appModel.routeSearch(initialReference)
+                        appModel.entityNavigation.routeSearch(initialReference)
                     })
                 }
             })
@@ -243,7 +244,7 @@ Item {
             if (serial !== root.pageLoadSerial) {
                 return
             }
-            pageLoader.sourceComponent = root.pageFor(appModel.currentView)
+            pageLoader.sourceComponent = root.pageFor(appModel.shell.currentView)
         })
     }
 

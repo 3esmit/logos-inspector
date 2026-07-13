@@ -5,7 +5,6 @@ use crate::{
     support::args::Args,
     support::backup_catalog::{
         attach_remote_backup_metadata, create_local_settings_backup, load_backup_catalog_value,
-        preview_local_settings_restore, restore_local_settings_backup,
     },
     support::state_store::{
         load_idl_state as load_idl_state_store, load_settings_state as load_settings_state_store,
@@ -27,8 +26,6 @@ pub(super) const METHOD_CATALOG: &[RuntimeMethodEntry] = &[
     RuntimeMethodEntry::no_args("loadBackupCatalog", load_backup_catalog),
     RuntimeMethodEntry::sync("createLocalSettingsBackup", create_local_backup),
     RuntimeMethodEntry::sync("attachBackupRemote", attach_backup_remote),
-    RuntimeMethodEntry::sync("previewLocalSettingsRestore", preview_local_restore),
-    RuntimeMethodEntry::sync("restoreLocalSettingsBackup", restore_local_backup),
 ];
 
 pub(super) fn load_idl_state() -> Result<Value> {
@@ -81,22 +78,4 @@ pub(super) fn attach_backup_remote(args: Value) -> Result<Value> {
         args.optional_string(2),
     )?;
     serde_json::to_value(entry).context("failed to serialize backup catalog entry")
-}
-
-pub(super) fn preview_local_restore(args: Value) -> Result<Value> {
-    let args = Args::new(args)?;
-    preview_local_settings_restore(
-        args.string(0, "backup catalog id")?,
-        args.value(1),
-        args.value(2),
-    )
-}
-
-pub(super) fn restore_local_backup(args: Value) -> Result<Value> {
-    let args = Args::new(args)?;
-    restore_local_settings_backup(
-        args.string(0, "backup catalog id")?,
-        args.value(1),
-        args.value(2),
-    )
 }

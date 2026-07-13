@@ -19,11 +19,7 @@ impl HeadRaceTransport {
 }
 
 impl ChannelSourceProbeTransport for HeadRaceTransport {
-    fn health(
-        self: Arc<Self>,
-        _role: ChannelSourceRole,
-        _target: ChannelSourceTarget,
-    ) -> TransportFuture<()> {
+    fn sequencer_health(self: Arc<Self>, _target: ChannelSourceTarget) -> TransportFuture<()> {
         Box::pin(async { Ok(()) })
     }
 
@@ -39,6 +35,25 @@ impl ChannelSourceProbeTransport for HeadRaceTransport {
         Box::pin(async move { Ok(if call == 0 { 41 } else { 42 }) })
     }
 
+    fn sequencer_block(
+        self: Arc<Self>,
+        _target: ChannelSourceTarget,
+        block_id: u64,
+    ) -> TransportFuture<Option<ChannelSourceBlock>> {
+        let present = block_id == 42 && self.retry_block_present;
+        Box::pin(async move {
+            Ok(present.then(|| ChannelSourceBlock {
+                block_id,
+                header_hash: "a".repeat(64),
+                parent_hash: Some("b".repeat(64)),
+            }))
+        })
+    }
+
+    fn indexer_health(self: Arc<Self>, _target: ChannelSourceTarget) -> TransportFuture<()> {
+        Box::pin(async { Ok(()) })
+    }
+
     fn indexer_finalized_head_id(
         self: Arc<Self>,
         _target: ChannelSourceTarget,
@@ -46,15 +61,13 @@ impl ChannelSourceProbeTransport for HeadRaceTransport {
         Box::pin(async { Ok(Some(40)) })
     }
 
-    fn block(
+    fn indexer_block(
         self: Arc<Self>,
-        _role: ChannelSourceRole,
         _target: ChannelSourceTarget,
         block_id: u64,
     ) -> TransportFuture<Option<ChannelSourceBlock>> {
-        let present = block_id == 42 && self.retry_block_present;
         Box::pin(async move {
-            Ok(present.then(|| ChannelSourceBlock {
+            Ok(Some(ChannelSourceBlock {
                 block_id,
                 header_hash: "a".repeat(64),
                 parent_hash: Some("b".repeat(64)),
@@ -108,6 +121,10 @@ async fn source_probe_records_independent_health_identity_and_head_facts() -> Re
     )
     .await;
 
+    let ChannelSourceProbeOutput::Sequencer(output) = output else {
+        anyhow::bail!("Sequencer request returned Indexer output");
+    };
+
     ensure!(
         matches!(output.health, ChannelSourceProbeFact::Observed(())),
         "health fact was not retained"
@@ -122,9 +139,38 @@ async fn source_probe_records_independent_health_identity_and_head_facts() -> Re
     ensure!(
         matches!(
             output.head,
-            ChannelSourceProbeFact::Observed(Some(ref block)) if block.block_id == 42
+            ChannelSourceProbeFact::Observed(ref block) if block.block_id == 42
         ),
         "head fact was not retained"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn indexer_probe_exposes_only_indexer_facts() -> Result<()> {
+    let output = probe_source(
+        Arc::new(HeadRaceTransport::new(true)),
+        ChannelSourceProbeRequest {
+            source_id: source_id('2'),
+            role: ChannelSourceRole::Indexer,
+            target: rpc_target(),
+        },
+    )
+    .await;
+
+    let ChannelSourceProbeOutput::Indexer(output) = output else {
+        anyhow::bail!("Indexer request returned Sequencer output");
+    };
+    ensure!(
+        matches!(output.health, ChannelSourceProbeFact::Observed(())),
+        "Indexer health fact was not retained"
+    );
+    ensure!(
+        matches!(
+            output.head,
+            ChannelSourceProbeFact::Observed(Some(ref block)) if block.block_id == 40
+        ),
+        "Indexer finalized head fact was not retained"
     );
     Ok(())
 }
@@ -134,15 +180,12 @@ async fn sequencer_module_probe_is_explicitly_unsupported() -> Result<()> {
     let transport: Arc<dyn ChannelSourceProbeTransport> =
         Arc::new(DefaultChannelSourceProbeTransport);
     let result = transport
-        .health(
-            ChannelSourceRole::Sequencer,
-            ChannelSourceTarget::Module {
-                module_id: super::super::layer::module_id_for_role(
-                    crate::source_routing::channel_sources::ChannelSourceRole::Sequencer,
-                )
-                .to_owned(),
-            },
-        )
+        .sequencer_health(ChannelSourceTarget::Module {
+            module_id: super::super::layer::module_id_for_role(
+                crate::source_routing::channel_sources::ChannelSourceRole::Sequencer,
+            )
+            .to_owned(),
+        })
         .await;
 
     let Err(error) = result else {

@@ -294,7 +294,7 @@ ColumnLayout {
             return ""
         }
         const id = root.detail.hash.length ? root.detail.hash : String(root.detail.slot || "")
-        return root.model.socialCommentTopic("cryptarchia", "block", id)
+        return root.model.social.commentTopic("cryptarchia", "block", id)
     }
 
 }

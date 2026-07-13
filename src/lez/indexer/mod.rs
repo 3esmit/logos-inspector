@@ -5,19 +5,16 @@ mod normalizer;
 mod transactions;
 
 pub use normalizer::{IndexerBlockReport, IndexerStatusReport};
-pub(crate) use normalizer::{
-    next_indexer_blocks_cursor, summarize_indexer_status_response, verified_indexer_block_report,
-};
+pub(crate) use normalizer::{summarize_indexer_status_response, verified_indexer_block_report};
 pub use transactions::{AccountTransactionSummary, TransactionTransferOutputSummary};
 pub(crate) use transactions::{
     summarize_indexer_transaction, summarize_transfer_outputs,
     verified_indexer_transaction_summary, with_account_direction,
 };
 
-use super::transfers::{TransferActivityPage, transfer_recipient_summaries_from_blocks};
 use crate::{
     lez::{AccountReport, TransactionSummary, indexer_account_report},
-    raw_json_rpc, raw_json_rpc_optional_result,
+    rpc::{raw_json_rpc, raw_json_rpc_optional_result},
 };
 
 pub async fn indexer_block_by_hash(
@@ -148,23 +145,4 @@ pub async fn indexer_health(endpoint: &str) -> Result<Value> {
     raw_json_rpc_optional_result(endpoint, "checkHealth", Value::Array(vec![]))
         .await
         .context("failed to check indexer health")
-}
-
-pub async fn indexer_status(endpoint: &str) -> Result<IndexerStatusReport> {
-    let response = raw_json_rpc(endpoint, "getStatus", Value::Array(vec![]))
-        .await
-        .context("failed to fetch indexer status")?;
-    Ok(summarize_indexer_status_response(&response))
-}
-
-pub async fn indexer_transfer_recipients(
-    endpoint: &str,
-    before: Option<u64>,
-    limit: u64,
-) -> Result<TransferActivityPage> {
-    let blocks = indexer_blocks(endpoint, before, limit).await?;
-    Ok(TransferActivityPage {
-        next_before_block: next_indexer_blocks_cursor(&blocks),
-        recipients: transfer_recipient_summaries_from_blocks(&blocks),
-    })
 }

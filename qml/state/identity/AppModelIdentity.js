@@ -1,4 +1,5 @@
 .import "../settings/SettingsProfile.js" as SettingsProfile
+.import "../source_operations/NodeOperationRequest.js" as NodeOperationRequest
 
 function saveIdlState(root) {
     with (root) {
@@ -73,7 +74,7 @@ function backupSettingsToStorage(root, encrypted, contents) {
             settingsBackupStatus = root.backupCatalogError.length ? root.backupCatalogError : qsTr("Local backup failed.")
             return false
         }
-        const upload = root.uploadBackupCatalogEntry(entry.backup_catalog_id)
+        const upload = root.backupImport.uploadBackupCatalogEntry(entry.backup_catalog_id)
         if (!upload) {
             settingsBackupStatus = root.backupCatalogError.length
                 ? qsTr("Local backup created. Storage upload failed: %1").arg(root.backupCatalogError)
@@ -101,12 +102,11 @@ function restoreSettingsFromStorage(root, cid, useWallet) {
             settingsBackupStatus = qsTr("Storage read-by-CID capability is required.")
             return false
         }
-        const response = root.callInspector("storageRestoreSettings", [
-            root.effectiveStorageSourceMode(storageSourceMode),
-            root.configuredStorageRestUrl(),
-            backupCid,
+        const response = root.callInspector("storageRestoreSettings", [NodeOperationRequest.envelope(
+            root.sourceRouting.storageOperationAdapter(),
+            { cid: backupCid, local_only: false },
             false
-        ], qsTr("Settings backup download"))
+        )], qsTr("Settings backup download"))
         if (!response.ok) {
             settingsBackupStatus = response.error || qsTr("Settings backup download failed.")
             return false
@@ -321,7 +321,7 @@ function refreshBedrockWalletModule(root, address) {
     with (root) {
         const target = String(address === undefined || address === null ? walletPublicKeyProbe : address).trim()
         bedrockWalletModuleError = ""
-        statusText = qsTr("Bedrock wallet")
+        shell.statusText = qsTr("Bedrock wallet")
         blockchainModuleReport = null
         return requestModuleAsync(inspectorModule, "blockchainModuleReport", [target], qsTr("Bedrock wallet"), false, function (response) {
             if (response.ok) {
@@ -489,7 +489,7 @@ function walletPayloadList(root, method, keys) {
 }
 
 function walletProbePayload(root, method) {
-    const value = root.moduleProbeValue("blockchain", method)
+    const value = root.metrics.moduleProbeValue("blockchain", method)
     return unwrapLogoscoreCallValue(value)
 }
 

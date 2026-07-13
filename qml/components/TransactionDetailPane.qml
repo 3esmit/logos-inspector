@@ -583,7 +583,7 @@ ColumnLayout {
         if (!root.detail || !root.detail.hash.length) {
             return ""
         }
-        return root.model.socialCommentTopic(root.detail.mode === "blockchain" ? "cryptarchia" : "lez", "transaction", root.detail.hash)
+        return root.model.social.commentTopic(root.detail.mode === "blockchain" ? "cryptarchia" : "lez", "transaction", root.detail.hash)
     }
 
 }

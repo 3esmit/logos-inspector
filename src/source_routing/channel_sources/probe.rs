@@ -1,9 +1,11 @@
 use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
-use super::{ChannelSourceRole, ChannelSourceTarget, layer};
+use super::{
+    ChannelSourceRole, ChannelSourceTarget, indexer::IndexerAdapter,
+    layer::ExecutionZoneReadErrorKind, sequencer::SequencerAdapter,
+};
 
 const SOURCE_PROBE_TIMEOUT: Duration = Duration::from_secs(8);
 
@@ -74,14 +76,13 @@ impl ChannelSourceProbeFailure {
 pub(crate) enum ChannelSourceProbeFact<T> {
     Observed(T),
     Failed(ChannelSourceProbeFailure),
-    NotApplicable,
 }
 
 impl<T> ChannelSourceProbeFact<T> {
     pub(crate) fn failure(&self) -> Option<&ChannelSourceProbeFailure> {
         match self {
             Self::Failed(failure) => Some(failure),
-            Self::Observed(_) | Self::NotApplicable => None,
+            Self::Observed(_) => None,
         }
     }
 }
@@ -101,10 +102,22 @@ pub(crate) struct ChannelSourceProbeRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ChannelSourceProbeOutput {
+pub(crate) struct SequencerSourceProbeOutput {
     pub(crate) health: ChannelSourceProbeFact<()>,
     pub(crate) channel_id: ChannelSourceProbeFact<String>,
+    pub(crate) head: ChannelSourceProbeFact<ChannelSourceBlock>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct IndexerSourceProbeOutput {
+    pub(crate) health: ChannelSourceProbeFact<()>,
     pub(crate) head: ChannelSourceProbeFact<Option<ChannelSourceBlock>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ChannelSourceProbeOutput {
+    Sequencer(SequencerSourceProbeOutput),
+    Indexer(IndexerSourceProbeOutput),
 }
 
 pub(crate) trait ChannelSourceProbe: Send + Sync + 'static {
@@ -170,14 +183,17 @@ impl ChannelSourceProbe for DefaultChannelSourceProbe {
     ) -> ChannelSourceProbeFuture<Result<Option<ChannelSourceBlock>, ChannelSourceProbeFailure>>
     {
         Box::pin(async move {
-            match tokio::time::timeout(
-                SOURCE_PROBE_TIMEOUT,
-                self.transport
+            let block = match request.role {
+                ChannelSourceRole::Sequencer => self
+                    .transport
                     .clone()
-                    .block(request.role, request.target, block_id),
-            )
-            .await
-            {
+                    .sequencer_block(request.target, block_id),
+                ChannelSourceRole::Indexer => self
+                    .transport
+                    .clone()
+                    .indexer_block(request.target, block_id),
+            };
+            match tokio::time::timeout(SOURCE_PROBE_TIMEOUT, block).await {
                 Ok(result) => result,
                 Err(_) => Err(ChannelSourceProbeFailure::timeout()),
             }
@@ -189,30 +205,28 @@ async fn probe_source(
     transport: Arc<dyn ChannelSourceProbeTransport>,
     request: ChannelSourceProbeRequest,
 ) -> ChannelSourceProbeOutput {
-    let health = transport
-        .clone()
-        .health(request.role, request.target.clone());
     match request.role {
         ChannelSourceRole::Sequencer => {
+            let health = transport.clone().sequencer_health(request.target.clone());
             let channel_id = transport
                 .clone()
                 .sequencer_channel_id(request.target.clone());
             let head = sequencer_head(transport, request.target);
             let (health, channel_id, head) = tokio::join!(health, channel_id, head);
-            ChannelSourceProbeOutput {
+            ChannelSourceProbeOutput::Sequencer(SequencerSourceProbeOutput {
                 health: result_fact(health),
                 channel_id: result_fact(channel_id),
-                head: result_fact(head.map(Some)),
-            }
+                head: result_fact(head),
+            })
         }
         ChannelSourceRole::Indexer => {
+            let health = transport.clone().indexer_health(request.target.clone());
             let head = indexer_head(transport, request.target);
             let (health, head) = tokio::join!(health, head);
-            ChannelSourceProbeOutput {
+            ChannelSourceProbeOutput::Indexer(IndexerSourceProbeOutput {
                 health: result_fact(health),
-                channel_id: ChannelSourceProbeFact::NotApplicable,
                 head: result_fact(head),
-            }
+            })
         }
     }
 }
@@ -225,15 +239,18 @@ fn result_fact<T>(result: Result<T, ChannelSourceProbeFailure>) -> ChannelSource
 }
 
 fn timed_out_output(role: ChannelSourceRole) -> ChannelSourceProbeOutput {
-    ChannelSourceProbeOutput {
-        health: ChannelSourceProbeFact::Failed(ChannelSourceProbeFailure::timeout()),
-        channel_id: match role {
-            ChannelSourceRole::Sequencer => {
-                ChannelSourceProbeFact::Failed(ChannelSourceProbeFailure::timeout())
-            }
-            ChannelSourceRole::Indexer => ChannelSourceProbeFact::NotApplicable,
-        },
-        head: ChannelSourceProbeFact::Failed(ChannelSourceProbeFailure::timeout()),
+    match role {
+        ChannelSourceRole::Sequencer => {
+            ChannelSourceProbeOutput::Sequencer(SequencerSourceProbeOutput {
+                health: ChannelSourceProbeFact::Failed(ChannelSourceProbeFailure::timeout()),
+                channel_id: ChannelSourceProbeFact::Failed(ChannelSourceProbeFailure::timeout()),
+                head: ChannelSourceProbeFact::Failed(ChannelSourceProbeFailure::timeout()),
+            })
+        }
+        ChannelSourceRole::Indexer => ChannelSourceProbeOutput::Indexer(IndexerSourceProbeOutput {
+            health: ChannelSourceProbeFact::Failed(ChannelSourceProbeFailure::timeout()),
+            head: ChannelSourceProbeFact::Failed(ChannelSourceProbeFailure::timeout()),
+        }),
     }
 }
 
@@ -244,7 +261,7 @@ async fn sequencer_head(
     let first_id = transport.clone().sequencer_head_id(target.clone()).await?;
     if let Some(block) = transport
         .clone()
-        .block(ChannelSourceRole::Sequencer, target.clone(), first_id)
+        .sequencer_block(target.clone(), first_id)
         .await?
     {
         return Ok(block);
@@ -252,7 +269,7 @@ async fn sequencer_head(
 
     let retry_id = transport.clone().sequencer_head_id(target.clone()).await?;
     transport
-        .block(ChannelSourceRole::Sequencer, target, retry_id)
+        .sequencer_block(target, retry_id)
         .await?
         .ok_or_else(|| {
             ChannelSourceProbeFailure::incomplete(
@@ -273,7 +290,7 @@ async fn indexer_head(
         return Ok(None);
     };
     transport
-        .block(ChannelSourceRole::Indexer, target, block_id)
+        .indexer_block(target, block_id)
         .await?
         .map(Some)
         .ok_or_else(|| {
@@ -285,11 +302,7 @@ type TransportFuture<T> =
     Pin<Box<dyn Future<Output = Result<T, ChannelSourceProbeFailure>> + Send + 'static>>;
 
 trait ChannelSourceProbeTransport: Send + Sync + 'static {
-    fn health(
-        self: Arc<Self>,
-        role: ChannelSourceRole,
-        target: ChannelSourceTarget,
-    ) -> TransportFuture<()>;
+    fn sequencer_health(self: Arc<Self>, target: ChannelSourceTarget) -> TransportFuture<()>;
 
     fn sequencer_channel_id(
         self: Arc<Self>,
@@ -298,14 +311,21 @@ trait ChannelSourceProbeTransport: Send + Sync + 'static {
 
     fn sequencer_head_id(self: Arc<Self>, target: ChannelSourceTarget) -> TransportFuture<u64>;
 
+    fn sequencer_block(
+        self: Arc<Self>,
+        target: ChannelSourceTarget,
+        block_id: u64,
+    ) -> TransportFuture<Option<ChannelSourceBlock>>;
+
+    fn indexer_health(self: Arc<Self>, target: ChannelSourceTarget) -> TransportFuture<()>;
+
     fn indexer_finalized_head_id(
         self: Arc<Self>,
         target: ChannelSourceTarget,
     ) -> TransportFuture<Option<u64>>;
 
-    fn block(
+    fn indexer_block(
         self: Arc<Self>,
-        role: ChannelSourceRole,
         target: ChannelSourceTarget,
         block_id: u64,
     ) -> TransportFuture<Option<ChannelSourceBlock>>;
@@ -314,40 +334,25 @@ trait ChannelSourceProbeTransport: Send + Sync + 'static {
 struct DefaultChannelSourceProbeTransport;
 
 impl ChannelSourceProbeTransport for DefaultChannelSourceProbeTransport {
-    fn health(
-        self: Arc<Self>,
-        role: ChannelSourceRole,
-        target: ChannelSourceTarget,
-    ) -> TransportFuture<()> {
+    fn sequencer_health(self: Arc<Self>, target: ChannelSourceTarget) -> TransportFuture<()> {
         Box::pin(async move {
-            match (role, target) {
-                (ChannelSourceRole::Sequencer, ChannelSourceTarget::Rpc { endpoint }) => {
-                    layer::sequencer_health(&endpoint).await.map_err(|_| {
-                        ChannelSourceProbeFailure::unavailable("Sequencer health request failed")
-                    })
-                }
-                (ChannelSourceRole::Indexer, ChannelSourceTarget::Rpc { endpoint }) => {
-                    layer::indexer_health(&endpoint)
-                        .await
-                        .map(|_| ())
-                        .map_err(|_| {
-                            ChannelSourceProbeFailure::unavailable("Indexer health request failed")
-                        })
-                }
-                (ChannelSourceRole::Sequencer, ChannelSourceTarget::Module { .. }) => {
-                    Err(ChannelSourceProbeFailure::unsupported(
-                        "configured module does not expose Sequencer inspection",
-                    ))
-                }
-                (ChannelSourceRole::Indexer, ChannelSourceTarget::Module { .. }) => {
-                    layer::module_indexer_health()
-                        .await
-                        .map(|_| ())
-                        .map_err(|_| {
-                            ChannelSourceProbeFailure::unavailable("Indexer module health failed")
-                        })
-                }
-            }
+            SequencerAdapter::connect(&target)
+                .map_err(|error| {
+                    probe_read_failure(
+                        error.kind,
+                        "Sequencer health request failed",
+                        "configured source does not expose Sequencer health inspection",
+                    )
+                })?
+                .health()
+                .await
+                .map_err(|error| {
+                    probe_read_failure(
+                        error.kind,
+                        "Sequencer health request failed",
+                        "configured source does not expose Sequencer health inspection",
+                    )
+                })
         })
     }
 
@@ -356,33 +361,94 @@ impl ChannelSourceProbeTransport for DefaultChannelSourceProbeTransport {
         target: ChannelSourceTarget,
     ) -> TransportFuture<String> {
         Box::pin(async move {
-            match target {
-                ChannelSourceTarget::Rpc { endpoint } => {
-                    layer::sequencer_channel_id(&endpoint).await.map_err(|_| {
-                        ChannelSourceProbeFailure::unavailable(
-                            "Sequencer Channel identity request failed",
-                        )
-                    })
-                }
-                ChannelSourceTarget::Module { .. } => Err(ChannelSourceProbeFailure::unsupported(
-                    "configured module does not expose Sequencer Channel identity",
-                )),
-            }
+            SequencerAdapter::connect(&target)
+                .map_err(|error| {
+                    probe_read_failure(
+                        error.kind,
+                        "Sequencer Channel identity request failed",
+                        "configured source does not expose Sequencer Channel identity",
+                    )
+                })?
+                .channel_id()
+                .await
+                .map_err(|error| {
+                    probe_read_failure(
+                        error.kind,
+                        "Sequencer Channel identity request failed",
+                        "configured source does not expose Sequencer Channel identity",
+                    )
+                })
         })
     }
 
     fn sequencer_head_id(self: Arc<Self>, target: ChannelSourceTarget) -> TransportFuture<u64> {
         Box::pin(async move {
-            match target {
-                ChannelSourceTarget::Rpc { endpoint } => layer::sequencer_last_block_id(&endpoint)
-                    .await
-                    .map_err(|_| {
-                        ChannelSourceProbeFailure::unavailable("Sequencer head request failed")
-                    }),
-                ChannelSourceTarget::Module { .. } => Err(ChannelSourceProbeFailure::unsupported(
-                    "configured module does not expose Sequencer head inspection",
-                )),
-            }
+            SequencerAdapter::connect(&target)
+                .map_err(|error| {
+                    probe_read_failure(
+                        error.kind,
+                        "Sequencer head request failed",
+                        "configured source does not expose Sequencer head inspection",
+                    )
+                })?
+                .reported_head_id()
+                .await
+                .map_err(|error| {
+                    probe_read_failure(
+                        error.kind,
+                        "Sequencer head request failed",
+                        "configured source does not expose Sequencer head inspection",
+                    )
+                })
+        })
+    }
+
+    fn sequencer_block(
+        self: Arc<Self>,
+        target: ChannelSourceTarget,
+        block_id: u64,
+    ) -> TransportFuture<Option<ChannelSourceBlock>> {
+        Box::pin(async move {
+            SequencerAdapter::connect(&target)
+                .map_err(|error| {
+                    probe_read_failure(
+                        error.kind,
+                        "Sequencer block request failed",
+                        "configured source does not expose Sequencer block inspection",
+                    )
+                })?
+                .block_by_id(block_id)
+                .await
+                .map(|block| block.map(sequencer_block_reference))
+                .map_err(|error| {
+                    probe_read_failure(
+                        error.kind,
+                        "Sequencer block request failed",
+                        "configured source does not expose Sequencer block inspection",
+                    )
+                })
+        })
+    }
+
+    fn indexer_health(self: Arc<Self>, target: ChannelSourceTarget) -> TransportFuture<()> {
+        Box::pin(async move {
+            IndexerAdapter::connect(&target)
+                .map_err(|error| {
+                    probe_read_failure(
+                        error.kind,
+                        "Indexer health request failed",
+                        "configured source does not expose Indexer health inspection",
+                    )
+                })?
+                .health()
+                .await
+                .map_err(|error| {
+                    probe_read_failure(
+                        error.kind,
+                        "Indexer health request failed",
+                        "configured source does not expose Indexer health inspection",
+                    )
+                })
         })
     }
 
@@ -391,86 +457,68 @@ impl ChannelSourceProbeTransport for DefaultChannelSourceProbeTransport {
         target: ChannelSourceTarget,
     ) -> TransportFuture<Option<u64>> {
         Box::pin(async move {
-            match target {
-                ChannelSourceTarget::Rpc { endpoint } => {
-                    layer::indexer_finalized_block_id(&endpoint)
-                        .await
-                        .map_err(|_| {
-                            ChannelSourceProbeFailure::unavailable(
-                                "Indexer finalized-head request failed",
-                            )
-                        })
-                }
-                ChannelSourceTarget::Module { .. } => layer::module_indexer_finalized_head()
-                    .await
-                    .map_err(|_| {
-                        ChannelSourceProbeFailure::unavailable(
-                            "Indexer module finalized-head request failed",
-                        )
-                    })
-                    .and_then(parse_optional_block_id),
-            }
+            IndexerAdapter::connect(&target)
+                .map_err(|error| {
+                    probe_read_failure(
+                        error.kind,
+                        "Indexer finalized-head request failed",
+                        "configured source does not expose Indexer head inspection",
+                    )
+                })?
+                .reported_head_id()
+                .await
+                .map_err(|error| {
+                    probe_read_failure(
+                        error.kind,
+                        "Indexer finalized-head request failed",
+                        "configured source does not expose Indexer head inspection",
+                    )
+                })
         })
     }
 
-    fn block(
+    fn indexer_block(
         self: Arc<Self>,
-        role: ChannelSourceRole,
         target: ChannelSourceTarget,
         block_id: u64,
     ) -> TransportFuture<Option<ChannelSourceBlock>> {
         Box::pin(async move {
-            match (role, target) {
-                (ChannelSourceRole::Sequencer, ChannelSourceTarget::Rpc { endpoint }) => {
-                    layer::sequencer_block(&endpoint, block_id)
-                        .await
-                        .map(|block| block.map(sequencer_block_reference))
-                        .map_err(|_| {
-                            ChannelSourceProbeFailure::unavailable("Sequencer block request failed")
-                        })
-                }
-                (ChannelSourceRole::Indexer, ChannelSourceTarget::Rpc { endpoint }) => {
-                    layer::indexer_block_by_id(&endpoint, block_id)
-                        .await
-                        .map(|block| block.and_then(indexer_block_reference))
-                        .map_err(|_| {
-                            ChannelSourceProbeFailure::unavailable("Indexer block request failed")
-                        })
-                }
-                (ChannelSourceRole::Sequencer, ChannelSourceTarget::Module { .. }) => {
-                    Err(ChannelSourceProbeFailure::unsupported(
-                        "configured module does not expose Sequencer block inspection",
-                    ))
-                }
-                (ChannelSourceRole::Indexer, ChannelSourceTarget::Module { .. }) => {
-                    let block =
-                        layer::module_indexer_block_by_id(block_id)
-                            .await
-                            .map_err(|_| {
-                                ChannelSourceProbeFailure::unavailable(
-                                    "Indexer module block request failed",
-                                )
-                            })?;
-                    Ok(block.and_then(indexer_block_reference))
-                }
-            }
+            IndexerAdapter::connect(&target)
+                .map_err(|error| {
+                    probe_read_failure(
+                        error.kind,
+                        "Indexer block request failed",
+                        "configured source does not expose Indexer block inspection",
+                    )
+                })?
+                .block_by_id(block_id)
+                .await
+                .map(|block| block.and_then(indexer_block_reference))
+                .map_err(|error| {
+                    probe_read_failure(
+                        error.kind,
+                        "Indexer block request failed",
+                        "configured source does not expose Indexer block inspection",
+                    )
+                })
         })
     }
 }
 
-fn parse_optional_block_id(value: Value) -> Result<Option<u64>, ChannelSourceProbeFailure> {
-    if value.is_null() || value.as_str().is_some_and(str::is_empty) {
-        return Ok(None);
+fn probe_read_failure(
+    kind: ExecutionZoneReadErrorKind,
+    diagnostic: &'static str,
+    unsupported: &'static str,
+) -> ChannelSourceProbeFailure {
+    match kind {
+        ExecutionZoneReadErrorKind::Unavailable => {
+            ChannelSourceProbeFailure::unavailable(diagnostic)
+        }
+        ExecutionZoneReadErrorKind::Protocol => ChannelSourceProbeFailure::protocol(diagnostic),
+        ExecutionZoneReadErrorKind::Capability => {
+            ChannelSourceProbeFailure::unsupported(unsupported)
+        }
     }
-    value
-        .as_u64()
-        .or_else(|| value.as_str().and_then(|value| value.parse().ok()))
-        .map(Some)
-        .ok_or_else(|| {
-            ChannelSourceProbeFailure::protocol(
-                "Indexer finalized block id was not an unsigned integer",
-            )
-        })
 }
 
 fn sequencer_block_reference(block: crate::lez::BlockSummary) -> ChannelSourceBlock {

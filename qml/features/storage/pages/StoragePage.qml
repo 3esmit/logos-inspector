@@ -6,7 +6,6 @@ import QtQuick.Layouts
 import "../../../components"
 import "../../modules/controls"
 import "../../../state"
-import "../../../state/source_routing/SourceObservationProjection.js" as SourceObservation
 import "../../../theme"
 
 ColumnLayout {
@@ -21,6 +20,7 @@ ColumnLayout {
         theme: root.theme
         family: "storage"
     }
+    readonly property var sourceView: sourceSession.view
     property string currentTab: "overview"
 
     width: parent ? parent.width : 900
@@ -40,7 +40,7 @@ ColumnLayout {
     }
 
     Component.onCompleted: {
-        if (!root.report()) {
+        if (!root.sourceView.report) {
             root.refreshSource(false)
         }
     }
@@ -51,7 +51,7 @@ ColumnLayout {
         title: qsTr("Storage Diagnostics")
         layerLabel: qsTr("Diagnostics")
         subtitle: qsTr("%1 on %2, %3 s refresh window.")
-            .arg(root.model.storageSourceLabel())
+            .arg(root.model.sourceRouting.storageSourceLabel())
             .arg(root.model.storageNetworkPreset)
             .arg(root.model.storageRollingWindow)
         Layout.fillWidth: true
@@ -59,7 +59,7 @@ ColumnLayout {
 
     SourceStrip {
         theme: root.theme
-        sources: root.sourceBadges()
+        sources: root.sourceView.sourceBadges
         Layout.fillWidth: true
     }
 
@@ -71,7 +71,7 @@ ColumnLayout {
             theme: root.theme
             text: qsTr("Refresh source")
             primary: true
-            enabled: !root.pending()
+            enabled: !root.sourceView.pending
             Layout.preferredWidth: 162
             accessibleName: qsTr("Refresh Storage source")
             onClicked: root.refreshSource(true)
@@ -80,15 +80,15 @@ ColumnLayout {
         ActionButton {
             theme: root.theme
             text: qsTr("Open settings")
-            enabled: !root.pending()
+            enabled: !root.sourceView.pending
             Layout.preferredWidth: 126
             accessibleName: qsTr("Open Storage settings")
             onClicked: root.model.openSettings("network", "storage")
         }
 
         Text {
-            text: root.statusLine()
-            color: root.statusColor()
+            text: root.sourceView.statusLine
+            color: root.sourceView.statusColor
             textFormat: Text.PlainText
             elide: Text.ElideRight
             font.pixelSize: root.theme.secondaryText
@@ -129,52 +129,52 @@ ColumnLayout {
                     theme: root.theme
                     compact: true
                     label: qsTr("Health")
-                    value: root.healthText()
-                    delta: root.freshnessText()
-                    deltaColor: root.statusColor()
+                    value: root.sourceView.healthText
+                    delta: root.sourceView.freshnessText
+                    deltaColor: root.sourceView.statusColor
                 }
 
                 MetricCard {
                     theme: root.theme
                     compact: true
                     label: qsTr("Source")
-                    value: root.sourceShortLabel()
-                    delta: root.shortText(root.model.storageSourceTarget(), 34)
+                    value: root.sourceView.sourceShortLabel
+                    delta: root.sourceView.sourceTargetShort
                 }
 
                 MetricCard {
                     theme: root.theme
                     compact: true
                     label: qsTr("Peers")
-                    value: root.metricDisplay("storage.peer_count")
-                    delta: root.identityEvidence()
-                    deltaColor: root.metricTone("storage.peer_count")
+                    value: root.sourceView.peerCount
+                    delta: root.sourceView.identityEvidence
+                    deltaColor: root.sourceView.peerColor
                 }
 
                 MetricCard {
                     theme: root.theme
                     compact: true
                     label: qsTr("Capacity")
-                    value: root.capacitySummary()
-                    delta: root.valueSummary(root.probeValue("space"))
+                    value: root.sourceView.capacitySummary
+                    delta: root.sourceView.capacityEvidence
                 }
 
                 MetricCard {
                     theme: root.theme
                     compact: true
                     label: qsTr("Transfers")
-                    value: root.transferSummary()
-                    delta: qsTr("%1 failures in window").arg(root.metricDisplay("storage.failed_transfers_recent"))
-                    deltaColor: root.transferFailureTone()
+                    value: root.sourceView.transferSummary
+                    delta: qsTr("%1 failures in window").arg(root.sourceView.transferFailures)
+                    deltaColor: root.sourceView.transferFailureColor
                 }
 
                 MetricCard {
                     theme: root.theme
                     compact: true
                     label: qsTr("Reliability")
-                    value: root.reliabilityText()
-                    delta: root.model.moduleLastError("storage") || root.sourceName()
-                    deltaColor: root.reliabilityTone()
+                    value: root.sourceView.reliabilityText
+                    delta: root.sourceView.reliabilityDetail
+                    deltaColor: root.sourceView.reliabilityColor
                 }
             }
 
@@ -187,25 +187,25 @@ ColumnLayout {
                 StatusRowsPanel {
                     theme: root.theme
                     title: qsTr("Live degradation")
-                    rows: root.healthRows()
+                    rows: root.sourceView.healthRows
                 }
 
                 StatusRowsPanel {
                     theme: root.theme
                     title: qsTr("Active operations")
-                    rows: root.activeOperationRows()
+                    rows: root.sourceView.activeOperationRows
                 }
 
                 StatusRowsPanel {
                     theme: root.theme
                     title: qsTr("Topology snapshot")
-                    rows: root.topologyRows()
+                    rows: root.sourceView.topologyRows
                 }
 
                 StatusRowsPanel {
                     theme: root.theme
                     title: qsTr("Capacity snapshot")
-                    rows: root.capacityRows()
+                    rows: root.sourceView.capacityRows
                 }
             }
         }
@@ -221,7 +221,7 @@ ColumnLayout {
             StatusRowsPanel {
                 theme: root.theme
                 title: qsTr("Diagnostic checklist")
-                rows: root.healthRows().concat(root.evidenceRows())
+                rows: root.sourceView.healthRows.concat(root.sourceView.evidenceRows)
             }
         }
     }
@@ -236,13 +236,13 @@ ColumnLayout {
             DetailRowsPanel {
                 theme: root.theme
                 title: qsTr("Local node identity")
-                rows: root.identityRows()
+                rows: root.sourceView.identityRows
             }
 
             StatusRowsPanel {
                 theme: root.theme
                 title: qsTr("Peer boundaries")
-                rows: root.topologyRows()
+                rows: root.sourceView.topologyRows
             }
         }
     }
@@ -257,7 +257,7 @@ ColumnLayout {
             StatusRowsPanel {
                 theme: root.theme
                 title: qsTr("Space and repository")
-                rows: root.capacityRows().concat(root.repositoryRows())
+                rows: root.sourceView.capacityRows.concat(root.sourceView.repositoryRows)
             }
         }
     }
@@ -272,7 +272,7 @@ ColumnLayout {
             StatusRowsPanel {
                 theme: root.theme
                 title: qsTr("Transfer counters")
-                rows: root.transferRows()
+                rows: root.sourceView.transferRows
             }
         }
     }
@@ -306,7 +306,7 @@ ColumnLayout {
                         theme: root.theme
                         text: qsTr("Local exists")
                         primary: true
-                        enabled: root.model.storageCidProbe.length > 0 && !root.pending()
+                        enabled: root.model.storageCidProbe.length > 0 && !root.sourceView.pending
                         Layout.preferredWidth: 126
                         accessibleName: qsTr("Check local CID existence")
                         onClicked: root.refreshSource(true, true)
@@ -314,7 +314,7 @@ ColumnLayout {
                 }
 
                 Repeater {
-                    model: root.cidRows()
+                    model: root.sourceView.cidRows
 
                     DetailRow {
                         required property var modelData
@@ -348,7 +348,7 @@ ColumnLayout {
             ProtocolRowsPanel {
                 theme: root.theme
                 title: qsTr("Protocols")
-                rows: root.protocolRows()
+                rows: root.sourceView.protocolRows
                 labelWidth: 150
             }
         }
@@ -363,8 +363,8 @@ ColumnLayout {
             refreshActions: [
                 { text: qsTr("Refresh status"), width: 140, accessibleName: qsTr("Refresh Storage status") }
             ]
-            pending: root.pending() || !root.diagnosticsGateEnabled("storage")
-            statusText: root.diagnosticsStatusText("storage", root.statusLine(), qsTr("Storage diagnostics"))
+            pending: root.sourceView.pending || !root.diagnosticsGateEnabled("storage")
+            statusText: root.diagnosticsStatusText("storage", root.sourceView.statusLine, qsTr("Storage diagnostics"))
             guardedTitle: qsTr("Guarded diagnostics")
             permissionEnabled: root.model.storageMutatingDiagnosticsEnabled && root.diagnosticsGateEnabled("storage")
             permissionDisabledTitle: root.diagnosticsGateEnabled("storage") ? qsTr("Permission disabled") : qsTr("Diagnostics unavailable")
@@ -374,7 +374,7 @@ ColumnLayout {
                 { text: qsTr("Provider lookup"), width: 148 },
                 { text: qsTr("Download probe"), width: 142 }
             ]
-            evidenceRows: root.evidenceRows()
+            evidenceRows: root.sourceView.evidenceRows
             onRefreshRequested: root.refreshSource(true)
         }
     }
@@ -404,14 +404,6 @@ ColumnLayout {
         sourceSession.refresh(showResult, includeCidProbe)
     }
 
-    function pending() {
-        return sourceSession.pending()
-    }
-
-    function report() {
-        return sourceSession.report()
-    }
-
     function diagnosticsGate(action) {
         return root.model.diagnosticsGate(action)
     }
@@ -425,267 +417,6 @@ ColumnLayout {
         if (gate.enabled === true) {
             return currentStatus
         }
-        return diagnosticsGateDetailText(gate, fallbackLabel)
-    }
-
-    function diagnosticsGateDetailText(gate, fallbackLabel) {
         return sourceSession.diagnosticsGateDetailText(gate, fallbackLabel)
     }
-
-    function status() {
-        return sourceSession.status()
-    }
-
-    function statusLine() {
-        return sourceSession.statusLine()
-    }
-
-    function statusColor() {
-        const status = root.status()
-        if (!status.known) {
-            return root.theme.textMuted
-        }
-        return status.ok ? root.theme.success : root.theme.error
-    }
-
-    function statusTone() {
-        const status = root.status()
-        if (!status.known) {
-            return "neutral"
-        }
-        return status.ok ? "success" : "error"
-    }
-
-    function healthText() {
-        if (root.pending()) {
-            return qsTr("Working")
-        }
-        const status = root.status()
-        if (!status.known) {
-            return qsTr("Unknown")
-        }
-        if (!status.ok) {
-            return qsTr("Problem")
-        }
-        return root.failedProbeCount() > 0 ? qsTr("Partial") : qsTr("Healthy")
-    }
-
-    function sourceName() {
-        return sourceSession.sourceLabel()
-    }
-
-    function sourceShortLabel() {
-        switch (root.storageSourceMode()) {
-        case "rest":
-            return qsTr("REST")
-        case "metrics":
-            return qsTr("Metrics")
-        case "unsupported":
-            return qsTr("Unsupported")
-        default:
-            return qsTr("Module")
-        }
-    }
-
-    function freshnessText() {
-        return sourceSession.freshnessText()
-    }
-
-    function freshnessCompactText() {
-        return sourceSession.freshnessCompactText()
-    }
-
-    function sourceBadges() {
-        return sourceSession.sourceBadges(root.model.storageNetworkPreset, qsTr("%1 s window").arg(root.model.storageRollingWindow))
-    }
-
-    function moduleInfoProbe() {
-        return sourceSession.moduleInfoProbe()
-    }
-
-    function probeValue(method) {
-        return sourceSession.probeValue(method)
-    }
-
-    function probe(method) {
-        return sourceSession.probe(method)
-    }
-
-    function probeKnown(method) {
-        return sourceSession.probeKnown(method)
-    }
-
-    function metricDisplay(key) {
-        return sourceSession.metricDisplay(key)
-    }
-
-    function metricKnown(key) {
-        return sourceSession.metricKnown(key)
-    }
-
-    function metricTone(key) {
-        return sourceSession.metricTone(key)
-    }
-
-    function failedProbeCount() {
-        return sourceSession.failedProbeCount()
-    }
-
-    function identityEvidence() {
-        return SourceObservation.storageIdentityEvidence(root)
-    }
-
-    function sourceFactAvailable(key) {
-        return sourceSession.sourceFactAvailable(key)
-    }
-
-    function sourceFactEvidence(key, fallback) {
-        return sourceSession.sourceFactEvidence(key, fallback)
-    }
-
-    function capacitySummary() {
-        return SourceObservation.storageCapacitySummary(root)
-    }
-
-    function transferSummary() {
-        return SourceObservation.storageTransferSummary(root)
-    }
-
-    function reliabilityText() {
-        return SourceObservation.storageReliabilityText(root)
-    }
-
-    function reliabilityTone() {
-        return SourceObservation.storageReliabilityTone(root)
-    }
-
-    function transferFailureTone() {
-        return SourceObservation.storageTransferFailureTone(root)
-    }
-
-    function healthRows() {
-        return SourceObservation.storageHealthRows(root)
-    }
-
-    function activeOperationRows() {
-        return SourceObservation.storageActiveOperationRows(root)
-    }
-
-    function topologyRows() {
-        return SourceObservation.storageTopologyRows(root)
-    }
-
-    function capacityRows() {
-        return SourceObservation.storageCapacityRows(root)
-    }
-
-    function repositoryRows() {
-        return SourceObservation.storageRepositoryRows(root)
-    }
-
-    function transferRows() {
-        return SourceObservation.storageTransferRows(root)
-    }
-
-    function activeDownloadRow() {
-        return SourceObservation.storageActiveDownloadRow(root)
-    }
-
-    function activeStorageOperation() {
-        const revision = root.model.storageActiveOperationRevision
-        return root.model.storageActiveOperation || null
-    }
-
-    function activeStorageOperationDetail(operation) {
-        return SourceObservation.storageActiveStorageOperationDetail(root, operation)
-    }
-
-    function cidRows() {
-        return SourceObservation.storageCidRows(root)
-    }
-
-    function protocolRows() {
-        return SourceObservation.storageProtocolRows(root)
-    }
-
-    function identityRows() {
-        return SourceObservation.storageIdentityRows(root)
-    }
-
-    function evidenceRows() {
-        return sourceSession.evidenceRows(root, qsTr("Refresh source to load probe evidence."))
-    }
-
-    function statusRow(label, state, evidence, tone) {
-        return sourceSession.statusRow(label, state, evidence, tone)
-    }
-
-    function metricRow(label, key) {
-        return SourceObservation.storageMetricRow(root, label, key)
-    }
-
-    function metricEvidence(key) {
-        return SourceObservation.storageMetricEvidence(root, key)
-    }
-
-    function manifestCountRow() {
-        return SourceObservation.storageManifestCountRow(root)
-    }
-
-    function spaceRow(label, keys) {
-        return SourceObservation.storageSpaceRow(root, label, keys)
-    }
-
-    function protocolRow(label, protocolId, observed, evidence) {
-        return SourceObservation.storageProtocolRow(label, protocolId, observed, evidence)
-    }
-
-    function probeRow(probe, fallbackLabel) {
-        return sourceSession.probeRow(probe, fallbackLabel)
-    }
-
-    function detailRow(label, value) {
-        return sourceSession.detailRow(label, value, [qsTr("Not queried"), qsTr("Not fetched"), qsTr("Idle")])
-    }
-
-    function pathDetailRow(label, value) {
-        return SourceObservation.storagePathDetailRow(root, label, value)
-    }
-
-    function restMetricsState() {
-        return SourceObservation.storageRestMetricsState(root)
-    }
-
-    function restMetricsEvidence() {
-        return SourceObservation.storageRestMetricsEvidence(root)
-    }
-
-    function restMetricsTone() {
-        return SourceObservation.storageRestMetricsTone(root)
-    }
-
-    function storageSourceMode() {
-        return root.model.effectiveStorageSourceMode(root.model.storageSourceMode)
-    }
-
-    function metricsEndpointConfigured() {
-        return String(root.model.storageMetricsUrl || "").trim().length > 0
-    }
-
-    function valueSummary(value) {
-        return sourceSession.valueSummary(value)
-    }
-
-    function copyValue(value) {
-        return sourceSession.copyValue(value)
-    }
-
-    function objectField(value, keys) {
-        return SourceObservation.objectField(value, keys)
-    }
-
-    function shortText(value, maxLength) {
-        return sourceSession.shortText(value, maxLength)
-    }
-
 }

@@ -28,7 +28,7 @@ ColumnLayout {
         rangeText: root.slotRangeText()
         canGoNewer: !root.model.blocksLiveEnabled && root.canLoadNewer()
         canGoOlder: !root.model.blocksLiveEnabled && root.model.blocksPageSlotFrom > 0
-        busy: root.model.busy
+        busy: root.model.shell.busy
         Layout.fillWidth: true
         headerCells: [
             { text: qsTr("L1 slot"), width: 96 },
@@ -68,7 +68,7 @@ ColumnLayout {
                 theme: root.theme
                 text: root.model.blocksLiveEnabled ? qsTr("Refresh Live") : qsTr("Live")
                 primary: !root.model.blocksLiveEnabled
-                enabled: !root.model.busy
+                enabled: !root.model.shell.busy
                 Layout.preferredWidth: root.model.blocksLiveEnabled ? 126 : 82
                 onClicked: root.model.blocksLiveEnabled ? root.model.chainPages.refreshBlocksLivePage() : root.model.chainPages.startBlocksLiveMode()
             }
@@ -77,7 +77,7 @@ ColumnLayout {
                 visible: root.model.blocksLiveEnabled
                 theme: root.theme
                 text: qsTr("Stop")
-                enabled: !root.model.busy
+                enabled: !root.model.shell.busy
                 Layout.preferredWidth: 82
                 onClicked: root.model.chainPages.stopBlocksLiveMode()
             }

@@ -8,9 +8,9 @@ use super::{
         layer::{INDEXER_SOURCE_MODES, SEQUENCER_SOURCE_MODES, source_modes_for_role},
     },
     core::layer::BEDROCK_SOURCE_MODES,
-    delivery::layer::MESSAGING_SOURCE_MODES,
+    delivery::MESSAGING_SOURCE_MODES,
     network_profiles,
-    storage::layer::STORAGE_SOURCE_MODES,
+    storage::STORAGE_SOURCE_MODES,
 };
 use serde::Serialize;
 

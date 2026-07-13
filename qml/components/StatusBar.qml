@@ -62,7 +62,7 @@ Pane {
             }
 
             Rectangle {
-                color: root.model.busy ? root.theme.warning : root.resultColor()
+                color: root.model.shell.busy ? root.theme.warning : root.resultColor()
                 radius: 4
                 Layout.preferredWidth: 8
                 Layout.preferredHeight: 8
@@ -100,7 +100,7 @@ Pane {
                 leftPadding: 12
                 rightPadding: 60
                 hoverEnabled: true
-                enabled: !root.model.busy
+                enabled: !root.model.shell.busy
                 Layout.fillWidth: true
                 Layout.preferredHeight: root.theme.controlHeight
                 onAccepted: root.openLookup()
@@ -144,7 +144,7 @@ Pane {
                 iconOnly: true
                 iconName: "search"
                 primary: true
-                enabled: !root.model.busy && root.lookupCanOpen(lookupField.text)
+                enabled: !root.model.shell.busy && root.lookupCanOpen(lookupField.text)
                 Layout.preferredWidth: root.theme.controlHeight
                 accessibleName: qsTr("Search")
                 ToolTip.visible: hovered
@@ -160,14 +160,14 @@ Pane {
             Layout.fillWidth: root.width < 760
 
             BusyIndicator {
-                running: root.model.busy
-                visible: root.model.busy
+                running: root.model.shell.busy
+                visible: root.model.shell.busy
                 Layout.preferredWidth: 30
                 Layout.preferredHeight: 30
             }
 
             Text {
-                visible: root.model.busy
+                visible: root.model.shell.busy
                 text: qsTr("Working")
                 color: root.theme.warning
                 textFormat: Text.PlainText
@@ -193,7 +193,7 @@ Pane {
 
     function openLookup() {
         const value = lookupField.text.trim()
-        if (!value.length || root.model.busy || !root.lookupCanOpen(value)) {
+        if (!value.length || root.model.shell.busy || !root.lookupCanOpen(value)) {
             return
         }
         lookupField.clear()
@@ -284,6 +284,6 @@ Pane {
     }
 
     function currentPageHasError() {
-        return root.model.pageHasOutput(root.model.currentView) && root.model.resultIsError
+        return root.model.pageHasOutput(root.model.shell.currentView) && root.model.shell.resultIsError
     }
 }

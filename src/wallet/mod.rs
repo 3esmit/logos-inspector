@@ -8,7 +8,10 @@ use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::{ProgramFileInfo, program_file_info, raw_http_json};
+use crate::{
+    lez::{ProgramFileInfo, program_file_info},
+    source_routing::bedrock_layer,
+};
 
 mod instruction;
 mod profile;
@@ -22,8 +25,8 @@ pub use instruction::{
 };
 use profile::{
     LocalWalletProfileInput, detect_wallet_binary, detect_wallet_home,
-    local_wallet_binary_is_path_like, parse_local_wallet_profile, resolve_local_wallet_profile,
-    wallet_home_is_configured,
+    local_wallet_binary_is_path_like, local_wallet_readiness, parse_local_wallet_profile,
+    resolve_local_wallet_profile, wallet_home_is_configured,
 };
 use runner::{
     CliLocalWalletRunner, LocalWalletInvocation, LocalWalletRunner, local_wallet_output_text,
@@ -57,6 +60,19 @@ pub struct LocalWalletProfileStatus {
     pub version: Option<String>,
     pub home_source: String,
     pub network_profile: String,
+    pub readiness: LocalWalletReadiness,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LocalWalletReadiness {
+    pub wallet_binary_ready: bool,
+    pub wallet_home_ready: bool,
+    pub wallet_config_ready: bool,
+    pub wallet_storage_ready: bool,
+    pub command_ready: bool,
+    pub accounts_ready: bool,
+    pub instruction_submit_ready: bool,
+    pub backup_encryption_ready: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -522,19 +538,18 @@ fn short_wallet_value(value: &str) -> String {
     format!("{}...{}", &value[..10], &value[value.len() - 6..])
 }
 
-pub async fn bedrock_wallet_balance(
+pub(crate) async fn bedrock_wallet_balance(
     endpoint: &str,
     public_key: &str,
     tip: Option<&str>,
 ) -> Result<Value> {
     let public_key = normalize_bedrock_wallet_public_key(public_key)?;
-    let mut path = format!("/wallet/{public_key}/balance");
-    if let Some(tip) = tip.map(str::trim).filter(|tip| !tip.is_empty()) {
-        let tip = normalize_bedrock_hex_id(tip, "balance tip")?;
-        path.push_str("?tip=");
-        path.push_str(&tip);
-    }
-    raw_http_json(endpoint, &path).await
+    let tip = tip
+        .map(str::trim)
+        .filter(|tip| !tip.is_empty())
+        .map(|tip| normalize_bedrock_hex_id(tip, "balance tip"))
+        .transpose()?;
+    bedrock_layer::wallet_balance(endpoint, &public_key, tip.as_deref()).await
 }
 
 pub(crate) fn default_wallet_state() -> Value {
@@ -595,6 +610,7 @@ fn local_wallet_profile_status_with_runner<R: LocalWalletRunner>(
     } else {
         env_home_source.unwrap_or("none")
     };
+    let mut readiness = local_wallet_readiness(&profile, &env_home);
 
     if wallet_binary.is_empty() && wallet_home.is_empty() {
         return Ok(LocalWalletProfileStatus {
@@ -605,6 +621,7 @@ fn local_wallet_profile_status_with_runner<R: LocalWalletRunner>(
             version: None,
             home_source: home_source.to_owned(),
             network_profile: profile.network_profile.trim().to_owned(),
+            readiness,
         });
     }
 
@@ -643,6 +660,9 @@ fn local_wallet_profile_status_with_runner<R: LocalWalletRunner>(
             Err(error) => {
                 details.push(format!("wallet binary version check failed: {error:#}"));
                 status = local_wallet_worst_status(status, "degraded");
+                readiness.wallet_binary_ready = false;
+                readiness.command_ready = false;
+                readiness.accounts_ready = false;
             }
         }
     }
@@ -655,6 +675,7 @@ fn local_wallet_profile_status_with_runner<R: LocalWalletRunner>(
         version,
         home_source: home_source.to_owned(),
         network_profile: profile.network_profile.trim().to_owned(),
+        readiness,
     })
 }
 
@@ -978,6 +999,8 @@ mod tests {
         assert_eq!(status.source, "local_wallet_cli");
         assert_eq!(status.home_source, "profile");
         assert_eq!(status.network_profile, "local");
+        assert!(!status.readiness.wallet_binary_ready);
+        assert!(!status.readiness.command_ready);
         assert!(!status.detail.contains("/definitely/not/a/logos/wallet"));
     }
 
@@ -997,6 +1020,8 @@ mod tests {
             return;
         };
         assert_eq!(status.home_source, "none");
+        assert!(!status.readiness.wallet_home_ready);
+        assert!(!status.readiness.command_ready);
         assert!(
             status
                 .detail
@@ -1020,6 +1045,8 @@ mod tests {
             return;
         };
         assert_eq!(status.home_source, LOCAL_WALLET_HOME_ENV);
+        assert!(status.readiness.wallet_home_ready);
+        assert!(!status.readiness.accounts_ready);
         assert!(
             status
                 .detail

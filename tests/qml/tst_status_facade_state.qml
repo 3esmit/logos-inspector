@@ -75,7 +75,7 @@ TestCase {
 	        }, "restarted")
 	        history.append({
 	            domain: "backup",
-	            method: "restoreLocalSettingsBackup",
+	            method: "settingsBackupImportApply",
 	            status: "applied_for_import"
 	        }, "applied")
 
@@ -108,7 +108,9 @@ TestCase {
 
     function test_dashboard_projection_marks_blocked_metric_without_hiding_card() {
         const item = StatusFactsProjection.dashboardGraphItem({
-            dashboardMetricValue: function () { return 12 },
+            metrics: {
+                dashboardMetricValue: function () { return 12 }
+            },
             dashboardMetricSamples: function () { return [{ value: 12 }] },
             valueText: function (value) { return String(value) },
             dashboardGate: function () {

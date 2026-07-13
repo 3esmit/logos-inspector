@@ -360,11 +360,6 @@ pub fn trace_transaction_summary_with_idl(
     ))
 }
 
-pub(crate) fn inspect_transaction(tx: &LeeTransaction) -> TransactionInspectionReport {
-    let summary = summarize_transaction(tx);
-    inspect_transaction_summary(&summary)
-}
-
 fn build_transaction_trace_report(
     summary: &TransactionSummary,
     inspection: TransactionInspectionReport,

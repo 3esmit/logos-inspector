@@ -11,6 +11,18 @@ pub(crate) trait OperationRunner {
     fn cancel(&self, operation_id: &str) -> Result<Value>;
     fn run_operation(&self, method: OperationMethod, args: Value, label: &str) -> Result<Value>;
     fn start_operation(&self, method: OperationMethod, args: Value, label: &str) -> Result<Value>;
+    fn preview_backup_import(
+        &self,
+        backup_catalog_id: &str,
+        wallet_profile: Option<&Value>,
+        options: Option<&Value>,
+    ) -> Result<Value>;
+    fn apply_backup_import(
+        &self,
+        backup_catalog_id: &str,
+        wallet_profile: Option<&Value>,
+        options: Option<&Value>,
+    ) -> Result<Value>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,6 +33,8 @@ pub(crate) enum OperationBridgeCommand {
     RuntimeOperationCancel,
     StorageOperationStatus,
     StorageOperationCancel,
+    SettingsBackupImportPreview,
+    SettingsBackupImportApply,
     Route(OperationRoute),
 }
 
@@ -65,6 +79,14 @@ const OPERATION_CONTROL_METHODS: &[(&str, OperationBridgeCommand)] = &[
         "storageOperationCancel",
         OperationBridgeCommand::StorageOperationCancel,
     ),
+    (
+        "settingsBackupImportPreview",
+        OperationBridgeCommand::SettingsBackupImportPreview,
+    ),
+    (
+        "settingsBackupImportApply",
+        OperationBridgeCommand::SettingsBackupImportApply,
+    ),
 ];
 
 pub(crate) fn operation_bridge_command(method: &str) -> Option<OperationBridgeCommand> {
@@ -95,6 +117,12 @@ pub(crate) fn handle_operation_command(
         OperationBridgeCommand::RuntimeOperationCancel => runtime_operation_cancel(runner, args)?,
         OperationBridgeCommand::StorageOperationStatus => storage_operation_status(runner, args)?,
         OperationBridgeCommand::StorageOperationCancel => storage_operation_cancel(runner, args)?,
+        OperationBridgeCommand::SettingsBackupImportPreview => {
+            settings_backup_import_preview(runner, args)?
+        }
+        OperationBridgeCommand::SettingsBackupImportApply => {
+            settings_backup_import_apply(runner, args)?
+        }
         OperationBridgeCommand::Route(route) => {
             if route.start_async {
                 runner.start_operation(route.method, args.clone(), route.label)?
@@ -142,6 +170,24 @@ fn storage_operation_cancel(runner: &impl OperationRunner, args: &Value) -> Resu
     runner.cancel(args.string(0, "storage operation id")?)
 }
 
+fn settings_backup_import_preview(runner: &impl OperationRunner, args: &Value) -> Result<Value> {
+    let args = Args::new(args.clone())?;
+    runner.preview_backup_import(
+        args.string(0, "backup catalog id")?,
+        args.value(1),
+        args.value(2),
+    )
+}
+
+fn settings_backup_import_apply(runner: &impl OperationRunner, args: &Value) -> Result<Value> {
+    let args = Args::new(args.clone())?;
+    runner.apply_backup_import(
+        args.string(0, "backup catalog id")?,
+        args.value(1),
+        args.value(2),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
@@ -168,6 +214,16 @@ mod tests {
             method: String,
             args: Value,
             label: String,
+        },
+        PreviewBackupImport {
+            backup_catalog_id: String,
+            wallet_profile: Option<Value>,
+            options: Option<Value>,
+        },
+        ApplyBackupImport {
+            backup_catalog_id: String,
+            wallet_profile: Option<Value>,
+            options: Option<Value>,
         },
     }
 
@@ -239,6 +295,36 @@ mod tests {
                 label: label.to_owned(),
             });
             Ok(json!({ "operationId": method.as_str() }))
+        }
+
+        fn preview_backup_import(
+            &self,
+            backup_catalog_id: &str,
+            wallet_profile: Option<&Value>,
+            options: Option<&Value>,
+        ) -> Result<Value> {
+            self.calls
+                .borrow_mut()
+                .push(RunnerCall::PreviewBackupImport {
+                    backup_catalog_id: backup_catalog_id.to_owned(),
+                    wallet_profile: wallet_profile.cloned(),
+                    options: options.cloned(),
+                });
+            Ok(json!({ "import_plan": true }))
+        }
+
+        fn apply_backup_import(
+            &self,
+            backup_catalog_id: &str,
+            wallet_profile: Option<&Value>,
+            options: Option<&Value>,
+        ) -> Result<Value> {
+            self.calls.borrow_mut().push(RunnerCall::ApplyBackupImport {
+                backup_catalog_id: backup_catalog_id.to_owned(),
+                wallet_profile: wallet_profile.cloned(),
+                options: options.cloned(),
+            });
+            Ok(json!({ "applied": true }))
         }
     }
 
@@ -352,6 +438,30 @@ mod tests {
             bail!("expected non-operation method to be ignored");
         }
         if !runner.calls().is_empty() {
+            bail!("unexpected runner calls");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn handle_operation_command_routes_backup_import_to_transaction_runner() -> Result<()> {
+        let runner = FakeRunner::default();
+        let args = json!(["backup-1", { "label": "wallet" }, { "settings": "replace" }]);
+
+        let command = operation_bridge_command("settingsBackupImportApply")
+            .context("backup import apply command")?;
+        let value = handle_operation_command(&runner, command, &args)?;
+
+        if value != json!({ "applied": true }) {
+            bail!("unexpected response: {value:?}");
+        }
+        if runner.calls()
+            != vec![RunnerCall::ApplyBackupImport {
+                backup_catalog_id: "backup-1".to_owned(),
+                wallet_profile: Some(json!({ "label": "wallet" })),
+                options: Some(json!({ "settings": "replace" })),
+            }]
+        {
             bail!("unexpected runner calls");
         }
         Ok(())

@@ -17,7 +17,9 @@ ColumnLayout {
     property string title: qsTr("Comments")
     property string expectedAccountId: ""
     property var entityRef: null
-    property string composerIdentityKey: model.selectedSocialIdentityKey
+    readonly property var commentView: model.social.commentsView(topic)
+    readonly property var identityView: model.social.identitiesView()
+    property string composerIdentityKey: model.social.selectedSocialIdentityKey
 
     visible: root.topic.length > 0
     spacing: root.theme.gap
@@ -27,10 +29,10 @@ ColumnLayout {
     Component.onCompleted: Qt.callLater(root.reload)
 
     Connections {
-        target: root.model
+        target: root.model.social
 
         function onSocialIdentityRevisionChanged() {
-            root.composerIdentityKey = root.model.selectedSocialIdentityKey
+            root.composerIdentityKey = root.model.social.selectedSocialIdentityKey
         }
     }
 
@@ -163,7 +165,8 @@ ColumnLayout {
             text: qsTr("Next page")
             enabled: !root.panelState().loading && !root.panelState().exhausted && root.storeAvailable()
             Layout.preferredWidth: 122
-            onClicked: root.model.loadSocialComments(root.topic, false, root.model.socialCommentPageSize, root.expectedAccountId)
+            onClicked: root.model.social.loadComments(root.topic, false,
+                root.model.social.socialCommentPageSize, root.expectedAccountId)
         }
 
         Text {
@@ -237,17 +240,18 @@ ColumnLayout {
                 text: qsTr("New")
                 Layout.preferredWidth: 92
                 onClicked: {
-                    const identity = root.model.createSocialIdentity("")
+                    const identity = root.model.social.createIdentity("")
                     root.composerIdentityKey = identity.key
                 }
             }
 
             ActionButton {
                 theme: root.theme
-                text: root.model.socialIdentityDefaultMode === "manual" ? qsTr("Manual") : qsTr("Per topic")
-                selected: root.model.socialIdentityDefaultMode !== "manual"
+                text: root.identityView.defaultMode === "manual" ? qsTr("Manual") : qsTr("Per topic")
+                selected: root.identityView.defaultMode !== "manual"
                 Layout.preferredWidth: 116
-                onClicked: root.model.setSocialIdentityDefaultMode(root.model.socialIdentityDefaultMode === "manual" ? "perConversation" : "manual")
+                onClicked: root.model.social.setIdentityDefaultMode(
+                    root.identityView.defaultMode === "manual" ? "perConversation" : "manual")
             }
 
             Item {
@@ -299,7 +303,7 @@ ColumnLayout {
         confirmText: qsTr("Post")
         confirmEnabled: root.writeAvailable() && commentBody.text.trim().length > 0
         onAccepted: {
-            if (root.model.postSocialComment(root.topic, commentBody.text,
+            if (root.model.social.postComment(root.topic, commentBody.text,
                     root.composerIdentityKey, root.entityRef)) {
                 commentBody.text = ""
             }
@@ -310,11 +314,12 @@ ColumnLayout {
         if (!root.topic.length || !root.storeAvailable()) {
             return
         }
-        root.model.loadSocialComments(root.topic, true, root.model.socialCommentPageSize, root.expectedAccountId)
+        root.model.social.loadComments(root.topic, true,
+            root.model.social.socialCommentPageSize, root.expectedAccountId)
     }
 
     function storeGate() {
-        return root.model.socialStoreGate()
+        return root.commentView.readGate
     }
 
     function storeAvailable() {
@@ -322,38 +327,31 @@ ColumnLayout {
     }
 
     function writeGate() {
-        return root.model.socialCommentWriteGate(root.topic)
+        return root.commentView.writeGate
     }
 
     function writeAvailable() {
         return root.writeGate().enabled === true
     }
 
-    function gateDetailText(gate, fallback) {
-        return root.model.socialGateDetailText(gate, fallback)
-    }
-
     function storeUnavailableText() {
-        return root.gateDetailText(root.storeGate(), qsTr("Delivery Store capability is unavailable."))
+        return root.commentView.readError
     }
 
     function writeUnavailableText() {
-        return root.gateDetailText(root.writeGate(), qsTr("Delivery send capability is unavailable."))
+        return root.commentView.writeError
     }
 
     function panelState() {
-        const revision = root.model.socialCommentRevision
-        return root.model.socialCommentStateForTopic(root.topic)
+        return root.commentView.state
     }
 
     function comments() {
-        const revision = root.model.socialCommentRevision
-        return root.model.socialComments(root.topic)
+        return root.commentView.rows
     }
 
     function identityRows() {
-        const revision = root.model.socialIdentityRevision
-        return root.model.socialIdentityRows()
+        return root.identityView.rows
     }
 
     function identityLabels() {
@@ -380,7 +378,7 @@ ColumnLayout {
         const rows = root.identityRows()
         if (index >= 0 && index < rows.length) {
             root.composerIdentityKey = rows[index].key
-            root.model.selectSocialIdentity(root.composerIdentityKey)
+            root.model.social.selectIdentity(root.composerIdentityKey)
         }
     }
 

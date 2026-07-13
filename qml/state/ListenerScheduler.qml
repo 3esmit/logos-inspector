@@ -107,14 +107,14 @@ QtObject {
         case "storage":
             return root.refreshRateFor(kind) > 0
         case "dashboard":
-            return model.currentView === "overview"
+            return model.shell.currentView === "overview"
                 && root.intervalFor("dashboard") > 0
         case "storageOperation":
-            return root.storageApp() && root.storageApp().activeStorageOperationRunning()
+            return root.storageApp() && root.storageApp().operation.running
         case "deliveryOperation":
-            return root.deliveryApp() && root.deliveryApp().activeDeliveryOperationRunning()
+            return root.deliveryApp() && root.deliveryApp().operation.running
         case "liveBlocks":
-            return model.blocksLiveEnabled === true && model.currentView === "blocks"
+            return model.blocksLiveEnabled === true && model.shell.currentView === "blocks"
         case "zonesStatus":
             return root.zoneState() && root.zoneState().statusPollingEnabled === true
         default:

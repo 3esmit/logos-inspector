@@ -11,6 +11,7 @@ use super::commands::{
     zone_l2::{ZoneL2Command, ZoneL2CommandInterface, zone_l2_command},
 };
 use crate::{
+    capabilities::{CapabilityBuildMode, CapabilityRegistry},
     inspection::catalog::DirectZoneCatalogWorker,
     modules::logos_core::{LogoscoreCliTransport, ModuleTransport},
     support::args::Args,
@@ -23,6 +24,7 @@ pub(crate) struct InspectorCommandSurface<T = LogoscoreCliTransport> {
     module_transport: T,
     zone_catalog: Arc<ZoneCatalogCommandInterface>,
     zone_l2: ZoneL2CommandInterface,
+    capability_registry: CapabilityRegistry,
     runtime: Runtime,
 }
 
@@ -49,6 +51,7 @@ where
             module_transport,
             zone_catalog,
             zone_l2,
+            capability_registry: CapabilityRegistry::default(),
             runtime,
         })
     }
@@ -62,8 +65,20 @@ where
     }
 
     pub(crate) fn call_inspector(&self, method: &str, args: Value) -> Result<Value> {
-        self.dispatch_inspector(method, args)?
-            .with_context(|| format!("unknown inspector method `{method}`"))
+        let result = self.dispatch_inspector(method, args).and_then(|value| {
+            value.with_context(|| format!("unknown inspector method `{method}`"))
+        });
+        match result {
+            Ok(value) => {
+                self.capability_registry.observe_success(method, &value)?;
+                Ok(value)
+            }
+            Err(error) => {
+                self.capability_registry
+                    .observe_failure(method, &error.to_string())?;
+                Err(error)
+            }
+        }
     }
 
     fn dispatch_inspector(&self, method: &str, args: Value) -> Result<Option<Value>> {
@@ -86,6 +101,20 @@ where
                 .zone_l2
                 .bridge_call(&self.runtime, command, &args)
                 .map(Some),
+            InspectorCommand::CapabilityRegistry => {
+                let args = Args::new(args)?;
+                let build_mode = CapabilityBuildMode::from_prefers_basecamp(args.optional_bool(0));
+                let runtime_inputs = args
+                    .value(1)
+                    .filter(|value| value.is_object())
+                    .context("capability runtime inputs are required")?;
+                serde_json::to_value(
+                    self.capability_registry
+                        .report(build_mode, Some(runtime_inputs))?,
+                )
+                .context("failed to serialize capability registry report")
+                .map(Some)
+            }
             InspectorCommand::CallModule => {
                 let args = Args::new(args)?;
                 let module = args.string(0, "module name")?;
@@ -121,10 +150,14 @@ enum InspectorCommand {
     Runtime(&'static RuntimeMethodEntry),
     ZoneCatalog(ZoneCatalogCommand),
     ZoneL2(ZoneL2Command),
+    CapabilityRegistry,
     CallModule,
 }
 
 fn inspector_command(method: &str) -> Option<InspectorCommand> {
+    if method == "capabilityRegistryReport" {
+        return Some(InspectorCommand::CapabilityRegistry);
+    }
     if let Some(command) = operation_bridge_command(method) {
         return Some(InspectorCommand::Operation(command));
     }
@@ -220,7 +253,7 @@ mod tests {
             .chain(runtime_methods::runtime_method_names())
             .chain(zone_catalog::zone_catalog_command_names())
             .chain(zone_l2::zone_l2_command_names())
-            .chain(["callModule"])
+            .chain(["capabilityRegistryReport", "callModule"])
         {
             if !names.insert(method) {
                 bail!("duplicate inspector method `{method}`");

@@ -8,7 +8,7 @@ function operationRows(model) {
 }
 
 function sendReady(model) {
-    if (model.busy || !model.walletProfileConfigured()) {
+    if (model.shell.busy || !model.walletProfileConfigured()) {
         return false
     }
     const from = String(model.walletSendFrom || "").trim()

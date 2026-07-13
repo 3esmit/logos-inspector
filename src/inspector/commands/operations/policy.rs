@@ -67,6 +67,27 @@ impl RuntimeOperationPolicy {
             "provenance": ["runtime_operation_policy"],
         })
     }
+
+    pub(super) fn safe_to_restart(&self) -> bool {
+        self.restart_policy == RestartPolicy::SafeReadPolling
+    }
+
+    pub(super) fn class_name(&self) -> &'static str {
+        self.class.as_str()
+    }
+
+    pub(super) fn restart_policy_name(&self) -> &'static str {
+        self.restart_policy.as_str()
+    }
+
+    pub(super) fn affected_inputs_value(&self) -> Value {
+        Value::Array(
+            self.affected_inputs
+                .iter()
+                .map(AffectedInput::as_value)
+                .collect(),
+        )
+    }
 }
 
 impl OperationClass {
@@ -176,9 +197,11 @@ mod tests {
         let request = runtime_operation_request_from_value(json!({
             "domain": "storage",
             "method": "storageManifests",
-            "sourceMode": "rest",
-            "endpoint": "http://storage.local",
-            "args": []
+            "adapter": {
+                "source_mode": "rest",
+                "inputs": { "rest_endpoint": "http://storage.local" }
+            },
+            "payload": {}
         }))?;
 
         let policy = RuntimeOperationPolicy::from_request(&request).as_value();
@@ -197,10 +220,12 @@ mod tests {
         let request = runtime_operation_request_from_value(json!({
             "domain": "storage",
             "method": "storageUploadUrl",
-            "sourceMode": "rest",
-            "endpoint": "http://storage.local",
-            "mutatingEnabled": true,
-            "args": ["/tmp/file.bin"]
+            "adapter": {
+                "source_mode": "rest",
+                "inputs": { "rest_endpoint": "http://storage.local" }
+            },
+            "mutating_enabled": true,
+            "payload": { "path": "/tmp/file.bin" }
         }))?;
 
         let policy = RuntimeOperationPolicy::from_request(&request).as_value();

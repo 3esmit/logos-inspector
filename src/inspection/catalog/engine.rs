@@ -4,7 +4,6 @@ use std::{
     num::NonZeroUsize,
 };
 
-use common::block::{Block as SequencerBlock, HashableBlockData};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 
@@ -19,6 +18,10 @@ use super::{
         CatalogL1Block, CatalogL1BlockEvent, CatalogL1RangePage, CatalogL1Source,
         CatalogL1SourceError,
     },
+};
+use crate::blockchain::channel_operations::{
+    ChannelOperationDecodeError, DecodedChannelOperation, DecodedChannelOperationKind,
+    InscriptionClassification, decode_block_channel_operations, decode_channel_operation,
 };
 use crate::inspection::zones::{
     CatalogCoverageStatus, CoveragePrefixStatus, L1ChannelSummary, L1FinalityState, NetworkScope,
@@ -1623,59 +1626,9 @@ fn ingest_blocks(
 fn extract_channel_observations(
     block: &CatalogL1Block,
 ) -> CatalogEngineResult<Vec<ChannelObservation>> {
-    let transactions = block
-        .payload
-        .get("transactions")
-        .and_then(Value::as_array)
-        .ok_or_else(|| {
-            CatalogEngineError::InvalidBlock("block transactions are not an array".to_owned())
-        })?;
-    let mut observations = Vec::new();
-    for transaction in transactions {
-        let Some(mantle_tx) = transaction.get("mantle_tx") else {
-            continue;
-        };
-        let Some(operations) = mantle_tx.get("ops").and_then(Value::as_array) else {
-            continue;
-        };
-        for (index, operation) in operations.iter().enumerate() {
-            let Some(opcode) = operation.get("opcode").and_then(parse_opcode) else {
-                continue;
-            };
-            if !matches!(opcode, 0x10..=0x13) {
-                continue;
-            }
-            let transaction_hash = mantle_tx
-                .get("hash")
-                .and_then(Value::as_str)
-                .ok_or_else(|| {
-                    CatalogEngineError::InvalidBlock(
-                        "Channel operation transaction hash is missing".to_owned(),
-                    )
-                })
-                .and_then(|value| canonical_hex(value, "transaction hash"))?;
-            let operation_index = u32::try_from(index).map_err(|_| {
-                CatalogEngineError::Overflow("transaction operation index exceeds u32".to_owned())
-            })?;
-            let payload = operation.get("payload").ok_or_else(|| {
-                CatalogEngineError::InvalidBlock(format!(
-                    "Channel opcode {opcode:#x} payload is missing"
-                ))
-            })?;
-            let observation = match opcode {
-                0x10 => parse_configuration(payload, transaction_hash, operation_index)?,
-                0x11 => parse_inscription(payload, transaction_hash, operation_index)?,
-                0x12 | 0x13 => parse_channel_operation(payload, transaction_hash, operation_index)?,
-                _ => {
-                    return Err(CatalogEngineError::InvalidBlock(format!(
-                        "unsupported Channel opcode {opcode:#x}"
-                    )));
-                }
-            };
-            observations.push(observation);
-        }
-    }
-    Ok(observations)
+    decode_block_channel_operations(&block.payload)
+        .map_err(map_channel_decode_error)
+        .map(|operations| operations.into_iter().map(channel_observation).collect())
 }
 
 pub fn extract_catalog_evidence_payload(
@@ -1736,76 +1689,53 @@ pub fn extract_catalog_evidence_payload(
     let operation = operations.get(operation_index).ok_or_else(|| {
         CatalogEngineError::SourceInconsistent("refetched evidence operation is missing".to_owned())
     })?;
-    let opcode = operation
-        .get("opcode")
-        .and_then(parse_opcode)
-        .ok_or_else(|| {
-            CatalogEngineError::SourceInconsistent(
-                "refetched evidence opcode is missing".to_owned(),
-            )
-        })?;
-    let payload = operation.get("payload").ok_or_else(|| {
-        CatalogEngineError::SourceInconsistent("refetched evidence payload is missing".to_owned())
-    })?;
-    let observation = match opcode {
-        0x10 => parse_configuration(
-            payload,
-            transaction_hash.to_owned(),
-            reference.operation_index,
-        )?,
-        0x11 => parse_inscription(
-            payload,
-            transaction_hash.to_owned(),
-            reference.operation_index,
-        )?,
-        0x12 | 0x13 => parse_channel_operation(
-            payload,
-            transaction_hash.to_owned(),
-            reference.operation_index,
-        )?,
-        _ => {
-            return Err(CatalogEngineError::SourceInconsistent(format!(
-                "refetched evidence opcode {opcode:#x} is not a Channel operation"
-            )));
-        }
-    };
-    if observation.channel_id != reference.channel_id {
+    let decoded =
+        decode_channel_operation(Some(transaction_hash), reference.operation_index, operation)
+            .map_err(map_channel_decode_error)?
+            .ok_or_else(|| {
+                CatalogEngineError::SourceInconsistent(
+                    "refetched evidence operation is not a Channel operation".to_owned(),
+                )
+            })?;
+    if decoded.channel_id != reference.channel_id {
         return Err(CatalogEngineError::SourceInconsistent(
             "refetched evidence belongs to another Channel".to_owned(),
         ));
     }
 
-    let (matches_kind, expected_use, format, bytes) = match &observation.kind {
-        ChannelObservationKind::Configuration { .. } => (
+    let (matches_kind, expected_use, format, bytes) = match &decoded.kind {
+        DecodedChannelOperationKind::Configuration { .. } => (
             reference.evidence_kind == ZoneEvidenceKind::ChannelConfiguration,
             CatalogEvidenceUse::PointSnapshot,
             CatalogEvidencePayloadFormat::Json,
-            serde_json::to_vec(payload).map_err(|error| {
+            serde_json::to_vec(&decoded.payload).map_err(|error| {
                 CatalogEngineError::InvalidBlock(format!(
                     "failed to encode Channel configuration evidence: {error}"
                 ))
             })?,
         ),
-        ChannelObservationKind::Inscription {
-            evidence_kind,
-            parent_is_root,
+        DecodedChannelOperationKind::Inscription {
+            parent,
+            classification,
+            bytes,
             ..
-        } => (
-            reference.evidence_kind == *evidence_kind
-                || reference.evidence_kind == ZoneEvidenceKind::ChannelCreated && *parent_is_root,
-            CatalogEvidenceUse::Presence,
-            CatalogEvidencePayloadFormat::Bytes,
-            inscription_bytes(payload.get("inscription").ok_or_else(|| {
-                CatalogEngineError::SourceInconsistent(
-                    "refetched inscription payload is missing".to_owned(),
-                )
-            })?)?,
-        ),
-        ChannelObservationKind::Operation => (
+        } => {
+            let evidence_kind = inscription_evidence_kind(*classification);
+            let parent_is_root = parent.bytes().all(|byte| byte == b'0');
+            (
+                reference.evidence_kind == evidence_kind
+                    || reference.evidence_kind == ZoneEvidenceKind::ChannelCreated
+                        && parent_is_root,
+                CatalogEvidenceUse::Presence,
+                CatalogEvidencePayloadFormat::Bytes,
+                bytes.clone(),
+            )
+        }
+        DecodedChannelOperationKind::Deposit | DecodedChannelOperationKind::Withdraw => (
             reference.evidence_kind == ZoneEvidenceKind::ChannelOperation,
             CatalogEvidenceUse::ReplayContribution,
             CatalogEvidencePayloadFormat::Json,
-            serde_json::to_vec(payload).map_err(|error| {
+            serde_json::to_vec(&decoded.payload).map_err(|error| {
                 CatalogEngineError::InvalidBlock(format!(
                     "failed to encode Channel operation evidence: {error}"
                 ))
@@ -1817,160 +1747,65 @@ pub fn extract_catalog_evidence_payload(
             "refetched evidence kind does not match its catalog reference".to_owned(),
         ));
     }
-    let opcode = u8::try_from(opcode)
-        .map_err(|_| CatalogEngineError::Overflow("evidence opcode exceeds u8".to_owned()))?;
     Ok(CatalogEvidencePayload {
-        opcode,
+        opcode: decoded.opcode,
         bytes,
         format,
     })
 }
 
-fn parse_configuration(
-    payload: &Value,
-    transaction_hash: String,
-    operation_index: u32,
-) -> CatalogEngineResult<ChannelObservation> {
-    let channel_id = required_channel_id(payload, &["channel"])?;
-    let keys = payload
-        .get("keys")
-        .and_then(Value::as_array)
-        .ok_or_else(|| {
-            CatalogEngineError::InvalidBlock("ChannelConfig keys are missing".to_owned())
-        })?
-        .iter()
-        .map(|key| {
-            key.as_str()
-                .ok_or_else(|| {
-                    CatalogEngineError::InvalidBlock("ChannelConfig key is not text".to_owned())
-                })
-                .and_then(|key| canonical_local_text(key, "Channel key"))
-        })
-        .collect::<CatalogEngineResult<Vec<_>>>()?;
-    if keys.is_empty() {
-        return Err(CatalogEngineError::InvalidBlock(
-            "ChannelConfig keys are empty".to_owned(),
-        ));
-    }
-    let withdraw_threshold = payload
-        .get("withdraw_threshold")
-        .and_then(integer_text)
-        .ok_or_else(|| {
-            CatalogEngineError::InvalidBlock(
-                "ChannelConfig withdraw_threshold is missing".to_owned(),
-            )
-        })?;
-    Ok(ChannelObservation {
+fn channel_observation(decoded: DecodedChannelOperation) -> ChannelObservation {
+    let DecodedChannelOperation {
         channel_id,
         transaction_hash,
         operation_index,
-        kind: ChannelObservationKind::Configuration {
+        kind,
+        ..
+    } = decoded;
+    let kind = match kind {
+        DecodedChannelOperationKind::Configuration {
+            keys,
+            withdraw_threshold,
+        } => ChannelObservationKind::Configuration {
             keys,
             withdraw_threshold,
         },
-    })
-}
-
-fn parse_inscription(
-    payload: &Value,
-    transaction_hash: String,
-    operation_index: u32,
-) -> CatalogEngineResult<ChannelObservation> {
-    let channel_id = required_channel_id(payload, &["channel_id"])?;
-    let parent = payload
-        .get("parent")
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            CatalogEngineError::InvalidBlock("ChannelInscribe parent is missing".to_owned())
-        })
-        .and_then(|value| canonical_hex(value, "ChannelInscribe parent"))?;
-    let signer = payload
-        .get("signer")
-        .and_then(Value::as_str)
-        .ok_or_else(|| {
-            CatalogEngineError::InvalidBlock("ChannelInscribe signer is missing".to_owned())
-        })
-        .and_then(|value| canonical_local_text(value, "ChannelInscribe signer"))?;
-    let inscription = payload.get("inscription").ok_or_else(|| {
-        CatalogEngineError::InvalidBlock("ChannelInscribe inscription is missing".to_owned())
-    })?;
-    let (evidence_kind, conflicting) = classify_inscription(inscription)?;
-    Ok(ChannelObservation {
+        DecodedChannelOperationKind::Inscription {
+            parent,
+            signer,
+            classification,
+            ..
+        } => ChannelObservationKind::Inscription {
+            evidence_kind: inscription_evidence_kind(classification),
+            parent_is_root: parent.bytes().all(|byte| byte == b'0'),
+            signer,
+            conflicting: classification == InscriptionClassification::Conflicting,
+        },
+        DecodedChannelOperationKind::Deposit | DecodedChannelOperationKind::Withdraw => {
+            ChannelObservationKind::Operation
+        }
+    };
+    ChannelObservation {
         channel_id,
         transaction_hash,
         operation_index,
-        kind: ChannelObservationKind::Inscription {
-            evidence_kind,
-            parent_is_root: parent.bytes().all(|byte| byte == b'0'),
-            signer,
-            conflicting,
-        },
-    })
-}
-
-fn parse_channel_operation(
-    payload: &Value,
-    transaction_hash: String,
-    operation_index: u32,
-) -> CatalogEngineResult<ChannelObservation> {
-    Ok(ChannelObservation {
-        channel_id: required_channel_id(payload, &["channel_id"])?,
-        transaction_hash,
-        operation_index,
-        kind: ChannelObservationKind::Operation,
-    })
-}
-
-fn classify_inscription(value: &Value) -> CatalogEngineResult<(ZoneEvidenceKind, bool)> {
-    let bytes = inscription_bytes(value)?;
-    let Ok(block) = borsh::from_slice::<SequencerBlock>(&bytes) else {
-        return Ok((ZoneEvidenceKind::RawInscription, false));
-    };
-    let hashable = HashableBlockData::from(block.clone());
-    let encoded = borsh::to_vec(&hashable).map_err(|error| {
-        CatalogEngineError::InvalidBlock(format!("failed to re-encode Sequencer block: {error}"))
-    })?;
-    const PREFIX: &[u8; 32] = b"/LEE/v0.3/Message/Block/\x00\x00\x00\x00\x00\x00\x00\x00";
-    let mut hasher = Sha256::new();
-    hasher.update(PREFIX);
-    hasher.update(encoded);
-    let computed: [u8; 32] = hasher.finalize().into();
-    if computed == block.header.hash.0 {
-        Ok((ZoneEvidenceKind::SequencerBlock, false))
-    } else {
-        Ok((ZoneEvidenceKind::RawInscription, true))
+        kind,
     }
 }
 
-fn inscription_bytes(value: &Value) -> CatalogEngineResult<Vec<u8>> {
-    match value {
-        Value::String(value) => {
-            let value = value
-                .strip_prefix("0x")
-                .or_else(|| value.strip_prefix("0X"))
-                .unwrap_or(value);
-            hex::decode(value).map_err(|error| {
-                CatalogEngineError::InvalidBlock(format!(
-                    "ChannelInscribe inscription is not hexadecimal: {error}"
-                ))
-            })
+fn inscription_evidence_kind(classification: InscriptionClassification) -> ZoneEvidenceKind {
+    match classification {
+        InscriptionClassification::SequencerBlock => ZoneEvidenceKind::SequencerBlock,
+        InscriptionClassification::Raw | InscriptionClassification::Conflicting => {
+            ZoneEvidenceKind::RawInscription
         }
-        Value::Array(values) => values
-            .iter()
-            .map(|value| {
-                value
-                    .as_u64()
-                    .and_then(|value| u8::try_from(value).ok())
-                    .ok_or_else(|| {
-                        CatalogEngineError::InvalidBlock(
-                            "ChannelInscribe byte array contains a non-byte value".to_owned(),
-                        )
-                    })
-            })
-            .collect(),
-        _ => Err(CatalogEngineError::InvalidBlock(
-            "ChannelInscribe inscription is not bytes".to_owned(),
-        )),
+    }
+}
+
+fn map_channel_decode_error(error: ChannelOperationDecodeError) -> CatalogEngineError {
+    match error {
+        ChannelOperationDecodeError::Invalid(detail) => CatalogEngineError::InvalidBlock(detail),
+        ChannelOperationDecodeError::Overflow(detail) => CatalogEngineError::Overflow(detail),
     }
 }
 
@@ -2306,15 +2141,6 @@ const fn evidence_kind_tag(kind: ZoneEvidenceKind) -> &'static str {
     }
 }
 
-fn required_channel_id(value: &Value, fields: &[&str]) -> CatalogEngineResult<String> {
-    fields
-        .iter()
-        .find_map(|field| value.get(*field))
-        .and_then(Value::as_str)
-        .ok_or_else(|| CatalogEngineError::InvalidBlock("Channel id is missing".to_owned()))
-        .and_then(|value| canonical_hex(value, "Channel id"))
-}
-
 fn canonical_hex(value: &str, label: &str) -> CatalogEngineResult<String> {
     let value = value.trim();
     let value = value
@@ -2327,42 +2153,6 @@ fn canonical_hex(value: &str, label: &str) -> CatalogEngineResult<String> {
         )));
     }
     Ok(value.to_ascii_lowercase())
-}
-
-fn canonical_local_text(value: &str, label: &str) -> CatalogEngineResult<String> {
-    let value = value.trim();
-    if value.is_empty() || value.len() > 256 || value.chars().any(char::is_control) {
-        return Err(CatalogEngineError::InvalidBlock(format!(
-            "{label} is invalid"
-        )));
-    }
-    Ok(value.to_owned())
-}
-
-fn parse_opcode(value: &Value) -> Option<u64> {
-    value.as_u64().or_else(|| {
-        value.as_str().and_then(|value| {
-            let value = value.trim();
-            if let Some(value) = value
-                .strip_prefix("0x")
-                .or_else(|| value.strip_prefix("0X"))
-            {
-                u64::from_str_radix(value, 16).ok()
-            } else {
-                value.parse().ok()
-            }
-        })
-    })
-}
-
-fn integer_text(value: &Value) -> Option<String> {
-    match value {
-        Value::Number(value) => Some(value.to_string()),
-        Value::String(value) if !value.trim().is_empty() => Some(value.trim().to_owned()),
-        Value::Null | Value::Bool(_) | Value::String(_) | Value::Array(_) | Value::Object(_) => {
-            None
-        }
-    }
 }
 
 #[cfg(test)]

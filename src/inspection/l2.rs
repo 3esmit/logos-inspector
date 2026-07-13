@@ -2,10 +2,14 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::{CatalogVerificationState, NetworkScope, ZoneKind, ZoneSourceRole, ZoneSummary};
+use super::{
+    ActiveZoneContextFields, CatalogVerificationState, NetworkScope, ZoneKind, ZoneSourceRole,
+    ZoneSummary,
+};
 use crate::source_routing::channel_sources::{ChannelSourceConfig, ChannelSourceMonitorSnapshot};
 
 mod cache;
+mod context;
 mod model;
 mod normalization;
 mod resolution;
@@ -13,14 +17,11 @@ mod router;
 mod source;
 
 pub(crate) use cache::*;
+pub(crate) use context::*;
 pub use model::*;
 pub(crate) use normalization::*;
 pub(crate) use router::*;
 pub(crate) use source::*;
-
-pub mod lez {
-    pub use crate::lez::*;
-}
 
 pub const L2_READ_SCHEMA_VERSION: u32 = 1;
 pub const L2_READ_ERROR_REPORT_KIND: &str = "lez.read_error";
@@ -44,6 +45,21 @@ pub struct ActiveZoneContext {
     pub indexer_source_id: Option<String>,
     pub source_config_revision: u64,
     pub context_revision: u64,
+}
+
+impl ActiveZoneContext {
+    #[must_use]
+    pub fn from_fields(fields: ActiveZoneContextFields, context_revision: u64) -> Self {
+        Self {
+            network_scope: fields.network_scope,
+            channel_id: fields.channel_id,
+            zone_kind: fields.zone_kind,
+            selected_sequencer_source_id: fields.selected_sequencer_source_id,
+            indexer_source_id: fields.indexer_source_id,
+            source_config_revision: fields.source_config_revision,
+            context_revision,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

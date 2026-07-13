@@ -1,7 +1,9 @@
 mod config;
+pub(crate) mod indexer;
 pub(crate) mod layer;
 mod monitor;
 mod probe;
+pub(crate) mod sequencer;
 mod store;
 
 pub use config::{

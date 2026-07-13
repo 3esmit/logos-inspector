@@ -2,6 +2,7 @@ use anyhow::Result;
 
 mod action_engine;
 mod action_workspace;
+mod adapters;
 mod commands;
 mod lifecycle;
 mod model;

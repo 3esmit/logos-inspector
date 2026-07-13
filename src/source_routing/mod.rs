@@ -1,24 +1,27 @@
 mod adapter;
 pub mod channel_sources;
 mod core;
-mod delivery;
+pub(crate) mod delivery;
 mod network_profiles;
 mod policy;
 mod selection;
 mod shared;
-mod storage;
+pub(crate) mod storage;
 
 pub use adapter::{
     AdapterConnectionType, AdapterInputPolicy, SourceAdapterPolicy, SourceModePolicy,
 };
-pub(crate) use adapter::{ManagedModuleCallSpec, ManagedNodeAction};
+pub(crate) use adapter::{
+    AdapterInitialization, ManagedModuleCallSpec, ManagedNodeAction, ManagedNodeContract,
+    NodeOperationRequest,
+};
 pub(crate) use channel_sources::layer as execution_zone_layer;
 #[cfg(test)]
 pub(crate) use core::adapters::BLOCKCHAIN_MODULE;
 pub(crate) use core::layer as bedrock_layer;
+pub(crate) use delivery as messaging_layer;
 pub(crate) use delivery::delivery_module_probe_plan;
 pub use delivery::delivery_source_report;
-pub(crate) use delivery::layer as messaging_layer;
 pub use network_profiles::{
     CUSTOM_NETWORK_PROFILE, DEFAULT_NETWORK_PROFILE, NetworkEndpoints, NetworkProfile,
     infer_network_profile, network_profiles, resolve_network_endpoints,
@@ -34,14 +37,11 @@ pub use policy::{
     source_policy_report,
 };
 pub(crate) use policy::{capability_provider_mode_policies, network_adapter_policy_for_connector};
-pub(crate) use selection::{
-    DeliveryStoreQuery, SourceArgsNormalization, SourceEndpoint, delivery_rest_source,
-    normalized_source_args, require_mutating_diagnostics, storage_rest_source,
-};
+pub(crate) use selection::SourceEndpoint;
 pub use shared::{
     SourceCapabilityFact, SourceFacts, SourceHealthFacts, SourceHealthStatus, SourceProbeFact,
     SourceReport,
 };
-pub(crate) use storage::layer as storage_layer;
+pub(crate) use storage as storage_layer;
 pub(crate) use storage::storage_module_probe_plan;
 pub use storage::storage_source_report;

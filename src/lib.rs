@@ -1,4 +1,4 @@
-pub mod blockchain;
+mod blockchain;
 pub mod capabilities;
 #[cfg(feature = "cli")]
 pub mod cli;
@@ -12,12 +12,12 @@ mod inspector {
     pub(crate) mod commands;
     pub(crate) mod value;
 }
-pub mod lez;
+mod lez;
 pub mod local_nodes;
-pub mod modules;
+mod modules;
 pub mod probe;
 mod public_surface;
-pub mod rpc;
+mod rpc;
 pub mod social;
 pub mod source_routing;
 pub(crate) mod support;
@@ -25,7 +25,7 @@ pub mod wallet;
 
 pub use public_surface::{bridge, idl_decode, logoscore, network, program_decode};
 
-// Compatibility shims. First-party code should prefer the domain modules above.
+// Public data models and pure helpers retained at the crate root.
 pub use public_surface::compat::*;
 pub(crate) use support::entity_id::{normalize_account_id_text, parse_account_id, parse_hash};
 pub(crate) use support::http_response::response_excerpt;

@@ -18,6 +18,10 @@ QtObject {
     property bool usesRestEndpoint: false
     property bool supportsMutatingDiagnostics: false
     property string restEndpoint: ""
+    property var adapterInitialization: ({
+        source_mode: effectiveSourceMode,
+        inputs: usesRestEndpoint ? ({ rest_endpoint: restEndpoint }) : ({})
+    })
     property string moduleName: "storage_module"
     property string networkPreset: "logos.test"
     property bool mutatingDiagnosticsEnabled: false
@@ -32,27 +36,17 @@ QtObject {
     property var sourceReport: null
 
     property var manifests: []
-    property string lastOperation: qsTr("None")
+    property alias lastOperation: storageOperations.lastOperation
     property string activeCid: cidProbe
-    property alias pendingMethod: storageOperations.pendingMethod
-    property alias pendingLabel: storageOperations.pendingLabel
-    property alias pendingArgs: storageOperations.pendingArgs
-    property alias terminalOperationId: storageOperations.terminalOperationId
-    property alias operationStartPending: storageOperations.startPending
-    property alias activeOperation: storageOperations.activeOperation
-    property alias activeOperationRevision: storageOperations.activeOperationRevision
-    property alias operationLog: storageOperations.operationLog
-    property alias operationLogRevision: storageOperations.operationLogRevision
+    readonly property var pendingOperation: storageOperations.confirmation
+    readonly property var operation: storageOperations.view
 
-    property SourceOperationFlow operationClient: SourceOperationFlow {
+    property SourceOperationSession operationSession: SourceOperationSession {
         id: storageOperations
 
         gateway: root.gateway
         domain: "storage"
-        moduleName: root.moduleName
-        effectiveSourceMode: root.effectiveSourceMode
-        restEndpoint: root.restEndpoint
-        usesRestEndpoint: root.usesRestEndpoint
+        adapterInitialization: root.adapterInitialization
         mutatingDiagnosticsEnabled: root.mutatingDiagnosticsEnabled
         defaultLabel: qsTr("Storage operation")
         busyError: qsTr("A storage operation is already running.")
@@ -124,8 +118,8 @@ QtObject {
         return gate.enabled ? "" : gateDetailText(gate)
     }
 
-    function storageArgs(extra) {
-        return storageOperations.sourceArgs(extra)
+    function storageArgs(method, extra) {
+        return storageOperations.requestArgs(method, extra)
     }
 
     function setCidProbe(value) {
@@ -140,9 +134,9 @@ QtObject {
         if (!gate.enabled) {
             return blockedStorageResponse(qsTr("List files"), gate, showLog === true)
         }
-        const response = gateway.call("storageManifests", storageArgs([]), qsTr("Storage manifests"))
+        const response = gateway.call("storageManifests", storageArgs("storageManifests", []), qsTr("Storage manifests"))
         if (showLog) {
-            appendOperation(qsTr("List files"), response)
+            storageOperations.appendResult(qsTr("List files"), response)
         }
         if (response.ok) {
             manifests = manifestArray(response.value)
@@ -162,22 +156,22 @@ QtObject {
         if (command.runtime) {
             return startStorageOperation(method, args, label)
         }
-        const response = gateway.call(method, storageArgs(args), label)
-        appendOperation(label, response)
+        const response = gateway.call(method, storageArgs(method, args), label)
+        storageOperations.appendResult(label, response)
         lastOperation = response.ok ? label : qsTr("Error")
         return response
     }
 
     function confirmStorage(method, args, label) {
-        storageOperations.confirm(method, args, label, true)
+        storageOperations.confirm(method, args, label)
     }
 
     function clearPendingStorage() {
-        storageOperations.clearPending()
+        storageOperations.clearConfirmation()
     }
 
     function runPendingStorage() {
-        return storageOperations.runPending(function (method, args, label) {
+        return storageOperations.runConfirmed(function (method, args, label) {
             return root.startStorageOperation(method, args, label)
         })
     }
@@ -189,9 +183,9 @@ QtObject {
             return blockedStorageResponse(label, gate, true)
         }
         lastOperation = qsTr("Starting")
-        const started = storageOperations.startOperation(method, args, label, function (response) {
+        const started = storageOperations.start(method, args, label, function (response) {
             if (response && response.ok) {
-                if (!StorageTransfer.applyStatusUpdate(root, response.value)) {
+                if (!StorageTransfer.applyStatusUpdate(storageOperations, response.value)) {
                     lastOperation = qsTr("Started")
                 }
                 currentTab = "operations"
@@ -208,8 +202,8 @@ QtObject {
     }
 
     function pollStorageOperation(showResult) {
-        return storageOperations.pollOperation(showResult === true, function (response) {
-            if (response && response.ok && StorageTransfer.applyStatusUpdate(root, response.value)) {
+        return storageOperations.poll(showResult === true, function (response) {
+            if (response && response.ok && StorageTransfer.applyStatusUpdate(storageOperations, response.value)) {
                 return true
             }
             return false
@@ -217,11 +211,11 @@ QtObject {
     }
 
     function cancelStorageOperation() {
-        return storageOperations.cancelOperation()
+        return storageOperations.cancel()
     }
 
     function appendTerminalStorageOperation(operation) {
-        return storageOperations.appendTerminalOperation(operation, activeStorageDetailText())
+        return storageOperations.acceptTerminal(operation, activeStorageDetailText())
     }
 
     function completeTerminalStorageOperation(operation) {
@@ -241,10 +235,6 @@ QtObject {
         }
     }
 
-    function appendOperation(label, response) {
-        storageOperations.appendOperation(label, response)
-    }
-
     function blockedStorageResponse(label, gate, logResponse) {
         const response = {
             ok: false,
@@ -254,7 +244,7 @@ QtObject {
         }
         lastOperation = qsTr("Blocked")
         if (logResponse) {
-            appendOperation(String(label || qsTr("Storage operation")), response)
+            storageOperations.appendResult(String(label || qsTr("Storage operation")), response)
         }
         return response
     }
@@ -271,48 +261,8 @@ QtObject {
         return SourceOperationCommandCatalog.storageRequiredInputs(action, args)
     }
 
-    function updateActiveOperation(value) {
-        storageOperations.updateActiveOperation(value)
-    }
-
-    function clearActiveOperation() {
-        storageOperations.clearActiveOperation()
-    }
-
-    function activeStorageOperation() {
-        return storageOperations.active()
-    }
-
-    function activeStorageOperationKnown() {
-        return storageOperations.known()
-    }
-
-    function activeStorageOperationRunning() {
-        return storageOperations.running()
-    }
-
-    function storageOperationBusy() {
-        return storageOperations.busy()
-    }
-
-    function activeStorageOperationCancelable() {
-        return storageOperations.cancelable()
-    }
-
-    function activeStorageOperationTerminal(operation) {
-        return storageOperations.terminal(operation)
-    }
-
-    function activeStorageStatusText() {
-        return storageOperations.statusText()
-    }
-
-    function activeStorageTone() {
-        return storageOperations.tone()
-    }
-
     function activeStorageDetailText() {
-        const operation = activeStorageOperation()
+        const operation = storageOperations.view.active
         if (!operation) {
             return qsTr("No active operation.")
         }
@@ -328,7 +278,7 @@ QtObject {
     }
 
     function applyStorageModuleEvent(eventName, args) {
-        return StorageTransfer.applyModuleEvent(root, eventName, args)
+        return StorageTransfer.applyModuleEvent(storageOperations, eventName, args)
     }
 
     function storageSpaceSummary() {
@@ -344,7 +294,7 @@ QtObject {
     }
 
     function activeStorageProgressText() {
-        const operation = activeStorageOperation()
+        const operation = storageOperations.view.active
         if (!operation) {
             return ""
         }
@@ -357,12 +307,8 @@ QtObject {
         return qsTr("%1 bytes").arg(valueText(written))
     }
 
-    function operationPayload(value) {
-        return storageOperations.operationPayload(value)
-    }
-
     function manifestArray(value) {
-        const payload = operationPayload(value)
+        const payload = storageOperations.payload(value)
         if (Array.isArray(payload)) {
             return payload
         }
@@ -403,14 +349,6 @@ QtObject {
                 mime: String(metadata.mimetype || row.mimetype || row.mimeType || row.contentType || "-")
             }
         })
-    }
-
-    function operationRows() {
-        return storageOperations.rows()
-    }
-
-    function operationSummary(value) {
-        return storageOperations.operationSummary(value)
     }
 
     function chunkSizeValue(text) {

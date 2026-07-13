@@ -6,14 +6,11 @@ use std::{
 use anyhow::{Context as _, Result, bail};
 use serde_json::Value;
 
-use crate::{
-    source_routing::{bedrock_layer, execution_zone_layer, messaging_layer, storage_layer},
-    support::time::now_millis,
-};
+use crate::support::time::now_millis;
 
+use super::adapters::{NodeActionPolicy, NodeConfigContext, adapter_for};
 use super::commands::{
-    command_spec_for, ensure_module_loaded, execute_command_spec, has_static_module_contract,
-    operation_detail_from_value,
+    command_spec_for, ensure_module_loaded, execute_command_spec, operation_detail_from_value,
 };
 use super::lifecycle::{has_event_contract, reset_module_contexts};
 use super::model::{
@@ -330,13 +327,22 @@ fn node_install(
     let node = request.node;
     operation_result(request, node, || {
         let kind = required_node(request)?;
-        if kind != NodeKind::Sequencer {
-            return Ok(needs_configuration(
-                "module nodes must be initialized before they can start",
-            ));
+        let adapter = adapter_for(kind);
+        let policy = adapter.action_policy(NodeAction::Install);
+        if let Some(reason) = policy.blocked_reason() {
+            return Ok(needs_configuration(reason));
         }
-        let Some(binary) = find_command("sequencer_service") else {
-            return Ok(needs_configuration("sequencer_service not found"));
+        let NodeActionPolicy::RegisterExecutable {
+            program: executable,
+        } = policy
+        else {
+            bail!(
+                "{} adapter returned an invalid install policy",
+                adapter.label()
+            );
+        };
+        let Some(binary) = find_command(executable) else {
+            return Ok(needs_configuration(&format!("{executable} not found")));
         };
         let record = active_devnet_mut(state)?;
         let config = required_node_config(record, kind)?;
@@ -346,7 +352,7 @@ fn node_install(
         write_devnet_manifest(record)?;
         Ok(OperationOutcome {
             status: "installed".to_owned(),
-            detail: "sequencer_service registered".to_owned(),
+            detail: format!("{executable} registered"),
             command: None,
         })
     })
@@ -361,17 +367,17 @@ fn node_initialize(
     let node = request.node;
     operation_result(request, node, || {
         let kind = required_node(request)?;
-        if kind == NodeKind::Sequencer {
-            return Ok(needs_configuration(
-                "the local sequencer uses an install registration instead of module initialization",
-            ));
+        let adapter = adapter_for(kind);
+        let policy = adapter.action_policy(NodeAction::Initialize);
+        if let Some(reason) = policy.blocked_reason() {
+            return Ok(needs_configuration(reason));
         }
-        if !has_static_module_contract(kind) {
-            return Ok(needs_configuration(&format!(
-                "{} has no verified logoscore module lifecycle contract",
-                kind.label()
-            )));
-        }
+        let NodeActionPolicy::ExecuteManaged { ensure_loaded, .. } = policy else {
+            bail!(
+                "{} adapter returned an invalid initialize policy",
+                adapter.label()
+            );
+        };
         let Some(runtime) = managed_runtime(runtime) else {
             return Ok(needs_configuration(
                 "start an Inspector-managed logoscore runtime before initializing a module node",
@@ -385,9 +391,11 @@ fn node_initialize(
             &config.config_path,
             DEFAULT_DEPLOYMENT,
         )
-        .with_context(|| format!("{} initialization is not implemented", kind.label()))?;
+        .with_context(|| format!("{} initialization is not implemented", adapter.label()))?;
         let cli = runtime.cli_runtime()?;
-        ensure_module_loaded(&spec, Some(&cli))?;
+        if ensure_loaded {
+            ensure_module_loaded(&spec, Some(&cli))?;
+        }
         match execute_command_spec(&spec, Some(&cli)) {
             Ok(value) => {
                 config.installed = true;
@@ -420,9 +428,14 @@ fn node_uninstall(
     let node = request.node;
     operation_result(request, node, || {
         let kind = required_node(request)?;
+        let adapter = adapter_for(kind);
+        let policy = adapter.action_policy(NodeAction::Uninstall);
+        if let Some(reason) = policy.blocked_reason() {
+            return Ok(needs_configuration(reason));
+        }
         let record = active_devnet_mut(state)?;
         let config = required_node_config(record, kind)?;
-        if kind == NodeKind::Sequencer {
+        if policy == NodeActionPolicy::RemoveExecutableRegistration {
             stop_owned_process(config);
             config.installed = false;
             config.package_path = None;
@@ -430,9 +443,15 @@ fn node_uninstall(
             write_devnet_manifest(record)?;
             return Ok(OperationOutcome {
                 status: "uninstalled".to_owned(),
-                detail: "sequencer registration removed".to_owned(),
+                detail: format!("{} registration removed", adapter.label()),
                 command: None,
             });
+        }
+        if !matches!(policy, NodeActionPolicy::ExecuteManaged { .. }) {
+            bail!(
+                "{} adapter returned an invalid uninstall policy",
+                adapter.label()
+            );
         }
         let Some(runtime) = managed_runtime(runtime) else {
             return Ok(needs_configuration(
@@ -486,11 +505,10 @@ fn node_start(
     let node = request.node;
     operation_result(request, node, || {
         let kind = required_node(request)?;
-        if !has_static_module_contract(kind) {
-            return Ok(needs_configuration(&format!(
-                "{} has no verified logoscore module lifecycle contract",
-                kind.label()
-            )));
+        let adapter = adapter_for(kind);
+        let policy = adapter.action_policy(NodeAction::Start);
+        if let Some(reason) = policy.blocked_reason() {
+            return Ok(needs_configuration(reason));
         }
         let record = active_devnet_mut(state)?;
         let config = required_node_config(record, kind)?;
@@ -502,8 +520,8 @@ fn node_start(
             &config.config_path,
             DEFAULT_DEPLOYMENT,
         )
-        .with_context(|| format!("{} start is not implemented", kind.label()))?;
-        if kind == NodeKind::Sequencer {
+        .with_context(|| format!("{} start is not implemented", adapter.label()))?;
+        if policy == NodeActionPolicy::ExecuteDetached {
             return match execute_command_spec(&spec, None) {
                 Ok(value) => {
                     config.process_id = value
@@ -526,6 +544,16 @@ fn node_start(
                 }),
             };
         }
+        let NodeActionPolicy::ExecuteManaged {
+            ensure_loaded,
+            requires_installed_context,
+        } = policy
+        else {
+            bail!(
+                "{} adapter returned an invalid start policy",
+                adapter.label()
+            );
+        };
         let Some(runtime) = managed_runtime(runtime) else {
             return Ok(needs_configuration(
                 "start an Inspector-managed logoscore runtime before starting a module node",
@@ -536,13 +564,13 @@ fn node_start(
                 "a module lifecycle action is already pending confirmation",
             ));
         }
-        if kind != NodeKind::Bedrock && !config.installed {
+        if requires_installed_context && !config.installed {
             return Ok(needs_configuration(
                 "initialize the module node before starting it",
             ));
         }
         let cli = runtime.cli_runtime()?;
-        if kind == NodeKind::Bedrock {
+        if ensure_loaded {
             ensure_module_loaded(&spec, Some(&cli))?;
         }
         match execute_command_spec(&spec, Some(&cli)) {
@@ -581,24 +609,33 @@ fn node_stop(
     let node = request.node;
     operation_result(request, node, || {
         let kind = required_node(request)?;
-        if !has_static_module_contract(kind) {
-            return Ok(needs_configuration(&format!(
-                "{} has no verified logoscore module lifecycle contract",
-                kind.label()
-            )));
+        let adapter = adapter_for(kind);
+        let policy = adapter.action_policy(NodeAction::Stop);
+        if let Some(reason) = policy.blocked_reason() {
+            return Ok(needs_configuration(reason));
         }
         let record = active_devnet_mut(state)?;
         let config = required_node_config(record, kind)?;
-        if kind == NodeKind::Sequencer {
+        if policy == NodeActionPolicy::ExecuteDetached {
             stop_owned_process(config);
             record.updated_at = now_millis();
             write_devnet_manifest(record)?;
             return Ok(OperationOutcome {
                 status: "stopped".to_owned(),
-                detail: "stopped recorded sequencer process".to_owned(),
+                detail: format!("stopped recorded {} process", adapter.label()),
                 command: None,
             });
         }
+        let NodeActionPolicy::ExecuteManaged {
+            requires_installed_context,
+            ..
+        } = policy
+        else {
+            bail!(
+                "{} adapter returned an invalid stop policy",
+                adapter.label()
+            );
+        };
         let Some(runtime) = managed_runtime(runtime) else {
             return Ok(needs_configuration(
                 "start an Inspector-managed logoscore runtime before stopping a module node",
@@ -609,7 +646,7 @@ fn node_stop(
                 "a module lifecycle action is already pending confirmation",
             ));
         }
-        if !config.installed {
+        if requires_installed_context && !config.installed {
             return Ok(needs_configuration(
                 "initialize the module node before stopping it",
             ));
@@ -620,7 +657,7 @@ fn node_stop(
             &config.config_path,
             DEFAULT_DEPLOYMENT,
         )
-        .with_context(|| format!("{} stop is not implemented", kind.label()))?;
+        .with_context(|| format!("{} stop is not implemented", adapter.label()))?;
         let cli = runtime.cli_runtime()?;
         match execute_command_spec(&spec, Some(&cli)) {
             Ok(value) => {
@@ -656,14 +693,28 @@ fn node_purge(
     let node = request.node;
     operation_result(request, node, || {
         let kind = required_node(request)?;
+        let adapter = adapter_for(kind);
+        let policy = adapter.action_policy(NodeAction::Purge);
+        if let Some(reason) = policy.blocked_reason() {
+            return Ok(needs_configuration(reason));
+        }
+        let NodeActionPolicy::PurgeData {
+            requires_removed_context,
+        } = policy
+        else {
+            bail!(
+                "{} adapter returned an invalid purge policy",
+                adapter.label()
+            );
+        };
         let workspace_root = PathBuf::from(&state.managed_workspace_root);
         let Some(record) = state.active_devnet_mut() else {
             bail!("active devnet is required");
         };
         let Some(config) = node_config_mut(record, kind) else {
-            bail!("{} config is not available", kind.label());
+            bail!("{} config is not available", adapter.label());
         };
-        if kind != NodeKind::Sequencer && config.installed {
+        if requires_removed_context && config.installed {
             return Ok(needs_configuration(
                 "remove the module context before purging its data directory",
             ));
@@ -679,7 +730,7 @@ fn node_purge(
         write_devnet_manifest(record)?;
         Ok(OperationOutcome {
             status: "purged".to_owned(),
-            detail: format!("purged {} data directory", kind.label()),
+            detail: format!("purged {} data directory", adapter.label()),
             command: None,
         })
     })
@@ -717,7 +768,7 @@ fn required_node_config(
     kind: NodeKind,
 ) -> Result<&mut LocalNodeConfigRecord> {
     node_config_mut(record, kind)
-        .with_context(|| format!("{} config is not available", kind.label()))
+        .with_context(|| format!("{} config is not available", adapter_for(kind).label()))
 }
 
 fn clear_module_context(config: &mut LocalNodeConfigRecord) {
@@ -799,7 +850,8 @@ fn target_network_id(state: &LocalNodesState, request: &LocalNodeActionRequest) 
 }
 
 fn default_node_config(workspace: &Path, kind: NodeKind) -> LocalNodeConfigRecord {
-    let port = kind.default_port();
+    let adapter = adapter_for(kind);
+    let port = adapter.default_port();
     LocalNodeConfigRecord {
         kind,
         config_path: workspace
@@ -812,7 +864,7 @@ fn default_node_config(workspace: &Path, kind: NodeKind) -> LocalNodeConfigRecor
             .join(kind.as_str())
             .display()
             .to_string(),
-        endpoint: kind.endpoint(port),
+        endpoint: adapter.endpoint(port),
         port,
         package_path: None,
         module_path: None,
@@ -842,28 +894,12 @@ fn generate_devnet_files(record: &LocalDevnetRecord) -> Result<()> {
 }
 
 fn generated_node_config(record: &LocalDevnetRecord, node: &LocalNodeConfigRecord) -> Value {
-    match node.kind {
-        NodeKind::Bedrock => bedrock_layer::managed_config(
-            &record.id,
-            &node.data_dir,
-            node.endpoint.as_deref(),
-            node.port,
-        ),
-        NodeKind::Storage => storage_layer::managed_config(&node.data_dir),
-        NodeKind::Messaging => messaging_layer::managed_config(node.port),
-        NodeKind::Sequencer => execution_zone_layer::managed_sequencer_config(
-            &record.id,
-            &node.data_dir,
-            node.endpoint.as_deref(),
-            node.port,
-        ),
-        NodeKind::Indexer => execution_zone_layer::managed_indexer_config(
-            &record.id,
-            &node.data_dir,
-            node.endpoint.as_deref(),
-            node.port,
-        ),
-    }
+    adapter_for(node.kind).build_config(NodeConfigContext {
+        network_id: &record.id,
+        data_dir: &node.data_dir,
+        endpoint: node.endpoint.as_deref(),
+        port: node.port,
+    })
 }
 
 fn write_devnet_manifest(record: &LocalDevnetRecord) -> Result<()> {

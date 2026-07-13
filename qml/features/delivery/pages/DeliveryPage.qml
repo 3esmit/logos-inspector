@@ -6,7 +6,6 @@ import QtQuick.Layouts
 import "../../../components"
 import "../../modules/controls"
 import "../../../state"
-import "../../../state/source_routing/SourceObservationProjection.js" as SourceObservation
 import "../../../theme"
 
 ColumnLayout {
@@ -21,6 +20,7 @@ ColumnLayout {
         theme: root.theme
         family: "delivery"
     }
+    readonly property var sourceView: sourceSession.view
     property string currentTab: "overview"
 
     width: parent ? parent.width : 900
@@ -40,7 +40,7 @@ ColumnLayout {
     }
 
     Component.onCompleted: {
-        if (!root.report()) {
+        if (!root.sourceView.report) {
             root.refreshSource(false)
         }
     }
@@ -51,7 +51,7 @@ ColumnLayout {
         title: qsTr("Delivery Diagnostics")
         layerLabel: qsTr("Diagnostics")
         subtitle: qsTr("%1 on %2, %3 s rolling window.")
-            .arg(root.model.deliverySourceLabel())
+            .arg(root.model.sourceRouting.deliverySourceLabel())
             .arg(root.model.messagingNetworkPreset)
             .arg(root.model.messagingRollingWindow)
         Layout.fillWidth: true
@@ -59,7 +59,7 @@ ColumnLayout {
 
     SourceStrip {
         theme: root.theme
-        sources: root.sourceBadges()
+        sources: root.sourceView.sourceBadges
         Layout.fillWidth: true
     }
 
@@ -71,7 +71,7 @@ ColumnLayout {
             theme: root.theme
             text: qsTr("Refresh source")
             primary: true
-            enabled: !root.pending()
+            enabled: !root.sourceView.pending
             Layout.preferredWidth: 162
             accessibleName: qsTr("Refresh Delivery source")
             onClicked: root.refreshSource(true)
@@ -80,15 +80,15 @@ ColumnLayout {
         ActionButton {
             theme: root.theme
             text: qsTr("Open settings")
-            enabled: !root.pending()
+            enabled: !root.sourceView.pending
             Layout.preferredWidth: 126
             accessibleName: qsTr("Open Delivery settings")
             onClicked: root.model.openSettings("network", "messaging")
         }
 
         Text {
-            text: root.statusLine()
-            color: root.statusColor()
+            text: root.sourceView.statusLine
+            color: root.sourceView.statusColor
             textFormat: Text.PlainText
             elide: Text.ElideRight
             font.pixelSize: root.theme.secondaryText
@@ -129,33 +129,33 @@ ColumnLayout {
                     theme: root.theme
                     compact: true
                     label: qsTr("Health")
-                    value: root.healthText()
-                    delta: root.freshnessText()
-                    deltaColor: root.statusColor()
+                    value: root.sourceView.healthText
+                    delta: root.sourceView.freshnessText
+                    deltaColor: root.sourceView.statusColor
                 }
 
                 MetricCard {
                     theme: root.theme
                     compact: true
                     label: qsTr("Source")
-                    value: root.sourceShortLabel()
-                    delta: root.shortText(root.model.deliverySourceTarget(), 34)
+                    value: root.sourceView.sourceShortLabel
+                    delta: root.sourceView.sourceTargetShort
                 }
 
                 MetricCard {
                     theme: root.theme
                     compact: true
                     label: qsTr("Peers")
-                    value: root.metricDisplay("messaging.peer_count")
-                    delta: root.identityEvidence()
-                    deltaColor: root.metricTone("messaging.peer_count")
+                    value: root.sourceView.peerCount
+                    delta: root.sourceView.identityEvidence
+                    deltaColor: root.sourceView.peerColor
                 }
 
                 MetricCard {
                     theme: root.theme
                     compact: true
                     label: qsTr("Messages")
-                    value: root.metricDisplay("messaging.message_received_events_recent")
+                    value: root.sourceView.messageCount
                     delta: qsTr("waku_node_messages_total")
                 }
 
@@ -163,9 +163,9 @@ ColumnLayout {
                     theme: root.theme
                     compact: true
                     label: qsTr("Errors")
-                    value: root.metricDisplay("messaging.message_error_events_recent")
-                    delta: root.model.moduleLastError("messaging") || root.sourceName()
-                    deltaColor: root.metricTone("messaging.message_error_events_recent")
+                    value: root.sourceView.errorCount
+                    delta: root.sourceView.errorDetail
+                    deltaColor: root.sourceView.errorColor
                 }
             }
 
@@ -178,13 +178,13 @@ ColumnLayout {
                 StatusRowsPanel {
                     theme: root.theme
                     title: qsTr("Live degradation")
-                    rows: root.healthRows()
+                    rows: root.sourceView.healthRows
                 }
 
                 StatusRowsPanel {
                     theme: root.theme
                     title: qsTr("Protocol readiness")
-                    rows: root.protocolRows()
+                    rows: root.sourceView.protocolRows
                 }
             }
         }
@@ -200,7 +200,7 @@ ColumnLayout {
             StatusRowsPanel {
                 theme: root.theme
                 title: qsTr("Diagnostic checklist")
-                rows: root.healthRows().concat(root.evidenceRows())
+                rows: root.sourceView.healthRows.concat(root.sourceView.evidenceRows)
             }
         }
     }
@@ -215,13 +215,13 @@ ColumnLayout {
             DetailRowsPanel {
                 theme: root.theme
                 title: qsTr("Local node identity")
-                rows: root.identityRows()
+                rows: root.sourceView.identityRows
             }
 
             StatusRowsPanel {
                 theme: root.theme
                 title: qsTr("Topology boundaries")
-                rows: root.topologyRows()
+                rows: root.sourceView.topologyRows
             }
         }
     }
@@ -236,7 +236,7 @@ ColumnLayout {
             StatusRowsPanel {
                 theme: root.theme
                 title: qsTr("Rolling-window rates")
-                rows: root.throughputRows()
+                rows: root.sourceView.throughputRows
             }
         }
     }
@@ -251,7 +251,7 @@ ColumnLayout {
             ProtocolRowsPanel {
                 theme: root.theme
                 title: qsTr("Protocols")
-                rows: root.protocolRows()
+                rows: root.sourceView.protocolRows
             }
         }
     }
@@ -266,7 +266,7 @@ ColumnLayout {
             StatusRowsPanel {
                 theme: root.theme
                 title: qsTr("Topics")
-                rows: root.topicRows()
+                rows: root.sourceView.topicRows
             }
 
             StatusMessage {
@@ -289,7 +289,7 @@ ColumnLayout {
             StatusRowsPanel {
                 theme: root.theme
                 title: qsTr("Store")
-                rows: root.storeRows()
+                rows: root.sourceView.storeRows
             }
         }
     }
@@ -303,8 +303,8 @@ ColumnLayout {
             refreshActions: [
                 { text: qsTr("Refresh status"), width: 140, accessibleName: qsTr("Refresh Delivery status") }
             ]
-            pending: root.pending() || !root.diagnosticsGateEnabled("delivery")
-            statusText: root.diagnosticsStatusText("delivery", root.statusLine(), qsTr("Delivery diagnostics"))
+            pending: root.sourceView.pending || !root.diagnosticsGateEnabled("delivery")
+            statusText: root.diagnosticsStatusText("delivery", root.sourceView.statusLine, qsTr("Delivery diagnostics"))
             guardedTitle: qsTr("Mutating diagnostics")
             permissionEnabled: root.model.messagingMutatingDiagnosticsEnabled && root.diagnosticsGateEnabled("delivery")
             permissionDisabledTitle: root.diagnosticsGateEnabled("delivery") ? qsTr("Permission disabled") : qsTr("Diagnostics unavailable")
@@ -314,7 +314,7 @@ ColumnLayout {
                 { text: qsTr("Store query"), width: 122 },
                 { text: qsTr("Lightpush test"), width: 136 }
             ]
-            evidenceRows: root.probeRows()
+            evidenceRows: root.sourceView.evidenceRows
             onRefreshRequested: root.refreshSource(true)
         }
     }
@@ -344,14 +344,6 @@ ColumnLayout {
         sourceSession.refresh(showResult)
     }
 
-    function pending() {
-        return sourceSession.pending()
-    }
-
-    function report() {
-        return sourceSession.report()
-    }
-
     function diagnosticsGate(action) {
         return root.model.diagnosticsGate(action)
     }
@@ -365,273 +357,6 @@ ColumnLayout {
         if (gate.enabled === true) {
             return currentStatus
         }
-        return diagnosticsGateDetailText(gate, fallbackLabel)
-    }
-
-    function diagnosticsGateDetailText(gate, fallbackLabel) {
         return sourceSession.diagnosticsGateDetailText(gate, fallbackLabel)
     }
-
-    function status() {
-        return sourceSession.status()
-    }
-
-    function statusLine() {
-        return sourceSession.statusLine()
-    }
-
-    function statusColor() {
-        const status = root.status()
-        if (!status.known) {
-            return root.theme.textMuted
-        }
-        return status.ok ? root.theme.success : root.theme.error
-    }
-
-    function statusTone() {
-        const status = root.status()
-        if (!status.known) {
-            return "neutral"
-        }
-        return status.ok ? "success" : "error"
-    }
-
-    function healthText() {
-        if (root.pending()) {
-            return qsTr("Working")
-        }
-        const status = root.status()
-        if (!status.known) {
-            return qsTr("Unknown")
-        }
-        if (!status.ok) {
-            return qsTr("Problem")
-        }
-        return root.failedProbeCount() > 0 ? qsTr("Partial") : qsTr("Healthy")
-    }
-
-    function sourceName() {
-        return sourceSession.sourceLabel()
-    }
-
-    function sourceShortLabel() {
-        switch (root.deliverySourceMode()) {
-        case "rest":
-            return qsTr("REST")
-        case "metrics":
-            return qsTr("Metrics")
-        case "network-monitor":
-            return qsTr("Monitor")
-        case "unsupported":
-            return qsTr("Unsupported")
-        default:
-            return qsTr("Module")
-        }
-    }
-
-    function freshnessText() {
-        return sourceSession.freshnessText()
-    }
-
-    function freshnessCompactText() {
-        return sourceSession.freshnessCompactText()
-    }
-
-    function sourceBadges() {
-        return sourceSession.sourceBadges(root.model.normalizedMessagingNetworkPreset(root.model.messagingNetworkPreset), qsTr("%1 s window").arg(root.model.messagingRollingWindow))
-    }
-
-    function moduleInfoProbe() {
-        return sourceSession.moduleInfoProbe()
-    }
-
-    function probeValue(method) {
-        return sourceSession.probeValue(method)
-    }
-
-    function probe(method) {
-        return sourceSession.probe(method)
-    }
-
-    function probeOk(method) {
-        const probe = root.probe(method)
-        return probe ? probe.ok === true : false
-    }
-
-    function metricDisplay(key) {
-        return sourceSession.metricDisplay(key)
-    }
-
-    function metricTone(key) {
-        return sourceSession.metricTone(key)
-    }
-
-    function failedProbeCount() {
-        return sourceSession.failedProbeCount()
-    }
-
-    function identityEvidence() {
-        return SourceObservation.deliveryIdentityEvidence(root)
-    }
-
-    function sourceFactAvailable(key) {
-        return sourceSession.sourceFactAvailable(key)
-    }
-
-    function sourceFactEvidence(key, fallback) {
-        return sourceSession.sourceFactEvidence(key, fallback)
-    }
-
-    function sourceFactObservedState(key, fallbackKnown) {
-        return SourceObservation.deliverySourceFactObservedState(root, key, fallbackKnown)
-    }
-
-    function sourceFactObservedTone(key, fallbackKnown) {
-        return SourceObservation.deliverySourceFactObservedTone(root, key, fallbackKnown)
-    }
-
-    function healthRows() {
-        return SourceObservation.deliveryHealthRows(root)
-    }
-
-    function evidenceRows() {
-        return sourceSession.evidenceRows(root, qsTr("Refresh source to load probe evidence."))
-    }
-
-    function topologyRows() {
-        return SourceObservation.deliveryTopologyRows(root)
-    }
-
-    function throughputRows() {
-        return SourceObservation.deliveryThroughputRows(root)
-    }
-
-    function protocolRows() {
-        return SourceObservation.deliveryProtocolRows(root)
-    }
-
-    function protocolHealthRows() {
-        return SourceObservation.deliveryProtocolHealthRows(root)
-    }
-
-    function protocolHealthEntry(item) {
-        return SourceObservation.deliveryProtocolHealthEntry(root, item)
-    }
-
-    function protocolHealthDetail(protocol, description) {
-        return SourceObservation.deliveryProtocolHealthDetail(root, protocol, description)
-    }
-
-    function protocolLabel(key) {
-        return SourceObservation.deliveryProtocolLabel(key)
-    }
-
-    function healthValueTone(value) {
-        return SourceObservation.deliveryHealthValueTone(root, value)
-    }
-
-    function combinedHealthTone(left, right) {
-        return SourceObservation.deliveryCombinedHealthTone(root, left, right)
-    }
-
-    function topicRows() {
-        return SourceObservation.deliveryTopicRows(root)
-    }
-
-    function storeRows() {
-        return SourceObservation.deliveryStoreRows(root)
-    }
-
-    function identityRows() {
-        return SourceObservation.deliveryIdentityRows(root)
-    }
-
-    function identityValue(kind) {
-        return SourceObservation.deliveryIdentityValue(root, kind)
-    }
-
-    function probeRows() {
-        return root.evidenceRows()
-    }
-
-    function statusRow(label, state, evidence, tone) {
-        return sourceSession.statusRow(label, state, evidence, tone)
-    }
-
-    function metricRow(label, key) {
-        return SourceObservation.deliveryMetricRow(root, label, key)
-    }
-
-    function metricEvidence(key) {
-        return SourceObservation.deliveryMetricEvidence(root, key)
-    }
-
-    function protocolStatusRow(label, protocol, metricKey) {
-        return SourceObservation.deliveryProtocolStatusRow(root, label, protocol, metricKey)
-    }
-
-    function protocolRow(label, protocolId, signalKey) {
-        return SourceObservation.deliveryProtocolRow(root, label, protocolId, signalKey)
-    }
-
-    function probeRow(probe, fallbackLabel) {
-        return sourceSession.probeRow(probe, fallbackLabel)
-    }
-
-    function detailRow(label, value) {
-        return sourceSession.detailRow(label, value)
-    }
-
-    function metricKnown(key) {
-        return sourceSession.metricKnown(key)
-    }
-
-    function restMetricsState() {
-        return SourceObservation.deliveryRestMetricsState(root)
-    }
-
-    function restMetricsEvidence() {
-        return SourceObservation.deliveryRestMetricsEvidence(root)
-    }
-
-    function moduleMetricsText() {
-        return SourceObservation.deliveryModuleMetricsText(root)
-    }
-
-    function restMetricsTone() {
-        return SourceObservation.deliveryRestMetricsTone(root)
-    }
-
-    function deliverySourceMode() {
-        return root.model.effectiveMessagingSourceMode(root.model.messagingSourceMode)
-    }
-
-    function networkMonitorPeerCount() {
-        return SourceObservation.deliveryNetworkMonitorPeerCount(root)
-    }
-
-    function networkMonitorTopicCount() {
-        return SourceObservation.deliveryNetworkMonitorTopicCount(root)
-    }
-
-    function servicePeerCount() {
-        return SourceObservation.deliveryServicePeerCount(root)
-    }
-
-    function countValue(value) {
-        return SourceObservation.deliveryCountValue(root, value)
-    }
-
-    function valueSummary(value) {
-        return sourceSession.valueSummary(value)
-    }
-
-    function copyValue(value) {
-        return sourceSession.copyValue(value)
-    }
-
-    function shortText(value, maxLength) {
-        return sourceSession.shortText(value, maxLength)
-    }
-
 }

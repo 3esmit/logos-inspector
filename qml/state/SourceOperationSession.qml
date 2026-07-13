@@ -1,49 +1,98 @@
 import QtQml
 import "../services/BridgeHelpers.js" as BridgeHelpers
 import "OperationHistoryVocabulary.js" as OperationHistoryVocabulary
+import "source_operations/NodeOperationRequest.js" as NodeOperationRequest
 
 QtObject {
     id: root
 
     required property var gateway
 
-    property string domain: ""
+    required property string domain
+    property var adapterInitialization: ({ source_mode: "", inputs: ({}) })
+    property bool mutatingDiagnosticsEnabled: false
     property string defaultLabel: qsTr("Runtime operation")
     property string busyError: qsTr("A runtime operation is already running.")
+    property var terminalDetailProvider: null
+
+    property string pendingMethod: ""
+    property string pendingLabel: ""
+    property var pendingArgs: []
     property bool startPending: false
     property var activeOperation: null
     property int activeOperationRevision: 0
     property string terminalOperationId: ""
     property var operationLog: []
     property int operationLogRevision: 0
-    property var terminalDetailProvider: null
+    property string lastOperation: qsTr("None")
+
+    readonly property var confirmation: ({
+        method: pendingMethod,
+        label: pendingLabel,
+        args: pendingArgs
+    })
+    readonly property var view: operationView()
 
     signal started(var operation)
     signal startFailed(var response)
     signal terminalOperation(var operation)
 
-    function start(request, label, onResponse) {
-        const operationLabel = String(label || (request && request.label) || defaultLabel)
-        if (busy()) {
-            const blocked = {
-                ok: false,
-                text: "",
-                error: busyError
-            }
-            appendOperation(operationLabel, blocked)
+    function requestArgs(method, args) {
+        return [NodeOperationRequest.envelope(
+            adapterInitialization,
+            NodeOperationRequest.payload(domain, method, args),
+            mutatingDiagnosticsEnabled
+        )]
+    }
+
+    function confirm(method, args, label) {
+        pendingMethod = String(method || "")
+        pendingArgs = args || []
+        pendingLabel = String(label || "")
+    }
+
+    function clearConfirmation() {
+        pendingMethod = ""
+        pendingArgs = []
+        pendingLabel = ""
+    }
+
+    function runConfirmed(callback) {
+        if (!pendingMethod.length || typeof callback !== "function") {
+            return null
+        }
+        const method = pendingMethod
+        const args = pendingArgs
+        const label = pendingLabel
+        const response = callback(method, args, label)
+        clearConfirmation()
+        return response
+    }
+
+    function start(method, args, label, onResponse) {
+        const operationLabel = String(label || defaultLabel)
+        if (view.busy) {
+            const blocked = { ok: false, text: "", error: busyError }
+            appendResult(operationLabel, blocked)
             return blocked
         }
 
+        const request = NodeOperationRequest.envelope(
+            adapterInitialization,
+            NodeOperationRequest.payload(domain, method, args),
+            mutatingDiagnosticsEnabled
+        )
+        request.domain = domain
+        request.method = String(method || "")
+        request.label = operationLabel
         startPending = true
         const callback = function (response) {
             startPending = false
-            appendOperation(operationLabel, response)
+            appendResult(operationLabel, response)
             if (response && response.ok) {
                 terminalOperationId = ""
-                const operation = operationWithRestartRequest(response.value, request)
-                response.value = operation
-                updateActiveOperation(operation)
-                started(operation)
+                acceptUpdate(response.value)
+                started(response.value)
             } else {
                 startFailed(response)
             }
@@ -72,8 +121,8 @@ QtObject {
     }
 
     function poll(showResult, onResponse) {
-        const operation = active()
-        const operationId = String(operation && operation.operationId ? operation.operationId : "")
+        const operation = activeOperation || null
+        const operationId = String(operation && operation.operationId || "")
         if (!operationId.length) {
             return null
         }
@@ -84,19 +133,19 @@ QtObject {
             if (!response || !response.ok) {
                 const failedOperation = {
                     operationId: operationId,
-                    domain: String(operation && operation.domain ? operation.domain : root.domain),
-                    method: String(operation && operation.method ? operation.method : ""),
+                    domain: String(operation && operation.domain || root.domain),
+                    method: String(operation && operation.method || ""),
                     status: "failed",
-                    label: String(operation && operation.label ? operation.label : defaultLabel),
-                    error: String((response && response.error) || qsTr("Runtime operation status failed."))
+                    label: String(operation && operation.label || defaultLabel),
+                    error: String(response && response.error || qsTr("Runtime operation status failed."))
                 }
-                updateActiveOperation(failedOperation)
-                appendTerminalOperation(failedOperation)
+                acceptUpdate(failedOperation)
+                acceptTerminal(failedOperation)
                 return
             }
-            updateActiveOperation(response.value)
-            if (terminal(response.value)) {
-                appendTerminalOperation(response.value)
+            acceptUpdate(response.value)
+            if (isTerminal(response.value)) {
+                acceptTerminal(response.value)
             }
         }
 
@@ -113,16 +162,15 @@ QtObject {
     }
 
     function cancel(onResponse) {
-        const operation = active()
-        const operationId = String(operation && operation.operationId ? operation.operationId : "")
+        const operationId = String(activeOperation && activeOperation.operationId || "")
         if (!operationId.length) {
             return null
         }
         const callback = function (response) {
             if (response && response.ok) {
-                updateActiveOperation(response.value)
+                acceptUpdate(response.value)
             }
-            appendOperation(qsTr("Cancel operation"), response)
+            appendResult(qsTr("Cancel operation"), response)
             if (onResponse) {
                 onResponse(response)
             }
@@ -140,98 +188,82 @@ QtObject {
         return null
     }
 
-    function updateActiveOperation(value) {
-        activeOperation = operationWithRestartRequest(value || null, activeOperation && activeOperation.restartRequest)
+    function acceptUpdate(value) {
+        activeOperation = value || null
         activeOperationRevision += 1
     }
 
-    function clearActiveOperation() {
+    function clearActive() {
         activeOperation = null
         activeOperationRevision += 1
     }
 
-    function active() {
-        const revision = activeOperationRevision
-        return activeOperation || null
+    function reset() {
+        clearConfirmation()
+        startPending = false
+        activeOperation = null
+        activeOperationRevision += 1
+        terminalOperationId = ""
+        operationLog = []
+        operationLogRevision += 1
+        lastOperation = qsTr("None")
     }
 
-    function operationWithRestartRequest(operation, restartRequest) {
-        const value = operation || null
-        if (!value || !restartRequest || value.restartRequest !== undefined || value.restart_request !== undefined) {
-            return value
-        }
-        const next = ({})
-        const keys = Object.keys(value)
-        for (let i = 0; i < keys.length; ++i) {
-            next[keys[i]] = value[keys[i]]
-        }
-        next.restartRequest = restartRequest
-        return next
-    }
-
-    function known() {
-        const operation = active()
-        return operation && String(operation.operationId || "").length > 0
-    }
-
-    function running() {
-        const operation = active()
-        const status = String(operation && operation.status ? operation.status : "")
-        return status === "running" || status === "canceling"
-    }
-
-    function busy() {
-        return startPending || running()
-    }
-
-    function cancelable() {
-        const operation = active()
-        const status = String(operation && operation.status ? operation.status : "")
-        return (status === "running" || status === "canceling") && operation && operation.cancellable === true
-    }
-
-    function terminal(operation) {
-        return OperationHistoryVocabulary.isRuntimeTerminalStatus(operation && operation.status)
-    }
-
-    function statusText() {
-        return OperationHistoryVocabulary.runtimeStatusText(active(), defaultLabel)
-    }
-
-    function tone() {
-        return OperationHistoryVocabulary.runtimeTone(active())
-    }
-
-    function appendOperation(label, response) {
+    function appendResult(label, response) {
         const rows = Array.isArray(operationLog) ? operationLog.slice(0) : []
         rows.unshift({
             time: timeText(),
             label: String(label || ""),
             status: response && response.ok ? qsTr("ok") : qsTr("error"),
-            detail: response && response.ok ? operationSummary(response.value) : String((response && response.error) || "")
+            detail: response && response.ok ? summary(response.value) : String(response && response.error || "")
         })
         operationLog = rows.slice(0, 20)
         operationLogRevision += 1
     }
 
-    function appendTerminalOperation(operation, detail) {
-        const operationId = String(operation && operation.operationId ? operation.operationId : "")
+    function acceptTerminal(operation, detail) {
+        const operationId = String(operation && operation.operationId || "")
         if (!operationId.length || terminalOperationId === operationId) {
             return false
         }
         terminalOperationId = operationId
         const ok = String(operation.status || "") === "completed"
-        appendOperation(String(operation.label || defaultLabel), {
+        appendResult(String(operation.label || defaultLabel), {
             ok: ok,
             value: operation.result || operation,
             error: String(operation.error || "")
         })
         if (gateway && typeof gateway.appendOperationHistory === "function") {
-            const detailText = terminalDetail(operation, detail)
-            gateway.appendOperationHistory(operation, detailText)
+            gateway.appendOperationHistory(operation, terminalDetail(operation, detail))
         }
         terminalOperation(operation)
         return true
+    }
+
+    function operationView() {
+        const activeRevision = activeOperationRevision
+        const logRevision = operationLogRevision
+        const operation = activeOperation || null
+        const status = String(operation && operation.status || "")
+        const running = status === "running" || status === "canceling"
+        return {
+            activeRevision: activeRevision,
+            logRevision: logRevision,
+            active: operation,
+            startPending: startPending,
+            known: operation !== null && String(operation.operationId || "").length > 0,
+            running: running,
+            busy: startPending || running,
+            cancelable: running && operation && operation.cancellable === true,
+            terminal: isTerminal(operation),
+            statusText: OperationHistoryVocabulary.runtimeStatusText(operation, defaultLabel),
+            tone: OperationHistoryVocabulary.runtimeTone(operation),
+            rows: operationRows()
+        }
+    }
+
+    function isTerminal(operation) {
+        return OperationHistoryVocabulary.isRuntimeTerminalStatus(operation && operation.status)
     }
 
     function terminalDetail(operation, detail) {
@@ -241,11 +273,10 @@ QtObject {
         if (terminalDetailProvider && typeof terminalDetailProvider === "function") {
             return String(terminalDetailProvider(operation) || "")
         }
-        return operationSummary(operation)
+        return summary(operation)
     }
 
-    function rows() {
-        const revision = operationLogRevision
+    function operationRows() {
         if (operationLog.length > 0) {
             return operationLog
         }
@@ -257,7 +288,7 @@ QtObject {
         }]
     }
 
-    function operationPayload(value) {
+    function payload(value) {
         if (value && value.value && value.value.result && value.value.result.value !== undefined) {
             return value.value.result.value
         }
@@ -273,18 +304,18 @@ QtObject {
         return value
     }
 
-    function operationSummary(value) {
-        const payload = operationPayload(value)
-        if (payload === undefined || payload === null) {
+    function summary(value) {
+        const result = payload(value)
+        if (result === undefined || result === null) {
             return qsTr("No value")
         }
-        if (typeof payload === "string") {
-            return payload
+        if (typeof result === "string") {
+            return result
         }
-        if (typeof payload === "boolean") {
-            return payload ? qsTr("true") : qsTr("false")
+        if (typeof result === "boolean") {
+            return result ? qsTr("true") : qsTr("false")
         }
-        return BridgeHelpers.formatValue(payload).replace(/\s+/g, " ").slice(0, 180)
+        return BridgeHelpers.formatValue(result).replace(/\s+/g, " ").slice(0, 180)
     }
 
     function timeText() {

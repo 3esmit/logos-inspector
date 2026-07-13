@@ -9,14 +9,11 @@ use std::{
 use anyhow::{Context as _, Result, bail};
 use serde_json::Value;
 
-use crate::{
-    source_routing::{messaging_layer, storage_layer},
-    support::time::now_millis,
-};
+use crate::{source_routing::ManagedNodeContract, support::time::now_millis};
 
 use super::{
     NodeAction, NodeKind, NodeLifecycleState,
-    commands::managed_action,
+    adapters::{adapter_for, managed_action},
     model::LocalNodesState,
     process::{process_is_alive, stop_process},
     runtime::LogoscoreRuntimeProfile,
@@ -32,10 +29,11 @@ pub(super) struct LifecycleTarget {
     pub(super) action: NodeAction,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 struct ModuleEventSpec {
     module: &'static str,
     event: &'static str,
+    contract: &'static ManagedNodeContract,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,7 +73,7 @@ pub(super) fn start_event_watch(
         if watchers.contains_key(&key) {
             bail!(
                 "a lifecycle event watch is already active for {}",
-                target.kind.label()
+                adapter_for(target.kind).label()
             );
         }
     }
@@ -83,7 +81,7 @@ pub(super) fn start_event_watch(
     let mut command = runtime
         .cli_runtime()?
         .watch_command(spec.module, spec.event);
-    let mut child = spawn_watch_command(&mut command, target.kind.label())?;
+    let mut child = spawn_watch_command(&mut command, adapter_for(target.kind).label())?;
     let process_id = child.id();
     let stdout = child
         .stdout
@@ -97,7 +95,7 @@ pub(super) fn start_event_watch(
             }
             bail!(
                 "a lifecycle event watch is already active for {}",
-                target.kind.label()
+                adapter_for(target.kind).label()
             );
         }
     }
@@ -166,7 +164,7 @@ pub(super) fn apply_event(state: &mut LocalNodesState, event: &ModuleLifecycleEv
 pub(super) fn reset_module_contexts(state: &mut LocalNodesState) {
     for record in &mut state.devnets {
         for node in &mut record.nodes {
-            if node.kind == NodeKind::Sequencer {
+            if !adapter_for(node.kind).resets_with_runtime() {
                 continue;
             }
             node.installed = false;
@@ -180,18 +178,12 @@ pub(super) fn reset_module_contexts(state: &mut LocalNodesState) {
 
 fn event_spec(kind: NodeKind, action: NodeAction) -> Option<ModuleEventSpec> {
     let action = managed_action(action)?;
-    let (module, event) = match kind {
-        NodeKind::Storage => (
-            storage_layer::module_id(),
-            storage_layer::managed_lifecycle_event(action)?,
-        ),
-        NodeKind::Messaging => (
-            messaging_layer::module_id(),
-            messaging_layer::managed_lifecycle_event(action)?,
-        ),
-        NodeKind::Bedrock | NodeKind::Sequencer | NodeKind::Indexer => return None,
-    };
-    Some(ModuleEventSpec { module, event })
+    let contract = adapter_for(kind).managed_contract()?;
+    Some(ModuleEventSpec {
+        module: contract.module_id(),
+        event: contract.lifecycle_event(action)?,
+        contract,
+    })
 }
 
 fn parse_watch_event(
@@ -210,13 +202,7 @@ fn parse_watch_event(
         .get("data")
         .and_then(Value::as_object)
         .context("logoscore lifecycle event has no data object")?;
-    let outcome = match target.kind {
-        NodeKind::Storage => storage_layer::managed_lifecycle_outcome(data.get("arg0"))?,
-        NodeKind::Messaging => {
-            messaging_layer::managed_lifecycle_outcome(data.get("arg0"), data.get("arg1"))?
-        }
-        _ => return Ok(None),
-    };
+    let outcome = spec.contract.decode_lifecycle_event(data)?;
     Ok(Some(ModuleLifecycleEvent {
         target: target.clone(),
         success: outcome.success,

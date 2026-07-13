@@ -1,5 +1,5 @@
-use anyhow::{Context as _, Result, bail};
-use serde_json::{Value, json};
+use anyhow::{Context as _, Result};
+use serde_json::Value;
 use tokio::runtime::Runtime;
 
 use crate::{
@@ -10,7 +10,7 @@ use crate::{
         build_zone_comment_topic, decode_comment_page as decode_social_comment_page,
         decode_social_messages, project_comment_event as decode_social_comment_row, validate_topic,
     },
-    source_routing::{storage_layer, storage_rest_source},
+    source_routing::storage_layer,
     support::args::Args,
 };
 
@@ -120,17 +120,11 @@ pub(super) fn accepted_shared_idl_entries_from_store_with_storage(
     let account_id = args.string(2, "account id")?;
     let account_data_hex = args.string(3, "account data hex")?;
     let owner_program_id = args.optional_string(4);
-    let storage_args = Args::new(json!([
-        args.string(5, "storage source mode")?,
-        args.string(6, "storage REST endpoint")?
-    ]))?;
-    if storage_layer::is_module_source(&storage_args) {
-        bail!(
-            "shared IDL CID fetch through storage_module needs storageDownloadDone correlation; use Direct REST source for synchronous shared IDL fetch"
-        )
-    }
-    let source = storage_rest_source(&storage_args)?;
-    let local_only = args.optional_bool(7);
+    let storage = storage_layer::StorageClient::from_initialization(
+        args.value(5)
+            .context("Storage adapter initialization is required")?,
+    )?;
+    let local_only = args.optional_bool(6);
     let mut messages = decode_social_messages(
         SocialCommentQuery {
             topic,
@@ -139,7 +133,7 @@ pub(super) fn accepted_shared_idl_entries_from_store_with_storage(
         value,
     );
     for message in &mut messages {
-        hydrate_shared_idl_payload(runtime, source.endpoint, local_only, &mut message.payload)?;
+        hydrate_shared_idl_payload(runtime, &storage, local_only, &mut message.payload)?;
     }
     to_value(decode_accepted_shared_idls_from_messages(
         topic,
@@ -152,7 +146,7 @@ pub(super) fn accepted_shared_idl_entries_from_store_with_storage(
 
 fn hydrate_shared_idl_payload(
     runtime: &Runtime,
-    endpoint: &str,
+    storage: &storage_layer::StorageClient,
     local_only: bool,
     payload: &mut SocialPayload,
 ) -> Result<()> {
@@ -166,7 +160,11 @@ fn hydrate_shared_idl_payload(
         return Ok(());
     }
     let bytes = runtime
-        .block_on(storage_layer::download_bytes(endpoint, idl_cid, local_only))
+        .block_on(storage.download_bytes(
+            idl_cid,
+            local_only,
+            "shared IDL CID fetch through storage_module needs storageDownloadDone correlation; use Direct REST source for synchronous shared IDL fetch",
+        ))
         .with_context(|| format!("failed to fetch shared IDL CID {idl_cid}"))?;
     let text = String::from_utf8(bytes).context("shared IDL CID payload is not UTF-8")?;
     let value: Value = serde_json::from_str(&text).context("shared IDL CID payload is not JSON")?;

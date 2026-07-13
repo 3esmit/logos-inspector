@@ -49,8 +49,7 @@ pub(crate) fn is_evidence_capability_error(error: &anyhow::Error) -> bool {
 }
 
 pub use accounts::{
-    AccountReport, SequencerAccountIdlReport, account_lookup, account_lookup_with_idl,
-    account_transactions_by_account, sequencer_account, sequencer_account_with_idl,
+    AccountReport, SequencerAccountIdlReport, account_transactions_by_account, sequencer_account,
 };
 pub(crate) use accounts::{indexer_account_report, summarize_account_transaction};
 pub(crate) use block::decode_sequencer_block;
@@ -59,7 +58,7 @@ pub use indexer::{
     AccountTransactionSummary, IndexerBlockReport, IndexerStatusReport,
     TransactionTransferOutputSummary, indexer_account_at_block, indexer_block_by_hash,
     indexer_block_by_id, indexer_blocks, indexer_finalized_block_id, indexer_health,
-    indexer_status, indexer_transaction, indexer_transfer_recipients,
+    indexer_transaction,
 };
 pub(crate) use indexer::{
     summarize_indexer_status_response, verified_indexer_block_report,
@@ -71,11 +70,8 @@ pub use programs::{
 pub use sequencer::{
     last_sequencer_block_id, sequencer_account_nonces, sequencer_block, sequencer_blocks,
     sequencer_channel_id, sequencer_commitment_proof, sequencer_health, sequencer_program_ids,
-    sequencer_transaction, sequencer_transaction_inspection,
-    sequencer_transaction_inspection_with_idl, sequencer_transaction_trace,
-    sequencer_transaction_trace_with_idl,
+    sequencer_transaction,
 };
-pub(crate) use transactions::inspect_transaction;
 pub use transactions::{
     TransactionIdlInspectionReport, TransactionInspectionReport, TransactionInspectionRow,
     TransactionInspectionSection, TransactionSummary, TransactionTraceRefs, TransactionTraceReport,

@@ -1,5 +1,4 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
     future::Future,
     pin::Pin,
     sync::{Arc, Mutex, MutexGuard},
@@ -9,13 +8,17 @@ use anyhow::{Context as _, Result, bail};
 use serde_json::Value;
 use tokio::runtime::Runtime;
 
+mod projection;
+
+use projection::ZoneProjectionLedger;
+
 use super::{
     decode_object_request,
     zone_evidence::{DirectEvidenceBlockReader, EvidenceBlockReader, ZoneEvidenceCommandInterface},
 };
 use crate::{
     inspection::{
-        CatalogVerificationState, NetworkScope, ZoneSummary,
+        CatalogVerificationState, NetworkScope,
         catalog::{
             ChannelSourceApplyRequest, ChannelSourceAttestationRecovery,
             ChannelSourceAttestationWarning, ChannelSourceAttestationWarningCode,
@@ -26,11 +29,8 @@ use crate::{
             ZoneCatalogSourceRequest, ZoneCatalogStatusReport, ZoneCatalogStatusRequest,
             ZoneCatalogWorker, ZoneDetailReport, ZoneDetailRequest, ZoneEvidenceDetailRequest,
             ZoneEvidencePageRequest, ZoneEvidencePayloadChunkRequest,
-            ZoneEvidencePayloadReleaseRequest, ZoneSummaryChanges, ZonesSummaryReport,
-            ZonesSummaryRequest,
+            ZoneEvidencePayloadReleaseRequest, ZonesSummaryReport, ZonesSummaryRequest,
         },
-        project_catalog_zone_detail, project_catalog_zones_with_sources,
-        sources::project_zone_sources,
     },
     inspector::value::to_value,
     source_routing::channel_sources::{
@@ -41,12 +41,6 @@ use crate::{
     },
     support::time::now_millis,
 };
-
-const DEFAULT_SUMMARY_PAGE_SIZE: usize = 200;
-const MAX_SUMMARY_PAGE_SIZE: usize = 500;
-const MAX_SUMMARY_JOURNAL_REVISIONS: usize = 64;
-const MAX_SUMMARY_JOURNAL_CHANGES: usize = 4_096;
-const MAX_SUMMARY_CURSORS: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ZoneCatalogCommand {
@@ -175,7 +169,7 @@ pub(crate) struct ZoneCatalogCommandInterface {
     sequencer_attestor: Arc<dyn SequencerTargetAttestor>,
     source_store: Arc<dyn ChannelSourceConfigStore>,
     evidence: ZoneEvidenceCommandInterface,
-    state: Mutex<ProjectionState>,
+    state: Mutex<ZoneProjectionLedger>,
 }
 
 impl ZoneCatalogCommandInterface {
@@ -221,7 +215,7 @@ impl ZoneCatalogCommandInterface {
             sequencer_attestor,
             source_store,
             evidence: ZoneEvidenceCommandInterface::new(evidence_reader),
-            state: Mutex::new(ProjectionState::default()),
+            state: Mutex::new(ZoneProjectionLedger::default()),
         }
     }
 
@@ -329,9 +323,9 @@ impl ZoneCatalogCommandInterface {
             source_revision: service.source_revision,
             network_scope,
             catalog_revision,
-            source_config_epoch: state.source_config_epoch,
-            observation_revision: state.observations.observation_revision,
-            summary_revision: state.summary_revision,
+            source_config_epoch: state.source_config_epoch(),
+            observation_revision: state.observation_revision(),
+            summary_revision: state.summary_revision(),
             verification: service.verification_state,
             coverage,
             ingestion,
@@ -345,34 +339,8 @@ impl ZoneCatalogCommandInterface {
         request: ZonesSummaryRequest,
     ) -> Result<ZonesSummaryReport> {
         self.refresh(runtime)?;
-        let limit = summary_page_limit(request.limit)?;
         let mut state = self.lock_state()?;
-        let snapshot = if let Some(cursor) = request.cursor.as_deref() {
-            let cursor = state
-                .cursors
-                .remove(cursor)
-                .context("Zone summary cursor is invalid or expired")?;
-            validate_summary_request_fences(
-                request.source_revision,
-                request.network_scope.as_ref(),
-                &cursor.snapshot,
-            )?;
-            CursorPage {
-                snapshot: cursor.snapshot,
-                offset: cursor.offset,
-            }
-        } else {
-            validate_current_summary_fences(&request, &state)?;
-            CursorPage {
-                snapshot: state.summary_snapshot(request.after_summary_revision),
-                offset: 0,
-            }
-        };
-        let (changes, next_offset) = snapshot.snapshot.page(snapshot.offset, limit);
-        let next_cursor = next_offset
-            .map(|offset| state.insert_cursor(snapshot.snapshot.clone(), offset))
-            .transpose()?;
-        Ok(snapshot.snapshot.report(changes, next_cursor))
+        state.summaries(request)
     }
 
     fn detail(&self, runtime: &Runtime, request: ZoneDetailRequest) -> Result<ZoneDetailReport> {
@@ -384,32 +352,7 @@ impl ZoneCatalogCommandInterface {
             .clone()
             .context("verified Zone Catalog is unavailable")?;
         let state = self.lock_state()?;
-        validate_detail_fences(&request, &service, &catalog, &state)?;
-        let detail_revision = state
-            .detail_revisions
-            .get(&request.channel_id)
-            .copied()
-            .context("Zone does not exist in current catalog projection")?;
-        let detail = project_catalog_zone_detail(
-            &catalog,
-            &state.configs,
-            &state.observations,
-            service.verification_state,
-            &request.channel_id,
-            detail_revision,
-        )
-        .context("Zone does not exist in current catalog projection")?;
-        Ok(ZoneDetailReport {
-            report_kind: "zones.zone_detail",
-            schema_version: ZONE_CATALOG_REPORT_SCHEMA_VERSION,
-            source_revision: service.source_revision,
-            network_scope: catalog.metadata.network_scope.clone(),
-            catalog_revision: catalog.metadata.catalog_revision,
-            source_config_epoch: state.source_config_epoch,
-            observation_revision: state.observations.observation_revision,
-            summary_revision: state.summary_revision,
-            detail,
-        })
+        state.detail_report(request, &service, &catalog)
     }
 
     fn control(
@@ -455,43 +398,43 @@ impl ZoneCatalogCommandInterface {
         }
         let configs = {
             let state = self.lock_state()?;
-            if !state.summaries.contains_key(&request.channel_id) {
+            if !state.contains_channel(&request.channel_id) {
                 bail!("Channel is not present in current Zone Catalog projection");
             }
-            state.configs.clone()
+            state.configs_snapshot()
         };
         validate_source_mutation_revision(&request, &configs)?;
         let (attestation, attestation_warning) = if let Some(plan) =
             sequencer_attestation_plan(&request, &configs)?
         {
             match runtime.block_on(self.sequencer_attestor.attest(plan.target.clone())) {
-                    Ok(reported_channel_id) => {
-                        let reported_channel_id = normalize_channel_id(&reported_channel_id)?;
-                        if reported_channel_id != request.channel_id {
-                            bail!("Sequencer attestation reported another Channel");
-                        }
-                        (
-                            Some(SequencerAttestationReceipt {
-                                reported_channel_id,
-                                target_fingerprint: plan.target.fingerprint(),
-                                attested_at_unix: now_millis() / 1_000,
-                            }),
-                            None,
-                        )
+                Ok(reported_channel_id) => {
+                    let reported_channel_id = normalize_channel_id(&reported_channel_id)?;
+                    if reported_channel_id != request.channel_id {
+                        bail!("Sequencer attestation reported another Channel");
                     }
-                    Err(_error) if plan.allow_pending => (
-                        None,
-                        Some(ChannelSourceAttestationWarning {
-                            code: ChannelSourceAttestationWarningCode::PendingAttestation,
-                            recovery: ChannelSourceAttestationRecovery::Retry,
-                            message: "Sequencer Channel attestation is pending; retry when the source is available."
-                                .to_owned(),
+                    (
+                        Some(SequencerAttestationReceipt {
+                            reported_channel_id,
+                            target_fingerprint: plan.target.fingerprint(),
+                            attested_at_unix: now_millis() / 1_000,
                         }),
-                    ),
-                    Err(error) => {
-                        return Err(error.context("Sequencer Channel attestation retry failed"));
-                    }
+                        None,
+                    )
                 }
+                Err(_error) if plan.allow_pending => (
+                    None,
+                    Some(ChannelSourceAttestationWarning {
+                        code: ChannelSourceAttestationWarningCode::PendingAttestation,
+                        recovery: ChannelSourceAttestationRecovery::Retry,
+                        message: "Sequencer Channel attestation is pending; retry when the source is available."
+                            .to_owned(),
+                    }),
+                ),
+                Err(error) => {
+                    return Err(error.context("Sequencer Channel attestation retry failed"));
+                }
+            }
         } else {
             (None, None)
         };
@@ -499,32 +442,7 @@ impl ZoneCatalogCommandInterface {
         self.refresh(runtime)?;
         let service = self.service.report();
         let state = self.lock_state()?;
-        let summary = state
-            .summaries
-            .get(&config.channel_id)
-            .context("updated Channel disappeared from Zone projection")?;
-        let projection = project_zone_sources(
-            summary.kind(),
-            &config.channel_id,
-            Some(&config),
-            &state.observations,
-        );
-        Ok(ChannelSourceConfigReport {
-            report_kind: "zones.channel_source_config",
-            schema_version: ZONE_CATALOG_REPORT_SCHEMA_VERSION,
-            source_revision: service.source_revision,
-            catalog_revision: service
-                .catalog
-                .as_deref()
-                .map_or(0, |catalog| catalog.metadata.catalog_revision),
-            source_config_epoch: state.source_config_epoch,
-            observation_revision: state.observations.observation_revision,
-            summary_revision: state.summary_revision,
-            config,
-            observations: projection.observations,
-            agreement: projection.agreement,
-            attestation_warning,
-        })
+        state.source_config_report(&service, config, attestation_warning)
     }
 
     fn evidence_page(
@@ -569,18 +487,8 @@ impl ZoneCatalogCommandInterface {
         runtime: &Runtime,
     ) -> Result<crate::inspection::l2::ZoneL2RuntimeFacts> {
         self.refresh(runtime)?;
-        let service = self.service.report();
         let state = self.lock_state()?;
-        Ok(crate::inspection::l2::ZoneL2RuntimeFacts {
-            network_scope: service
-                .catalog
-                .as_deref()
-                .map(|catalog| catalog.metadata.network_scope.clone()),
-            verification: service.verification_state,
-            summaries: state.summaries.clone(),
-            configs: state.configs.clone(),
-            observations: state.observations.clone(),
-        })
+        Ok(state.runtime_facts())
     }
 
     fn refresh(&self, runtime: &Runtime) -> Result<()> {
@@ -593,361 +501,11 @@ impl ZoneCatalogCommandInterface {
         state.refresh(&service, configs, observations)
     }
 
-    fn lock_state(&self) -> Result<MutexGuard<'_, ProjectionState>> {
+    fn lock_state(&self) -> Result<MutexGuard<'_, ZoneProjectionLedger>> {
         self.state
             .lock()
             .map_err(|_| anyhow::anyhow!("Zone Catalog projection lock is poisoned"))
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ProjectionKey {
-    source_revision: u64,
-    network_scope: Option<NetworkScope>,
-    catalog_revision: u64,
-    source_config_epoch: u64,
-    observation_revision: u64,
-    verification: CatalogVerificationState,
-}
-
-#[derive(Default)]
-struct ProjectionState {
-    projection_key: Option<ProjectionKey>,
-    source_config_epoch: u64,
-    configs: Vec<ChannelSourceConfig>,
-    observations: ChannelSourceMonitorSnapshot,
-    summary_revision: u64,
-    delta_floor_revision: u64,
-    summaries: BTreeMap<String, ZoneSummary>,
-    detail_revisions: BTreeMap<String, u64>,
-    journal: VecDeque<SummaryJournalEntry>,
-    journal_change_count: usize,
-    cursors: BTreeMap<String, SummaryCursor>,
-    cursor_order: VecDeque<String>,
-}
-
-impl ProjectionState {
-    fn refresh(
-        &mut self,
-        service: &crate::inspection::catalog::ZoneCatalogServiceReport,
-        configs: Vec<ChannelSourceConfig>,
-        observations: ChannelSourceMonitorSnapshot,
-    ) -> Result<()> {
-        if self.configs != configs {
-            self.source_config_epoch = self
-                .source_config_epoch
-                .checked_add(1)
-                .context("Channel source configuration epoch overflow")?;
-        }
-        let network_scope = service
-            .catalog
-            .as_deref()
-            .map(|catalog| catalog.metadata.network_scope.clone());
-        let catalog_revision = service
-            .catalog
-            .as_deref()
-            .map_or(0, |catalog| catalog.metadata.catalog_revision);
-        let key = ProjectionKey {
-            source_revision: service.source_revision,
-            network_scope,
-            catalog_revision,
-            source_config_epoch: self.source_config_epoch,
-            observation_revision: observations.observation_revision,
-            verification: service.verification_state,
-        };
-        let rows = service.catalog.as_deref().map_or_else(Vec::new, |catalog| {
-            project_catalog_zones_with_sources(
-                catalog,
-                &configs,
-                &observations,
-                service.verification_state,
-            )
-        });
-        self.configs = configs;
-        self.observations = observations;
-        if self.projection_key.as_ref() == Some(&key) {
-            return Ok(());
-        }
-        let initial_empty = self.projection_key.is_none()
-            && key.source_revision == 0
-            && key.network_scope.is_none()
-            && key.catalog_revision == 0
-            && key.source_config_epoch == 0
-            && key.observation_revision == 0
-            && rows.is_empty();
-        let identity_changed = self.projection_key.as_ref().map_or(
-            key.source_revision != 0 || key.network_scope.is_some(),
-            |previous| {
-                previous.source_revision != key.source_revision
-                    || previous.network_scope != key.network_scope
-            },
-        );
-        self.projection_key = Some(key.clone());
-        if initial_empty {
-            return Ok(());
-        }
-
-        let next_revision = self
-            .summary_revision
-            .checked_add(1)
-            .context("Zone summary revision overflow")?;
-        if identity_changed {
-            self.delta_floor_revision = next_revision;
-        }
-        let next_rows = rows
-            .into_iter()
-            .map(|row| (row.channel_id.clone(), row))
-            .collect::<BTreeMap<_, _>>();
-        let upserts = next_rows
-            .iter()
-            .filter(|(channel_id, row)| self.summaries.get(*channel_id) != Some(*row))
-            .map(|(_, row)| row.clone())
-            .collect::<Vec<_>>();
-        let removed_zone_ids = self
-            .summaries
-            .keys()
-            .filter(|channel_id| !next_rows.contains_key(*channel_id))
-            .cloned()
-            .collect::<Vec<_>>();
-        for channel_id in next_rows.keys() {
-            let revision = self.detail_revisions.entry(channel_id.clone()).or_insert(0);
-            *revision = revision
-                .checked_add(1)
-                .context("Zone detail revision overflow")?;
-        }
-        for channel_id in &removed_zone_ids {
-            self.detail_revisions.remove(channel_id);
-        }
-        let change_count = upserts.len().saturating_add(removed_zone_ids.len());
-        self.journal.push_back(SummaryJournalEntry {
-            revision: next_revision,
-            source_revision: key.source_revision,
-            network_scope: key.network_scope,
-            upserts,
-            removed_zone_ids,
-        });
-        self.journal_change_count = self.journal_change_count.saturating_add(change_count);
-        self.trim_journal();
-        self.summary_revision = next_revision;
-        self.summaries = next_rows;
-        Ok(())
-    }
-
-    fn trim_journal(&mut self) {
-        while self.journal.len() > MAX_SUMMARY_JOURNAL_REVISIONS
-            || self.journal_change_count > MAX_SUMMARY_JOURNAL_CHANGES
-        {
-            let Some(removed) = self.journal.pop_front() else {
-                break;
-            };
-            self.journal_change_count = self
-                .journal_change_count
-                .saturating_sub(removed.change_count());
-        }
-    }
-
-    fn summary_snapshot(&self, after_revision: Option<u64>) -> SummarySnapshot {
-        let key = self.projection_key.clone().unwrap_or(ProjectionKey {
-            source_revision: 0,
-            network_scope: None,
-            catalog_revision: 0,
-            source_config_epoch: 0,
-            observation_revision: 0,
-            verification: CatalogVerificationState::Empty,
-        });
-        let changes = after_revision
-            .and_then(|revision| self.delta_since(revision, &key))
-            .unwrap_or_else(|| SummarySnapshotChanges::Reset {
-                rows: self.summaries.values().cloned().collect(),
-            });
-        SummarySnapshot {
-            source_revision: key.source_revision,
-            network_scope: key.network_scope,
-            catalog_revision: key.catalog_revision,
-            source_config_epoch: key.source_config_epoch,
-            observation_revision: key.observation_revision,
-            summary_revision: self.summary_revision,
-            changes,
-        }
-    }
-
-    fn delta_since(
-        &self,
-        after_revision: u64,
-        key: &ProjectionKey,
-    ) -> Option<SummarySnapshotChanges> {
-        if after_revision > self.summary_revision {
-            return None;
-        }
-        if after_revision < self.delta_floor_revision {
-            return None;
-        }
-        if after_revision == self.summary_revision {
-            return Some(SummarySnapshotChanges::Delta {
-                upserts: Vec::new(),
-                removed_zone_ids: Vec::new(),
-            });
-        }
-        let first_required = after_revision.checked_add(1)?;
-        let first = self.journal.iter().find(|entry| {
-            entry.revision == first_required
-                && entry.source_revision == key.source_revision
-                && entry.network_scope == key.network_scope
-        })?;
-        let mut expected = first.revision;
-        let mut upserts = BTreeMap::new();
-        let mut removed = BTreeSet::new();
-        for entry in self.journal.iter().filter(|entry| {
-            entry.revision >= first_required && entry.revision <= self.summary_revision
-        }) {
-            if entry.revision != expected
-                || entry.source_revision != key.source_revision
-                || entry.network_scope != key.network_scope
-            {
-                return None;
-            }
-            for channel_id in &entry.removed_zone_ids {
-                upserts.remove(channel_id);
-                removed.insert(channel_id.clone());
-            }
-            for row in &entry.upserts {
-                removed.remove(&row.channel_id);
-                upserts.insert(row.channel_id.clone(), row.clone());
-            }
-            expected = expected.checked_add(1)?;
-        }
-        if expected != self.summary_revision.checked_add(1)? {
-            return None;
-        }
-        Some(SummarySnapshotChanges::Delta {
-            upserts: upserts.into_values().collect(),
-            removed_zone_ids: removed.into_iter().collect(),
-        })
-    }
-
-    fn insert_cursor(&mut self, snapshot: SummarySnapshot, offset: usize) -> Result<String> {
-        let mut random = [0_u8; 16];
-        getrandom::fill(&mut random).context("failed to create Zone summary cursor")?;
-        let token = format!("zsc1_{}", hex::encode(random));
-        self.cursors
-            .insert(token.clone(), SummaryCursor { snapshot, offset });
-        self.cursor_order.push_back(token.clone());
-        while self.cursor_order.len() > MAX_SUMMARY_CURSORS {
-            if let Some(expired) = self.cursor_order.pop_front() {
-                self.cursors.remove(&expired);
-            }
-        }
-        Ok(token)
-    }
-}
-
-#[derive(Debug, Clone)]
-struct SummaryJournalEntry {
-    revision: u64,
-    source_revision: u64,
-    network_scope: Option<NetworkScope>,
-    upserts: Vec<ZoneSummary>,
-    removed_zone_ids: Vec<String>,
-}
-
-impl SummaryJournalEntry {
-    fn change_count(&self) -> usize {
-        self.upserts
-            .len()
-            .saturating_add(self.removed_zone_ids.len())
-    }
-}
-
-#[derive(Debug, Clone)]
-struct SummarySnapshot {
-    source_revision: u64,
-    network_scope: Option<NetworkScope>,
-    catalog_revision: u64,
-    source_config_epoch: u64,
-    observation_revision: u64,
-    summary_revision: u64,
-    changes: SummarySnapshotChanges,
-}
-
-impl SummarySnapshot {
-    fn page(&self, offset: usize, limit: usize) -> (ZoneSummaryChanges, Option<usize>) {
-        match &self.changes {
-            SummarySnapshotChanges::Reset { rows } => {
-                let end = offset.saturating_add(limit).min(rows.len());
-                let page = rows.get(offset..end).unwrap_or_default().to_vec();
-                let next = (end < rows.len()).then_some(end);
-                (ZoneSummaryChanges::Reset { rows: page }, next)
-            }
-            SummarySnapshotChanges::Delta {
-                upserts,
-                removed_zone_ids,
-            } => {
-                let total = upserts.len().saturating_add(removed_zone_ids.len());
-                let end = offset.saturating_add(limit).min(total);
-                let upsert_start = offset.min(upserts.len());
-                let upsert_end = end.min(upserts.len());
-                let removed_start = offset.saturating_sub(upserts.len());
-                let removed_end = end.saturating_sub(upserts.len());
-                let page_upserts = upserts
-                    .get(upsert_start..upsert_end)
-                    .unwrap_or_default()
-                    .to_vec();
-                let page_removed = removed_zone_ids
-                    .get(removed_start..removed_end)
-                    .unwrap_or_default()
-                    .to_vec();
-                let next = (end < total).then_some(end);
-                (
-                    ZoneSummaryChanges::Delta {
-                        upserts: page_upserts,
-                        removed_zone_ids: page_removed,
-                    },
-                    next,
-                )
-            }
-        }
-    }
-
-    fn report(
-        &self,
-        changes: ZoneSummaryChanges,
-        next_cursor: Option<String>,
-    ) -> ZonesSummaryReport {
-        ZonesSummaryReport {
-            report_kind: "zones.summary",
-            schema_version: ZONE_CATALOG_REPORT_SCHEMA_VERSION,
-            source_revision: self.source_revision,
-            network_scope: self.network_scope.clone(),
-            catalog_revision: self.catalog_revision,
-            source_config_epoch: self.source_config_epoch,
-            observation_revision: self.observation_revision,
-            summary_revision: self.summary_revision,
-            changes,
-            next_cursor,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-enum SummarySnapshotChanges {
-    Reset {
-        rows: Vec<ZoneSummary>,
-    },
-    Delta {
-        upserts: Vec<ZoneSummary>,
-        removed_zone_ids: Vec<String>,
-    },
-}
-
-#[derive(Debug, Clone)]
-struct SummaryCursor {
-    snapshot: SummarySnapshot,
-    offset: usize,
-}
-
-struct CursorPage {
-    snapshot: SummarySnapshot,
-    offset: usize,
 }
 
 fn validate_source_mutation_revision(
@@ -1092,67 +650,6 @@ fn project_coverage_report(
         }),
         gap_count: usize_to_u64(snapshot.gaps.len()),
     }
-}
-
-fn summary_page_limit(limit: Option<u16>) -> Result<usize> {
-    let limit = limit.map_or(DEFAULT_SUMMARY_PAGE_SIZE, usize::from);
-    if limit == 0 || limit > MAX_SUMMARY_PAGE_SIZE {
-        bail!("Zone summary page limit must be between 1 and {MAX_SUMMARY_PAGE_SIZE}");
-    }
-    Ok(limit)
-}
-
-fn validate_current_summary_fences(
-    request: &ZonesSummaryRequest,
-    state: &ProjectionState,
-) -> Result<()> {
-    let key = state
-        .projection_key
-        .as_ref()
-        .context("Zone summary projection is unavailable")?;
-    if request.source_revision != key.source_revision {
-        bail!("Zone summary source revision is stale");
-    }
-    if request.network_scope.as_ref() != key.network_scope.as_ref() {
-        bail!("Zone summary network scope is stale");
-    }
-    if request
-        .after_summary_revision
-        .is_some_and(|revision| revision > state.summary_revision)
-    {
-        bail!("Zone summary revision is newer than current state");
-    }
-    Ok(())
-}
-
-fn validate_summary_request_fences(
-    source_revision: u64,
-    network_scope: Option<&NetworkScope>,
-    snapshot: &SummarySnapshot,
-) -> Result<()> {
-    if source_revision != snapshot.source_revision
-        || network_scope != snapshot.network_scope.as_ref()
-    {
-        bail!("Zone summary cursor belongs to another source or network");
-    }
-    Ok(())
-}
-
-fn validate_detail_fences(
-    request: &ZoneDetailRequest,
-    service: &crate::inspection::catalog::ZoneCatalogServiceReport,
-    catalog: &crate::inspection::catalog::CatalogSnapshot,
-    state: &ProjectionState,
-) -> Result<()> {
-    if request.source_revision != service.source_revision
-        || request.network_scope != catalog.metadata.network_scope
-        || request.catalog_revision != catalog.metadata.catalog_revision
-        || request.summary_revision != state.summary_revision
-        || request.observation_revision != state.observations.observation_revision
-    {
-        bail!("Zone detail request fences are stale");
-    }
-    Ok(())
 }
 
 fn require_verified(verification: &CatalogVerificationState) -> Result<()> {

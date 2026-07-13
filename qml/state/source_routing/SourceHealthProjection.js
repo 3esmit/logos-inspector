@@ -34,8 +34,9 @@ function networkConnectionSummary(root, kind, value) {
         if (!moduleReportReachable(root, value)) {
             return moduleReportError(value) || qsTr("source unavailable")
         }
-        const version = root.moduleProbeValue("messaging", "version")
-        return version !== null ? qsTr("version %1").arg(root.valueText(version)) : qsTr("%1 reachable").arg(root.deliverySourceLabel())
+        const version = root.metrics.moduleProbeValue("messaging", "version")
+        return version !== null ? qsTr("version %1").arg(root.valueText(version))
+            : qsTr("%1 reachable").arg(root.sourceRouting.deliverySourceLabel())
     }
     if (kind === "storage") {
         const health = sourceHealth(value)
@@ -48,8 +49,10 @@ function networkConnectionSummary(root, kind, value) {
         if (String(value && value.module ? value.module : "") === "storage_metrics") {
             return qsTr("metrics available")
         }
-        const version = root.moduleProbeValue("storage", "version") || root.moduleProbeValue("storage", "moduleVersion")
-        return version !== null ? qsTr("version %1").arg(root.valueText(version)) : qsTr("%1 reachable").arg(root.storageSourceLabel())
+        const version = root.metrics.moduleProbeValue("storage", "version")
+            || root.metrics.moduleProbeValue("storage", "moduleVersion")
+        return version !== null ? qsTr("version %1").arg(root.valueText(version))
+            : qsTr("%1 reachable").arg(root.sourceRouting.storageSourceLabel())
     }
     return qsTr("reachable")
 }

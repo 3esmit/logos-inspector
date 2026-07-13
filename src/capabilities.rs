@@ -4,8 +4,11 @@ use serde_json::Value;
 mod availability;
 mod catalog;
 mod diagnostics_evidence;
+mod evidence;
 mod runtime_evidence;
 mod state_rulebook;
+
+pub(crate) use evidence::CapabilityRegistry;
 
 use catalog::{
     capability_specs, connector_scopes, default_connector, provider_instances, provider_types,
@@ -186,6 +189,15 @@ mod tests {
 
     use super::*;
 
+    fn test_registry_report_with_value(
+        build_mode: CapabilityBuildMode,
+        value: Option<&Value>,
+    ) -> CapabilityRegistryReport {
+        let evidence = evidence::CapabilityEvidenceSnapshot::from_legacy_test_value(value);
+        let inputs = CapabilityRuntimeInputs::from_value_with_evidence(value, evidence);
+        capability_registry_report_with_inputs(build_mode, &inputs)
+    }
+
     #[test]
     fn basecamp_defaults_use_module_backed_connectors() -> Result<()> {
         let value =
@@ -291,7 +303,7 @@ mod tests {
         let loading_inputs = serde_json::json!({
             "node_url": "http://127.0.0.1:8545"
         });
-        let loading = serde_json::to_value(capability_registry_report_with_value(
+        let loading = serde_json::to_value(test_registry_report_with_value(
             CapabilityBuildMode::Standalone,
             Some(&loading_inputs),
         ))?;
@@ -318,7 +330,7 @@ mod tests {
                 }
             }
         });
-        let ready = serde_json::to_value(capability_registry_report_with_value(
+        let ready = serde_json::to_value(test_registry_report_with_value(
             CapabilityBuildMode::Standalone,
             Some(&ready_inputs),
         ))?;
@@ -334,7 +346,7 @@ mod tests {
     #[test]
     fn runtime_inputs_gate_local_nodes_by_settings() -> Result<()> {
         let disabled_inputs = serde_json::json!({});
-        let disabled = serde_json::to_value(capability_registry_report_with_value(
+        let disabled = serde_json::to_value(test_registry_report_with_value(
             CapabilityBuildMode::Standalone,
             Some(&disabled_inputs),
         ))?;
@@ -349,7 +361,7 @@ mod tests {
             "local_nodes_enabled": true,
             "local_devnet_enabled": false
         });
-        let enabled = serde_json::to_value(capability_registry_report_with_value(
+        let enabled = serde_json::to_value(test_registry_report_with_value(
             CapabilityBuildMode::Standalone,
             Some(&enabled_inputs),
         ))?;
@@ -403,7 +415,7 @@ mod tests {
                 }
             }
         });
-        let value = serde_json::to_value(capability_registry_report_with_value(
+        let value = serde_json::to_value(test_registry_report_with_value(
             CapabilityBuildMode::Basecamp,
             Some(&inputs),
         ))?;
@@ -465,7 +477,7 @@ mod tests {
                 }
             }
         });
-        let value = serde_json::to_value(capability_registry_report_with_value(
+        let value = serde_json::to_value(test_registry_report_with_value(
             CapabilityBuildMode::Basecamp,
             Some(&inputs),
         ))?;
@@ -509,7 +521,7 @@ mod tests {
             "wallet_profile_configured": true,
             "wallet_home_configured": true
         });
-        let value = serde_json::to_value(capability_registry_report_with_value(
+        let value = serde_json::to_value(test_registry_report_with_value(
             CapabilityBuildMode::Standalone,
             Some(&inputs),
         ))?;
@@ -556,7 +568,7 @@ mod tests {
                 }
             }
         });
-        let value = serde_json::to_value(capability_registry_report_with_value(
+        let value = serde_json::to_value(test_registry_report_with_value(
             CapabilityBuildMode::Standalone,
             Some(&inputs),
         ))?;
@@ -587,7 +599,7 @@ mod tests {
             "wallet_profile_configured": true,
             "wallet_home_configured": true
         });
-        let value = serde_json::to_value(capability_registry_report_with_value(
+        let value = serde_json::to_value(test_registry_report_with_value(
             CapabilityBuildMode::Standalone,
             Some(&inputs),
         ))?;
@@ -624,7 +636,7 @@ mod tests {
                 }
             }
         });
-        let loading = serde_json::to_value(capability_registry_report_with_value(
+        let loading = serde_json::to_value(test_registry_report_with_value(
             CapabilityBuildMode::Standalone,
             Some(&empty_shell),
         ))?;
@@ -656,7 +668,7 @@ mod tests {
                 ]
             }
         });
-        let degraded = serde_json::to_value(capability_registry_report_with_value(
+        let degraded = serde_json::to_value(test_registry_report_with_value(
             CapabilityBuildMode::Standalone,
             Some(&evidence),
         ))?;
@@ -706,7 +718,7 @@ mod tests {
                 }
             }
         });
-        let value = serde_json::to_value(capability_registry_report_with_value(
+        let value = serde_json::to_value(test_registry_report_with_value(
             CapabilityBuildMode::Standalone,
             Some(&inputs),
         ))?;
@@ -735,7 +747,7 @@ mod tests {
                 }
             }
         });
-        let value = serde_json::to_value(capability_registry_report_with_value(
+        let value = serde_json::to_value(test_registry_report_with_value(
             CapabilityBuildMode::Standalone,
             Some(&inputs),
         ))?;
@@ -773,7 +785,7 @@ mod tests {
                 }
             }
         });
-        let value = serde_json::to_value(capability_registry_report_with_value(
+        let value = serde_json::to_value(test_registry_report_with_value(
             CapabilityBuildMode::Standalone,
             Some(&inputs),
         ))?;
@@ -807,7 +819,7 @@ mod tests {
             "storage_rest_url": "http://127.0.0.1:8080/api/storage/v1",
             "storage_mutating_diagnostics_enabled": true
         });
-        let value = serde_json::to_value(capability_registry_report_with_value(
+        let value = serde_json::to_value(test_registry_report_with_value(
             CapabilityBuildMode::Standalone,
             Some(&inputs),
         ))?;
@@ -851,7 +863,7 @@ mod tests {
                 }
             }
         });
-        let value = serde_json::to_value(capability_registry_report_with_value(
+        let value = serde_json::to_value(test_registry_report_with_value(
             CapabilityBuildMode::Basecamp,
             Some(&inputs),
         ))?;
@@ -896,7 +908,7 @@ mod tests {
                 }
             }
         });
-        let value = serde_json::to_value(capability_registry_report_with_value(
+        let value = serde_json::to_value(test_registry_report_with_value(
             CapabilityBuildMode::Standalone,
             Some(&inputs),
         ))?;
@@ -941,7 +953,7 @@ mod tests {
             },
             "storage_rest_url": "http://127.0.0.1:8080/api/storage/v1"
         });
-        let value = serde_json::to_value(capability_registry_report_with_value(
+        let value = serde_json::to_value(test_registry_report_with_value(
             CapabilityBuildMode::Standalone,
             Some(&inputs),
         ))?;
@@ -984,7 +996,7 @@ mod tests {
                 }
             }
         });
-        let value = serde_json::to_value(capability_registry_report_with_value(
+        let value = serde_json::to_value(test_registry_report_with_value(
             CapabilityBuildMode::Standalone,
             Some(&inputs),
         ))?;

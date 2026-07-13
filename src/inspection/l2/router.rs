@@ -4,28 +4,27 @@ use std::{
 };
 
 use crate::{
-    inspection::{CatalogVerificationState, ZoneKind, ZoneSourceRole},
-    lez::{IndexerBlockReport, TransactionSummary},
-    source_routing::channel_sources::{
-        ChannelSourceBindingState, ChannelSourceConfig, ChannelSourceHealthState,
-        ChannelSourceRole, PersistedSequencerAttestation,
-    },
+    inspection::ZoneSourceRole,
+    lez::{IndexerBlockReport, ProgramIdEntry, TransactionSummary},
 };
 
 use super::{
-    ActiveZoneContext, DirectZoneL2SourceAdapter, L2_READ_SCHEMA_VERSION, L2AccountActivityPage,
-    L2AccountAnchorState, L2AccountNonce, L2AccountNoncesData, L2AccountSnapshotData,
-    L2BlockAnchor, L2BlockDetail, L2BlockRow, L2BlocksPage, L2CacheScope, L2CommitmentProofData,
-    L2EvidenceCache, L2ExactSourceCandidate, L2ProgramsData, L2ReadErrorCode, L2ReadErrorDetails,
-    L2ReadOutcome, L2ReadReport, L2ReadRoute, L2ReadWarning, L2RecoveryAction, L2Retrieval,
-    L2RouteAttempt, L2RouteAttemptOutcome, L2RouteCompleteness, L2RouteContribution,
-    L2RouteFinality, L2RoutePolicy, L2SourceDescriptor, L2SourceError, L2SourceErrorKind,
-    L2SourceHead, L2SourceObservation, L2TransactionDetail, L2TransactionTrace, L2TransfersPage,
-    NormalizedL2Block, ZoneL2AccountActivityOrder, ZoneL2AccountActivityQuery,
+    ActiveZoneContext, ActiveZoneContextError, DirectIndexerL2SourceAdapter,
+    DirectSequencerL2SourceAdapter, IndexerL2Source, IndexerL2SourceAdapter,
+    L2_READ_SCHEMA_VERSION, L2AccountActivityPage, L2AccountActivityRow, L2AccountAnchorState,
+    L2AccountNonce, L2AccountNoncesData, L2AccountSnapshotData, L2AccountValue, L2BlockAnchor,
+    L2BlockDetail, L2BlockRow, L2BlocksPage, L2CacheScope, L2CommitmentProofData, L2EvidenceCache,
+    L2ExactSourceCandidate, L2ProgramsData, L2ReadErrorCode, L2ReadErrorDetails, L2ReadOutcome,
+    L2ReadReport, L2ReadRoute, L2ReadWarning, L2RecoveryAction, L2Retrieval, L2RouteAttempt,
+    L2RouteAttemptOutcome, L2RouteCompleteness, L2RouteContribution, L2RouteFinality,
+    L2RoutePolicy, L2SourceDescriptor, L2SourceError, L2SourceErrorKind, L2SourceHead,
+    L2SourceObservation, L2TransactionDetail, L2TransactionTrace, L2TransfersPage,
+    NormalizedL2Block, ResolvedActiveZoneContext, ResolvedSourcePlan, SequencerL2Source,
+    SequencerL2SourceAdapter, ZoneL2AccountActivityOrder, ZoneL2AccountActivityQuery,
     ZoneL2AccountNoncesQuery, ZoneL2AccountQuery, ZoneL2AccountSnapshot, ZoneL2BlockDetailQuery,
     ZoneL2BlockTarget, ZoneL2BlocksQuery, ZoneL2CommitmentProofQuery, ZoneL2ProgramsQuery,
-    ZoneL2Request, ZoneL2RuntimeFacts, ZoneL2SourceAdapter, ZoneL2TransactionQuery,
-    ZoneL2TransactionTraceQuery, ZoneL2TransfersQuery,
+    ZoneL2Request, ZoneL2RuntimeFacts, ZoneL2TransactionQuery, ZoneL2TransactionTraceQuery,
+    ZoneL2TransfersQuery,
 };
 
 const DEFAULT_PAGE_LIMIT: usize = 25;
@@ -34,21 +33,29 @@ const MAX_CURSOR_ENTRIES: usize = 128;
 const MAX_NONCE_ACCOUNTS: usize = 100;
 
 pub(crate) struct ZoneL2Router {
-    adapter: Arc<dyn ZoneL2SourceAdapter>,
+    sequencer: Arc<dyn SequencerL2SourceAdapter>,
+    indexer: Arc<dyn IndexerL2SourceAdapter>,
     state: Mutex<L2RouterState>,
 }
 
 impl Default for ZoneL2Router {
     fn default() -> Self {
-        Self::new(Arc::new(DirectZoneL2SourceAdapter))
+        Self::new(
+            Arc::new(DirectSequencerL2SourceAdapter),
+            Arc::new(DirectIndexerL2SourceAdapter),
+        )
     }
 }
 
 impl ZoneL2Router {
     #[must_use]
-    pub(crate) fn new(adapter: Arc<dyn ZoneL2SourceAdapter>) -> Self {
+    pub(crate) fn new(
+        sequencer: Arc<dyn SequencerL2SourceAdapter>,
+        indexer: Arc<dyn IndexerL2SourceAdapter>,
+    ) -> Self {
         Self {
-            adapter,
+            sequencer,
+            indexer,
             state: Mutex::new(L2RouterState::default()),
         }
     }
@@ -58,28 +65,26 @@ impl ZoneL2Router {
         facts: &ZoneL2RuntimeFacts,
         request: ZoneL2Request<ZoneL2BlocksQuery>,
     ) -> Result<L2ReadReport<L2BlocksPage>, L2ReadFailure> {
-        let config = self.validate_and_reconcile(facts, &request)?;
+        let zone = self.validate_and_reconcile(facts, &request)?;
         let limit = page_limit(request.query.limit)?;
         match request.query.cursor.as_deref() {
             Some(cursor) => {
                 let state = self.block_cursor(cursor)?;
                 validate_cursor_context(&request.context, &state.context)?;
-                self.continue_blocks(facts, request, config, state, limit)
-                    .await
+                self.continue_blocks(request, zone, state, limit).await
             }
-            None => self.initial_blocks(facts, request, config, limit).await,
+            None => self.initial_blocks(request, zone, limit).await,
         }
     }
 
     async fn initial_blocks(
         &self,
-        facts: &ZoneL2RuntimeFacts,
         request: ZoneL2Request<ZoneL2BlocksQuery>,
-        config: ChannelSourceConfig,
+        zone: ResolvedActiveZoneContext,
         limit: usize,
     ) -> Result<L2ReadReport<L2BlocksPage>, L2ReadFailure> {
-        let indexer = optional_role_plan(facts, &config, ZoneSourceRole::Indexer);
-        let sequencer = optional_role_plan(facts, &config, ZoneSourceRole::Sequencer);
+        let indexer = contributor_plan(zone.source_plan(ZoneSourceRole::Indexer));
+        let sequencer = contributor_plan(zone.source_plan(ZoneSourceRole::Sequencer));
         if matches!(indexer, ContributorPlan::Absent)
             && matches!(sequencer, ContributorPlan::Absent)
         {
@@ -91,8 +96,8 @@ impl ZoneL2Router {
 
         let fetch_limit = limit.saturating_add(1);
         let (indexer_result, sequencer_result) = tokio::join!(
-            fetch_initial_contributor(self.adapter.as_ref(), indexer, fetch_limit),
-            fetch_initial_contributor(self.adapter.as_ref(), sequencer, fetch_limit),
+            fetch_initial_contributor(self, indexer, fetch_limit),
+            fetch_initial_contributor(self, sequencer, fetch_limit),
         );
         let results = [indexer_result, sequencer_result]
             .into_iter()
@@ -151,22 +156,18 @@ impl ZoneL2Router {
 
     async fn continue_blocks(
         &self,
-        facts: &ZoneL2RuntimeFacts,
         request: ZoneL2Request<ZoneL2BlocksQuery>,
-        config: ChannelSourceConfig,
+        zone: ResolvedActiveZoneContext,
         state: BlockCursorState,
         limit: usize,
     ) -> Result<L2ReadReport<L2BlocksPage>, L2ReadFailure> {
         let mut indexer = None;
         let mut sequencer = None;
         for pinned in &state.contributors {
-            let descriptor = eligible_descriptor(
-                facts,
-                &config,
-                &pinned.descriptor.source_id,
-                Some(pinned.descriptor.role),
-            )
-            .map_err(|_| cursor_invalidated())?;
+            let descriptor = zone
+                .source(&pinned.descriptor.source_id, Some(pinned.descriptor.role))
+                .map_err(L2ReadFailure::from_context)
+                .map_err(|_| cursor_invalidated())?;
             if descriptor != pinned.descriptor {
                 return Err(cursor_invalidated());
             }
@@ -178,14 +179,14 @@ impl ZoneL2Router {
         let fetch_limit = limit.saturating_add(1);
         let (indexer_result, sequencer_result) = tokio::join!(
             fetch_continuation_contributor(
-                self.adapter.as_ref(),
+                self,
                 indexer,
                 &state.source_heads,
                 state.next_before,
                 fetch_limit,
             ),
             fetch_continuation_contributor(
-                self.adapter.as_ref(),
+                self,
                 sequencer,
                 &state.source_heads,
                 state.next_before,
@@ -238,10 +239,12 @@ impl ZoneL2Router {
         facts: &ZoneL2RuntimeFacts,
         request: ZoneL2Request<ZoneL2BlockDetailQuery>,
     ) -> Result<L2ReadReport<L2BlockDetail>, L2ReadFailure> {
-        let config = self.validate_and_reconcile(facts, &request)?;
+        let zone = self.validate_and_reconcile(facts, &request)?;
         let target = normalized_block_target(&request.query.target)?;
         if let Some(source_id) = request.query.exact_source_id.as_deref() {
-            let source = eligible_descriptor(facts, &config, source_id, None)?;
+            let source = zone
+                .source(source_id, None)
+                .map_err(L2ReadFailure::from_context)?;
             let read = self
                 .read_block_source(
                     &request.context,
@@ -262,25 +265,22 @@ impl ZoneL2Router {
 
         match target {
             ZoneL2BlockTarget::Id { block_id } => {
-                self.numeric_block_detail(facts, request, config, block_id)
-                    .await
+                self.numeric_block_detail(request, zone, block_id).await
             }
             target @ (ZoneL2BlockTarget::Hash { .. } | ZoneL2BlockTarget::Identity { .. }) => {
-                self.policy_block_detail(facts, request, config, target)
-                    .await
+                self.policy_block_detail(request, zone, target).await
             }
         }
     }
 
     async fn policy_block_detail(
         &self,
-        facts: &ZoneL2RuntimeFacts,
         request: ZoneL2Request<ZoneL2BlockDetailQuery>,
-        config: ChannelSourceConfig,
+        zone: ResolvedActiveZoneContext,
         target: ZoneL2BlockTarget,
     ) -> Result<L2ReadReport<L2BlockDetail>, L2ReadFailure> {
-        let indexer = optional_descriptor(facts, &config, ZoneSourceRole::Indexer)?;
-        let sequencer = optional_descriptor(facts, &config, ZoneSourceRole::Sequencer)?;
+        let indexer = selected_source(&zone, ZoneSourceRole::Indexer)?;
+        let sequencer = selected_source(&zone, ZoneSourceRole::Sequencer)?;
         let Some(primary) = indexer.or_else(|| sequencer.clone()) else {
             return Err(source_unconfigured());
         };
@@ -337,13 +337,12 @@ impl ZoneL2Router {
 
     async fn numeric_block_detail(
         &self,
-        facts: &ZoneL2RuntimeFacts,
         request: ZoneL2Request<ZoneL2BlockDetailQuery>,
-        config: ChannelSourceConfig,
+        zone: ResolvedActiveZoneContext,
         block_id: u64,
     ) -> Result<L2ReadReport<L2BlockDetail>, L2ReadFailure> {
-        let indexer = optional_descriptor(facts, &config, ZoneSourceRole::Indexer)?;
-        let sequencer = optional_descriptor(facts, &config, ZoneSourceRole::Sequencer)?;
+        let indexer = selected_source(&zone, ZoneSourceRole::Indexer)?;
+        let sequencer = selected_source(&zone, ZoneSourceRole::Sequencer)?;
         let target = ZoneL2BlockTarget::Id { block_id };
         let Some(indexer_source) = indexer else {
             let sequencer_source = sequencer.ok_or_else(source_unconfigured)?;
@@ -365,8 +364,7 @@ impl ZoneL2Router {
             ));
         };
         let indexer_head = self
-            .adapter
-            .head(indexer_source.clone())
+            .source_head(indexer_source.clone())
             .await
             .map_err(|error| {
                 source_failure_with_policy(&indexer_source, error, L2RoutePolicy::IndexerPrimary)
@@ -533,13 +531,10 @@ impl ZoneL2Router {
         }
         let result = match target {
             ZoneL2BlockTarget::Id { block_id } | ZoneL2BlockTarget::Identity { block_id, .. } => {
-                self.adapter
-                    .block_by_id(descriptor.clone(), *block_id)
-                    .await
+                self.source_block_by_id(descriptor.clone(), *block_id).await
             }
             ZoneL2BlockTarget::Hash { block_hash } => {
-                self.adapter
-                    .block_by_hash(descriptor.clone(), block_hash.clone())
+                self.indexer_block_by_hash(descriptor.clone(), block_hash.clone())
                     .await
             }
         }
@@ -612,12 +607,11 @@ impl ZoneL2Router {
         facts: &ZoneL2RuntimeFacts,
         request: ZoneL2Request<ZoneL2TransactionQuery>,
     ) -> Result<L2ReadReport<L2TransactionDetail>, L2ReadFailure> {
-        let config = self.validate_and_reconcile(facts, &request)?;
+        let zone = self.validate_and_reconcile(facts, &request)?;
         let transaction_id = normalized_hash(&request.query.transaction_id, "transaction id")?;
         let (read, route, completeness) = self
             .read_transaction_policy(
-                facts,
-                &config,
+                &zone,
                 &request.context,
                 &transaction_id,
                 request.query.exact_source_id.as_deref(),
@@ -647,12 +641,11 @@ impl ZoneL2Router {
         facts: &ZoneL2RuntimeFacts,
         request: ZoneL2Request<ZoneL2TransactionTraceQuery>,
     ) -> Result<L2ReadReport<L2TransactionTrace>, L2ReadFailure> {
-        let config = self.validate_and_reconcile(facts, &request)?;
+        let zone = self.validate_and_reconcile(facts, &request)?;
         let transaction_id = normalized_hash(&request.query.transaction_id, "transaction id")?;
         let (read, route, completeness) = self
             .read_transaction_policy(
-                facts,
-                &config,
+                &zone,
                 &request.context,
                 &transaction_id,
                 request.query.exact_source_id.as_deref(),
@@ -683,14 +676,15 @@ impl ZoneL2Router {
 
     async fn read_transaction_policy(
         &self,
-        facts: &ZoneL2RuntimeFacts,
-        config: &ChannelSourceConfig,
+        zone: &ResolvedActiveZoneContext,
         context: &ActiveZoneContext,
         transaction_id: &str,
         exact_source_id: Option<&str>,
     ) -> Result<(TransactionSourceRead, L2ReadRoute, L2RouteCompleteness), L2ReadFailure> {
         if let Some(source_id) = exact_source_id {
-            let source = eligible_descriptor(facts, config, source_id, None)?;
+            let source = zone
+                .source(source_id, None)
+                .map_err(L2ReadFailure::from_context)?;
             let read = self
                 .read_transaction_source(
                     context,
@@ -705,8 +699,8 @@ impl ZoneL2Router {
             };
             return Ok((read, route, L2RouteCompleteness::SingleConfigured));
         }
-        let indexer = optional_descriptor(facts, config, ZoneSourceRole::Indexer)?;
-        let sequencer = optional_descriptor(facts, config, ZoneSourceRole::Sequencer)?;
+        let indexer = selected_source(zone, ZoneSourceRole::Indexer)?;
+        let sequencer = selected_source(zone, ZoneSourceRole::Sequencer)?;
         let Some(primary) = indexer.or_else(|| sequencer.clone()) else {
             return Err(source_unconfigured());
         };
@@ -767,8 +761,7 @@ impl ZoneL2Router {
             });
         }
         let value = self
-            .adapter
-            .transaction(descriptor.clone(), transaction_id.to_owned())
+            .source_transaction(descriptor.clone(), transaction_id.to_owned())
             .await
             .map_err(|error| source_failure_with_policy(&descriptor, error, policy))?;
         if let Some(transaction) = &value {
@@ -813,7 +806,7 @@ impl ZoneL2Router {
         facts: &ZoneL2RuntimeFacts,
         request: ZoneL2Request<ZoneL2AccountQuery>,
     ) -> Result<L2ReadReport<L2AccountSnapshotData>, L2ReadFailure> {
-        let config = self.validate_and_reconcile(facts, &request)?;
+        let zone = self.validate_and_reconcile(facts, &request)?;
         let account_id = normalized_account_id(&request.query.account_id)?;
         let required_role = match request.query.snapshot {
             ZoneL2AccountSnapshot::Provisional => ZoneSourceRole::Sequencer,
@@ -829,9 +822,10 @@ impl ZoneL2Router {
             L2RoutePolicy::SelectedSequencer
         };
         let source = if let Some(source_id) = request.query.exact_source_id.as_deref() {
-            eligible_descriptor(facts, &config, source_id, Some(required_role))?
+            zone.source(source_id, Some(required_role))
+                .map_err(L2ReadFailure::from_context)?
         } else {
-            optional_descriptor(facts, &config, required_role)?.ok_or_else(source_unconfigured)?
+            selected_source(&zone, required_role)?.ok_or_else(source_unconfigured)?
         };
         let (value, attempt, warning) = match &request.query.snapshot {
             ZoneL2AccountSnapshot::Finalized => {
@@ -921,8 +915,7 @@ impl ZoneL2Router {
         let block = match requested_anchor {
             Some(anchor) => {
                 let block = self
-                    .adapter
-                    .block_by_id(source.clone(), anchor.block_id)
+                    .source_block_by_id(source.clone(), anchor.block_id)
                     .await
                     .map_err(|error| source_failure_with_policy(&source, error, policy))?;
                 match block {
@@ -931,8 +924,7 @@ impl ZoneL2Router {
                 }
             }
             None => self
-                .adapter
-                .head(source.clone())
+                .source_head(source.clone())
                 .await
                 .map_err(|error| source_failure_with_policy(&source, error, policy))?,
         };
@@ -952,8 +944,7 @@ impl ZoneL2Router {
             block_hash: block.summary.block_hash,
         };
         let account = self
-            .adapter
-            .account_at_block(source.clone(), account_id.to_owned(), anchor.block_id)
+            .indexer_account_at_block(source.clone(), account_id.to_owned(), anchor.block_id)
             .await
             .map_err(|error| source_failure_with_policy(&source, error, policy))?;
         if cacheable {
@@ -1029,8 +1020,7 @@ impl ZoneL2Router {
         policy: L2RoutePolicy,
     ) -> Result<ProvisionalAccountObservation, L2ReadFailure> {
         let before = self
-            .adapter
-            .head(source.clone())
+            .source_head(source.clone())
             .await
             .map_err(|error| source_failure_with_policy(source, error, policy))?
             .map(block_anchor)
@@ -1038,13 +1028,11 @@ impl ZoneL2Router {
                 source_failure_with_policy(source, L2SourceError::protocol_error(), policy)
             })?;
         let account = self
-            .adapter
-            .current_account(source.clone(), account_id.to_owned())
+            .sequencer_current_account(source.clone(), account_id.to_owned())
             .await
             .map_err(|error| source_failure_with_policy(source, error, policy))?;
         let after = self
-            .adapter
-            .head(source.clone())
+            .source_head(source.clone())
             .await
             .map_err(|error| source_failure_with_policy(source, error, policy))?
             .map(block_anchor)
@@ -1063,11 +1051,11 @@ impl ZoneL2Router {
         facts: &ZoneL2RuntimeFacts,
         request: ZoneL2Request<ZoneL2AccountActivityQuery>,
     ) -> Result<L2ReadReport<L2AccountActivityPage>, L2ReadFailure> {
-        let config = self.validate_and_reconcile(facts, &request)?;
+        let zone = self.validate_and_reconcile(facts, &request)?;
         let account_id = normalized_account_id(&request.query.account_id)?;
         let limit = page_limit(request.query.limit)?;
-        let source = optional_descriptor(facts, &config, ZoneSourceRole::Indexer)?
-            .ok_or_else(source_unconfigured)?;
+        let source =
+            selected_source(&zone, ZoneSourceRole::Indexer)?.ok_or_else(source_unconfigured)?;
         let offset = if let Some(cursor) = request.query.cursor.as_deref() {
             let state = self.activity_cursor(cursor)?;
             validate_cursor_context(&request.context, &state.context)?;
@@ -1082,8 +1070,7 @@ impl ZoneL2Router {
             0
         };
         let mut rows = self
-            .adapter
-            .account_activity(
+            .indexer_account_activity(
                 source.clone(),
                 account_id.clone(),
                 offset,
@@ -1133,16 +1120,14 @@ impl ZoneL2Router {
         facts: &ZoneL2RuntimeFacts,
         request: ZoneL2Request<ZoneL2ProgramsQuery>,
     ) -> Result<L2ReadReport<L2ProgramsData>, L2ReadFailure> {
-        let config = self.validate_and_reconcile(facts, &request)?;
+        let zone = self.validate_and_reconcile(facts, &request)?;
         let (source, policy) = selected_or_exact_source(
-            facts,
-            &config,
+            &zone,
             request.query.exact_source_id.as_deref(),
             ZoneSourceRole::Sequencer,
         )?;
         let programs = self
-            .adapter
-            .programs(source.clone())
+            .sequencer_programs(source.clone())
             .await
             .map_err(|error| source_failure_with_policy(&source, error, policy))?;
         Ok(single_source_report(
@@ -1164,17 +1149,15 @@ impl ZoneL2Router {
         facts: &ZoneL2RuntimeFacts,
         request: ZoneL2Request<ZoneL2CommitmentProofQuery>,
     ) -> Result<L2ReadReport<L2CommitmentProofData>, L2ReadFailure> {
-        let config = self.validate_and_reconcile(facts, &request)?;
+        let zone = self.validate_and_reconcile(facts, &request)?;
         let commitment_hex = normalized_hash(&request.query.commitment_hex, "commitment")?;
         let (source, policy) = selected_or_exact_source(
-            facts,
-            &config,
+            &zone,
             request.query.exact_source_id.as_deref(),
             ZoneSourceRole::Sequencer,
         )?;
         let proof = self
-            .adapter
-            .commitment_proof(source.clone(), commitment_hex.clone())
+            .sequencer_commitment_proof(source.clone(), commitment_hex.clone())
             .await
             .map_err(|error| source_failure_with_policy(&source, error, policy))?;
         let outcome = proof.map_or(L2ReadOutcome::NotFound, |(leaf_index, sibling_hashes)| {
@@ -1201,7 +1184,7 @@ impl ZoneL2Router {
         facts: &ZoneL2RuntimeFacts,
         request: ZoneL2Request<ZoneL2AccountNoncesQuery>,
     ) -> Result<L2ReadReport<L2AccountNoncesData>, L2ReadFailure> {
-        let config = self.validate_and_reconcile(facts, &request)?;
+        let zone = self.validate_and_reconcile(facts, &request)?;
         if request.query.account_ids.len() > MAX_NONCE_ACCOUNTS {
             return Err(L2ReadFailure::new(
                 L2ReadErrorCode::InvalidRequest,
@@ -1215,14 +1198,12 @@ impl ZoneL2Router {
             .map(|account_id| normalized_account_id(account_id))
             .collect::<Result<Vec<_>, _>>()?;
         let (source, policy) = selected_or_exact_source(
-            facts,
-            &config,
+            &zone,
             request.query.exact_source_id.as_deref(),
             ZoneSourceRole::Sequencer,
         )?;
         let nonces = self
-            .adapter
-            .account_nonces(source.clone(), account_ids.clone())
+            .sequencer_account_nonces(source.clone(), account_ids.clone())
             .await
             .map_err(|error| source_failure_with_policy(&source, error, policy))?;
         if nonces.len() != account_ids.len() {
@@ -1256,10 +1237,10 @@ impl ZoneL2Router {
         facts: &ZoneL2RuntimeFacts,
         request: ZoneL2Request<ZoneL2TransfersQuery>,
     ) -> Result<L2ReadReport<L2TransfersPage>, L2ReadFailure> {
-        let config = self.validate_and_reconcile(facts, &request)?;
+        let zone = self.validate_and_reconcile(facts, &request)?;
         let limit = page_limit(request.query.block_limit)?;
-        let source = optional_descriptor(facts, &config, ZoneSourceRole::Indexer)?
-            .ok_or_else(source_unconfigured)?;
+        let source =
+            selected_source(&zone, ZoneSourceRole::Indexer)?.ok_or_else(source_unconfigured)?;
         let (anchor, before) = if let Some(cursor) = request.query.cursor.as_deref() {
             let state = self.transfer_cursor(cursor)?;
             validate_cursor_context(&request.context, &state.context)?;
@@ -1267,8 +1248,7 @@ impl ZoneL2Router {
                 return Err(cursor_invalidated());
             }
             let resolved = self
-                .adapter
-                .block_by_id(source.clone(), state.anchor.block_id)
+                .source_block_by_id(source.clone(), state.anchor.block_id)
                 .await
                 .map_err(|error| {
                     source_failure_with_policy(&source, error, L2RoutePolicy::IndexerPrimary)
@@ -1282,7 +1262,7 @@ impl ZoneL2Router {
             }
             (state.anchor, Some(state.next_before))
         } else {
-            let head = self.adapter.head(source.clone()).await.map_err(|error| {
+            let head = self.source_head(source.clone()).await.map_err(|error| {
                 source_failure_with_policy(&source, error, L2RoutePolicy::IndexerPrimary)
             })?;
             let Some(head) = head else {
@@ -1309,8 +1289,7 @@ impl ZoneL2Router {
             (anchor, before)
         };
         let mut blocks = self
-            .adapter
-            .transfer_blocks(
+            .indexer_transfer_blocks(
                 source.clone(),
                 before,
                 u64::try_from(limit.saturating_add(1)).unwrap_or(u64::MAX),
@@ -1359,20 +1338,175 @@ impl ZoneL2Router {
         ))
     }
 
+    async fn source_head(
+        &self,
+        source: L2SourceDescriptor,
+    ) -> Result<Option<NormalizedL2Block>, L2SourceError> {
+        match source.role {
+            ZoneSourceRole::Sequencer => {
+                self.sequencer.head(SequencerL2Source::parse(source)?).await
+            }
+            ZoneSourceRole::Indexer => self.indexer.head(IndexerL2Source::parse(source)?).await,
+        }
+    }
+
+    async fn source_blocks(
+        &self,
+        source: L2SourceDescriptor,
+        before: Option<u64>,
+        limit: u64,
+    ) -> Result<Vec<NormalizedL2Block>, L2SourceError> {
+        match source.role {
+            ZoneSourceRole::Sequencer => {
+                self.sequencer
+                    .blocks(SequencerL2Source::parse(source)?, before, limit)
+                    .await
+            }
+            ZoneSourceRole::Indexer => {
+                self.indexer
+                    .blocks(IndexerL2Source::parse(source)?, before, limit)
+                    .await
+            }
+        }
+    }
+
+    async fn source_block_by_id(
+        &self,
+        source: L2SourceDescriptor,
+        block_id: u64,
+    ) -> Result<Option<NormalizedL2Block>, L2SourceError> {
+        match source.role {
+            ZoneSourceRole::Sequencer => {
+                self.sequencer
+                    .block_by_id(SequencerL2Source::parse(source)?, block_id)
+                    .await
+            }
+            ZoneSourceRole::Indexer => {
+                self.indexer
+                    .block_by_id(IndexerL2Source::parse(source)?, block_id)
+                    .await
+            }
+        }
+    }
+
+    async fn source_transaction(
+        &self,
+        source: L2SourceDescriptor,
+        transaction_id: String,
+    ) -> Result<Option<TransactionSummary>, L2SourceError> {
+        match source.role {
+            ZoneSourceRole::Sequencer => {
+                self.sequencer
+                    .transaction(SequencerL2Source::parse(source)?, transaction_id)
+                    .await
+            }
+            ZoneSourceRole::Indexer => {
+                self.indexer
+                    .transaction(IndexerL2Source::parse(source)?, transaction_id)
+                    .await
+            }
+        }
+    }
+
+    async fn indexer_block_by_hash(
+        &self,
+        source: L2SourceDescriptor,
+        block_hash: String,
+    ) -> Result<Option<NormalizedL2Block>, L2SourceError> {
+        self.indexer
+            .block_by_hash(IndexerL2Source::parse(source)?, block_hash)
+            .await
+    }
+
+    async fn sequencer_current_account(
+        &self,
+        source: L2SourceDescriptor,
+        account_id: String,
+    ) -> Result<L2AccountValue, L2SourceError> {
+        self.sequencer
+            .current_account(SequencerL2Source::parse(source)?, account_id)
+            .await
+    }
+
+    async fn indexer_account_at_block(
+        &self,
+        source: L2SourceDescriptor,
+        account_id: String,
+        block_id: u64,
+    ) -> Result<L2AccountValue, L2SourceError> {
+        self.indexer
+            .account_at_block(IndexerL2Source::parse(source)?, account_id, block_id)
+            .await
+    }
+
+    async fn indexer_account_activity(
+        &self,
+        source: L2SourceDescriptor,
+        account_id: String,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<L2AccountActivityRow>, L2SourceError> {
+        self.indexer
+            .account_activity(IndexerL2Source::parse(source)?, account_id, offset, limit)
+            .await
+    }
+
+    async fn sequencer_programs(
+        &self,
+        source: L2SourceDescriptor,
+    ) -> Result<Vec<ProgramIdEntry>, L2SourceError> {
+        self.sequencer
+            .programs(SequencerL2Source::parse(source)?)
+            .await
+    }
+
+    async fn sequencer_commitment_proof(
+        &self,
+        source: L2SourceDescriptor,
+        commitment_hex: String,
+    ) -> Result<Option<(u64, Vec<String>)>, L2SourceError> {
+        self.sequencer
+            .commitment_proof(SequencerL2Source::parse(source)?, commitment_hex)
+            .await
+    }
+
+    async fn sequencer_account_nonces(
+        &self,
+        source: L2SourceDescriptor,
+        account_ids: Vec<String>,
+    ) -> Result<Vec<String>, L2SourceError> {
+        self.sequencer
+            .account_nonces(SequencerL2Source::parse(source)?, account_ids)
+            .await
+    }
+
+    async fn indexer_transfer_blocks(
+        &self,
+        source: L2SourceDescriptor,
+        before: Option<u64>,
+        limit: u64,
+    ) -> Result<Vec<IndexerBlockReport>, L2SourceError> {
+        self.indexer
+            .transfer_blocks(IndexerL2Source::parse(source)?, before, limit)
+            .await
+    }
+
     fn validate_and_reconcile<T>(
         &self,
         facts: &ZoneL2RuntimeFacts,
         request: &ZoneL2Request<T>,
-    ) -> Result<ChannelSourceConfig, L2ReadFailure> {
-        let config = validate_context(facts, request)?;
-        let valid_scopes = cache_scopes(facts);
+    ) -> Result<ResolvedActiveZoneContext, L2ReadFailure> {
+        let zone =
+            ResolvedActiveZoneContext::resolve(facts, &request.context, request.request_revision)
+                .map_err(L2ReadFailure::from_context)?;
+        let valid_scopes = ResolvedActiveZoneContext::valid_cache_scopes(facts);
         let mut state = self.lock_state()?;
-        if facts.verification == CatalogVerificationState::Verified {
+        if !valid_scopes.is_empty() {
             state.cache.retain_scopes(&valid_scopes);
         } else {
             state.cache.clear();
         }
-        Ok(config)
+        Ok(zone)
     }
 
     fn block_cursor(&self, token: &str) -> Result<BlockCursorState, L2ReadFailure> {
@@ -1533,36 +1667,27 @@ impl ContributorResult {
     }
 }
 
-fn optional_descriptor(
-    facts: &ZoneL2RuntimeFacts,
-    config: &ChannelSourceConfig,
+fn selected_source(
+    zone: &ResolvedActiveZoneContext,
     role: ZoneSourceRole,
 ) -> Result<Option<L2SourceDescriptor>, L2ReadFailure> {
-    let source_id = match role {
-        ZoneSourceRole::Indexer => config
-            .indexer_source
-            .as_ref()
-            .map(|source| source.source_id.as_str()),
-        ZoneSourceRole::Sequencer => config.selected_sequencer_source_id.as_deref(),
-    };
-    source_id
-        .map(|source_id| eligible_descriptor(facts, config, source_id, Some(role)))
-        .transpose()
+    zone.selected_source(role)
+        .map_err(L2ReadFailure::from_context)
 }
 
 fn selected_or_exact_source(
-    facts: &ZoneL2RuntimeFacts,
-    config: &ChannelSourceConfig,
+    zone: &ResolvedActiveZoneContext,
     exact_source_id: Option<&str>,
     role: ZoneSourceRole,
 ) -> Result<(L2SourceDescriptor, L2RoutePolicy), L2ReadFailure> {
     match exact_source_id {
         Some(source_id) => Ok((
-            eligible_descriptor(facts, config, source_id, Some(role))?,
+            zone.source(source_id, Some(role))
+                .map_err(L2ReadFailure::from_context)?,
             L2RoutePolicy::ExactSource,
         )),
         None => Ok((
-            optional_descriptor(facts, config, role)?.ok_or_else(source_unconfigured)?,
+            selected_source(zone, role)?.ok_or_else(source_unconfigured)?,
             if role == ZoneSourceRole::Indexer {
                 L2RoutePolicy::IndexerPrimary
             } else {
@@ -1781,7 +1906,7 @@ fn transaction_trace_value(
 }
 
 async fn fetch_initial_contributor(
-    adapter: &dyn ZoneL2SourceAdapter,
+    router: &ZoneL2Router,
     plan: ContributorPlan,
     limit: usize,
 ) -> Option<ContributorResult> {
@@ -1801,7 +1926,7 @@ async fn fetch_initial_contributor(
             exhausted: true,
         }),
         ContributorPlan::Eligible(descriptor) => {
-            let head = match adapter.head(descriptor.clone()).await {
+            let head = match router.source_head(descriptor.clone()).await {
                 Ok(head) => head,
                 Err(error) => return Some(failed_contributor(descriptor, error)),
             };
@@ -1821,8 +1946,8 @@ async fn fetch_initial_contributor(
                 });
             };
             let before = head_block.summary.block_id.checked_add(1);
-            let blocks = match adapter
-                .blocks(
+            let blocks = match router
+                .source_blocks(
                     descriptor.clone(),
                     before,
                     u64::try_from(limit).unwrap_or(u64::MAX),
@@ -1859,7 +1984,7 @@ async fn fetch_initial_contributor(
 }
 
 async fn fetch_continuation_contributor(
-    adapter: &dyn ZoneL2SourceAdapter,
+    router: &ZoneL2Router,
     pinned: Option<PinnedContributor>,
     heads: &[L2SourceHead],
     before: u64,
@@ -1872,8 +1997,8 @@ async fn fetch_continuation_contributor(
         .find(|head| head.source_id == descriptor.source_id)
         .cloned();
     if let Some(anchor) = &head {
-        let verification = adapter
-            .block_by_id(descriptor.clone(), anchor.block_id)
+        let verification = router
+            .source_block_by_id(descriptor.clone(), anchor.block_id)
             .await;
         match verification {
             Ok(Some(block)) if block.summary.block_hash == anchor.block_hash => {}
@@ -1898,8 +2023,8 @@ async fn fetch_continuation_contributor(
             exhausted: true,
         });
     }
-    let blocks = match adapter
-        .blocks(
+    let blocks = match router
+        .source_blocks(
             descriptor.clone(),
             Some(before),
             u64::try_from(limit).unwrap_or(u64::MAX),
@@ -2047,227 +2172,13 @@ fn validate_block_sequence(
     Ok(())
 }
 
-fn optional_role_plan(
-    facts: &ZoneL2RuntimeFacts,
-    config: &ChannelSourceConfig,
-    role: ZoneSourceRole,
-) -> ContributorPlan {
-    let source_id = match role {
-        ZoneSourceRole::Indexer => config
-            .indexer_source
-            .as_ref()
-            .map(|source| source.source_id.as_str()),
-        ZoneSourceRole::Sequencer => config.selected_sequencer_source_id.as_deref(),
-    };
-    let Some(source_id) = source_id else {
-        return ContributorPlan::Absent;
-    };
-    let descriptor = configured_descriptor(config, source_id);
-    match descriptor {
-        Some(descriptor) => match source_eligibility(facts, config, source_id, role) {
-            Ok(()) => ContributorPlan::Eligible(descriptor),
-            Err(failure) => ContributorPlan::Ineligible(descriptor, failure),
-        },
-        None => ContributorPlan::Absent,
-    }
-}
-
-fn validate_context<T>(
-    facts: &ZoneL2RuntimeFacts,
-    request: &ZoneL2Request<T>,
-) -> Result<ChannelSourceConfig, L2ReadFailure> {
-    if request.context.context_revision == 0 || request.request_revision == 0 {
-        return Err(L2ReadFailure::new(
-            L2ReadErrorCode::InvalidRequest,
-            "Zone L2 revisions must be positive",
-        ));
-    }
-    if !is_hex_identity(&request.context.channel_id) {
-        return Err(L2ReadFailure::new(
-            L2ReadErrorCode::InvalidRequest,
-            "Active Zone Channel id is invalid",
-        ));
-    }
-    if facts.verification != CatalogVerificationState::Verified {
-        return Err(L2ReadFailure::new(
-            L2ReadErrorCode::ZoneUnverified,
-            "Zone Catalog is not verified",
-        ));
-    }
-    if facts.network_scope.as_ref() != Some(&request.context.network_scope) {
-        return Err(stale_context("Active Zone network scope is stale"));
-    }
-    let Some(summary) = facts.summaries.get(&request.context.channel_id) else {
-        return Err(stale_context("Active Zone no longer exists"));
-    };
-    if summary.kind() != ZoneKind::SequencerZone {
-        return Err(L2ReadFailure::new(
-            L2ReadErrorCode::L2NotApplicable,
-            "Active Zone has no Sequencer-backed L2",
-        ));
-    }
-    if request.context.zone_kind != summary.kind() {
-        return Err(stale_context("Active Zone kind is stale"));
-    }
-    let config = facts
-        .configs
-        .iter()
-        .find(|config| {
-            config.network_scope == request.context.network_scope
-                && config.channel_id == request.context.channel_id
-        })
-        .cloned()
-        .unwrap_or_else(|| ChannelSourceConfig {
-            network_scope: request.context.network_scope.clone(),
-            channel_id: request.context.channel_id.clone(),
-            config_revision: 0,
-            sequencer_sources: Vec::new(),
-            selected_sequencer_source_id: None,
-            indexer_source: None,
-        });
-    if request.context.source_config_revision != config.config_revision
-        || request.context.selected_sequencer_source_id != config.selected_sequencer_source_id
-        || request.context.indexer_source_id
-            != config
-                .indexer_source
-                .as_ref()
-                .map(|source| source.source_id.clone())
-    {
-        return Err(stale_context("Active Zone source configuration is stale"));
-    }
-    Ok(config)
-}
-
-fn configured_descriptor(
-    config: &ChannelSourceConfig,
-    source_id: &str,
-) -> Option<L2SourceDescriptor> {
-    if let Some(source) = config
-        .sequencer_sources
-        .iter()
-        .find(|source| source.source_id == source_id)
-    {
-        return Some(L2SourceDescriptor {
-            source_id: source.source_id.clone(),
-            role: ZoneSourceRole::Sequencer,
-            target: source.target.clone(),
-            source_config_revision: config.config_revision,
-        });
-    }
-    config
-        .indexer_source
-        .as_ref()
-        .filter(|source| source.source_id == source_id)
-        .map(|source| L2SourceDescriptor {
-            source_id: source.source_id.clone(),
-            role: ZoneSourceRole::Indexer,
-            target: source.target.clone(),
-            source_config_revision: config.config_revision,
-        })
-}
-
-fn eligible_descriptor(
-    facts: &ZoneL2RuntimeFacts,
-    config: &ChannelSourceConfig,
-    source_id: &str,
-    required_role: Option<ZoneSourceRole>,
-) -> Result<L2SourceDescriptor, L2ReadFailure> {
-    let descriptor = configured_descriptor(config, source_id).ok_or_else(|| {
-        L2ReadFailure::new(
-            L2ReadErrorCode::SourceIneligible,
-            "Source does not belong to the active Channel",
-        )
-    })?;
-    if required_role.is_some_and(|role| descriptor.role != role) {
-        return Err(L2ReadFailure::new(
-            L2ReadErrorCode::SourceIneligible,
-            "Source role cannot serve this L2 read",
-        ));
-    }
-    source_eligibility(facts, config, source_id, descriptor.role)?;
-    Ok(descriptor)
-}
-
-fn source_eligibility(
-    facts: &ZoneL2RuntimeFacts,
-    config: &ChannelSourceConfig,
-    source_id: &str,
-    role: ZoneSourceRole,
-) -> Result<(), L2ReadFailure> {
-    let observed_role = match role {
-        ZoneSourceRole::Sequencer => ChannelSourceRole::Sequencer,
-        ZoneSourceRole::Indexer => ChannelSourceRole::Indexer,
-    };
-    let observation = facts
-        .observations
-        .channels
-        .iter()
-        .find(|set| {
-            set.channel_id == config.channel_id && set.config_revision == config.config_revision
-        })
-        .and_then(|set| {
-            set.observations.iter().find(|observation| {
-                observation.source_id == source_id && observation.role == observed_role
-            })
-        });
-    if role == ZoneSourceRole::Sequencer {
-        let source = config
-            .sequencer_sources
-            .iter()
-            .find(|source| source.source_id == source_id)
-            .ok_or_else(source_unconfigured)?;
-        let runtime_attested = observation.is_some_and(|observation| {
-            observation.binding_state == Some(ChannelSourceBindingState::RuntimeAttested)
-        });
-        if source.channel_attestation == PersistedSequencerAttestation::Pending && !runtime_attested
-        {
-            return Err(L2ReadFailure::new(
-                L2ReadErrorCode::SourceIneligible,
-                "Sequencer source has no matching Channel attestation",
-            ));
+fn contributor_plan(plan: ResolvedSourcePlan) -> ContributorPlan {
+    match plan {
+        ResolvedSourcePlan::Absent => ContributorPlan::Absent,
+        ResolvedSourcePlan::Eligible(descriptor) => ContributorPlan::Eligible(descriptor),
+        ResolvedSourcePlan::Ineligible(descriptor, error) => {
+            ContributorPlan::Ineligible(descriptor, L2ReadFailure::from_context(error))
         }
-    }
-    if observation
-        .is_some_and(|observation| observation.health == ChannelSourceHealthState::ChannelMismatch)
-    {
-        return Err(L2ReadFailure::new(
-            L2ReadErrorCode::SourceIneligible,
-            "Source reports another Channel",
-        ));
-    }
-    Ok(())
-}
-
-fn cache_scopes(facts: &ZoneL2RuntimeFacts) -> Vec<L2CacheScope> {
-    if facts.verification != CatalogVerificationState::Verified {
-        return Vec::new();
-    }
-    facts
-        .configs
-        .iter()
-        .flat_map(|config| {
-            let sequencers = config.sequencer_sources.iter().filter_map(|source| {
-                source_eligibility(facts, config, &source.source_id, ZoneSourceRole::Sequencer)
-                    .ok()?;
-                Some(cache_scope(config, &source.source_id))
-            });
-            let indexer = config.indexer_source.iter().filter_map(|source| {
-                source_eligibility(facts, config, &source.source_id, ZoneSourceRole::Indexer)
-                    .ok()?;
-                Some(cache_scope(config, &source.source_id))
-            });
-            sequencers.chain(indexer)
-        })
-        .collect()
-}
-
-fn cache_scope(config: &ChannelSourceConfig, source_id: &str) -> L2CacheScope {
-    L2CacheScope {
-        schema_version: L2_READ_SCHEMA_VERSION,
-        network_scope: config.network_scope.clone(),
-        channel_id: config.channel_id.clone(),
-        source_id: source_id.to_owned(),
-        source_config_revision: config.config_revision,
     }
 }
 
@@ -2449,19 +2360,11 @@ fn cursor_invalidated() -> L2ReadFailure {
     )
 }
 
-fn stale_context(message: impl Into<String>) -> L2ReadFailure {
-    L2ReadFailure::new(L2ReadErrorCode::StaleContext, message)
-}
-
 fn source_unconfigured() -> L2ReadFailure {
     L2ReadFailure::new(
         L2ReadErrorCode::SourceUnconfigured,
         "Active Zone has no source configured for this read",
     )
-}
-
-fn is_hex_identity(value: &str) -> bool {
-    value.len() == 64 && value.chars().all(|character| character.is_ascii_hexdigit())
 }
 
 #[derive(Debug, Clone)]
@@ -2488,6 +2391,10 @@ impl L2ReadFailure {
             route: None,
             current_context_revision: None,
         }
+    }
+
+    fn from_context(error: ActiveZoneContextError) -> Self {
+        Self::new(error.code, error.message)
     }
 
     fn with_route(mut self, route: L2ReadRoute) -> Self {

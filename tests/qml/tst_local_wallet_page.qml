@@ -57,11 +57,12 @@ TestCase {
 
     function init() {
         fakeHost.reset()
-        model.busy = false
+        model.shell.busy = false
         model.localWalletTab = "controls"
         model.walletStateLoaded = true
         model.walletBinary = "/usr/bin/wallet"
         model.walletHome = "/tmp/wallet-home"
+        model.localWalletStatus = readyWalletStatus()
         model.walletCreatePrivacy = "public"
         model.walletCreateLabel = ""
         model.walletSendFrom = ""
@@ -109,6 +110,24 @@ TestCase {
         model.walletStateLoaded = true
         model.walletBinary = "/usr/bin/wallet"
         model.walletHome = "/tmp/wallet-home"
+        model.localWalletStatus = readyWalletStatus()
+    }
+
+    function readyWalletStatus() {
+        return {
+            status: "ok",
+            home_source: "profile",
+            readiness: {
+                wallet_binary_ready: true,
+                wallet_home_ready: true,
+                wallet_config_ready: true,
+                wallet_storage_ready: true,
+                command_ready: true,
+                accounts_ready: true,
+                instruction_submit_ready: true,
+                backup_encryption_ready: true
+            }
+        }
     }
 
     function configureWalletOperation(operation) {
