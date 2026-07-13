@@ -12,6 +12,7 @@ use crate::{
         ZoneL2CommitmentProofQuery, ZoneL2ProgramsQuery, ZoneL2Request, ZoneL2Router,
         ZoneL2TransactionQuery, ZoneL2TransactionTraceQuery, ZoneL2TransfersQuery,
     },
+    modules::logos_core::{ModuleTransportKind, SharedModuleTransport},
     support::bridge_envelope::structured_bridge_error,
 };
 
@@ -62,10 +63,14 @@ pub(crate) struct ZoneL2CommandInterface {
 
 impl ZoneL2CommandInterface {
     #[must_use]
-    pub(crate) fn new(catalog: Arc<ZoneCatalogCommandInterface>) -> Self {
+    pub(crate) fn new(
+        catalog: Arc<ZoneCatalogCommandInterface>,
+        module_transport: SharedModuleTransport,
+        module_transport_kind: ModuleTransportKind,
+    ) -> Self {
         Self {
             catalog,
-            router: ZoneL2Router::default(),
+            router: ZoneL2Router::with_module_transport(module_transport, module_transport_kind),
         }
     }
 

@@ -2,6 +2,7 @@ use crate::support::args::Args;
 use anyhow::Result;
 
 use super::{CoreEndpointMode, CoreSourceMode, core, core::layer::BedrockAdapter};
+use crate::modules::logos_core::ModuleTransportKind;
 
 pub(crate) struct SourceEndpoint<'a> {
     pub(crate) mode: CoreEndpointMode,
@@ -15,7 +16,10 @@ impl<'a> SourceEndpoint<'a> {
     pub(crate) const fn adapter(&self) -> BedrockAdapter<'a> {
         match self.mode {
             CoreEndpointMode::Rpc => BedrockAdapter::rpc(self.endpoint),
-            CoreEndpointMode::Module => BedrockAdapter::module(),
+            CoreEndpointMode::Module => BedrockAdapter::module(ModuleTransportKind::Module),
+            CoreEndpointMode::LogoscoreCli => {
+                BedrockAdapter::module(ModuleTransportKind::LogoscoreCli)
+            }
         }
     }
 }
@@ -26,7 +30,10 @@ impl Args {
         if let Some(mode) = CoreSourceMode::from_token(first) {
             let adapter = match mode {
                 CoreSourceMode::Rpc => BedrockAdapter::rpc(self.string(index + 1, label)?),
-                CoreSourceMode::Module | CoreSourceMode::LogoscoreCli => BedrockAdapter::module(),
+                CoreSourceMode::Module => BedrockAdapter::module(ModuleTransportKind::Module),
+                CoreSourceMode::LogoscoreCli => {
+                    BedrockAdapter::module(ModuleTransportKind::LogoscoreCli)
+                }
             };
             return Ok(source_endpoint_from_adapter(
                 adapter,
@@ -57,8 +64,11 @@ fn source_endpoint_from_adapter<'a>(
             next_index,
             module,
         },
-        BedrockAdapter::Module => SourceEndpoint {
-            mode: CoreEndpointMode::Module,
+        BedrockAdapter::Module { transport } => SourceEndpoint {
+            mode: match transport {
+                ModuleTransportKind::Module => CoreEndpointMode::Module,
+                ModuleTransportKind::LogoscoreCli => CoreEndpointMode::LogoscoreCli,
+            },
             endpoint: "",
             next_index,
             module,

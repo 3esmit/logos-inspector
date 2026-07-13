@@ -1,7 +1,9 @@
 use anyhow::Result;
 use serde_json::Value;
 
-use crate::{source_routing::bedrock_layer, support::args::Args};
+use crate::{
+    modules::logos_core::SharedModuleTransport, source_routing::bedrock_layer, support::args::Args,
+};
 
 use super::super::value::to_value;
 use super::RuntimeOperationRequest;
@@ -64,32 +66,55 @@ pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
 pub(super) async fn execute(
     command: BlockchainCommand,
     request: &RuntimeOperationRequest,
+    module_transport: SharedModuleTransport,
 ) -> Result<Value> {
     match command {
-        BlockchainCommand::Node => execute_blockchain_node(request).await,
-        BlockchainCommand::Blocks => execute_blockchain_blocks(request).await,
-        BlockchainCommand::LiveBlocks => execute_blockchain_live_blocks(request).await,
-        BlockchainCommand::Block => execute_blockchain_block(request).await,
-        BlockchainCommand::Transaction => execute_blockchain_transaction(request).await,
+        BlockchainCommand::Node => execute_blockchain_node(request, &module_transport).await,
+        BlockchainCommand::Blocks => execute_blockchain_blocks(request, &module_transport).await,
+        BlockchainCommand::LiveBlocks => {
+            execute_blockchain_live_blocks(request, &module_transport).await
+        }
+        BlockchainCommand::Block => execute_blockchain_block(request, &module_transport).await,
+        BlockchainCommand::Transaction => {
+            execute_blockchain_transaction(request, &module_transport).await
+        }
     }
 }
 
-async fn execute_blockchain_node(request: &RuntimeOperationRequest) -> Result<Value> {
+async fn execute_blockchain_node(
+    request: &RuntimeOperationRequest,
+    module_transport: &SharedModuleTransport,
+) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
     let source = args.source_endpoint(0, "node endpoint")?;
-    to_value(bedrock_layer::node_report(source.adapter()).await?)
+    to_value(bedrock_layer::node_report(source.adapter(), module_transport).await?)
 }
 
-async fn execute_blockchain_blocks(request: &RuntimeOperationRequest) -> Result<Value> {
+async fn execute_blockchain_blocks(
+    request: &RuntimeOperationRequest,
+    module_transport: &SharedModuleTransport,
+) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
     let source = args.source_endpoint(0, "node endpoint")?;
     let slot_from = args.u64(source.next_index, "slot from")?;
     let slot_to = args.u64(source.next_index + 1, "slot to")?;
     let limit = args.value(source.next_index + 2).and_then(Value::as_u64);
-    to_value(bedrock_layer::blocks(source.adapter(), slot_from, slot_to, limit).await?)
+    to_value(
+        bedrock_layer::blocks(
+            source.adapter(),
+            slot_from,
+            slot_to,
+            limit,
+            module_transport,
+        )
+        .await?,
+    )
 }
 
-async fn execute_blockchain_live_blocks(request: &RuntimeOperationRequest) -> Result<Value> {
+async fn execute_blockchain_live_blocks(
+    request: &RuntimeOperationRequest,
+    module_transport: &SharedModuleTransport,
+) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
     let source = args.source_endpoint(0, "node endpoint")?;
     let slot_from = args.u64(source.next_index, "slot from")?;
@@ -98,28 +123,45 @@ async fn execute_blockchain_live_blocks(request: &RuntimeOperationRequest) -> Re
         .value(source.next_index + 2)
         .and_then(Value::as_u64)
         .unwrap_or(50);
-    to_value(bedrock_layer::live_blocks(source.adapter(), slot_from, slot_to, limit).await?)
+    to_value(
+        bedrock_layer::live_blocks(
+            source.adapter(),
+            slot_from,
+            slot_to,
+            limit,
+            module_transport,
+        )
+        .await?,
+    )
 }
 
-async fn execute_blockchain_block(request: &RuntimeOperationRequest) -> Result<Value> {
+async fn execute_blockchain_block(
+    request: &RuntimeOperationRequest,
+    module_transport: &SharedModuleTransport,
+) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
     let source = args.source_endpoint(0, "node endpoint")?;
     to_value(
         bedrock_layer::block(
             source.adapter(),
             args.string(source.next_index, "block id")?,
+            module_transport,
         )
         .await?,
     )
 }
 
-async fn execute_blockchain_transaction(request: &RuntimeOperationRequest) -> Result<Value> {
+async fn execute_blockchain_transaction(
+    request: &RuntimeOperationRequest,
+    module_transport: &SharedModuleTransport,
+) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
     let source = args.source_endpoint(0, "node endpoint")?;
     to_value(
         bedrock_layer::transaction(
             source.adapter(),
             args.string(source.next_index, "transaction id")?,
+            module_transport,
         )
         .await?,
     )

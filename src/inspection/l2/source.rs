@@ -1,4 +1,4 @@
-use std::{future::Future, pin::Pin};
+use std::{future::Future, pin::Pin, sync::Arc};
 
 use super::{
     L2AccountActivityRow, L2AccountValue, NormalizedL2Block, normalize_account,
@@ -7,6 +7,7 @@ use super::{
 use crate::{
     inspection::ZoneSourceRole,
     lez::{IndexerBlockReport, ProgramIdEntry, TransactionSummary},
+    modules::logos_core::{LogoscoreCliTransport, ModuleTransportKind, SharedModuleTransport},
     source_routing::channel_sources::{
         ChannelSourceTarget,
         indexer::IndexerAdapter,
@@ -326,8 +327,33 @@ impl SequencerL2SourceAdapter for DirectSequencerL2SourceAdapter {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct DirectIndexerL2SourceAdapter;
+#[derive(Clone)]
+pub(crate) struct DirectIndexerL2SourceAdapter {
+    module_transport: SharedModuleTransport,
+    module_transport_kind: ModuleTransportKind,
+}
+
+impl Default for DirectIndexerL2SourceAdapter {
+    fn default() -> Self {
+        Self::new(
+            Arc::new(LogoscoreCliTransport::default()),
+            ModuleTransportKind::LogoscoreCli,
+        )
+    }
+}
+
+impl DirectIndexerL2SourceAdapter {
+    #[must_use]
+    pub(crate) fn new(
+        module_transport: SharedModuleTransport,
+        module_transport_kind: ModuleTransportKind,
+    ) -> Self {
+        Self {
+            module_transport,
+            module_transport_kind,
+        }
+    }
+}
 
 impl IndexerL2SourceAdapter for DirectIndexerL2SourceAdapter {
     fn head<'a>(
@@ -335,7 +361,7 @@ impl IndexerL2SourceAdapter for DirectIndexerL2SourceAdapter {
         source: IndexerL2Source,
     ) -> L2SourceFuture<'a, Option<NormalizedL2Block>> {
         Box::pin(async move {
-            indexer_adapter(&source)?
+            indexer_adapter(&source, &self.module_transport, self.module_transport_kind)?
                 .head()
                 .await
                 .map_err(map_execution_zone_error)?
@@ -351,7 +377,7 @@ impl IndexerL2SourceAdapter for DirectIndexerL2SourceAdapter {
         limit: u64,
     ) -> L2SourceFuture<'a, Vec<NormalizedL2Block>> {
         Box::pin(async move {
-            indexer_adapter(&source)?
+            indexer_adapter(&source, &self.module_transport, self.module_transport_kind)?
                 .blocks(before, limit)
                 .await
                 .map_err(map_execution_zone_error)?
@@ -367,7 +393,7 @@ impl IndexerL2SourceAdapter for DirectIndexerL2SourceAdapter {
         block_id: u64,
     ) -> L2SourceFuture<'a, Option<NormalizedL2Block>> {
         Box::pin(async move {
-            indexer_adapter(&source)?
+            indexer_adapter(&source, &self.module_transport, self.module_transport_kind)?
                 .block_by_id(block_id)
                 .await
                 .map_err(map_execution_zone_error)?
@@ -382,7 +408,7 @@ impl IndexerL2SourceAdapter for DirectIndexerL2SourceAdapter {
         block_hash: String,
     ) -> L2SourceFuture<'a, Option<NormalizedL2Block>> {
         Box::pin(async move {
-            indexer_adapter(&source)?
+            indexer_adapter(&source, &self.module_transport, self.module_transport_kind)?
                 .block_by_hash(&block_hash)
                 .await
                 .map_err(map_execution_zone_error)?
@@ -397,7 +423,7 @@ impl IndexerL2SourceAdapter for DirectIndexerL2SourceAdapter {
         transaction_id: String,
     ) -> L2SourceFuture<'a, Option<TransactionSummary>> {
         Box::pin(async move {
-            indexer_adapter(&source)?
+            indexer_adapter(&source, &self.module_transport, self.module_transport_kind)?
                 .transaction(&transaction_id)
                 .await
                 .map_err(map_execution_zone_error)
@@ -411,7 +437,7 @@ impl IndexerL2SourceAdapter for DirectIndexerL2SourceAdapter {
         block_id: u64,
     ) -> L2SourceFuture<'a, L2AccountValue> {
         Box::pin(async move {
-            indexer_adapter(&source)?
+            indexer_adapter(&source, &self.module_transport, self.module_transport_kind)?
                 .account_at_block(&account_id, block_id)
                 .await
                 .map(normalize_account)
@@ -427,7 +453,7 @@ impl IndexerL2SourceAdapter for DirectIndexerL2SourceAdapter {
         limit: usize,
     ) -> L2SourceFuture<'a, Vec<L2AccountActivityRow>> {
         Box::pin(async move {
-            indexer_adapter(&source)?
+            indexer_adapter(&source, &self.module_transport, self.module_transport_kind)?
                 .account_activity(&account_id, offset, limit)
                 .await
                 .map(|rows| rows.into_iter().map(normalize_activity_row).collect())
@@ -442,7 +468,7 @@ impl IndexerL2SourceAdapter for DirectIndexerL2SourceAdapter {
         limit: u64,
     ) -> L2SourceFuture<'a, Vec<IndexerBlockReport>> {
         Box::pin(async move {
-            indexer_adapter(&source)?
+            indexer_adapter(&source, &self.module_transport, self.module_transport_kind)?
                 .blocks(before, limit)
                 .await
                 .map_err(map_execution_zone_error)
@@ -454,8 +480,13 @@ fn sequencer_adapter(source: &SequencerL2Source) -> Result<SequencerAdapter<'_>,
     SequencerAdapter::connect(source.target()).map_err(map_execution_zone_error)
 }
 
-fn indexer_adapter(source: &IndexerL2Source) -> Result<IndexerAdapter<'_>, L2SourceError> {
-    IndexerAdapter::connect(source.target()).map_err(map_execution_zone_error)
+fn indexer_adapter<'a>(
+    source: &'a IndexerL2Source,
+    module_transport: &SharedModuleTransport,
+    module_transport_kind: ModuleTransportKind,
+) -> Result<IndexerAdapter<'a>, L2SourceError> {
+    IndexerAdapter::connect(source.target(), module_transport, module_transport_kind)
+        .map_err(map_execution_zone_error)
 }
 
 fn map_execution_zone_error(error: ExecutionZoneReadError) -> L2SourceError {

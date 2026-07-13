@@ -9,6 +9,34 @@ fn primary_domain_modules_expose_boundaries() {
     let _ = logos_inspector::wallet::LOCAL_WALLET_HOME_ENV;
 }
 
+struct PublicModuleTransport;
+
+impl logos_inspector::module_transport::ModuleTransport for PublicModuleTransport {
+    fn kind(&self) -> logos_inspector::module_transport::ModuleTransportKind {
+        logos_inspector::module_transport::ModuleTransportKind::Module
+    }
+
+    fn call(
+        &self,
+        call: logos_inspector::module_transport::ModuleCall,
+    ) -> logos_inspector::module_transport::ModuleCallFuture<'_> {
+        Box::pin(async move {
+            Ok(logos_inspector::module_transport::ModuleCallReply::new(
+                logos_inspector::module_transport::ModuleTransportKind::Module,
+                serde_json::json!({ "method": call.method() }),
+            ))
+        })
+    }
+}
+
+#[test]
+fn module_transport_port_is_publicly_composable() {
+    assert!(
+        logos_inspector::bridge::InspectorBridge::with_module_transport(PublicModuleTransport)
+            .is_ok()
+    );
+}
+
 #[test]
 fn source_routing_exposes_adapter_boundaries() {
     let _ = logos_inspector::source_routing::network_profiles;

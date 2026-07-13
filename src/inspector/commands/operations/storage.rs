@@ -4,7 +4,7 @@ use anyhow::{Context as _, Result, bail};
 use serde_json::{Value, json};
 use tokio::io::AsyncWriteExt as _;
 
-use crate::source_routing::storage_layer;
+use crate::{modules::logos_core::SharedModuleTransport, source_routing::storage_layer};
 
 use super::spec::{
     AffectedContextField, AffectedContextKey, OperationClass, OperationCommand,
@@ -125,12 +125,13 @@ pub(super) async fn execute(
     registry: &RuntimeOperationRegistry,
     operation_id: &RuntimeOperationId,
     cancel_requested: &AtomicBool,
+    module_transport: SharedModuleTransport,
 ) -> Result<RuntimeOperationOutcome> {
     let request = storage_layer::StorageOperationRequest::parse(
         request.node_request()?,
         command.operation(),
     )?;
-    match storage_layer::execute_operation(request).await? {
+    match storage_layer::execute_operation(request, module_transport).await? {
         storage_layer::StorageOperationOutput::Outcome(outcome) => Ok(outcome.into()),
         storage_layer::StorageOperationOutput::Download(download) => {
             let cid = download.cid().to_owned();

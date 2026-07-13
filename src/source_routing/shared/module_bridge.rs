@@ -1,24 +1,39 @@
 use anyhow::Result;
 use serde_json::{Value, json};
 
-use crate::source_routing::{ModuleDispatchIdentityRole, ModuleDispatchReceipt};
+use crate::{
+    modules::logos_core::{
+        ModuleCall, ModuleCallReply, ModuleTransportKind, SharedModuleTransport,
+        dispatch_module_call,
+    },
+    source_routing::{ModuleDispatchIdentityRole, ModuleDispatchReceipt},
+};
 
-pub(crate) fn call_value(module: &str, method: &str, values: &[Value]) -> Result<Value> {
-    let args = values.iter().map(module_arg_text).collect::<Vec<_>>();
-    crate::source_routing::core::adapters::module::call_value(module, method, &args)
+pub(crate) async fn call_value(
+    transport: &SharedModuleTransport,
+    transport_kind: ModuleTransportKind,
+    module: &str,
+    method: &str,
+    values: Vec<Value>,
+) -> Result<ModuleCallReply> {
+    let call = ModuleCall::new(transport_kind, module, method, values)?;
+    dispatch_module_call(transport.as_ref(), call).await
 }
 
 pub(crate) fn dispatch_result(
     module: &str,
     method: &str,
-    value: Value,
+    reply: ModuleCallReply,
     context: &[(&str, String)],
     identity_role: ModuleDispatchIdentityRole,
 ) -> ModuleDispatchReceipt {
+    let transport = reply.transport();
+    let value = reply.into_value();
     let raw_value = value.clone();
     let mut result = json!({
         "module": module,
         "method": method,
+        "adapter": transport,
         "dispatched": true,
         "value": value,
     });
@@ -30,13 +45,6 @@ pub(crate) fn dispatch_result(
         }
     }
     ModuleDispatchReceipt::new(result, &raw_value, identity_role)
-}
-
-fn module_arg_text(value: &Value) -> String {
-    value
-        .as_str()
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| value.to_string())
 }
 
 #[cfg(test)]
@@ -51,7 +59,7 @@ mod tests {
         let receipt = dispatch_result(
             "storage_module",
             "uploadUrl",
-            json!("42"),
+            ModuleCallReply::new(ModuleTransportKind::LogoscoreCli, json!("42")),
             &[("path", "/tmp/a".to_owned())],
             ModuleDispatchIdentityRole::Session,
         );
@@ -70,6 +78,7 @@ mod tests {
                 == json!({
                     "module": "storage_module",
                     "method": "uploadUrl",
+                    "adapter": "logoscore_cli",
                     "dispatched": true,
                     "value": "42",
                     "sessionId": "42",
@@ -89,7 +98,7 @@ mod tests {
         let receipt = dispatch_result(
             "delivery_module",
             "send",
-            json!("request-7"),
+            ModuleCallReply::new(ModuleTransportKind::LogoscoreCli, json!("request-7")),
             &[],
             ModuleDispatchIdentityRole::Request,
         );

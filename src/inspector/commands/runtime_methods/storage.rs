@@ -3,6 +3,7 @@ use serde_json::{Value, json};
 use tokio::runtime::Runtime;
 
 use crate::{
+    modules::logos_core::SharedModuleTransport,
     source_routing::storage_layer,
     support::args::Args,
     support::backup_catalog::{
@@ -14,28 +15,37 @@ use super::super::value::to_value;
 use super::RuntimeMethodEntry;
 
 pub(super) const METHOD_CATALOG: &[RuntimeMethodEntry] = &[
-    RuntimeMethodEntry::with_runtime("storageExists", storage_exists),
+    RuntimeMethodEntry::with_module_transport("storageExists", storage_exists),
     RuntimeMethodEntry::with_runtime("storageRestoreSettings", storage_restore_settings),
-    RuntimeMethodEntry::with_runtime(
+    RuntimeMethodEntry::with_module_transport(
         "storageUploadBackupCatalogEntry",
         storage_upload_backup_catalog_entry,
     ),
-    RuntimeMethodEntry::with_runtime("storageUploadPayload", storage_upload_payload),
+    RuntimeMethodEntry::with_module_transport("storageUploadPayload", storage_upload_payload),
 ];
 
-pub(super) fn storage_exists(runtime: &Runtime, args: Value) -> Result<Value> {
+pub(super) fn storage_exists(
+    runtime: &Runtime,
+    args: Value,
+    module_transport: SharedModuleTransport,
+) -> Result<Value> {
     let args = Args::new(args)?;
     let request = storage_layer::StorageExistsRequest::parse(&args)?;
-    to_value(runtime.block_on(request.execute())?)
+    to_value(runtime.block_on(request.execute(&module_transport))?)
 }
 
-pub(super) fn storage_upload_backup_catalog_entry(runtime: &Runtime, args: Value) -> Result<Value> {
+pub(super) fn storage_upload_backup_catalog_entry(
+    runtime: &Runtime,
+    args: Value,
+    module_transport: SharedModuleTransport,
+) -> Result<Value> {
     let args = Args::new(args)?;
     let request = storage_layer::StorageBackupUploadRequest::parse(&args)?;
     let backup_catalog_id = request.backup_catalog_id();
     let bytes = backup_payload_bytes(backup_catalog_id)?;
     let upload = runtime
         .block_on(request.client().upload_bytes(
+            &module_transport,
             "logos-inspector-settings-backup.json",
             &bytes,
             request.block_size(),
@@ -66,17 +76,22 @@ pub(super) fn storage_upload_backup_catalog_entry(runtime: &Runtime, args: Value
     }))
 }
 
-pub(super) fn storage_upload_payload(runtime: &Runtime, args: Value) -> Result<Value> {
+pub(super) fn storage_upload_payload(
+    runtime: &Runtime,
+    args: Value,
+    module_transport: SharedModuleTransport,
+) -> Result<Value> {
     let args = Args::new(args)?;
     let request = storage_layer::StoragePayloadUploadRequest::parse(&args)?;
     let bytes = serde_json::to_vec_pretty(request.payload())
         .context("failed to serialize storage payload")?;
     let upload = runtime
-        .block_on(
-            request
-                .client()
-                .upload_bytes(request.filename(), &bytes, request.block_size()),
-        )
+        .block_on(request.client().upload_bytes(
+            &module_transport,
+            request.filename(),
+            &bytes,
+            request.block_size(),
+        ))
         .context("failed to upload payload through Storage")?;
     let endpoint = request.client().source();
     let cid = upload

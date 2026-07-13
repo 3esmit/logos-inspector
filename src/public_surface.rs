@@ -2,6 +2,13 @@ pub mod bridge {
     pub use crate::inspector::bridge::InspectorBridge;
 }
 
+pub mod module_transport {
+    pub use crate::modules::logos_core::{
+        ModuleCall, ModuleCallFuture, ModuleCallReply, ModuleDiagnosticFuture, ModuleTransport,
+        ModuleTransportKind, SharedModuleTransport,
+    };
+}
+
 pub mod program_decode {
     pub use crate::decode::*;
 }

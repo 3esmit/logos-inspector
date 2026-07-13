@@ -1,7 +1,10 @@
 use anyhow::Result;
 use serde_json::Value;
 
-use crate::source_routing::{NodeOperationOutcome, messaging_layer};
+use crate::{
+    modules::logos_core::SharedModuleTransport,
+    source_routing::{NodeOperationOutcome, messaging_layer},
+};
 
 use super::RuntimeOperationRequest;
 use super::spec::{
@@ -113,12 +116,13 @@ pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
 pub(super) async fn execute(
     command: DeliveryCommand,
     request: &RuntimeOperationRequest,
+    module_transport: SharedModuleTransport,
 ) -> Result<NodeOperationOutcome> {
     let request = messaging_layer::DeliveryOperationRequest::parse(
         request.node_request()?,
         command.operation(),
     )?;
-    messaging_layer::execute_operation(request).await
+    messaging_layer::execute_operation(request, module_transport).await
 }
 
 pub(super) fn add_operation_context(

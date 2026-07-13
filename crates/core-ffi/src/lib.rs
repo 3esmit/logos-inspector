@@ -11,7 +11,7 @@ pub struct LogosInspectorCore {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn logos_inspector_core_new() -> *mut LogosInspectorCore {
-    match InspectorBridge::new() {
+    match InspectorBridge::basecamp_unavailable() {
         Ok(bridge) => Box::into_raw(Box::new(LogosInspectorCore { bridge })),
         Err(_) => ptr::null_mut(),
     }
@@ -297,6 +297,52 @@ mod tests {
         }
         if second_value.get("value") != surviving_value.get("value") {
             return err("surviving core handle changed after sibling release");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn new_handle_fails_external_module_calls_closed_without_cli_fallback() -> TestResult {
+        let module = CString::new("logos_blockchain")?;
+        let method = CString::new("getCryptarchiaInfo")?;
+        let args = CString::new("[]")?;
+        let handle = logos_inspector_core_new();
+        if handle.is_null() {
+            return err("failed to create core handle");
+        }
+
+        // SAFETY: handle and C strings remain live for this call.
+        let response = unsafe {
+            logos_inspector_core_call_module(
+                handle,
+                module.as_ptr(),
+                method.as_ptr(),
+                args.as_ptr(),
+            )
+        };
+        let value = response_value(response);
+        // SAFETY: handle was created above and has not been released.
+        unsafe {
+            logos_inspector_core_free(handle);
+        }
+        let value = value?;
+
+        if value.get("ok").and_then(Value::as_bool) != Some(false) {
+            return err("expected fail-closed error response");
+        }
+        expect_error_envelope_shape(&value)?;
+        if value.get("error").and_then(Value::as_str)
+            != Some(
+                "Basecamp host module transport is unavailable: the pinned protocol does not provide safe async error and close semantics",
+            )
+        {
+            return Err(std::io::Error::other(format!(
+                "unexpected Basecamp transport error: {value}"
+            ))
+            .into());
+        }
+        if value.get("error_details").is_some() {
+            return err("unexpected structured details in transport error");
         }
         Ok(())
     }

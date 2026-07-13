@@ -33,6 +33,7 @@ use crate::{
         },
     },
     inspector::value::to_value,
+    modules::logos_core::{ModuleTransportKind, SharedModuleTransport},
     source_routing::channel_sources::{
         ChannelSourceConfig, ChannelSourceConfigMutation, ChannelSourceMonitor,
         ChannelSourceMonitorSnapshot, ChannelSourceRole, ChannelSourceTarget,
@@ -174,12 +175,21 @@ pub(crate) struct ZoneCatalogCommandInterface {
 
 impl ZoneCatalogCommandInterface {
     #[must_use]
-    pub(crate) fn with_worker(runtime: &Runtime, worker: Arc<dyn ZoneCatalogWorker>) -> Self {
+    pub(crate) fn with_worker_and_module_transport(
+        runtime: &Runtime,
+        worker: Arc<dyn ZoneCatalogWorker>,
+        module_transport: SharedModuleTransport,
+        module_transport_kind: ModuleTransportKind,
+    ) -> Self {
         Self::with_dependencies(
             runtime,
             worker,
             Arc::new(SettingsChannelSourceConfigStore),
-            Arc::new(ChannelSourceMonitor::new(runtime.handle())),
+            Arc::new(ChannelSourceMonitor::with_module_transport(
+                runtime.handle(),
+                module_transport,
+                module_transport_kind,
+            )),
             Arc::new(DirectSequencerTargetAttestor),
         )
     }

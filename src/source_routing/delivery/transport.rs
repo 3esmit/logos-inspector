@@ -3,6 +3,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use reqwest::{Method, Url};
 use serde_json::{Value, json};
 
+use crate::modules::logos_core::{ModuleTransportKind, SharedModuleTransport};
 use crate::source_routing::{
     ModuleDispatchIdentityRole, ModuleDispatchReceipt,
     shared::{http, module_bridge},
@@ -10,24 +11,43 @@ use crate::source_routing::{
 
 use super::operations::DeliveryStoreQuery;
 
-pub(super) async fn module_call(method: &'static str, args: Vec<Value>) -> Result<Value> {
-    blocking_module_call("Messaging module call", move || {
-        module_bridge::call_value(super::layer::module_id(), method, &args)
-    })
+pub(super) async fn module_call(
+    transport: &SharedModuleTransport,
+    transport_kind: ModuleTransportKind,
+    method: &'static str,
+    args: Vec<Value>,
+) -> Result<Value> {
+    module_bridge::call_value(
+        transport,
+        transport_kind,
+        super::layer::module_id(),
+        method,
+        args,
+    )
     .await
+    .map(|reply| reply.into_value())
 }
 
 pub(super) async fn module_dispatch(
+    transport: &SharedModuleTransport,
+    transport_kind: ModuleTransportKind,
     method: &'static str,
     args: Vec<Value>,
     context: &[(&'static str, String)],
     identity_role: ModuleDispatchIdentityRole,
 ) -> Result<ModuleDispatchReceipt> {
-    let value = module_call(method, args).await?;
+    let reply = module_bridge::call_value(
+        transport,
+        transport_kind,
+        super::layer::module_id(),
+        method,
+        args,
+    )
+    .await?;
     Ok(module_bridge::dispatch_result(
         super::layer::module_id(),
         method,
-        value,
+        reply,
         context,
         identity_role,
     ))
@@ -131,16 +151,6 @@ pub(super) fn store_query_url(endpoint: &str, store_query: DeliveryStoreQuery<'_
         );
     }
     Ok(url)
-}
-
-async fn blocking_module_call<T, F>(label: &'static str, call: F) -> Result<T>
-where
-    T: Send + 'static,
-    F: FnOnce() -> Result<T> + Send + 'static,
-{
-    tokio::task::spawn_blocking(call)
-        .await
-        .with_context(|| format!("{label} worker failed"))?
 }
 
 fn parse_probe_text(text: &str) -> Value {

@@ -11,7 +11,11 @@ use anyhow::{Context as _, Result, bail};
 use serde_json::Value;
 use tokio::runtime::Runtime;
 
-use crate::{source_routing::ModuleEventEnvelope, support::time::now_millis};
+use crate::{
+    modules::logos_core::{LogoscoreCliTransport, SharedModuleTransport},
+    source_routing::ModuleEventEnvelope,
+    support::time::now_millis,
+};
 
 mod backup_import;
 mod blockchain;
@@ -44,11 +48,11 @@ pub(crate) use spec::OperationMethod;
 use spec::normalized_operation_method;
 use transition::RuntimeOperationTransition;
 
-#[derive(Debug)]
 pub(crate) struct RuntimeOperations {
     registry: RuntimeOperationRegistry,
     next_operation_id: AtomicU64,
     backup_import: BackupImportCoordinator,
+    module_transport: SharedModuleTransport,
 }
 
 impl Default for RuntimeOperations {
@@ -57,6 +61,7 @@ impl Default for RuntimeOperations {
             registry: RuntimeOperationRegistry::default(),
             next_operation_id: AtomicU64::new(1),
             backup_import: BackupImportCoordinator::new(Arc::new(LocalBackupImportStore)),
+            module_transport: Arc::new(LogoscoreCliTransport::default()),
         }
     }
 }
@@ -93,12 +98,14 @@ impl RuntimeOperations {
 
         let registry = self.registry.clone();
         let task_operation_id = operation_id.clone();
+        let module_transport = Arc::clone(&self.module_transport);
         let _detached_task = runtime.spawn(async move {
             let result = execute_runtime_operation(
                 request,
                 &registry,
                 &task_operation_id,
                 &cancel_requested,
+                module_transport,
             )
             .await;
             registry.transition(
@@ -255,6 +262,7 @@ impl RuntimeOperations {
             registry: RuntimeOperationRegistry::default(),
             next_operation_id: AtomicU64::new(1),
             backup_import: BackupImportCoordinator::new(store),
+            module_transport: Arc::new(LogoscoreCliTransport::default()),
         }
     }
 
@@ -281,9 +289,14 @@ impl RuntimeOperations {
     }
 }
 
-#[derive(Debug, Default)]
 pub(crate) struct RuntimeOperationInterface {
     operations: RuntimeOperations,
+}
+
+impl Default for RuntimeOperationInterface {
+    fn default() -> Self {
+        Self::new(Arc::new(LogoscoreCliTransport::default()))
+    }
 }
 
 struct RuntimeOperationRunner<'a> {
@@ -350,6 +363,17 @@ impl OperationRunner for RuntimeOperationRunner<'_> {
 }
 
 impl RuntimeOperationInterface {
+    pub(crate) fn new(module_transport: SharedModuleTransport) -> Self {
+        Self {
+            operations: RuntimeOperations {
+                registry: RuntimeOperationRegistry::default(),
+                next_operation_id: AtomicU64::new(1),
+                backup_import: BackupImportCoordinator::new(Arc::new(LocalBackupImportStore)),
+                module_transport,
+            },
+        }
+    }
+
     pub(crate) fn bridge_call(
         &self,
         runtime: &Runtime,

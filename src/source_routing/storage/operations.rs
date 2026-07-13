@@ -3,6 +3,7 @@ use reqwest::Response;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
+use crate::modules::logos_core::{ModuleTransportKind, SharedModuleTransport};
 use crate::source_routing::{
     AdapterInitialization, ModuleCorrelation, ModuleDispatchIdentityRole, ModuleDispatchReceipt,
     ModuleEventCorrelationKind, ModuleTerminalEventContract, NodeOperationOutcome,
@@ -77,7 +78,7 @@ impl StorageDownloadRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum StorageOperationAdapter {
-    Module,
+    Module(ModuleTransportKind),
     Rest { endpoint: String },
 }
 
@@ -90,8 +91,11 @@ impl StorageClient {
     pub(crate) fn from_initialization(value: &Value) -> Result<Self> {
         let initialization = AdapterInitialization::parse(value, STORAGE_SOURCE_MODES, "rest")?;
         let adapter = match StorageSourceMode::from_token(initialization.source_mode()) {
-            StorageSourceMode::Module | StorageSourceMode::LogoscoreCli => {
-                StorageOperationAdapter::Module
+            StorageSourceMode::Module => {
+                StorageOperationAdapter::Module(ModuleTransportKind::Module)
+            }
+            StorageSourceMode::LogoscoreCli => {
+                StorageOperationAdapter::Module(ModuleTransportKind::LogoscoreCli)
             }
             StorageSourceMode::Rest => StorageOperationAdapter::Rest {
                 endpoint: initialization
@@ -112,22 +116,35 @@ impl StorageClient {
 
     pub(crate) fn endpoint(&self) -> Option<&str> {
         match &self.adapter {
-            StorageOperationAdapter::Module => None,
+            StorageOperationAdapter::Module(_) => None,
             StorageOperationAdapter::Rest { endpoint } => Some(endpoint),
         }
     }
 
     pub(crate) fn source(&self) -> &str {
         match &self.adapter {
-            StorageOperationAdapter::Module => "logoscore call storage_module",
+            StorageOperationAdapter::Module(ModuleTransportKind::Module) => "module storage_module",
+            StorageOperationAdapter::Module(ModuleTransportKind::LogoscoreCli) => {
+                "logoscore call storage_module"
+            }
             StorageOperationAdapter::Rest { endpoint } => endpoint,
         }
     }
 
-    pub(crate) async fn exists(&self, cid: &str) -> Result<Value> {
+    pub(crate) async fn exists(
+        &self,
+        module_transport: &SharedModuleTransport,
+        cid: &str,
+    ) -> Result<Value> {
         match &self.adapter {
-            StorageOperationAdapter::Module => {
-                transport::module_call("exists", vec![json!(cid)]).await
+            StorageOperationAdapter::Module(transport_kind) => {
+                transport::module_call(
+                    module_transport,
+                    *transport_kind,
+                    "exists",
+                    vec![json!(cid)],
+                )
+                .await
             }
             StorageOperationAdapter::Rest { endpoint } => transport::exists(endpoint, cid).await,
         }
@@ -135,12 +152,22 @@ impl StorageClient {
 
     pub(crate) async fn upload_bytes(
         &self,
+        module_transport: &SharedModuleTransport,
         filename: &str,
         bytes: &[u8],
         block_size: u64,
     ) -> Result<Value> {
         match &self.adapter {
-            StorageOperationAdapter::Module => {
+            StorageOperationAdapter::Module(ModuleTransportKind::Module) => {
+                bail!("Basecamp module source does not support Inspector-managed byte staging")
+            }
+            StorageOperationAdapter::Module(ModuleTransportKind::LogoscoreCli) => {
+                if module_transport.kind() != ModuleTransportKind::LogoscoreCli {
+                    bail!(
+                        "resolved module transport `logoscore_cli` is unavailable; active transport is `{}`",
+                        module_transport.kind().as_str()
+                    );
+                }
                 transport::module_upload_bytes(filename, bytes, block_size).await
             }
             StorageOperationAdapter::Rest { endpoint } => {
@@ -156,7 +183,7 @@ impl StorageClient {
         module_error: &str,
     ) -> Result<Vec<u8>> {
         match &self.adapter {
-            StorageOperationAdapter::Module => bail!("{module_error}"),
+            StorageOperationAdapter::Module(_) => bail!("{module_error}"),
             StorageOperationAdapter::Rest { endpoint } => {
                 transport::download_bytes(endpoint, cid, local_only).await
             }
@@ -191,8 +218,9 @@ impl StorageOperationRequest {
 
 pub(crate) async fn execute_operation(
     request: StorageOperationRequest,
+    module_transport: SharedModuleTransport,
 ) -> Result<StorageOperationOutput> {
-    execute_plan(request.plan).await
+    execute_plan(request.plan, module_transport).await
 }
 
 pub(crate) async fn download_response(request: &StorageDownloadRequest) -> Result<Response> {
@@ -202,6 +230,7 @@ pub(crate) async fn download_response(request: &StorageDownloadRequest) -> Resul
 #[derive(Debug, Clone, PartialEq)]
 enum StorageOperationPlan {
     Module {
+        transport: ModuleTransportKind,
         method: &'static str,
         args: Vec<Value>,
         context: Vec<(&'static str, String)>,
@@ -315,8 +344,9 @@ fn operation_plan(
                 }),
             );
             match client.adapter {
-                StorageOperationAdapter::Module => Ok((
+                StorageOperationAdapter::Module(transport) => Ok((
                     StorageOperationPlan::Module {
+                        transport,
                         method: "downloadToUrl",
                         args: vec![
                             json!(cid),
@@ -359,8 +389,9 @@ fn plan_for_client(
 ) -> Result<(StorageOperationPlan, Map<String, Value>)> {
     let context_map = context_map(&context);
     match client.adapter {
-        StorageOperationAdapter::Module => Ok((
+        StorageOperationAdapter::Module(transport) => Ok((
             StorageOperationPlan::Module {
+                transport,
                 method,
                 args,
                 context,
@@ -402,9 +433,13 @@ fn plan_for_client(
     }
 }
 
-async fn execute_plan(plan: StorageOperationPlan) -> Result<StorageOperationOutput> {
+async fn execute_plan(
+    plan: StorageOperationPlan,
+    module_transport: SharedModuleTransport,
+) -> Result<StorageOperationOutput> {
     let value = match plan {
         StorageOperationPlan::Module {
+            transport: transport_kind,
             method,
             args,
             context,
@@ -415,13 +450,21 @@ async fn execute_plan(plan: StorageOperationPlan) -> Result<StorageOperationOutp
                     "uploadUrl" => ModuleDispatchIdentityRole::Session,
                     _ => ModuleDispatchIdentityRole::None,
                 };
-                let receipt =
-                    transport::module_dispatch(method, args, &context, identity_role).await?;
+                let receipt = transport::module_dispatch(
+                    &module_transport,
+                    transport_kind,
+                    method,
+                    args,
+                    &context,
+                    identity_role,
+                )
+                .await?;
                 return Ok(StorageOperationOutput::Outcome(
                     storage_module_dispatch_outcome(method, receipt)?,
                 ));
             } else {
-                let value = transport::module_call(method, args).await?;
+                let value =
+                    transport::module_call(&module_transport, transport_kind, method, args).await?;
                 return Ok(StorageOperationOutput::Outcome(
                     NodeOperationOutcome::Completed(value),
                 ));
@@ -513,8 +556,8 @@ impl StorageExistsRequest {
         })
     }
 
-    pub(crate) async fn execute(&self) -> Result<Value> {
-        self.client.exists(&self.cid).await
+    pub(crate) async fn execute(&self, module_transport: &SharedModuleTransport) -> Result<Value> {
+        self.client.exists(module_transport, &self.cid).await
     }
 }
 
@@ -719,12 +762,36 @@ mod tests {
         let request = StorageOperationRequest::parse(&request, StorageOperation::Upload)?;
 
         let expected = StorageOperationPlan::Module {
+            transport: ModuleTransportKind::Module,
             method: "uploadUrl",
             args: vec![json!("/tmp/a"), json!(DEFAULT_BLOCK_SIZE)],
             context: vec![("path", "/tmp/a".to_owned())],
             dispatch: true,
         };
         anyhow::ensure!(request.plan == expected, "unexpected Storage upload plan");
+        Ok(())
+    }
+
+    #[test]
+    fn logoscore_cli_upload_plan_preserves_cli_transport() -> Result<()> {
+        let request = request(json!({
+            "adapter": { "source_mode": "logoscore_cli", "inputs": {} },
+            "mutating_enabled": true,
+            "payload": { "path": "/tmp/a" }
+        }))?;
+
+        let request = StorageOperationRequest::parse(&request, StorageOperation::Upload)?;
+
+        anyhow::ensure!(
+            matches!(
+                request.plan,
+                StorageOperationPlan::Module {
+                    transport: ModuleTransportKind::LogoscoreCli,
+                    ..
+                }
+            ),
+            "Storage LogosCore CLI plan lost transport identity"
+        );
         Ok(())
     }
 
@@ -739,6 +806,7 @@ mod tests {
         let request = StorageOperationRequest::parse(&request, StorageOperation::Fetch)?;
 
         let expected = StorageOperationPlan::Module {
+            transport: ModuleTransportKind::Module,
             method: "fetch",
             args: vec![json!("cid-a")],
             context: vec![("cid", "cid-a".to_owned())],

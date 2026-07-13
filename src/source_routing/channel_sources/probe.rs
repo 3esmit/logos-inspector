@@ -2,6 +2,10 @@ use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use serde::{Deserialize, Serialize};
 
+use crate::modules::logos_core::{
+    LogoscoreCliTransport, ModuleTransportKind, SharedModuleTransport,
+};
+
 use super::{
     ChannelSourceRole, ChannelSourceTarget, indexer::IndexerAdapter,
     layer::ExecutionZoneReadErrorKind, sequencer::SequencerAdapter,
@@ -139,8 +143,22 @@ pub(crate) struct DefaultChannelSourceProbe {
 
 impl Default for DefaultChannelSourceProbe {
     fn default() -> Self {
+        let transport: SharedModuleTransport = Arc::new(LogoscoreCliTransport::default());
+        Self::with_module_transport(transport, ModuleTransportKind::LogoscoreCli)
+    }
+}
+
+impl DefaultChannelSourceProbe {
+    #[must_use]
+    pub(crate) fn with_module_transport(
+        module_transport: SharedModuleTransport,
+        module_transport_kind: ModuleTransportKind,
+    ) -> Self {
         Self {
-            transport: Arc::new(DefaultChannelSourceProbeTransport),
+            transport: Arc::new(DefaultChannelSourceProbeTransport::new(
+                module_transport,
+                module_transport_kind,
+            )),
         }
     }
 }
@@ -148,7 +166,7 @@ impl Default for DefaultChannelSourceProbe {
 pub(crate) async fn attest_sequencer_target(target: ChannelSourceTarget) -> anyhow::Result<String> {
     match tokio::time::timeout(
         SOURCE_PROBE_TIMEOUT,
-        Arc::new(DefaultChannelSourceProbeTransport).sequencer_channel_id(target),
+        Arc::new(DefaultChannelSourceProbeTransport::default()).sequencer_channel_id(target),
     )
     .await
     {
@@ -331,7 +349,31 @@ trait ChannelSourceProbeTransport: Send + Sync + 'static {
     ) -> TransportFuture<Option<ChannelSourceBlock>>;
 }
 
-struct DefaultChannelSourceProbeTransport;
+struct DefaultChannelSourceProbeTransport {
+    module_transport: SharedModuleTransport,
+    module_transport_kind: ModuleTransportKind,
+}
+
+impl Default for DefaultChannelSourceProbeTransport {
+    fn default() -> Self {
+        Self::new(
+            Arc::new(LogoscoreCliTransport::default()),
+            ModuleTransportKind::LogoscoreCli,
+        )
+    }
+}
+
+impl DefaultChannelSourceProbeTransport {
+    fn new(
+        module_transport: SharedModuleTransport,
+        module_transport_kind: ModuleTransportKind,
+    ) -> Self {
+        Self {
+            module_transport,
+            module_transport_kind,
+        }
+    }
+}
 
 impl ChannelSourceProbeTransport for DefaultChannelSourceProbeTransport {
     fn sequencer_health(self: Arc<Self>, target: ChannelSourceTarget) -> TransportFuture<()> {
@@ -432,7 +474,7 @@ impl ChannelSourceProbeTransport for DefaultChannelSourceProbeTransport {
 
     fn indexer_health(self: Arc<Self>, target: ChannelSourceTarget) -> TransportFuture<()> {
         Box::pin(async move {
-            IndexerAdapter::connect(&target)
+            IndexerAdapter::connect(&target, &self.module_transport, self.module_transport_kind)
                 .map_err(|error| {
                     probe_read_failure(
                         error.kind,
@@ -457,7 +499,7 @@ impl ChannelSourceProbeTransport for DefaultChannelSourceProbeTransport {
         target: ChannelSourceTarget,
     ) -> TransportFuture<Option<u64>> {
         Box::pin(async move {
-            IndexerAdapter::connect(&target)
+            IndexerAdapter::connect(&target, &self.module_transport, self.module_transport_kind)
                 .map_err(|error| {
                     probe_read_failure(
                         error.kind,
@@ -483,7 +525,7 @@ impl ChannelSourceProbeTransport for DefaultChannelSourceProbeTransport {
         block_id: u64,
     ) -> TransportFuture<Option<ChannelSourceBlock>> {
         Box::pin(async move {
-            IndexerAdapter::connect(&target)
+            IndexerAdapter::connect(&target, &self.module_transport, self.module_transport_kind)
                 .map_err(|error| {
                     probe_read_failure(
                         error.kind,

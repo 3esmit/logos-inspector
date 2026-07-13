@@ -26,7 +26,10 @@ use super::{
         ChannelSourceProbeOutput, ChannelSourceProbeRequest, DefaultChannelSourceProbe,
     },
 };
-use crate::inspection::NetworkScope;
+use crate::{
+    inspection::NetworkScope,
+    modules::logos_core::{LogoscoreCliTransport, ModuleTransportKind, SharedModuleTransport},
+};
 
 const MONITOR_COMMAND_CAPACITY: usize = 8;
 const MAX_CONCURRENT_PROBES: usize = 8;
@@ -194,9 +197,22 @@ pub struct ChannelSourceMonitor {
 impl ChannelSourceMonitor {
     #[must_use]
     pub fn new(runtime: &Handle) -> Self {
+        let module_transport: SharedModuleTransport = Arc::new(LogoscoreCliTransport::default());
+        Self::with_module_transport(runtime, module_transport, ModuleTransportKind::LogoscoreCli)
+    }
+
+    #[must_use]
+    pub(crate) fn with_module_transport(
+        runtime: &Handle,
+        module_transport: SharedModuleTransport,
+        module_transport_kind: ModuleTransportKind,
+    ) -> Self {
         Self::with_dependencies(
             runtime,
-            Arc::new(DefaultChannelSourceProbe::default()),
+            Arc::new(DefaultChannelSourceProbe::with_module_transport(
+                module_transport,
+                module_transport_kind,
+            )),
             Arc::new(TokioMonitorClock::new()),
         )
     }

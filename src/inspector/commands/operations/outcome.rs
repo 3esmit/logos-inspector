@@ -69,6 +69,7 @@ mod tests {
                 == json!({
                     "module": "delivery_module",
                     "method": "start",
+                    "adapter": "logoscore_cli",
                     "dispatched": true,
                     "value": true,
                 }),
