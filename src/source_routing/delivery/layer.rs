@@ -164,11 +164,33 @@ pub(crate) const MESSAGING_SOURCE_MODES: &[SourceModePolicy] = &[
         label_key: "delivery_module",
         label: "Delivery module",
         source_label: "Delivery module",
-        summary: "Use delivery_module through logoscore",
+        summary: "Use the host-provided Delivery module API",
         implemented: true,
         adapter: SourceAdapterPolicy {
             connector_id: DELIVERY_MODULE,
             connection_type: AdapterConnectionType::Module,
+            target: "module",
+            module_id: Some(DELIVERY_MODULE),
+            inputs: &[],
+            capabilities: MODULE_CAPABILITIES,
+            supports_cid_probe: false,
+            supports_mutating_diagnostics: true,
+            capability_scopes: &["delivery"],
+            endpoint_role: None,
+        },
+    },
+    SourceModePolicy {
+        key: "logoscore_cli",
+        aliases: &["logoscore_cli", "logoscore-cli", "logoscore cli"],
+        effective: "module",
+        label_key: "logoscore_cli",
+        label: "LogosCore CLI",
+        source_label: "LogosCore CLI (Delivery)",
+        summary: "Call delivery_module with logoscore call",
+        implemented: true,
+        adapter: SourceAdapterPolicy {
+            connector_id: "logoscore_cli_delivery_module",
+            connection_type: AdapterConnectionType::LogoscoreCli,
             target: "module",
             module_id: Some(DELIVERY_MODULE),
             inputs: &[],
@@ -316,7 +338,8 @@ impl<'a> MessagingAdapter<'a> {
         metrics_endpoint: Option<&'a str>,
     ) -> Self {
         match crate::source_routing::DeliverySourceMode::from_token(source_mode) {
-            crate::source_routing::DeliverySourceMode::Module => Self::module(),
+            crate::source_routing::DeliverySourceMode::Module
+            | crate::source_routing::DeliverySourceMode::LogoscoreCli => Self::module(),
             crate::source_routing::DeliverySourceMode::Rest => Self::rest(
                 present(rest_endpoint).unwrap_or(DEFAULT_DELIVERY_REST_ENDPOINT),
                 present(metrics_endpoint),

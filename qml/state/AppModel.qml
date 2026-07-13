@@ -365,6 +365,12 @@ QtObject {
             function appendOperationHistory(operation, detail) {
                 return root.appendOperationHistory(operation, detail)
             }
+
+            function activateLocalProfile() {
+                root.applyProfileIndex(root.profileIndexFor("local"))
+                root.saveSettingsState()
+                return root.networkProfile === "local"
+            }
         }
     }
     property alias walletStateLoaded: walletState.loaded
@@ -1171,17 +1177,19 @@ QtObject {
 	        const identity = socialState.identitiesView()
 	        const localIdentityReady = identity.rows.length > 0
 	            || identity.selectedKey.length > 0 || identity.defaultMode !== "manual"
-	        const storageSyncRest = sourceRouting.effectiveStorageSourceMode(
-	            storageSourceMode) === "rest"
+	        const storageMode = sourceRouting.resolvedSourceModeKey(
+	            "storage", sourceRouting.connectorSourceMode("storage", storageSourceMode))
+	        const storageSyncRead = storageMode === "rest"
+	        const storageSyncUpload = storageMode === "rest" || storageMode === "logoscore_cli"
 	        return {
 	            "social.identity.local": { status: localIdentityReady ? "available" : "input_required", provenance: "local_identity" },
 	            "storage.shared_idl.sync_read": {
-	                status: storageSyncRest ? "available" : "unavailable",
+	                status: storageSyncRead ? "available" : "unavailable",
 	                label: qsTr("Storage synchronous CID read"),
 	                provenance: "source_routing"
 	            },
 	            "storage.shared_idl.sync_upload": {
-	                status: storageSyncRest ? "available" : "unavailable",
+	                status: storageSyncUpload ? "available" : "unavailable",
 	                label: qsTr("Storage synchronous payload upload"),
 	                provenance: "source_routing"
 	            }
@@ -1228,15 +1236,15 @@ QtObject {
         return {
             scopes: {
                 "l1": {
-                    connector_id: prefersBasecampModules() ? "blockchain_module" : "direct_l1_rpc",
+                    connector_id: prefersBasecampModules() ? "blockchain_module" : "logoscore_cli_blockchain_module",
                     provenance: "build_default"
                 },
                 "delivery": {
-                    connector_id: prefersBasecampModules() ? "delivery_module" : "direct_delivery_rest",
+                    connector_id: prefersBasecampModules() ? "delivery_module" : "logoscore_cli_delivery_module",
                     provenance: "build_default"
                 },
                 "storage": {
-                    connector_id: prefersBasecampModules() ? "storage_module" : "direct_storage_rest",
+                    connector_id: prefersBasecampModules() ? "storage_module" : "logoscore_cli_storage_module",
                     provenance: "build_default"
                 }
             }
@@ -1261,13 +1269,38 @@ QtObject {
             const key = keys[i]
             const fallback = defaults[key] || {}
             const entry = scopes[key] && typeof scopes[key] === "object" ? scopes[key] : fallback
+            const requestedConnectorId = String(entry.connector_id || entry.connectorId || entry.id || "")
+            const connectorId = networkConnectorSupported(key, requestedConnectorId)
+                ? requestedConnectorId
+                : String(fallback.connector_id || "")
+            const usesFallback = connectorId !== requestedConnectorId
             result.scopes[key] = {
-                connector_id: String(entry.connector_id || entry.connectorId || entry.id || fallback.connector_id || ""),
-                endpoint: String(entry.endpoint || entry.url || entry.rest_endpoint || entry.rpc_endpoint || ""),
-                provenance: String(entry.provenance || entry.connector_provenance || (entry === fallback ? "build_default" : "network_profile"))
+                connector_id: connectorId,
+                endpoint: usesFallback
+                    ? String(fallback.endpoint || "")
+                    : String(entry.endpoint || entry.url || entry.rest_endpoint || entry.rpc_endpoint || ""),
+                provenance: usesFallback
+                    ? "build_default"
+                    : String(entry.provenance || entry.connector_provenance || (entry === fallback ? "build_default" : "network_profile"))
             }
         }
         return result
+    }
+
+    function networkConnectorSupported(scope, connectorId) {
+        const candidate = String(connectorId || "")
+        if (!candidate.length) {
+            return false
+        }
+        const family = String(scope || "") === "l1" ? "core" : String(scope || "")
+        const policies = sourceRouting.sourceModePolicies(family)
+        for (let i = 0; i < policies.length; ++i) {
+            const descriptor = sourceRouting.sourceModeDescriptor(family, policies[i].key)
+            if (descriptor.connectorId === candidate) {
+                return descriptor.connectionType !== "module" || prefersBasecampModules()
+            }
+        }
+        return false
     }
 
     function networkConnectorConfigPayload() {

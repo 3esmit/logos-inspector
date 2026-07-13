@@ -51,6 +51,17 @@ QtObject {
         });
     }
 
+    function activateLocalProfile() {
+        if (!gateway.activateLocalProfile()) {
+            error = qsTr("Local network profile is not available.")
+            revision += 1
+            return false
+        }
+        refresh(false)
+        refreshDevnets()
+        return true
+    }
+
     function runAction(action, node, networkId, workspacePath, label, runtimeModulesDir, runtimeBinaryPath) {
         if (busy) {
             gateway.setResult(qsTr("Local nodes"), qsTr("Another inspection is already running."), true, null);

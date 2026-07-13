@@ -12,6 +12,7 @@ use crate::modules::logos_core::LogoscoreCliRuntime;
 #[serde(rename_all = "snake_case")]
 pub enum AdapterConnectionType {
     Module,
+    LogoscoreCli,
     Rpc,
     Rest,
     Metrics,
@@ -428,9 +429,11 @@ pub(crate) mod contract_tests {
         for mode in modes {
             let actual = select(mode.key, Some(REST_ENDPOINT), Some(METRICS_ENDPOINT));
             let expected = match mode.adapter.connection_type {
-                AdapterConnectionType::Module => EndpointAdapterBehavior::Module {
-                    module_id: mode.adapter.module_id.unwrap_or_default(),
-                },
+                AdapterConnectionType::Module | AdapterConnectionType::LogoscoreCli => {
+                    EndpointAdapterBehavior::Module {
+                        module_id: mode.adapter.module_id.unwrap_or_default(),
+                    }
+                }
                 AdapterConnectionType::Rest | AdapterConnectionType::NetworkMonitor => {
                     EndpointAdapterBehavior::Endpoint {
                         connection_type: mode.adapter.connection_type,
@@ -551,7 +554,7 @@ pub(crate) mod contract_tests {
         assert_eq!(unique.len(), keys.len(), "duplicate adapter input key");
 
         match adapter.connection_type {
-            AdapterConnectionType::Module => {
+            AdapterConnectionType::Module | AdapterConnectionType::LogoscoreCli => {
                 assert!(keys.is_empty(), "module adapters take no user input");
                 assert_eq!(adapter.target, "module");
                 assert!(adapter.module_id.is_some(), "module id is layer-owned");

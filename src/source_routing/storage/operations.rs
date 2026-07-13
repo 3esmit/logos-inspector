@@ -86,7 +86,9 @@ impl StorageClient {
     pub(crate) fn from_initialization(value: &Value) -> Result<Self> {
         let initialization = AdapterInitialization::parse(value, STORAGE_SOURCE_MODES, "rest")?;
         let adapter = match StorageSourceMode::from_token(initialization.source_mode()) {
-            StorageSourceMode::Module => StorageOperationAdapter::Module,
+            StorageSourceMode::Module | StorageSourceMode::LogoscoreCli => {
+                StorageOperationAdapter::Module
+            }
             StorageSourceMode::Rest => StorageOperationAdapter::Rest {
                 endpoint: initialization
                     .input("rest_endpoint")
@@ -111,6 +113,13 @@ impl StorageClient {
         }
     }
 
+    pub(crate) fn source(&self) -> &str {
+        match &self.adapter {
+            StorageOperationAdapter::Module => "logoscore call storage_module",
+            StorageOperationAdapter::Rest { endpoint } => endpoint,
+        }
+    }
+
     pub(crate) async fn exists(&self, cid: &str) -> Result<Value> {
         match &self.adapter {
             StorageOperationAdapter::Module => {
@@ -125,10 +134,11 @@ impl StorageClient {
         filename: &str,
         bytes: &[u8],
         block_size: u64,
-        module_error: &str,
     ) -> Result<Value> {
         match &self.adapter {
-            StorageOperationAdapter::Module => bail!("{module_error}"),
+            StorageOperationAdapter::Module => {
+                transport::module_upload_bytes(filename, bytes, block_size).await
+            }
             StorageOperationAdapter::Rest { endpoint } => {
                 transport::upload_bytes(endpoint, filename, bytes, block_size).await
             }

@@ -47,7 +47,7 @@ function sourceModeOptions(root, family) {
     for (let i = 0; i < modes.length; ++i) {
         const mode = modes[i] || {}
         const key = String(mode.key || "")
-        if (!key.length) {
+        if (!key.length || !sourceModeVisible(root, mode)) {
             continue
         }
         options.push({
@@ -57,6 +57,11 @@ function sourceModeOptions(root, family) {
         })
     }
     return options
+}
+
+function sourceModeVisible(root, mode) {
+    const adapter = mode && mode.adapter && typeof mode.adapter === "object" ? mode.adapter : ({})
+    return String(adapter.connection_type || "") !== "module" || root.prefersBasecampModules()
 }
 
 function sourceModeIndexFor(root, family, value, options) {
@@ -155,8 +160,9 @@ function sourceModeSupportsMutatingDiagnostics(root, family, value) {
 
 function coreSourceArgs(root, sourceMode, endpoint, extra) {
     const rest = Array.isArray(extra) ? extra : []
-    if (String(sourceModePolicy(root, "core", resolvedSourceModeKey(root, "core", sourceMode)).effective || "rpc") === "module") {
-        return ["module"].concat(rest)
+    const descriptor = sourceModeDescriptor(root, "core", sourceMode)
+    if (descriptor.effective === "module") {
+        return [descriptor.key].concat(rest)
     }
     return [String(endpoint || "")].concat(rest)
 }
@@ -217,14 +223,10 @@ function sourceLabel(root, family, sourceMode, fallbackLabel) {
 }
 
 function coreSourceLabel(root, sourceMode, rpcLabel) {
-    const source = resolvedSourceModeKey(root, "core", sourceMode)
-    if (source === "module") {
-        return qsTr("Basecamp module")
-    }
-    if (source === "rpc") {
-        return rpcLabel
-    }
-    return rpcLabel
+    const descriptor = sourceModeDescriptor(root, "core", sourceMode)
+    return descriptor.effective === "module"
+        ? String(descriptor.sourceLabel || descriptor.label || qsTr("Module"))
+        : rpcLabel
 }
 
 function defaultSourceMode(family) {

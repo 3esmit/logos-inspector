@@ -349,7 +349,9 @@ async fn execute_plan(plan: DeliveryOperationPlan) -> Result<Value> {
 fn parse_adapter(value: &Value) -> Result<MessagingOperationAdapter> {
     let initialization = AdapterInitialization::parse(value, MESSAGING_SOURCE_MODES, "rest")?;
     match DeliverySourceMode::from_token(initialization.source_mode()) {
-        DeliverySourceMode::Module => Ok(MessagingOperationAdapter::Module),
+        DeliverySourceMode::Module | DeliverySourceMode::LogoscoreCli => {
+            Ok(MessagingOperationAdapter::Module)
+        }
         DeliverySourceMode::Rest => Ok(MessagingOperationAdapter::Rest {
             endpoint: initialization
                 .input("rest_endpoint")

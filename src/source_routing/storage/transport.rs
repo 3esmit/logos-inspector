@@ -1,6 +1,6 @@
-use std::path::Path;
+use std::{collections::HashSet, path::Path, time::Duration};
 
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use reqwest::{Method, Response, header};
 use serde_json::{Value, json};
 use tokio_util::io::ReaderStream;
@@ -134,6 +134,118 @@ pub(super) async fn upload_bytes(
     }))
 }
 
+pub(super) async fn module_upload_bytes(
+    filename: &str,
+    bytes: &[u8],
+    block_size: u64,
+) -> Result<Value> {
+    let filename = filename.to_owned();
+    let bytes = bytes.to_vec();
+    blocking_module_call("Storage module payload upload", move || {
+        module_upload_bytes_blocking(&filename, &bytes, block_size)
+    })
+    .await
+}
+
+fn module_upload_bytes_blocking(filename: &str, bytes: &[u8], block_size: u64) -> Result<Value> {
+    let block_size = i64::try_from(block_size).context("storage upload block size is too large")?;
+    let safe_filename = Path::new(filename)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .context("storage upload filename is invalid")?;
+    let staged = crate::modules::logos_core::stage_shared_file(safe_filename, bytes)?;
+    let path = staged
+        .path()
+        .to_str()
+        .context("temporary storage upload path is not UTF-8")?
+        .to_owned();
+
+    crate::modules::logos_core::require_module_method(
+        super::layer::module_id(),
+        "uploadUrl",
+        "uploadUrl(QString,int)",
+    )?;
+    crate::modules::logos_core::require_module_method(
+        super::layer::module_id(),
+        "manifests",
+        "manifests()",
+    )?;
+    let manifests_before = crate::source_routing::shared::module_bridge::call_value(
+        super::layer::module_id(),
+        "manifests",
+        &[],
+    )?;
+    let baseline_cids = manifest_cids(&manifests_before);
+    let session = crate::source_routing::shared::module_bridge::call_value(
+        super::layer::module_id(),
+        "uploadUrl",
+        &[json!(path), json!(block_size)],
+    )?;
+    let session_id = session
+        .as_str()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .context("storage_module.uploadUrl returned no session ID")?
+        .to_owned();
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    let cid = loop {
+        let manifests = crate::source_routing::shared::module_bridge::call_value(
+            super::layer::module_id(),
+            "manifests",
+            &[],
+        )?;
+        if let Some(cid) = new_manifest_cid(&manifests, safe_filename, bytes.len(), &baseline_cids)
+        {
+            break cid;
+        }
+        if std::time::Instant::now() >= deadline {
+            bail!("timed out waiting for storage_module upload session {session_id}");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    Ok(json!({
+        "cid": cid,
+        "filename": safe_filename,
+        "bytes": bytes.len(),
+        "endpoint": "logoscore call storage_module.uploadUrl",
+        "completion": "manifest_poll",
+        "sessionId": session_id,
+    }))
+}
+
+fn manifest_cids(manifests: &Value) -> HashSet<String> {
+    manifests
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|manifest| manifest.get("cid").and_then(Value::as_str))
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn new_manifest_cid(
+    manifests: &Value,
+    filename: &str,
+    bytes: usize,
+    baseline_cids: &HashSet<String>,
+) -> Option<String> {
+    let bytes = u64::try_from(bytes).ok()?;
+    manifests.as_array()?.iter().find_map(|manifest| {
+        let cid = manifest.get("cid")?.as_str()?.trim();
+        let candidate_filename = manifest.get("filename")?.as_str()?;
+        let candidate_bytes = manifest
+            .get("datasetSize")
+            .or_else(|| manifest.get("dataset_size"))?
+            .as_u64()?;
+        (candidate_filename == filename
+            && candidate_bytes == bytes
+            && !cid.is_empty()
+            && !baseline_cids.contains(cid))
+        .then(|| cid.to_owned())
+    })
+}
+
 pub(super) async fn download_bytes(endpoint: &str, cid: &str, local_only: bool) -> Result<Vec<u8>> {
     let route = download_route(cid, local_only);
     let url = http::rest_url(endpoint, &route);
@@ -193,4 +305,27 @@ fn parse_probe_text(text: &str) -> Value {
         return Value::Null;
     }
     serde_json::from_str(trimmed).unwrap_or_else(|_| Value::String(trimmed.to_owned()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manifest_poll_correlates_new_upload_by_filename_and_size() -> Result<()> {
+        let baseline = HashSet::from(["cid-old".to_owned()]);
+        let manifests = json!([
+            {"cid":"cid-old","filename":"backup.json","datasetSize":12},
+            {"cid":"cid-wrong-size","filename":"backup.json","datasetSize":13},
+            {"cid":"cid-new","filename":"backup.json","datasetSize":12}
+        ]);
+
+        let cid = new_manifest_cid(&manifests, "backup.json", 12, &baseline);
+
+        anyhow::ensure!(
+            cid.as_deref() == Some("cid-new"),
+            "manifest correlation drift"
+        );
+        Ok(())
+    }
 }

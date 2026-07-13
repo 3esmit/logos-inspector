@@ -148,6 +148,17 @@ const MODULE_CAPABILITIES: &[&str] = &[
     "storage.content.download_to_file",
     "storage.content.remove",
 ];
+const LOGOSCORE_CLI_CAPABILITIES: &[&str] = &[
+    "storage.identity.read",
+    "storage.space.read",
+    "storage.manifests.read",
+    "storage.content.exists",
+    "storage.content.read_by_cid",
+    "storage.content.upload",
+    "storage.backup.sync_upload",
+    "storage.content.download_to_file",
+    "storage.content.remove",
+];
 const REST_CAPABILITIES: &[&str] = &[
     "storage.identity.read",
     "storage.space.read",
@@ -173,7 +184,7 @@ pub(crate) const STORAGE_SOURCE_MODES: &[SourceModePolicy] = &[
         label_key: "storage_module",
         label: "Storage module",
         source_label: "Storage module",
-        summary: "Use storage_module through logoscore",
+        summary: "Use the host-provided Storage module API",
         implemented: true,
         adapter: SourceAdapterPolicy {
             connector_id: STORAGE_MODULE,
@@ -182,6 +193,28 @@ pub(crate) const STORAGE_SOURCE_MODES: &[SourceModePolicy] = &[
             module_id: Some(STORAGE_MODULE),
             inputs: &[],
             capabilities: MODULE_CAPABILITIES,
+            supports_cid_probe: true,
+            supports_mutating_diagnostics: true,
+            capability_scopes: &["storage"],
+            endpoint_role: None,
+        },
+    },
+    SourceModePolicy {
+        key: "logoscore_cli",
+        aliases: &["logoscore_cli", "logoscore-cli", "logoscore cli"],
+        effective: "module",
+        label_key: "logoscore_cli",
+        label: "LogosCore CLI",
+        source_label: "LogosCore CLI (Storage)",
+        summary: "Call storage_module with logoscore call",
+        implemented: true,
+        adapter: SourceAdapterPolicy {
+            connector_id: "logoscore_cli_storage_module",
+            connection_type: AdapterConnectionType::LogoscoreCli,
+            target: "module",
+            module_id: Some(STORAGE_MODULE),
+            inputs: &[],
+            capabilities: LOGOSCORE_CLI_CAPABILITIES,
             supports_cid_probe: true,
             supports_mutating_diagnostics: true,
             capability_scopes: &["storage"],
@@ -305,7 +338,8 @@ impl<'a> StorageAdapter<'a> {
         metrics_endpoint: Option<&'a str>,
     ) -> Self {
         match crate::source_routing::StorageSourceMode::from_token(source_mode) {
-            crate::source_routing::StorageSourceMode::Module => Self::module(),
+            crate::source_routing::StorageSourceMode::Module
+            | crate::source_routing::StorageSourceMode::LogoscoreCli => Self::module(),
             crate::source_routing::StorageSourceMode::Rest => Self::rest(
                 present(rest_endpoint).unwrap_or(DEFAULT_STORAGE_REST_ENDPOINT),
                 present(metrics_endpoint),

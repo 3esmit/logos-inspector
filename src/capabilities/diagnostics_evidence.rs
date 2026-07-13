@@ -109,11 +109,10 @@ fn append_diagnostics_report_constraints(
             let Some(sub_capability) = diagnostics_source_sub_capability(key) else {
                 continue;
             };
-            append_unique(unavailable, vec![sub_capability.to_owned()]);
             append_unique(
                 warnings,
                 vec![format!(
-                    "{} diagnostics report is unavailable",
+                    "{} diagnostics report found provider problems",
                     diagnostics_source_label(key)
                 )],
             );
@@ -121,6 +120,7 @@ fn append_diagnostics_report_constraints(
                 compact_errors,
                 diagnostics_nested_report_errors(source_report),
             );
+            remove_unavailable(unavailable, sub_capability);
         }
     }
 

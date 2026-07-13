@@ -4,6 +4,11 @@ use anyhow::{Context as _, Result};
 use serde_json::{Value, json};
 
 use super::args::{CliCommand, WalletCommand};
+use crate::source_routing::{
+    DEFAULT_DELIVERY_METRICS_ENDPOINT, DEFAULT_DELIVERY_REST_ENDPOINT,
+    DEFAULT_STORAGE_METRICS_ENDPOINT, DEFAULT_STORAGE_REST_ENDPOINT, SourceFamily,
+    source_mode_is_token, source_mode_policy,
+};
 use crate::support::confirmation::ConfirmationPolicy;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -86,13 +91,12 @@ impl CliCommand {
                 metrics_url,
             } => Ok(CliInvocation::json(
                 "storageSourceReport",
-                json!([
-                    source_mode,
-                    rest_url.unwrap_or_default(),
-                    metrics_url.unwrap_or_default(),
-                    cid.unwrap_or_default(),
-                    false
-                ]),
+                json!([storage_report_initialization(
+                    &source_mode,
+                    rest_url.as_deref(),
+                    metrics_url.as_deref(),
+                    cid.as_deref(),
+                )]),
             )),
             CliCommand::Messaging {
                 source_mode,
@@ -100,11 +104,11 @@ impl CliCommand {
                 metrics_url,
             } => Ok(CliInvocation::json(
                 "deliverySourceReport",
-                json!([
-                    source_mode,
-                    rest_url.unwrap_or_default(),
-                    metrics_url.unwrap_or_default()
-                ]),
+                json!([delivery_report_initialization(
+                    &source_mode,
+                    rest_url.as_deref(),
+                    metrics_url.as_deref(),
+                )]),
             )),
             CliCommand::Capabilities => Ok(CliInvocation::json("capabilitiesReport", json!([]))),
             CliCommand::Channels {
@@ -131,6 +135,63 @@ impl CliCommand {
             )),
             CliCommand::Wallet { command } => command.invocation(),
         }
+    }
+}
+
+fn delivery_report_initialization(
+    source_mode: &str,
+    rest_url: Option<&str>,
+    metrics_url: Option<&str>,
+) -> Value {
+    let source_mode = canonical_source_mode(SourceFamily::Delivery, source_mode);
+    let inputs = match source_mode.as_str() {
+        "rest" | "network-monitor" => json!({
+            "rest_endpoint": rest_url.unwrap_or(DEFAULT_DELIVERY_REST_ENDPOINT),
+            "metrics_endpoint": metrics_url.unwrap_or_default(),
+        }),
+        "metrics" => json!({
+            "metrics_endpoint": metrics_url.unwrap_or(DEFAULT_DELIVERY_METRICS_ENDPOINT),
+        }),
+        _ => json!({}),
+    };
+    json!({
+        "source_mode": source_mode,
+        "inputs": inputs,
+    })
+}
+
+fn storage_report_initialization(
+    source_mode: &str,
+    rest_url: Option<&str>,
+    metrics_url: Option<&str>,
+    cid: Option<&str>,
+) -> Value {
+    let source_mode = canonical_source_mode(SourceFamily::Storage, source_mode);
+    let inputs = match source_mode.as_str() {
+        "rest" => json!({
+            "rest_endpoint": rest_url.unwrap_or(DEFAULT_STORAGE_REST_ENDPOINT),
+            "metrics_endpoint": metrics_url.unwrap_or_default(),
+        }),
+        "metrics" => json!({
+            "metrics_endpoint": metrics_url.unwrap_or(DEFAULT_STORAGE_METRICS_ENDPOINT),
+        }),
+        _ => json!({}),
+    };
+    json!({
+        "source_mode": source_mode,
+        "inputs": inputs,
+        "options": {
+            "cid": cid.unwrap_or_default(),
+            "privileged_debug_enabled": false,
+        },
+    })
+}
+
+fn canonical_source_mode(family: SourceFamily, value: &str) -> String {
+    if source_mode_is_token(family, value) {
+        source_mode_policy(family, value).key.to_owned()
+    } else {
+        value.trim().to_ascii_lowercase()
     }
 }
 
@@ -325,6 +386,64 @@ mod tests {
         ensure!(
             invocation.args.pointer("/1/from").and_then(Value::as_str) == Some("acct-1"),
             "unexpected sender"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn messaging_command_plans_one_structured_adapter_initialization() -> Result<()> {
+        let invocation = CliCommand::Messaging {
+            source_mode: "logoscore_cli".to_owned(),
+            rest_url: None,
+            metrics_url: None,
+        }
+        .invocation()?;
+
+        ensure!(
+            invocation.method == "deliverySourceReport",
+            "unexpected method"
+        );
+        ensure!(
+            invocation.args
+                == json!([{
+                    "source_mode": "logoscore_cli",
+                    "inputs": {}
+                }]),
+            "unexpected args: {}",
+            invocation.args
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn storage_rest_command_supplies_default_endpoint_in_structured_adapter() -> Result<()> {
+        let invocation = CliCommand::Storage {
+            cid: Some("cid-a".to_owned()),
+            source_mode: "rest".to_owned(),
+            rest_url: None,
+            metrics_url: None,
+        }
+        .invocation()?;
+
+        ensure!(
+            invocation.method == "storageSourceReport",
+            "unexpected method"
+        );
+        ensure!(
+            invocation.args
+                == json!([{
+                    "source_mode": "rest",
+                    "inputs": {
+                        "rest_endpoint": crate::source_routing::DEFAULT_STORAGE_REST_ENDPOINT,
+                        "metrics_endpoint": ""
+                    },
+                    "options": {
+                        "cid": "cid-a",
+                        "privileged_debug_enabled": false
+                    }
+                }]),
+            "unexpected args: {}",
+            invocation.args
         );
         Ok(())
     }

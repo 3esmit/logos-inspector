@@ -39,13 +39,9 @@ pub(super) fn storage_upload_backup_catalog_entry(runtime: &Runtime, args: Value
             "logos-inspector-settings-backup.json",
             &bytes,
             request.block_size(),
-            "settings backup through storage_module needs storageUploadDone event correlation to return the final CID; use the Storage app upload flow or Direct REST source for synchronous settings backup",
         ))
-        .context("failed to upload settings backup through storage REST")?;
-    let endpoint = request
-        .client()
-        .endpoint()
-        .context("settings backup requires storage REST source")?;
+        .context("failed to upload settings backup through Storage")?;
+    let endpoint = request.client().source();
     let cid = upload
         .get("cid")
         .and_then(Value::as_str)
@@ -76,17 +72,13 @@ pub(super) fn storage_upload_payload(runtime: &Runtime, args: Value) -> Result<V
     let bytes = serde_json::to_vec_pretty(request.payload())
         .context("failed to serialize storage payload")?;
     let upload = runtime
-        .block_on(request.client().upload_bytes(
-            request.filename(),
-            &bytes,
-            request.block_size(),
-            "payload upload through storage_module needs storageUploadDone event correlation to return the final CID; use Direct REST source for synchronous payload upload",
-        ))
-        .context("failed to upload payload through storage REST")?;
-    let endpoint = request
-        .client()
-        .endpoint()
-        .context("payload upload requires storage REST source")?;
+        .block_on(
+            request
+                .client()
+                .upload_bytes(request.filename(), &bytes, request.block_size()),
+        )
+        .context("failed to upload payload through Storage")?;
+    let endpoint = request.client().source();
     let cid = upload
         .get("cid")
         .and_then(Value::as_str)

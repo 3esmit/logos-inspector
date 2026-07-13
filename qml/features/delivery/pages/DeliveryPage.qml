@@ -303,7 +303,7 @@ ColumnLayout {
             refreshActions: [
                 { text: qsTr("Refresh status"), width: 140, accessibleName: qsTr("Refresh Delivery status") }
             ]
-            pending: root.sourceView.pending || !root.diagnosticsGateEnabled("delivery")
+            pending: root.sourceView.pending
             statusText: root.diagnosticsStatusText("delivery", root.sourceView.statusLine, qsTr("Delivery diagnostics"))
             guardedTitle: qsTr("Mutating diagnostics")
             permissionEnabled: root.model.messagingMutatingDiagnosticsEnabled && root.diagnosticsGateEnabled("delivery")

@@ -26,13 +26,13 @@ impl Args {
         if let Some(mode) = CoreSourceMode::from_token(first) {
             let adapter = match mode {
                 CoreSourceMode::Rpc => BedrockAdapter::rpc(self.string(index + 1, label)?),
-                CoreSourceMode::Module => BedrockAdapter::module(),
+                CoreSourceMode::Module | CoreSourceMode::LogoscoreCli => BedrockAdapter::module(),
             };
             return Ok(source_endpoint_from_adapter(
                 adapter,
                 match mode {
                     CoreSourceMode::Rpc => index + 2,
-                    CoreSourceMode::Module => index + 1,
+                    CoreSourceMode::Module | CoreSourceMode::LogoscoreCli => index + 1,
                 },
                 core::adapters::BLOCKCHAIN_MODULE,
             ));

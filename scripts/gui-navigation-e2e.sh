@@ -89,6 +89,44 @@ done
 }
 sleep 3
 
+if [[ -n "${GUI_NAV_WINDOW_WIDTH:-}" || -n "${GUI_NAV_WINDOW_HEIGHT:-}" ]]; then
+  DISPLAY="$DISPLAY_VALUE" \
+  GUI_NAV_WINDOW_ID="$WINDOW_ID" \
+  GUI_NAV_WINDOW_WIDTH="${GUI_NAV_WINDOW_WIDTH:-1180}" \
+  GUI_NAV_WINDOW_HEIGHT="${GUI_NAV_WINDOW_HEIGHT:-820}" \
+  python3 - <<'PY'
+import ctypes
+import os
+import time
+
+x11 = ctypes.CDLL("libX11.so.6")
+x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+x11.XOpenDisplay.restype = ctypes.c_void_p
+x11.XResizeWindow.argtypes = [
+    ctypes.c_void_p,
+    ctypes.c_ulong,
+    ctypes.c_uint,
+    ctypes.c_uint,
+]
+x11.XFlush.argtypes = [ctypes.c_void_p]
+x11.XCloseDisplay.argtypes = [ctypes.c_void_p]
+
+display = x11.XOpenDisplay(os.environ["DISPLAY"].encode())
+if not display:
+    raise SystemExit("cannot open X display")
+
+x11.XResizeWindow(
+    display,
+    int(os.environ["GUI_NAV_WINDOW_ID"], 0),
+    int(os.environ["GUI_NAV_WINDOW_WIDTH"]),
+    int(os.environ["GUI_NAV_WINDOW_HEIGHT"]),
+)
+x11.XFlush(display)
+time.sleep(0.2)
+x11.XCloseDisplay(display)
+PY
+fi
+
 DISPLAY="$DISPLAY_VALUE" import -window "$WINDOW_ID" "$ARTIFACT_DIR/before.png"
 
 DISPLAY="$DISPLAY_VALUE" \
@@ -127,13 +165,22 @@ display = x11.XOpenDisplay(os.environ["DISPLAY"].encode())
 if not display:
     raise SystemExit("cannot open X display")
 
-x = int(os.environ["GUI_NAV_CLICK_X"])
-y = int(os.environ["GUI_NAV_CLICK_Y"])
-xtst.XTestFakeMotionEvent(display, -1, x, y, 0)
-xtst.XTestFakeButtonEvent(display, 1, 1, 0)
-xtst.XTestFakeButtonEvent(display, 1, 0, 0)
-x11.XFlush(display)
-time.sleep(0.1)
+raw_sequence = os.environ.get("GUI_NAV_CLICK_SEQUENCE", "").strip()
+if raw_sequence:
+    clicks = []
+    for raw_click in raw_sequence.split(";"):
+        raw_x, raw_y = raw_click.split(",", 1)
+        clicks.append((int(raw_x), int(raw_y)))
+else:
+    clicks = [(int(os.environ["GUI_NAV_CLICK_X"]), int(os.environ["GUI_NAV_CLICK_Y"]))]
+
+settle_seconds = float(os.environ.get("GUI_NAV_SETTLE_SECONDS", "0.1"))
+for x, y in clicks:
+    xtst.XTestFakeMotionEvent(display, -1, x, y, 0)
+    xtst.XTestFakeButtonEvent(display, 1, 1, 0)
+    xtst.XTestFakeButtonEvent(display, 1, 0, 0)
+    x11.XFlush(display)
+    time.sleep(settle_seconds)
 x11.XCloseDisplay(display)
 PY
 
@@ -168,12 +215,12 @@ printf 'Main content colors: %s\n' "$CONTENT_COLORS"
 printf 'Render attempts: %s\n' "$RENDER_ATTEMPT"
 
 if [[ ! "$CHANGED_PIXELS" =~ ^[0-9]+$ ]] || (( CHANGED_PIXELS < 500 )); then
-  printf 'Blocks navigation did not replace main content\n' >&2
+  printf 'Navigation did not replace main content\n' >&2
   exit 1
 fi
 
 if [[ ! "$CONTENT_COLORS" =~ ^[0-9]+$ ]] || (( CONTENT_COLORS < 16 )); then
-  printf 'Blocks navigation rendered blank main content\n' >&2
+  printf 'Navigation rendered blank main content\n' >&2
   exit 1
 fi
 

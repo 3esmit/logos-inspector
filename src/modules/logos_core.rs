@@ -1,13 +1,20 @@
-use std::{env, process::Command, time::Duration};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+    process::Command,
+    time::Duration,
+};
 
 use anyhow::{Context as _, Result, bail};
 use serde::Serialize;
 use serde_json::Value;
+use tempfile::TempDir;
 
 use crate::support::command_runner::{CommandRunPolicy, output_text, run_command};
 
 const LOGOSCORE_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const LOGOSCORE_OUTPUT_LIMIT: usize = 4096;
+const LOGOSCORE_JSON_OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct LogosCoreOutput {
@@ -86,6 +93,17 @@ impl ModuleTransport for LogoscoreCliTransport {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LogoscoreCliRuntime {
     runner: LogosCoreRunner,
+}
+
+pub(crate) struct LogoscoreSharedFile {
+    _directory: TempDir,
+    path: PathBuf,
+}
+
+impl LogoscoreSharedFile {
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
 }
 
 impl LogoscoreCliRuntime {
@@ -203,6 +221,27 @@ impl LogoscoreCliRuntime {
         self.run_json(["stop", "--json"], command_timeout())
     }
 
+    pub(crate) fn stage_shared_file(
+        &self,
+        filename: &str,
+        bytes: &[u8],
+    ) -> Result<LogoscoreSharedFile> {
+        let directory = tempfile::Builder::new()
+            .prefix("logos-inspector-upload-")
+            .tempdir()
+            .context("failed to create logoscore upload workspace")?;
+        #[cfg(unix)]
+        share_with_local_daemon(&self.runner, directory.path())?;
+        let path = directory.path().join(filename);
+        fs::write(&path, bytes).context("failed to write logoscore upload payload")?;
+        #[cfg(unix)]
+        share_file_with_local_daemon(&self.runner, &path)?;
+        Ok(LogoscoreSharedFile {
+            _directory: directory,
+            path,
+        })
+    }
+
     fn run_json<I, S>(&self, args: I, timeout: Duration) -> Result<LogosCoreOutput>
     where
         I: IntoIterator<Item = S>,
@@ -230,6 +269,93 @@ pub fn module_info(module: &str) -> Result<LogosCoreOutput> {
         bail!("module name is required");
     }
     configured_runtime().module_info(module)
+}
+
+pub(crate) fn require_module_method(module: &str, method: &str, signature: &str) -> Result<()> {
+    configured_runtime().require_module_method(module, method, signature)
+}
+
+pub(crate) fn stage_shared_file(filename: &str, bytes: &[u8]) -> Result<LogoscoreSharedFile> {
+    configured_runtime().stage_shared_file(filename, bytes)
+}
+
+#[cfg(unix)]
+fn share_with_local_daemon(runner: &LogosCoreRunner, path: &Path) -> Result<()> {
+    use std::os::unix::fs::{PermissionsExt as _, chown};
+
+    let group = local_daemon_group(runner)?;
+    chown(path, None, Some(group)).context("failed to assign logoscore upload directory group")?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o750))
+        .context("failed to secure logoscore upload directory")
+}
+
+#[cfg(unix)]
+fn share_file_with_local_daemon(runner: &LogosCoreRunner, path: &Path) -> Result<()> {
+    use std::os::unix::fs::{PermissionsExt as _, chown};
+
+    let group = local_daemon_group(runner)?;
+    chown(path, None, Some(group)).context("failed to assign logoscore upload file group")?;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o640))
+        .context("failed to secure logoscore upload file")
+}
+
+#[cfg(unix)]
+fn local_daemon_group(runner: &LogosCoreRunner) -> Result<u32> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let config_dir = runner_config_dir(runner)?;
+    let config_path = config_dir.join("client").join("config.json");
+    let config_bytes = fs::read(&config_path).with_context(|| {
+        format!(
+            "failed to read logoscore client config `{}`",
+            config_path.display()
+        )
+    })?;
+    let config: Value = serde_json::from_slice(&config_bytes)
+        .context("logoscore client config contains invalid JSON")?;
+    let instance_id = local_transport_instance_id(&config)?;
+    let socket = env::temp_dir().join(format!("logos_core_service_{instance_id}"));
+    fs::metadata(&socket)
+        .with_context(|| {
+            format!(
+                "logoscore local transport socket is unavailable at `{}`",
+                socket.display()
+            )
+        })
+        .map(|metadata| metadata.gid())
+}
+
+#[cfg(unix)]
+fn runner_config_dir(runner: &LogosCoreRunner) -> Result<PathBuf> {
+    if let Some(config_dir) = runner.config_dir.as_deref() {
+        return Ok(PathBuf::from(config_dir));
+    }
+    let home = runner
+        .home
+        .clone()
+        .or_else(|| env::var("HOME").ok())
+        .filter(|value| !value.trim().is_empty())
+        .context("HOME is required to locate logoscore client config")?;
+    Ok(PathBuf::from(home).join(".logoscore"))
+}
+
+#[cfg(unix)]
+fn local_transport_instance_id(config: &Value) -> Result<&str> {
+    let transport = config
+        .pointer("/daemon/core_service/transport")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if transport != "local" {
+        bail!(
+            "storage_module uploadUrl requires local logoscore transport with a shared filesystem"
+        );
+    }
+    config
+        .get("instance_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .context("logoscore client config has no instance_id")
 }
 
 fn module_discovery(
@@ -324,20 +450,34 @@ where
             output_limit: LOGOSCORE_OUTPUT_LIMIT,
         },
     )?;
-    let stdout = output_text(&output.stdout, &[], LOGOSCORE_OUTPUT_LIMIT);
     let stderr = output_text(&output.stderr, &[], LOGOSCORE_OUTPUT_LIMIT);
-    let value = serde_json::from_str(&stdout).with_context(|| {
-        format!(
-            "{} returned non-json output: {}",
-            runner.label,
-            stdout.chars().take(400).collect::<String>()
-        )
-    })?;
+    let value = parse_json_stdout(&runner.label, &output.stdout)?;
     let stderr = (!stderr.is_empty()).then_some(stderr);
     Ok(LogosCoreOutput {
         runner: runner.label.clone(),
         value,
         stderr,
+    })
+}
+
+fn parse_json_stdout(label: &str, stdout: &[u8]) -> Result<Value> {
+    if stdout.len() > LOGOSCORE_JSON_OUTPUT_LIMIT {
+        bail!(
+            "{label} JSON output exceeded {} bytes",
+            LOGOSCORE_JSON_OUTPUT_LIMIT
+        );
+    }
+    let text = std::str::from_utf8(stdout).with_context(|| {
+        format!(
+            "{label} returned non-UTF-8 output: {}",
+            output_text(stdout, &[], 400)
+        )
+    })?;
+    serde_json::from_str(text.trim()).with_context(|| {
+        format!(
+            "{label} returned non-json output: {}",
+            text.chars().take(400).collect::<String>()
+        )
     })
 }
 
@@ -428,7 +568,11 @@ fn normalize_call_value(value: &mut Value) {
     let Some(raw) = call_value.as_str() else {
         return;
     };
-    let Ok(parsed) = serde_json::from_str::<Value>(raw) else {
+    let trimmed = raw.trim();
+    if !(trimmed.starts_with('{') || trimmed.starts_with('[')) {
+        return;
+    }
+    let Ok(parsed) = serde_json::from_str::<Value>(trimmed) else {
         return;
     };
     *call_value = parsed;
@@ -467,6 +611,31 @@ mod tests {
 
         let value = value.pointer("/result/value").and_then(Value::as_str);
         assert_eq!(value, Some("@[Version, Metrics]"));
+    }
+
+    #[test]
+    fn keeps_scalar_json_text_as_module_string() {
+        let mut value = json!({
+            "result": {
+                "value": "0"
+            }
+        });
+
+        normalize_call_value(&mut value);
+
+        let value = value.pointer("/result/value").and_then(Value::as_str);
+        assert_eq!(value, Some("0"));
+    }
+
+    #[test]
+    fn parses_json_larger_than_error_excerpt_limit() -> Result<()> {
+        let expected = json!({ "payload": "x".repeat(LOGOSCORE_OUTPUT_LIMIT * 3) });
+        let encoded = serde_json::to_vec(&expected)?;
+
+        let parsed = parse_json_stdout("logoscore test", &encoded)?;
+
+        anyhow::ensure!(parsed == expected, "large logoscore JSON was truncated");
+        Ok(())
     }
 
     #[test]

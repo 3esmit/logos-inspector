@@ -47,6 +47,7 @@ const EMERGENCY_SOURCE_MODE: SourceModePolicy = SourceModePolicy {
 pub enum CoreSourceMode {
     Rpc,
     Module,
+    LogoscoreCli,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +59,7 @@ pub enum CoreEndpointMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeliverySourceMode {
     Module,
+    LogoscoreCli,
     Rest,
     Metrics,
     NetworkMonitor,
@@ -67,6 +69,7 @@ pub enum DeliverySourceMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StorageSourceMode {
     Module,
+    LogoscoreCli,
     Rest,
     Metrics,
     Unsupported,
@@ -313,7 +316,7 @@ impl SourcePolicyCatalog {
     #[must_use]
     pub fn report(self) -> SourcePolicyReport {
         SourcePolicyReport {
-            version: 3,
+            version: 4,
             defaults: SourcePolicyDefaults {
                 node_endpoint: DEFAULT_NODE_ENDPOINT,
                 delivery_rest_endpoint: DEFAULT_DELIVERY_REST_ENDPOINT,
@@ -358,6 +361,7 @@ impl CoreSourceMode {
         match policy.key {
             "rpc" => Some(Self::Rpc),
             "module" => Some(Self::Module),
+            "logoscore_cli" => Some(Self::LogoscoreCli),
             _ => None,
         }
     }
@@ -366,12 +370,13 @@ impl CoreSourceMode {
         match self {
             Self::Rpc => "rpc",
             Self::Module => "module",
+            Self::LogoscoreCli => "logoscore_cli",
         }
     }
 
     pub fn effective(self) -> CoreEndpointMode {
         match self {
-            Self::Module => CoreEndpointMode::Module,
+            Self::Module | Self::LogoscoreCli => CoreEndpointMode::Module,
             Self::Rpc => CoreEndpointMode::Rpc,
         }
     }
@@ -392,6 +397,7 @@ impl DeliverySourceMode {
             .mode_policy_for_token(SourceFamily::Delivery, value)
             .map(|policy| match policy.key {
                 "module" => Self::Module,
+                "logoscore_cli" => Self::LogoscoreCli,
                 "rest" => Self::Rest,
                 "metrics" => Self::Metrics,
                 "network-monitor" => Self::NetworkMonitor,
@@ -407,6 +413,7 @@ impl DeliverySourceMode {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Module => "module",
+            Self::LogoscoreCli => "logoscore_cli",
             Self::Rest => "rest",
             Self::Metrics => "metrics",
             Self::NetworkMonitor => "network-monitor",
@@ -425,6 +432,7 @@ impl StorageSourceMode {
             .mode_policy_for_token(SourceFamily::Storage, value)
             .map(|policy| match policy.key {
                 "module" => Self::Module,
+                "logoscore_cli" => Self::LogoscoreCli,
                 "rest" => Self::Rest,
                 "metrics" => Self::Metrics,
                 _ => Self::Unsupported,
@@ -439,6 +447,7 @@ impl StorageSourceMode {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Module => "module",
+            Self::LogoscoreCli => "logoscore_cli",
             Self::Rest => "rest",
             Self::Metrics => "metrics",
             Self::Unsupported => "unsupported",
@@ -655,7 +664,7 @@ mod tests {
         );
 
         let report = catalog.report();
-        assert_eq!(report.version, 3);
+        assert_eq!(report.version, 4);
         assert!(
             report
                 .source_modes
@@ -684,7 +693,7 @@ mod tests {
             .iter()
             .find(|mode| mode.key == "network-monitor");
 
-        assert_eq!(policy.version, 3);
+        assert_eq!(policy.version, 4);
         assert_eq!(
             delivery_rest.map(|mode| mode.label),
             Some("Direct Waku REST")
@@ -821,6 +830,35 @@ mod tests {
             default_endpoint_for_domain("delivery"),
             DEFAULT_DELIVERY_REST_ENDPOINT
         );
+    }
+
+    #[test]
+    fn source_policy_keeps_host_modules_distinct_from_logoscore_cli() {
+        let policy = source_policy_report();
+
+        for modes in [
+            policy.source_modes.core,
+            policy.source_modes.delivery,
+            policy.source_modes.storage,
+        ] {
+            let module = modes.iter().find(|mode| mode.key == "module");
+            let cli = modes.iter().find(|mode| mode.key == "logoscore_cli");
+
+            assert!(module.is_some(), "missing host module connector");
+            assert!(cli.is_some(), "missing logoscore CLI connector");
+            assert_eq!(
+                module.map(|mode| mode.adapter.connection_type),
+                Some(AdapterConnectionType::Module)
+            );
+            assert_eq!(
+                cli.map(|mode| mode.adapter.connection_type),
+                Some(AdapterConnectionType::LogoscoreCli)
+            );
+            assert_ne!(
+                module.map(|mode| mode.adapter.connector_id),
+                cli.map(|mode| mode.adapter.connector_id)
+            );
+        }
     }
 
     fn generated_source_policy_catalog() -> Result<String, serde_json::Error> {
