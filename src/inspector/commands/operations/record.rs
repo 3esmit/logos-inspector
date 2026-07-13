@@ -344,3 +344,42 @@ pub(super) fn test_runtime_operation_record(
         cancel_requested,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use anyhow::{Result, bail};
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn runtime_record_serializes_definition_policy_facts() -> Result<()> {
+        let record = test_runtime_operation_record(
+            "wallet-read-1",
+            "wallet",
+            "localWalletAccounts",
+            RuntimeOperationStatus::Running,
+            false,
+            None,
+            Arc::new(AtomicBool::new(false)),
+        );
+
+        let value = runtime_operation_value(&record.operation);
+
+        if value.get("policyFacts")
+            != Some(&json!({
+                "operationClass": "read_poll",
+                "affectedInputs": [
+                    { "key": "domain", "value": "wallet" },
+                    { "key": "method", "value": "localWalletAccounts" }
+                ],
+                "restartPolicy": "safe_read_polling",
+                "confirmationRequired": false,
+                "provenance": ["runtime_operation_policy"]
+            }))
+        {
+            bail!("runtime record policy facts drifted: {value}");
+        }
+        Ok(())
+    }
+}

@@ -273,13 +273,16 @@ mod tests {
             args: Value,
             label: &str,
         ) -> Result<Value> {
+            let definition = method
+                .definition()
+                .with_context(|| format!("operation definition is missing for {method:?}"))?;
             self.calls.borrow_mut().push(RunnerCall::RunOperation {
-                domain: method.domain().as_str().to_owned(),
-                method: method.as_str().to_owned(),
+                domain: definition.domain().as_str().to_owned(),
+                method: definition.name().to_owned(),
                 args,
                 label: label.to_owned(),
             });
-            Ok(json!({ "operation": method.as_str() }))
+            Ok(json!({ "operation": definition.name() }))
         }
 
         fn start_operation(
@@ -288,13 +291,16 @@ mod tests {
             args: Value,
             label: &str,
         ) -> Result<Value> {
+            let definition = method
+                .definition()
+                .with_context(|| format!("operation definition is missing for {method:?}"))?;
             self.calls.borrow_mut().push(RunnerCall::StartOperation {
-                domain: method.domain().as_str().to_owned(),
-                method: method.as_str().to_owned(),
+                domain: definition.domain().as_str().to_owned(),
+                method: definition.name().to_owned(),
                 args,
                 label: label.to_owned(),
             });
-            Ok(json!({ "operationId": method.as_str() }))
+            Ok(json!({ "operationId": definition.name() }))
         }
 
         fn preview_backup_import(

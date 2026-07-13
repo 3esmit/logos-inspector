@@ -83,7 +83,7 @@ impl BackupImportCoordinator {
 
     pub(super) fn operation_permit(
         &self,
-        method: OperationMethod,
+        request: &RuntimeOperationRequest,
     ) -> Result<BackupOperationPermit<'_>> {
         let active = self
             .active_selection
@@ -91,11 +91,11 @@ impl BackupImportCoordinator {
             .map_err(|_| anyhow::anyhow!("backup import state is unavailable"))?;
         if active
             .as_ref()
-            .is_some_and(|selection| selection.affects(method))
+            .is_some_and(|selection| selection.affects(request.method()))
         {
             bail!(
                 "operation `{}` is blocked while affected settings are being imported",
-                method.as_str()
+                request.method_name()
             );
         }
         Ok(BackupOperationPermit { _active: active })
@@ -743,6 +743,23 @@ mod tests {
 
         if plan.get("blocked").and_then(Value::as_bool) != Some(true) {
             bail!("affected operation should block import: {plan}");
+        }
+        let decision = plan
+            .get("operation_decisions")
+            .and_then(Value::as_array)
+            .and_then(|decisions| decisions.first())
+            .context("backup import decision is missing")?;
+        let policy = decision
+            .get("operation")
+            .and_then(|operation| operation.get("policyFacts"))
+            .context("runtime operation policy facts are missing")?;
+        if decision.get("operationClass") != policy.get("operationClass")
+            || decision.get("affectedInputs") != policy.get("affectedInputs")
+            || decision.get("restartPolicy") != policy.get("restartPolicy")
+            || decision.get("action").and_then(Value::as_str) != Some("block")
+            || decision.get("restartEligible").and_then(Value::as_bool) != Some(false)
+        {
+            bail!("backup decision did not reuse runtime policy facts: {decision}");
         }
         Ok(())
     }

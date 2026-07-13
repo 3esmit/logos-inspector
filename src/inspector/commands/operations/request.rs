@@ -4,13 +4,15 @@ use serde_json::{Map, Value, json};
 use crate::{source_routing::NodeOperationRequest, support::args::Args};
 
 use super::delivery;
-use super::spec::{OperationDomain, OperationExclusiveGroup, OperationMethod};
+use super::spec::{
+    OperationDefinition, OperationDomain, OperationExclusiveGroup, OperationExecutor,
+    OperationMethod, OperationPolicyDefinition, operation_definition,
+};
 use super::storage;
 
 #[derive(Debug, Clone)]
 pub(crate) struct RuntimeOperationRequest {
-    pub(super) domain: String,
-    pub(super) method: OperationMethod,
+    definition: OperationDefinition,
     node_request: Option<NodeOperationRequest>,
     pub(super) args: Value,
     pub(super) label: String,
@@ -18,7 +20,9 @@ pub(crate) struct RuntimeOperationRequest {
 
 impl RuntimeOperationRequest {
     pub(crate) fn from_call(method: OperationMethod, args: Value, label: &str) -> Result<Self> {
-        let node_request = if node_domain(method.domain()) {
+        let definition = operation_definition(method)
+            .with_context(|| format!("runtime operation definition is missing for {method:?}"))?;
+        let node_request = if node_domain(definition.domain()) {
             Some(NodeOperationRequest::from_bridge_args(&Args::new(
                 args.clone(),
             )?)?)
@@ -26,8 +30,7 @@ impl RuntimeOperationRequest {
             None
         };
         Ok(Self {
-            domain: method.domain().as_str().to_owned(),
-            method,
+            definition,
             node_request,
             args,
             label: label.to_owned(),
@@ -35,11 +38,27 @@ impl RuntimeOperationRequest {
     }
 
     pub(crate) fn method_name(&self) -> &'static str {
-        self.method.as_str()
+        self.definition.name()
     }
 
     pub(super) fn method(&self) -> OperationMethod {
-        self.method
+        self.definition.method()
+    }
+
+    pub(super) fn domain(&self) -> OperationDomain {
+        self.definition.domain()
+    }
+
+    pub(super) fn domain_name(&self) -> &'static str {
+        self.definition.domain().as_str()
+    }
+
+    pub(super) fn executor(&self) -> OperationExecutor {
+        self.definition.executor()
+    }
+
+    pub(super) fn policy_definition(&self) -> OperationPolicyDefinition {
+        self.definition.policy()
     }
 
     pub(crate) fn label(&self) -> &str {
@@ -47,11 +66,11 @@ impl RuntimeOperationRequest {
     }
 
     pub(crate) fn cancellable(&self) -> bool {
-        self.method.cancellable()
+        self.definition.is_cancellable()
     }
 
     pub(crate) fn exclusive_group(&self) -> Option<OperationExclusiveGroup> {
-        self.method.exclusive_group()
+        self.definition.exclusive_group()
     }
 
     pub(super) fn node_request(&self) -> Result<&NodeOperationRequest> {
@@ -77,15 +96,17 @@ pub(crate) fn runtime_operation_request_from_value(
         .context("runtime operation method is required")?;
     let method = OperationMethod::from_str(&method)
         .with_context(|| format!("unknown runtime operation method `{method}`"))?;
+    let definition = operation_definition(method)
+        .with_context(|| format!("runtime operation definition is missing for {method:?}"))?;
     if let Some(domain) = object_string(object, "domain")
-        && domain != method.domain().as_str()
+        && domain != definition.domain().as_str()
     {
         bail!(
             "runtime operation domain `{domain}` does not match method `{}`",
-            method.as_str()
+            definition.name()
         );
     }
-    let node_request = if node_domain(method.domain()) {
+    let node_request = if node_domain(definition.domain()) {
         Some(NodeOperationRequest::from_value(&value)?)
     } else {
         None
@@ -95,11 +116,10 @@ pub(crate) fn runtime_operation_request_from_value(
         .cloned()
         .unwrap_or_else(|| Value::Array(Vec::new()));
     let request = RuntimeOperationRequest {
-        domain: method.domain().as_str().to_owned(),
-        method,
+        definition,
         node_request,
         args,
-        label: object_string(object, "label").unwrap_or_else(|| method.label().to_owned()),
+        label: object_string(object, "label").unwrap_or_else(|| definition.label().to_owned()),
     };
     validate_node_request(&request)?;
     Ok(request)
@@ -119,7 +139,7 @@ fn node_domain(domain: OperationDomain) -> bool {
 }
 
 fn validate_node_request(request: &RuntimeOperationRequest) -> Result<()> {
-    match request.method.domain() {
+    match request.domain() {
         OperationDomain::Storage => storage::validate(request),
         OperationDomain::Delivery => delivery::validate(request),
         _ => Ok(()),
@@ -155,7 +175,7 @@ pub(super) fn runtime_operation_context(request: &RuntimeOperationRequest) -> Va
             context.insert("mutatingEnabled".to_owned(), json!(true));
         }
     }
-    match request.method.domain() {
+    match request.domain() {
         OperationDomain::Storage => storage::add_operation_context(request, &mut context),
         OperationDomain::Delivery => delivery::add_operation_context(request, &mut context),
         _ => {}

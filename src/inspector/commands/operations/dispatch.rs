@@ -15,7 +15,7 @@ pub(super) async fn execute_runtime_operation(
     operation_id: &str,
     cancel_requested: &AtomicBool,
 ) -> Result<Value> {
-    match request.method().executor() {
+    match request.executor() {
         OperationExecutor::Storage => {
             storage::execute(&request, registry, operation_id, cancel_requested).await
         }

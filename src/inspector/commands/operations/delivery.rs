@@ -4,51 +4,65 @@ use serde_json::Value;
 use crate::source_routing::messaging_layer;
 
 use super::RuntimeOperationRequest;
-use super::spec::{OperationDefinition, OperationDomain, OperationMethod};
+use super::spec::{OperationClass, OperationDefinition, OperationDomain, OperationMethod};
 
 pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
-    OperationDefinition::mutating(
+    OperationDefinition::new(
         OperationMethod::DeliverySubscribe,
         "deliverySubscribe",
         OperationDomain::Delivery,
         "Delivery subscribe",
-    ),
-    OperationDefinition::mutating(
+        OperationClass::Mutating,
+    )
+    .with_context_inputs(&["source", "endpoint"]),
+    OperationDefinition::new(
         OperationMethod::DeliveryUnsubscribe,
         "deliveryUnsubscribe",
         OperationDomain::Delivery,
         "Delivery unsubscribe",
-    ),
-    OperationDefinition::mutating(
+        OperationClass::Mutating,
+    )
+    .with_context_inputs(&["source", "endpoint"]),
+    OperationDefinition::new(
         OperationMethod::DeliverySend,
         "deliverySend",
         OperationDomain::Delivery,
         "Delivery send",
-    ),
-    OperationDefinition::mutating(
+        OperationClass::Mutating,
+    )
+    .with_context_inputs(&["source", "endpoint"]),
+    OperationDefinition::new(
         OperationMethod::DeliveryCreateNode,
         "deliveryCreateNode",
         OperationDomain::Delivery,
         "Delivery create node",
-    ),
-    OperationDefinition::mutating(
+        OperationClass::Lifecycle,
+    )
+    .with_context_inputs(&["source", "endpoint"]),
+    OperationDefinition::new(
         OperationMethod::DeliveryStart,
         "deliveryStart",
         OperationDomain::Delivery,
         "Delivery start",
-    ),
-    OperationDefinition::mutating(
+        OperationClass::Lifecycle,
+    )
+    .with_context_inputs(&["source", "endpoint"]),
+    OperationDefinition::new(
         OperationMethod::DeliveryStop,
         "deliveryStop",
         OperationDomain::Delivery,
         "Delivery stop",
-    ),
+        OperationClass::Lifecycle,
+    )
+    .with_context_inputs(&["source", "endpoint"]),
     OperationDefinition::new(
         OperationMethod::DeliveryStoreQuery,
         "deliveryStoreQuery",
         OperationDomain::Delivery,
         "Delivery store query",
-    ),
+        OperationClass::ReadPoll,
+    )
+    .with_context_inputs(&["source", "endpoint"]),
 ];
 
 pub(super) async fn execute(request: &RuntimeOperationRequest) -> Result<Value> {

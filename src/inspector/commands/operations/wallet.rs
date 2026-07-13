@@ -9,7 +9,7 @@ use crate::{
 
 use super::super::value::{blocking_value, to_value};
 use super::RuntimeOperationRequest;
-use super::spec::{OperationDefinition, OperationDomain, OperationMethod};
+use super::spec::{OperationClass, OperationDefinition, OperationDomain, OperationMethod};
 use super::wallet_args::{confirmed_wallet_args, wallet_profile_arg};
 
 pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
@@ -18,30 +18,35 @@ pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
         "localWalletCreateAccount",
         OperationDomain::Wallet,
         "Wallet account",
+        OperationClass::SigningSubmission,
     ),
     OperationDefinition::new(
         OperationMethod::LocalWalletSendTransaction,
         "localWalletSendTransaction",
         OperationDomain::Wallet,
         "Wallet send",
+        OperationClass::SigningSubmission,
     ),
     OperationDefinition::new(
         OperationMethod::LocalWalletCommand,
         "localWalletCommand",
         OperationDomain::Wallet,
         "Wallet command",
+        OperationClass::SigningSubmission,
     ),
     OperationDefinition::new(
         OperationMethod::LocalWalletSyncPrivate,
         "localWalletSyncPrivate",
         OperationDomain::Wallet,
         "Private sync",
+        OperationClass::SigningSubmission,
     ),
     OperationDefinition::new(
         OperationMethod::LocalWalletAccounts,
         "localWalletAccounts",
         OperationDomain::Wallet,
         "Wallet accounts",
+        OperationClass::ReadPoll,
     ),
 ];
 

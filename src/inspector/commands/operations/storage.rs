@@ -7,7 +7,9 @@ use tokio::io::AsyncWriteExt as _;
 use crate::source_routing::storage_layer;
 
 use super::record::update_runtime_operation_progress;
-use super::spec::{OperationDefinition, OperationDomain, OperationExclusiveGroup, OperationMethod};
+use super::spec::{
+    OperationClass, OperationDefinition, OperationDomain, OperationExclusiveGroup, OperationMethod,
+};
 use super::{RuntimeOperationRegistry, RuntimeOperationRequest};
 
 pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
@@ -16,38 +18,50 @@ pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
         "storageManifests",
         OperationDomain::Storage,
         "Storage manifests",
-    ),
+        OperationClass::ReadPoll,
+    )
+    .with_context_inputs(&["source", "endpoint"]),
     OperationDefinition::new(
         OperationMethod::StorageDownloadManifest,
         "storageDownloadManifest",
         OperationDomain::Storage,
         "Storage manifest",
-    ),
-    OperationDefinition::mutating(
+        OperationClass::ReadPoll,
+    )
+    .with_context_inputs(&["source", "endpoint", "cid"]),
+    OperationDefinition::new(
         OperationMethod::StorageFetch,
         "storageFetch",
         OperationDomain::Storage,
         "Storage fetch",
-    ),
-    OperationDefinition::mutating(
+        OperationClass::Mutating,
+    )
+    .with_context_inputs(&["source", "endpoint", "cid"]),
+    OperationDefinition::new(
         OperationMethod::StorageUploadUrl,
         "storageUploadUrl",
         OperationDomain::Storage,
         "Storage upload",
-    ),
-    OperationDefinition::cancellable(
+        OperationClass::Mutating,
+    )
+    .with_context_inputs(&["source", "endpoint", "path"]),
+    OperationDefinition::new(
         OperationMethod::StorageDownloadToUrl,
         "storageDownloadToUrl",
         OperationDomain::Storage,
         "Storage download",
-        OperationExclusiveGroup::StorageDownload,
-    ),
-    OperationDefinition::mutating(
+        OperationClass::Mutating,
+    )
+    .with_context_inputs(&["source", "endpoint", "cid", "path"])
+    .cancellable(OperationExclusiveGroup::StorageDownload),
+    OperationDefinition::new(
         OperationMethod::StorageRemove,
         "storageRemove",
         OperationDomain::Storage,
         "Storage remove",
-    ),
+        OperationClass::Destructive,
+    )
+    .with_context_inputs(&["source", "endpoint", "cid"]),
 ];
 
 pub(super) async fn execute(
