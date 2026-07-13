@@ -1,15 +1,18 @@
 use anyhow::{Context as _, Result};
 use reqwest::{Method, Response};
+use serde::Deserialize;
 use serde_json::{Value, json};
 
+use super::adapters::STORAGE_MODULE;
 use crate::{
     modules::ModuleReport,
     modules::logos_core::LogoscoreCliRuntime,
     source_routing::{
         DEFAULT_STORAGE_METRICS_ENDPOINT, DEFAULT_STORAGE_REST_ENDPOINT,
         adapter::{
-            AdapterConnectionType, AdapterInputPolicy, AdapterLayer, SourceAdapterPolicy,
-            SourceModePolicy, sealed,
+            AdapterConnectionType, AdapterInitialization, AdapterInputPolicy,
+            ManagedLifecycleOutcome, ManagedModuleCallSpec, ManagedNodeAction, SourceAdapterPolicy,
+            SourceModePolicy,
         },
     },
     support::raw_source_transport::request_success,
@@ -33,7 +36,7 @@ pub(crate) fn operation_args(
 }
 
 pub(crate) fn ensure_managed_module(runtime: &LogoscoreCliRuntime) -> Result<()> {
-    crate::source_routing::adapter::ensure_managed_module(runtime, module_id())
+    runtime.ensure_module_loaded(module_id())
 }
 
 pub(crate) fn call_managed_module(
@@ -42,16 +45,73 @@ pub(crate) fn call_managed_module(
     signature: &str,
     args: &[String],
 ) -> Result<Value> {
-    crate::source_routing::adapter::call_managed_module(
-        runtime,
-        module_id(),
-        method,
-        signature,
-        args,
-    )
+    runtime.call_checked(module_id(), method, signature, args)
 }
 
-use super::adapters::STORAGE_MODULE;
+#[must_use]
+pub(crate) fn managed_call_spec(
+    action: ManagedNodeAction,
+    config_path: &str,
+) -> Option<ManagedModuleCallSpec> {
+    match action {
+        ManagedNodeAction::Initialize => Some(ManagedModuleCallSpec::new(
+            "init",
+            "init(QString)",
+            vec![format!("@{config_path}")],
+        )),
+        ManagedNodeAction::Start => {
+            Some(ManagedModuleCallSpec::new("start", "start()", Vec::new()))
+        }
+        ManagedNodeAction::Stop => Some(ManagedModuleCallSpec::new("stop", "stop()", Vec::new())),
+        ManagedNodeAction::Destroy => Some(ManagedModuleCallSpec::new(
+            "destroy",
+            "destroy()",
+            Vec::new(),
+        )),
+    }
+}
+
+#[must_use]
+pub(crate) fn managed_config(data_dir: &str) -> Value {
+    json!({
+        "data-dir": data_dir,
+        "log-level": "INFO",
+        "nat": "none",
+        "network": "logos.test",
+    })
+}
+
+#[must_use]
+pub(crate) const fn managed_lifecycle_event(action: ManagedNodeAction) -> Option<&'static str> {
+    match action {
+        ManagedNodeAction::Start => Some("storageStart"),
+        ManagedNodeAction::Stop => Some("storageStop"),
+        ManagedNodeAction::Initialize | ManagedNodeAction::Destroy => None,
+    }
+}
+
+pub(crate) fn managed_lifecycle_outcome(
+    payload: Option<&Value>,
+) -> Result<ManagedLifecycleOutcome> {
+    let payload = payload.context("storage lifecycle event has no payload")?;
+    let payload = match payload {
+        Value::String(text) => serde_json::from_str(text),
+        value => serde_json::from_value(value.clone()),
+    };
+    let payload: StorageLifecyclePayload =
+        payload.context("storage lifecycle event payload is not valid JSON")?;
+    Ok(ManagedLifecycleOutcome {
+        success: payload.success,
+        detail: payload.message,
+    })
+}
+
+#[derive(Debug, Deserialize)]
+struct StorageLifecyclePayload {
+    success: bool,
+    #[serde(default)]
+    message: String,
+}
 
 const REST_INPUTS: &[AdapterInputPolicy] = &[
     AdapterInputPolicy {
@@ -117,6 +177,8 @@ pub(crate) const STORAGE_SOURCE_MODES: &[SourceModePolicy] = &[
             capabilities: MODULE_CAPABILITIES,
             supports_cid_probe: true,
             supports_mutating_diagnostics: true,
+            capability_scopes: &["storage"],
+            endpoint_role: None,
         },
     },
     SourceModePolicy {
@@ -144,6 +206,8 @@ pub(crate) const STORAGE_SOURCE_MODES: &[SourceModePolicy] = &[
             capabilities: REST_CAPABILITIES,
             supports_cid_probe: true,
             supports_mutating_diagnostics: true,
+            capability_scopes: &["storage"],
+            endpoint_role: Some("storage_rest_url"),
         },
     },
     SourceModePolicy {
@@ -164,24 +228,11 @@ pub(crate) const STORAGE_SOURCE_MODES: &[SourceModePolicy] = &[
             capabilities: METRICS_CAPABILITIES,
             supports_cid_probe: false,
             supports_mutating_diagnostics: false,
+            capability_scopes: &["storage"],
+            endpoint_role: Some("storage_metrics_url"),
         },
     },
 ];
-
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct StorageAdapterLayer;
-
-impl sealed::Sealed for StorageAdapterLayer {}
-
-impl AdapterLayer for StorageAdapterLayer {
-    fn key(&self) -> &'static str {
-        "storage"
-    }
-
-    fn modes(&self) -> &'static [SourceModePolicy] {
-        STORAGE_SOURCE_MODES
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StorageAdapter<'a> {
@@ -198,13 +249,27 @@ pub(crate) enum StorageAdapter<'a> {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct StorageReportInputs<'a> {
-    pub(crate) source_mode: &'a str,
-    pub(crate) rest_endpoint: Option<&'a str>,
-    pub(crate) metrics_endpoint: Option<&'a str>,
-    pub(crate) cid: Option<&'a str>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StorageReportInputs {
+    pub(crate) source_mode: String,
+    pub(crate) rest_endpoint: Option<String>,
+    pub(crate) metrics_endpoint: Option<String>,
+    pub(crate) cid: Option<String>,
     pub(crate) privileged_debug_enabled: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct StorageReportEnvelope {
+    #[serde(default)]
+    options: StorageReportOptions,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct StorageReportOptions {
+    #[serde(default)]
+    cid: String,
+    #[serde(default)]
+    privileged_debug_enabled: bool,
 }
 
 impl<'a> StorageAdapter<'a> {
@@ -248,39 +313,27 @@ impl<'a> StorageAdapter<'a> {
     }
 }
 
-#[must_use]
-pub(crate) fn report_inputs(args: &crate::support::args::Args) -> StorageReportInputs<'_> {
-    let source_mode = args.optional_string(0).unwrap_or("rest");
-    match crate::source_routing::StorageSourceMode::from_token(source_mode) {
-        crate::source_routing::StorageSourceMode::Module => StorageReportInputs {
-            source_mode,
-            rest_endpoint: None,
-            metrics_endpoint: None,
-            cid: args.optional_string(1),
-            privileged_debug_enabled: args.optional_bool(2),
-        },
-        crate::source_routing::StorageSourceMode::Rest => StorageReportInputs {
-            source_mode,
-            rest_endpoint: args.optional_string(1),
-            metrics_endpoint: args.optional_string(2),
-            cid: args.optional_string(3),
-            privileged_debug_enabled: args.optional_bool(4),
-        },
-        crate::source_routing::StorageSourceMode::Metrics => StorageReportInputs {
-            source_mode,
-            rest_endpoint: None,
-            metrics_endpoint: args.optional_string(1),
-            cid: None,
-            privileged_debug_enabled: false,
-        },
-        crate::source_routing::StorageSourceMode::Unsupported => StorageReportInputs {
-            source_mode,
-            rest_endpoint: None,
-            metrics_endpoint: None,
-            cid: None,
-            privileged_debug_enabled: false,
-        },
-    }
+pub(crate) fn report_inputs(args: &crate::support::args::Args) -> Result<StorageReportInputs> {
+    let value = args
+        .value(0)
+        .context("Storage adapter initialization is required")?;
+    let initialization = AdapterInitialization::parse(value, STORAGE_SOURCE_MODES, "rest")?;
+    let envelope: StorageReportEnvelope = serde_json::from_value(value.clone())
+        .context("Storage adapter initialization must be an object")?;
+    let StorageReportOptions {
+        cid,
+        privileged_debug_enabled,
+    } = envelope.options;
+    let cid = cid.trim().to_owned();
+    Ok(StorageReportInputs {
+        source_mode: initialization.source_mode().to_owned(),
+        rest_endpoint: initialization.input("rest_endpoint").map(ToOwned::to_owned),
+        metrics_endpoint: initialization
+            .input("metrics_endpoint")
+            .map(ToOwned::to_owned),
+        cid: if cid.is_empty() { None } else { Some(cid) },
+        privileged_debug_enabled,
+    })
 }
 
 fn present(value: Option<&str>) -> Option<&str> {
@@ -420,11 +473,29 @@ fn parse_probe_text(text: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::source_routing::adapter::contract_tests::assert_layer_contract;
+    use crate::source_routing::adapter::{
+        ManagedNodeAction,
+        contract_tests::{assert_layer_contract, assert_managed_module_contract},
+    };
 
     #[test]
     fn storage_adapters_satisfy_shared_seam_contract() {
-        assert_layer_contract(&StorageAdapterLayer);
+        assert_layer_contract("storage", STORAGE_SOURCE_MODES);
+    }
+
+    #[test]
+    fn storage_managed_calls_satisfy_shared_contract() {
+        assert_managed_module_contract(
+            "storage",
+            module_id(),
+            &[
+                ManagedNodeAction::Initialize,
+                ManagedNodeAction::Start,
+                ManagedNodeAction::Stop,
+                ManagedNodeAction::Destroy,
+            ],
+            managed_call_spec,
+        );
     }
 
     #[test]
@@ -447,13 +518,20 @@ mod tests {
 
     #[test]
     fn storage_report_boundary_parses_compact_adapter_inputs() -> Result<()> {
-        let module = crate::support::args::Args::new(json!(["module", "cid-a", true]))?;
-        let metrics = crate::support::args::Args::new(json!(["metrics", "http://metrics"]))?;
+        let module = crate::support::args::Args::new(json!([{
+            "source_mode": "module",
+            "inputs": {},
+            "options": { "cid": "cid-a", "privileged_debug_enabled": true }
+        }]))?;
+        let metrics = crate::support::args::Args::new(json!([{
+            "source_mode": "metrics",
+            "inputs": { "metrics_endpoint": "http://metrics" }
+        }]))?;
 
-        if report_inputs(&module).rest_endpoint.is_some()
-            || report_inputs(&module).cid != Some("cid-a")
-            || report_inputs(&metrics).metrics_endpoint != Some("http://metrics")
-            || report_inputs(&metrics).cid.is_some()
+        if report_inputs(&module)?.rest_endpoint.is_some()
+            || report_inputs(&module)?.cid.as_deref() != Some("cid-a")
+            || report_inputs(&metrics)?.metrics_endpoint.as_deref() != Some("http://metrics")
+            || report_inputs(&metrics)?.cid.is_some()
         {
             anyhow::bail!("compact Storage report inputs were parsed incorrectly");
         }

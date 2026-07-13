@@ -16,13 +16,11 @@ use crate::{
 
 use super::{
     NodeAction, NodeKind, NodeLifecycleState,
+    commands::managed_action,
     model::LocalNodesState,
     process::{process_is_alive, stop_process},
     runtime::LogoscoreRuntimeProfile,
 };
-
-const STORAGE_MODULE: &str = storage_layer::module_id();
-const DELIVERY_MODULE: &str = messaging_layer::module_id();
 
 static STATE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static WATCHERS: OnceLock<Mutex<HashMap<String, u32>>> = OnceLock::new();
@@ -181,25 +179,19 @@ pub(super) fn reset_module_contexts(state: &mut LocalNodesState) {
 }
 
 fn event_spec(kind: NodeKind, action: NodeAction) -> Option<ModuleEventSpec> {
-    match (kind, action) {
-        (NodeKind::Storage, NodeAction::Start) => Some(ModuleEventSpec {
-            module: STORAGE_MODULE,
-            event: "storageStart",
-        }),
-        (NodeKind::Storage, NodeAction::Stop) => Some(ModuleEventSpec {
-            module: STORAGE_MODULE,
-            event: "storageStop",
-        }),
-        (NodeKind::Messaging, NodeAction::Start) => Some(ModuleEventSpec {
-            module: DELIVERY_MODULE,
-            event: "nodeStarted",
-        }),
-        (NodeKind::Messaging, NodeAction::Stop) => Some(ModuleEventSpec {
-            module: DELIVERY_MODULE,
-            event: "nodeStopped",
-        }),
-        _ => None,
-    }
+    let action = managed_action(action)?;
+    let (module, event) = match kind {
+        NodeKind::Storage => (
+            storage_layer::module_id(),
+            storage_layer::managed_lifecycle_event(action)?,
+        ),
+        NodeKind::Messaging => (
+            messaging_layer::module_id(),
+            messaging_layer::managed_lifecycle_event(action)?,
+        ),
+        NodeKind::Bedrock | NodeKind::Sequencer | NodeKind::Indexer => return None,
+    };
+    Some(ModuleEventSpec { module, event })
 }
 
 fn parse_watch_event(
@@ -218,50 +210,18 @@ fn parse_watch_event(
         .get("data")
         .and_then(Value::as_object)
         .context("logoscore lifecycle event has no data object")?;
-    let (success, detail) = match target.kind {
-        NodeKind::Storage => storage_event_outcome(data.get("arg0"))?,
-        NodeKind::Messaging => delivery_event_outcome(data.get("arg0"), data.get("arg1"))?,
+    let outcome = match target.kind {
+        NodeKind::Storage => storage_layer::managed_lifecycle_outcome(data.get("arg0"))?,
+        NodeKind::Messaging => {
+            messaging_layer::managed_lifecycle_outcome(data.get("arg0"), data.get("arg1"))?
+        }
         _ => return Ok(None),
     };
     Ok(Some(ModuleLifecycleEvent {
         target: target.clone(),
-        success,
-        detail,
+        success: outcome.success,
+        detail: outcome.detail,
     }))
-}
-
-fn storage_event_outcome(payload: Option<&Value>) -> Result<(bool, String)> {
-    let payload = payload.context("storage lifecycle event has no payload")?;
-    let payload = match payload {
-        Value::String(text) => {
-            serde_json::from_str(text).context("storage lifecycle event payload is not JSON")?
-        }
-        value => value.clone(),
-    };
-    let success = payload
-        .get("success")
-        .and_then(Value::as_bool)
-        .context("storage lifecycle event has no success flag")?;
-    let detail = payload
-        .get("message")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_owned();
-    Ok((success, detail))
-}
-
-fn delivery_event_outcome(
-    success: Option<&Value>,
-    detail: Option<&Value>,
-) -> Result<(bool, String)> {
-    let success = success
-        .and_then(Value::as_bool)
-        .context("delivery lifecycle event has no success flag")?;
-    let detail = detail
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_owned();
-    Ok((success, detail))
 }
 
 fn spawn_watch_command(command: &mut Command, label: &str) -> Result<std::process::Child> {

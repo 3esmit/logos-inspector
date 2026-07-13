@@ -71,7 +71,7 @@ impl Default for LogoscoreCliTransport {
 
 impl LogoscoreCliTransport {
     #[must_use]
-    pub(crate) fn for_runtime(runtime: LogoscoreCliRuntime) -> Self {
+    fn from_runtime(runtime: LogoscoreCliRuntime) -> Self {
         Self { runtime }
     }
 }
@@ -167,6 +167,17 @@ impl LogoscoreCliRuntime {
         let mut output = self.run_json(command_args, command_timeout())?;
         normalize_call_value(&mut output.value);
         Ok(output)
+    }
+
+    pub(crate) fn call_checked(
+        &self,
+        module: &str,
+        method: &str,
+        signature: &str,
+        args: &[String],
+    ) -> Result<Value> {
+        self.require_module_method(module, method, signature)?;
+        LogoscoreCliTransport::from_runtime(self.clone()).call(module, method, args)
     }
 
     #[must_use]

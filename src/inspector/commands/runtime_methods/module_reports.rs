@@ -77,12 +77,12 @@ pub(super) fn storage_report(args: Value) -> Result<Value> {
 
 pub(super) fn storage_source_report(runtime: &Runtime, args: Value) -> Result<Value> {
     let args = Args::new(args)?;
-    let inputs = storage_layer::report_inputs(&args);
+    let inputs = storage_layer::report_inputs(&args)?;
     to_value(runtime.block_on(inspect_storage_source_report(
-        inputs.source_mode,
-        inputs.rest_endpoint,
-        inputs.metrics_endpoint,
-        inputs.cid,
+        &inputs.source_mode,
+        inputs.rest_endpoint.as_deref(),
+        inputs.metrics_endpoint.as_deref(),
+        inputs.cid.as_deref(),
         inputs.privileged_debug_enabled,
     )))
 }
@@ -94,10 +94,10 @@ pub(super) fn delivery_report(args: Value) -> Result<Value> {
 
 pub(super) fn delivery_source_report(runtime: &Runtime, args: Value) -> Result<Value> {
     let args = Args::new(args)?;
-    let inputs = messaging_layer::report_inputs(&args);
+    let inputs = messaging_layer::report_inputs(&args)?;
     to_value(runtime.block_on(inspect_delivery_source_report(
-        inputs.source_mode,
-        inputs.rest_endpoint,
-        inputs.metrics_endpoint,
+        &inputs.source_mode,
+        inputs.rest_endpoint.as_deref(),
+        inputs.metrics_endpoint.as_deref(),
     )))
 }

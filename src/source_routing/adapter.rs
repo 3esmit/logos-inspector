@@ -1,7 +1,8 @@
-use serde::Serialize;
-use serde_json::Value;
+use std::collections::BTreeMap;
 
-use crate::modules::logos_core::{LogoscoreCliRuntime, LogoscoreCliTransport, ModuleTransport};
+use anyhow::{Context as _, Result, bail};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -30,6 +31,10 @@ pub struct SourceAdapterPolicy {
     pub capabilities: &'static [&'static str],
     pub supports_cid_probe: bool,
     pub supports_mutating_diagnostics: bool,
+    #[serde(skip)]
+    pub capability_scopes: &'static [&'static str],
+    #[serde(skip)]
+    pub endpoint_role: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -45,59 +50,141 @@ pub struct SourceModePolicy {
     pub adapter: SourceAdapterPolicy,
 }
 
-pub(crate) mod sealed {
-    pub trait Sealed {}
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub(crate) struct AdapterInitialization {
+    #[serde(default)]
+    source_mode: String,
+    #[serde(default)]
+    inputs: BTreeMap<String, String>,
 }
 
-pub(crate) trait AdapterLayer: sealed::Sealed {
-    fn key(&self) -> &'static str;
-    fn modes(&self) -> &'static [SourceModePolicy];
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ManagedNodeAction {
+    Initialize,
+    Start,
+    Stop,
+    Destroy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ManagedModuleCallSpec {
+    pub(crate) method: &'static str,
+    pub(crate) signature: &'static str,
+    pub(crate) args: Vec<String>,
+}
+
+impl ManagedModuleCallSpec {
+    #[must_use]
+    pub(crate) fn new(method: &'static str, signature: &'static str, args: Vec<String>) -> Self {
+        Self {
+            method,
+            signature,
+            args,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ManagedLifecycleOutcome {
+    pub(crate) success: bool,
+    pub(crate) detail: String,
+}
+
+impl AdapterInitialization {
+    pub(crate) fn parse(
+        value: &Value,
+        modes: &'static [SourceModePolicy],
+        default_mode: &str,
+    ) -> Result<Self> {
+        let mut initialization: Self = serde_json::from_value(value.clone())
+            .context("adapter initialization must be an object")?;
+        let requested_mode = if initialization.source_mode.trim().is_empty() {
+            default_mode
+        } else {
+            initialization.source_mode.trim()
+        };
+        let mode = mode_for_token(modes, requested_mode)
+            .with_context(|| format!("unsupported source mode `{requested_mode}`"))?;
+        initialization.source_mode = mode.key.to_owned();
+        initialization.normalize_inputs(mode)?;
+        Ok(initialization)
+    }
+
+    #[must_use]
+    pub(crate) fn source_mode(&self) -> &str {
+        &self.source_mode
+    }
+
+    #[must_use]
+    pub(crate) fn input(&self, key: &str) -> Option<&str> {
+        self.inputs
+            .get(key)
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    }
+
+    fn normalize_inputs(&mut self, mode: &SourceModePolicy) -> Result<()> {
+        for key in self.inputs.keys() {
+            if !mode.adapter.inputs.iter().any(|input| input.key == key) {
+                bail!(
+                    "adapter `{}` does not accept input `{key}`",
+                    mode.adapter.connector_id
+                );
+            }
+        }
+        for input in mode.adapter.inputs {
+            if input.required && self.input(input.key).is_none() {
+                bail!("{} is required", input.label);
+            }
+        }
+        self.inputs.retain(|_, value| !value.trim().is_empty());
+        Ok(())
+    }
 }
 
 #[must_use]
 pub(crate) fn adapter_for_connector(
-    layers: &[&dyn AdapterLayer],
+    mode_families: &[&'static [SourceModePolicy]],
     connector_id: &str,
 ) -> Option<&'static SourceAdapterPolicy> {
-    layers
+    mode_families
         .iter()
-        .filter(|layer| !layer.key().is_empty())
-        .flat_map(|layer| layer.modes())
+        .flat_map(|modes| modes.iter())
         .find(|mode| mode.adapter.connector_id == connector_id)
         .map(|mode| &mode.adapter)
 }
 
-pub(crate) fn ensure_managed_module(
-    runtime: &LogoscoreCliRuntime,
-    module: &str,
-) -> anyhow::Result<()> {
-    runtime.ensure_module_loaded(module)
-}
-
-pub(crate) fn call_managed_module(
-    runtime: &LogoscoreCliRuntime,
-    module: &str,
-    method: &str,
-    signature: &str,
-    args: &[String],
-) -> anyhow::Result<Value> {
-    runtime.require_module_method(module, method, signature)?;
-    LogoscoreCliTransport::for_runtime(runtime.clone()).call(module, method, args)
+fn mode_for_token(
+    modes: &'static [SourceModePolicy],
+    value: &str,
+) -> Option<&'static SourceModePolicy> {
+    let value = value.trim().to_ascii_lowercase();
+    modes
+        .iter()
+        .find(|mode| mode.key == value || mode.aliases.contains(&value.as_str()))
 }
 
 #[cfg(test)]
 pub(crate) mod contract_tests {
     use std::{collections::BTreeSet, fs, path::Path};
 
-    use super::{AdapterConnectionType, AdapterLayer, SourceAdapterPolicy};
+    use serde_json::{Value, json};
 
-    pub(crate) fn assert_layer_contract(layer: &dyn AdapterLayer) {
-        let modes = layer.modes();
-        assert!(
-            modes.len() >= 2,
-            "{} must expose a real adapter seam",
-            layer.key()
-        );
+    use super::{
+        AdapterConnectionType, AdapterInitialization, ManagedModuleCallSpec, ManagedNodeAction,
+        SourceAdapterPolicy, SourceModePolicy,
+    };
+
+    const MANAGED_ACTIONS: &[ManagedNodeAction] = &[
+        ManagedNodeAction::Initialize,
+        ManagedNodeAction::Start,
+        ManagedNodeAction::Stop,
+        ManagedNodeAction::Destroy,
+    ];
+
+    pub(crate) fn assert_layer_contract(key: &str, modes: &'static [SourceModePolicy]) {
+        assert!(modes.len() >= 2, "{} must expose a real adapter seam", key);
 
         let mut mode_keys = BTreeSet::new();
         let mut connector_ids = BTreeSet::new();
@@ -116,6 +203,98 @@ pub(crate) mod contract_tests {
                     mode.adapter.connector_id
                 );
             }
+            assert_initialization_contract(mode, modes);
+        }
+    }
+
+    pub(crate) fn assert_managed_module_contract(
+        key: &str,
+        module_id: &str,
+        supported_actions: &[ManagedNodeAction],
+        call_spec: impl Fn(ManagedNodeAction, &str) -> Option<ManagedModuleCallSpec>,
+    ) {
+        assert!(!module_id.trim().is_empty(), "{key} module id is empty");
+        for action in MANAGED_ACTIONS {
+            let spec = call_spec(*action, "/tmp/node.json");
+            assert_eq!(
+                spec.is_some(),
+                supported_actions.contains(action),
+                "{key} action support mismatch for {action:?}"
+            );
+            if let Some(spec) = spec {
+                assert_call_signature(key, &spec);
+            }
+        }
+    }
+
+    fn assert_call_signature(key: &str, spec: &ManagedModuleCallSpec) {
+        assert!(!spec.method.is_empty(), "{key} method is empty");
+        assert!(
+            spec.signature.contains('('),
+            "{key} signature has no opening parenthesis"
+        );
+        let Some((signature_method, parameters)) = spec.signature.split_once('(') else {
+            return;
+        };
+        assert_eq!(
+            signature_method, spec.method,
+            "{key} method/signature drift"
+        );
+        assert!(
+            parameters.ends_with(')'),
+            "{key} signature has no closing parenthesis"
+        );
+        let Some(parameters) = parameters.strip_suffix(')') else {
+            return;
+        };
+        let parameter_count = if parameters.is_empty() {
+            0
+        } else {
+            parameters.split(',').count()
+        };
+        assert_eq!(
+            parameter_count,
+            spec.args.len(),
+            "{key} call argument/signature arity drift"
+        );
+    }
+
+    fn assert_initialization_contract(mode: &SourceModePolicy, modes: &'static [SourceModePolicy]) {
+        let inputs = mode
+            .adapter
+            .inputs
+            .iter()
+            .map(|input| {
+                (
+                    input.key.to_owned(),
+                    Value::String(format!("{}-value", input.key)),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>();
+        let value = json!({
+            "source_mode": mode.key,
+            "inputs": inputs,
+        });
+        let result = AdapterInitialization::parse(&value, modes, mode.key);
+        assert!(
+            result.is_ok(),
+            "adapter `{}` rejected valid inputs: {result:?}",
+            mode.key
+        );
+        let Ok(initialization) = result else {
+            return;
+        };
+        assert_eq!(initialization.source_mode(), mode.key);
+
+        let unknown = json!({
+            "source_mode": mode.key,
+            "inputs": { "unknown_input": "value" },
+        });
+        assert!(AdapterInitialization::parse(&unknown, modes, mode.key).is_err());
+
+        if mode.adapter.inputs.iter().any(|input| input.required) {
+            let missing = json!({ "source_mode": mode.key, "inputs": {} });
+            assert!(AdapterInitialization::parse(&missing, modes, mode.key).is_err());
         }
     }
 
@@ -159,7 +338,7 @@ pub(crate) mod contract_tests {
     }
 
     #[test]
-    fn node_transport_calls_are_encapsulated_by_layer_implementations() {
+    fn supplemental_source_scan_finds_no_node_transport_bypasses() {
         let source_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut violations = Vec::new();
         inspect_source_tree(&source_root, &mut violations);
@@ -202,13 +381,11 @@ pub(crate) mod contract_tests {
     fn allowed_layer_path(path: &Path) -> bool {
         let text = path.to_string_lossy();
         text.ends_with("source_routing/adapter.rs")
+            || text.ends_with("modules/logos_core.rs")
             || text.ends_with("source_routing/core/layer.rs")
             || text.ends_with("source_routing/storage/layer.rs")
             || text.ends_with("source_routing/delivery/layer.rs")
             || text.ends_with("source_routing/channel_sources/layer.rs")
-            || text.contains("/blockchain/")
-            || text.contains("/lez/")
-            || text.contains("/modules/")
     }
 
     fn forbidden_transport_call(line: &str) -> bool {
@@ -219,7 +396,9 @@ pub(crate) mod contract_tests {
             "crate::lez::account_transactions_by_account(",
             "crate::blockchain::blockchain_",
             "crate::blockchain::channels::channel_",
-            "LogoscoreCliTransport::for_runtime(",
+            "LogoscoreCliTransport::from_runtime(",
+            ".call_checked(",
+            "runtime.ensure_module_loaded(",
             "source_routing::shared::http::",
             "source_routing::shared::module_bridge::call_value(",
         ];

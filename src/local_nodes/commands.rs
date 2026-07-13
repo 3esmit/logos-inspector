@@ -6,7 +6,10 @@ use serde_json::{Value, json};
 use super::{NodeAction, NodeKind, process::spawn_detached};
 use crate::{
     modules::logos_core::LogoscoreCliRuntime,
-    source_routing::{bedrock_layer, execution_zone_layer, messaging_layer, storage_layer},
+    source_routing::{
+        ManagedModuleCallSpec, ManagedNodeAction, bedrock_layer, execution_zone_layer,
+        messaging_layer, storage_layer,
+    },
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,9 +24,7 @@ pub(super) struct LocalNodeCommandSpec {
 enum CommandBackend {
     LogosCore {
         layer: ManagedNodeLayer,
-        method: &'static str,
-        signature: &'static str,
-        call_args: Vec<String>,
+        call: ManagedModuleCallSpec,
     },
     SpawnProcess,
 }
@@ -52,19 +53,32 @@ impl ManagedNodeLayer {
         }
     }
 
-    fn call(
-        self,
-        runtime: &LogoscoreCliRuntime,
-        method: &str,
-        signature: &str,
-        args: &[String],
-    ) -> Result<Value> {
+    fn call(self, runtime: &LogoscoreCliRuntime, spec: &ManagedModuleCallSpec) -> Result<Value> {
         match self {
-            Self::Bedrock => bedrock_layer::call_managed_module(runtime, method, signature, args),
-            Self::Storage => storage_layer::call_managed_module(runtime, method, signature, args),
-            Self::Messaging => {
-                messaging_layer::call_managed_module(runtime, method, signature, args)
+            Self::Bedrock => {
+                bedrock_layer::call_managed_module(runtime, spec.method, spec.signature, &spec.args)
             }
+            Self::Storage => {
+                storage_layer::call_managed_module(runtime, spec.method, spec.signature, &spec.args)
+            }
+            Self::Messaging => messaging_layer::call_managed_module(
+                runtime,
+                spec.method,
+                spec.signature,
+                &spec.args,
+            ),
+        }
+    }
+
+    fn call_spec(
+        self,
+        action: ManagedNodeAction,
+        config_path: &str,
+    ) -> Option<ManagedModuleCallSpec> {
+        match self {
+            Self::Bedrock => bedrock_layer::managed_call_spec(action, config_path),
+            Self::Storage => storage_layer::managed_call_spec(action, config_path),
+            Self::Messaging => messaging_layer::managed_call_spec(action, config_path),
         }
     }
 }
@@ -76,69 +90,42 @@ pub(super) fn command_spec_for(
     config_path: &str,
     _deployment: &str,
 ) -> Option<LocalNodeCommandSpec> {
-    let config = config_path.to_owned();
     match (kind, action) {
-        (NodeKind::Bedrock, NodeAction::Start) => Some(logoscore_spec(
-            ManagedNodeLayer::Bedrock,
-            "start",
-            "start(QString,QString)",
-            vec![config, String::new()],
-        )),
-        (NodeKind::Bedrock, NodeAction::Stop) => Some(logoscore_spec(
-            ManagedNodeLayer::Bedrock,
-            "stop",
-            "stop()",
-            Vec::new(),
-        )),
-        (NodeKind::Storage, NodeAction::Initialize) => Some(logoscore_spec(
-            ManagedNodeLayer::Storage,
-            "init",
-            "init(QString)",
-            vec![file_argument(&config)],
-        )),
-        (NodeKind::Storage, NodeAction::Start) => Some(logoscore_spec(
-            ManagedNodeLayer::Storage,
-            "start",
-            "start()",
-            Vec::new(),
-        )),
-        (NodeKind::Storage, NodeAction::Stop) => Some(logoscore_spec(
-            ManagedNodeLayer::Storage,
-            "stop",
-            "stop()",
-            Vec::new(),
-        )),
-        (NodeKind::Storage, NodeAction::Uninstall | NodeAction::DeleteNetwork) => {
-            Some(logoscore_spec(
-                ManagedNodeLayer::Storage,
-                "destroy",
-                "destroy()",
-                Vec::new(),
-            ))
-        }
-        (NodeKind::Messaging, NodeAction::Initialize) => Some(logoscore_spec(
-            ManagedNodeLayer::Messaging,
-            "createNode",
-            "createNode(QString)",
-            vec![file_argument(&config)],
-        )),
-        (NodeKind::Messaging, NodeAction::Start) => Some(logoscore_spec(
-            ManagedNodeLayer::Messaging,
-            "start",
-            "start()",
-            Vec::new(),
-        )),
-        (NodeKind::Messaging, NodeAction::Stop) => Some(logoscore_spec(
-            ManagedNodeLayer::Messaging,
-            "stop",
-            "stop()",
-            Vec::new(),
-        )),
         (NodeKind::Sequencer, NodeAction::Start) => Some(spawn_spec(
             execution_zone_layer::managed_sequencer_program(),
-            vec![config],
+            vec![config_path.to_owned()],
         )),
-        _ => None,
+        _ => {
+            let layer = managed_layer(kind)?;
+            let call = layer.call_spec(managed_action(action)?, config_path)?;
+            Some(logoscore_spec(layer, call))
+        }
+    }
+}
+
+#[must_use]
+pub(super) const fn managed_action(action: NodeAction) -> Option<ManagedNodeAction> {
+    match action {
+        NodeAction::Initialize => Some(ManagedNodeAction::Initialize),
+        NodeAction::Start => Some(ManagedNodeAction::Start),
+        NodeAction::Stop => Some(ManagedNodeAction::Stop),
+        NodeAction::Uninstall | NodeAction::DeleteNetwork => Some(ManagedNodeAction::Destroy),
+        NodeAction::StartRuntime
+        | NodeAction::StopRuntime
+        | NodeAction::NewNetwork
+        | NodeAction::LoadNetwork
+        | NodeAction::ResetNetwork
+        | NodeAction::Install
+        | NodeAction::Purge => None,
+    }
+}
+
+const fn managed_layer(kind: NodeKind) -> Option<ManagedNodeLayer> {
+    match kind {
+        NodeKind::Bedrock => Some(ManagedNodeLayer::Bedrock),
+        NodeKind::Storage => Some(ManagedNodeLayer::Storage),
+        NodeKind::Messaging => Some(ManagedNodeLayer::Messaging),
+        NodeKind::Sequencer | NodeKind::Indexer => None,
     }
 }
 
@@ -158,14 +145,9 @@ pub(super) fn execute_command_spec(
     runtime: Option<&LogoscoreCliRuntime>,
 ) -> Result<Value> {
     match &spec.backend {
-        CommandBackend::LogosCore {
-            layer,
-            method,
-            signature,
-            call_args,
-        } => {
+        CommandBackend::LogosCore { layer, call } => {
             let runtime = runtime.context("an Inspector-managed logoscore runtime is required")?;
-            layer.call(runtime, method, signature, call_args)
+            layer.call(runtime, call)
         }
         CommandBackend::SpawnProcess => {
             let mut command = Command::new(&spec.program);
@@ -181,36 +163,25 @@ pub(super) fn execute_command_spec(
     }
 }
 
-fn file_argument(path: &str) -> String {
-    format!("@{path}")
-}
-
-fn logoscore_spec(
-    layer: ManagedNodeLayer,
-    method: &'static str,
-    signature: &'static str,
-    call_args: Vec<String>,
-) -> LocalNodeCommandSpec {
+fn logoscore_spec(layer: ManagedNodeLayer, call: ManagedModuleCallSpec) -> LocalNodeCommandSpec {
     let module = layer.module_id();
-    let mut args = vec!["call".to_owned(), module.to_owned(), method.to_owned()];
-    args.extend(call_args.iter().cloned());
+    let mut args = vec!["call".to_owned(), module.to_owned(), call.method.to_owned()];
+    args.extend(call.args.iter().cloned());
     args.push("--json".to_owned());
     LocalNodeCommandSpec {
         program: "logoscore".to_owned(),
         display: shell_display("logoscore", &args),
         args,
-        backend: CommandBackend::LogosCore {
-            layer,
-            method,
-            signature,
-            call_args,
-        },
+        backend: CommandBackend::LogosCore { layer, call },
     }
 }
 
 #[must_use]
 pub(super) fn has_static_module_contract(kind: NodeKind) -> bool {
-    kind != NodeKind::Indexer
+    matches!(
+        kind,
+        NodeKind::Bedrock | NodeKind::Storage | NodeKind::Messaging | NodeKind::Sequencer
+    )
 }
 
 fn spawn_spec(program: &str, args: Vec<String>) -> LocalNodeCommandSpec {

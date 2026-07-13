@@ -3,14 +3,16 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use reqwest::Method;
 use serde_json::{Value, json};
 
+use super::adapters::DELIVERY_MODULE;
 use crate::{
     modules::ModuleReport,
     modules::logos_core::LogoscoreCliRuntime,
     source_routing::{
         DEFAULT_DELIVERY_METRICS_ENDPOINT, DEFAULT_DELIVERY_REST_ENDPOINT,
         adapter::{
-            AdapterConnectionType, AdapterInputPolicy, AdapterLayer, SourceAdapterPolicy,
-            SourceModePolicy, sealed,
+            AdapterConnectionType, AdapterInitialization, AdapterInputPolicy,
+            ManagedLifecycleOutcome, ManagedModuleCallSpec, ManagedNodeAction, SourceAdapterPolicy,
+            SourceModePolicy,
         },
     },
 };
@@ -35,7 +37,7 @@ pub(crate) fn lifecycle_args(
 }
 
 pub(crate) fn ensure_managed_module(runtime: &LogoscoreCliRuntime) -> Result<()> {
-    crate::source_routing::adapter::ensure_managed_module(runtime, module_id())
+    runtime.ensure_module_loaded(module_id())
 }
 
 pub(crate) fn call_managed_module(
@@ -44,16 +46,63 @@ pub(crate) fn call_managed_module(
     signature: &str,
     args: &[String],
 ) -> Result<Value> {
-    crate::source_routing::adapter::call_managed_module(
-        runtime,
-        module_id(),
-        method,
-        signature,
-        args,
-    )
+    runtime.call_checked(module_id(), method, signature, args)
 }
 
-use super::adapters::DELIVERY_MODULE;
+#[must_use]
+pub(crate) fn managed_call_spec(
+    action: ManagedNodeAction,
+    config_path: &str,
+) -> Option<ManagedModuleCallSpec> {
+    match action {
+        ManagedNodeAction::Initialize => Some(ManagedModuleCallSpec::new(
+            "createNode",
+            "createNode(QString)",
+            vec![format!("@{config_path}")],
+        )),
+        ManagedNodeAction::Start => {
+            Some(ManagedModuleCallSpec::new("start", "start()", Vec::new()))
+        }
+        ManagedNodeAction::Stop => Some(ManagedModuleCallSpec::new("stop", "stop()", Vec::new())),
+        ManagedNodeAction::Destroy => None,
+    }
+}
+
+#[must_use]
+pub(crate) fn managed_config(port: Option<u16>) -> Value {
+    json!({
+        "mode": "Core",
+        "preset": "logos.test",
+        "rest": true,
+        "restAddress": "127.0.0.1",
+        "restPort": port.unwrap_or(8645),
+        "logLevel": "INFO",
+        "logFormat": "TEXT",
+    })
+}
+
+#[must_use]
+pub(crate) const fn managed_lifecycle_event(action: ManagedNodeAction) -> Option<&'static str> {
+    match action {
+        ManagedNodeAction::Start => Some("nodeStarted"),
+        ManagedNodeAction::Stop => Some("nodeStopped"),
+        ManagedNodeAction::Initialize | ManagedNodeAction::Destroy => None,
+    }
+}
+
+pub(crate) fn managed_lifecycle_outcome(
+    success: Option<&Value>,
+    detail: Option<&Value>,
+) -> Result<ManagedLifecycleOutcome> {
+    let success = success
+        .and_then(Value::as_bool)
+        .context("delivery lifecycle event has no success flag")?;
+    let detail = detail
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    Ok(ManagedLifecycleOutcome { success, detail })
+}
 
 const REST_INPUTS: &[AdapterInputPolicy] = &[
     AdapterInputPolicy {
@@ -121,6 +170,8 @@ pub(crate) const MESSAGING_SOURCE_MODES: &[SourceModePolicy] = &[
             capabilities: MODULE_CAPABILITIES,
             supports_cid_probe: false,
             supports_mutating_diagnostics: true,
+            capability_scopes: &["delivery"],
+            endpoint_role: None,
         },
     },
     SourceModePolicy {
@@ -141,6 +192,8 @@ pub(crate) const MESSAGING_SOURCE_MODES: &[SourceModePolicy] = &[
             capabilities: REST_CAPABILITIES,
             supports_cid_probe: false,
             supports_mutating_diagnostics: true,
+            capability_scopes: &["delivery"],
+            endpoint_role: Some("messaging_rest_url"),
         },
     },
     SourceModePolicy {
@@ -161,6 +214,8 @@ pub(crate) const MESSAGING_SOURCE_MODES: &[SourceModePolicy] = &[
             capabilities: METRICS_CAPABILITIES,
             supports_cid_probe: false,
             supports_mutating_diagnostics: false,
+            capability_scopes: &["delivery"],
+            endpoint_role: Some("messaging_metrics_url"),
         },
     },
     SourceModePolicy {
@@ -187,24 +242,11 @@ pub(crate) const MESSAGING_SOURCE_MODES: &[SourceModePolicy] = &[
             capabilities: MONITOR_CAPABILITIES,
             supports_cid_probe: false,
             supports_mutating_diagnostics: false,
+            capability_scopes: &["delivery"],
+            endpoint_role: Some("messaging_rest_url"),
         },
     },
 ];
-
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct MessagingAdapterLayer;
-
-impl sealed::Sealed for MessagingAdapterLayer {}
-
-impl AdapterLayer for MessagingAdapterLayer {
-    fn key(&self) -> &'static str {
-        "messaging"
-    }
-
-    fn modes(&self) -> &'static [SourceModePolicy] {
-        MESSAGING_SOURCE_MODES
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MessagingAdapter<'a> {
@@ -225,11 +267,11 @@ pub(crate) enum MessagingAdapter<'a> {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct MessagingReportInputs<'a> {
-    pub(crate) source_mode: &'a str,
-    pub(crate) rest_endpoint: Option<&'a str>,
-    pub(crate) metrics_endpoint: Option<&'a str>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MessagingReportInputs {
+    pub(crate) source_mode: String,
+    pub(crate) rest_endpoint: Option<String>,
+    pub(crate) metrics_endpoint: Option<String>,
 }
 
 impl<'a> MessagingAdapter<'a> {
@@ -288,32 +330,18 @@ impl<'a> MessagingAdapter<'a> {
     }
 }
 
-#[must_use]
-pub(crate) fn report_inputs(args: &crate::support::args::Args) -> MessagingReportInputs<'_> {
-    let source_mode = args.optional_string(0).unwrap_or("rest");
-    match crate::source_routing::DeliverySourceMode::from_token(source_mode) {
-        crate::source_routing::DeliverySourceMode::Module => MessagingReportInputs {
-            source_mode,
-            rest_endpoint: None,
-            metrics_endpoint: None,
-        },
-        crate::source_routing::DeliverySourceMode::Rest
-        | crate::source_routing::DeliverySourceMode::NetworkMonitor => MessagingReportInputs {
-            source_mode,
-            rest_endpoint: args.optional_string(1),
-            metrics_endpoint: args.optional_string(2),
-        },
-        crate::source_routing::DeliverySourceMode::Metrics => MessagingReportInputs {
-            source_mode,
-            rest_endpoint: None,
-            metrics_endpoint: args.optional_string(1),
-        },
-        crate::source_routing::DeliverySourceMode::Unsupported => MessagingReportInputs {
-            source_mode,
-            rest_endpoint: None,
-            metrics_endpoint: None,
-        },
-    }
+pub(crate) fn report_inputs(args: &crate::support::args::Args) -> Result<MessagingReportInputs> {
+    let value = args
+        .value(0)
+        .context("Messaging adapter initialization is required")?;
+    let initialization = AdapterInitialization::parse(value, MESSAGING_SOURCE_MODES, "rest")?;
+    Ok(MessagingReportInputs {
+        source_mode: initialization.source_mode().to_owned(),
+        rest_endpoint: initialization.input("rest_endpoint").map(ToOwned::to_owned),
+        metrics_endpoint: initialization
+            .input("metrics_endpoint")
+            .map(ToOwned::to_owned),
+    })
 }
 
 fn present(value: Option<&str>) -> Option<&str> {
@@ -438,11 +466,28 @@ fn parse_probe_text(text: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::source_routing::adapter::contract_tests::assert_layer_contract;
+    use crate::source_routing::adapter::{
+        ManagedNodeAction,
+        contract_tests::{assert_layer_contract, assert_managed_module_contract},
+    };
 
     #[test]
     fn messaging_adapters_satisfy_shared_seam_contract() {
-        assert_layer_contract(&MessagingAdapterLayer);
+        assert_layer_contract("messaging", MESSAGING_SOURCE_MODES);
+    }
+
+    #[test]
+    fn messaging_managed_calls_satisfy_shared_contract() {
+        assert_managed_module_contract(
+            "messaging",
+            module_id(),
+            &[
+                ManagedNodeAction::Initialize,
+                ManagedNodeAction::Start,
+                ManagedNodeAction::Stop,
+            ],
+            managed_call_spec,
+        );
     }
 
     #[test]
@@ -465,12 +510,18 @@ mod tests {
 
     #[test]
     fn messaging_report_boundary_parses_compact_adapter_inputs() -> Result<()> {
-        let module = crate::support::args::Args::new(json!(["module"]))?;
-        let metrics = crate::support::args::Args::new(json!(["metrics", "http://metrics"]))?;
+        let module = crate::support::args::Args::new(json!([{
+            "source_mode": "module",
+            "inputs": {}
+        }]))?;
+        let metrics = crate::support::args::Args::new(json!([{
+            "source_mode": "metrics",
+            "inputs": { "metrics_endpoint": "http://metrics" }
+        }]))?;
 
-        if report_inputs(&module).rest_endpoint.is_some()
-            || report_inputs(&module).metrics_endpoint.is_some()
-            || report_inputs(&metrics).metrics_endpoint != Some("http://metrics")
+        if report_inputs(&module)?.rest_endpoint.is_some()
+            || report_inputs(&module)?.metrics_endpoint.is_some()
+            || report_inputs(&metrics)?.metrics_endpoint.as_deref() != Some("http://metrics")
         {
             anyhow::bail!("compact Messaging report inputs were parsed incorrectly");
         }
