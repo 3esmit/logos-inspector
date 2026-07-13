@@ -164,6 +164,7 @@ Pane {
                             ActionButton {
                                 id: navButton
 
+                                objectName: "navButton_" + String(navRow.modelData.view || "")
                                 visible: !navRow.isGroup
                                 theme: root.theme
                                 text: root.navText(navRow.modelData)
