@@ -1,13 +1,3 @@
-.import "StorageOperationLifecycle.js" as StorageOperationLifecycle
-
-function applyStatusUpdate(root, operation) {
-    return StorageOperationLifecycle.applyStatusUpdate(root, operation)
-}
-
-function applyModuleEvent(root, eventName, args) {
-    return StorageOperationLifecycle.applyModuleEvent(root, eventName, args)
-}
-
 function spaceSummary(root) {
     const value = spaceValue(root)
     if (!value) {

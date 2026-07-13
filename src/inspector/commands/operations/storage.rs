@@ -6,12 +6,14 @@ use tokio::io::AsyncWriteExt as _;
 
 use crate::source_routing::storage_layer;
 
-use super::record::update_runtime_operation_progress;
 use super::spec::{
     AffectedContextField, AffectedContextKey, OperationClass, OperationCommand,
     OperationDefinition, OperationExclusiveGroup, OperationMethod,
 };
-use super::{RuntimeOperationRegistry, RuntimeOperationRequest};
+use super::{
+    RuntimeOperationRegistry, RuntimeOperationRequest, identity::RuntimeOperationId,
+    outcome::RuntimeOperationOutcome, transition::RuntimeOperationTransition,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum StorageCommand {
@@ -121,21 +123,22 @@ pub(super) async fn execute(
     command: StorageCommand,
     request: &RuntimeOperationRequest,
     registry: &RuntimeOperationRegistry,
-    operation_id: &str,
+    operation_id: &RuntimeOperationId,
     cancel_requested: &AtomicBool,
-) -> Result<Value> {
+) -> Result<RuntimeOperationOutcome> {
     let request = storage_layer::StorageOperationRequest::parse(
         request.node_request()?,
         command.operation(),
     )?;
     match storage_layer::execute_operation(request).await? {
-        storage_layer::StorageOperationOutput::Complete(value) => Ok(value),
+        storage_layer::StorageOperationOutput::Outcome(outcome) => Ok(outcome.into()),
         storage_layer::StorageOperationOutput::Download(download) => {
             let cid = download.cid().to_owned();
             let path = download.path().to_owned();
             storage_rest_download_tracked(&download, registry, operation_id, cancel_requested)
                 .await
                 .with_context(|| format!("failed to download storage CID {cid} to `{path}`"))
+                .map(RuntimeOperationOutcome::Completed)
         }
     }
 }
@@ -161,14 +164,20 @@ pub(super) fn validate(command: StorageCommand, request: &RuntimeOperationReques
 pub(super) async fn storage_rest_download_tracked(
     request: &storage_layer::StorageDownloadRequest,
     registry: &RuntimeOperationRegistry,
-    operation_id: &str,
+    operation_id: &RuntimeOperationId,
     cancel_requested: &AtomicBool,
 ) -> Result<Value> {
     if cancel_requested.load(Ordering::Relaxed) {
         bail!("storage download canceled");
     }
     let response = storage_layer::download_response(request).await?;
-    update_runtime_operation_progress(registry, operation_id, 0, response.content_length());
+    registry.transition(
+        operation_id,
+        RuntimeOperationTransition::Progress {
+            bytes_written: 0,
+            content_length: response.content_length(),
+        },
+    )?;
     let path = request.path();
     let temp_path = format!("{path}.part");
     let mut file = tokio::fs::File::create(&temp_path)
@@ -189,7 +198,13 @@ pub(super) async fn storage_rest_download_tracked(
                 .await
                 .with_context(|| format!("failed to write download file `{temp_path}`"))?;
             bytes = bytes.saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
-            update_runtime_operation_progress(registry, operation_id, bytes, None);
+            registry.transition(
+                operation_id,
+                RuntimeOperationTransition::Progress {
+                    bytes_written: bytes,
+                    content_length: None,
+                },
+            )?;
         }
         file.flush()
             .await

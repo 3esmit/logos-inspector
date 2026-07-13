@@ -1,9 +1,13 @@
 use anyhow::{Context as _, Result, bail};
 use serde_json::{Map, Value, json};
 
-use crate::{source_routing::NodeOperationRequest, support::args::Args};
+use crate::{
+    source_routing::{DeliverySourceMode, NodeOperationRequest, StorageSourceMode},
+    support::args::Args,
+};
 
 use super::delivery;
+use super::identity::ClientRequestId;
 use super::spec::{
     OperationCommand, OperationDefinition, OperationDomain, OperationExclusiveGroup,
     OperationMethod, OperationPolicyDefinition, operation_definition,
@@ -14,6 +18,7 @@ use super::storage;
 pub(crate) struct RuntimeOperationRequest {
     definition: OperationDefinition,
     node_request: Option<NodeOperationRequest>,
+    client_request_id: Option<ClientRequestId>,
     pub(super) args: Value,
     pub(super) label: String,
 }
@@ -32,6 +37,7 @@ impl RuntimeOperationRequest {
         let request = Self {
             definition,
             node_request,
+            client_request_id: None,
             args,
             label: label.to_owned(),
         };
@@ -61,6 +67,10 @@ impl RuntimeOperationRequest {
 
     pub(crate) fn label(&self) -> &str {
         &self.label
+    }
+
+    pub(super) fn client_request_id(&self) -> Option<&ClientRequestId> {
+        self.client_request_id.as_ref()
     }
 
     pub(crate) fn cancellable(&self) -> bool {
@@ -116,11 +126,26 @@ pub(crate) fn runtime_operation_request_from_value(
     let request = RuntimeOperationRequest {
         definition,
         node_request,
+        client_request_id: optional_id(object, "clientRequestId", ClientRequestId::parse)?,
         args,
         label: object_string(object, "label").unwrap_or_else(|| definition.label().to_owned()),
     };
     validate_node_request(&request)?;
     Ok(request)
+}
+
+fn optional_id<T>(
+    object: &Map<String, Value>,
+    key: &str,
+    parse: impl FnOnce(&str) -> Result<T>,
+) -> Result<Option<T>> {
+    let Some(value) = object.get(key) else {
+        return Ok(None);
+    };
+    let value = value
+        .as_str()
+        .with_context(|| format!("runtime operation {key} must be a string"))?;
+    parse(value).map(Some)
 }
 
 fn object_string(object: &Map<String, Value>, key: &str) -> Option<String> {
@@ -157,6 +182,35 @@ pub(super) fn runtime_operation_backend(request: &RuntimeOperationRequest) -> St
         .filter(|value| !value.is_empty())
         .unwrap_or("direct")
         .to_owned()
+}
+
+pub(super) fn runtime_operation_pending_module(
+    request: &RuntimeOperationRequest,
+) -> Option<&'static str> {
+    let node_request = request.node_request.as_ref()?;
+    match request.definition.domain() {
+        OperationDomain::Storage
+            if matches!(
+                StorageSourceMode::from_token(node_request.source_mode()),
+                StorageSourceMode::Module | StorageSourceMode::LogoscoreCli
+            ) =>
+        {
+            Some(crate::source_routing::storage_layer::managed_contract().module_id())
+        }
+        OperationDomain::Delivery
+            if matches!(
+                DeliverySourceMode::from_token(node_request.source_mode()),
+                DeliverySourceMode::Module | DeliverySourceMode::LogoscoreCli
+            ) =>
+        {
+            Some(crate::source_routing::messaging_layer::managed_contract().module_id())
+        }
+        OperationDomain::Storage | OperationDomain::Delivery => None,
+        OperationDomain::LocalNodes
+        | OperationDomain::Wallet
+        | OperationDomain::Blockchain
+        | OperationDomain::Execution => None,
+    }
 }
 
 pub(super) fn runtime_operation_context(request: &RuntimeOperationRequest) -> Result<Value> {
@@ -207,6 +261,7 @@ mod tests {
                 "path": "/tmp/cid-a.bin",
                 "local_only": false
             },
+            "clientRequestId": "storage-client-1",
             "label": "Download"
         }))?;
 
@@ -220,6 +275,9 @@ mod tests {
             })
         {
             bail!("unexpected runtime operation context");
+        }
+        if request.client_request_id().map(ClientRequestId::as_str) != Some("storage-client-1") {
+            bail!("client request identity was not parsed independently");
         }
         Ok(())
     }
@@ -248,6 +306,31 @@ mod tests {
         {
             bail!("unexpected delivery context");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn pending_module_detection_normalizes_storage_and_delivery_aliases() -> Result<()> {
+        let storage = runtime_operation_request_from_value(json!({
+            "domain": "storage",
+            "method": "storageUploadUrl",
+            "adapter": { "source_mode": "basecamp-module", "inputs": {} },
+            "mutating_enabled": true,
+            "payload": { "path": "/tmp/storage-alias" }
+        }))?;
+        let delivery = runtime_operation_request_from_value(json!({
+            "domain": "delivery",
+            "method": "deliverySend",
+            "adapter": { "source_mode": "logoscore-cli", "inputs": {} },
+            "mutating_enabled": true,
+            "payload": { "topic": "/topic", "payload": "hello" }
+        }))?;
+
+        anyhow::ensure!(
+            runtime_operation_pending_module(&storage) == Some("storage_module")
+                && runtime_operation_pending_module(&delivery) == Some("delivery_module"),
+            "source aliases did not preserve pending module identity"
+        );
         Ok(())
     }
 

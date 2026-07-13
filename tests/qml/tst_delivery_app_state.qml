@@ -34,6 +34,7 @@ TestCase {
         state.deliveryModuleEventRevision = 0
         state.deliveryConnectionStatus = ""
         state.deliveryNodeStatus = ""
+        state.operationSession.reset()
     }
 
     function test_message_received_event_returns_delivery_message_effect() {
@@ -61,6 +62,10 @@ TestCase {
         compare(effect.deliveryMessage.payload, JSON.stringify(payload))
         compare(state.moduleEventRows()[0].label, "messageReceived")
         compare(state.moduleEventRows()[0].status, "event")
+        compare(gateway.lastMethod, "runtimeOperationModuleEvent")
+        compare(gateway.lastArgs[0].moduleName, "delivery_module")
+        compare(gateway.lastArgs[0].eventName, "messageReceived")
+        compare(gateway.lastArgs[0].args[0], "hash-1")
     }
 
     function test_connection_event_returns_refresh_effect() {
@@ -76,5 +81,12 @@ TestCase {
         verify(!effect.deliveryMessage)
         compare(state.moduleEventSummary(), "connected")
         compare(state.moduleEventRows()[0].label, "connectionStateChanged")
+        compare(gateway.lastMethod, "runtimeOperationModuleEvent")
+    }
+
+    function test_operation_status_text_keeps_reconciled_terminal_state() {
+        compare(state.operationStatusText({ status: "awaiting_external" }), "Waiting")
+        compare(state.operationStatusText({ status: "completed" }), "Complete")
+        compare(state.operationStatusText({ status: "dispatched" }), "Dispatched")
     }
 }

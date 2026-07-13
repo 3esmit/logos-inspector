@@ -3,6 +3,7 @@ pub mod channel_sources;
 mod core;
 pub(crate) mod delivery;
 mod network_profiles;
+mod operation;
 mod policy;
 mod selection;
 mod shared;
@@ -25,6 +26,11 @@ pub use delivery::delivery_source_report;
 pub use network_profiles::{
     CUSTOM_NETWORK_PROFILE, DEFAULT_NETWORK_PROFILE, NetworkEndpoints, NetworkProfile,
     infer_network_profile, network_profiles, resolve_network_endpoints,
+};
+pub(crate) use operation::{
+    BridgeCallbackId, ModuleCorrelation, ModuleDispatchIdentityRole, ModuleDispatchReceipt,
+    ModuleEventCorrelationKind, ModuleEventEnvelope, ModuleRequestId, ModuleSessionId,
+    ModuleTerminalEventContract, NodeOperationOutcome, ObservableOperationAcceptance,
 };
 pub use policy::{
     CoreEndpointMode, CoreSourceMode, DEFAULT_DELIVERY_METRICS_ENDPOINT,

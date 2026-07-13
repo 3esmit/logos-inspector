@@ -1,4 +1,4 @@
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use serde_json::Value;
 
 use super::spec::{OperationMethod, OperationRoute, operation_route};
@@ -6,6 +6,7 @@ use crate::support::args::Args;
 
 pub(crate) trait OperationRunner {
     fn start_from_value(&self, value: Value) -> Result<Value>;
+    fn ingest_module_event(&self, event: Value) -> Result<Value>;
     fn status(&self, operation_id: &str) -> Result<Value>;
     fn events(&self, operation_id: &str, after_seq: u64) -> Result<Value>;
     fn cancel(&self, operation_id: &str) -> Result<Value>;
@@ -28,6 +29,7 @@ pub(crate) trait OperationRunner {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OperationBridgeCommand {
     RuntimeOperationStart,
+    RuntimeOperationModuleEvent,
     RuntimeOperationStatus,
     RuntimeOperationEvents,
     RuntimeOperationCancel,
@@ -46,6 +48,10 @@ const OPERATION_CONTROL_METHODS: &[(&str, OperationBridgeCommand)] = &[
     (
         "runtimeOperationStart",
         OperationBridgeCommand::RuntimeOperationStart,
+    ),
+    (
+        "runtimeOperationModuleEvent",
+        OperationBridgeCommand::RuntimeOperationModuleEvent,
     ),
     (
         "nodeOperationStatus",
@@ -112,6 +118,9 @@ pub(crate) fn handle_operation_command(
 ) -> Result<Value> {
     let value = match command {
         OperationBridgeCommand::RuntimeOperationStart => runtime_operation_start(runner, args)?,
+        OperationBridgeCommand::RuntimeOperationModuleEvent => {
+            runtime_operation_module_event(runner, args)?
+        }
         OperationBridgeCommand::RuntimeOperationStatus => runtime_operation_status(runner, args)?,
         OperationBridgeCommand::RuntimeOperationEvents => runtime_operation_events(runner, args)?,
         OperationBridgeCommand::RuntimeOperationCancel => runtime_operation_cancel(runner, args)?,
@@ -141,6 +150,18 @@ fn runtime_operation_start(runner: &impl OperationRunner, args: &Value) -> Resul
             .cloned()
             .context("runtime operation request is required")?,
     )
+}
+
+fn runtime_operation_module_event(runner: &impl OperationRunner, args: &Value) -> Result<Value> {
+    let args = Args::new(args.clone())?;
+    let event = args.value(0).context("runtime module event is required")?;
+    if args.iter().count() != 1 {
+        bail!("runtime module event accepts exactly one object argument");
+    }
+    if !event.is_object() {
+        bail!("runtime module event must be an object");
+    }
+    runner.ingest_module_event(event.clone())
 }
 
 fn runtime_operation_status(runner: &impl OperationRunner, args: &Value) -> Result<Value> {
@@ -200,6 +221,7 @@ mod tests {
     #[derive(Debug, PartialEq)]
     enum RunnerCall {
         StartFromValue(Value),
+        IngestModuleEvent(Value),
         Status(String),
         Events(String, u64),
         Cancel(String),
@@ -244,6 +266,13 @@ mod tests {
                 .borrow_mut()
                 .push(RunnerCall::StartFromValue(value));
             Ok(json!({ "operationId": "started" }))
+        }
+
+        fn ingest_module_event(&self, event: Value) -> Result<Value> {
+            self.calls
+                .borrow_mut()
+                .push(RunnerCall::IngestModuleEvent(event));
+            Ok(json!({ "matchedOperationIds": ["operation-1"] }))
         }
 
         fn status(&self, operation_id: &str) -> Result<Value> {
@@ -357,6 +386,59 @@ mod tests {
                 "args": ["rest", "http://127.0.0.1:8645", true, "/topic", "hello"]
             }))]
         {
+            bail!("unexpected runner calls");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn handle_operation_command_routes_runtime_module_event_object() -> Result<()> {
+        let runner = FakeRunner::default();
+        let event = json!({
+            "moduleName": "storage_module",
+            "eventName": "storageUploadDone",
+            "args": [{ "operation_id": "operation-1", "cid": "cid-a" }]
+        });
+
+        let command = operation_bridge_command("runtimeOperationModuleEvent")
+            .context("runtime module event command")?;
+        let value = handle_operation_command(&runner, command, &json!([event.clone()]))?;
+
+        if value != json!({ "matchedOperationIds": ["operation-1"] }) {
+            bail!("unexpected response: {value:?}");
+        }
+        if runner.calls() != vec![RunnerCall::IngestModuleEvent(event)] {
+            bail!("unexpected runner calls");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn handle_operation_command_rejects_invalid_runtime_module_event_arguments() -> Result<()> {
+        let runner = FakeRunner::default();
+        let command = operation_bridge_command("runtimeOperationModuleEvent")
+            .context("runtime module event command")?;
+        let cases = [
+            (json!([]), "runtime module event is required"),
+            (
+                json!([{}, {}]),
+                "runtime module event accepts exactly one object argument",
+            ),
+            (
+                json!(["storageUploadDone"]),
+                "runtime module event must be an object",
+            ),
+        ];
+
+        for (args, expected_message) in cases {
+            let error = handle_operation_command(&runner, command, &args)
+                .err()
+                .context("invalid runtime module event arguments should fail")?;
+            if error.to_string() != expected_message {
+                bail!("unexpected error: {error:?}");
+            }
+        }
+        if !runner.calls().is_empty() {
             bail!("unexpected runner calls");
         }
         Ok(())

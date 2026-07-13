@@ -98,8 +98,10 @@ QtObject {
 
     function startDeliveryOperation(method, args, label) {
         lastOperation = qsTr("Starting")
-        const started = deliveryOperations.start(method, args, label, function (response) {
-            lastOperation = response && response.ok ? qsTr("Started") : qsTr("Error")
+        const started = deliveryOperations.start(method, args, label, function (response, operation) {
+            lastOperation = response && response.ok
+                ? operationStatusText(operation || response.value)
+                : qsTr("Error")
             if (response && response.ok) {
                 currentTab = "operations"
             }
@@ -116,12 +118,36 @@ QtObject {
     }
 
     function completeTerminalDeliveryOperation(operation) {
-        const ok = String(operation.status || "") === "completed"
-        lastOperation = ok ? qsTr("Complete") : qsTr("Stopped")
+        const status = String(operation && operation.status || "")
+        lastOperation = status === "dispatched"
+            ? qsTr("Dispatched")
+            : (status === "completed" ? qsTr("Complete") : qsTr("Stopped"))
+    }
+
+    function operationStatusText(operation) {
+        switch (String(operation && operation.status || "")) {
+        case "awaiting_external":
+            return qsTr("Waiting")
+        case "running":
+        case "canceling":
+            return qsTr("Started")
+        case "completed":
+            return qsTr("Complete")
+        case "dispatched":
+            return qsTr("Dispatched")
+        default:
+            return qsTr("Started")
+        }
     }
 
     function applyModuleEvent(eventName, args) {
         const name = String(eventName || "")
+        const event = args && args.__moduleEventEnvelope === true ? args : {
+            moduleName: moduleName,
+            eventName: name,
+            args: Array.isArray(args) ? args : (args === undefined || args === null ? [] : [args])
+        }
+        deliveryOperations.ingestModuleEvent(event)
         const record = deliveryEventRecord(name, args)
         appendModuleEvent(record)
         const effect = {

@@ -492,15 +492,13 @@ fn operation_decisions(
     operations: &RuntimeOperations,
     selection: &BackupSelection,
 ) -> Result<Vec<OperationDecision>> {
-    let registry = operations
-        .registry
-        .lock()
-        .map_err(|_| anyhow::anyhow!("runtime operation registry is unavailable"))?;
-    Ok(registry
-        .values()
-        .filter(|record| !record.operation.status.is_terminal())
-        .filter_map(|record| operation_decision(record, selection))
-        .collect())
+    operations.registry.inspect(|registry| {
+        registry
+            .values()
+            .filter(|record| !record.operation.status.is_terminal())
+            .filter_map(|record| operation_decision(record, selection))
+            .collect()
+    })
 }
 
 fn operation_decision(
@@ -514,7 +512,7 @@ fn operation_decision(
     let can_stop =
         record.operation.status == RuntimeOperationStatus::Running && record.operation.cancellable;
     Some(OperationDecision {
-        operation_id: record.operation.operation_id.clone(),
+        operation_id: record.operation.operation_id.as_str().to_owned(),
         label: record.operation.label.clone(),
         action: if can_stop {
             DecisionAction::Stop
@@ -542,7 +540,10 @@ fn wait_until_terminal(
             .get("status")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        if matches!(status, "completed" | "failed" | "canceled") {
+        if matches!(
+            status,
+            "completed" | "dispatched" | "failed" | "canceled" | "timed_out"
+        ) {
             return Ok(Some(operation));
         }
         if Instant::now() >= deadline {
