@@ -168,11 +168,6 @@ impl ZoneProjectionLedger {
         self.projection.summary(channel_id).is_some()
     }
 
-    #[must_use]
-    pub(super) fn configs_snapshot(&self) -> Vec<ChannelSourceConfig> {
-        self.projection.configs().to_vec()
-    }
-
     pub(super) fn summaries(&mut self, request: ZonesSummaryRequest) -> Result<ZonesSummaryReport> {
         let limit = summary_page_limit(request.limit)?;
         let page = if let Some(cursor) = request.cursor.as_deref() {

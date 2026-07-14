@@ -15,9 +15,7 @@ use serde_json::{Value, json};
 use sha2::Sha256;
 
 use crate::{
-    source_routing::channel_sources::{
-        normalized_settings_state_from_backup, settings_state_from_stored,
-    },
+    source_routing::channel_sources::settings_state_from_stored,
     support::{
         local_state::{
             LocalStateCommitReport, LocalStateSession, LocalStateTransactionError,
@@ -205,10 +203,8 @@ fn restore_app_settings_backup_in_dir_with_commit(
         )?;
         let mut writes = LocalStateWriteSet::new();
         if let Some(settings) = plan.settings.as_ref() {
-            let normalized = normalized_settings_state_from_backup(settings)
-                .context("failed to validate restored settings state")?;
             writes = writes.settings(
-                serde_json::to_vec_pretty(&normalized)
+                serde_json::to_vec_pretty(settings)
                     .context("failed to serialize restored settings state")?,
             );
         }
@@ -1032,6 +1028,187 @@ mod tests {
     }
 
     #[test]
+    fn favorites_only_restore_preserves_current_channel_config_and_revision() -> Result<()> {
+        let directory = tempfile::tempdir().context("failed to create backup test directory")?;
+        let current_config = backup_test_channel_config('1', '1', 7, "Current", 3040);
+        let current_settings = json!({
+            "version": 2,
+            "theme": "old",
+            "favorites": [{ "value": "old-favorite" }],
+            "channel_source_configs": [current_config.clone()]
+        });
+        fs::write(
+            directory.path().join("settings.json"),
+            serde_json::to_vec(&current_settings)?,
+        )?;
+        let backup_settings = json!({
+            "version": 2,
+            "theme": "backup",
+            "favorites": [{ "value": "new-favorite" }],
+            "channel_source_configs": [backup_test_channel_config('1', '1', 99, "Backup", 4040)]
+        });
+        let payload = backup_payload_from_states(
+            &backup_settings,
+            &json!({ "version": 1, "idls": [] }),
+            &json!({ "profile": { "label": "Ignored wallet" } }),
+            false,
+            None,
+        )?;
+        let restored = restored_state_from_payload(&payload, None)?;
+        let options = BackupImportOptions::parse(Some(&json!({
+            "settings": "skip",
+            "favorites": "replace",
+            "idl_registry": "skip",
+            "wallet_profile": "skip"
+        })))?;
+
+        preview_app_settings_backup_import_in_dir(directory.path(), &restored, &options)?;
+        restore_app_settings_backup_in_dir(directory.path(), &restored, &options)?;
+
+        let saved: Value =
+            serde_json::from_slice(&fs::read(directory.path().join("settings.json"))?)?;
+        if saved.pointer("/favorites/0/value").and_then(Value::as_str) != Some("new-favorite")
+            || saved.get("theme").and_then(Value::as_str) != Some("old")
+            || saved.pointer("/channel_source_configs/0") != Some(&current_config)
+            || saved
+                .pointer("/channel_source_configs/0/config_revision")
+                .and_then(Value::as_u64)
+                != Some(7)
+        {
+            bail!("favorites-only restore changed current Channel source config: {saved}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn settings_replace_rebases_channel_config_revisions_on_disk() -> Result<()> {
+        let directory = tempfile::tempdir().context("failed to create backup test directory")?;
+        let current_a = backup_test_channel_config('3', '3', 7, "Same", 3040);
+        let current_b = backup_test_channel_config('4', '4', 9, "Current", 3041);
+        let current_c = backup_test_channel_config('5', '5', 3, "Removed", 3042);
+        fs::write(
+            directory.path().join("settings.json"),
+            serde_json::to_vec(&json!({
+                "version": 2,
+                "theme": "old",
+                "channel_source_configs": [current_a.clone(), current_b, current_c]
+            }))?,
+        )?;
+        let mut archived_a = current_a;
+        *archived_a
+            .get_mut("config_revision")
+            .context("archived config revision missing")? = json!(99);
+        let archived_b = backup_test_channel_config('4', '4', 1, "Changed", 4041);
+        let archived_d = backup_test_channel_config('6', '6', 88, "New", 4042);
+        let payload = backup_payload_from_states(
+            &json!({
+                "version": 2,
+                "theme": "backup",
+                "channel_source_configs": [
+                    archived_a,
+                    archived_b.clone(),
+                    archived_d.clone()
+                ]
+            }),
+            &json!({ "version": 1, "idls": [] }),
+            &json!({ "profile": { "label": "Ignored wallet" } }),
+            false,
+            None,
+        )?;
+        let restored = restored_state_from_payload(&payload, None)?;
+        let options = BackupImportOptions::parse(Some(&json!({
+            "settings": "replace",
+            "favorites": "skip",
+            "idl_registry": "skip",
+            "wallet_profile": "skip"
+        })))?;
+
+        preview_app_settings_backup_import_in_dir(directory.path(), &restored, &options)?;
+        restore_app_settings_backup_in_dir(directory.path(), &restored, &options)?;
+
+        let saved: Value =
+            serde_json::from_slice(&fs::read(directory.path().join("settings.json"))?)?;
+        let configs = saved
+            .get("channel_source_configs")
+            .and_then(Value::as_array)
+            .context("restored Channel source configs missing")?;
+        let config = |channel_character: char| {
+            let channel_id = channel_character.to_string().repeat(64);
+            configs.iter().find(|config| {
+                config.get("channel_id").and_then(Value::as_str) == Some(channel_id.as_str())
+            })
+        };
+        if config('3').and_then(|value| value.get("config_revision")) != Some(&json!(7))
+            || config('4').and_then(|value| value.get("config_revision")) != Some(&json!(10))
+            || config('5').is_some()
+            || config('6').and_then(|value| value.get("config_revision")) != Some(&json!(1))
+            || config('4').and_then(|value| value.get("sequencer_sources"))
+                != archived_b.get("sequencer_sources")
+            || config('6').and_then(|value| value.get("sequencer_sources"))
+                != archived_d.get("sequencer_sources")
+            || saved.get("theme").and_then(Value::as_str) != Some("backup")
+        {
+            bail!("settings replacement revision matrix drifted: {saved}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn backup_revision_overflow_aborts_settings_idl_and_wallet_transaction() -> Result<()> {
+        let directory = tempfile::tempdir().context("failed to create backup test directory")?;
+        let current_settings = json!({
+            "version": 2,
+            "theme": "old",
+            "channel_source_configs": [backup_test_channel_config('2', '2', u64::MAX, "Current", 3040)]
+        });
+        let current_settings_bytes = serde_json::to_vec(&current_settings)?;
+        let current_idl_bytes = br#"{"version":1,"idls":[{"key":"old"}]}"#.to_vec();
+        let current_wallet_bytes = br#"{"profile":{"label":"Old wallet"}}"#.to_vec();
+        fs::write(
+            directory.path().join("settings.json"),
+            &current_settings_bytes,
+        )?;
+        fs::write(directory.path().join("idls.json"), &current_idl_bytes)?;
+        fs::write(directory.path().join("wallet.json"), &current_wallet_bytes)?;
+        let payload = backup_payload_from_states(
+            &json!({
+                "version": 2,
+                "theme": "new",
+                "channel_source_configs": [backup_test_channel_config('2', '2', 1, "Changed", 4040)]
+            }),
+            &json!({ "version": 1, "idls": [{ "key": "new" }] }),
+            &json!({ "profile": { "label": "New wallet" } }),
+            false,
+            None,
+        )?;
+        let restored = restored_state_from_payload(&payload, None)?;
+        let options = BackupImportOptions::parse(Some(&json!({
+            "settings": "replace",
+            "favorites": "skip",
+            "idl_registry": "replace",
+            "wallet_profile": "replace"
+        })))?;
+
+        let preview_error =
+            preview_app_settings_backup_import_in_dir(directory.path(), &restored, &options)
+                .err()
+                .context("overflowing backup preview unexpectedly succeeded")?;
+        let restore_error =
+            restore_app_settings_backup_in_dir(directory.path(), &restored, &options)
+                .err()
+                .context("overflowing backup restore unexpectedly succeeded")?;
+        if !format!("{preview_error:#}").contains("revision overflow during backup import")
+            || !format!("{restore_error:#}").contains("revision overflow during backup import")
+            || fs::read(directory.path().join("settings.json"))? != current_settings_bytes
+            || fs::read(directory.path().join("idls.json"))? != current_idl_bytes
+            || fs::read(directory.path().join("wallet.json"))? != current_wallet_bytes
+        {
+            bail!("revision overflow did not abort the complete local-state transaction");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn malformed_selected_settings_idl_and_wallet_do_not_mutate_local_state() -> Result<()> {
         for (label, state, option_value, expected_error) in [
             (
@@ -1138,10 +1315,10 @@ mod tests {
     #[test]
     fn selective_backup_flows_do_not_parse_unselected_local_state() -> Result<()> {
         let directory = tempfile::tempdir().context("failed to create backup test directory")?;
-        let malformed_settings = b"{malformed-settings";
+        let current_settings = br#"{"version":2,"theme":"old","channel_source_configs":[]}"#;
         let malformed_idl = b"{malformed-idl";
         let malformed_wallet = b"{malformed-wallet-secret";
-        fs::write(directory.path().join("settings.json"), malformed_settings)?;
+        fs::write(directory.path().join("settings.json"), current_settings)?;
         fs::write(directory.path().join("idls.json"), malformed_idl)?;
         fs::write(directory.path().join("wallet.json"), malformed_wallet)?;
 
@@ -1198,7 +1375,7 @@ mod tests {
             bail!("selective export included unselected state: {exported}");
         }
 
-        fs::write(directory.path().join("settings.json"), malformed_settings)?;
+        fs::write(directory.path().join("settings.json"), current_settings)?;
         let skip_all = json!({
             "settings": "skip",
             "favorites": "skip",
@@ -1208,7 +1385,7 @@ mod tests {
         let skip_all = BackupImportOptions::parse(Some(&skip_all))?;
         preview_app_settings_backup_import_in_dir(directory.path(), &restored, &skip_all)?;
         restore_app_settings_backup_in_dir(directory.path(), &restored, &skip_all)?;
-        if fs::read(directory.path().join("settings.json"))? != malformed_settings {
+        if fs::read(directory.path().join("settings.json"))? != current_settings {
             bail!("all-skip restore parsed or modified current settings");
         }
         Ok(())
@@ -1932,6 +2109,34 @@ mod tests {
             bail!("wallet profile merge should be rejected");
         }
         Ok(())
+    }
+
+    fn backup_test_channel_config(
+        channel_character: char,
+        source_character: char,
+        revision: u64,
+        label: &str,
+        port: u16,
+    ) -> Value {
+        json!({
+            "network_scope": {
+                "kind": "genesis_id",
+                "genesis_id": "a".repeat(64)
+            },
+            "channel_id": channel_character.to_string().repeat(64),
+            "config_revision": revision,
+            "sequencer_sources": [{
+                "source_id": format!("src_{}", source_character.to_string().repeat(32)),
+                "label": label,
+                "target": {
+                    "kind": "rpc",
+                    "endpoint": format!("https://sequencer-{port}.example/")
+                },
+                "channel_attestation": { "state": "pending" }
+            }],
+            "selected_sequencer_source_id": null,
+            "indexer_source": null
+        })
     }
 
     fn warning_key_present(warnings: &[Value], key: &str) -> bool {
