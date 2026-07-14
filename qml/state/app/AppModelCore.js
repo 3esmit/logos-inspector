@@ -3,28 +3,10 @@
 .import "PageRegistry.js" as PageRegistry
 
 function handleNetworkConfigurationChanged(root) {
+    resetDashboardConfiguration(root)
+    clearNetworkConnectionFamily(root, "blockchain")
     with (root) {
-        networkConfigurationRevision += 1
-        networkConnectionStatus = ({})
-        networkConnectionStatusRevision += 1
-        networkConnectionPending = ({})
-        networkConnectionPendingRevision += 1
-        dashboardOverview = null
-        dashboardNode = null
-        dashboardL1Blocks = []
-        dashboardBlocks = []
-        dashboardProvisionalBlocks = []
-        dashboardLezBlockRows = []
-        dashboardError = ""
-        dashboardRefreshing = false
-        dashboardRefreshSerial += 1
         blockchainModuleReport = null
-        storageModuleReport = null
-        messagingModuleReport = null
-        storageSourceReport = null
-        messagingSourceReport = null
-        storageApp.invalidateSourceRequests()
-        deliveryApp.invalidateSourceRequests()
         localNodesReport = null
         localNodesError = ""
         localNodesRevision += 1
@@ -37,18 +19,76 @@ function handleNetworkConfigurationChanged(root) {
     }
 }
 
+function handleBlockchainConfigurationChanged(root) {
+    with (root) {
+        blockchainConfigurationRevision += 1
+        root.handleNetworkConfigurationChanged()
+    }
+}
+
 function handleMessagingConfigurationChanged(root) {
+    resetDashboardConfiguration(root)
+    clearNetworkConnectionFamily(root, "messaging")
     with (root) {
         root.clearDashboardMetricHistoryForPrefix("messaging.")
-        handleNetworkConfigurationChanged()
+        messagingModuleReport = null
+        messagingSourceReport = null
+        deliveryApp.invalidateSourceRequests()
+        saveSettingsState()
     }
 }
 
 function handleStorageConfigurationChanged(root) {
+    resetDashboardConfiguration(root)
+    clearNetworkConnectionFamily(root, "storage")
     with (root) {
         root.clearDashboardMetricHistoryForPrefix("storage.")
-        handleNetworkConfigurationChanged()
+        storageModuleReport = null
+        storageSourceReport = null
+        storageApp.invalidateSourceRequests()
+        saveSettingsState()
     }
+}
+
+function resetDashboardConfiguration(root) {
+    with (root) {
+        networkConfigurationRevision += 1
+        dashboardOverview = null
+        dashboardNode = null
+        dashboardL1Blocks = []
+        dashboardBlocks = []
+        dashboardProvisionalBlocks = []
+        dashboardLezBlockRows = []
+        dashboardError = ""
+        dashboardRefreshing = false
+        dashboardRefreshSerial += 1
+        if (chainPages) {
+            chainPages.invalidateOperationCaller("dashboard.node",
+                qsTr("Dashboard configuration changed."))
+            chainPages.invalidateOperationCaller("dashboard.live",
+                qsTr("Dashboard configuration changed."))
+        }
+    }
+}
+
+function clearNetworkConnectionFamily(root, family) {
+    with (root) {
+        networkConnectionStatus = mapWithoutKey(networkConnectionStatus, family)
+        networkConnectionStatusRevision += 1
+        networkConnectionPending = mapWithoutKey(networkConnectionPending, family)
+        networkConnectionPendingRevision += 1
+    }
+}
+
+function mapWithoutKey(value, key) {
+    const next = ({})
+    const source = value && typeof value === "object" ? value : ({})
+    for (const currentKey in source) {
+        if (currentKey !== key) {
+            next[currentKey] = source[currentKey]
+        }
+    }
+    return next
 }
 
 function navTreeItems(root) {
@@ -280,6 +320,7 @@ function restoreNavigationSnapshot(root, snapshot) {
     root.shell.navigationRestoring = true
     try {
         root.shell.statusText = String(values.statusText || qsTr("Ready"))
+        root.shell.resultGeneration += 1
         root.shell.resultTitle = String(values.resultTitle || qsTr("Output"))
         root.shell.resultText = String(values.resultText || "")
         root.shell.resultValue = cloneNavigationValue(root, values.resultValue)
@@ -488,6 +529,7 @@ function openSettings(root, section, subsection, recordHistory) {
 
 function clearResult(root) {
     with (root) {
+        shell.resultGeneration += 1
         shell.resultTitle = qsTr("Output")
         shell.resultText = ""
         shell.resultValue = null
@@ -498,6 +540,7 @@ function clearResult(root) {
 
 function setResult(root, title, text, isError, value, owner) {
     with (root) {
+        shell.resultGeneration += 1
         shell.resultTitle = title
         shell.resultText = text
         shell.resultValue = value === undefined ? null : value

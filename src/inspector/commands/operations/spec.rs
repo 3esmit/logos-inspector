@@ -93,6 +93,9 @@ pub(super) enum AffectedContextKey {
     Path,
     Filename,
     BackupCatalogId,
+    SlotRange,
+    BlockId,
+    TransactionId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -321,6 +324,9 @@ impl AffectedContextKey {
             Self::Path => "path",
             Self::Filename => "filename",
             Self::BackupCatalogId => "backupCatalogId",
+            Self::SlotRange => "slotRange",
+            Self::BlockId => "blockId",
+            Self::TransactionId => "transactionId",
         }
     }
 }
@@ -1042,6 +1048,45 @@ mod tests {
                 &[
                     AffectedContextField::required(AffectedContextKey::Source),
                     AffectedContextField::required(AffectedContextKey::Endpoint),
+                ],
+            ),
+            (
+                OperationMethod::BlockchainNode,
+                &[
+                    AffectedContextField::required(AffectedContextKey::Source),
+                    AffectedContextField::optional(AffectedContextKey::Endpoint),
+                ],
+            ),
+            (
+                OperationMethod::BlockchainBlocks,
+                &[
+                    AffectedContextField::required(AffectedContextKey::Source),
+                    AffectedContextField::optional(AffectedContextKey::Endpoint),
+                    AffectedContextField::required(AffectedContextKey::SlotRange),
+                ],
+            ),
+            (
+                OperationMethod::BlockchainLiveBlocks,
+                &[
+                    AffectedContextField::required(AffectedContextKey::Source),
+                    AffectedContextField::optional(AffectedContextKey::Endpoint),
+                    AffectedContextField::required(AffectedContextKey::SlotRange),
+                ],
+            ),
+            (
+                OperationMethod::BlockchainBlock,
+                &[
+                    AffectedContextField::required(AffectedContextKey::Source),
+                    AffectedContextField::optional(AffectedContextKey::Endpoint),
+                    AffectedContextField::required(AffectedContextKey::BlockId),
+                ],
+            ),
+            (
+                OperationMethod::BlockchainTransaction,
+                &[
+                    AffectedContextField::required(AffectedContextKey::Source),
+                    AffectedContextField::optional(AffectedContextKey::Endpoint),
+                    AffectedContextField::required(AffectedContextKey::TransactionId),
                 ],
             ),
         ];

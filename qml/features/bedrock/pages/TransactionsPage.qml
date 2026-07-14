@@ -28,7 +28,7 @@ ColumnLayout {
         rangeText: root.transactionRangeText()
         canGoNewer: root.canLoadNewer()
         canGoOlder: root.model.transactionsPageNextBeforeBlock > 0
-        busy: root.model.shell.busy
+        busy: root.model.shell.busy || root.model.chainPages.transactionsWorkflowRunning
         Layout.fillWidth: true
         headerCells: [
             { text: qsTr("L1 slot"), width: 96 },

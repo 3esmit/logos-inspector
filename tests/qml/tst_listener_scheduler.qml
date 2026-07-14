@@ -57,6 +57,23 @@ TestCase {
     }
 
     QtObject {
+        id: chainState
+
+        property bool operationsRunning: false
+        property int polls: 0
+
+        function pollOperations() {
+            polls += 1
+            return polls
+        }
+
+        function refreshBlocksLivePage() {
+            fakeModel.liveCalls += 1
+            return fakeModel.liveCalls
+        }
+    }
+
+    QtObject {
         id: zoneState
 
         signal statusRefreshRequested()
@@ -92,6 +109,7 @@ TestCase {
         property QtObject backupCatalog: backupCatalogState
         property QtObject deliveryApp: deliveryState
         property QtObject social: socialState
+        property QtObject chainPages: chainState
         property QtObject zoneInspection: zoneState
         property var queriedKinds: []
         property int dashboardCalls: 0
@@ -145,6 +163,8 @@ TestCase {
         deliveryState.polls = 0
         socialState.operationsRunning = false
         socialState.polls = 0
+        chainState.operationsRunning = false
+        chainState.polls = 0
         zoneState.statusPollingEnabled = false
         zoneState.statusPollInterval = 5000
         zoneState.polls = 0
@@ -158,9 +178,11 @@ TestCase {
         fakeModel.backupCatalogUploadRunning = true
         deliveryState.running = true
         socialState.operationsRunning = true
+        chainState.operationsRunning = true
         scheduler.tick("storageOperation")
         scheduler.tick("deliveryOperation")
         scheduler.tick("socialOperation")
+        scheduler.tick("chainOperation")
         scheduler.tick("liveBlocks")
 
         compare(fakeModel.queriedKinds[0], "blockchain")
@@ -169,6 +191,7 @@ TestCase {
         compare(backupCatalogState.polls, 1)
         compare(deliveryState.polls, 1)
         compare(socialState.polls, 1)
+        compare(chainState.polls, 1)
         compare(fakeModel.liveCalls, 1)
     }
 
@@ -185,6 +208,10 @@ TestCase {
         socialState.operationsRunning = true
         verify(scheduler.enabled("socialOperation"))
         compare(scheduler.intervalFor("socialOperation"), 10)
+        verify(!scheduler.enabled("chainOperation"))
+        chainState.operationsRunning = true
+        verify(scheduler.enabled("chainOperation"))
+        compare(scheduler.intervalFor("chainOperation"), 10)
         verify(scheduler.enabled("dashboard"))
         fakeModel.shell.currentView = "blocks"
         verify(!scheduler.enabled("dashboard"))

@@ -104,13 +104,34 @@ QtObject {
 
         inspectorModule: root.inspectorModule
         capabilityFacade: root.capabilities
+        configurationGeneration: root.blockchainConfigurationRevision
         gateway: QtObject {
-            function requestModule(moduleName, method, args, label, showResult, cacheResult) {
-                return root.requestModule(moduleName, method, args, label, showResult, cacheResult)
+            function startRuntimeOperation(request, showResult, callback) {
+                return root.runtimeOperationStart(request, showResult === true, callback)
             }
 
-            function requestModuleAsync(moduleName, method, args, label, showResult, callback, acceptResponse) {
-                return root.requestModuleAsync(moduleName, method, args, label, showResult, callback, acceptResponse)
+            function runtimeOperationStatus(operationId, showResult, callback) {
+                return root.runtimeOperationStatus(operationId, showResult === true, callback)
+            }
+
+            function runtimeOperationCancel(operationId, showResult, callback) {
+                return root.runtimeOperationCancel(operationId, showResult === true, callback)
+            }
+
+            function appendOperationHistory(operation, detail) {
+                return root.appendOperationHistory(operation, detail)
+            }
+
+            function beginPresentation(label, owner) {
+                return appRequestState.beginPresentation(label, owner)
+            }
+
+            function completePresentation(lease, title, text, isError, value) {
+                return appRequestState.completePresentation(lease, title, text, isError, value)
+            }
+
+            function abandonPresentation(lease) {
+                return appRequestState.abandonPresentation(lease)
             }
 
             function setResult(title, text, isError, value, owner) {
@@ -162,6 +183,13 @@ QtObject {
     property string nodeUrl: "http://127.0.0.1:8080/"
     property var networkConnectorConfig: defaultNetworkConnectorConfig()
     property string blockchainSourceMode: "rpc"
+    readonly property string blockchainConfigurationSignature: JSON.stringify([
+        networkProfile,
+        nodeUrl,
+        blockchainSourceMode,
+        networkConnectorConfig && networkConnectorConfig.scopes
+            ? networkConnectorConfig.scopes.l1 || null : null
+    ])
     property string messagingSourceMode: "rest"
     property string messagingRestUrl: "http://127.0.0.1:8645"
     property string messagingMetricsUrl: "http://127.0.0.1:8008/metrics"
@@ -281,6 +309,7 @@ QtObject {
     property var networkConnectionStatus: ({})
     property int networkConnectionStatusRevision: 0
     property int networkConfigurationRevision: 0
+    property int blockchainConfigurationRevision: 0
     property var footerFieldSelections: metrics.defaultFooterFieldSelections()
     property int footerFieldRevision: 0
     property var dashboardGraphSelections: defaultDashboardGraphSelections()
@@ -781,13 +810,11 @@ QtObject {
         function onSharedIdlAutoShareChanged() { root.saveSettingsState() }
     }
 
-    onNetworkProfileChanged: handleNetworkConfigurationChanged()
-    onNodeUrlChanged: handleNetworkConfigurationChanged()
+    onBlockchainConfigurationSignatureChanged: handleBlockchainConfigurationChanged()
     onNetworkConnectorConfigChanged: {
         syncSourceModesFromConnectorConfig()
         refreshCapabilityRegistryIfLoaded()
     }
-    onBlockchainSourceModeChanged: handleNetworkConfigurationChanged()
     onMessagingSourceModeChanged: handleMessagingConfigurationChanged()
     onMessagingRestUrlChanged: handleMessagingConfigurationChanged()
     onMessagingMetricsUrlChanged: handleMessagingConfigurationChanged()
@@ -830,6 +857,10 @@ QtObject {
     onDashboardGraphRevisionChanged: saveSettingsState()
 
     function handleNetworkConfigurationChanged() { return AppModelCore.handleNetworkConfigurationChanged(root) }
+
+    function handleBlockchainConfigurationChanged() {
+        return AppModelCore.handleBlockchainConfigurationChanged(root)
+    }
 
     function handleMessagingConfigurationChanged() { return AppModelCore.handleMessagingConfigurationChanged(root) }
 
@@ -910,6 +941,14 @@ QtObject {
     }
 
     function blockchainArgs(extra) { return sourceRouting.blockchainArgs(extra) }
+
+    function startBlockchainOperation(callerKey, method, args, label, callback) {
+        return chainPages.startOperation(callerKey, method, args, label, callback)
+    }
+
+    function presentBlockchainOperation(callerKey, method, args, label, owner, callback) {
+        return chainPages.presentOperation(callerKey, method, args, label, owner, callback)
+    }
 
     function blockchainRpcArgs(extra) { return AppModelNetwork.blockchainRpcArgs(root, extra) }
 

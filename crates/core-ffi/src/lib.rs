@@ -2217,10 +2217,16 @@ mod tests {
     fn host_enabled_handle_rejects_async_required_inspector_calls_before_dispatch() -> TestResult {
         let host = TestHost::new();
         let handle = TestCoreHandle::new(&host)?;
-        let args = CString::new("[]")?;
 
-        for method in ["rawRpc", "runtimeOperationStatus", "callModule", "modules"] {
+        for (method, args) in [
+            ("rawRpc", "[]"),
+            ("runtimeOperationStatus", "[]"),
+            ("blockchainNode", "[\"module\"]"),
+            ("callModule", "[]"),
+            ("modules", "[]"),
+        ] {
             let method = CString::new(method)?;
+            let args = CString::new(args)?;
             // SAFETY: handle and C strings remain live for this call.
             let response = unsafe {
                 logos_inspector_core_call(handle.as_ptr(), method.as_ptr(), args.as_ptr())

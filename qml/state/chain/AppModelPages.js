@@ -2,38 +2,56 @@
 .import "ChainPageQuery.js" as ChainPageQuery
 .import "ChainPageQuerySession.js" as ChainPageQuerySession
 
-function refreshBlocksPage(root, anchorSlot) {
+function refreshBlocksPageRequest(root, anchorSlot, onComplete) {
     with (root) {
-        const node = requestModule(inspectorModule, "blockchainNode", root.blockchainArgs([]), qsTr("Blocks node state"), false)
-        if (!node.ok) {
-            blocksPageError = node.error
-            shell.setResult(qsTr("Blocks"), blocksPageError, true)
-            return
+        if (root.operationPending("blocks.page.node")
+                || root.operationPending("blocks.page.range")
+                || root.operationPending("blocks.live.node")
+                || root.operationPending("blocks.live.range")) {
+            return null
         }
-
-        const window = ChainPageQuery.slotWindow(anchorSlot, ChainPageQuery.slotTip(node.value, false), blocksPageWindow)
-        const slotFrom = window.slotFrom
-        const slotTo = window.slotTo
-        const blockLimit = Math.max(5, Number(blocksPageLimit || 5))
-        const blocks = requestModule(inspectorModule, "blockchainBlocks", root.blockchainArgs([slotFrom, slotTo, blockLimit]), qsTr("Blocks"), false)
-        if (!blocks.ok) {
-            blocksPageError = blocks.error
-            shell.setResult(qsTr("Blocks"), blocksPageError, true)
-            return
-        }
-
-        dashboardNode = node.value
-        blocksPageSlotFrom = slotFrom
-        blocksPageSlotTo = slotTo
-        if (!Array.isArray(blocks.value)) {
-            blocksPageRows = []
-            blocksPageError = qsTr("Response shape unknown. Raw JSON remains available.")
-            shell.setResult(qsTr("Blocks"), BridgeHelpers.formatValue(blocks.value), false, blocks.value)
-            return
-        }
-        blocksPageRows = sortedBlocks(blocks.value).slice(0, blocksPageLimit)
-        blocksPageError = ""
-        shell.setResult(qsTr("Blocks"), BridgeHelpers.formatValue(blocksPageRows), false, blocksPageRows)
+        const presentation = root.beginPresentation(qsTr("Blocks"), "blocks")
+        return root.startOperation("blocks.page.node", "blockchainNode", [],
+            qsTr("Blocks node state"), function (node) {
+                if (!node || !node.ok) {
+                    blocksPageError = String(node && node.error || qsTr("Blocks node query failed."))
+                    const presented = root.completePresentation(presentation, qsTr("Blocks"),
+                        blocksPageError, true, null)
+                    if (onComplete) {
+                        onComplete(node, presented)
+                    }
+                    return false
+                }
+                const window = ChainPageQuery.slotWindow(anchorSlot,
+                    ChainPageQuery.slotTip(node.value, false), blocksPageWindow)
+                const slotFrom = window.slotFrom
+                const slotTo = window.slotTo
+                const blockLimit = Math.max(5, Number(blocksPageLimit || 5))
+                dashboardNode = node.value
+                root.startOperation("blocks.page.range", "blockchainBlocks",
+                    [slotFrom, slotTo, blockLimit], qsTr("Blocks"), function (blocks) {
+                        if (!blocks || !blocks.ok) {
+                            blocksPageError = String(blocks && blocks.error || qsTr("Blocks query failed."))
+                            const presented = root.completePresentation(presentation, qsTr("Blocks"),
+                                blocksPageError, true, null)
+                            if (onComplete) {
+                                onComplete(blocks, presented)
+                            }
+                            return false
+                        }
+                        blocksPageSlotFrom = slotFrom
+                        blocksPageSlotTo = slotTo
+                        blocksPageRows = sortedBlocks(blocks.value).slice(0, blocksPageLimit)
+                        blocksPageError = ""
+                        const presented = root.completePresentation(presentation, qsTr("Blocks"),
+                            BridgeHelpers.formatValue(blocksPageRows), false, blocksPageRows)
+                        if (onComplete) {
+                            onComplete(blocks, presented)
+                        }
+                        return false
+                    })
+                return false
+            })
     }
 }
 
@@ -45,14 +63,27 @@ function startBlocksLiveMode(root) {
         blocksLiveUnknownEvents = 0
         blocksLiveCheckedAt = ""
         if (!blocksPageRows.length) {
-            refreshBlocksPage()
+            refreshBlocksPageRequest(root, undefined, function (response, presented) {
+                if (blocksLiveEnabled && response && response.ok && presented === true) {
+                    refreshBlocksLivePage(root)
+                } else if (blocksLiveEnabled && presented === true) {
+                    blocksLiveError = String(response && response.error
+                        || qsTr("Blocks page refresh failed."))
+                    blocksLiveEnabled = false
+                } else if (blocksLiveEnabled) {
+                    blocksLiveEnabled = false
+                }
+            })
+            return
         }
-        refreshBlocksLivePage()
+        refreshBlocksLivePage(root)
     }
 }
 
 function stopBlocksLiveMode(root) {
     with (root) {
+        root.invalidateOperationCaller("blocks.live.node", qsTr("Live blocks stopped."))
+        root.invalidateOperationCaller("blocks.live.range", qsTr("Live blocks stopped."))
         blocksLiveEnabled = false
         blocksLiveError = ""
         blocksLiveSource = ""
@@ -63,32 +94,53 @@ function stopBlocksLiveMode(root) {
 
 function refreshBlocksLivePage(root) {
     with (root) {
-        const node = requestModule(inspectorModule, "blockchainNode", root.blockchainArgs([]), qsTr("Live blocks node state"), false)
-        if (!node.ok) {
-            blocksLiveError = node.error
-            return
+        if (root.operationPending("blocks.live.node")
+                || root.operationPending("blocks.live.range")
+                || root.operationPending("blocks.page.node")
+                || root.operationPending("blocks.page.range")) {
+            return null
         }
-        dashboardNode = node.value
-        const window = ChainPageQuery.liveSlotWindow(ChainPageQuery.slotTip(node.value, false), blocksPageSlotTo, blocksPageWindow)
-        const slotTo = window.slotTo
-        if (slotTo <= 0) {
-            blocksLiveError = qsTr("No L1 tip available.")
-            return
-        }
-        const slotFrom = window.slotFrom
-        const limit = Math.max(5, Number(blocksPageLimit || 5))
-        const response = requestModule(inspectorModule, "blockchainLiveBlocks", root.blockchainArgs([slotFrom, slotTo, limit]), qsTr("Live blocks"), false)
-        if (!response.ok) {
-            blocksLiveError = response.error
-            return
-        }
-
-        applyLiveBlockReport(root, normalizedLiveBlockReport(response.value || {}, "blocks_range"), {
-            slotFrom: slotFrom,
-            slotTo: slotTo,
-            updateResult: true,
-            resultTitle: qsTr("Live blocks")
-        })
+        const presentation = root.beginPresentation(qsTr("Live blocks"), "blocks")
+        return root.startOperation("blocks.live.node", "blockchainNode", [],
+            qsTr("Live blocks node state"), function (node) {
+                if (!node || !node.ok) {
+                    blocksLiveError = String(node && node.error || qsTr("Live blocks node query failed."))
+                    root.completePresentation(presentation, qsTr("Live blocks"),
+                        blocksLiveError, true, null)
+                    return false
+                }
+                dashboardNode = node.value
+                const window = ChainPageQuery.liveSlotWindow(
+                    ChainPageQuery.slotTip(node.value, false), blocksPageSlotTo, blocksPageWindow)
+                const slotTo = window.slotTo
+                if (slotTo <= 0) {
+                    blocksLiveError = qsTr("No L1 tip available.")
+                    root.completePresentation(presentation, qsTr("Live blocks"),
+                        blocksLiveError, true, null)
+                    return false
+                }
+                const slotFrom = window.slotFrom
+                const limit = Math.max(5, Number(blocksPageLimit || 5))
+                root.startOperation("blocks.live.range", "blockchainLiveBlocks",
+                    [slotFrom, slotTo, limit], qsTr("Live blocks"), function (response) {
+                        if (!response || !response.ok) {
+                            blocksLiveError = String(response && response.error || qsTr("Live blocks query failed."))
+                            root.completePresentation(presentation, qsTr("Live blocks"),
+                                blocksLiveError, true, null)
+                            return false
+                        }
+                        const liveReport = applyLiveBlockReport(root,
+                            normalizedLiveBlockReport(response.value || {}, "blocks_range"), {
+                                slotFrom: slotFrom,
+                                slotTo: slotTo,
+                                updateResult: false
+                            })
+                        root.completePresentation(presentation, qsTr("Live blocks"),
+                            BridgeHelpers.formatValue(liveReport), false, liveReport)
+                        return false
+                    })
+                return false
+            })
     }
 }
 
@@ -163,7 +215,7 @@ function applyLiveBlockReport(root, report, options) {
         blocksPageError = ""
         if (opts.updateResult === true) {
             const title = String(opts.resultTitle || qsTr("Live blocks"))
-            shell.setResult(title, BridgeHelpers.formatValue(liveReport), false, liveReport)
+            root.setResult(title, BridgeHelpers.formatValue(liveReport), false, liveReport, "blocks")
         }
         return liveReport
     }
@@ -272,12 +324,16 @@ function newerBlocksPage(root) {
 
 function setBlocksPageLimit(root, limit) {
     with (root) {
+        if (blocksWorkflowRunning) {
+            return false
+        }
         const value = Math.max(1, Number(limit || blocksPageLimit))
         if (blocksPageLimit === value) {
-            return
+            return false
         }
         blocksPageLimit = value
         refreshBlocksPage(blocksPageSlotTo > 0 ? blocksPageSlotTo : null)
+        return true
     }
 }
 

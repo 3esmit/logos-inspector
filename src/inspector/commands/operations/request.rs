@@ -9,13 +9,13 @@ use crate::{
     support::args::Args,
 };
 
-use super::delivery;
 use super::identity::ClientRequestId;
 use super::spec::{
     OperationCommand, OperationDefinition, OperationDomain, OperationExclusiveGroup,
     OperationMethod, OperationPolicyDefinition, operation_definition,
 };
 use super::storage;
+use super::{blockchain, delivery};
 
 #[derive(Debug, Clone)]
 pub(crate) struct RuntimeOperationRequest {
@@ -204,6 +204,7 @@ fn validate_node_request(request: &RuntimeOperationRequest) -> Result<()> {
     match request.command() {
         OperationCommand::Storage(command) => storage::validate(command, request),
         OperationCommand::Delivery(command) => delivery::validate(command, request),
+        OperationCommand::Blockchain(command) => blockchain::validate(command, request),
         _ => Ok(()),
     }
 }
@@ -211,6 +212,14 @@ fn validate_node_request(request: &RuntimeOperationRequest) -> Result<()> {
 pub(super) fn runtime_operation_backend(request: &RuntimeOperationRequest) -> String {
     if let Some(node_request) = &request.node_request {
         return node_request.source_mode().to_owned();
+    }
+    if matches!(request.command(), OperationCommand::Blockchain(_)) {
+        return Args::new(request.args.clone())
+            .and_then(|args| {
+                args.source_endpoint(0, "node endpoint")
+                    .map(|source| source.mode.as_str().to_owned())
+            })
+            .unwrap_or_else(|_| "direct".to_owned());
     }
     request
         .args
@@ -272,6 +281,9 @@ pub(super) fn runtime_operation_context(request: &RuntimeOperationRequest) -> Re
         }
         OperationCommand::Delivery(command) => {
             delivery::add_operation_context(command, request, &mut context)?;
+        }
+        OperationCommand::Blockchain(command) => {
+            blockchain::add_operation_context(command, request, &mut context)?;
         }
         _ => {}
     }
@@ -516,6 +528,89 @@ mod tests {
             }
         }
         Ok(())
+    }
+
+    #[test]
+    fn blockchain_operation_context_freezes_source_range_and_target_identity() -> Result<()> {
+        let cases = [
+            (
+                "blockchainNode",
+                json!(["rpc", "http://blockchain.local"]),
+                json!({
+                    "source": "rpc",
+                    "endpoint": "http://blockchain.local"
+                }),
+            ),
+            (
+                "blockchainBlocks",
+                json!(["module", 10, 20, 5]),
+                json!({
+                    "source": "module",
+                    "slotFrom": 10,
+                    "slotTo": 20,
+                    "slotRange": "10:20",
+                    "limit": 5
+                }),
+            ),
+            (
+                "blockchainLiveBlocks",
+                json!(["logoscore_cli", 30, 40]),
+                json!({
+                    "source": "logoscore_cli",
+                    "slotFrom": 30,
+                    "slotTo": 40,
+                    "slotRange": "30:40",
+                    "limit": 50
+                }),
+            ),
+            (
+                "blockchainBlock",
+                json!(["module", "block-a"]),
+                json!({
+                    "source": "module",
+                    "blockId": "block-a"
+                }),
+            ),
+            (
+                "blockchainTransaction",
+                json!(["rpc", "http://blockchain.local", "tx-a"]),
+                json!({
+                    "source": "rpc",
+                    "endpoint": "http://blockchain.local",
+                    "transactionId": "tx-a"
+                }),
+            ),
+        ];
+
+        for (method, args, expected_context) in cases {
+            let request = runtime_operation_request_from_value(json!({
+                "domain": "blockchain",
+                "method": method,
+                "args": args,
+                "clientRequestId": format!("client-{method}")
+            }))?;
+            if runtime_operation_context(&request)? != expected_context {
+                bail!("blockchain operation `{method}` lost context identity");
+            }
+            let expected_backend = expected_context
+                .get("source")
+                .and_then(Value::as_str)
+                .context("expected source")?;
+            if runtime_operation_backend(&request) != expected_backend {
+                bail!("blockchain operation `{method}` lost backend identity");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn blockchain_operation_request_rejects_incomplete_range_before_admission() {
+        let result = runtime_operation_request_from_value(json!({
+            "domain": "blockchain",
+            "method": "blockchainBlocks",
+            "args": ["module", 10]
+        }));
+        assert!(result.is_err());
     }
 
     #[test]

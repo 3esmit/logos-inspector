@@ -1,12 +1,28 @@
 import QtQml
+import "../services/BridgeHelpers.js" as BridgeHelpers
+import "chain" as Chain
 import "chain/AppModelPages.js" as AppModelPages
 
 QtObject {
     id: root
 
     required property var gateway
+    required property int configurationGeneration
     property var capabilityFacade: null
     property string inspectorModule: "logos_inspector"
+    readonly property var operationSourceArgs: blockchainArgs([])
+    property Chain.ChainOperationCoordinator operationCoordinator: Chain.ChainOperationCoordinator {
+        gateway: root.gateway
+        sourceArgs: root.operationSourceArgs
+        configurationGeneration: root.configurationGeneration
+    }
+    readonly property bool operationsRunning: operationCoordinator.running
+    readonly property bool blocksWorkflowRunning: operationPending("blocks.page.node")
+        || operationPending("blocks.page.range")
+        || operationPending("blocks.live.node")
+        || operationPending("blocks.live.range")
+    readonly property bool transactionsWorkflowRunning: operationPending("transactions.page.node")
+        || operationPending("transactions.page.range")
 
     property var dashboardOverview: null
     property var dashboardNode: null
@@ -38,14 +54,6 @@ QtObject {
     property int transactionsPageBlockBatch: 1000
     property int transactionsPageLimit: 20
     property string transactionsPageError: ""
-
-    function requestModule(moduleName, method, args, label, showResult, cacheResult) {
-        return gateway.requestModule(moduleName, method, args, label, showResult, cacheResult)
-    }
-
-    function requestModuleAsync(moduleName, method, args, label, showResult, callback, acceptResponse) {
-        return gateway.requestModuleAsync(moduleName, method, args, label, showResult, callback, acceptResponse)
-    }
 
     function setResult(title, text, isError, value, owner) {
         return gateway.setResult(title, text, isError, value, owner)
@@ -84,7 +92,71 @@ QtObject {
 
     function normalizedHexText(value) { return gateway.normalizedHexText(value) }
 
-    function refreshBlocksPage(anchorSlot) { return AppModelPages.refreshBlocksPage(root, anchorSlot) }
+    function startOperation(callerKey, method, args, label, callback) {
+        return operationCoordinator.start(callerKey, {
+            method: String(method || ""),
+            args: Array.isArray(args) ? args.slice(0) : [],
+            label: String(label || method || qsTr("Blockchain query"))
+        }, callback)
+    }
+
+    function presentOperation(callerKey, method, args, label, owner, callback) {
+        const title = String(label || method || qsTr("Blockchain query"))
+        const presentation = beginPresentation(title, owner)
+        const ticket = startOperation(callerKey, method, args, title, function (response, completedTicket) {
+            completePresentationResponse(presentation, title, response)
+            return callback ? callback(response, completedTicket) === true : false
+        })
+        if (!ticket) {
+            abandonPresentation(presentation)
+        }
+        return ticket
+    }
+
+    function beginPresentation(label, owner) {
+        if (!gateway || typeof gateway.beginPresentation !== "function") {
+            return null
+        }
+        return gateway.beginPresentation(String(label || ""), owner)
+    }
+
+    function completePresentation(lease, title, text, isError, value) {
+        if (!lease || !gateway || typeof gateway.completePresentation !== "function") {
+            return false
+        }
+        return gateway.completePresentation(lease, title, text, isError === true, value)
+    }
+
+    function completePresentationResponse(lease, title, response) {
+        const ok = response && response.ok === true
+        return completePresentation(lease, title,
+            ok ? BridgeHelpers.formatValue(response.value)
+               : String(response && response.error || qsTr("Blockchain query failed.")),
+            !ok, ok ? response.value : null)
+    }
+
+    function abandonPresentation(lease) {
+        if (!lease || !gateway || typeof gateway.abandonPresentation !== "function") {
+            return false
+        }
+        return gateway.abandonPresentation(lease)
+    }
+
+    function pollOperations() { return operationCoordinator.poll() }
+
+    function operationPending(callerKey) { return operationCoordinator.callerPending(callerKey) }
+
+    function invalidateOperations(reason) { return operationCoordinator.invalidateSource(reason) }
+
+    function invalidateOperationCaller(callerKey, reason) {
+        return operationCoordinator.invalidateCaller(callerKey, reason)
+    }
+
+    function releaseOperation(ticket) { return operationCoordinator.release(ticket) }
+
+    function refreshBlocksPage(anchorSlot, onComplete) {
+        return AppModelPages.refreshBlocksPageRequest(root, anchorSlot, onComplete)
+    }
 
     function startBlocksLiveMode() { return AppModelPages.startBlocksLiveMode(root) }
 

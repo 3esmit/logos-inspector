@@ -3,35 +3,45 @@
 
 function refreshTransactionsPage(root, beforeBlock) {
     with (root) {
-        const node = requestModule(inspectorModule, "blockchainNode", root.blockchainArgs([]), qsTr("Transactions node state"), false)
-        if (!node.ok) {
-            transactionsPageError = node.error
-            shell.setResult(qsTr("Transactions"), transactionsPageError, true)
-            return
+        if (root.operationPending("transactions.page.node")
+                || root.operationPending("transactions.page.range")) {
+            return null
         }
-
-        const window = ChainPageQuery.slotWindow(beforeBlock, ChainPageQuery.slotTip(node.value, true), transactionsPageBlockBatch)
-        const slotFrom = window.slotFrom
-        const slotTo = window.slotTo
-        const blocks = requestModule(inspectorModule, "blockchainBlocks", root.blockchainArgs([slotFrom, slotTo]), qsTr("Transactions"), false)
-        if (!blocks.ok) {
-            transactionsPageError = blocks.error
-            shell.setResult(qsTr("Transactions"), transactionsPageError, true)
-            return
-        }
-
-        transactionsPageBeforeBlock = slotTo
-        if (!Array.isArray(blocks.value)) {
-            transactionsPageRows = []
-            transactionsPageNextBeforeBlock = 0
-            transactionsPageError = qsTr("Response shape unknown. Raw JSON remains available.")
-            shell.setResult(qsTr("Transactions"), BridgeHelpers.formatValue(blocks.value), false, blocks.value)
-            return
-        }
-        transactionsPageRows = root.transactionRowsFromBlocks(blocks.value).slice(0, transactionsPageLimit)
-        transactionsPageNextBeforeBlock = slotFrom > 0 ? slotFrom - 1 : 0
-        transactionsPageError = ""
-        shell.setResult(qsTr("Transactions"), BridgeHelpers.formatValue(transactionsPageRows), false, transactionsPageRows)
+        const presentation = root.beginPresentation(qsTr("Transactions"), "transactions")
+        return root.startOperation("transactions.page.node", "blockchainNode", [],
+            qsTr("Transactions node state"), function (node) {
+                if (!node || !node.ok) {
+                    transactionsPageError = String(node && node.error
+                        || qsTr("Transactions node query failed."))
+                    root.completePresentation(presentation, qsTr("Transactions"),
+                        transactionsPageError, true, null)
+                    return false
+                }
+                const window = ChainPageQuery.slotWindow(beforeBlock,
+                    ChainPageQuery.slotTip(node.value, true), transactionsPageBlockBatch)
+                const slotFrom = window.slotFrom
+                const slotTo = window.slotTo
+                root.startOperation("transactions.page.range", "blockchainBlocks",
+                    [slotFrom, slotTo], qsTr("Transactions"), function (blocks) {
+                        if (!blocks || !blocks.ok) {
+                            transactionsPageError = String(blocks && blocks.error
+                                || qsTr("Transactions query failed."))
+                            root.completePresentation(presentation, qsTr("Transactions"),
+                                transactionsPageError, true, null)
+                            return false
+                        }
+                        transactionsPageBeforeBlock = slotTo
+                        transactionsPageRows = root.transactionRowsFromBlocks(blocks.value)
+                            .slice(0, transactionsPageLimit)
+                        transactionsPageNextBeforeBlock = slotFrom > 0 ? slotFrom - 1 : 0
+                        transactionsPageError = ""
+                        root.completePresentation(presentation, qsTr("Transactions"),
+                            BridgeHelpers.formatValue(transactionsPageRows),
+                            false, transactionsPageRows)
+                        return false
+                    })
+                return false
+            })
     }
 }
 
@@ -44,10 +54,14 @@ function newerTransactionsPage(root) {
 }
 
 function setTransactionsPageLimit(root, limit) {
+    if (root.transactionsWorkflowRunning) {
+        return false
+    }
     const value = Math.max(1, Number(limit || root.transactionsPageLimit))
     if (root.transactionsPageLimit === value) {
-        return
+        return false
     }
     root.transactionsPageLimit = value
     refreshTransactionsPage(root, root.transactionsPageBeforeBlock > 0 ? root.transactionsPageBeforeBlock : null)
+    return true
 }

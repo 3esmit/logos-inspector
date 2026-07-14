@@ -245,7 +245,11 @@ mod tests {
             AffectedContextKey::Endpoint,
             AffectedContextKey::Cid,
             AffectedContextKey::Path,
+            AffectedContextKey::Filename,
             AffectedContextKey::BackupCatalogId,
+            AffectedContextKey::SlotRange,
+            AffectedContextKey::BlockId,
+            AffectedContextKey::TransactionId,
         ] {
             let result =
                 affected_inputs(&request, &json!({}), &[AffectedContextField::required(key)]);

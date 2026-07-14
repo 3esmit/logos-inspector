@@ -12,24 +12,41 @@ function openMantleTransaction(root, hash) {
         selectView("transactionDetail", false)
         transactionDetailError = ""
         if (detail) {
+            root.chainPages.invalidateOperationCaller("detail.transaction",
+                qsTr("Transaction selection changed."))
             transactionDetailValue = detail
             transactionsPageError = ""
             shell.setResult(qsTr("Mantle transaction"), BridgeHelpers.formatValue(detail), false, detail)
             return
         }
-
-        const response = requestModule(inspectorModule, "blockchainTransaction", root.blockchainArgs([root.chainPages.normalizedHashOrValue(value)]), qsTr("Mantle transaction"), false)
-        if (response.ok) {
-            const fetched = root.blockchainTransactionDetail(response.value, value)
-            transactionDetailValue = fetched
-            transactionsPageError = ""
-            shell.setResult(qsTr("Mantle transaction"), BridgeHelpers.formatValue(fetched), false, fetched)
-            return
+        if (root.chainPages.operationPending("detail.transaction")) {
+            transactionDetailError = qsTr("A transaction lookup is already running.")
+            shell.setResult(qsTr("Mantle transaction"), transactionDetailError,
+                true, null, "transactionDetail")
+            return null
         }
-
-        transactionDetailValue = null
-        transactionDetailError = response.error || qsTr("Mantle transaction %1 was not found.").arg(value)
-        shell.setResult(qsTr("Mantle transaction"), transactionDetailError, true, null, "transactionDetail")
+        const presentation = root.chainPages.beginPresentation(
+            qsTr("Mantle transaction"), "transactionDetail")
+        return root.chainPages.startOperation("detail.transaction", "blockchainTransaction",
+            [root.chainPages.normalizedHashOrValue(value)], qsTr("Mantle transaction"),
+            function (response) {
+                if (response && response.ok) {
+                    const fetched = root.blockchainTransactionDetail(response.value, value)
+                    transactionDetailValue = fetched
+                    transactionDetailError = ""
+                    transactionsPageError = ""
+                    root.chainPages.completePresentation(presentation,
+                        qsTr("Mantle transaction"), BridgeHelpers.formatValue(fetched),
+                        false, fetched)
+                    return false
+                }
+                transactionDetailValue = null
+                transactionDetailError = String(response && response.error
+                    || qsTr("Mantle transaction %1 was not found.").arg(value))
+                root.chainPages.completePresentation(presentation,
+                    qsTr("Mantle transaction"), transactionDetailError, true, null)
+                return false
+            })
     }
 }
 
@@ -72,6 +89,8 @@ function openBlockchainBlock(root, blockOrId) {
 
         pushNavigationHistory()
         selectView("blockDetail", false)
+        root.chainPages.invalidateOperationCaller("detail.block",
+            qsTr("Block selection changed."))
         blockDetailValue = detail
         blockDetailError = ""
         shell.setResult(qsTr("Block"), BridgeHelpers.formatValue(detail), false, detail)
@@ -88,30 +107,52 @@ function loadBlockchainBlockById(root, blockId) {
         selectView("blockDetail", false)
         blockDetailValue = null
         blockDetailError = ""
-        const response = requestModule(inspectorModule, "blockchainBlock", root.blockchainArgs([value]), qsTr("Block lookup"), false)
-        if (response.ok) {
-            blockDetailValue = root.chainPages.blockchainBlockDetail(response.value)
-            blockDetailError = ""
-            blocksPageError = ""
-            shell.setResult(qsTr("Block"), BridgeHelpers.formatValue(blockDetailValue), false, blockDetailValue)
-            return
+        if (root.chainPages.operationPending("detail.block")) {
+            blockDetailError = qsTr("A block lookup is already running.")
+            shell.setResult(qsTr("Block"), blockDetailError, true, null, "blockDetail")
+            return null
         }
         const normalized = root.chainPages.normalizedHashOrValue(value)
         const retryValue = normalized !== value ? normalized : ""
-        if (retryValue.length) {
-            const retry = requestModule(inspectorModule, "blockchainBlock", root.blockchainArgs([retryValue]), qsTr("Block lookup"), false)
-            if (retry.ok) {
-                blockDetailValue = root.chainPages.blockchainBlockDetail(retry.value)
+        const presentation = root.chainPages.beginPresentation(qsTr("Block"), "blockDetail")
+        const acceptBlock = function (response) {
+            if (response && response.ok) {
+                blockDetailValue = root.chainPages.blockchainBlockDetail(response.value)
                 blockDetailError = ""
                 blocksPageError = ""
-                shell.setResult(qsTr("Block"), BridgeHelpers.formatValue(blockDetailValue), false, blockDetailValue)
-                return
+                root.chainPages.completePresentation(presentation, qsTr("Block"),
+                    BridgeHelpers.formatValue(blockDetailValue), false, blockDetailValue)
+                return true
             }
+            return false
         }
-        selectView("blockDetail", false)
-        blockDetailValue = null
-        blockDetailError = qsTr("L1 block %1 was not found.").arg(value)
-        shell.setResult(qsTr("Block"), blockDetailError, true, null, "blockDetail")
+        const failBlock = function (response) {
+            blockDetailValue = null
+            blockDetailError = response && response.invalidated
+                ? String(response.error || qsTr("Blockchain source changed."))
+                : qsTr("L1 block %1 was not found.").arg(value)
+            root.chainPages.completePresentation(presentation, qsTr("Block"),
+                blockDetailError, true, null)
+        }
+        return root.chainPages.startOperation("detail.block", "blockchainBlock", [value],
+            qsTr("Block lookup"), function (response) {
+                if (acceptBlock(response)) {
+                    return false
+                }
+                if (retryValue.length && response && !response.invalidated
+                        && response.terminalStatus === "failed") {
+                    root.chainPages.startOperation("detail.block", "blockchainBlock", [retryValue],
+                        qsTr("Block lookup"), function (retry) {
+                            if (!acceptBlock(retry)) {
+                                failBlock(retry)
+                            }
+                            return false
+                        })
+                    return false
+                }
+                failBlock(response)
+                return false
+            })
     }
 }
 
@@ -122,23 +163,29 @@ function loadBlockchainBlockBySlot(root, slot) {
         selectView("blockDetail", false)
         blockDetailValue = null
         blockDetailError = ""
-        const response = requestModule(inspectorModule, "blockchainBlocks", root.blockchainArgs([value, value]), qsTr("Block lookup"), false)
-        if (response.ok) {
-            const blocks = Array.isArray(response.value) ? response.value : []
-            if (blocks.length > 0) {
-                blockDetailValue = root.chainPages.blockchainBlockDetail(blocks[0])
-                blockDetailError = ""
-                shell.setResult(qsTr("Block"), BridgeHelpers.formatValue(blockDetailValue), false, blockDetailValue)
-                return
-            }
-            blockDetailError = qsTr("No block found at slot %1.").arg(value)
-            blockDetailValue = null
+        if (root.chainPages.operationPending("detail.block")) {
+            blockDetailError = qsTr("A block lookup is already running.")
             shell.setResult(qsTr("Block"), blockDetailError, true, null, "blockDetail")
-        } else {
-            blockDetailError = response.error
-            blockDetailValue = null
-            shell.setResult(qsTr("Block"), response.error, true, null, "blockDetail")
+            return null
         }
+        const presentation = root.chainPages.beginPresentation(qsTr("Block"), "blockDetail")
+        return root.chainPages.startOperation("detail.block", "blockchainBlocks", [value, value],
+            qsTr("Block lookup"), function (response) {
+                if (response && response.ok && response.value.length > 0) {
+                    blockDetailValue = root.chainPages.blockchainBlockDetail(response.value[0])
+                    blockDetailError = ""
+                    root.chainPages.completePresentation(presentation, qsTr("Block"),
+                        BridgeHelpers.formatValue(blockDetailValue), false, blockDetailValue)
+                    return false
+                }
+                blockDetailValue = null
+                blockDetailError = response && response.ok
+                    ? qsTr("No block found at slot %1.").arg(value)
+                    : String(response && response.error || qsTr("Block lookup failed."))
+                root.chainPages.completePresentation(presentation, qsTr("Block"),
+                    blockDetailError, true, null)
+                return false
+            })
     }
 }
 
@@ -157,6 +204,8 @@ function openBlockchainTransaction(root, transaction, block) {
         }
         pushNavigationHistory()
         selectView("transactionDetail", false)
+        root.chainPages.invalidateOperationCaller("detail.transaction",
+            qsTr("Transaction selection changed."))
         transactionDetailValue = detail
         transactionDetailError = ""
         shell.setResult(qsTr("Transaction"), BridgeHelpers.formatValue(detail), false, detail)
@@ -188,8 +237,9 @@ function transactionDetail(root, hash) {
 function blockchainTransactionDetail(root, value, fallbackHash) {
     with (root) {
         const tx = value || {}
-        const hash = transactionHash(tx) || String(tx.hash || tx.tx_hash || tx.transaction_hash || fallbackHash || "")
-        const ops = transactionOps(tx)
+        const hash = root.chainPages.transactionHash(tx)
+            || String(tx.hash || tx.tx_hash || tx.transaction_hash || fallbackHash || "")
+        const ops = root.chainPages.transactionOps(tx)
         return {
             type: "blockchain_transaction",
             hash: hash,
@@ -197,7 +247,7 @@ function blockchainTransactionDetail(root, value, fallbackHash) {
             slot: tx.slot,
             index: tx.index,
             ops: ops.map(function (op, index) {
-                return operationSummary(op, tx, index)
+                return root.chainPages.operationSummary(op, tx, index)
             }),
             raw: tx.raw || tx
         }
