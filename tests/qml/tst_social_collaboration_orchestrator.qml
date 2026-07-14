@@ -71,6 +71,10 @@ TestCase {
                 inputs: {}
             }
         }
+
+        function effectiveMessagingSourceMode(value) {
+            return value
+        }
     }
 
     ListModel {
@@ -213,9 +217,6 @@ TestCase {
                 warnings: [],
                 provenance: ["test"]
             }
-        }
-        function effectiveMessagingSourceMode(value) {
-            return value
         }
         function configuredStorageRestUrl() {
             return "http://storage"

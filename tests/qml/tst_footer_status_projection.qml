@@ -8,10 +8,17 @@ TestCase {
     name: "FooterStatusProjection"
 
     QtObject {
+        id: sourceRoutingStub
+
+        function storageSourceTarget() { return "rest" }
+    }
+
+    QtObject {
         id: model
 
         property int footerFieldRevision: 0
         property string storageNetworkPreset: ""
+        property var sourceRouting: sourceRoutingStub
         readonly property var metrics: model
 
         function footerFieldEnabled(key) {
@@ -27,7 +34,6 @@ TestCase {
         function reportProbeValue(report, method) { return null }
         function moduleReport(kind) { return null }
         function moduleLastError(kind) { return "" }
-        function storageSourceTarget() { return "rest" }
     }
 
     QtObject {

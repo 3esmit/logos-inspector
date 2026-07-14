@@ -51,8 +51,6 @@ QtObject {
             }
         }
     }
-    property alias sourcePolicy: sourceRoutingState.sourcePolicy
-    property alias sourcePolicyLoaded: sourceRoutingState.sourcePolicyLoaded
     property Domains.ZoneInspectionState zoneInspection: Domains.ZoneInspectionState {
         id: zoneInspectionState
 
@@ -73,7 +71,7 @@ QtObject {
     }
     property Domains.NetworkProfileState networkProfiles: Domains.NetworkProfileState {
         id: networkProfileState
-        sourcePolicy: root.sourcePolicy
+        sourcePolicy: root.sourceRouting.sourcePolicy
     }
     readonly property var storageSource: sourceRouting.storageSourceView()
     readonly property var deliverySource: sourceRouting.deliverySourceView()
@@ -138,7 +136,7 @@ QtObject {
                 return appShellState.setResult(title, text, isError, value, owner)
             }
 
-            function blockchainArgs(extra) { return root.blockchainArgs(extra) }
+            function blockchainArgs(extra) { return root.sourceRouting.blockchainArgs(extra) }
 
             function blockchainRpcArgs(extra) { return root.blockchainRpcArgs(extra) }
 
@@ -228,7 +226,6 @@ QtObject {
             function saveSettingsState() { return root.saveSettingsState() }
             function saveIdlState() { return root.saveIdlState() }
             function socialGate(action) { return root.socialGate(action) }
-            function effectiveMessagingSourceMode(value) { return root.effectiveMessagingSourceMode(value) }
             function normalizedIdlEntry(entry, fallbackIndex) { return root.normalizedIdlEntry(entry, fallbackIndex) }
             function idlEntryForKey(key) { return root.idlEntryForKey(key) }
             function idlNameFromJson(value) { return root.idlNameFromJson(value) }
@@ -958,8 +955,6 @@ QtObject {
         }
     }
 
-    function blockchainArgs(extra) { return sourceRouting.blockchainArgs(extra) }
-
     function startBlockchainOperation(callerKey, method, args, label, callback) {
         return chainPages.startOperation(callerKey, method, args, label, callback)
     }
@@ -1244,8 +1239,6 @@ QtObject {
 
     function canonicalRefreshRate(seconds) { return AppModelNetwork.canonicalRefreshRate(root, seconds) }
 
-    function loadSourcePolicy() { return sourceRouting.loadSourcePolicy() }
-
     function loadCapabilityRegistry() { return capabilityGateState.loadRegistry(root.prefersBasecampModules(), capabilityRegistryRuntimeInputs()) }
 
     function refreshCapabilityRegistryIfLoaded() {
@@ -1277,9 +1270,9 @@ QtObject {
             network_connector_config: networkConnectorConfigPayload(),
             wallet_connector_config: walletConnectorConfigPayload(),
             node_url: String(nodeUrl || ""),
-            storage_rest_url: configuredStorageRestUrl(),
+            storage_rest_url: sourceRouting.configuredStorageRestUrl(),
             storage_metrics_url: String(storageMetricsUrl || ""),
-            messaging_rest_url: configuredMessagingRestUrl(),
+            messaging_rest_url: sourceRouting.configuredMessagingRestUrl(),
 	        messaging_metrics_url: String(messagingMetricsUrl || ""),
 	        storage_mutating_diagnostics_enabled: storageMutatingDiagnosticsEnabled === true,
             messaging_mutating_diagnostics_enabled: messagingMutatingDiagnosticsEnabled === true,
@@ -1312,42 +1305,6 @@ QtObject {
 	            }
 	        }
 	    }
-
-    function sourcePolicyDefault(key, fallback) { return sourceRouting.sourcePolicyDefault(key, fallback) }
-
-    function sourceModePolicy(family, value) { return sourceRouting.sourceModePolicy(family, value) }
-
-    function sourceModePolicies(family) { return sourceRouting.sourceModePolicies(family) }
-
-    function sourceModeOptions(family) { return sourceRouting.sourceModeOptions(family) }
-
-    function sourceModeIndexFor(family, value, options) { return sourceRouting.sourceModeIndexFor(family, value, options) }
-
-    function sourceModeAt(index, options) { return sourceRouting.sourceModeAt(index, options) }
-
-    function sourceModeAdapter(family, value) { return sourceRouting.sourceModeAdapter(family, value) }
-
-    function resolvedSourceModeKey(family, value) { return sourceRouting.resolvedSourceModeKey(family, value) }
-
-    function sourceModeTargetKind(family, value) { return sourceRouting.sourceModeTargetKind(family, value) }
-
-    function sourceModeUsesEndpoint(family, value, endpointKind) { return sourceRouting.sourceModeUsesEndpoint(family, value, endpointKind) }
-
-    function sourceModeSupportsCidProbe(family, value) { return sourceRouting.sourceModeSupportsCidProbe(family, value) }
-
-    function sourceModeSupportsMutatingDiagnostics(family, value) { return sourceRouting.sourceModeSupportsMutatingDiagnostics(family, value) }
-
-    function coreSourceView(role) { return sourceRouting.coreSourceView(role) }
-
-    function deliverySourceView() { return sourceRouting.deliverySourceView() }
-
-    function storageSourceView() { return sourceRouting.storageSourceView() }
-
-    function sourceFamilyView(family, role, report) { return sourceRouting.sourceFamilyView(family, role, report) }
-
-    function deliveryReportView(report) { return sourceRouting.deliveryReportView(report) }
-
-    function storageReportView(report) { return sourceRouting.storageReportView(report) }
 
     function defaultNetworkConnectorConfig() {
         return {
@@ -1516,28 +1473,6 @@ QtObject {
     function deliveryHealthValueOk(value, unknownOk) { return AppModelNetwork.deliveryHealthValueOk(root, value, unknownOk) }
 
     function moduleReportError(report) { return AppModelNetwork.moduleReportError(root, report) }
-
-    function deliverySourceTarget() { return sourceRouting.deliverySourceTarget() }
-
-    function configuredMessagingRestUrl() { return sourceRouting.configuredMessagingRestUrl() }
-
-    function normalizedMessagingSourceMode(value) { return sourceRouting.normalizedMessagingSourceMode(value) }
-
-    function effectiveMessagingSourceMode(value) { return sourceRouting.effectiveMessagingSourceMode(value === undefined ? messagingSourceMode : value) }
-
-    function normalizedCoreSourceMode(value) { return sourceRouting.normalizedCoreSourceMode(value) }
-
-    function effectiveCoreSourceMode(value) { return sourceRouting.effectiveCoreSourceMode(value) }
-
-    function blockchainSourceLabel() { return sourceRouting.blockchainSourceLabel() }
-
-    function blockchainSourceTarget() { return sourceRouting.blockchainSourceTarget() }
-
-    function storageSourceTarget() { return sourceRouting.storageSourceTarget() }
-
-    function configuredStorageRestUrl() { return sourceRouting.configuredStorageRestUrl() }
-
-    function normalizedStorageSourceMode(value) { return sourceRouting.normalizedStorageSourceMode(value) }
 
     function networkConnectionState(kind) { return AppModelNetwork.networkConnectionState(root, kind) }
 

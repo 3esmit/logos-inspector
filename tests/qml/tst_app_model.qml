@@ -5,6 +5,7 @@ import "../../qml/state"
 import "../../qml/state/source_routing/SourcePolicyCatalog.js" as SourcePolicyCatalog
 import "../../qml/state/source_routing/SourceDiagnosticsProjection.js" as SourceDiagnostics
 import "../../qml/state/status/StatusFactsProjection.js" as StatusFactsProjection
+import "SourceRoutingCompatibilityManifest.js" as SourceRoutingCompatibilityManifest
 import "fixtures"
 
 TestCase {
@@ -199,8 +200,8 @@ TestCase {
         model.blockchainSourceMode = "rpc"
         model.messagingSourceMode = "rest"
         model.storageSourceMode = "rest"
-        model.sourcePolicy = ({})
-        model.sourcePolicyLoaded = false
+        model.sourceRouting.sourcePolicy = ({})
+        model.sourceRouting.sourcePolicyLoaded = false
         model.capabilityRegistryLoaded = true
         model.capabilityRegistryReport = appModelTestCapabilityRegistry()
         model.settingsBackupContents = model.defaultSettingsBackupContents()
@@ -209,8 +210,8 @@ TestCase {
         basecampModel.blockchainSourceMode = "module"
         basecampModel.messagingSourceMode = "module"
         basecampModel.storageSourceMode = "module"
-        basecampModel.sourcePolicy = ({})
-        basecampModel.sourcePolicyLoaded = false
+        basecampModel.sourceRouting.sourcePolicy = ({})
+        basecampModel.sourceRouting.sourcePolicyLoaded = false
         model.networkConfigurationRevision = 0
         model.blockchainConfigurationRevision = 0
         basecampModel.capabilityRegistryLoaded = true
@@ -349,7 +350,7 @@ TestCase {
             eventCursor: Number(cursor || 1),
             context: {
                 source: "rest",
-                endpoint: model.configuredStorageRestUrl(),
+                endpoint: model.sourceRouting.configuredStorageRestUrl(),
                 cid: String(cid || "cid-restore"),
                 downloadScope: "network"
             },
@@ -549,8 +550,8 @@ TestCase {
     }
 
     function installSourceModePolicy(targetModel) {
-        targetModel.sourcePolicy = SourcePolicyCatalog.fallbackPolicy()
-        targetModel.sourcePolicyLoaded = true
+        targetModel.sourceRouting.sourcePolicy = SourcePolicyCatalog.fallbackPolicy()
+        targetModel.sourceRouting.sourcePolicyLoaded = true
     }
 
     function sourceOption(options, key) {
@@ -678,6 +679,54 @@ TestCase {
         }
     }
 
+    function test_source_routing_compatibility_manifest_matches_appmodel() {
+        const inventory = SourceRoutingCompatibilityManifest.manifest()
+        const seen = ({})
+        const methodClasses = ({ production: 0, test_only: 0, none: 0 })
+        let methodCount = 0
+        let aliasCount = 0
+
+        compare(inventory.retainedAliases.length, 0)
+        verify(inventory.retainedAliasDecision.length > 0)
+        compare(inventory.retiredMembers.length, 33)
+        for (let i = 0; i < inventory.retiredMembers.length; ++i) {
+            const member = inventory.retiredMembers[i]
+            verify(member.name.length > 0)
+            verify(seen[member.name] !== true, member.name)
+            seen[member.name] = true
+            verify(Array.isArray(member.formerConsumers), member.name)
+            compare(model[member.name], undefined, member.name)
+            if (member.kind === "method") {
+                methodCount += 1
+                methodClasses[member.consumerClass] += 1
+            } else if (member.kind === "alias") {
+                aliasCount += 1
+            } else {
+                fail("Unknown inventory kind: " + member.kind)
+            }
+        }
+        compare(methodCount, 31)
+        compare(aliasCount, 2)
+        compare(methodClasses.production, 10)
+        compare(methodClasses.test_only, 9)
+        compare(methodClasses.none, 12)
+
+        for (let j = 0; j < inventory.retainedCompositionMembers.length; ++j) {
+            const retained = inventory.retainedCompositionMembers[j]
+            verify(retained.reason.length > 0, retained.name)
+            verify(retained.consumers.length > 0, retained.name)
+            verify(model[retained.name] !== undefined, retained.name)
+        }
+        for (let k = 0; k < inventory.requiredFacadeMethods.length; ++k) {
+            const method = inventory.requiredFacadeMethods[k]
+            compare(typeof model.sourceRouting[method], "function", method)
+        }
+        for (let n = 0; n < inventory.requiredFacadeProperties.length; ++n) {
+            const propertyName = inventory.requiredFacadeProperties[n]
+            verify(model.sourceRouting[propertyName] !== undefined, propertyName)
+        }
+    }
+
     function test_basecamp_bridge_decodes_json_serialized_inspector_response() {
         basecampHost.serializeResults = true
 
@@ -702,9 +751,9 @@ TestCase {
     }
 
     function test_core_source_args_keep_rpc_shape_in_standalone_rpc_connector() {
-        compare(model.effectiveCoreSourceMode(model.blockchainSourceMode), "rpc")
+        compare(model.sourceRouting.effectiveCoreSourceMode(model.blockchainSourceMode), "rpc")
 
-        const args = model.blockchainArgs([1, 2])
+        const args = model.sourceRouting.blockchainArgs([1, 2])
 
         compare(args.length, 3)
         compare(args[0], model.nodeUrl)
@@ -755,24 +804,24 @@ TestCase {
     }
 
     function test_messaging_and_storage_use_standalone_connectors_without_basecamp() {
-        compare(model.normalizedMessagingSourceMode(model.messagingSourceMode), "rest")
-        compare(model.effectiveMessagingSourceMode(model.messagingSourceMode), "rest")
+        compare(model.sourceRouting.normalizedMessagingSourceMode(model.messagingSourceMode), "rest")
+        compare(model.sourceRouting.effectiveMessagingSourceMode(model.messagingSourceMode), "rest")
         const deliveryArgs = model.sourceRouting.deliverySourceReportArgs()
         compare(deliveryArgs.length, 1)
         compare(deliveryArgs[0].source_mode, "rest")
-        compare(deliveryArgs[0].inputs.rest_endpoint, model.configuredMessagingRestUrl())
+        compare(deliveryArgs[0].inputs.rest_endpoint, model.sourceRouting.configuredMessagingRestUrl())
         compare(deliveryArgs[0].inputs.metrics_endpoint, model.messagingMetricsUrl)
-        compare(model.deliverySourceTarget(), model.configuredMessagingRestUrl())
+        compare(model.sourceRouting.deliverySourceTarget(), model.sourceRouting.configuredMessagingRestUrl())
 
-        compare(model.normalizedStorageSourceMode(model.storageSourceMode), "rest")
+        compare(model.sourceRouting.normalizedStorageSourceMode(model.storageSourceMode), "rest")
         compare(model.sourceRouting.effectiveStorageSourceMode(model.storageSourceMode), "rest")
         const storageArgs = model.sourceRouting.storageSourceReportArgs(false)
         compare(storageArgs.length, 1)
         compare(storageArgs[0].source_mode, "rest")
-        compare(storageArgs[0].inputs.rest_endpoint, model.configuredStorageRestUrl())
+        compare(storageArgs[0].inputs.rest_endpoint, model.sourceRouting.configuredStorageRestUrl())
         compare(storageArgs[0].inputs.metrics_endpoint, model.storageMetricsUrl)
         compare(storageArgs[0].options.privileged_debug_enabled, false)
-        compare(model.storageSourceTarget(), model.configuredStorageRestUrl())
+        compare(model.sourceRouting.storageSourceTarget(), model.sourceRouting.configuredStorageRestUrl())
     }
 
     function test_source_routing_state_owns_runtime_source_views() {
@@ -780,42 +829,42 @@ TestCase {
         compare(delivery.mode, "rest")
         compare(delivery.effectiveMode, "rest")
         compare(delivery.label, "Direct Waku REST")
-        compare(delivery.target, model.configuredMessagingRestUrl())
+        compare(delivery.target, model.sourceRouting.configuredMessagingRestUrl())
         const deliveryArgs = delivery.reportArgs()
         compare(deliveryArgs[0].source_mode, "rest")
-        compare(deliveryArgs[0].inputs.rest_endpoint, model.configuredMessagingRestUrl())
+        compare(deliveryArgs[0].inputs.rest_endpoint, model.sourceRouting.configuredMessagingRestUrl())
 
         const storage = model.sourceRouting.storageSourceView()
         compare(storage.mode, "rest")
         compare(storage.effectiveMode, "rest")
-        compare(storage.target, model.configuredStorageRestUrl())
+        compare(storage.target, model.sourceRouting.configuredStorageRestUrl())
         const storageArgs = storage.reportArgs(false)
         compare(storageArgs[0].source_mode, "rest")
-        compare(storageArgs[0].inputs.rest_endpoint, model.configuredStorageRestUrl())
+        compare(storageArgs[0].inputs.rest_endpoint, model.sourceRouting.configuredStorageRestUrl())
 
     }
 
     function test_source_policy_catalog_fallback_supports_pending_modes_without_bridge_policy() {
-        model.sourcePolicy = ({})
-        model.sourcePolicyLoaded = false
+        model.sourceRouting.sourcePolicy = ({})
+        model.sourceRouting.sourcePolicyLoaded = false
 
-        compare(model.normalizedMessagingSourceMode("metrics"), "metrics")
-        compare(model.normalizedMessagingSourceMode("network-monitor"), "network-monitor")
-        compare(model.normalizedMessagingSourceMode("delivery network monitor"), "network-monitor")
-        compare(model.normalizedMessagingSourceMode("network monitor"), "rest")
-        compare(model.normalizedStorageSourceMode("metrics"), "metrics")
+        compare(model.sourceRouting.normalizedMessagingSourceMode("metrics"), "metrics")
+        compare(model.sourceRouting.normalizedMessagingSourceMode("network-monitor"), "network-monitor")
+        compare(model.sourceRouting.normalizedMessagingSourceMode("delivery network monitor"), "network-monitor")
+        compare(model.sourceRouting.normalizedMessagingSourceMode("network monitor"), "rest")
+        compare(model.sourceRouting.normalizedStorageSourceMode("metrics"), "metrics")
 
         model.setNetworkConnectorMode("delivery", "network-monitor")
-        compare(model.effectiveMessagingSourceMode(model.messagingSourceMode), "network-monitor")
+        compare(model.sourceRouting.effectiveMessagingSourceMode(model.messagingSourceMode), "network-monitor")
         compare(model.sourceRouting.deliverySourceReportArgs()[0].source_mode, "network-monitor")
-        compare(model.deliverySourceTarget(), model.configuredMessagingRestUrl())
+        compare(model.sourceRouting.deliverySourceTarget(), model.sourceRouting.configuredMessagingRestUrl())
 
         model.setNetworkConnectorMode("storage", "metrics")
         compare(model.sourceRouting.effectiveStorageSourceMode(model.storageSourceMode), "metrics")
         compare(model.sourceRouting.storageSourceReportArgs(false)[0].source_mode, "metrics")
-        compare(model.storageSourceTarget(), model.storageMetricsUrl)
+        compare(model.sourceRouting.storageSourceTarget(), model.storageMetricsUrl)
 
-        const deliveryOptions = model.sourceModeOptions("delivery")
+        const deliveryOptions = model.sourceRouting.sourceModeOptions("delivery")
         const deliveryKeys = deliveryOptions.map(option => option.key)
         verify(deliveryKeys.indexOf("metrics") >= 0)
         verify(deliveryKeys.indexOf("network-monitor") >= 0)
@@ -823,12 +872,12 @@ TestCase {
     }
 
     function test_messaging_and_storage_use_module_connectors_in_basecamp() {
-        compare(basecampModel.effectiveMessagingSourceMode(basecampModel.messagingSourceMode), "module")
+        compare(basecampModel.sourceRouting.effectiveMessagingSourceMode(basecampModel.messagingSourceMode), "module")
         const deliveryArgs = basecampModel.sourceRouting.deliverySourceReportArgs()
         compare(deliveryArgs.length, 1)
         compare(deliveryArgs[0].source_mode, "module")
         compare(Object.keys(deliveryArgs[0].inputs).length, 0)
-        compare(basecampModel.deliverySourceTarget(), basecampModel.deliveryModule)
+        compare(basecampModel.sourceRouting.deliverySourceTarget(), basecampModel.deliveryModule)
 
         compare(basecampModel.sourceRouting.effectiveStorageSourceMode(basecampModel.storageSourceMode), "module")
         const storageArgs = basecampModel.sourceRouting.storageSourceReportArgs(false)
@@ -836,7 +885,7 @@ TestCase {
         compare(storageArgs[0].source_mode, "module")
         compare(Object.keys(storageArgs[0].inputs).length, 0)
         compare(storageArgs[0].options.privileged_debug_enabled, false)
-        compare(basecampModel.storageSourceTarget(), basecampModel.storageModule)
+        compare(basecampModel.sourceRouting.storageSourceTarget(), basecampModel.storageModule)
     }
 
     function test_standalone_defaults_to_logoscore_cli_and_hides_host_module_connector() {
@@ -845,11 +894,11 @@ TestCase {
         compare(defaults.delivery.connector_id, "logoscore_cli_delivery_module")
         compare(defaults.storage.connector_id, "logoscore_cli_storage_module")
 
-        const options = model.sourceModeOptions("storage")
+        const options = model.sourceRouting.sourceModeOptions("storage")
         verify(sourceOption(options, "logoscore_cli") !== null)
         compare(String(sourceOption(options, "module").key || ""), "")
 
-        const basecampOptions = basecampModel.sourceModeOptions("storage")
+        const basecampOptions = basecampModel.sourceRouting.sourceModeOptions("storage")
         verify(sourceOption(basecampOptions, "module") !== null)
         verify(sourceOption(basecampOptions, "logoscore_cli") !== null)
     }
@@ -925,20 +974,20 @@ TestCase {
             }
         })
 
-        verify(model.loadSourcePolicy())
+        verify(model.sourceRouting.loadSourcePolicy())
         compare(fakeHost.lastMethod, "sourcePolicy")
-        verify(model.sourcePolicyLoaded)
+        verify(model.sourceRouting.sourcePolicyLoaded)
 
         model.messagingRestUrl = ""
         model.storageRestUrl = ""
-        compare(model.configuredMessagingRestUrl(), "http://policy-delivery.invalid:8645")
-        compare(model.configuredStorageRestUrl(), "http://policy-storage.invalid/api/storage/v1")
-        compare(model.normalizedCoreSourceMode("basecamp"), "module")
-        compare(model.effectiveCoreSourceMode("basecamp"), "rpc")
+        compare(model.sourceRouting.configuredMessagingRestUrl(), "http://policy-delivery.invalid:8645")
+        compare(model.sourceRouting.configuredStorageRestUrl(), "http://policy-storage.invalid/api/storage/v1")
+        compare(model.sourceRouting.normalizedCoreSourceMode("basecamp"), "module")
+        compare(model.sourceRouting.effectiveCoreSourceMode("basecamp"), "rpc")
         model.setNetworkConnectorMode("l1", "module")
-        compare(model.effectiveCoreSourceMode("basecamp"), "module")
-        compare(model.normalizedMessagingSourceMode("direct waku rest"), "rest")
-        compare(model.normalizedStorageSourceMode("standalone rest"), "rest")
+        compare(model.sourceRouting.effectiveCoreSourceMode("basecamp"), "module")
+        compare(model.sourceRouting.normalizedMessagingSourceMode("direct waku rest"), "rest")
+        compare(model.sourceRouting.normalizedStorageSourceMode("standalone rest"), "rest")
 
         model.applyProfile(1)
         compare(model.nodeUrl, "http://policy-local-node.invalid/")
@@ -1000,64 +1049,64 @@ TestCase {
         const deliveryArgs = model.sourceRouting.deliverySourceReportArgs()
         compare(deliveryArgs[0].source_mode, "rest")
         compare(deliveryArgs[0].inputs.rest_endpoint, "http://127.0.0.1:8645")
-        compare(model.deliverySourceTarget(), "http://127.0.0.1:8645")
+        compare(model.sourceRouting.deliverySourceTarget(), "http://127.0.0.1:8645")
 
         model.setNetworkConnectorMode("storage", "rest")
         model.storageRestUrl = ""
         const storageArgs = model.sourceRouting.storageSourceReportArgs(false)
         compare(storageArgs[0].source_mode, "rest")
         compare(storageArgs[0].inputs.rest_endpoint, "http://127.0.0.1:8080/api/storage/v1")
-        compare(model.storageSourceTarget(), "http://127.0.0.1:8080/api/storage/v1")
+        compare(model.sourceRouting.storageSourceTarget(), "http://127.0.0.1:8080/api/storage/v1")
     }
 
     function test_storage_module_connector_uses_module_route() {
         installSourceModePolicy(model)
 
-        compare(model.normalizedStorageSourceMode("module"), "module")
+        compare(model.sourceRouting.normalizedStorageSourceMode("module"), "module")
         model.setNetworkConnectorMode("storage", "module")
         compare(model.sourceRouting.effectiveStorageSourceMode(model.storageSourceMode), "module")
         const storageArgs = model.sourceRouting.storageSourceReportArgs(false)
         compare(storageArgs[0].source_mode, "module")
         compare(Object.keys(storageArgs[0].inputs).length, 0)
         compare(storageArgs[0].options.privileged_debug_enabled, false)
-        compare(model.storageSourceTarget(), model.storageModule)
+        compare(model.sourceRouting.storageSourceTarget(), model.storageModule)
     }
 
     function test_delivery_network_monitor_source_is_supported() {
         installSourceModePolicy(model)
 
-        compare(model.normalizedMessagingSourceMode("network-monitor"), "network-monitor")
-        compare(model.normalizedMessagingSourceMode("delivery network monitor"), "network-monitor")
-        compare(model.normalizedMessagingSourceMode("discovery crawler"), "network-monitor")
-        compare(model.normalizedMessagingSourceMode("network monitor"), "rest")
-        compare(model.normalizedMessagingSourceMode("crawler"), "rest")
+        compare(model.sourceRouting.normalizedMessagingSourceMode("network-monitor"), "network-monitor")
+        compare(model.sourceRouting.normalizedMessagingSourceMode("delivery network monitor"), "network-monitor")
+        compare(model.sourceRouting.normalizedMessagingSourceMode("discovery crawler"), "network-monitor")
+        compare(model.sourceRouting.normalizedMessagingSourceMode("network monitor"), "rest")
+        compare(model.sourceRouting.normalizedMessagingSourceMode("crawler"), "rest")
         model.setNetworkConnectorMode("delivery", "network-monitor")
 
-        compare(model.effectiveMessagingSourceMode(model.messagingSourceMode), "network-monitor")
+        compare(model.sourceRouting.effectiveMessagingSourceMode(model.messagingSourceMode), "network-monitor")
         const deliveryArgs = model.sourceRouting.deliverySourceReportArgs()
         compare(deliveryArgs[0].source_mode, "network-monitor")
-        compare(deliveryArgs[0].inputs.rest_endpoint, model.configuredMessagingRestUrl())
+        compare(deliveryArgs[0].inputs.rest_endpoint, model.sourceRouting.configuredMessagingRestUrl())
         compare(deliveryArgs[0].inputs.metrics_endpoint, model.messagingMetricsUrl)
-        compare(model.deliverySourceTarget(), model.configuredMessagingRestUrl())
+        compare(model.sourceRouting.deliverySourceTarget(), model.sourceRouting.configuredMessagingRestUrl())
     }
 
     function test_source_mode_options_labels_and_targets_come_from_policy() {
         installSourceModePolicy(model)
 
-        const storageOptions = model.sourceModeOptions("storage")
+        const storageOptions = model.sourceRouting.sourceModeOptions("storage")
         verify(storageOptions.length >= 2)
         compare(sourceOption(storageOptions, "rest").label, "Standalone REST")
 
         model.setNetworkConnectorMode("storage", "module")
         compare(model.sourceRouting.storageSourceLabel(), "Storage module")
-        compare(model.storageSourceTarget(), model.storageModule)
-        verify(model.sourceModeSupportsCidProbe("storage", model.storageSourceMode))
-        verify(model.sourceModeSupportsMutatingDiagnostics("storage", model.storageSourceMode))
+        compare(model.sourceRouting.storageSourceTarget(), model.storageModule)
+        verify(model.sourceRouting.sourceModeSupportsCidProbe("storage", model.storageSourceMode))
+        verify(model.sourceRouting.sourceModeSupportsMutatingDiagnostics("storage", model.storageSourceMode))
 
         model.setNetworkConnectorMode("delivery", "metrics")
         compare(model.sourceRouting.deliverySourceLabel(), "Metrics only")
-        compare(model.deliverySourceTarget(), model.messagingMetricsUrl)
-        verify(model.sourceModeUsesEndpoint("delivery", model.messagingSourceMode, "metrics"))
+        compare(model.sourceRouting.deliverySourceTarget(), model.messagingMetricsUrl)
+        verify(model.sourceRouting.sourceModeUsesEndpoint("delivery", model.messagingSourceMode, "metrics"))
     }
 
     function test_source_report_health_facts_drive_connection_state_without_probes() {
@@ -1213,7 +1262,7 @@ TestCase {
             ],
             probes: []
         }
-        const view = model.storageReportView(report)
+        const view = model.sourceRouting.storageReportView(report)
 
         compare(view.probeValue("space").used, 1)
         verify(view.capabilityAvailable("space"))
@@ -2237,7 +2286,7 @@ TestCase {
                         value: socialUploadOperation("idl-upload", {
                             cid: "cid-idl",
                             filename: "logos-inspector-shared-idl.json",
-                            endpoint: model.configuredStorageRestUrl()
+                            endpoint: model.sourceRouting.configuredStorageRestUrl()
                         }),
                         text: "OK",
                         error: ""
@@ -2540,7 +2589,7 @@ TestCase {
         compare(backupCalls.length, 1)
         const backupRequest = backupCalls[0].args[0]
         compare(backupRequest.adapter.source_mode, "rest")
-        compare(backupRequest.adapter.inputs.rest_endpoint, model.configuredStorageRestUrl())
+        compare(backupRequest.adapter.inputs.rest_endpoint, model.sourceRouting.configuredStorageRestUrl())
         compare(backupRequest.mutating_enabled, true)
         compare(backupRequest.payload.backup_catalog_id, "backup-1")
         const localCalls = fakeHost.calls.filter(function (call) {
@@ -2661,7 +2710,7 @@ TestCase {
                             }
                         },
                         bytes: 128,
-                        endpoint: model.configuredStorageRestUrl(),
+                        endpoint: model.sourceRouting.configuredStorageRestUrl(),
                         source: "network"
                     }),
                 text: "OK",
@@ -2686,7 +2735,7 @@ TestCase {
         compare(downloadCalls[0].args[0].domain, "storage")
         compare(downloadCalls[0].args[0].method, "storageDownloadBackupCatalogEntry")
         compare(downloadCalls[0].args[0].adapter.source_mode, "rest")
-        compare(downloadCalls[0].args[0].adapter.inputs.rest_endpoint, model.configuredStorageRestUrl())
+        compare(downloadCalls[0].args[0].adapter.inputs.rest_endpoint, model.sourceRouting.configuredStorageRestUrl())
         compare(downloadCalls[0].args[0].mutating_enabled, false)
         compare(downloadCalls[0].args[0].payload.cid, "cid-restore")
         compare(downloadCalls[0].args[0].payload.local_only, false)
@@ -2733,7 +2782,7 @@ TestCase {
                             }
                         },
                         bytes: 64,
-                        endpoint: model.configuredStorageRestUrl(),
+                        endpoint: model.sourceRouting.configuredStorageRestUrl(),
                         source: "network"
                     }, 2)
             }

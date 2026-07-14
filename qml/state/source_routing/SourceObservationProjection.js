@@ -190,7 +190,7 @@ function storageProtocolRows(page) {
         page.protocolRow(qsTr("Merkle verification"), "storage-root", false, qsTr("No passive verification source.")),
         page.protocolRow(qsTr("DHT discovery"), "libp2p/kad-dht", page.probeKnown("debug"), page.probeKnown("debug") ? page.valueSummary(page.probeValue("debug")) : qsTr("No DHT table.")),
         page.protocolRow(qsTr("Block exchange"), "storage/blockexchange", page.metricKnown("storage.active_downloads") || page.metricKnown("storage.active_uploads"), page.transferSummary()),
-        page.protocolRow(qsTr("REST / C API"), "/api/storage/v1", page.storageSourceMode() === "rest", page.model.storageSourceTarget()),
+        page.protocolRow(qsTr("REST / C API"), "/api/storage/v1", page.storageSourceMode() === "rest", page.model.sourceRouting.storageSourceTarget()),
         page.protocolRow(qsTr("Mix / private queries"), "private queries", false, qsTr("No passive signal."))
     ]
 }
@@ -202,7 +202,7 @@ function storageIdentityRows(page) {
         page.pathDetailRow(qsTr("Data directory"), page.probeValue("dataDir") || page.model.storageDataDir),
         page.detailRow(qsTr("Version"), page.probeValue("version") || page.probeValue("moduleVersion")),
         page.detailRow(qsTr("Network preset"), page.model.storageNetworkPreset),
-        page.detailRow(qsTr("Source target"), page.model.storageSourceTarget())
+        page.detailRow(qsTr("Source target"), page.model.sourceRouting.storageSourceTarget())
     ]
 }
 
@@ -670,7 +670,7 @@ function deliveryRestMetricsEvidence(page) {
     }
     if (sourceMode === "network-monitor") {
         return qsTr("%1; metrics %2")
-            .arg(page.shortText(page.model.deliverySourceTarget(), 24))
+            .arg(page.shortText(page.model.sourceRouting.deliverySourceTarget(), 24))
             .arg(page.shortText(page.model.messagingMetricsUrl, 24))
     }
     return page.shortText(page.model.messagingRestUrl, 48)

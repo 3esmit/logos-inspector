@@ -328,14 +328,19 @@ ColumnLayout {
                     enabled: !root.requestBusy
                     Layout.fillWidth: true
                     accessibleName: qsTr("Run storage source report")
-                    onClicked: root.model.callInspectorAsync("storageSourceReport", [
-                        root.model.sourceRouting.effectiveStorageSourceMode(
-                            root.model.storageSourceMode),
-                        root.model.configuredStorageRestUrl(),
-                        root.model.storageMetricsUrl,
-                        cid.text.trim(),
-                        root.model.storagePrivilegedDebugEnabled
-                    ], qsTr("Storage report"))
+                    onClicked: root.model.callInspectorAsync(
+                        "storageSourceReport",
+                        root.model.sourceRouting.storageSourceReportArgs(
+                            root.model.sourceRouting.connectorSourceMode(
+                                "storage", root.model.storageSourceMode),
+                            root.model.sourceRouting.configuredStorageRestUrl(),
+                            root.model.storageMetricsUrl,
+                            cid.text.trim(),
+                            cid.text.trim().length > 0,
+                            root.model.storagePrivilegedDebugEnabled
+                        ),
+                        qsTr("Storage report")
+                    )
                 }
 
                 ActionButton {
