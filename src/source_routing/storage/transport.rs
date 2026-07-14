@@ -9,7 +9,7 @@ use crate::{
     modules::logos_core::{ModuleTransportKind, SharedModuleTransport},
     source_routing::shared::{http, module_bridge},
     source_routing::{ModuleDispatchIdentityRole, ModuleDispatchReceipt},
-    support::raw_source_transport::{request_bytes, request_success},
+    support::raw_source_transport::{request_bytes_bounded, request_success},
 };
 
 pub(super) async fn module_call(
@@ -266,13 +266,19 @@ fn new_manifest_cid(
     })
 }
 
-pub(super) async fn download_bytes(endpoint: &str, cid: &str, local_only: bool) -> Result<Vec<u8>> {
+pub(super) async fn download_bytes(
+    endpoint: &str,
+    cid: &str,
+    local_only: bool,
+    max_bytes: usize,
+) -> Result<Vec<u8>> {
     let route = download_route(cid, local_only);
     let url = http::rest_url(endpoint, &route);
-    request_bytes(
+    request_bytes_bounded(
         reqwest::Client::new().get(&url),
         &url,
-        "failed to read storage backup download body",
+        "failed to read storage download body",
+        max_bytes,
     )
     .await
 }
@@ -329,6 +335,13 @@ fn parse_probe_text(text: &str) -> Value {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        io::{Read as _, Write as _},
+        net::TcpListener,
+        thread,
+        time::Duration,
+    };
+
     use super::*;
 
     #[test]
@@ -347,5 +360,85 @@ mod tests {
             "manifest correlation drift"
         );
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn backup_download_rejects_declared_body_over_limit() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let endpoint = format!("http://{}", listener.local_addr()?);
+        let server = thread::spawn(move || -> Result<()> {
+            let (mut stream, _) = listener.accept()?;
+            read_request_headers(&mut stream)?;
+            stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 9\r\nConnection: close\r\n\r\n123456789",
+            )?;
+            Ok(())
+        });
+
+        let error = download_bytes(&endpoint, "cid-large", false, 8)
+            .await
+            .err()
+            .context("oversized declared body should fail")?;
+        server
+            .join()
+            .map_err(|_| anyhow::anyhow!("declared-body server panicked"))??;
+
+        anyhow::ensure!(
+            error
+                .to_string()
+                .contains("http response body exceeded 8 byte limit"),
+            "unexpected declared-body limit error: {error:#}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn backup_download_rejects_chunked_body_over_limit() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let endpoint = format!("http://{}", listener.local_addr()?);
+        let server = thread::spawn(move || -> Result<()> {
+            let (mut stream, _) = listener.accept()?;
+            read_request_headers(&mut stream)?;
+            stream.write_all(
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n5\r\n12345\r\n4\r\n6789\r\n0\r\n\r\n",
+            )?;
+            Ok(())
+        });
+
+        let error = download_bytes(&endpoint, "cid-large", true, 8)
+            .await
+            .err()
+            .context("oversized chunked body should fail")?;
+        server
+            .join()
+            .map_err(|_| anyhow::anyhow!("chunked-body server panicked"))??;
+
+        anyhow::ensure!(
+            error
+                .to_string()
+                .contains("http response body exceeded 8 byte limit"),
+            "unexpected chunked-body limit error: {error:#}"
+        );
+        Ok(())
+    }
+
+    fn read_request_headers(stream: &mut std::net::TcpStream) -> Result<()> {
+        stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 1024];
+        loop {
+            let bytes = stream.read(&mut buffer)?;
+            if bytes == 0 {
+                anyhow::bail!("HTTP request headers were incomplete");
+            }
+            request.extend_from_slice(
+                buffer
+                    .get(..bytes)
+                    .context("HTTP request header chunk was invalid")?,
+            );
+            if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                return Ok(());
+            }
+        }
     }
 }

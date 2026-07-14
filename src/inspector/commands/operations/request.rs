@@ -363,6 +363,35 @@ mod tests {
     }
 
     #[test]
+    fn backup_catalog_download_context_keeps_adapter_and_scope_identity() -> Result<()> {
+        let request = runtime_operation_request_from_value(json!({
+            "domain": "storage",
+            "method": "storageDownloadBackupCatalogEntry",
+            "adapter": {
+                "source_mode": "rest",
+                "inputs": { "rest_endpoint": "http://storage.local/api" }
+            },
+            "mutating_enabled": false,
+            "payload": { "cid": "cid-remote", "local_only": false }
+        }))?;
+
+        if runtime_operation_context(&request)?
+            != json!({
+                "endpoint": "http://storage.local/api",
+                "source": "rest",
+                "cid": "cid-remote",
+                "downloadScope": "network"
+            })
+        {
+            bail!("unexpected backup catalog download context");
+        }
+        if runtime_operation_backend(&request) != "rest" {
+            bail!("backup catalog download backend identity drifted");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn payload_upload_context_keeps_filename_identity() -> Result<()> {
         let request = runtime_operation_request_from_value(json!({
             "domain": "storage",

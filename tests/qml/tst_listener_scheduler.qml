@@ -37,10 +37,16 @@ TestCase {
         id: backupCatalogState
 
         property int polls: 0
+        property int downloadPolls: 0
 
         function pollUpload() {
             polls += 1
             return polls
+        }
+
+        function pollDownload() {
+            downloadPolls += 1
+            return downloadPolls
         }
     }
 
@@ -105,6 +111,8 @@ TestCase {
         }
         property bool blocksLiveEnabled: false
         property bool backupCatalogUploadRunning: false
+        property bool backupCatalogDownloadRunning: false
+        property bool backupCatalogTransferRunning: false
         property QtObject storageApp: storageState
         property QtObject backupCatalog: backupCatalogState
         property QtObject deliveryApp: deliveryState
@@ -153,12 +161,15 @@ TestCase {
         fakeModel.shell.currentView = "overview"
         fakeModel.blocksLiveEnabled = false
         fakeModel.backupCatalogUploadRunning = false
+        fakeModel.backupCatalogDownloadRunning = false
+        fakeModel.backupCatalogTransferRunning = false
         fakeModel.queriedKinds = []
         fakeModel.dashboardCalls = 0
         fakeModel.liveCalls = 0
         storageState.running = false
         storageState.polls = 0
         backupCatalogState.polls = 0
+        backupCatalogState.downloadPolls = 0
         deliveryState.running = false
         deliveryState.polls = 0
         socialState.operationsRunning = false
@@ -217,6 +228,21 @@ TestCase {
         verify(!scheduler.enabled("dashboard"))
         fakeModel.blocksLiveEnabled = true
         verify(scheduler.enabled("liveBlocks"))
+    }
+
+    function test_backup_download_enables_storage_polling_and_uses_download_session() {
+        fakeModel.backupCatalogDownloadRunning = true
+        fakeModel.backupCatalogTransferRunning = true
+
+        verify(scheduler.enabled("storageOperation"))
+        scheduler.tick("storageOperation")
+
+        compare(backupCatalogState.polls, 0)
+        compare(backupCatalogState.downloadPolls, 1)
+
+        fakeModel.backupCatalogDownloadRunning = false
+        fakeModel.backupCatalogTransferRunning = false
+        verify(!scheduler.enabled("storageOperation"))
     }
 
     function test_zones_status_uses_adaptive_interval_and_immediate_signal() {

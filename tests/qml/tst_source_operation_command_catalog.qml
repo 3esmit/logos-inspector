@@ -1,6 +1,7 @@
 import QtQuick
 import QtTest
 import "../../qml/state/source_operations/SourceOperationCommandCatalog.js" as SourceOperationCommandCatalog
+import "../../qml/state/source_operations/NodeOperationRequest.js" as NodeOperationRequest
 
 TestCase {
     name: "SourceOperationCommandCatalog"
@@ -11,6 +12,8 @@ TestCase {
             "storageUploadPayload", ["shared-idl.json", { kind: "shared-idl" }])
         const backupUpload = SourceOperationCommandCatalog.storageCommand(
             "storageUploadBackupCatalogEntry", ["backup-1"])
+        const backupDownload = SourceOperationCommandCatalog.storageCommand(
+            "storageDownloadBackupCatalogEntry", ["cid-backup"])
         const exists = SourceOperationCommandCatalog.storageCommand("storageExists", ["cid"])
 
         compare(upload.action, "upload")
@@ -31,10 +34,28 @@ TestCase {
         compare(backupUpload.requiredInputs[0].value, "backup-1")
         verify(backupUpload.runtime)
 
+        compare(backupDownload.action, "backup_read_by_cid")
+        compare(backupDownload.requiredInputs.length, 1)
+        compare(backupDownload.requiredInputs[0].key, "cid")
+        compare(backupDownload.requiredInputs[0].value, "cid-backup")
+        verify(backupDownload.runtime)
+
         compare(exists.action, "exists")
         compare(exists.requiredInputs[0].key, "cid")
         compare(exists.requiredInputs[0].value, "cid")
         verify(!exists.runtime)
+    }
+
+    function test_backup_download_payload_preserves_cid_and_scope() {
+        const network = NodeOperationRequest.storagePayload(
+            "storageDownloadBackupCatalogEntry", ["cid-network", false])
+        const local = NodeOperationRequest.storagePayload(
+            "storageDownloadBackupCatalogEntry", ["cid-local", true])
+
+        compare(network.cid, "cid-network")
+        compare(network.local_only, false)
+        compare(local.cid, "cid-local")
+        compare(local.local_only, true)
     }
 
     function test_delivery_commands_map_runtime_and_inputs() {

@@ -1,13 +1,23 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::{
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use anyhow::{Context as _, Result, bail};
 use serde_json::{Value, json};
 use tokio::io::AsyncWriteExt as _;
 
+#[cfg(test)]
+use crate::support::settings_backup::SETTINGS_BACKUP_MAX_BYTES;
 use crate::{
     modules::logos_core::SharedModuleTransport,
     source_routing::storage_layer,
-    support::backup_catalog::{attach_remote_backup_metadata, backup_payload_bytes},
+    support::backup_catalog::{
+        attach_remote_backup_metadata, backup_payload_bytes,
+        record_remote_settings_backup_payload_in_dir,
+    },
+    support::settings_backup::ensure_settings_backup_size,
+    support::state_store::config_dir,
 };
 
 use super::spec::{
@@ -27,6 +37,7 @@ pub(super) enum StorageCommand {
     UploadUrl,
     UploadPayload,
     UploadBackupCatalogEntry,
+    DownloadBackupCatalogEntry,
     DownloadToUrl,
     Remove,
 }
@@ -40,6 +51,7 @@ impl StorageCommand {
             Self::UploadUrl => OperationMethod::StorageUploadUrl,
             Self::UploadPayload => OperationMethod::StorageUploadPayload,
             Self::UploadBackupCatalogEntry => OperationMethod::StorageUploadBackupCatalogEntry,
+            Self::DownloadBackupCatalogEntry => OperationMethod::StorageDownloadBackupCatalogEntry,
             Self::DownloadToUrl => OperationMethod::StorageDownloadToUrl,
             Self::Remove => OperationMethod::StorageRemove,
         }
@@ -51,7 +63,9 @@ impl StorageCommand {
             Self::DownloadManifest => Some(storage_layer::StorageOperation::DownloadManifest),
             Self::Fetch => Some(storage_layer::StorageOperation::Fetch),
             Self::UploadUrl => Some(storage_layer::StorageOperation::Upload),
-            Self::UploadPayload | Self::UploadBackupCatalogEntry => None,
+            Self::UploadPayload
+            | Self::UploadBackupCatalogEntry
+            | Self::DownloadBackupCatalogEntry => None,
             Self::DownloadToUrl => Some(storage_layer::StorageOperation::Download),
             Self::Remove => Some(storage_layer::StorageOperation::Remove),
         }
@@ -125,6 +139,18 @@ pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
         AffectedContextField::required(AffectedContextKey::BackupCatalogId),
     ]),
     OperationDefinition::new(
+        OperationCommand::Storage(StorageCommand::DownloadBackupCatalogEntry),
+        "storageDownloadBackupCatalogEntry",
+        "Backup download",
+        OperationClass::Mutating,
+    )
+    .with_context_inputs(&[
+        AffectedContextField::required(AffectedContextKey::Source),
+        AffectedContextField::optional(AffectedContextKey::Endpoint),
+        AffectedContextField::required(AffectedContextKey::Cid),
+        AffectedContextField::required(AffectedContextKey::DownloadScope),
+    ]),
+    OperationDefinition::new(
         OperationCommand::Storage(StorageCommand::DownloadToUrl),
         "storageDownloadToUrl",
         "Storage download",
@@ -164,6 +190,9 @@ pub(super) async fn execute(
         }
         StorageCommand::UploadBackupCatalogEntry => {
             return execute_backup_catalog_upload(request, module_transport).await;
+        }
+        StorageCommand::DownloadBackupCatalogEntry => {
+            return execute_backup_catalog_download(request).await;
         }
         _ => {}
     }
@@ -206,6 +235,14 @@ pub(super) fn add_operation_context(
             );
             return Ok(());
         }
+        StorageCommand::DownloadBackupCatalogEntry => {
+            let download = storage_layer::StorageBackupDownloadRequest::parse_request(
+                request.node_request()?,
+            )?;
+            context.insert("cid".to_owned(), json!(download.cid()));
+            context.insert("downloadScope".to_owned(), json!(download.download_scope()));
+            return Ok(());
+        }
         _ => {}
     }
     let operation = command
@@ -227,6 +264,12 @@ pub(super) fn validate(command: StorageCommand, request: &RuntimeOperationReques
         }
         StorageCommand::UploadBackupCatalogEntry => {
             return storage_layer::StorageBackupUploadRequest::parse_request(
+                request.node_request()?,
+            )
+            .map(|_| ());
+        }
+        StorageCommand::DownloadBackupCatalogEntry => {
+            return storage_layer::StorageBackupDownloadRequest::parse_request(
                 request.node_request()?,
             )
             .map(|_| ());
@@ -297,6 +340,7 @@ async fn execute_backup_catalog_upload(
     let bytes = tokio::task::spawn_blocking(move || backup_payload_bytes(&payload_catalog_id))
         .await
         .context("backup payload worker failed")??;
+    ensure_settings_backup_size(bytes.len())?;
     let upload = request
         .client()
         .upload_bytes(
@@ -323,6 +367,73 @@ async fn execute_backup_catalog_upload(
         "catalog_entry": catalog_entry,
         "upload": upload,
     })))
+}
+
+async fn execute_backup_catalog_download(
+    request: &RuntimeOperationRequest,
+) -> Result<RuntimeOperationOutcome> {
+    execute_backup_catalog_download_in_dir(request, None).await
+}
+
+async fn execute_backup_catalog_download_in_dir(
+    request: &RuntimeOperationRequest,
+    catalog_base_dir: Option<PathBuf>,
+) -> Result<RuntimeOperationOutcome> {
+    let request =
+        storage_layer::StorageBackupDownloadRequest::parse_request(request.node_request()?)?;
+    let cid = request.cid().to_owned();
+    let local_only = request.local_only();
+    let bytes = request
+        .client()
+        .download_backup_bytes(&cid, local_only)
+        .await
+        .with_context(|| format!("failed to download settings backup CID {cid}"))?;
+    let endpoint = request
+        .client()
+        .endpoint()
+        .context("settings backup download requires storage REST source")?
+        .to_owned();
+    let result = tokio::task::spawn_blocking(move || {
+        let base_dir = match catalog_base_dir {
+            Some(base_dir) => base_dir,
+            None => config_dir()?,
+        };
+        downloaded_backup_result(&base_dir, &bytes, &cid, &endpoint, local_only)
+    })
+    .await
+    .context("backup download recorder worker failed")??;
+    Ok(RuntimeOperationOutcome::Completed(result))
+}
+
+fn downloaded_backup_result(
+    base_dir: &Path,
+    bytes: &[u8],
+    cid: &str,
+    endpoint: &str,
+    local_only: bool,
+) -> Result<Value> {
+    let payload: Value = serde_json::from_slice(bytes)
+        .with_context(|| format!("settings backup CID {cid} did not contain JSON"))?;
+    let entry = record_remote_settings_backup_payload_in_dir(
+        base_dir,
+        Some(&format!("Remote backup {cid}")),
+        &payload,
+        cid,
+        Some("logos_storage"),
+    )
+    .context("failed to record downloaded backup in local catalog")?;
+    Ok(json!({
+        "downloaded": true,
+        "restored": false,
+        "cid": cid,
+        "backup_catalog_id": entry.backup_catalog_id,
+        "payload_id": entry.payload_id,
+        "catalog_entry": entry,
+        "bytes": bytes.len(),
+        "endpoint": endpoint,
+        "source": if local_only { "local" } else { "network" },
+        "encrypted": payload.get("encrypted").and_then(Value::as_bool).unwrap_or(false),
+    }))
 }
 
 fn required_backup_upload_cid(upload: &Value) -> Result<String> {
@@ -410,11 +521,12 @@ pub(super) async fn storage_rest_download_tracked(
 #[cfg(test)]
 mod tests {
     use std::{
+        fs,
         io::{Read as _, Write as _},
         net::TcpListener,
         sync::Arc,
         thread,
-        time::Duration,
+        time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
     use anyhow::{Context as _, Result};
@@ -451,6 +563,354 @@ mod tests {
                 == "Basecamp module source does not support Inspector-managed byte staging",
             "unexpected executor error: {error:#}"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn backup_download_executor_records_rest_payload_with_download_only_result() -> Result<()>
+    {
+        let payload = json!({
+            "kind": "logos-inspector-settings-backup",
+            "version": 1,
+            "encrypted": false,
+            "state": { "settings": { "favorites": [] } }
+        });
+        let body = serde_json::to_vec(&payload)?;
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let endpoint = format!("http://{}", listener.local_addr()?);
+        let response_body = body.clone();
+        let server = thread::spawn(move || -> Result<Vec<u8>> {
+            let (mut stream, _) = listener.accept()?;
+            stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+            let request = read_http_headers(&mut stream)?;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                response_body.len()
+            )?;
+            stream.write_all(&response_body)?;
+            Ok(request)
+        });
+        let base_dir = unique_backup_dir("download-valid")?;
+        let request = runtime_operation_request_from_value(json!({
+            "domain": "storage",
+            "method": "storageDownloadBackupCatalogEntry",
+            "adapter": {
+                "source_mode": "rest",
+                "inputs": { "rest_endpoint": endpoint }
+            },
+            "mutating_enabled": false,
+            "payload": { "cid": "cid-restore", "local_only": false }
+        }))?;
+
+        let outcome =
+            execute_backup_catalog_download_in_dir(&request, Some(base_dir.clone())).await?;
+        let RuntimeOperationOutcome::Completed(result) = outcome else {
+            bail!("backup download should complete");
+        };
+        let request_bytes = server
+            .join()
+            .map_err(|_| anyhow::anyhow!("storage download test server panicked"))??;
+        let request_text = std::str::from_utf8(&request_bytes)?;
+        let catalog: Value =
+            serde_json::from_slice(&fs::read(base_dir.join("backup_catalog.json"))?)?;
+
+        anyhow::ensure!(
+            request_text.starts_with("GET /data/cid-restore/network/stream HTTP/1.1\r\n"),
+            "unexpected backup download request: {request_text}"
+        );
+        anyhow::ensure!(
+            result.get("downloaded") == Some(&json!(true))
+                && result.get("restored") == Some(&json!(false))
+                && result.get("cid") == Some(&json!("cid-restore"))
+                && result.get("encrypted") == Some(&json!(false))
+                && result.get("bytes") == Some(&json!(body.len()))
+                && result.pointer("/catalog_entry/remote/cid") == Some(&json!("cid-restore")),
+            "backup download result drifted: {result:?}"
+        );
+        anyhow::ensure!(
+            catalog
+                .get("entries")
+                .and_then(Value::as_array)
+                .is_some_and(|entries| entries.len() == 1),
+            "downloaded payload was not recorded exactly once: {catalog:?}"
+        );
+        fs::remove_dir_all(&base_dir)?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn backup_download_executor_preserves_local_only_route_and_result_scope() -> Result<()> {
+        let body = serde_json::to_vec(&json!({
+            "kind": "logos-inspector-settings-backup",
+            "version": 1,
+            "encrypted": false,
+            "state": { "settings": { "favorites": [] } }
+        }))?;
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let endpoint = format!("http://{}", listener.local_addr()?);
+        let response_body = body.clone();
+        let server = thread::spawn(move || -> Result<Vec<u8>> {
+            let (mut stream, _) = listener.accept()?;
+            stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+            let request = read_http_headers(&mut stream)?;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                response_body.len()
+            )?;
+            stream.write_all(&response_body)?;
+            Ok(request)
+        });
+        let base_dir = unique_backup_dir("download-local")?;
+        let request = runtime_operation_request_from_value(json!({
+            "domain": "storage",
+            "method": "storageDownloadBackupCatalogEntry",
+            "adapter": {
+                "source_mode": "rest",
+                "inputs": { "rest_endpoint": endpoint }
+            },
+            "mutating_enabled": false,
+            "payload": { "cid": "cid-local", "local_only": true }
+        }))?;
+
+        let outcome =
+            execute_backup_catalog_download_in_dir(&request, Some(base_dir.clone())).await?;
+        let RuntimeOperationOutcome::Completed(result) = outcome else {
+            bail!("local-only backup download should complete");
+        };
+        let request_bytes = server
+            .join()
+            .map_err(|_| anyhow::anyhow!("local-only download test server panicked"))??;
+        let request_text = std::str::from_utf8(&request_bytes)?;
+
+        anyhow::ensure!(
+            request_text.starts_with("GET /data/cid-local HTTP/1.1\r\n"),
+            "unexpected local-only backup request: {request_text}"
+        );
+        anyhow::ensure!(
+            result.get("source") == Some(&json!("local"))
+                && result.get("restored") == Some(&json!(false))
+                && result.get("cid") == Some(&json!("cid-local")),
+            "local-only backup result lost request scope: {result:?}"
+        );
+        fs::remove_dir_all(&base_dir)?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn invalid_backup_download_json_does_not_record_catalog_entry() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let endpoint = format!("http://{}", listener.local_addr()?);
+        let server = thread::spawn(move || -> Result<()> {
+            let (mut stream, _) = listener.accept()?;
+            let _request = read_http_headers(&mut stream)?;
+            let body = b"{not-json";
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            )?;
+            stream.write_all(body)?;
+            Ok(())
+        });
+        let base_dir = unique_backup_dir("download-invalid")?;
+        let request = runtime_operation_request_from_value(json!({
+            "domain": "storage",
+            "method": "storageDownloadBackupCatalogEntry",
+            "adapter": {
+                "source_mode": "rest",
+                "inputs": { "rest_endpoint": endpoint }
+            },
+            "mutating_enabled": false,
+            "payload": { "cid": "cid-invalid", "local_only": false }
+        }))?;
+
+        let error = execute_backup_catalog_download_in_dir(&request, Some(base_dir.clone()))
+            .await
+            .err()
+            .context("invalid backup JSON should fail")?;
+        server
+            .join()
+            .map_err(|_| anyhow::anyhow!("invalid JSON test server panicked"))??;
+
+        anyhow::ensure!(
+            error
+                .to_string()
+                .contains("settings backup CID cid-invalid did not contain JSON"),
+            "unexpected invalid backup error: {error:#}"
+        );
+        anyhow::ensure!(
+            !base_dir.join("backup_catalog.json").exists(),
+            "invalid backup JSON created a catalog"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn invalid_backup_envelopes_do_not_record_catalog_entries() -> Result<()> {
+        let cases = [
+            (
+                "wrong-kind",
+                json!({
+                    "kind": "other-backup",
+                    "version": 1,
+                    "encrypted": false,
+                    "state": { "settings": {} }
+                }),
+                "backup payload kind is not supported",
+            ),
+            (
+                "wrong-version",
+                json!({
+                    "kind": "logos-inspector-settings-backup",
+                    "version": 2,
+                    "encrypted": false,
+                    "state": { "settings": {} }
+                }),
+                "backup payload version is not supported",
+            ),
+            (
+                "malformed-encrypted",
+                json!({
+                    "kind": "logos-inspector-settings-backup",
+                    "version": 1,
+                    "encrypted": true,
+                    "state": { "settings": {} }
+                }),
+                "encrypted backup metadata is missing",
+            ),
+        ];
+
+        for (label, payload, expected_error) in cases {
+            let body = serde_json::to_vec(&payload)?;
+            let listener = TcpListener::bind("127.0.0.1:0")?;
+            let endpoint = format!("http://{}", listener.local_addr()?);
+            let server = thread::spawn(move || -> Result<()> {
+                let (mut stream, _) = listener.accept()?;
+                let _request = read_http_headers(&mut stream)?;
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )?;
+                stream.write_all(&body)?;
+                Ok(())
+            });
+            let base_dir = unique_backup_dir(label)?;
+            let request = runtime_operation_request_from_value(json!({
+                "domain": "storage",
+                "method": "storageDownloadBackupCatalogEntry",
+                "adapter": {
+                    "source_mode": "rest",
+                    "inputs": { "rest_endpoint": endpoint }
+                },
+                "mutating_enabled": false,
+                "payload": { "cid": format!("cid-{label}"), "local_only": false }
+            }))?;
+
+            let error = execute_backup_catalog_download_in_dir(&request, Some(base_dir.clone()))
+                .await
+                .err()
+                .context("invalid backup envelope should fail")?;
+            server
+                .join()
+                .map_err(|_| anyhow::anyhow!("invalid envelope test server panicked"))??;
+
+            anyhow::ensure!(
+                format!("{error:#}").contains(expected_error),
+                "unexpected invalid backup envelope error: {error:#}"
+            );
+            anyhow::ensure!(
+                !base_dir.join("backup_catalog.json").exists(),
+                "invalid backup envelope created a catalog"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn oversized_backup_download_does_not_record_catalog_entry() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let endpoint = format!("http://{}", listener.local_addr()?);
+        let server = thread::spawn(move || -> Result<()> {
+            let (mut stream, _) = listener.accept()?;
+            let _request = read_http_headers(&mut stream)?;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                SETTINGS_BACKUP_MAX_BYTES.saturating_add(1)
+            )?;
+            Ok(())
+        });
+        let base_dir = unique_backup_dir("download-oversized")?;
+        let request = runtime_operation_request_from_value(json!({
+            "domain": "storage",
+            "method": "storageDownloadBackupCatalogEntry",
+            "adapter": {
+                "source_mode": "rest",
+                "inputs": { "rest_endpoint": endpoint }
+            },
+            "mutating_enabled": false,
+            "payload": { "cid": "cid-oversized", "local_only": false }
+        }))?;
+
+        let error = execute_backup_catalog_download_in_dir(&request, Some(base_dir.clone()))
+            .await
+            .err()
+            .context("oversized backup download should fail")?;
+        server
+            .join()
+            .map_err(|_| anyhow::anyhow!("oversized download test server panicked"))??;
+
+        anyhow::ensure!(
+            format!("{error:#}").contains(&format!(
+                "http response body exceeded {} byte limit",
+                SETTINGS_BACKUP_MAX_BYTES
+            )),
+            "unexpected oversized backup error: {error:#}"
+        );
+        anyhow::ensure!(
+            !base_dir.join("backup_catalog.json").exists(),
+            "oversized backup download created a catalog"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn module_backup_download_fails_closed_without_cli_fallback() -> Result<()> {
+        for (source_mode, expected_error) in [
+            (
+                "module",
+                "Basecamp Storage module does not expose backup read-by-CID bytes",
+            ),
+            (
+                "logoscore_cli",
+                "LogosCore CLI Storage adapter does not support backup read-by-CID bytes",
+            ),
+        ] {
+            let base_dir = unique_backup_dir(source_mode)?;
+            let request = runtime_operation_request_from_value(json!({
+                "domain": "storage",
+                "method": "storageDownloadBackupCatalogEntry",
+                "adapter": { "source_mode": source_mode, "inputs": {} },
+                "mutating_enabled": false,
+                "payload": { "cid": "cid-module", "local_only": false }
+            }))?;
+
+            let error = execute_backup_catalog_download_in_dir(&request, Some(base_dir.clone()))
+                .await
+                .err()
+                .context("module backup download should fail")?;
+            anyhow::ensure!(
+                format!("{error:#}").contains(expected_error),
+                "unexpected module backup download error: {error:#}"
+            );
+            anyhow::ensure!(
+                !base_dir.join("backup_catalog.json").exists(),
+                "failed module download wrote local catalog state"
+            );
+        }
         Ok(())
     }
 
@@ -580,6 +1040,37 @@ mod tests {
             }
         }
         Ok(request)
+    }
+
+    fn read_http_headers(stream: &mut std::net::TcpStream) -> Result<Vec<u8>> {
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        loop {
+            let bytes_read = stream.read(&mut buffer)?;
+            if bytes_read == 0 {
+                break;
+            }
+            request.extend_from_slice(
+                buffer
+                    .get(..bytes_read)
+                    .context("HTTP header read exceeded its buffer")?,
+            );
+            if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                return Ok(request);
+            }
+        }
+        bail!("HTTP request headers were incomplete")
+    }
+
+    fn unique_backup_dir(label: &str) -> Result<PathBuf> {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .context("system clock is before Unix epoch")?
+            .as_nanos();
+        Ok(std::env::temp_dir().join(format!(
+            "logos-inspector-backup-operation-{label}-{}-{nanos}",
+            std::process::id()
+        )))
     }
 
     fn split_http_request(request: &[u8]) -> Result<(&str, &[u8])> {

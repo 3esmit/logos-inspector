@@ -2222,6 +2222,14 @@ mod tests {
             ("rawRpc", "[]"),
             ("runtimeOperationStatus", "[]"),
             ("blockchainNode", "[\"module\"]"),
+            (
+                "storageDownloadBackupCatalogEntry",
+                r#"[{"adapter":{"source_mode":"module","inputs":{}},"mutating_enabled":false,"payload":{"cid":"cid-backup","local_only":false}}]"#,
+            ),
+            (
+                "storageRestoreSettings",
+                r#"[{"adapter":{"source_mode":"module","inputs":{}},"mutating_enabled":false,"payload":{"cid":"cid-legacy","local_only":false}}]"#,
+            ),
             ("callModule", "[]"),
             ("modules", "[]"),
         ] {
@@ -2280,6 +2288,70 @@ mod tests {
         drop(handle);
         if host.close_count() != 1 {
             return err("host close callback did not run exactly once");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn async_host_rejects_direct_backup_download_aliases_before_dispatch() -> TestResult {
+        let host = TestHost::new();
+        let handle = TestCoreHandle::new(&host)?;
+        let collector = Arc::new(ReplyCollector::default());
+        let drops = Arc::new(AtomicUsize::new(0));
+        let args = r#"[{"adapter":{"source_mode":"module","inputs":{}},"mutating_enabled":false,"payload":{"cid":"cid-backup","local_only":false}}]"#;
+
+        for (bridge_request_id, method) in [
+            (31_u64, "storageDownloadBackupCatalogEntry"),
+            (32_u64, "storageRestoreSettings"),
+        ] {
+            let context = reply_context(&collector, &drops);
+            if enqueue_test_call(
+                handle.as_ptr(),
+                bridge_request_id,
+                "logos_inspector",
+                method,
+                args,
+                context,
+            )? != 1
+            {
+                // SAFETY: rejected ingress leaves its callback context caller-owned.
+                unsafe {
+                    drop(Box::from_raw(context.cast::<ReplyContext>()));
+                }
+                return err("backup download direct-call ingress was rejected");
+            }
+        }
+
+        let replies = collector.wait_for_replies(2)?;
+        let expected_error = "host-backed operation `storageDownloadBackupCatalogEntry` requires `runtimeOperationStart`";
+        for bridge_request_id in [31_u64, 32_u64] {
+            let response = replies
+                .iter()
+                .find(|(reply_id, _)| *reply_id == bridge_request_id)
+                .ok_or_else(|| std::io::Error::other("backup download reply was missing"))?;
+            let value: Value = serde_json::from_str(&response.1)?;
+            if value.get("ok").and_then(Value::as_bool) != Some(false)
+                || value.get("error").and_then(Value::as_str) != Some(expected_error)
+            {
+                return Err(std::io::Error::other(format!(
+                    "backup download direct call returned wrong response: {value}"
+                ))
+                .into());
+            }
+            handle.wait_for_bridge_id_available(bridge_request_id)?;
+        }
+        if collector.count() != 2 || drops.load(Ordering::Acquire) != 2 {
+            return err("backup download direct calls did not complete exactly once");
+        }
+        if !lock(&host.registry).requests.is_empty() || !host.cancelled().is_empty() {
+            return err("backup download direct call reached host transport");
+        }
+
+        handle.close();
+        handle.close();
+        drop(handle);
+        if host.close_count() != 1 {
+            return err("backup download rejection did not close host exactly once");
         }
         Ok(())
     }

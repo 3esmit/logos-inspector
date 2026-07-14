@@ -247,6 +247,7 @@ mod tests {
             AffectedContextKey::Path,
             AffectedContextKey::Filename,
             AffectedContextKey::BackupCatalogId,
+            AffectedContextKey::DownloadScope,
             AffectedContextKey::SlotRange,
             AffectedContextKey::BlockId,
             AffectedContextKey::TransactionId,

@@ -1,5 +1,4 @@
 .import "../settings/SettingsProfile.js" as SettingsProfile
-.import "../source_operations/NodeOperationRequest.js" as NodeOperationRequest
 
 function saveIdlState(root) {
     with (root) {
@@ -110,7 +109,7 @@ function backupSettingsToStorage(root, encrypted, contents) {
     }
 }
 
-function restoreSettingsFromStorage(root, cid, useWallet) {
+function downloadSettingsBackupToCatalog(root, cid) {
     with (root) {
         const backupCid = String(cid || "").trim()
         if (backupCid.length === 0) {
@@ -121,24 +120,37 @@ function restoreSettingsFromStorage(root, cid, useWallet) {
             settingsBackupStatus = qsTr("Storage read-by-CID capability is required.")
             return false
         }
-        const response = root.callInspector("storageRestoreSettings", [NodeOperationRequest.envelope(
-            root.sourceRouting.storageOperationAdapter(),
-            { cid: backupCid, local_only: false },
-            false
-        )], qsTr("Settings backup download"))
-        if (!response.ok) {
-            settingsBackupStatus = response.error || qsTr("Settings backup download failed.")
+        if (!root.backupCatalog || typeof root.backupCatalog.downloadRemote !== "function") {
+            settingsBackupStatus = qsTr("Local Backup Catalog is unavailable.")
             return false
         }
-        if (root.backupCatalog && typeof root.loadBackupCatalog === "function") {
-            root.loadBackupCatalog()
+        let downloadCompleted = false
+        const admitted = root.backupCatalog.downloadRemote(backupCid, function (response) {
+            downloadCompleted = true
+            if (!response || response.ok !== true) {
+                root.settingsBackupStatus = String(response && response.error || qsTr("Settings backup download failed."))
+                return
+            }
+            const catalogId = String(response.value && response.value.backup_catalog_id || "").trim()
+            root.settingsBackupStatus = catalogId.length
+                ? qsTr("Downloaded backup %1 into local catalog as %2.").arg(backupCid).arg(catalogId)
+                : qsTr("Downloaded backup %1 into local catalog.").arg(backupCid)
+        })
+        if (!admitted) {
+            settingsBackupStatus = root.backupCatalogError.length
+                ? root.backupCatalogError
+                : qsTr("Settings backup download failed.")
+            return false
         }
-        const catalogId = String(response.value && response.value.backup_catalog_id ? response.value.backup_catalog_id : "")
-        settingsBackupStatus = catalogId.length
-            ? qsTr("Downloaded backup %1 into local catalog as %2.").arg(backupCid).arg(catalogId)
-            : qsTr("Downloaded backup %1 into local catalog.").arg(backupCid)
+        if (!downloadCompleted) {
+            settingsBackupStatus = qsTr("Settings backup download started.")
+        }
         return true
     }
+}
+
+function restoreSettingsFromStorage(root, cid, useWallet) {
+    return downloadSettingsBackupToCatalog(root, cid)
 }
 
 function settingsBackupAvailable(root) {

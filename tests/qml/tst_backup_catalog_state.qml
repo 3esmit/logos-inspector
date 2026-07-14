@@ -61,6 +61,7 @@ TestCase {
 
     function init() {
         catalog.invalidateUpload("")
+        catalog.invalidateDownload("")
         gateway.reset()
         catalog.entries = []
         catalog.loaded = false
@@ -77,16 +78,94 @@ TestCase {
         immediateUploadCatalog.error = ""
     }
 
-    function uploadOperation(id, status, cursor, result) {
+    function uploadOperation(id, status, cursor, result, catalogId) {
+        const expectedCatalogId = catalogId === undefined
+            ? String(result && result.backup_catalog_id || "backup-1")
+            : String(catalogId)
         return {
             operationId: id,
             domain: "storage",
             method: "storageUploadBackupCatalogEntry",
+            backend: "rest",
             label: "Backup upload",
             status: status,
             eventCursor: cursor,
+            context: {
+                source: "rest",
+                endpoint: "http://storage",
+                mutatingEnabled: true,
+                backupCatalogId: expectedCatalogId
+            },
             result: result === undefined ? null : result,
             error: status === "failed" ? "upload failed" : ""
+        }
+    }
+
+    function uploadResult(catalogId, cid, payloadId) {
+        const expectedCatalogId = String(catalogId || "backup-1")
+        const expectedCid = String(cid || "z-cid")
+        return {
+            cid: expectedCid,
+            bytes: 128,
+            endpoint: "http://storage",
+            backup_catalog_id: expectedCatalogId,
+            catalog_entry: {
+                backup_catalog_id: expectedCatalogId,
+                payload_id: String(payloadId || "sha256:upload"),
+                encrypted: false,
+                remote: {
+                    cid: expectedCid,
+                    provider: "logos_storage"
+                }
+            }
+        }
+    }
+
+    function downloadResult(cid, catalogId, payloadId) {
+        const expectedCid = cid === undefined ? "cid-download" : String(cid)
+        const expectedCatalogId = catalogId === undefined ? "backup-download" : String(catalogId)
+        const expectedPayloadId = payloadId === undefined ? "sha256:download" : String(payloadId)
+        return {
+            downloaded: true,
+            restored: false,
+            cid: expectedCid,
+            backup_catalog_id: expectedCatalogId,
+            payload_id: expectedPayloadId,
+            catalog_entry: {
+                backup_catalog_id: expectedCatalogId,
+                payload_id: expectedPayloadId,
+                encrypted: false,
+                remote: {
+                    cid: expectedCid,
+                    provider: "logos_storage"
+                }
+            },
+            bytes: 128,
+            endpoint: "http://storage",
+            source: "network",
+            encrypted: false
+        }
+    }
+
+    function downloadOperation(id, status, cursor, cid, result) {
+        const expectedCid = String(cid || "cid-download")
+        return {
+            operationId: String(id || "download-1"),
+            domain: "storage",
+            method: "storageDownloadBackupCatalogEntry",
+            backend: "rest",
+            backend: "rest",
+            label: "Backup download",
+            status: String(status || "completed"),
+            eventCursor: Number(cursor || 1),
+            context: {
+                source: "rest",
+                endpoint: "http://storage",
+                cid: expectedCid,
+                downloadScope: "network"
+            },
+            result: result === undefined ? null : result,
+            error: status === "failed" ? "download failed" : ""
         }
     }
 
@@ -231,18 +310,357 @@ TestCase {
         compare(gateway.lastArgs[2].settings, "replace")
     }
 
+    function test_download_remote_starts_canonical_operation_and_projects_terminal_catalog_entry() {
+        gateway.requestResponses = ({
+            runtimeOperationStart: {
+                ok: true,
+                value: downloadOperation(
+                    "download-1", "completed", 1, "cid-download",
+                    downloadResult("cid-download", "backup-download", "sha256:download"))
+            }
+        })
+        let callbackCount = 0
+        let completion = null
+
+        verify(catalog.downloadRemote("cid-download", function (response) {
+            callbackCount += 1
+            completion = response
+        }))
+
+        compare(gateway.lastMethod, "runtimeOperationStart")
+        const request = gateway.lastArgs[0]
+        compare(request.domain, "storage")
+        compare(request.method, "storageDownloadBackupCatalogEntry")
+        compare(request.adapter.source_mode, "rest")
+        compare(request.adapter.inputs.rest_endpoint, "http://storage")
+        compare(request.mutating_enabled, false)
+        compare(request.payload.cid, "cid-download")
+        compare(request.payload.local_only, false)
+        compare(callbackCount, 1)
+        verify(completion.ok)
+        compare(catalog.rows().length, 1)
+        compare(catalog.rows()[0].backup_catalog_id, "backup-download")
+        compare(catalog.rows()[0].remote.cid, "cid-download")
+        compare(gateway.history.length, 1)
+        compare(catalog.pollDownload(), null)
+        compare(callbackCount, 1)
+    }
+
+    function test_download_remote_polls_running_operation_to_terminal_once() {
+        gateway.requestResponses = ({
+            runtimeOperationStart: {
+                ok: true,
+                value: downloadOperation("download-1", "running", 1, "cid-polled", null)
+            },
+            runtimeOperationStatus: {
+                ok: true,
+                value: downloadOperation(
+                    "download-1", "completed", 2, "cid-polled",
+                    downloadResult("cid-polled", "backup-polled", "sha256:polled"))
+            }
+        })
+        let completion = null
+
+        verify(catalog.downloadRemote("cid-polled", function (response) {
+            completion = response
+        }))
+        verify(catalog.downloadRunning)
+        catalog.pollDownload()
+
+        verify(completion !== null)
+        verify(completion.ok)
+        verify(!catalog.downloadRunning)
+        compare(catalog.rows().length, 1)
+        compare(catalog.rows()[0].backup_catalog_id, "backup-polled")
+        compare(gateway.requestCount, 2)
+        compare(gateway.history.length, 1)
+    }
+
+    function test_catalog_transfer_admission_serializes_downloads_and_uploads() {
+        gateway.deferRequests = true
+        let first = null
+        let duplicate = null
+        let upload = null
+
+        verify(catalog.downloadRemote("cid-first", function (response) {
+            first = response
+        }))
+        verify(!catalog.downloadRemote("cid-second", function (response) {
+            duplicate = response
+        }))
+        verify(!catalog.uploadLocal("backup-upload", function (response) {
+            upload = response
+        }))
+
+        compare(gateway.requestCount, 1)
+        verify(duplicate !== null)
+        verify(!duplicate.ok)
+        verify(upload !== null)
+        verify(!upload.ok)
+        gateway.completeRequestAt(0, {
+            ok: true,
+            value: downloadOperation(
+                "download-first", "completed", 1, "cid-first",
+                downloadResult("cid-first", "backup-first", "sha256:first"))
+        })
+        verify(first !== null)
+        verify(first.ok)
+        compare(catalog.rows().length, 1)
+    }
+
+    function test_catalog_mutators_are_rejected_at_state_seam_during_transfer() {
+        gateway.deferRequests = true
+        verify(catalog.downloadRemote("cid-active", function () {}))
+        const callsBeforeMutations = gateway.callCount
+
+        compare(catalog.createLocal("Blocked", false, {}, {}), null)
+        compare(catalog.attachRemote("backup-active", "cid-other", "logos_storage"), null)
+        compare(catalog.applyImport("backup-active", {}, {}), null)
+
+        compare(gateway.callCount, callsBeforeMutations)
+        verify(catalog.transferRunning)
+        verify(catalog.error.indexOf("blocked while a backup catalog transfer") >= 0)
+        gateway.completeRequestAt(0, {
+            ok: true,
+            value: downloadOperation(
+                "download-active", "completed", 1, "cid-active",
+                downloadResult("cid-active", "backup-active", "sha256:active"))
+        })
+        verify(!catalog.transferRunning)
+    }
+
+    function test_download_rejects_foreign_identity_context_and_result_shapes() {
+        const wrongDomain = downloadOperation(
+            "wrong-domain", "completed", 1, "cid-test",
+            downloadResult("cid-test", "backup-test", "sha256:test"))
+        wrongDomain.domain = "delivery"
+        const wrongMethod = downloadOperation(
+            "wrong-method", "completed", 1, "cid-test",
+            downloadResult("cid-test", "backup-test", "sha256:test"))
+        wrongMethod.method = "storageDownloadManifest"
+        const wrongBackend = downloadOperation(
+            "wrong-backend", "completed", 1, "cid-test",
+            downloadResult("cid-test", "backup-test", "sha256:test"))
+        wrongBackend.backend = "module"
+        const wrongContext = downloadOperation(
+            "wrong-context", "completed", 1, "cid-other",
+            downloadResult("cid-test", "backup-test", "sha256:test"))
+        const wrongCid = downloadOperation(
+            "wrong-cid", "completed", 1, "cid-test",
+            downloadResult("cid-other", "backup-test", "sha256:test"))
+        const missingCatalog = downloadOperation(
+            "missing-catalog", "completed", 1, "cid-test",
+            downloadResult("cid-test", "", "sha256:test"))
+        const wrongPayload = downloadResult("cid-test", "backup-test", "sha256:test")
+        wrongPayload.catalog_entry.payload_id = "sha256:other"
+        const mismatchedPayload = downloadOperation(
+            "wrong-payload", "completed", 1, "cid-test", wrongPayload)
+        const wrongRemote = downloadResult("cid-test", "backup-test", "sha256:test")
+        wrongRemote.catalog_entry.remote.cid = "cid-other"
+        const mismatchedRemote = downloadOperation(
+            "wrong-remote", "completed", 1, "cid-test", wrongRemote)
+        const wrongScope = downloadResult("cid-test", "backup-test", "sha256:test")
+        wrongScope.source = "local"
+        const mismatchedScope = downloadOperation(
+            "wrong-scope", "completed", 1, "cid-test", wrongScope)
+        const wrongEndpoint = downloadResult("cid-test", "backup-test", "sha256:test")
+        wrongEndpoint.endpoint = "http://other-storage"
+        const mismatchedEndpoint = downloadOperation(
+            "wrong-endpoint", "completed", 1, "cid-test", wrongEndpoint)
+        const wrongEncryption = downloadResult("cid-test", "backup-test", "sha256:test")
+        wrongEncryption.encrypted = true
+        const mismatchedEncryption = downloadOperation(
+            "wrong-encryption", "completed", 1, "cid-test", wrongEncryption)
+        const wrongProvider = downloadResult("cid-test", "backup-test", "sha256:test")
+        wrongProvider.catalog_entry.remote.provider = "other_storage"
+        const mismatchedProvider = downloadOperation(
+            "wrong-provider", "completed", 1, "cid-test", wrongProvider)
+        const unknownStatus = downloadOperation("unknown", "mystery", 1, "cid-test", null)
+        const cases = [
+            wrongDomain,
+            wrongMethod,
+            wrongBackend,
+            wrongContext,
+            wrongCid,
+            missingCatalog,
+            mismatchedPayload,
+            mismatchedRemote,
+            mismatchedScope,
+            mismatchedEndpoint,
+            mismatchedEncryption,
+            mismatchedProvider,
+            unknownStatus
+        ]
+
+        for (let i = 0; i < cases.length; ++i) {
+            gateway.requestResponses = ({
+                runtimeOperationStart: { ok: true, value: cases[i] }
+            })
+            let completion = null
+            verify(catalog.downloadRemote("cid-test", function (response) {
+                completion = response
+            }))
+            verify(completion !== null)
+            verify(!completion.ok)
+            verify(!catalog.downloadRunning)
+            compare(catalog.rows().length, 0)
+        }
+        compare(gateway.history.length, 0)
+    }
+
+    function test_download_rejects_foreign_endpoint_when_admitted_context_has_none() {
+        catalog.storageAdapterInitialization = ({
+            source_mode: "logoscore_cli",
+            inputs: ({})
+        })
+        const operation = downloadOperation(
+            "download-no-endpoint", "running", 1, "cid-no-endpoint", null)
+        operation.backend = "logoscore_cli"
+        operation.context.source = "logoscore_cli"
+        operation.context.endpoint = "http://foreign-storage"
+        gateway.requestResponses = ({
+            runtimeOperationStart: { ok: true, value: operation }
+        })
+        let completion = null
+
+        verify(catalog.downloadRemote("cid-no-endpoint", function (response) {
+            completion = response
+        }))
+
+        verify(completion !== null)
+        verify(!completion.ok)
+        verify(completion.error.indexOf("different request context") >= 0)
+        verify(!catalog.transferRunning)
+    }
+
+    function test_download_terminal_failures_complete_once_without_projection() {
+        const statuses = ["failed", "canceled", "timed_out"]
+        let callbackCount = 0
+
+        for (let i = 0; i < statuses.length; ++i) {
+            gateway.requestResponses = ({
+                runtimeOperationStart: {
+                    ok: true,
+                    value: downloadOperation(
+                        "download-" + statuses[i], statuses[i], 1, "cid-failure", null)
+                }
+            })
+            let completion = null
+            verify(catalog.downloadRemote("cid-failure", function (response) {
+                callbackCount += 1
+                completion = response
+            }))
+            verify(completion !== null)
+            verify(!completion.ok)
+            compare(catalog.rows().length, 0)
+        }
+
+        compare(callbackCount, statuses.length)
+        compare(gateway.history.length, statuses.length)
+    }
+
+    function test_download_source_change_retains_running_transfer_until_old_terminal() {
+        gateway.requestResponses = ({
+            runtimeOperationStart: {
+                ok: true,
+                value: downloadOperation("download-1", "running", 1, "cid-late", null)
+            }
+        })
+        let callbackCount = 0
+        let completion = null
+        verify(catalog.downloadRemote("cid-late", function (response) {
+            callbackCount += 1
+            completion = response
+        }))
+        gateway.deferRequests = true
+        catalog.pollDownload()
+        catalog.storageAdapterInitialization = ({
+            source_mode: "rest",
+            inputs: { rest_endpoint: "http://other-storage" }
+        })
+
+        compare(callbackCount, 0)
+        verify(completion === null)
+        verify(catalog.downloadRunning)
+        verify(catalog.transferRunning)
+        verify(!catalog.invalidateDownload("must remain tracked"))
+        const requestsBeforeBlockedTransfer = gateway.requestCount
+        verify(!catalog.uploadLocal("backup-blocked", function () {}))
+        compare(gateway.requestCount, requestsBeforeBlockedTransfer)
+        gateway.completeRequestAt(0, {
+            ok: true,
+            value: downloadOperation(
+                "download-1", "completed", 2, "cid-late",
+                downloadResult("cid-late", "backup-late", "sha256:late"))
+        })
+        compare(callbackCount, 1)
+        verify(completion !== null)
+        verify(completion.ok)
+        verify(!catalog.transferRunning)
+        compare(catalog.rows().length, 1)
+        compare(gateway.history.length, 1)
+    }
+
+    function test_download_source_change_retains_pending_start_and_serializes_new_transfer() {
+        gateway.deferRequests = true
+        let callbackCount = 0
+        let completion = null
+        verify(catalog.downloadRemote("cid-start", function (response) {
+            callbackCount += 1
+            completion = response
+        }))
+        catalog.storageAdapterInitialization = ({
+            source_mode: "rest",
+            inputs: { rest_endpoint: "http://replacement" }
+        })
+
+        compare(callbackCount, 0)
+        verify(completion === null)
+        verify(catalog.transferRunning)
+        verify(!catalog.downloadRemote("cid-replacement", function () {}))
+        verify(!catalog.uploadLocal("backup-replacement", function () {}))
+        compare(gateway.requestCount, 1)
+        gateway.completeRequestAt(0, {
+            ok: true,
+            value: downloadOperation(
+                "download-start", "completed", 1, "cid-start",
+                downloadResult("cid-start", "backup-start", "sha256:start"))
+        })
+        compare(callbackCount, 1)
+        verify(completion !== null)
+        verify(completion.ok)
+        verify(!catalog.transferRunning)
+        compare(catalog.rows().length, 1)
+        compare(gateway.history.length, 1)
+    }
+
+    function test_download_only_records_catalog_and_never_calls_import_methods() {
+        gateway.requestResponses = ({
+            runtimeOperationStart: {
+                ok: true,
+                value: downloadOperation(
+                    "download-only", "completed", 1, "cid-only",
+                    downloadResult("cid-only", "backup-only", "sha256:only"))
+            }
+        })
+
+        verify(catalog.downloadRemote("cid-only", function () {}))
+
+        compare(catalog.rows().length, 1)
+        verify(!gateway.calls.some(function (call) {
+            return call.method === "settingsBackupImportPreview"
+                || call.method === "settingsBackupImportApply"
+                || call.method === "loadBackupCatalog"
+        }))
+    }
+
     function test_upload_local_starts_runtime_operation_and_projects_terminal_result() {
         gateway.requestResponses = ({
             runtimeOperationStart: {
                 ok: true,
-                value: uploadOperation("upload-1", "completed", 1, {
-                    cid: "z-cid",
-                    backup_catalog_id: "backup-1",
-                    catalog_entry: {
-                        backup_catalog_id: "backup-1",
-                        remote: { cid: "z-cid" }
-                    }
-                })
+                value: uploadOperation(
+                    "upload-1", "completed", 1,
+                    uploadResult("backup-1", "z-cid", "sha256:upload-1"))
             }
         })
         let completion = null
@@ -274,14 +692,9 @@ TestCase {
             },
             runtimeOperationStatus: {
                 ok: true,
-                value: uploadOperation("upload-1", "completed", 2, {
-                    cid: "z-polled",
-                    backup_catalog_id: "backup-1",
-                    catalog_entry: {
-                        backup_catalog_id: "backup-1",
-                        remote: { cid: "z-polled" }
-                    }
-                })
+                value: uploadOperation(
+                    "upload-1", "completed", 2,
+                    uploadResult("backup-1", "z-polled", "sha256:polled"))
             }
         })
         let completion = null
@@ -329,14 +742,10 @@ TestCase {
         gateway.requestResponses = ({
             runtimeOperationStart: {
                 ok: true,
-                value: uploadOperation("upload-1", "completed", 1, {
-                    cid: "z-wrong",
-                    backup_catalog_id: "backup-2",
-                    catalog_entry: {
-                        backup_catalog_id: "backup-2",
-                        remote: { cid: "z-wrong" }
-                    }
-                })
+                value: uploadOperation(
+                    "upload-1", "completed", 1,
+                    uploadResult("backup-2", "z-wrong", "sha256:wrong"),
+                    "backup-1")
             }
         })
         let completion = null
@@ -349,6 +758,66 @@ TestCase {
         verify(!completion.ok)
         verify(completion.error.indexOf("different backup catalog ID") >= 0)
         compare(catalog.rows().length, 0)
+        compare(gateway.history.length, 0)
+    }
+
+    function test_upload_rejects_foreign_context_and_transfer_metadata() {
+        const valid = uploadResult("backup-1", "z-valid", "sha256:valid")
+        const wrongBackend = uploadOperation(
+            "upload-wrong-backend", "completed", 1, valid)
+        wrongBackend.backend = "logoscore_cli"
+        const wrongEndpointContext = uploadOperation(
+            "upload-wrong-context-endpoint", "completed", 1, valid)
+        wrongEndpointContext.context.endpoint = "http://other-storage"
+        const wrongCatalogContext = uploadOperation(
+            "upload-wrong-context-catalog", "completed", 1, valid)
+        wrongCatalogContext.context.backupCatalogId = "backup-2"
+        const wrongMutatingContext = uploadOperation(
+            "upload-wrong-context-mutating", "completed", 1, valid)
+        wrongMutatingContext.context.mutatingEnabled = false
+        const wrongResultEndpointValue = uploadResult(
+            "backup-1", "z-endpoint", "sha256:endpoint")
+        wrongResultEndpointValue.endpoint = "http://other-storage"
+        const wrongResultEndpoint = uploadOperation(
+            "upload-wrong-result-endpoint", "completed", 1, wrongResultEndpointValue)
+        const missingPayloadValue = uploadResult(
+            "backup-1", "z-payload", "sha256:payload")
+        missingPayloadValue.catalog_entry.payload_id = ""
+        const missingPayload = uploadOperation(
+            "upload-missing-payload", "completed", 1, missingPayloadValue)
+        const wrongProviderValue = uploadResult(
+            "backup-1", "z-provider", "sha256:provider")
+        wrongProviderValue.catalog_entry.remote.provider = "other_storage"
+        const wrongProvider = uploadOperation(
+            "upload-wrong-provider", "completed", 1, wrongProviderValue)
+        const wrongBytesValue = uploadResult("backup-1", "z-bytes", "sha256:bytes")
+        wrongBytesValue.bytes = -1
+        const wrongBytes = uploadOperation(
+            "upload-wrong-bytes", "completed", 1, wrongBytesValue)
+        const cases = [
+            wrongBackend,
+            wrongEndpointContext,
+            wrongCatalogContext,
+            wrongMutatingContext,
+            wrongResultEndpoint,
+            missingPayload,
+            wrongProvider,
+            wrongBytes
+        ]
+
+        for (let i = 0; i < cases.length; ++i) {
+            gateway.requestResponses = ({
+                runtimeOperationStart: { ok: true, value: cases[i] }
+            })
+            let completion = null
+            verify(catalog.uploadLocal("backup-1", function (response) {
+                completion = response
+            }))
+            verify(completion !== null)
+            verify(!completion.ok)
+            verify(!catalog.transferRunning)
+            compare(catalog.rows().length, 0)
+        }
         compare(gateway.history.length, 0)
     }
 
@@ -420,17 +889,15 @@ TestCase {
         verify(!second.ok)
         gateway.completeRequestAt(0, {
             ok: true,
-            value: uploadOperation("upload-1", "completed", 1, {
-                cid: "z-first",
-                backup_catalog_id: "backup-1",
-                catalog_entry: { backup_catalog_id: "backup-1", remote: { cid: "z-first" } }
-            })
+            value: uploadOperation(
+                "upload-1", "completed", 1,
+                uploadResult("backup-1", "z-first", "sha256:first"))
         })
         verify(first !== null)
         verify(first.ok)
     }
 
-    function test_source_invalidation_rejects_late_poll_completion() {
+    function test_upload_source_change_retains_running_transfer_until_old_terminal() {
         gateway.requestResponses = ({
             runtimeOperationStart: {
                 ok: true,
@@ -447,20 +914,25 @@ TestCase {
             source_mode: "rest",
             inputs: { rest_endpoint: "http://other-storage" }
         })
-        verify(completion !== null)
-        verify(!completion.ok)
-        verify(catalog.error.indexOf("Storage source changed") >= 0)
-        verify(catalog.revision > 0)
+        verify(completion === null)
+        verify(catalog.uploadRunning)
+        verify(catalog.transferRunning)
+        verify(!catalog.invalidateUpload("must remain tracked"))
+        const requestsBeforeBlockedTransfer = gateway.requestCount
+        verify(!catalog.downloadRemote("cid-blocked", function () {}))
+        compare(gateway.requestCount, requestsBeforeBlockedTransfer)
 
         gateway.completeRequestAt(0, {
             ok: true,
-            value: uploadOperation("upload-1", "completed", 2, {
-                cid: "z-late",
-                backup_catalog_id: "backup-1",
-                catalog_entry: { backup_catalog_id: "backup-1", remote: { cid: "z-late" } }
-            })
+            value: uploadOperation(
+                "upload-1", "completed", 2,
+                uploadResult("backup-1", "z-late", "sha256:late"))
         })
-        compare(catalog.rows().length, 0)
+        verify(completion !== null)
+        verify(completion.ok)
+        verify(!catalog.transferRunning)
+        compare(catalog.rows().length, 1)
+        compare(gateway.history.length, 1)
     }
 
     function test_unknown_polled_status_fails_closed() {
@@ -489,14 +961,9 @@ TestCase {
     }
 
     function test_successful_projection_is_applied_once() {
-        const terminal = uploadOperation("upload-once", "completed", 1, {
-            cid: "z-once",
-            backup_catalog_id: "backup-1",
-            catalog_entry: {
-                backup_catalog_id: "backup-1",
-                remote: { cid: "z-once" }
-            }
-        })
+        const terminal = uploadOperation(
+            "upload-once", "completed", 1,
+            uploadResult("backup-1", "z-once", "sha256:once"))
         gateway.requestResponses = ({
             runtimeOperationStart: { ok: true, value: terminal }
         })
@@ -519,14 +986,9 @@ TestCase {
         gateway.requestResponses = ({
             runtimeOperationStart: {
                 ok: true,
-                value: uploadOperation("upload-a", "completed", 1, {
-                    cid: "z-a",
-                    backup_catalog_id: "backup-a",
-                    catalog_entry: {
-                        backup_catalog_id: "backup-a",
-                        remote: { cid: "z-a" }
-                    }
-                })
+                value: uploadOperation(
+                    "upload-a", "completed", 1,
+                    uploadResult("backup-a", "z-a", "sha256:a"))
             }
         })
         verify(catalog.uploadLocal("backup-a", function () {}))
@@ -544,7 +1006,7 @@ TestCase {
 
         gateway.completeRequestAt(0, {
             ok: true,
-            value: uploadOperation("upload-b", "running", 1, null)
+            value: uploadOperation("upload-b", "running", 1, null, "backup-b")
         })
         verify(catalog.uploadRunning)
         catalog.pollUpload()
@@ -553,14 +1015,9 @@ TestCase {
         compare(gateway.requests[gateway.requests.length - 1].args[0], "upload-b")
         gateway.completeRequestAt(0, {
             ok: true,
-            value: uploadOperation("upload-b", "completed", 2, {
-                cid: "z-b",
-                backup_catalog_id: "backup-b",
-                catalog_entry: {
-                    backup_catalog_id: "backup-b",
-                    remote: { cid: "z-b" }
-                }
-            })
+            value: uploadOperation(
+                "upload-b", "completed", 2,
+                uploadResult("backup-b", "z-b", "sha256:b"))
         })
 
         verify(secondCompletion !== null)
