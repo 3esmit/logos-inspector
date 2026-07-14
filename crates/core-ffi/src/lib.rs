@@ -2163,13 +2163,15 @@ mod tests {
         }
         let replies = collector.wait_for_replies(1)?;
         let start_response: Value = serde_json::from_str(&replies[0].1)?;
-        if start_response.get("ok").and_then(Value::as_bool) != Some(true)
-            || start_response
-                .pointer("/value/operationId")
-                .and_then(Value::as_str)
-                .is_none()
-        {
+        let Some(operation_id) = start_response
+            .pointer("/value/operationId")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+        else {
             return err("runtime operation start did not return operation identity");
+        };
+        if start_response.get("ok").and_then(Value::as_bool) != Some(true) {
+            return err("runtime operation start returned an error");
         }
 
         let request = host.wait_for_request()?;
@@ -2180,6 +2182,49 @@ mod tests {
             return err("detached runtime operation crossed wrong host boundary");
         }
         host.complete(request.id, 1, "\"request-45\"", true)?;
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut status_request_id = 4_500_u64;
+        loop {
+            let status_collector = Arc::new(ReplyCollector::default());
+            let status_drops = Arc::new(AtomicUsize::new(0));
+            let status_context = reply_context(&status_collector, &status_drops);
+            let status_args = serde_json::json!([operation_id.as_str()]).to_string();
+            if enqueue_test_call(
+                handle.as_ptr(),
+                status_request_id,
+                "logos_inspector",
+                "runtimeOperationStatus",
+                &status_args,
+                status_context,
+            )? != 1
+            {
+                // SAFETY: return 0 leaves this callback context caller-owned.
+                unsafe {
+                    drop(Box::from_raw(status_context.cast::<ReplyContext>()));
+                }
+                return err("runtime operation status ingress was rejected");
+            }
+            let status_replies = status_collector.wait_for_replies(1)?;
+            let status: Value = serde_json::from_str(&status_replies[0].1)?;
+            if status.pointer("/value/status").and_then(Value::as_str) == Some("awaiting_external")
+            {
+                if status_drops.load(Ordering::Acquire) != 1 {
+                    return err("runtime status callback context was not released once");
+                }
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err(std::io::Error::other(format!(
+                    "detached runtime operation did not settle after host reply: {status}"
+                ))
+                .into());
+            }
+            status_request_id = status_request_id
+                .checked_add(1)
+                .ok_or_else(|| std::io::Error::other("status request id space exhausted"))?;
+            thread::yield_now();
+        }
         handle.close();
         if drops.load(Ordering::Acquire) != 1 {
             return err("runtime operation start callback context was not released once");
