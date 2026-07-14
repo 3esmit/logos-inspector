@@ -4775,6 +4775,7 @@ version = "0.2.0-rc6"
 dependencies = [
  "logos-inspector",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
