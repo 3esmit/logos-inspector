@@ -778,6 +778,30 @@ void testTtlReclaimsPendingAndTerminalEntries()
     REQUIRE(fake.cancelCalls == cancelsBeforeTerminalExpiry);
 }
 
+void testBackupImportPendingOwnershipOutlivesMailboxTtl()
+{
+    FakeRuntime fake;
+    RuntimeScope runtimeScope(fake);
+    auto now = std::chrono::steady_clock::time_point {};
+    LogosInspectorAsyncBridgeLimits limits;
+    limits.entryTtl = 10ms;
+    auto bridge = makeBridge(fake, limits, [&] { return now; });
+
+    const std::string started = bridge.callAsync(
+        "authoritative-backup-import",
+        "settingsBackupImportApply",
+        R"(["backup-1",{}])");
+    const std::string token = extractToken(started);
+    REQUIRE(!token.empty());
+    now += 11ms;
+    REQUIRE(contains(bridge.pollAsync(token), "\"status\":\"pending\""));
+    REQUIRE(fake.cancelCalls == 0);
+
+    fake.completePending(fake.asynchronousResponse);
+    REQUIRE(contains(bridge.pollAsync(token), "\"status\":\"ready\""));
+    REQUIRE(contains(bridge.releaseAsync(token), "\"released\":true"));
+}
+
 void testCallbackIdMismatchBecomesStableTerminalError()
 {
     FakeRuntime fake;
@@ -927,6 +951,8 @@ int main()
         { "released pending slot", testReleasedPendingCallRetainsSlotUntilCallback },
         { "input and response budgets", testInputAndResponseBudgets },
         { "ttl reclamation", testTtlReclaimsPendingAndTerminalEntries },
+        { "backup import ownership outlives ttl",
+            testBackupImportPendingOwnershipOutlivesMailboxTtl },
         { "callback id mismatch", testCallbackIdMismatchBecomesStableTerminalError },
         { "active async lifecycle", testCloseWaitsForActiveAsyncAbiCall },
         { "active local lifecycle", testCloseWaitsForActiveLocalCall },

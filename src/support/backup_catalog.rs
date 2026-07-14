@@ -13,13 +13,47 @@ use sha2::{Digest as _, Sha256};
 use crate::support::state_store::config_dir;
 
 use super::settings_backup::{
-    SETTINGS_BACKUP_MAX_BYTES, ensure_settings_backup_size, export_app_settings_backup,
-    preview_app_settings_backup_import, restore_app_settings_backup_with_options,
-    validate_app_settings_backup_envelope,
+    BackupImportOptions, SETTINGS_BACKUP_MAX_BYTES, ensure_settings_backup_size,
+    export_app_settings_backup, preview_app_settings_backup_import,
+    restore_app_settings_backup_with_options, validate_app_settings_backup_envelope,
+};
+
+#[cfg(test)]
+use super::{
+    local_state::LocalStateTestFault,
+    settings_backup::{
+        preview_app_settings_backup_import_in_dir_for_test,
+        restore_app_settings_backup_in_dir_for_test,
+        restore_app_settings_backup_with_fault_in_dir_for_test,
+    },
 };
 
 const CATALOG_VERSION: u64 = 1;
 const BACKUP_PAYLOAD_DIR: &str = "backup-payloads";
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct BackupCatalogId(String);
+
+impl BackupCatalogId {
+    pub(crate) fn parse(value: &str) -> Result<Self> {
+        let value = value.trim();
+        if value.is_empty() {
+            bail!("backup catalog id is required");
+        }
+        if value == "."
+            || value == ".."
+            || value.contains(['/', '\\'])
+            || value.chars().any(char::is_control)
+        {
+            bail!("backup catalog id contains an unsafe path component");
+        }
+        Ok(Self(value.to_owned()))
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct BackupCatalog {
@@ -91,33 +125,96 @@ pub(crate) fn backup_payload_bytes(backup_catalog_id: &str) -> Result<Vec<u8>> {
 }
 
 fn backup_payload_bytes_in_dir(base_dir: &Path, backup_catalog_id: &str) -> Result<Vec<u8>> {
-    let catalog_id = backup_catalog_id.trim();
-    if catalog_id.is_empty() {
-        bail!("backup catalog id is required");
-    }
+    let catalog_id = BackupCatalogId::parse(backup_catalog_id)?;
     let catalog = load_catalog_from_path(&catalog_path_for_dir(base_dir))?;
-    ensure_catalog_entry(&catalog, catalog_id)?;
-    let path = payload_path(base_dir, catalog_id);
-    read_backup_payload_file(&path)
+    let entry = ensure_catalog_entry(&catalog, catalog_id.as_str())?;
+    let path = payload_path(base_dir, catalog_id.as_str());
+    let bytes = read_backup_payload_file(&path)?;
+    let actual_payload_id = payload_identity(&bytes);
+    if entry.payload_id != actual_payload_id {
+        bail!(
+            "backup catalog entry `{}` payload identity does not match the catalog",
+            catalog_id.as_str()
+        );
+    }
+    Ok(bytes)
 }
 
-pub(crate) fn preview_local_settings_restore(
+pub(crate) fn preview_local_settings_restore_with_options(
     backup_catalog_id: &str,
     wallet_profile: Option<&Value>,
-    options: Option<&Value>,
+    options: &BackupImportOptions,
 ) -> Result<Value> {
-    let payload = backup_payload_value(backup_catalog_id)?;
-    preview_app_settings_backup_import(&payload, wallet_profile, options)
+    let (catalog_id, payload) = backup_payload_value(backup_catalog_id)?;
+    let mut summary = preview_app_settings_backup_import(&payload, wallet_profile, options)?;
+    set_summary_catalog_id(&mut summary, &catalog_id)?;
+    set_summary_import_areas(&mut summary, options)?;
+    Ok(summary)
 }
 
-pub(crate) fn restore_local_settings_backup(
+pub(crate) fn restore_local_settings_backup_with_options(
     backup_catalog_id: &str,
     wallet_profile: Option<&Value>,
-    options: Option<&Value>,
+    options: &BackupImportOptions,
 ) -> Result<Value> {
-    let payload = backup_payload_value(backup_catalog_id)?;
+    if options.is_empty() {
+        bail!("select at least one backup section to import");
+    }
+    let (catalog_id, payload) = backup_payload_value(backup_catalog_id)?;
     let mut summary = restore_app_settings_backup_with_options(&payload, wallet_profile, options)?;
-    set_summary_catalog_id(&mut summary, backup_catalog_id)?;
+    set_summary_catalog_id(&mut summary, &catalog_id)?;
+    set_summary_import_areas(&mut summary, options)?;
+    Ok(summary)
+}
+
+#[cfg(test)]
+pub(crate) fn preview_local_settings_restore_with_options_in_dir_for_test(
+    base_dir: &Path,
+    backup_catalog_id: &str,
+    wallet_profile: Option<&Value>,
+    options: &BackupImportOptions,
+) -> Result<Value> {
+    let (catalog_id, payload) = backup_payload_value_in_dir(base_dir, backup_catalog_id)?;
+    let mut summary = preview_app_settings_backup_import_in_dir_for_test(
+        base_dir,
+        &payload,
+        wallet_profile,
+        options,
+    )?;
+    set_summary_catalog_id(&mut summary, &catalog_id)?;
+    set_summary_import_areas(&mut summary, options)?;
+    Ok(summary)
+}
+
+#[cfg(test)]
+pub(crate) fn restore_local_settings_backup_with_options_in_dir_for_test(
+    base_dir: &Path,
+    backup_catalog_id: &str,
+    wallet_profile: Option<&Value>,
+    options: &BackupImportOptions,
+    fault: Option<LocalStateTestFault>,
+) -> Result<Value> {
+    if options.is_empty() {
+        bail!("select at least one backup section to import");
+    }
+    let (catalog_id, payload) = backup_payload_value_in_dir(base_dir, backup_catalog_id)?;
+    let mut summary = match fault {
+        Some(fault) => restore_app_settings_backup_with_fault_in_dir_for_test(
+            base_dir,
+            &payload,
+            wallet_profile,
+            options,
+            fault,
+        )?,
+        None => restore_app_settings_backup_in_dir_for_test(
+            base_dir,
+            &payload,
+            wallet_profile,
+            options,
+        )?,
+    };
+    set_summary_catalog_id(&mut summary, &catalog_id)?;
+    set_summary_import_areas(&mut summary, options)?;
     Ok(summary)
 }
 
@@ -230,10 +327,7 @@ pub(crate) fn attach_remote_backup_metadata(
     cid: &str,
     provider: Option<&str>,
 ) -> Result<BackupCatalogEntry> {
-    let catalog_id = backup_catalog_id.trim();
-    if catalog_id.is_empty() {
-        bail!("backup catalog id is required");
-    }
+    let catalog_id = BackupCatalogId::parse(backup_catalog_id)?;
     let cid = cid.trim();
     if cid.is_empty() {
         bail!("remote backup CID is required");
@@ -244,9 +338,12 @@ pub(crate) fn attach_remote_backup_metadata(
     let Some(entry) = catalog
         .entries
         .iter_mut()
-        .find(|entry| entry.backup_catalog_id == catalog_id)
+        .find(|entry| entry.backup_catalog_id == catalog_id.as_str())
     else {
-        bail!("backup catalog entry `{catalog_id}` was not found");
+        bail!(
+            "backup catalog entry `{}` was not found",
+            catalog_id.as_str()
+        );
     };
     entry.remote = Some(remote_backup_metadata(cid, provider));
     let result = entry.clone();
@@ -254,15 +351,24 @@ pub(crate) fn attach_remote_backup_metadata(
     Ok(result)
 }
 
-fn backup_payload_value(backup_catalog_id: &str) -> Result<Value> {
-    let catalog_id = backup_catalog_id.trim();
-    if catalog_id.is_empty() {
-        bail!("backup catalog id is required");
-    }
-    let bytes = backup_payload_bytes(catalog_id)?;
-    serde_json::from_slice(&bytes).with_context(|| {
-        format!("backup catalog entry `{catalog_id}` payload does not contain JSON")
-    })
+fn backup_payload_value(backup_catalog_id: &str) -> Result<(String, Value)> {
+    let base_dir = config_dir()?;
+    backup_payload_value_in_dir(&base_dir, backup_catalog_id)
+}
+
+fn backup_payload_value_in_dir(
+    base_dir: &Path,
+    backup_catalog_id: &str,
+) -> Result<(String, Value)> {
+    let catalog_id = BackupCatalogId::parse(backup_catalog_id)?;
+    let bytes = backup_payload_bytes_in_dir(base_dir, catalog_id.as_str())?;
+    let payload = serde_json::from_slice(&bytes).with_context(|| {
+        format!(
+            "backup catalog entry `{}` payload does not contain JSON",
+            catalog_id.as_str()
+        )
+    })?;
+    Ok((catalog_id.0, payload))
 }
 
 fn ensure_catalog_entry<'a>(
@@ -283,6 +389,33 @@ fn set_summary_catalog_id(summary: &mut Value, backup_catalog_id: &str) -> Resul
     object.insert(
         "backup_catalog_id".to_owned(),
         Value::String(backup_catalog_id.to_owned()),
+    );
+    Ok(())
+}
+
+fn set_summary_import_areas(summary: &mut Value, options: &BackupImportOptions) -> Result<()> {
+    let object = summary
+        .as_object_mut()
+        .context("backup restore summary is not an object")?;
+    object.insert(
+        "selected_areas".to_owned(),
+        Value::Array(
+            options
+                .selected_areas()
+                .into_iter()
+                .map(|area| Value::String(area.as_str().to_owned()))
+                .collect(),
+        ),
+    );
+    object.insert(
+        "affected_areas".to_owned(),
+        Value::Array(
+            options
+                .affected_areas()
+                .into_iter()
+                .map(|area| Value::String(area.as_str().to_owned()))
+                .collect(),
+        ),
     );
     Ok(())
 }
@@ -803,6 +936,79 @@ mod tests {
             SETTINGS_BACKUP_MAX_BYTES
         )) {
             bail!("unexpected oversized local backup error: {error:#}");
+        }
+        fs::remove_dir_all(&base)
+            .with_context(|| format!("failed to remove test directory {}", base.display()))?;
+        Ok(())
+    }
+
+    #[test]
+    fn backup_payload_reader_rejects_valid_json_with_wrong_payload_identity() -> Result<()> {
+        let base = unique_test_dir("payload-identity-mismatch")?;
+        let original = json!({
+            "kind": "logos-inspector-settings-backup",
+            "version": 1,
+            "encrypted": false,
+            "state": { "settings": { "theme": "light", "favorites": [] } }
+        });
+        let changed = json!({
+            "kind": "logos-inspector-settings-backup",
+            "version": 1,
+            "encrypted": false,
+            "state": { "settings": { "theme": "dark", "favorites": [] } }
+        });
+        let entry = record_remote_payload_in_dir(
+            &base,
+            None,
+            &original,
+            "z-payload-identity",
+            Some("logos_storage"),
+        )?;
+        fs::write(
+            payload_path(&base, &entry.backup_catalog_id),
+            serde_json::to_vec_pretty(&changed)?,
+        )?;
+
+        let error = backup_payload_bytes_in_dir(&base, &entry.backup_catalog_id)
+            .err()
+            .context("changed local payload identity should fail")?;
+        if !error
+            .to_string()
+            .contains("payload identity does not match the catalog")
+        {
+            bail!("unexpected payload identity error: {error:#}");
+        }
+        fs::remove_dir_all(&base)
+            .with_context(|| format!("failed to remove test directory {}", base.display()))?;
+        Ok(())
+    }
+
+    #[test]
+    fn backup_catalog_id_normalizes_whitespace_and_rejects_path_components() -> Result<()> {
+        let base = unique_test_dir("catalog-id-normalization")?;
+        let payload = json!({
+            "kind": "logos-inspector-settings-backup",
+            "version": 1,
+            "encrypted": false,
+            "state": { "settings": { "favorites": [] } }
+        });
+        let entry = record_remote_payload_in_dir(
+            &base,
+            None,
+            &payload,
+            "z-catalog-id",
+            Some("logos_storage"),
+        )?;
+
+        let (catalog_id, resolved) =
+            backup_payload_value_in_dir(&base, &format!("  {}  ", entry.backup_catalog_id))?;
+        if catalog_id != entry.backup_catalog_id || resolved != payload {
+            bail!("backup catalog id did not resolve to canonical identity");
+        }
+        for unsafe_id in ["../backup", "folder/backup", "folder\\backup", ".", ".."] {
+            if backup_payload_bytes_in_dir(&base, unsafe_id).is_ok() {
+                bail!("unsafe backup catalog id was accepted: {unsafe_id}");
+            }
         }
         fs::remove_dir_all(&base)
             .with_context(|| format!("failed to remove test directory {}", base.display()))?;

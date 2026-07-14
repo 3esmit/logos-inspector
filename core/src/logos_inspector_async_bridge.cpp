@@ -20,6 +20,7 @@
 namespace {
 constexpr std::string_view kSchema = "logos-inspector-async-bridge/v1";
 constexpr std::string_view kInspectorModule = "logos_inspector";
+constexpr std::string_view kAuthoritativeBackupImportMethod = "settingsBackupImportApply";
 constexpr std::string_view kTokenPrefix = "liab-";
 constexpr std::size_t kTokenHexLength = 32;
 constexpr std::size_t kMaxIdentifierBytes = 256;
@@ -84,6 +85,11 @@ struct CallbackContext
     std::shared_ptr<BridgeState> state;
     uint64_t bridgeId = 0;
 };
+
+bool retainsPendingOwnership(std::string_view module, std::string_view method) noexcept
+{
+    return module == kInspectorModule && method == kAuthoritativeBackupImportMethod;
+}
 
 std::string jsonEscape(std::string_view value)
 {
@@ -866,7 +872,9 @@ private:
             entry.method = method;
             entry.argsJson = argsJson;
             entry.inputBytes = bytes;
-            entry.expiresAt = state_->clock() + state_->limits.entryTtl;
+            entry.expiresAt = retainsPendingOwnership(module, method)
+                ? std::chrono::steady_clock::time_point::max()
+                : state_->clock() + state_->limits.entryTtl;
 
             try {
                 const auto inserted = state_->entries.emplace(bridgeId, std::move(entry));

@@ -20,6 +20,10 @@ QtObject {
     property var downloadCompletion: null
     property int downloadGeneration: 0
     readonly property bool downloadRunning: downloadOperations.view.busy
+    property string pendingImportCatalogId: ""
+    property var importCompletion: null
+    property int importGeneration: 0
+    readonly property bool importRunning: pendingImportCatalogId.length > 0
     property var activeTransferIdentity: null
     readonly property bool transferRunning: activeTransferIdentity !== null
         || uploadRunning || downloadRunning
@@ -117,27 +121,232 @@ QtObject {
         return null
     }
 
-    function applyImport(backupCatalogId, walletProfile, options) {
-        if (!catalogMutationAllowed(qsTr("Local backup restore"))) {
-            return null
+    function applyImport(backupCatalogId, walletProfile, options, onComplete) {
+        const catalogId = String(backupCatalogId || "").trim()
+        if (!catalogId.length) {
+            const missing = importFailure(qsTr("Backup catalog ID is required."))
+            applyImportFailure(missing)
+            if (typeof onComplete === "function") {
+                onComplete(missing)
+            }
+            return false
         }
-        const response = gateway.call("settingsBackupImportApply", [String(backupCatalogId || ""), walletProfile || {}, options || {}], qsTr("Local backup restore"))
-        if (response && response.ok === true && response.value) {
+        if (!catalogMutationAllowed(qsTr("Local backup restore"))) {
+            const busy = importFailure(error)
+            if (typeof onComplete === "function") {
+                onComplete(busy)
+            }
+            return false
+        }
+
+        importGeneration += 1
+        const generation = importGeneration
+        pendingImportCatalogId = catalogId
+        importCompletion = typeof onComplete === "function" ? onComplete : null
+        error = ""
+        if (!gateway
+                || typeof gateway.supportsAsync !== "function"
+                || gateway.supportsAsync() !== true
+                || typeof gateway.request !== "function") {
+            finishImport(importFailure(qsTr("Asynchronous backup import is unavailable.")))
+            return false
+        }
+
+        let started = null
+        try {
+            started = gateway.request(
+                "settingsBackupImportApply",
+                [catalogId, walletProfile || {}, options || {}],
+                qsTr("Local backup restore"),
+                false,
+                function (response) {
+                    if (generation !== importGeneration
+                            || pendingImportCatalogId !== catalogId) {
+                        return
+                    }
+                    const problem = importTerminalProblem(response, catalogId)
+                    finishImport(problem.length ? importFailure(problem) : response)
+                }
+            )
+        } catch (requestError) {
+            if (generation === importGeneration && pendingImportCatalogId === catalogId) {
+                finishImport(importFailure(qsTr("Backup import dispatch failed: %1")
+                    .arg(String(requestError))))
+            }
+            return false
+        }
+
+        const admitted = !(started && started.ok === false)
+            && started !== null
+            && started !== undefined
+            && started !== false
+        if (!admitted
+                && generation === importGeneration
+                && pendingImportCatalogId === catalogId) {
+            finishImport(importFailure(qsTr("Backup import request was not admitted.")))
+        }
+        return admitted
+    }
+
+    function importTerminalProblem(response, requestedCatalogId) {
+        if (!response || response.ok !== true) {
+            return String(response && response.error
+                || qsTr("Local backup restore failed."))
+        }
+        const value = response.value
+        if (!value || typeof value !== "object" || Array.isArray(value)) {
+            return qsTr("Backup import returned no terminal result.")
+        }
+        if (value.terminal !== true) {
+            return qsTr("Backup import returned a non-terminal result.")
+        }
+        const importId = String(value.importId || "").trim()
+        if (!importId.length) {
+            return qsTr("Backup import returned no import identity.")
+        }
+        const catalogId = String(value.backupCatalogId || "").trim()
+        if (catalogId !== String(requestedCatalogId || "").trim()) {
+            return qsTr("Backup import returned a different backup catalog ID.")
+        }
+        if (value.backup_catalog_id !== undefined
+                && String(value.backup_catalog_id || "").trim() !== catalogId) {
+            return qsTr("Backup import returned conflicting catalog identity.")
+        }
+
+        const phase = String(value.phase || "")
+        const outcome = String(value.outcome || "")
+        const validTerminal = (phase === "Applied" && outcome === "applied")
+            || (phase === "RolledBack"
+                && (outcome === "blocked" || outcome === "rolled_back"))
+            || (phase === "RecoveryRequired" && outcome === "recovery_required")
+        if (!validTerminal) {
+            return qsTr("Backup import returned an invalid terminal outcome.")
+        }
+
+        const selectedProblem = importAreasProblem(value.selectedAreas, false)
+        if (selectedProblem.length) {
+            return selectedProblem
+        }
+        const appliedProblem = importAreasProblem(value.appliedAreas, true)
+        if (appliedProblem.length) {
+            return appliedProblem
+        }
+        const selectedAreas = value.selectedAreas
+        const appliedAreas = value.appliedAreas
+        for (let i = 0; i < appliedAreas.length; ++i) {
+            if (selectedAreas.indexOf(appliedAreas[i]) < 0) {
+                return qsTr("Backup import applied an area outside its selection.")
+            }
+        }
+        if (outcome !== "applied" && appliedAreas.length !== 0) {
+            return qsTr("Backup import returned applied areas for an unapplied outcome.")
+        }
+        if (!Array.isArray(value.operationEvents)) {
+            return qsTr("Backup import returned no authoritative operation events.")
+        }
+        let terminalEventCount = 0
+        for (let i = 0; i < value.operationEvents.length; ++i) {
+            const event = value.operationEvents[i]
+            if (!event || typeof event !== "object" || Array.isArray(event)) {
+                return qsTr("Backup import returned an uncorrelated operation event.")
+            }
+            if (String(event.importId || "").trim() !== importId
+                    || String(event.backupCatalogId || "").trim() !== catalogId) {
+                return qsTr("Backup import returned an uncorrelated operation event.")
+            }
+            const importTerminalEvent = String(event.method || "")
+                === "settingsBackupImportApply" || event.terminal === true
+            if (!importTerminalEvent) {
+                continue
+            }
+            terminalEventCount += 1
+            if (i !== value.operationEvents.length - 1
+                    || event.terminal !== true
+                    || String(event.domain || "") !== "backup"
+                    || String(event.method || "") !== "settingsBackupImportApply"
+                    || String(event.operationId || "") !== importId
+                    || String(event.phase || "") !== phase
+                    || String(event.outcome || "") !== outcome
+                    || String(event.status || "") !== importTerminalStatus(outcome)
+                    || String(event.restartPolicy || "") !== "manual_required") {
+                return qsTr("Backup import returned an invalid terminal operation event.")
+            }
+        }
+        if (terminalEventCount !== 1) {
+            return qsTr("Backup import returned an invalid terminal operation event count.")
+        }
+        return ""
+    }
+
+    function importTerminalStatus(outcome) {
+        switch (String(outcome || "")) {
+        case "applied":
+            return "applied_for_import"
+        case "blocked":
+            return "blocked_for_import"
+        case "rolled_back":
+            return "rolled_back_for_import"
+        case "recovery_required":
+            return "recovery_required_for_import"
+        default:
+            return ""
+        }
+    }
+
+    function importAreasProblem(areas, allowEmpty) {
+        if (!Array.isArray(areas) || (!allowEmpty && areas.length === 0)) {
+            return qsTr("Backup import returned invalid area projection.")
+        }
+        const canonical = ["settings", "favorites", "idl_registry", "wallet_profile"]
+        const seen = {}
+        for (let i = 0; i < areas.length; ++i) {
+            const area = String(areas[i] || "")
+            if (canonical.indexOf(area) < 0 || seen[area] === true) {
+                return qsTr("Backup import returned invalid selected areas.")
+            }
+            seen[area] = true
+        }
+        return ""
+    }
+
+    function finishImport(response) {
+        const callback = importCompletion
+        importCompletion = null
+        pendingImportCatalogId = ""
+        if (response && response.ok === true) {
             error = ""
             revision += 1
-            return response.value
+        } else {
+            applyImportFailure(response || importFailure(qsTr("Local backup restore failed.")))
         }
-        error = String(response && response.error ? response.error : qsTr("Local backup restore failed."))
+        if (typeof callback === "function") {
+            callback(response)
+        }
+    }
+
+    function applyImportFailure(response) {
+        error = String(response && response.error || qsTr("Local backup restore failed."))
         revision += 1
-        return null
+    }
+
+    function importFailure(message) {
+        return {
+            ok: false,
+            value: null,
+            text: "",
+            error: String(message || qsTr("Local backup restore failed."))
+        }
     }
 
     function catalogMutationAllowed(label) {
-        if (!transferRunning) {
+        if (!transferRunning && !importRunning) {
             return true
         }
-        error = qsTr("%1 is blocked while a backup catalog transfer is running.")
-            .arg(String(label || qsTr("Backup catalog mutation")))
+        error = importRunning
+            ? qsTr("%1 is blocked while a backup import is running.")
+                .arg(String(label || qsTr("Backup catalog mutation")))
+            : qsTr("%1 is blocked while a backup catalog transfer is running.")
+                .arg(String(label || qsTr("Backup catalog mutation")))
         revision += 1
         return false
     }
@@ -238,8 +447,10 @@ QtObject {
             }
             return false
         }
-        if (transferRunning) {
-            const busy = downloadFailure(qsTr("A backup catalog transfer is already running."))
+        if (transferRunning || importRunning) {
+            const busy = downloadFailure(importRunning
+                ? qsTr("A backup import is already running.")
+                : qsTr("A backup catalog transfer is already running."))
             applyDownloadFailure(busy)
             if (typeof onComplete === "function") {
                 onComplete(busy)
@@ -456,8 +667,10 @@ QtObject {
             }
             return false
         }
-        if (transferRunning) {
-            const busy = uploadFailure(qsTr("A backup catalog transfer is already running."))
+        if (transferRunning || importRunning) {
+            const busy = uploadFailure(importRunning
+                ? qsTr("A backup import is already running.")
+                : qsTr("A backup catalog transfer is already running."))
             applyUploadFailure(busy)
             if (typeof onComplete === "function") {
                 onComplete(busy)

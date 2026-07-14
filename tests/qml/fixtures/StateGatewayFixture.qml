@@ -5,6 +5,7 @@ QtObject {
     property int requestCount: 0
     property int nextRequestId: 1
     property bool deferRequests: false
+    property bool asyncSupported: true
     property string lastMethod: ""
     property var lastArgs: []
     property string lastLabel: ""
@@ -36,6 +37,7 @@ QtObject {
         requestCount = 0
         nextRequestId = 1
         deferRequests = false
+        asyncSupported = true
         lastMethod = ""
         lastArgs = []
         lastLabel = ""
@@ -114,6 +116,10 @@ QtObject {
             callback(response)
         }
         return response
+    }
+
+    function supportsAsync() {
+        return asyncSupported
     }
 
     function completeRequestAt(index, response) {

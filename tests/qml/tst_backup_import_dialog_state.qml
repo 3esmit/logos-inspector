@@ -14,6 +14,7 @@ TestCase {
         property string lastBackupId: ""
         property var lastOptions: null
         property var nextPlan: null
+        property bool running: false
 
         function previewLocalSettingsImportPlan(backupId, options) {
             lastBackupId = String(backupId || "")
@@ -44,7 +45,9 @@ TestCase {
         model.backupCatalogError = ""
         model.lastBackupId = ""
         model.lastOptions = null
+        model.running = false
         model.nextPlan = ({
+            selectedAreas: ["settings", "favorites", "idl_registry"],
             settings: true,
             favorites: 1,
             idls: true,
@@ -90,5 +93,48 @@ TestCase {
         compare(model.lastOptions.conflicts.favorites["fav-a"], "skip_backup_item")
         verify(!dialog.hasRequiredConflicts())
         verify(dialog.confirmEnabled())
+
+        dialog.setMode("favorites", "skip")
+        verify(!model.lastOptions.items
+            || model.lastOptions.items.favorites === undefined)
+        verify(!model.lastOptions.conflicts
+            || model.lastOptions.conflicts.favorites === undefined)
+
+        dialog.setMode("favorites", "merge")
+        verify(dialog.itemSelected("favorites", "fav-a"))
+        verify(dialog.hasRequiredConflicts())
+    }
+
+    function test_confirm_uses_backend_selection_and_import_busy_state() {
+        dialog.backupId = "backup-1"
+        model.nextPlan = ({
+            selectedAreas: [],
+            blocked: false,
+            conflicts: ({})
+        })
+        dialog.preview()
+
+        compare(dialog.selectedAreas().length, 0)
+        verify(!dialog.confirmEnabled())
+
+        model.nextPlan = ({
+            selectedAreas: ["wallet_profile"],
+            blocked: false,
+            conflicts: ({})
+        })
+        dialog.options = {
+            settings: "skip",
+            favorites: "skip",
+            idl_registry: "skip",
+            wallet_profile: "skip"
+        }
+        dialog.preview()
+
+        compare(dialog.selectedAreas().length, 1)
+        compare(dialog.selectedAreas()[0], "wallet_profile")
+        verify(dialog.confirmEnabled())
+
+        model.running = true
+        verify(!dialog.confirmEnabled())
     }
 }

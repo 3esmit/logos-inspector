@@ -20,8 +20,8 @@ use crate::{
     },
     support::{
         local_state::{
-            LocalStateSession, LocalStateTransactionError, LocalStateWriteSet, StateFile,
-            with_local_state_in,
+            LocalStateCommitReport, LocalStateSession, LocalStateTransactionError,
+            LocalStateWriteSet, StateFile, with_local_state_in,
         },
         state_store::{config_dir, idl_state_from_stored, wallet_state_from_stored},
     },
@@ -29,7 +29,7 @@ use crate::{
 };
 
 #[cfg(test)]
-use crate::support::local_state::LOCAL_STATE_TRANSACTION_ID_HEX_LENGTH;
+use crate::support::local_state::{LOCAL_STATE_TRANSACTION_ID_HEX_LENGTH, LocalStateTestFault};
 
 const BACKUP_KIND: &str = "logos-inspector-settings-backup";
 const BACKUP_VERSION: u64 = 1;
@@ -38,6 +38,13 @@ const ENCRYPTION_TAG_BYTES: usize = 16;
 const WALLET_CONFIG_FILE: &str = "wallet_config.json";
 
 pub(crate) const SETTINGS_BACKUP_MAX_BYTES: usize = 16 * 1024 * 1024;
+
+mod import_options;
+mod import_plan;
+
+pub(crate) use import_options::{
+    BackupImportArea, BackupImportMode, BackupImportOptions, BackupImportSelection,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RestoreSummary {
@@ -123,7 +130,7 @@ fn export_app_settings_backup_in_dir(
 pub(crate) fn preview_app_settings_backup_import(
     payload: &Value,
     wallet_profile: Option<&Value>,
-    options: Option<&Value>,
+    options: &BackupImportOptions,
 ) -> Result<Value> {
     let state = restored_state_from_payload(payload, wallet_profile)?;
     preview_app_settings_backup_import_in_dir(&config_dir()?, &state, options)
@@ -132,8 +139,9 @@ pub(crate) fn preview_app_settings_backup_import(
 fn preview_app_settings_backup_import_in_dir(
     base_dir: &Path,
     state: &RestoredState,
-    options: Option<&Value>,
+    options: &BackupImportOptions,
 ) -> Result<Value> {
+    validate_selected_import_state(state, options)?;
     with_local_state_in(base_dir, |session| {
         let (current_settings, current_idl) = current_import_state(session, state, options)?;
         let plan = build_import_plan_with_current(
@@ -148,10 +156,21 @@ fn preview_app_settings_backup_import_in_dir(
     .context("failed to load selected current local state for backup import preview")
 }
 
+#[cfg(test)]
+pub(crate) fn preview_app_settings_backup_import_in_dir_for_test(
+    base_dir: &Path,
+    payload: &Value,
+    wallet_profile: Option<&Value>,
+    options: &BackupImportOptions,
+) -> Result<Value> {
+    let state = restored_state_from_payload(payload, wallet_profile)?;
+    preview_app_settings_backup_import_in_dir(base_dir, &state, options)
+}
+
 pub(crate) fn restore_app_settings_backup_with_options(
     payload: &Value,
     wallet_profile: Option<&Value>,
-    options: Option<&Value>,
+    options: &BackupImportOptions,
 ) -> Result<Value> {
     let state = restored_state_from_payload(payload, wallet_profile)?;
     restore_app_settings_backup_in_dir(&config_dir()?, &state, options)
@@ -160,8 +179,20 @@ pub(crate) fn restore_app_settings_backup_with_options(
 fn restore_app_settings_backup_in_dir(
     base_dir: &Path,
     state: &RestoredState,
-    options: Option<&Value>,
+    options: &BackupImportOptions,
 ) -> Result<Value> {
+    restore_app_settings_backup_in_dir_with_commit(base_dir, state, options, |session, writes| {
+        session.commit(writes, || Ok(()))
+    })
+}
+
+fn restore_app_settings_backup_in_dir_with_commit(
+    base_dir: &Path,
+    state: &RestoredState,
+    options: &BackupImportOptions,
+    commit: impl FnOnce(&mut LocalStateSession, LocalStateWriteSet) -> Result<LocalStateCommitReport>,
+) -> Result<Value> {
+    validate_selected_import_state(state, options)?;
     with_local_state_in(base_dir, |session| {
         let (current_settings, current_idl) = current_import_state(session, state, options)
             .context("failed to rebuild backup import plan from current local state")?;
@@ -195,9 +226,7 @@ fn restore_app_settings_backup_in_dir(
         if writes.is_empty() {
             return Ok(plan.summary);
         }
-        let report = session
-            .commit(writes, || Ok(()))
-            .map_err(local_state_commit_error)?;
+        let report = commit(session, writes).map_err(local_state_commit_error)?;
         let mut summary = plan.summary;
         set_object_field(
             &mut summary,
@@ -212,12 +241,40 @@ fn restore_app_settings_backup_in_dir(
     })
 }
 
+#[cfg(test)]
+pub(crate) fn restore_app_settings_backup_in_dir_for_test(
+    base_dir: &Path,
+    payload: &Value,
+    wallet_profile: Option<&Value>,
+    options: &BackupImportOptions,
+) -> Result<Value> {
+    let state = restored_state_from_payload(payload, wallet_profile)?;
+    restore_app_settings_backup_in_dir(base_dir, &state, options)
+}
+
+#[cfg(test)]
+pub(crate) fn restore_app_settings_backup_with_fault_in_dir_for_test(
+    base_dir: &Path,
+    payload: &Value,
+    wallet_profile: Option<&Value>,
+    options: &BackupImportOptions,
+    fault: LocalStateTestFault,
+) -> Result<Value> {
+    let state = restored_state_from_payload(payload, wallet_profile)?;
+    restore_app_settings_backup_in_dir_with_commit(
+        base_dir,
+        &state,
+        options,
+        move |session, writes| session.commit_with_test_fault(writes, fault),
+    )
+}
+
 fn current_import_state(
     session: &LocalStateSession,
     state: &RestoredState,
-    options: Option<&Value>,
+    options: &BackupImportOptions,
 ) -> Result<(Option<Value>, Option<Value>)> {
-    let requirements = import_plan::current_state_requirements(state, options)?;
+    let requirements = import_plan::current_state_requirements(state, options);
     let settings = requirements
         .settings
         .then(|| {
@@ -233,6 +290,116 @@ fn current_import_state(
         })
         .transpose()?;
     Ok((settings, idl))
+}
+
+fn validate_selected_import_state(
+    state: &RestoredState,
+    options: &BackupImportOptions,
+) -> Result<()> {
+    if (options.mode(BackupImportArea::Settings).is_selected()
+        || options.mode(BackupImportArea::Favorites).is_selected())
+        && let Some(settings) = state.settings.as_ref()
+    {
+        validate_import_settings_state(settings, options)?;
+    }
+    if options.mode(BackupImportArea::IdlRegistry).is_selected()
+        && let Some(idl) = state.idl.as_ref()
+    {
+        validate_import_idl_state(idl)?;
+    }
+    if options.mode(BackupImportArea::WalletProfile).is_selected()
+        && let Some(wallet) = state.wallet.as_ref()
+    {
+        validate_import_wallet_state(wallet)?;
+    }
+    Ok(())
+}
+
+fn validate_import_settings_state(settings: &Value, options: &BackupImportOptions) -> Result<()> {
+    let object = settings
+        .as_object()
+        .context("backup settings state must be an object")?;
+    if options.mode(BackupImportArea::Favorites).is_selected()
+        && let Some(favorites) = object.get("favorites")
+    {
+        let favorites = favorites
+            .as_array()
+            .context("backup favorites must be an array")?;
+        for (index, favorite) in favorites.iter().enumerate() {
+            if !favorite.is_object() {
+                bail!("backup favorite at index {index} must be an object");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_import_idl_state(idl: &Value) -> Result<()> {
+    let object = idl
+        .as_object()
+        .context("backup IDL registry must be an object")?;
+    let entries = object
+        .get("idls")
+        .and_then(Value::as_array)
+        .context("backup IDL registry must contain an `idls` array")?;
+    for (index, entry) in entries.iter().enumerate() {
+        if !entry.is_object() {
+            bail!("backup IDL registry item at index {index} must be an object");
+        }
+    }
+    if let Some(selections) = object.get("account_idl_selections") {
+        let selections = selections
+            .as_object()
+            .context("backup IDL account selections must be an object")?;
+        for (account, selection) in selections {
+            if normalized_account_idl_selection_key(selection).is_none() {
+                bail!(
+                    "backup IDL account selection for `{account}` must be a non-empty IDL key string or object"
+                );
+            }
+            if let Some(selection) = selection.as_object() {
+                for field in ["accountType", "ownerProgram", "network"] {
+                    if selection.get(field).is_some_and(|value| !value.is_string()) {
+                        bail!(
+                            "backup IDL account selection field `{field}` for `{account}` must be a string"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn normalized_account_idl_selection_key(selection: &Value) -> Option<String> {
+    selection
+        .as_str()
+        .or_else(|| {
+            selection
+                .as_object()
+                .and_then(|value| value.get("idlKey"))
+                .and_then(Value::as_str)
+        })
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_lowercase)
+}
+
+fn validate_import_wallet_state(wallet: &Value) -> Result<()> {
+    let object = wallet
+        .as_object()
+        .context("backup wallet state must be an object")?;
+    if let Some(profile) = object.get("profile")
+        && !profile.is_object()
+    {
+        bail!("backup wallet profile must be an object");
+    }
+    if let Some(operations) = object.get("operations")
+        && !operations.is_array()
+    {
+        bail!("backup wallet operations must be an array");
+    }
+    Ok(())
 }
 
 fn local_state_commit_error(error: anyhow::Error) -> anyhow::Error {
@@ -499,13 +666,11 @@ struct RestoredState {
     summary: RestoreSummary,
 }
 
-mod import_plan;
-
 #[cfg(test)]
 use import_plan::build_import_plan;
 use import_plan::build_import_plan_with_current;
 #[cfg(test)]
-use import_plan::{ImportMode, ImportSelection, planned_idl_state, planned_settings_state};
+use import_plan::{planned_idl_state, planned_settings_state};
 
 fn restored_state_from_payload(
     payload: &Value,
@@ -832,16 +997,13 @@ mod tests {
             None,
         )?;
         let restored = restored_state_from_payload(&payload, None)?;
-        let summary = restore_app_settings_backup_in_dir(
-            directory.path(),
-            &restored,
-            Some(&json!({
-                "settings": "replace",
-                "favorites": "skip",
-                "idl_registry": "replace",
-                "wallet_profile": "replace"
-            })),
-        )?;
+        let options = BackupImportOptions::parse(Some(&json!({
+            "settings": "replace",
+            "favorites": "skip",
+            "idl_registry": "replace",
+            "wallet_profile": "replace"
+        })))?;
+        let summary = restore_app_settings_backup_in_dir(directory.path(), &restored, &options)?;
 
         if summary
             .pointer("/transaction/status")
@@ -865,6 +1027,110 @@ mod tests {
             || wallet.pointer("/profile/label").and_then(Value::as_str) != Some("New wallet")
         {
             bail!("restore did not commit the selected triple");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_selected_settings_idl_and_wallet_do_not_mutate_local_state() -> Result<()> {
+        for (label, state, option_value, expected_error) in [
+            (
+                "favorites-settings-container",
+                json!({ "settings": "not-an-object" }),
+                json!({ "favorites": "replace" }),
+                "backup settings state must be an object",
+            ),
+            (
+                "favorites-container",
+                json!({ "settings": { "favorites": "not-an-array" } }),
+                json!({ "favorites": "replace" }),
+                "backup favorites must be an array",
+            ),
+            (
+                "favorite-row",
+                json!({ "settings": { "favorites": ["not-an-object"] } }),
+                json!({ "favorites": "replace" }),
+                "backup favorite at index 0 must be an object",
+            ),
+            (
+                "idl-container",
+                json!({ "idls": "not-an-object" }),
+                json!({ "idl_registry": "replace" }),
+                "backup IDL registry must be an object",
+            ),
+            (
+                "idl-rows",
+                json!({ "idls": { "idls": "not-an-array" } }),
+                json!({ "idl_registry": "replace" }),
+                "backup IDL registry must contain an `idls` array",
+            ),
+            (
+                "idl-account-selection",
+                json!({
+                    "idls": {
+                        "idls": [],
+                        "account_idl_selections": {
+                            "account-a": { "accountType": "AccountA" }
+                        }
+                    }
+                }),
+                json!({ "idl_registry": "replace" }),
+                "must be a non-empty IDL key string or object",
+            ),
+            (
+                "idl-account-metadata",
+                json!({
+                    "idls": {
+                        "idls": [],
+                        "account_idl_selections": {
+                            "account-a": { "idlKey": "idl-a", "network": 7 }
+                        }
+                    }
+                }),
+                json!({ "idl_registry": "replace" }),
+                "field `network`",
+            ),
+            (
+                "wallet-container",
+                json!({ "wallet": "not-an-object" }),
+                json!({ "wallet_profile": "replace" }),
+                "backup wallet state must be an object",
+            ),
+            (
+                "wallet-profile",
+                json!({ "wallet": { "profile": "not-an-object" } }),
+                json!({ "wallet_profile": "replace" }),
+                "backup wallet profile must be an object",
+            ),
+        ] {
+            let directory =
+                tempfile::tempdir().context("failed to create malformed restore test directory")?;
+            let old_settings = br#"{"version":2,"theme":"old","channel_source_configs":[]}"#;
+            let old_idl = br#"{"version":1,"idls":[{"key":"old"}]}"#;
+            let old_wallet = br#"{"profile":{"label":"Old wallet"}}"#;
+            fs::write(directory.path().join("settings.json"), old_settings)?;
+            fs::write(directory.path().join("idls.json"), old_idl)?;
+            fs::write(directory.path().join("wallet.json"), old_wallet)?;
+            let payload = json!({
+                "kind": BACKUP_KIND,
+                "version": BACKUP_VERSION,
+                "encrypted": false,
+                "state": state,
+            });
+            let restored = restored_state_from_payload(&payload, None)?;
+            let options = BackupImportOptions::parse(Some(&option_value))?;
+
+            let error = restore_app_settings_backup_in_dir(directory.path(), &restored, &options)
+                .err()
+                .with_context(|| format!("malformed selected {label} payload should fail"))?;
+
+            if !error.to_string().contains(expected_error)
+                || fs::read(directory.path().join("settings.json"))? != old_settings
+                || fs::read(directory.path().join("idls.json"))? != old_idl
+                || fs::read(directory.path().join("wallet.json"))? != old_wallet
+            {
+                bail!("malformed selected {label} payload mutated local state: {error:#}");
+            }
         }
         Ok(())
     }
@@ -898,16 +1164,17 @@ mod tests {
             "idl_registry": "skip",
             "wallet_profile": "skip"
         });
+        let selected_options = BackupImportOptions::parse(Some(&selected_options))?;
 
         let preview = preview_app_settings_backup_import_in_dir(
             directory.path(),
             &restored,
-            Some(&selected_options),
+            &selected_options,
         )?;
         if preview.get("settings").and_then(Value::as_bool) != Some(true) {
             bail!("selective preview omitted selected settings: {preview}");
         }
-        restore_app_settings_backup_in_dir(directory.path(), &restored, Some(&selected_options))?;
+        restore_app_settings_backup_in_dir(directory.path(), &restored, &selected_options)?;
         if fs::read(directory.path().join("idls.json"))? != malformed_idl
             || fs::read(directory.path().join("wallet.json"))? != malformed_wallet
         {
@@ -938,8 +1205,9 @@ mod tests {
             "idl_registry": "skip",
             "wallet_profile": "skip"
         });
-        preview_app_settings_backup_import_in_dir(directory.path(), &restored, Some(&skip_all))?;
-        restore_app_settings_backup_in_dir(directory.path(), &restored, Some(&skip_all))?;
+        let skip_all = BackupImportOptions::parse(Some(&skip_all))?;
+        preview_app_settings_backup_import_in_dir(directory.path(), &restored, &skip_all)?;
+        restore_app_settings_backup_in_dir(directory.path(), &restored, &skip_all)?;
         if fs::read(directory.path().join("settings.json"))? != malformed_settings {
             bail!("all-skip restore parsed or modified current settings");
         }
@@ -1056,35 +1324,28 @@ mod tests {
             "account_idl_selections": { "account-local": "idl-local" }
         });
         let options = json!({
+            "settings": "replace",
+            "favorites": "merge",
+            "idl_registry": "merge",
+            "wallet_profile": "skip",
             "conflicts": {
                 "idl_registry": {
                     "idl-a": "replace_existing"
                 }
             }
         });
+        let options = BackupImportOptions::parse(Some(&options))?;
         let settings = planned_settings_state(
             restored.settings.as_ref(),
             Some(&current_settings),
-            &ImportSelection {
-                settings: ImportMode::Merge,
-                favorites: ImportMode::Merge,
-                idl_registry: ImportMode::Merge,
-                wallet_profile: ImportMode::Skip,
-            },
-            Some(&options),
+            &options,
             true,
         )?
         .state
         .context("settings plan missing")?;
-        let idl = planned_idl_state(
-            restored.idl.as_ref(),
-            Some(&current_idl),
-            ImportMode::Merge,
-            Some(&options),
-            true,
-        )?
-        .state
-        .context("idl plan missing")?;
+        let idl = planned_idl_state(restored.idl.as_ref(), Some(&current_idl), &options, true)?
+            .state
+            .context("idl plan missing")?;
 
         if settings
             .get("favorites")
@@ -1127,17 +1388,13 @@ mod tests {
                 { "kind": "transaction", "layer": "l2", "open_kind": "transaction", "value": "tx-1" }
             ]
         });
-        let selection = ImportSelection {
-            settings: ImportMode::Skip,
-            favorites: ImportMode::Merge,
-            idl_registry: ImportMode::Skip,
-            wallet_profile: ImportMode::Skip,
-        };
+        let selection = BackupImportOptions::parse(Some(&json!({
+            "favorites": "merge"
+        })))?;
         let preview = planned_settings_state(
             Some(&backup_settings),
             Some(&current_settings),
             &selection,
-            None,
             false,
         )?;
 
@@ -1151,7 +1408,6 @@ mod tests {
             Some(&backup_settings),
             Some(&current_settings),
             &selection,
-            None,
             true,
         )
         .is_ok()
@@ -1160,6 +1416,7 @@ mod tests {
         }
 
         let replace_options = json!({
+            "favorites": "merge",
             "items": {
                 "favorites": {
                     "account:l2:account:account-1": true,
@@ -1172,11 +1429,11 @@ mod tests {
                 }
             }
         });
+        let replace_options = BackupImportOptions::parse(Some(&replace_options))?;
         let replaced = planned_settings_state(
             Some(&backup_settings),
             Some(&current_settings),
-            &selection,
-            Some(&replace_options),
+            &replace_options,
             true,
         )?
         .state
@@ -1192,17 +1449,18 @@ mod tests {
         }
 
         let skip_options = json!({
+            "favorites": "merge",
             "conflicts": {
                 "favorites": {
                     "account:l2:account:account-1": "skip_backup_item"
                 }
             }
         });
+        let skip_options = BackupImportOptions::parse(Some(&skip_options))?;
         let skipped = planned_settings_state(
             Some(&backup_settings),
             Some(&current_settings),
-            &selection,
-            Some(&skip_options),
+            &skip_options,
             true,
         )?
         .state
@@ -1237,29 +1495,20 @@ mod tests {
             ],
             "account_idl_selections": {}
         });
-        let preview = planned_idl_state(
-            Some(&backup_idl),
-            Some(&current_idl),
-            ImportMode::Merge,
-            None,
-            false,
-        )?;
+        let merge_options = BackupImportOptions::parse(Some(&json!({
+            "idl_registry": "merge"
+        })))?;
+        let preview =
+            planned_idl_state(Some(&backup_idl), Some(&current_idl), &merge_options, false)?;
         if preview.idl_registry.conflicts.len() != 1 {
             bail!("IDL conflict was not reported");
         }
-        if planned_idl_state(
-            Some(&backup_idl),
-            Some(&current_idl),
-            ImportMode::Merge,
-            None,
-            true,
-        )
-        .is_ok()
-        {
+        if planned_idl_state(Some(&backup_idl), Some(&current_idl), &merge_options, true).is_ok() {
             bail!("IDL conflict should require explicit decision before apply");
         }
 
         let replace_options = json!({
+            "idl_registry": "merge",
             "items": {
                 "idl_registry": {
                     "idl-a": true,
@@ -1272,11 +1521,11 @@ mod tests {
                 }
             }
         });
+        let replace_options = BackupImportOptions::parse(Some(&replace_options))?;
         let replaced = planned_idl_state(
             Some(&backup_idl),
             Some(&current_idl),
-            ImportMode::Merge,
-            Some(&replace_options),
+            &replace_options,
             true,
         )?
         .state
@@ -1292,21 +1541,18 @@ mod tests {
         }
 
         let skip_options = json!({
+            "idl_registry": "merge",
             "conflicts": {
                 "idl_registry": {
                     "idl-a": "skip_backup_item"
                 }
             }
         });
-        let skipped = planned_idl_state(
-            Some(&backup_idl),
-            Some(&current_idl),
-            ImportMode::Merge,
-            Some(&skip_options),
-            true,
-        )?
-        .state
-        .context("IDL plan missing")?;
+        let skip_options = BackupImportOptions::parse(Some(&skip_options))?;
+        let skipped =
+            planned_idl_state(Some(&backup_idl), Some(&current_idl), &skip_options, true)?
+                .state
+                .context("IDL plan missing")?;
         let rows = skipped
             .get("idls")
             .and_then(Value::as_array)
@@ -1315,6 +1561,121 @@ mod tests {
             || rows.first().and_then(|row| row.get("name")) != Some(&json!("Local Token"))
         {
             bail!("IDL conflict skip did not keep existing and import non-conflict: {skipped}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn idl_item_selection_keeps_account_mappings_for_selected_idls_only() -> Result<()> {
+        let backup_idl = json!({
+            "idls": [
+                { "key": "idl-a", "name": "Selected" },
+                { "key": "idl-b", "name": "Skipped" }
+            ],
+            "account_idl_selections": {
+                "account-a": {
+                    "idlKey": "IDL-A",
+                    "accountType": "AccountA",
+                    "ownerProgram": "owner-a",
+                    "network": "devnet"
+                },
+                "account-b": {
+                    "idlKey": "idl-b",
+                    "accountType": "AccountB",
+                    "ownerProgram": "owner-b",
+                    "network": "devnet"
+                }
+            }
+        });
+        let current_idl = json!({
+            "idls": [],
+            "account_idl_selections": {}
+        });
+        let options = BackupImportOptions::parse(Some(&json!({
+            "idl_registry": "merge",
+            "items": {
+                "idl_registry": {
+                    "idl-a": true,
+                    "idl-b": false
+                }
+            }
+        })))?;
+
+        let planned = planned_idl_state(Some(&backup_idl), Some(&current_idl), &options, true)?
+            .state
+            .context("selected IDL plan is missing")?;
+        let rows = planned
+            .get("idls")
+            .and_then(Value::as_array)
+            .context("selected IDL rows are missing")?;
+        let selections = planned
+            .get("account_idl_selections")
+            .and_then(Value::as_object)
+            .context("selected IDL account mappings are missing")?;
+
+        if rows.len() != 1
+            || rows
+                .first()
+                .and_then(|row| row.get("key"))
+                .and_then(Value::as_str)
+                != Some("idl-a")
+            || selections
+                .get("account-a")
+                .and_then(|value| value.get("idlKey"))
+                .and_then(Value::as_str)
+                != Some("IDL-A")
+            || selections.contains_key("account-b")
+        {
+            bail!("IDL item selection drifted from account mappings: {planned}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn settings_replace_with_favorites_skip_never_imports_backup_favorites() -> Result<()> {
+        let backup_settings = json!({
+            "theme": "dark",
+            "favorites": [{ "value": "backup-favorite" }]
+        });
+        let current_settings = json!({
+            "theme": "light",
+            "favorites": [{ "value": "current-favorite" }]
+        });
+        let options = BackupImportOptions::parse(Some(&json!({
+            "settings": "replace",
+            "favorites": "skip"
+        })))?;
+
+        let planned = planned_settings_state(
+            Some(&backup_settings),
+            Some(&current_settings),
+            &options,
+            true,
+        )?
+        .state
+        .context("settings replacement plan is missing")?;
+
+        if planned.get("theme").and_then(Value::as_str) != Some("dark")
+            || planned
+                .pointer("/favorites/0/value")
+                .and_then(Value::as_str)
+                != Some("current-favorite")
+        {
+            bail!("settings replacement imported skipped backup favorites: {planned}");
+        }
+
+        let planned_without_current_favorites = planned_settings_state(
+            Some(&backup_settings),
+            Some(&json!({ "theme": "light" })),
+            &options,
+            true,
+        )?
+        .state
+        .context("settings replacement plan without current favorites is missing")?;
+        if planned_without_current_favorites.get("favorites").is_some() {
+            bail!(
+                "settings replacement retained skipped backup favorites when current favorites were absent: {planned_without_current_favorites}"
+            );
         }
         Ok(())
     }
@@ -1334,15 +1695,12 @@ mod tests {
                 encrypted: false,
             },
         };
-        let plan = build_import_plan(
-            &restored,
-            Some(&json!({
-                "settings": "replace",
-                "favorites": "skip",
-                "wallet_profile": "skip"
-            })),
-            false,
-        )?;
+        let options = BackupImportOptions::parse(Some(&json!({
+            "settings": "replace",
+            "favorites": "skip",
+            "wallet_profile": "skip"
+        })))?;
+        let plan = build_import_plan(&restored, &options, false)?;
 
         if plan.wallet.is_some() {
             bail!("wallet profile should be skipped");
@@ -1382,11 +1740,8 @@ mod tests {
             },
         };
 
-        let plan = build_import_plan(
-            &restored,
-            Some(&json!({ "wallet_profile": "replace" })),
-            false,
-        )?;
+        let options = BackupImportOptions::parse(Some(&json!({ "wallet_profile": "replace" })))?;
+        let plan = build_import_plan(&restored, &options, false)?;
         let warnings = plan
             .summary
             .get("warnings")
@@ -1434,11 +1789,8 @@ mod tests {
             },
         };
 
-        let plan = build_import_plan(
-            &restored,
-            Some(&json!({ "wallet_profile": "replace" })),
-            false,
-        )?;
+        let options = BackupImportOptions::parse(Some(&json!({ "wallet_profile": "replace" })))?;
+        let plan = build_import_plan(&restored, &options, false)?;
         let warning_count = plan
             .summary
             .get("warnings")
@@ -1477,14 +1829,11 @@ mod tests {
             },
         };
 
-        let plan = build_import_plan(
-            &restored,
-            Some(&json!({
-                "settings": "replace",
-                "wallet_profile": "skip"
-            })),
-            false,
-        )?;
+        let options = BackupImportOptions::parse(Some(&json!({
+            "settings": "replace",
+            "wallet_profile": "skip"
+        })))?;
+        let plan = build_import_plan(&restored, &options, false)?;
 
         let warning_count = plan
             .summary
@@ -1516,7 +1865,7 @@ mod tests {
             },
         };
 
-        let plan = build_import_plan(&restored, None, false)?;
+        let plan = build_import_plan(&restored, &BackupImportOptions::default(), false)?;
 
         if plan.settings.is_some() || plan.idl.is_some() || plan.wallet.is_some() {
             bail!("implicit backup import modes should skip all sections");
@@ -1533,31 +1882,53 @@ mod tests {
     }
 
     #[test]
-    fn import_plan_rejects_merge_for_replace_only_sections() -> Result<()> {
+    fn zero_favorite_replace_remains_an_applied_area() -> Result<()> {
         let restored = RestoredState {
-            settings: Some(json!({ "theme": "dark" })),
+            settings: Some(json!({ "favorites": [] })),
             idl: None,
-            wallet: Some(json!({ "profile": { "label": "Backup wallet" } })),
+            wallet: None,
             summary: RestoreSummary {
                 settings_restored: true,
                 idl_restored: false,
-                wallet_restored: true,
+                wallet_restored: false,
                 favorites_count: 0,
                 idl_count: 0,
                 encrypted: false,
             },
         };
+        let options = BackupImportOptions::parse(Some(&json!({
+            "favorites": "replace"
+        })))?;
 
-        if build_import_plan(&restored, Some(&json!({ "settings": "merge" })), false).is_ok() {
+        let plan = build_import_plan_with_current(
+            &restored,
+            &options,
+            true,
+            Some(&json!({ "favorites": [{ "value": "remove-me" }] })),
+            None,
+        )?;
+
+        if plan.summary.get("favorites").and_then(Value::as_u64) != Some(0)
+            || !plan
+                .summary
+                .get("applied_areas")
+                .and_then(Value::as_array)
+                .is_some_and(|areas| areas.contains(&json!("favorites")))
+        {
+            bail!(
+                "zero-favorite replace lost its applied area: {}",
+                plan.summary
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn import_plan_rejects_merge_for_replace_only_sections() -> Result<()> {
+        if BackupImportOptions::parse(Some(&json!({ "settings": "merge" }))).is_ok() {
             bail!("settings merge should be rejected");
         }
-        if build_import_plan(
-            &restored,
-            Some(&json!({ "wallet_profile": "merge" })),
-            false,
-        )
-        .is_ok()
-        {
+        if BackupImportOptions::parse(Some(&json!({ "wallet_profile": "merge" }))).is_ok() {
             bail!("wallet profile merge should be rejected");
         }
         Ok(())

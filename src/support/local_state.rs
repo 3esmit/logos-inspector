@@ -184,6 +184,13 @@ pub(crate) enum LocalStateFailureStatus {
     RecoveryRequired,
 }
 
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LocalStateTestFault {
+    Rollback,
+    RecoveryRequired,
+}
+
 impl LocalStateFailureStatus {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
@@ -215,6 +222,16 @@ impl LocalStateTransactionError {
             status: LocalStateFailureStatus::RecoveryRequired,
             phase,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_rolled_back(transaction_id: &str) -> Self {
+        Self::rolled_back(transaction_id, "test fault injection")
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_recovery_required(transaction_id: &str) -> Self {
+        Self::recovery_required(Some(transaction_id), "test fault injection")
     }
 
     pub(crate) const fn status(&self) -> LocalStateFailureStatus {
@@ -271,6 +288,11 @@ pub(crate) fn with_local_state_in<R>(
 
 pub(crate) fn lock_local_state_in(base_dir: &Path) -> Result<LocalStateSession> {
     LocalStateSession::acquire(base_dir, &mut NoopHook)
+}
+
+#[cfg(test)]
+pub(crate) fn local_state_hot_journal_exists_in(base_dir: &Path) -> Result<bool> {
+    path_present(&base_dir.join(JOURNAL_FILE_NAME))
 }
 
 pub(crate) fn recover_local_state() -> Result<()> {
@@ -355,6 +377,22 @@ impl LocalStateSession {
         cancellation_probe: impl FnMut() -> Result<()>,
     ) -> Result<LocalStateCommitReport> {
         self.commit_with_hook(writes, cancellation_probe, &mut NoopHook)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn commit_with_test_fault(
+        &mut self,
+        writes: LocalStateWriteSet,
+        fault: LocalStateTestFault,
+    ) -> Result<LocalStateCommitReport> {
+        self.commit_with_hook(
+            writes,
+            || Ok(()),
+            &mut LocalStateTestFaultHook {
+                fault,
+                forward_failure_injected: false,
+            },
+        )
     }
 
     fn commit_with_hook(
@@ -1013,6 +1051,29 @@ struct NoopHook;
 
 impl IoHook for NoopHook {}
 
+#[cfg(test)]
+struct LocalStateTestFaultHook {
+    fault: LocalStateTestFault,
+    forward_failure_injected: bool,
+}
+
+#[cfg(test)]
+impl IoHook for LocalStateTestFaultHook {
+    fn before(&mut self, point: IoPoint) -> Result<()> {
+        if !self.forward_failure_injected && point == IoPoint::CommitDirectorySync {
+            self.forward_failure_injected = true;
+            bail!("injected backup import commit failure")
+        }
+        if self.forward_failure_injected
+            && self.fault == LocalStateTestFault::RecoveryRequired
+            && point == IoPoint::RollbackPersist(StateFile::Settings)
+        {
+            bail!("injected backup import rollback failure")
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 struct SimulatedCrash;
 
@@ -1050,6 +1111,17 @@ mod tests {
     const CRASH_POINT_ENV: &str = "LOGOS_INSPECTOR_LOCAL_STATE_CRASH_POINT";
     const CRASH_DIR_ENV: &str = "LOGOS_INSPECTOR_LOCAL_STATE_CRASH_DIR";
     const FILE_LOCK_READER_ENV: &str = "LOGOS_INSPECTOR_LOCAL_STATE_FILE_LOCK_READER";
+
+    #[test]
+    fn test_transaction_errors_preserve_injected_status_and_identity() {
+        let rolled_back = LocalStateTransactionError::test_rolled_back("tx-rolled-back");
+        let recovery = LocalStateTransactionError::test_recovery_required("tx-recovery");
+
+        assert_eq!(rolled_back.status(), LocalStateFailureStatus::RolledBack);
+        assert_eq!(rolled_back.transaction_id(), Some("tx-rolled-back"));
+        assert_eq!(recovery.status(), LocalStateFailureStatus::RecoveryRequired);
+        assert_eq!(recovery.transaction_id(), Some("tx-recovery"));
+    }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum HookMoment {

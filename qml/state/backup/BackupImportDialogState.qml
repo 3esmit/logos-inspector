@@ -64,7 +64,23 @@ QtObject {
 
     function setMode(area, mode) {
         const next = copyOptions()
-        next[String(area || "")] = String(mode || "skip")
+        const areaKey = String(area || "")
+        const nextMode = String(mode || "skip")
+        if (String(next[areaKey] || "skip") !== nextMode) {
+            if (next.items && typeof next.items === "object") {
+                delete next.items[areaKey]
+                if (Object.keys(next.items).length === 0) {
+                    delete next.items
+                }
+            }
+            if (next.conflicts && typeof next.conflicts === "object") {
+                delete next.conflicts[areaKey]
+                if (Object.keys(next.conflicts).length === 0) {
+                    delete next.conflicts
+                }
+            }
+        }
+        next[areaKey] = nextMode
         options = next
         preview()
     }
@@ -262,6 +278,7 @@ QtObject {
         return backupId.length > 0
             && plan !== null
             && planError.length === 0
+            && model.running !== true
             && plan.blocked !== true
             && !hasRequiredConflicts()
             && selectedAreas().length > 0
@@ -326,16 +343,8 @@ QtObject {
     }
 
     function selectedAreas() {
-        const current = copyOptions()
-        const areas = ["settings", "favorites", "idl_registry", "wallet_profile"]
-        const selected = []
-        for (let i = 0; i < areas.length; ++i) {
-            const area = areas[i]
-            const mode = String(current[area] || "skip")
-            if (mode !== "skip" && mode !== "none" && mode !== "not_import" && mode !== "not import") {
-                selected.push(area)
-            }
-        }
-        return selected
+        const value = plan || null
+        return value && Array.isArray(value.selectedAreas)
+            ? value.selectedAreas.slice(0) : []
     }
 }

@@ -75,6 +75,20 @@ impl RuntimeOperations {
         request: RuntimeOperationRequest,
     ) -> Result<Value> {
         let operation_permit = self.backup_import.operation_permit(&request)?;
+        let result = self.start_admitted(runtime, request);
+        drop(operation_permit);
+        result
+    }
+
+    fn start_after_backup_import(
+        &self,
+        runtime: &Runtime,
+        request: RuntimeOperationRequest,
+    ) -> Result<Value> {
+        self.start_admitted(runtime, request)
+    }
+
+    fn start_admitted(&self, runtime: &Runtime, request: RuntimeOperationRequest) -> Result<Value> {
         let operation_id = RuntimeOperationId::allocated(
             request.domain_name(),
             &normalized_operation_method(request.method_name()),
@@ -100,8 +114,6 @@ impl RuntimeOperations {
             self.registry.remove(&operation_id)?;
             return Err(error);
         }
-        drop(operation_permit);
-
         self.registry.value(&operation_id)
     }
 
@@ -139,13 +151,24 @@ impl RuntimeOperations {
 
     pub(crate) fn cancel(&self, operation_id: &str) -> Result<Value> {
         let operation_id = RuntimeOperationId::parse(operation_id)?;
+        self.request_cancel(&operation_id)?;
+        self.registry.value(&operation_id)
+    }
+
+    fn cancel_for_backup_import(&self, operation_id: &str) -> Result<bool> {
+        let operation_id = RuntimeOperationId::parse(operation_id)?;
+        self.request_cancel(&operation_id)
+    }
+
+    fn request_cancel(&self, operation_id: &RuntimeOperationId) -> Result<bool> {
         let disposition = self
             .registry
-            .transition(&operation_id, RuntimeOperationTransition::CancelRequested)?;
-        if disposition == transition::TransitionDisposition::Applied {
-            self.supervisor.cancel(&operation_id)?;
+            .transition(operation_id, RuntimeOperationTransition::CancelRequested)?;
+        let requested = disposition == transition::TransitionDisposition::Applied;
+        if requested {
+            self.supervisor.cancel(operation_id)?;
         }
-        self.registry.value(&operation_id)
+        Ok(requested)
     }
 
     pub(crate) fn run_blocking(

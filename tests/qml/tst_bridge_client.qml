@@ -910,6 +910,260 @@ TestCase {
         compare(basecampAsyncHost.pendingCount("releaseAsync"), 1)
     }
 
+    function test_backup_import_retains_callback_until_authoritative_completion() {
+        client.host = basecampAsyncHost
+        const requestId = client.callModuleAsync(
+            "logos_inspector",
+            "settingsBackupImportApply",
+            ["backup-1", {}],
+            function (response) {
+                asyncCallbackCount += 1
+                asyncResponse = response
+            }
+        )
+
+        verify(completeBasecampStart(basecampAsyncHost, "lai_abababababababababababababababab"))
+        verify(completeBasecampPoll(basecampAsyncHost, "pending"))
+        client.pendingCalls[requestId].deadlineMs = 0
+        client.pendingCalls[requestId].pollAttempts = client.basecampAsyncMaxPollAttempts
+        client.pendingCalls[requestId].nextPollAtMs = 0
+        client.pollBasecampCalls()
+
+        compare(asyncCallbackCount, 0)
+        compare(basecampAsyncHost.pendingCount("cancelAsync"), 0)
+        compare(basecampAsyncHost.pendingCount("releaseAsync"), 0)
+        compare(basecampAsyncHost.pendingCount("pollAsync"), 1)
+        verify(completeBasecampPoll(
+            basecampAsyncHost,
+            "ready",
+            finalBridgeResponse({ terminal: true, outcome: "applied" })
+        ))
+        compare(asyncCallbackCount, 1)
+        verify(asyncResponse.ok)
+        verify(asyncResponse.value.terminal)
+    }
+
+    function test_backup_import_retries_ambiguous_poll_fault_until_ready() {
+        client.host = basecampAsyncHost
+        const requestId = client.callModuleAsync(
+            "logos_inspector",
+            "settingsBackupImportApply",
+            ["backup-1", {}],
+            function (response) {
+                asyncCallbackCount += 1
+                asyncResponse = response
+            }
+        )
+
+        verify(completeBasecampStart(basecampAsyncHost, "lai_acacacacacacacacacacacacacacacac"))
+        verify(basecampAsyncHost.completeNext(
+            "pollAsync",
+            inspectorControlError("non-timeout control fault")
+        ))
+        compare(asyncCallbackCount, 0)
+        compare(basecampAsyncHost.pendingCount("cancelAsync"), 0)
+        compare(basecampAsyncHost.pendingCount("releaseAsync"), 0)
+        verify(client.pendingCalls[requestId] !== undefined)
+
+        client.pendingCalls[requestId].nextPollAtMs = 0
+        client.pollBasecampCalls()
+        const token = pendingControlArgument(basecampAsyncHost, "pollAsync", 0)
+        verify(basecampAsyncHost.completeNext("pollAsync", inspectorControlResponse({
+            schema: "incompatible-schema",
+            token: token,
+            status: "pending"
+        })))
+        compare(asyncCallbackCount, 0)
+        compare(basecampAsyncHost.pendingCount("releaseAsync"), 0)
+        client.pendingCalls[requestId].nextPollAtMs = 0
+        client.pollBasecampCalls()
+        verify(completeBasecampPoll(
+            basecampAsyncHost,
+            "ready",
+            finalBridgeResponse({ terminal: true, outcome: "applied" })
+        ))
+        compare(asyncCallbackCount, 1)
+        verify(asyncResponse.ok)
+        compare(basecampAsyncHost.pendingCount("releaseAsync"), 1)
+    }
+
+    function test_backup_import_keeps_original_host_ownership_across_replacement() {
+        client.host = basecampAsyncHost
+        const requestId = client.callModuleAsync(
+            "logos_inspector",
+            "settingsBackupImportApply",
+            ["backup-1", {}],
+            function (response) {
+                asyncCallbackCount += 1
+                asyncResponse = response
+            }
+        )
+
+        verify(completeBasecampStart(basecampAsyncHost, "lai_adadadadadadadadadadadadadadadad"))
+        client.host = replacementBasecampAsyncHost
+        compare(asyncCallbackCount, 0)
+        verify(client.pendingCalls[requestId] !== undefined)
+        compare(basecampAsyncHost.pendingCount("cancelAsync"), 0)
+        compare(basecampAsyncHost.pendingCount("releaseAsync"), 0)
+
+        verify(completeBasecampPoll(
+            basecampAsyncHost,
+            "ready",
+            finalBridgeResponse({ terminal: true, outcome: "applied" })
+        ))
+        compare(asyncCallbackCount, 1)
+        verify(asyncResponse.ok)
+        compare(basecampAsyncHost.pendingCount("releaseAsync"), 1)
+        compare(replacementBasecampAsyncHost.pendingCount("pollAsync"), 0)
+    }
+
+    function test_backup_import_host_churn_preserves_start_single_flight() {
+        client.host = basecampAsyncHost
+        const requestId = client.callModuleAsync(
+            "logos_inspector",
+            "settingsBackupImportApply",
+            ["backup-1", {}],
+            function (response) {
+                asyncCallbackCount += 1
+                asyncResponse = response
+            }
+        )
+
+        compare(basecampAsyncHost.pendingCount("callAsync"), 1)
+        client.host = replacementBasecampAsyncHost
+        client.host = basecampAsyncHost
+        client.host = replacementBasecampAsyncHost
+        client.pollBasecampCalls()
+        compare(basecampAsyncHost.pendingCount("callAsync"), 1)
+        verify(client.pendingCalls[requestId].startInFlight)
+
+        verify(basecampAsyncHost.completeNext(
+            "callAsync",
+            inspectorControlError("start fault after host churn")
+        ))
+        compare(asyncCallbackCount, 0)
+        verify(!client.pendingCalls[requestId].startInFlight)
+        client.pendingCalls[requestId].nextStartAtMs = 0
+        client.pollBasecampCalls()
+        compare(basecampAsyncHost.pendingCount("callAsync"), 1)
+        verify(client.pendingCalls[requestId].startInFlight)
+
+        verify(completeBasecampStart(
+            basecampAsyncHost,
+            "lai_aeaeaeaeaeaeaeaeaeaeaeaeaeaeaeae"
+        ))
+        verify(completeBasecampPoll(
+            basecampAsyncHost,
+            "ready",
+            finalBridgeResponse({ terminal: true, outcome: "applied" })
+        ))
+        compare(asyncCallbackCount, 1)
+        verify(asyncResponse.ok)
+    }
+
+    function test_backup_import_host_churn_preserves_poll_single_flight() {
+        client.host = basecampAsyncHost
+        const requestId = client.callModuleAsync(
+            "logos_inspector",
+            "settingsBackupImportApply",
+            ["backup-1", {}],
+            function (response) {
+                asyncCallbackCount += 1
+                asyncResponse = response
+            }
+        )
+
+        verify(completeBasecampStart(
+            basecampAsyncHost,
+            "lai_afafafafafafafafafafafafafafafaf"
+        ))
+        compare(basecampAsyncHost.pendingCount("pollAsync"), 1)
+        client.host = replacementBasecampAsyncHost
+        client.host = basecampAsyncHost
+        client.host = replacementBasecampAsyncHost
+        client.pollBasecampCalls()
+        compare(basecampAsyncHost.pendingCount("pollAsync"), 1)
+        verify(client.pendingCalls[requestId].pollInFlight)
+
+        verify(basecampAsyncHost.completeNext(
+            "pollAsync",
+            inspectorControlResponse({
+                schema: client.basecampAsyncBridgeSchema,
+                token: "lai_afafafafafafafafafafafafafafafaf",
+                status: "pending"
+            })
+        ))
+        compare(asyncCallbackCount, 0)
+        verify(!client.pendingCalls[requestId].pollInFlight)
+        compare(basecampAsyncHost.pendingCount("pollAsync"), 0)
+        client.pendingCalls[requestId].nextPollAtMs = 0
+        client.pollBasecampCalls()
+        compare(basecampAsyncHost.pendingCount("pollAsync"), 1)
+        verify(client.pendingCalls[requestId].pollInFlight)
+
+        verify(completeBasecampPoll(
+            basecampAsyncHost,
+            "ready",
+            finalBridgeResponse({ terminal: true, outcome: "applied" })
+        ))
+        compare(asyncCallbackCount, 1)
+        verify(asyncResponse.ok)
+    }
+
+    function test_backup_import_retries_start_and_poll_dispatch_loss() {
+        client.host = basecampAsyncHost
+        const requestId = client.callModuleAsync(
+            "logos_inspector",
+            "settingsBackupImportApply",
+            ["backup-1", {}],
+            function (response) {
+                asyncCallbackCount += 1
+                asyncResponse = response
+            }
+        )
+
+        verify(basecampAsyncHost.completeNext(
+            "callAsync",
+            inspectorControlError("retry start")
+        ))
+        client.pendingCalls[requestId].host = basecampHost
+        client.pendingCalls[requestId].nextStartAtMs = 0
+        client.pollBasecampCalls()
+        compare(asyncCallbackCount, 0)
+        verify(client.pendingCalls[requestId] !== undefined)
+        verify(!client.pendingCalls[requestId].startInFlight)
+
+        client.pendingCalls[requestId].host = basecampAsyncHost
+        client.pendingCalls[requestId].nextStartAtMs = 0
+        client.pollBasecampCalls()
+        verify(completeBasecampStart(
+            basecampAsyncHost,
+            "lai_b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0"
+        ))
+        verify(basecampAsyncHost.completeNext(
+            "pollAsync",
+            inspectorControlError("retry poll")
+        ))
+
+        client.pendingCalls[requestId].host = basecampHost
+        client.pendingCalls[requestId].nextPollAtMs = 0
+        client.pollBasecampCalls()
+        compare(asyncCallbackCount, 0)
+        verify(client.pendingCalls[requestId] !== undefined)
+        verify(!client.pendingCalls[requestId].pollInFlight)
+
+        client.pendingCalls[requestId].host = basecampAsyncHost
+        client.pendingCalls[requestId].nextPollAtMs = 0
+        client.pollBasecampCalls()
+        verify(completeBasecampPoll(
+            basecampAsyncHost,
+            "ready",
+            finalBridgeResponse({ terminal: true, outcome: "applied" })
+        ))
+        compare(asyncCallbackCount, 1)
+        verify(asyncResponse.ok)
+    }
+
     function test_basecamp_poll_transport_timeout_retries_same_token() {
         client.host = basecampAsyncHost
         const token = "lai_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
