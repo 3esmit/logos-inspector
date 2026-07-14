@@ -9,6 +9,7 @@ QtObject {
     property int nextRequestId: 1
     property var pendingCalls: ({})
     property var moduleEventSubscriptions: ({})
+    property var moduleEventRegistrations: []
 
     onHostChanged: {
         hostEpoch += 1
@@ -22,6 +23,7 @@ QtObject {
     }
 
     signal moduleEventReceived(string moduleName, string eventName, var args)
+    signal callbackFailed(string error)
 
     function prefersBasecampModules() {
         return BridgeEnvelope.prefersBasecampModules(root.host)
@@ -88,7 +90,21 @@ QtObject {
         if (current[key] && current[key].active === true) {
             return true
         }
+        const subscriptionHost = root.host
+        const subscriptionHostEpoch = root.hostEpoch
+        const basecampSubscription = root.prefersBasecampModules()
+        const registered = basecampSubscription
+            ? root.moduleEventRegistration(subscriptionHost, key)
+            : null
+        if (registered) {
+            root.rememberActiveModuleEventSubscription(key, registered.callback)
+            return true
+        }
         const callback = function () {
+            if (root.host !== subscriptionHost
+                    || root.hostEpoch !== subscriptionHostEpoch) {
+                return
+            }
             const values = []
             for (let i = 0; i < arguments.length; ++i) {
                 values.push(arguments[i])
@@ -97,19 +113,19 @@ QtObject {
         }
         let active = false
         try {
-            if (root.host && root.host["onModuleEvent"]) {
-                if (root.prefersBasecampModules()) {
-                    active = root.host["onModuleEvent"](moduleText, eventText) === true
+            if (subscriptionHost && subscriptionHost["onModuleEvent"]) {
+                if (basecampSubscription) {
+                    active = subscriptionHost["onModuleEvent"](moduleText, eventText) === true
                 } else {
-                    active = root.host["onModuleEvent"](moduleText, eventText, callback) !== false
+                    active = subscriptionHost["onModuleEvent"](moduleText, eventText, callback) !== false
                 }
             }
         } catch (error) {
             active = false
         }
         try {
-            if (!active && root.host && root.host["module"]) {
-                const moduleObject = root.host["module"](moduleText)
+            if (!active && subscriptionHost && subscriptionHost["module"]) {
+                const moduleObject = subscriptionHost["module"](moduleText)
                 if (moduleObject && moduleObject["on"]) {
                     moduleObject["on"](eventText, callback)
                     active = true
@@ -121,7 +137,40 @@ QtObject {
         if (!active) {
             return false
         }
+        if (basecampSubscription) {
+            const registrations = Array.isArray(root.moduleEventRegistrations)
+                ? root.moduleEventRegistrations.slice()
+                : []
+            registrations.push({
+                host: subscriptionHost,
+                key: key,
+                callback: callback
+            })
+            root.moduleEventRegistrations = registrations
+        }
+        if (root.host !== subscriptionHost) {
+            return false
+        }
+        root.rememberActiveModuleEventSubscription(key, callback)
+        return true
+    }
+
+    function moduleEventRegistration(host, key) {
+        const registrations = Array.isArray(root.moduleEventRegistrations)
+            ? root.moduleEventRegistrations
+            : []
+        for (let i = 0; i < registrations.length; ++i) {
+            const registration = registrations[i]
+            if (registration && registration.host === host && registration.key === key) {
+                return registration
+            }
+        }
+        return null
+    }
+
+    function rememberActiveModuleEventSubscription(key, callback) {
         const next = {}
+        const current = root.moduleEventSubscriptions || {}
         for (const name in current) {
             next[name] = current[name]
         }
@@ -130,7 +179,6 @@ QtObject {
             callback: callback
         }
         root.moduleEventSubscriptions = next
-        return true
     }
 
     function finishAsyncCall(requestId, response, expectedHostEpoch) {
@@ -151,11 +199,21 @@ QtObject {
     function failPendingCalls(response) {
         const pending = root.pendingCalls || {}
         root.pendingCalls = ({})
+        let firstError = ""
         for (const requestId in pending) {
             const entry = pending[requestId]
             if (entry && typeof entry.callback === "function") {
-                entry.callback(response)
+                try {
+                    entry.callback(response)
+                } catch (error) {
+                    if (!firstError.length) {
+                        firstError = error && error.message ? error.message : String(error)
+                    }
+                }
             }
+        }
+        if (firstError.length) {
+            root.callbackFailed(firstError)
         }
     }
 
