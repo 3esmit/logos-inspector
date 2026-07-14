@@ -22,12 +22,13 @@ TestCase {
     }
 
     function test_delivery_commands_map_runtime_and_inputs() {
-        const query = SourceOperationCommandCatalog.deliveryCommand("deliveryStoreQuery", ["/topic"])
+        const query = SourceOperationCommandCatalog.deliveryCommand("deliveryStoreQuery", ["peer", "/topic"])
         const send = SourceOperationCommandCatalog.deliveryCommand("deliverySend", ["/topic"])
 
         compare(query.action, "store_query")
         compare(query.requiredInputs[0].key, "topic")
-        verify(!query.runtime)
+        compare(query.requiredInputs[0].value, "/topic")
+        verify(query.runtime)
 
         compare(send.action, "send")
         compare(send.requiredInputs[0].value, "/topic")

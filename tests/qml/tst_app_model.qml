@@ -1033,6 +1033,23 @@ TestCase {
         })
     }
 
+    function test_delivery_store_result_keeps_messaging_owner_after_navigation() {
+        model.shell.currentView = "overview"
+
+        model.deliveryApp.setDeliveryStoreQueryResult({
+            operationId: "delivery-store-owner",
+            domain: "delivery",
+            method: "deliveryStoreQuery",
+            status: "completed",
+            label: "Store query",
+            result: { value: { messages: [] } }
+        })
+
+        compare(model.shell.resultTitle, "Store query")
+        compare(model.shell.resultOwner, "messaging")
+        verify(!model.shell.resultIsError)
+    }
+
     function test_runtime_module_event_projects_only_returned_operation() {
         fakeHost.responses = {
             runtimeOperationModuleEvent: {

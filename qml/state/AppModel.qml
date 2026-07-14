@@ -480,10 +480,6 @@ QtObject {
         id: deliveryAppState
 
         gateway: QtObject {
-            function call(method, args, label) {
-                return root.callInspector(method, args, label)
-            }
-
             function startRuntimeOperation(request, showResult, callback) {
                 return root.runtimeOperationStart(request, showResult === true, callback)
             }
@@ -502,6 +498,10 @@ QtObject {
 
             function appendOperationHistory(operation, detail) {
                 return root.appendOperationHistory(operation, detail)
+            }
+
+            function setResult(title, text, isError, value) {
+                return appShellState.setResult(title, text, isError, value, "messaging")
             }
         }
         busy: appShellState.busy

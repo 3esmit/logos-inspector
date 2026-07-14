@@ -51,6 +51,14 @@ QtObject {
     property string deliveryConnectionStatus: ""
     property string deliveryNodeStatus: ""
 
+    onAdapterInitializationChanged: {
+        invalidateSourceRequests()
+    }
+
+    function invalidateSourceRequests() {
+        deliveryOperations.clearActive()
+    }
+
     function sourceBadges() {
         return [qsTr("Delivery"), sourceLabel, sourceTarget, networkPreset]
     }
@@ -87,23 +95,30 @@ QtObject {
 
     function runDelivery(method, args, label) {
         const command = SourceOperationCommandCatalog.deliveryCommand(method, args)
-        if (command.runtime) {
-            return startDeliveryOperation(method, args, label)
-        }
-        const response = gateway.call(method, deliveryArgs(method, args), label)
-        deliveryOperations.appendResult(label, response)
-        lastOperation = response && response.ok ? String(label || "") : qsTr("Error")
-        return response
+        return startDeliveryOperation(command.method, args, label)
     }
 
     function startDeliveryOperation(method, args, label) {
+        const storeQuery = String(method || "") === "deliveryStoreQuery"
         lastOperation = qsTr("Starting")
         const started = deliveryOperations.start(method, args, label, function (response, operation) {
-            lastOperation = response && response.ok
-                ? operationStatusText(operation || response.value)
-                : qsTr("Error")
             if (response && response.ok) {
-                currentTab = "operations"
+                if (!deliveryOperations.isTerminal(operation)) {
+                    lastOperation = operationStatusText(operation || response.value)
+                }
+                if (!storeQuery) {
+                    currentTab = "operations"
+                }
+            } else {
+                lastOperation = qsTr("Error")
+            }
+            if ((!response || !response.ok) && storeQuery) {
+                gateway.setResult(
+                    String(label || qsTr("Delivery Store query")),
+                    String(response && response.error || qsTr("Delivery Store query failed.")),
+                    true,
+                    null
+                )
             }
         })
         if (started && started.ok === false) {
@@ -119,9 +134,29 @@ QtObject {
 
     function completeTerminalDeliveryOperation(operation) {
         const status = String(operation && operation.status || "")
+        if (String(operation && operation.method || "") === "deliveryStoreQuery") {
+            setDeliveryStoreQueryResult(operation)
+        }
         lastOperation = status === "dispatched"
             ? qsTr("Dispatched")
             : (status === "completed" ? qsTr("Complete") : qsTr("Stopped"))
+    }
+
+    function setDeliveryStoreQueryResult(operation) {
+        const label = String(operation && operation.label || qsTr("Delivery Store query"))
+        if (String(operation && operation.status || "") === "completed") {
+            const value = operation && operation.result !== undefined && operation.result !== null
+                ? operation.result
+                : operation
+            gateway.setResult(label, BridgeHelpers.formatValue(value), false, value)
+        } else {
+            gateway.setResult(
+                label,
+                String(operation && operation.error || qsTr("Delivery Store query failed.")),
+                true,
+                null
+            )
+        }
     }
 
     function operationStatusText(operation) {
@@ -276,7 +311,7 @@ QtObject {
     }
 
     function messageControlsEnabled(topic) {
-        return !busy && !deliveryOperations.view.running && deliveryMessageSource()
+        return !busy && !deliveryOperations.view.busy && deliveryMessageSource()
             && mutatingDiagnosticsEnabled && validContentTopic(topic)
     }
 
