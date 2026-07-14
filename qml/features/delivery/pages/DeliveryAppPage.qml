@@ -278,7 +278,7 @@ ColumnLayout {
                     theme: root.theme
                     text: qsTr("Create")
                     primary: true
-                    enabled: !root.model.shell.busy && !root.activeDeliveryOperationRunning() && root.deliveryModuleSource() && nodeConfig.text.trim().length > 0
+                    enabled: !root.model.shell.busy && !root.activeDeliveryOperationBusy() && root.deliveryModuleSource() && nodeConfig.text.trim().length > 0
                     Layout.preferredWidth: 112
                     onClicked: root.confirmDelivery("deliveryCreateNode", [nodeConfig.text.trim()], qsTr("Create node"))
                 }
@@ -286,7 +286,7 @@ ColumnLayout {
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Start")
-                    enabled: !root.model.shell.busy && !root.activeDeliveryOperationRunning() && root.deliveryModuleSource()
+                    enabled: !root.model.shell.busy && !root.activeDeliveryOperationBusy() && root.deliveryModuleSource()
                     Layout.preferredWidth: 96
                     onClicked: root.confirmDelivery("deliveryStart", [], qsTr("Start node"))
                 }
@@ -294,7 +294,7 @@ ColumnLayout {
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Stop")
-                    enabled: !root.model.shell.busy && !root.activeDeliveryOperationRunning() && root.deliveryModuleSource()
+                    enabled: !root.model.shell.busy && !root.activeDeliveryOperationBusy() && root.deliveryModuleSource()
                     Layout.preferredWidth: 96
                     onClicked: root.confirmDelivery("deliveryStop", [], qsTr("Stop node"))
                 }
@@ -528,7 +528,7 @@ ColumnLayout {
                     theme: root.theme
                     text: qsTr("Query Store")
                     primary: true
-                    enabled: !root.model.shell.busy && root.deliveryRestSource()
+                    enabled: !root.model.shell.busy && !root.activeDeliveryOperationBusy() && root.deliveryRestSource()
                     Layout.preferredWidth: 132
                     onClicked: root.runDelivery("deliveryStoreQuery", [
                         storePeer.text.trim(),
@@ -667,8 +667,8 @@ ColumnLayout {
         return root.deliveryState.runDelivery(method, args, label)
     }
 
-    function activeDeliveryOperationRunning() {
-        return root.deliveryState.operation.running
+    function activeDeliveryOperationBusy() {
+        return root.deliveryState.operation.busy
     }
 
     function messageControlsEnabled(topic) {

@@ -24,7 +24,7 @@ function handleNetworkConfigurationChanged(root) {
         storageSourceReport = null
         messagingSourceReport = null
         storageApp.invalidateSourceRequests()
-        deliveryApp.operationSession.clearActive()
+        deliveryApp.invalidateSourceRequests()
         localNodesReport = null
         localNodesError = ""
         localNodesRevision += 1

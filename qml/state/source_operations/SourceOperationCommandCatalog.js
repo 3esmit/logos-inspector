@@ -56,7 +56,7 @@ function deliveryCommand(method, args) {
         method: String(method || ""),
         action: deliveryActionForMethod(method),
         requiredInputs: deliveryRequiredInputs(method, args),
-        runtime: String(method || "") !== "deliveryStoreQuery"
+        runtime: true
     }
 }
 
@@ -85,6 +85,7 @@ function deliveryRequiredInputs(method, args) {
     const values = Array.isArray(args) ? args : []
     switch (String(method || "")) {
     case "deliveryStoreQuery":
+        return [{ key: "topic", label: qsTr("Content topic"), value: values[1] }]
     case "deliverySubscribe":
     case "deliveryUnsubscribe":
     case "deliverySend":
