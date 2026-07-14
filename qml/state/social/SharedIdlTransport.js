@@ -1,5 +1,3 @@
-.import "../source_operations/NodeOperationRequest.js" as NodeOperationRequest
-
 function acceptedEntriesFromStore(root, request, storeValue, callback) {
     const value = request || {}
     if (String(value.policy || "") === "disabled"
@@ -35,7 +33,7 @@ function acceptedEntriesFromStore(root, request, storeValue, callback) {
     )
 }
 
-function publish(root, request) {
+function publish(root, request, callback) {
     const value = request || {}
     const idlJson = String(value.idlJson || "")
     if (!String(value.topic || "").length || !value.scope || !idlJson.length
@@ -53,51 +51,23 @@ function publish(root, request) {
         created_at: createdAt,
         scope: value.scope
     }
-    const upload = root.gateway.callInspector(
-        "storageUploadPayload",
-        [NodeOperationRequest.envelope(
-            root.sourceRouting.storageOperationAdapter(),
-            {
-                filename: "logos-inspector-shared-idl.json",
-                payload: artifact,
-                block_size: 65536
-            },
-            root.storageMutatingDiagnosticsEnabled === true
-        )],
-        qsTr("Upload shared IDL")
-    )
-    if (!upload.ok || !upload.value || !String(upload.value.cid || "").length) {
-        return false
-    }
-    const cid = String(upload.value.cid || "")
-    const payload = {
+    const message = {
         kind: "lez_account_idl",
         version: 2,
         identity: value.identity || {},
         account_id: String(value.accountId || ""),
         program_id: String(value.programId || ""),
         idl_name: String(value.idlName || qsTr("IDL")),
-        idl_cid: cid,
-        storage: {
-            cid: cid,
-            provider: "logos_storage",
-            endpoint: root.gateway.configuredStorageRestUrl()
-        },
         created_at: createdAt,
         scope: value.scope
     }
-    const response = root.gateway.callInspector(
-        "deliverySend",
-        deliveryArgs(root, "deliverySend", [value.topic, JSON.stringify(payload)]),
-        qsTr("Share IDL")
-    )
-    return response.ok === true
-}
-
-function deliveryArgs(root, method, extra) {
-    return [NodeOperationRequest.envelope(
-        root.sourceRouting.deliveryOperationAdapter(),
-        NodeOperationRequest.deliveryPayload(method, extra),
-        root.messagingMutatingDiagnosticsEnabled === true
-    )]
+    return root.startSharedIdlWrite({
+        filename: "logos-inspector-shared-idl.json",
+        artifact: artifact,
+        blockSize: 65536,
+        topic: String(value.topic || ""),
+        message: message,
+        uploadLabel: qsTr("Upload shared IDL"),
+        deliveryLabel: qsTr("Share IDL")
+    }, callback)
 }

@@ -630,8 +630,7 @@ pub(crate) struct StoragePayloadUploadRequest {
 }
 
 impl StoragePayloadUploadRequest {
-    pub(crate) fn parse(args: &Args) -> Result<Self> {
-        let request = NodeOperationRequest::from_bridge_args(args)?;
+    pub(crate) fn parse_request(request: &NodeOperationRequest) -> Result<Self> {
         request.require_mutating("storage payload upload")?;
         let payload: PayloadUploadPayload = request.payload("storage payload upload")?;
         Ok(Self {
@@ -830,6 +829,60 @@ mod tests {
                 && request.block_size() == 32_768
                 && request.client().source() == "logoscore call storage_module",
             "backup upload request lost typed input identity"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn payload_upload_request_preserves_typed_payload_and_filename() -> Result<()> {
+        let request = request(json!({
+            "adapter": {
+                "source_mode": "rest",
+                "inputs": { "rest_endpoint": "http://storage" }
+            },
+            "mutating_enabled": true,
+            "payload": {
+                "filename": "shared-idl.json",
+                "payload": { "kind": "shared-idl" },
+                "block_size": 32768
+            }
+        }))?;
+
+        let request = StoragePayloadUploadRequest::parse_request(&request)?;
+
+        anyhow::ensure!(
+            request.filename() == "shared-idl.json"
+                && request.payload() == &json!({ "kind": "shared-idl" })
+                && request.block_size() == 32_768
+                && request.client().source() == "http://storage",
+            "payload upload request lost typed input identity"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn payload_upload_request_requires_mutating_diagnostics() -> Result<()> {
+        let request = request(json!({
+            "adapter": {
+                "source_mode": "rest",
+                "inputs": { "rest_endpoint": "http://storage" }
+            },
+            "mutating_enabled": false,
+            "payload": {
+                "filename": "shared-idl.json",
+                "payload": { "kind": "shared-idl" }
+            }
+        }))?;
+
+        let error = StoragePayloadUploadRequest::parse_request(&request)
+            .err()
+            .context("disabled payload upload should fail")?;
+
+        anyhow::ensure!(
+            error
+                .to_string()
+                .contains("requires mutating diagnostics to be enabled"),
+            "unexpected payload upload error: {error:#}"
         );
         Ok(())
     }

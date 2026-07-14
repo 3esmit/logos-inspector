@@ -508,6 +508,43 @@ mod tests {
     }
 
     #[test]
+    fn handle_operation_command_keeps_payload_upload_on_blocking_compatibility_route() -> Result<()>
+    {
+        let runner = FakeRunner::default();
+        let args = json!([{
+            "adapter": {
+                "source_mode": "rest",
+                "inputs": { "rest_endpoint": "http://127.0.0.1:8080" }
+            },
+            "mutating_enabled": true,
+            "payload": {
+                "filename": "shared-idl.json",
+                "payload": { "kind": "shared-idl" },
+                "block_size": 65536
+            }
+        }]);
+
+        let command = operation_bridge_command("storageUploadPayload")
+            .context("payload upload operation command")?;
+        let value = handle_operation_command(&runner, command, &args)?;
+
+        if value != json!({ "operation": "storageUploadPayload" }) {
+            bail!("unexpected response: {value:?}");
+        }
+        if runner.calls()
+            != vec![RunnerCall::RunOperation {
+                domain: "storage".to_owned(),
+                method: "storageUploadPayload".to_owned(),
+                args,
+                label: "Storage payload upload".to_owned(),
+            }]
+        {
+            bail!("unexpected runner calls");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn handle_operation_command_routes_storage_cancel_alias() -> Result<()> {
         let runner = FakeRunner::default();
 

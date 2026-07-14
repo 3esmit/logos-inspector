@@ -197,15 +197,10 @@ QtObject {
                 return root.appendOperationHistory(operation, detail)
             }
 
-            function callInspector(method, args, label) {
-                return root.callInspector(method, args, label)
-            }
-
             function saveSettingsState() { return root.saveSettingsState() }
             function saveIdlState() { return root.saveIdlState() }
             function socialGate(action) { return root.socialGate(action) }
             function effectiveMessagingSourceMode(value) { return root.effectiveMessagingSourceMode(value) }
-            function configuredStorageRestUrl() { return root.configuredStorageRestUrl() }
             function normalizedIdlEntry(entry, fallbackIndex) { return root.normalizedIdlEntry(entry, fallbackIndex) }
             function idlEntryForKey(key) { return root.idlEntryForKey(key) }
             function idlNameFromJson(value) { return root.idlNameFromJson(value) }

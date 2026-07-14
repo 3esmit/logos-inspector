@@ -47,10 +47,10 @@ TestCase {
     QtObject {
         id: socialState
 
-        property bool storeQueriesRunning: false
+        property bool operationsRunning: false
         property int polls: 0
 
-        function pollStoreQueries() {
+        function pollOperations() {
             polls += 1
             return polls
         }
@@ -143,7 +143,7 @@ TestCase {
         backupCatalogState.polls = 0
         deliveryState.running = false
         deliveryState.polls = 0
-        socialState.storeQueriesRunning = false
+        socialState.operationsRunning = false
         socialState.polls = 0
         zoneState.statusPollingEnabled = false
         zoneState.statusPollInterval = 5000
@@ -157,10 +157,10 @@ TestCase {
         storageState.running = true
         fakeModel.backupCatalogUploadRunning = true
         deliveryState.running = true
-        socialState.storeQueriesRunning = true
+        socialState.operationsRunning = true
         scheduler.tick("storageOperation")
         scheduler.tick("deliveryOperation")
-        scheduler.tick("socialStoreQuery")
+        scheduler.tick("socialOperation")
         scheduler.tick("liveBlocks")
 
         compare(fakeModel.queriedKinds[0], "blockchain")
@@ -181,10 +181,10 @@ TestCase {
         storageState.running = false
         fakeModel.backupCatalogUploadRunning = true
         verify(scheduler.enabled("storageOperation"))
-        verify(!scheduler.enabled("socialStoreQuery"))
-        socialState.storeQueriesRunning = true
-        verify(scheduler.enabled("socialStoreQuery"))
-        compare(scheduler.intervalFor("socialStoreQuery"), 10)
+        verify(!scheduler.enabled("socialOperation"))
+        socialState.operationsRunning = true
+        verify(scheduler.enabled("socialOperation"))
+        compare(scheduler.intervalFor("socialOperation"), 10)
         verify(scheduler.enabled("dashboard"))
         fakeModel.shell.currentView = "blocks"
         verify(!scheduler.enabled("dashboard"))

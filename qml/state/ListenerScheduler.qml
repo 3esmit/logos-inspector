@@ -44,10 +44,10 @@ QtObject {
             onTriggered: root.tick("deliveryOperation")
         },
         Timer {
-            interval: root.intervalFor("socialStoreQuery")
+            interval: root.intervalFor("socialOperation")
             repeat: true
-            running: root.enabled("socialStoreQuery")
-            onTriggered: root.tick("socialStoreQuery")
+            running: root.enabled("socialOperation")
+            onTriggered: root.tick("socialOperation")
         },
         Timer {
             interval: root.intervalFor("liveBlocks")
@@ -93,7 +93,7 @@ QtObject {
             return Math.max(1, Number(model.dashboardRefreshInterval ? model.dashboardRefreshInterval() : 0))
         case "storageOperation":
         case "deliveryOperation":
-        case "socialStoreQuery":
+        case "socialOperation":
             return Math.max(1, Number(operationPollInterval || 500))
         case "liveBlocks":
             return Math.max(1, Number(model.refreshInterval ? model.refreshInterval(model.blockchainRefreshRate) : 0))
@@ -121,8 +121,8 @@ QtObject {
                 || model.backupCatalogUploadRunning === true
         case "deliveryOperation":
             return root.deliveryApp() && root.deliveryApp().operation.running
-        case "socialStoreQuery":
-            return root.socialState() && root.socialState().storeQueriesRunning === true
+        case "socialOperation":
+            return root.socialState() && root.socialState().operationsRunning === true
         case "liveBlocks":
             return model.blocksLiveEnabled === true && model.shell.currentView === "blocks"
         case "zonesStatus":
@@ -147,8 +147,8 @@ QtObject {
             return root.pollStorageOperations()
         case "deliveryOperation":
             return root.deliveryApp() ? root.deliveryApp().pollDeliveryOperation(false) : null
-        case "socialStoreQuery":
-            return root.socialState() ? root.socialState().pollStoreQueries() : null
+        case "socialOperation":
+            return root.socialState() ? root.socialState().pollOperations() : null
         case "liveBlocks":
             return model.chainPages ? model.chainPages.refreshBlocksLivePage() : model.refreshBlocksLivePage()
         case "zonesStatus":

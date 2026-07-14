@@ -36,49 +36,124 @@ QtObject {
         adapterInitialization: root.deliveryAdapterInitialization
         mutatingDiagnosticsEnabled: root.messagingMutatingDiagnosticsEnabled
     }
-    readonly property bool storeQueriesRunning: storeQueryCoordinator.running
+    property Social.SocialWriteCoordinator writeCoordinator: Social.SocialWriteCoordinator {
+        gateway: root.gateway
+        storageAdapterInitialization: root.storageAdapterInitialization
+        deliveryAdapterInitialization: root.deliveryAdapterInitialization
+        storageMutatingDiagnosticsEnabled: root.storageMutatingDiagnosticsEnabled
+        deliveryMutatingDiagnosticsEnabled: root.messagingMutatingDiagnosticsEnabled
+    }
+    readonly property bool operationsRunning: storeQueryCoordinator.running || writeCoordinator.running
+    readonly property bool writesRunning: writeCoordinator.running
 
-    onDeliveryAdapterInitializationChanged: invalidateSourceRequests()
-    onStorageAdapterInitializationChanged: invalidateSourceRequests()
-    onMessagingMutatingDiagnosticsEnabledChanged: invalidateSourceRequests()
-    onStorageMutatingDiagnosticsEnabledChanged: invalidateSourceRequests()
+    onDeliveryAdapterInitializationChanged: invalidateReadSourceRequests()
+    onStorageAdapterInitializationChanged: invalidateReadSourceRequests()
+    onMessagingMutatingDiagnosticsEnabledChanged: invalidateReadSourceRequests()
+    onStorageMutatingDiagnosticsEnabledChanged: invalidateReadSourceRequests()
 
-    function commentTopic(layer, entity, id) { return Orchestrator.socialCommentTopic(root, layer, entity, id) }
-    function zoneCommentTopic(entityRef) { return Orchestrator.socialZoneCommentTopic(root, entityRef) }
-    function zoneAccountIdlTopic(entityRef) { return Orchestrator.socialZoneAccountIdlTopic(root, entityRef) }
-    function commentsView(topic) { return Orchestrator.commentView(root, topic) }
-    function loadComments(topic, reset, pageSize, expectedAccountId) { return Orchestrator.loadSocialComments(root, topic, reset, pageSize, expectedAccountId) }
-    function postComment(topic, body, identityKey, entityRef) { return Orchestrator.postSocialComment(root, topic, body, identityKey, entityRef) }
-    function applyIncomingComment(event) { return Orchestrator.applyIncomingComment(root, event) }
-    function applyIncomingDeliveryMessage(message) { return Orchestrator.applyIncomingDeliveryMessage(root, message) }
+    function commentTopic(layer, entity, id) {
+        return Orchestrator.socialCommentTopic(root, layer, entity, id)
+    }
+    function zoneCommentTopic(entityRef) {
+        return Orchestrator.socialZoneCommentTopic(root, entityRef)
+    }
+    function zoneAccountIdlTopic(entityRef) {
+        return Orchestrator.socialZoneAccountIdlTopic(root, entityRef)
+    }
+    function commentsView(topic) {
+        return Orchestrator.commentView(root, topic)
+    }
+    function loadComments(topic, reset, pageSize, expectedAccountId) {
+        return Orchestrator.loadSocialComments(root, topic, reset, pageSize, expectedAccountId)
+    }
+    function postComment(topic, body, identityKey, entityRef, onComplete) {
+        return Orchestrator.postSocialComment(root, topic, body, identityKey, entityRef, onComplete)
+    }
+    function applyIncomingComment(event) {
+        return Orchestrator.applyIncomingComment(root, event)
+    }
+    function applyIncomingDeliveryMessage(message) {
+        return Orchestrator.applyIncomingDeliveryMessage(root, message)
+    }
 
-    function loadSettings(value) { return Orchestrator.loadSocialSettings(root, value) }
-    function settingsPayload() { return Orchestrator.socialSettingsPayload(root) }
-    function identitiesView() { return Orchestrator.identityView(root) }
-    function createIdentity(displayName) { return Orchestrator.createSocialIdentity(root, displayName) }
-    function selectIdentity(key) { return Orchestrator.selectSocialIdentity(root, key) }
-    function setIdentityDefaultMode(mode) { return Orchestrator.setSocialIdentityDefaultMode(root, mode) }
+    function loadSettings(value) {
+        return Orchestrator.loadSocialSettings(root, value)
+    }
+    function settingsPayload() {
+        return Orchestrator.socialSettingsPayload(root)
+    }
+    function identitiesView() {
+        return Orchestrator.identityView(root)
+    }
+    function createIdentity(displayName) {
+        return Orchestrator.createSocialIdentity(root, displayName)
+    }
+    function selectIdentity(key) {
+        return Orchestrator.selectSocialIdentity(root, key)
+    }
+    function setIdentityDefaultMode(mode) {
+        return Orchestrator.setSocialIdentityDefaultMode(root, mode)
+    }
 
-    function setSharedIdlPolicy(policy) { return Orchestrator.setSharedIdlPolicy(root, policy) }
-    function setSharedIdlAutoShare(enabled) { return Orchestrator.setSharedIdlAutoShare(root, enabled) }
-    function refreshSharedIdlsForAccount(entityRef, dataHex, ownerProgramId) { return Orchestrator.refreshSharedIdlsForAccount(root, entityRef, dataHex, ownerProgramId) }
-    function applySharedIdlPolicy(accountId, entry) { return Orchestrator.applySharedIdlPolicy(root, accountId, entry) }
-    function sharedIdlSuggestions(accountId, ownerProgramId) { return Orchestrator.sharedIdlSuggestions(root, accountId, ownerProgramId) }
-    function sharedIdlEntriesForAccount(accountId, ownerProgramId) { return Orchestrator.sharedIdlEntriesForAccount(root, accountId, ownerProgramId) }
-    function publishAccountIdl(entityRef, ownerProgramId, idlEntry) { return Orchestrator.publishAccountIdl(root, entityRef, ownerProgramId, idlEntry) }
-    function maybeAutoShareAccountIdl(entityRef, ownerProgramId, idlEntry) { return Orchestrator.maybeAutoShareAccountIdl(root, entityRef, ownerProgramId, idlEntry) }
+    function setSharedIdlPolicy(policy) {
+        return Orchestrator.setSharedIdlPolicy(root, policy)
+    }
+    function setSharedIdlAutoShare(enabled) {
+        return Orchestrator.setSharedIdlAutoShare(root, enabled)
+    }
+    function refreshSharedIdlsForAccount(entityRef, dataHex, ownerProgramId) {
+        return Orchestrator.refreshSharedIdlsForAccount(root, entityRef, dataHex, ownerProgramId)
+    }
+    function applySharedIdlPolicy(accountId, entry) {
+        return Orchestrator.applySharedIdlPolicy(root, accountId, entry)
+    }
+    function sharedIdlSuggestions(accountId, ownerProgramId) {
+        return Orchestrator.sharedIdlSuggestions(root, accountId, ownerProgramId)
+    }
+    function sharedIdlEntriesForAccount(accountId, ownerProgramId) {
+        return Orchestrator.sharedIdlEntriesForAccount(root, accountId, ownerProgramId)
+    }
+    function publishAccountIdl(entityRef, ownerProgramId, idlEntry, onComplete) {
+        return Orchestrator.publishAccountIdl(root, entityRef, ownerProgramId, idlEntry, onComplete)
+    }
+    function maybeAutoShareAccountIdl(entityRef, ownerProgramId, idlEntry) {
+        return Orchestrator.maybeAutoShareAccountIdl(root, entityRef, ownerProgramId, idlEntry)
+    }
 
     function queryDeliveryStore(scope, cursor, pageSize, label, callback) {
         return storeQueryCoordinator.start(scope, cursor, pageSize, label, callback)
     }
 
-    function pollStoreQueries() { return storeQueryCoordinator.poll() }
-    function storeQueryCallerPending(callerKey) { return storeQueryCoordinator.callerPending(callerKey) }
-    function isCurrentStoreQuery(ticket) { return storeQueryCoordinator.isCurrent(ticket) }
-    function releaseStoreQuery(ticket) { return storeQueryCoordinator.release(ticket) }
-    function invalidateSharedIdlRequests() { storeQueryCoordinator.invalidateFamily("shared-idl") }
+    function startCommentWrite(request, callback) {
+        return writeCoordinator.startComment(request, callback)
+    }
+    function startSharedIdlWrite(request, callback) {
+        return writeCoordinator.startSharedIdl(request, callback)
+    }
+    function pollOperations() {
+        const queryPolls = storeQueryCoordinator.poll()
+        const writePoll = writeCoordinator.poll()
+        return writePoll !== null ? writePoll : queryPolls
+    }
+    function storeQueryCallerPending(callerKey) {
+        return storeQueryCoordinator.callerPending(callerKey)
+    }
+    function isCurrentStoreQuery(ticket) {
+        return storeQueryCoordinator.isCurrent(ticket)
+    }
+    function releaseStoreQuery(ticket) {
+        return storeQueryCoordinator.release(ticket)
+    }
+    function invalidateSharedIdlRequests() {
+        writeCoordinator.invalidateKind("shared-idl", qsTr("Shared IDL settings changed during publication."))
+        storeQueryCoordinator.invalidateFamily("shared-idl")
+    }
 
     function invalidateSourceRequests() {
+        writeCoordinator.invalidate(qsTr("Social source changed during write."))
+        invalidateReadSourceRequests()
+    }
+    function invalidateReadSourceRequests() {
         storeQueryCoordinator.invalidateSource()
         Orchestrator.invalidateSocialCommentRequests(root)
     }

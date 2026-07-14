@@ -351,6 +351,36 @@ mod tests {
     }
 
     #[test]
+    fn payload_upload_context_keeps_filename_identity() -> Result<()> {
+        let request = runtime_operation_request_from_value(json!({
+            "domain": "storage",
+            "method": "storageUploadPayload",
+            "adapter": {
+                "source_mode": "rest",
+                "inputs": { "rest_endpoint": "http://storage.local/api" }
+            },
+            "mutating_enabled": true,
+            "payload": {
+                "filename": "shared-idl.json",
+                "payload": { "kind": "shared-idl" },
+                "block_size": 65536
+            }
+        }))?;
+
+        if runtime_operation_context(&request)?
+            != json!({
+                "endpoint": "http://storage.local/api",
+                "source": "rest",
+                "mutatingEnabled": true,
+                "filename": "shared-idl.json"
+            })
+        {
+            bail!("unexpected payload upload context");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn runtime_operation_context_keeps_delivery_context_typed() -> Result<()> {
         let request = runtime_operation_request_from_value(json!({
             "domain": "delivery",
