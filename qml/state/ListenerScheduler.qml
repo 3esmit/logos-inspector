@@ -44,6 +44,12 @@ QtObject {
             onTriggered: root.tick("deliveryOperation")
         },
         Timer {
+            interval: root.intervalFor("socialStoreQuery")
+            repeat: true
+            running: root.enabled("socialStoreQuery")
+            onTriggered: root.tick("socialStoreQuery")
+        },
+        Timer {
             interval: root.intervalFor("liveBlocks")
             repeat: true
             running: root.enabled("liveBlocks")
@@ -87,6 +93,7 @@ QtObject {
             return Math.max(1, Number(model.dashboardRefreshInterval ? model.dashboardRefreshInterval() : 0))
         case "storageOperation":
         case "deliveryOperation":
+        case "socialStoreQuery":
             return Math.max(1, Number(operationPollInterval || 500))
         case "liveBlocks":
             return Math.max(1, Number(model.refreshInterval ? model.refreshInterval(model.blockchainRefreshRate) : 0))
@@ -113,6 +120,8 @@ QtObject {
             return root.storageApp() && root.storageApp().operation.running
         case "deliveryOperation":
             return root.deliveryApp() && root.deliveryApp().operation.running
+        case "socialStoreQuery":
+            return root.socialState() && root.socialState().storeQueriesRunning === true
         case "liveBlocks":
             return model.blocksLiveEnabled === true && model.shell.currentView === "blocks"
         case "zonesStatus":
@@ -137,6 +146,8 @@ QtObject {
             return root.storageApp() ? root.storageApp().pollStorageOperation(false) : null
         case "deliveryOperation":
             return root.deliveryApp() ? root.deliveryApp().pollDeliveryOperation(false) : null
+        case "socialStoreQuery":
+            return root.socialState() ? root.socialState().pollStoreQueries() : null
         case "liveBlocks":
             return model.chainPages ? model.chainPages.refreshBlocksLivePage() : model.refreshBlocksLivePage()
         case "zonesStatus":
@@ -168,6 +179,10 @@ QtObject {
 
     function deliveryApp() {
         return model && model.deliveryApp ? model.deliveryApp : null
+    }
+
+    function socialState() {
+        return model && model.social ? model.social : null
     }
 
     function zoneState() {

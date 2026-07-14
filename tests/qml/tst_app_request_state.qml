@@ -191,6 +191,43 @@ TestCase {
         compare(bridge.lastArgs[0], "op-7")
     }
 
+    function test_async_same_method_reverse_completion_invokes_both_callbacks() {
+        bridge.deferAsync = true
+        const completed = []
+        requests.requestModuleAsync(
+            "logos_inspector",
+            "runtimeOperationStatus",
+            ["op-a"],
+            "",
+            false,
+            function (response) { completed.push(response.value.operationId) }
+        )
+        requests.requestModuleAsync(
+            "logos_inspector",
+            "runtimeOperationStatus",
+            ["op-b"],
+            "",
+            false,
+            function (response) { completed.push(response.value.operationId) }
+        )
+
+        bridge.completeAsync(1, {
+            ok: true,
+            value: { operationId: "op-b" },
+            text: "",
+            error: ""
+        })
+        bridge.completeAsync(0, {
+            ok: true,
+            value: { operationId: "op-a" },
+            text: "",
+            error: ""
+        })
+
+        compare(completed.join(","), "op-b,op-a")
+        compare(cachedValue.operationId, "op-b")
+    }
+
     function test_busy_request_rejects_without_bridge_call() {
         shell.busy = true
 

@@ -87,6 +87,10 @@ function loadSocialComments(root, topic, reset, pageSize, expectedAccountId) {
     if (!key.length || !socialCommentReadAvailable(root, key)) {
         return false
     }
+    const callerKey = "comments|" + key
+    if (root.storeQueryCallerPending(callerKey)) {
+        return false
+    }
     const current = socialCommentState(root, key)
     const cursor = reset === true ? "" : String(current.cursor || "")
     setSocialCommentState(root, key, {
@@ -97,50 +101,112 @@ function loadSocialComments(root, topic, reset, pageSize, expectedAccountId) {
         exhausted: false
     })
 
-    const response = querySocialStore(root, key, cursor, pageSize, qsTr("Comments"))
-    if (!response.ok) {
+    const query = querySocialStore(root, {
+        callerKey: callerKey,
+        family: "comments",
+        accountId: String(expectedAccountId || ""),
+        topic: key
+    }, cursor, pageSize, qsTr("Comments"), function (response, ticket) {
+        return finishSocialCommentQuery(
+            root,
+            key,
+            cursor,
+            String(expectedAccountId || ""),
+            response,
+            ticket
+        )
+    })
+    if (!query.ok) {
         setSocialCommentState(root, key, {
-            rows: reset === true ? [] : socialComments(root, key),
+            rows: socialComments(root, key),
             cursor: cursor,
             loading: false,
-            error: response.error || qsTr("Comment query failed."),
-            exhausted: response.storeUnavailable === true
+            error: query.error || qsTr("Comment query failed."),
+            exhausted: query.storeUnavailable === true
         })
         return false
     }
+    return true
+}
 
-    const page = root.gateway.requestModule(
-        root.inspectorModule,
-        "socialCommentPageFromStore",
-        [key, response.value, String(expectedAccountId || "")],
-        qsTr("Comments"),
-        false,
-        false
-    )
-    if (!page.ok) {
-        setSocialCommentState(root, key, {
-            rows: reset === true ? [] : socialComments(root, key),
+function finishSocialCommentQuery(root, topic, cursor, expectedAccountId, response, ticket) {
+    if (!ticket || !root.isCurrentStoreQuery(ticket)) {
+        return false
+    }
+    if (!response || response.ok !== true) {
+        setSocialCommentState(root, topic, {
+            rows: socialComments(root, topic),
             cursor: cursor,
             loading: false,
-            error: page.error || qsTr("Comment decode failed."),
+            error: String(response && response.error || qsTr("Comment query failed.")),
             exhausted: false
         })
         return false
     }
+    if (!root.gateway || typeof root.gateway.requestModuleAsync !== "function") {
+        setSocialCommentState(root, topic, {
+            rows: socialComments(root, topic),
+            cursor: cursor,
+            loading: false,
+            error: qsTr("Comment decoder is unavailable."),
+            exhausted: false
+        })
+        return false
+    }
+    const admitted = root.gateway.requestModuleAsync(
+        root.inspectorModule,
+        "socialCommentPageFromStore",
+        [topic, response.value, expectedAccountId],
+        qsTr("Comments"),
+        false,
+        function (page) {
+            if (!root.isCurrentStoreQuery(ticket)) {
+                return
+            }
+            applySocialCommentPage(root, topic, cursor, page)
+            root.releaseStoreQuery(ticket)
+        }
+    )
+    if (admitted === false || admitted === null) {
+        if (root.isCurrentStoreQuery(ticket)) {
+            setSocialCommentState(root, topic, {
+                rows: socialComments(root, topic),
+                cursor: cursor,
+                loading: false,
+                error: qsTr("Comment query could not be decoded."),
+                exhausted: false
+            })
+            root.releaseStoreQuery(ticket)
+        }
+        return false
+    }
+    return true
+}
+
+function applySocialCommentPage(root, topic, cursor, page) {
+    if (!page || page.ok !== true) {
+        setSocialCommentState(root, topic, {
+            rows: socialComments(root, topic),
+            cursor: cursor,
+            loading: false,
+            error: String(page && page.error || qsTr("Comment decode failed.")),
+            exhausted: false
+        })
+        return
+    }
 
     const pageValue = page.value && typeof page.value === "object" ? page.value : ({})
     const incoming = Array.isArray(pageValue.rows) ? pageValue.rows : []
-    const existing = reset === true ? [] : socialComments(root, key)
+    const existing = socialComments(root, topic)
     const merged = mergeSocialCommentRows(existing, incoming)
     const nextCursor = String(pageValue.cursor || "")
-    setSocialCommentState(root, key, {
+    setSocialCommentState(root, topic, {
         rows: merged,
         cursor: nextCursor,
         loading: false,
         error: "",
         exhausted: incoming.length === 0 || !nextCursor.length || nextCursor === cursor
     })
-    return true
 }
 
 function setSocialCommentState(root, topic, state) {
@@ -152,6 +218,15 @@ function setSocialCommentState(root, topic, state) {
     next[key] = state || {}
     root.socialCommentState = next
     root.socialCommentRevision += 1
+}
+
+function invalidateSocialCommentRequests(root) {
+    const current = root.socialCommentState || {}
+    const keys = Object.keys(current)
+    if (keys.length) {
+        root.socialCommentState = ({})
+        root.socialCommentRevision += 1
+    }
 }
 
 function applyIncomingComment(root, event) {
@@ -503,7 +578,7 @@ function socialStoreAvailable(root) {
     return socialStoreGate(root).enabled === true
 }
 
-function querySocialStore(root, topic, cursor, pageSize, label) {
+function querySocialStore(root, scope, cursor, pageSize, label, callback) {
     const gate = socialStoreGate(root)
     if (!gate.enabled) {
         return {
@@ -512,14 +587,19 @@ function querySocialStore(root, topic, cursor, pageSize, label) {
             storeUnavailable: true
         }
     }
-    return root.gateway.requestModule(
-        root.inspectorModule,
-        "deliveryStoreQuery",
-        socialDeliveryArgs(root, "deliveryStoreQuery", ["", String(topic || ""), "", String(cursor || ""), socialPageSize(root, pageSize), true, true]),
+    const ticket = root.queryDeliveryStore(
+        scope,
+        String(cursor || ""),
+        socialPageSize(root, pageSize),
         String(label || qsTr("Delivery Store")),
-        false,
-        false
+        callback
     )
+    return {
+        ok: ticket !== null,
+        ticket: ticket,
+        error: ticket !== null ? "" : qsTr("Delivery Store query could not be started."),
+        storeUnavailable: false
+    }
 }
 
 function socialCommentSendAvailable(root, topic) {
@@ -555,6 +635,7 @@ function socialPageSize(root, pageSize) {
 
 function loadSocialSettings(root, value) {
     const settings = value || {}
+    root.invalidateSharedIdlRequests()
     root.socialIdentities.clear()
     const identities = Array.isArray(settings.social_identities) ? settings.social_identities : []
     for (let i = 0; i < identities.length; ++i) {
@@ -726,6 +807,7 @@ function socialIdentityDisplayName(identity) {
 }
 
 function setSharedIdlPolicy(root, policy) {
+    root.invalidateSharedIdlRequests()
     root.sharedIdlPolicy = normalizedSharedIdlPolicy(policy)
     root.gateway.saveSettingsState()
 }
@@ -751,21 +833,57 @@ function setSharedIdlAutoShare(root, enabled) {
 
 function refreshSharedIdlsForAccount(root, entityRef, dataHex, ownerProgramId) {
     const account = String(entityRef && entityRef.canonical_key || "").trim()
-    const entries = SharedIdlTransport.acceptedEntries(root, {
+    const request = {
         policy: normalizedSharedIdlPolicy(root.sharedIdlPolicy),
         accountId: account,
         dataHex: String(dataHex || "").trim(),
         ownerProgramId: String(ownerProgramId || ""),
         topic: socialZoneAccountIdlTopic(root, entityRef),
         readEnabled: socialSharedIdlReadAvailable(root)
-    })
-    let accepted = 0
-    for (let i = 0; i < entries.length; ++i) {
-        if (applySharedIdlPolicy(root, account, entries[i])) {
-            accepted += 1
-        }
     }
-    return accepted > 0
+    if (request.policy === "disabled" || !request.accountId.length
+            || !request.topic.length || !request.dataHex.length
+            || request.readEnabled !== true) {
+        return false
+    }
+    const callerKey = "shared-idl|" + account
+    if (root.storeQueryCallerPending(callerKey)) {
+        return false
+    }
+
+    const query = querySocialStore(root, {
+        callerKey: callerKey,
+        family: "shared-idl",
+        accountId: account,
+        topic: request.topic
+    }, "", 20, qsTr("Shared IDLs"), function (response, ticket) {
+        if (!response || response.ok !== true || !root.isCurrentStoreQuery(ticket)) {
+            return false
+        }
+        const admitted = SharedIdlTransport.acceptedEntriesFromStore(
+            root,
+            request,
+            response.value,
+            function (acceptedResponse) {
+                if (!root.isCurrentStoreQuery(ticket)) {
+                    return
+                }
+                const entries = acceptedResponse && acceptedResponse.ok === true
+                        && Array.isArray(acceptedResponse.value)
+                    ? acceptedResponse.value : []
+                for (let i = 0; i < entries.length; ++i) {
+                    applySharedIdlPolicy(root, account, entries[i])
+                }
+                root.releaseStoreQuery(ticket)
+            }
+        )
+        if (admitted === false || admitted === null) {
+            root.releaseStoreQuery(ticket)
+            return false
+        }
+        return true
+    })
+    return query.ok
 }
 
 function applySharedIdlPolicy(root, accountId, entry) {

@@ -181,8 +181,20 @@ QtObject {
         messagingMutatingDiagnosticsEnabled: root.messagingMutatingDiagnosticsEnabled
         storageMutatingDiagnosticsEnabled: root.storageMutatingDiagnosticsEnabled
         gateway: QtObject {
-            function requestModule(moduleName, method, args, label, showResult, cacheResult) {
-                return root.requestModule(moduleName, method, args, label, showResult, cacheResult)
+            function requestModuleAsync(moduleName, method, args, label, showResult, callback, acceptResponse) {
+                return root.requestModuleAsync(moduleName, method, args, label, showResult, callback, acceptResponse)
+            }
+
+            function startRuntimeOperation(request, showResult, callback) {
+                return root.runtimeOperationStart(request, showResult === true, callback)
+            }
+
+            function runtimeOperationStatus(operationId, showResult, callback) {
+                return root.runtimeOperationStatus(operationId, showResult === true, callback)
+            }
+
+            function appendOperationHistory(operation, detail) {
+                return root.appendOperationHistory(operation, detail)
             }
 
             function callInspector(method, args, label) {
