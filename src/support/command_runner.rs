@@ -1,7 +1,8 @@
 use std::{
+    collections::VecDeque,
     io::{self, ErrorKind},
     process::{Child, Command, ExitStatus, Output, Stdio},
-    sync::{Condvar, LazyLock, Mutex, MutexGuard},
+    sync::{Arc, Condvar, LazyLock, Mutex, MutexGuard, mpsc},
     thread,
     time::{Duration, Instant},
 };
@@ -22,8 +23,11 @@ const COMMAND_CAPTURE_FINAL_BUDGET: usize = COMMAND_CAPTURE_LIMIT + 8192;
 pub(crate) const MAX_CONCURRENT_COMMANDS: usize = 4;
 const TERMINATION_RETRY_INTERVAL: Duration = Duration::from_millis(5);
 const TERMINATION_RETRY_WINDOW: Duration = Duration::from_millis(250);
+const TERMINATION_REAP_WINDOW: Duration = Duration::from_millis(250);
 static COMMAND_BUDGET: LazyLock<CommandBudget> =
     LazyLock::new(|| CommandBudget::new(MAX_CONCURRENT_COMMANDS));
+static COMMAND_RECOVERY: LazyLock<std::result::Result<mpsc::SyncSender<CommandRecovery>, String>> =
+    LazyLock::new(start_command_recovery_worker);
 
 pub(crate) struct CommandRunPolicy<'a> {
     pub(crate) label: &'a str,
@@ -159,7 +163,49 @@ impl std::fmt::Display for CommandTerminated {
 
 impl std::error::Error for CommandTerminated {}
 
+#[derive(Debug)]
+pub(crate) struct CommandCleanupUnconfirmed {
+    reason: Option<CommandStopReason>,
+    scope: CommandTerminationScope,
+    message: String,
+}
+
+impl CommandCleanupUnconfirmed {
+    pub(crate) fn new(
+        reason: Option<CommandStopReason>,
+        scope: CommandTerminationScope,
+        message: String,
+    ) -> Self {
+        Self {
+            reason,
+            scope,
+            message,
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn reason(&self) -> Option<CommandStopReason> {
+        self.reason
+    }
+}
+
+impl std::fmt::Display for CommandCleanupUnconfirmed {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "{}; cleanup scope: {:?}",
+            self.message, self.scope
+        )
+    }
+}
+
+impl std::error::Error for CommandCleanupUnconfirmed {}
+
 struct CommandBudget {
+    inner: Arc<CommandBudgetInner>,
+}
+
+struct CommandBudgetInner {
     limit: usize,
     state: Mutex<CommandBudgetState>,
     available: Condvar,
@@ -169,53 +215,80 @@ struct CommandBudgetState {
     active: usize,
 }
 
-struct CommandPermit<'a> {
-    budget: &'a CommandBudget,
+struct CommandPermit {
+    budget: Arc<CommandBudgetInner>,
+}
+
+pub(crate) struct StreamingCommandPermit {
+    _permit: CommandPermit,
+}
+
+pub(crate) fn acquire_streaming_command_permit(
+    label: &str,
+    control: &CommandControl,
+) -> Result<StreamingCommandPermit> {
+    let policy = CommandRunPolicy {
+        label,
+        timeout: Duration::ZERO,
+        poll_interval: TERMINATION_RETRY_INTERVAL,
+        redactions: &[],
+        output_limit: 0,
+    };
+    let permit = COMMAND_BUDGET.acquire(&policy, Some(control), None)?;
+    Ok(StreamingCommandPermit { _permit: permit })
 }
 
 impl CommandBudget {
-    const fn new(limit: usize) -> Self {
+    fn new(limit: usize) -> Self {
         Self {
-            limit,
-            state: Mutex::new(CommandBudgetState { active: 0 }),
-            available: Condvar::new(),
+            inner: Arc::new(CommandBudgetInner {
+                limit,
+                state: Mutex::new(CommandBudgetState { active: 0 }),
+                available: Condvar::new(),
+            }),
         }
     }
 
-    fn acquire<'a>(
-        &'a self,
+    fn acquire(
+        &self,
         policy: &CommandRunPolicy<'_>,
         control: Option<&CommandControl>,
         relative_deadline: Option<Instant>,
-    ) -> Result<CommandPermit<'a>> {
+    ) -> Result<CommandPermit> {
         let mut state = self.lock_state();
         loop {
             check_pre_spawn_control(policy, control, relative_deadline)?;
-            if state.active < self.limit {
+            if state.active < self.inner.limit {
                 state.active += 1;
-                return Ok(CommandPermit { budget: self });
+                return Ok(CommandPermit {
+                    budget: Arc::clone(&self.inner),
+                });
             }
 
             let wait_for = pre_spawn_wait_duration(policy, control, relative_deadline);
-            let (next_state, _wait_result) = match self.available.wait_timeout(state, wait_for) {
-                Ok(result) => result,
-                Err(poisoned) => poisoned.into_inner(),
-            };
+            let (next_state, _wait_result) =
+                match self.inner.available.wait_timeout(state, wait_for) {
+                    Ok(result) => result,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
             state = next_state;
         }
     }
 
     fn lock_state(&self) -> MutexGuard<'_, CommandBudgetState> {
-        match self.state.lock() {
+        match self.inner.state.lock() {
             Ok(state) => state,
             Err(poisoned) => poisoned.into_inner(),
         }
     }
 }
 
-impl Drop for CommandPermit<'_> {
+impl Drop for CommandPermit {
     fn drop(&mut self) {
-        let mut state = self.budget.lock_state();
+        let mut state = match self.budget.state.lock() {
+            Ok(state) => state,
+            Err(poisoned) => poisoned.into_inner(),
+        };
         if state.active != 0 {
             state.active -= 1;
         }
@@ -277,14 +350,39 @@ fn run_command_inner(
 }
 
 fn run_command_inner_with<P>(
+    command: Command,
+    policy: CommandRunPolicy<'_>,
+    control: Option<CommandControl>,
+    budget: &CommandBudget,
+    poll_child: P,
+) -> Result<Output>
+where
+    P: FnMut(&mut Child) -> io::Result<Option<ExitStatus>>,
+{
+    run_command_inner_with_termination(
+        command,
+        policy,
+        control,
+        budget,
+        poll_child,
+        request_termination,
+        Child::try_wait,
+    )
+}
+
+fn run_command_inner_with_termination<P, R, W>(
     mut command: Command,
     policy: CommandRunPolicy<'_>,
     control: Option<CommandControl>,
     budget: &CommandBudget,
     mut poll_child: P,
+    mut request_stop: R,
+    mut poll_reap: W,
 ) -> Result<Output>
 where
     P: FnMut(&mut Child) -> io::Result<Option<ExitStatus>>,
+    R: FnMut(&mut Child, CommandTerminationScope) -> io::Result<CommandTerminationScope>,
+    W: FnMut(&mut Child) -> io::Result<Option<ExitStatus>>,
 {
     let started = Instant::now();
     let relative_deadline = if control.is_none() {
@@ -296,7 +394,8 @@ where
     } else {
         None
     };
-    let _permit = budget.acquire(&policy, control.as_ref(), relative_deadline)?;
+    let permit = budget.acquire(&policy, control.as_ref(), relative_deadline)?;
+    let recovery = command_recovery_sender()?;
     check_pre_spawn_control(&policy, control.as_ref(), relative_deadline)?;
     let termination_scope = configure_termination_scope(&mut command);
     let capture_setup = CaptureSetup::configure(&mut command, policy.label)?;
@@ -304,42 +403,123 @@ where
     let mut child = command
         .spawn()
         .with_context(|| format!("failed to run {}", policy.label))?;
-    let mut capture = capture_setup.start(&mut child, policy.label, termination_scope)?;
+    let mut capture = match capture_setup.start(&mut child, policy.label, termination_scope) {
+        Ok(capture) => capture,
+        Err(error) => {
+            let cleanup = match terminate_and_reap_bounded_with(
+                &mut child,
+                policy.label,
+                termination_scope,
+                &mut request_stop,
+                &mut poll_reap,
+            ) {
+                Ok(cleanup) => cleanup,
+                Err(cleanup) => {
+                    return Err(error).with_context(|| {
+                        format!(
+                            "failed to initialize {} output capture; termination also failed: {cleanup:#}",
+                            policy.label
+                        )
+                    });
+                }
+            };
+            return match cleanup {
+                BoundedReapOutcome::Reaped(_) => Err(error),
+                BoundedReapOutcome::CleanupUnconfirmed { scope, detail } => {
+                    Err(cleanup_unconfirmed_error(
+                        recovery,
+                        child,
+                        None,
+                        permit,
+                        None,
+                        scope,
+                        policy.label,
+                        format!("output capture initialization failed: {error}; {detail}"),
+                    ))
+                }
+            };
+        }
+    };
 
     loop {
         if let Err(error) = capture.drain_available() {
-            let cleanup = terminate_after_capture_failure(
+            let cleanup = match terminate_and_collect_bounded_with(
                 &mut child,
                 capture,
                 policy.label,
                 termination_scope,
-            );
+                &mut request_stop,
+                &mut poll_reap,
+            ) {
+                Ok(cleanup) => cleanup,
+                Err(cleanup) => {
+                    return Err(error).with_context(|| {
+                        format!(
+                            "failed to capture output from {}; termination also failed: {cleanup:#}",
+                            policy.label
+                        )
+                    });
+                }
+            };
             return match cleanup {
-                Ok(_) => Err(error).with_context(|| {
-                    format!("failed to capture output from {}", policy.label)
-                }),
-                Err(cleanup_error) => Err(error).with_context(|| {
-                    format!(
-                        "failed to capture output from {}; termination also failed: {cleanup_error:#}",
-                        policy.label
-                    )
-                }),
+                StoppedOutput::Completed(_) | StoppedOutput::Terminated { .. } => Err(error)
+                    .with_context(|| format!("failed to capture output from {}", policy.label)),
+                StoppedOutput::CleanupUnconfirmed {
+                    capture,
+                    scope,
+                    detail,
+                } => Err(cleanup_unconfirmed_error(
+                    recovery,
+                    child,
+                    Some(capture),
+                    permit,
+                    None,
+                    scope,
+                    policy.label,
+                    format!("output capture failed: {error}; {detail}"),
+                )),
             };
         }
 
         let status = match poll_child(&mut child) {
             Ok(status) => status,
             Err(error) => {
-                let cleanup =
-                    terminate_and_collect(&mut child, capture, policy.label, termination_scope);
+                let cleanup = match terminate_and_collect_bounded_with(
+                    &mut child,
+                    capture,
+                    policy.label,
+                    termination_scope,
+                    &mut request_stop,
+                    &mut poll_reap,
+                ) {
+                    Ok(cleanup) => cleanup,
+                    Err(cleanup) => {
+                        return Err(error).with_context(|| {
+                            format!(
+                                "failed to poll {}; termination also failed: {cleanup:#}",
+                                policy.label
+                            )
+                        });
+                    }
+                };
                 return match cleanup {
-                    Ok(_) => Err(error).with_context(|| format!("failed to poll {}", policy.label)),
-                    Err(cleanup_error) => Err(error).with_context(|| {
-                        format!(
-                            "failed to poll {}; termination also failed: {cleanup_error:#}",
-                            policy.label
-                        )
-                    }),
+                    StoppedOutput::Completed(_) | StoppedOutput::Terminated { .. } => {
+                        Err(error).with_context(|| format!("failed to poll {}", policy.label))
+                    }
+                    StoppedOutput::CleanupUnconfirmed {
+                        capture,
+                        scope,
+                        detail,
+                    } => Err(cleanup_unconfirmed_error(
+                        recovery,
+                        child,
+                        Some(capture),
+                        permit,
+                        None,
+                        scope,
+                        policy.label,
+                        format!("child polling failed: {error}; {detail}"),
+                    )),
                 };
             }
         };
@@ -357,22 +537,45 @@ where
                 None
             };
             if let Some(reason) = stop_reason {
-                return match terminate_and_collect(
+                return match terminate_and_collect_bounded_with(
                     &mut child,
                     capture,
                     policy.label,
                     termination_scope,
+                    &mut request_stop,
+                    &mut poll_reap,
                 )? {
                     StoppedOutput::Completed(output) => validate_output(output, &policy),
                     StoppedOutput::Terminated { scope, .. } => {
                         Err(CommandTerminated::after_reap(reason, scope).into())
                     }
+                    StoppedOutput::CleanupUnconfirmed {
+                        capture,
+                        scope,
+                        detail,
+                    } => Err(cleanup_unconfirmed_error(
+                        recovery,
+                        child,
+                        Some(capture),
+                        permit,
+                        Some(reason),
+                        scope,
+                        policy.label,
+                        detail,
+                    )),
                 };
             }
         }
 
         if relative_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-            match terminate_and_collect(&mut child, capture, policy.label, termination_scope)? {
+            match terminate_and_collect_bounded_with(
+                &mut child,
+                capture,
+                policy.label,
+                termination_scope,
+                &mut request_stop,
+                &mut poll_reap,
+            )? {
                 StoppedOutput::Completed(output) => return validate_output(output, &policy),
                 StoppedOutput::Terminated { output, .. } => {
                     let message = process_message(&output, policy.redactions, policy.output_limit);
@@ -382,6 +585,22 @@ where
                         policy.timeout.as_millis(),
                         message
                     );
+                }
+                StoppedOutput::CleanupUnconfirmed {
+                    capture,
+                    scope,
+                    detail,
+                } => {
+                    return Err(cleanup_unconfirmed_error(
+                        recovery,
+                        child,
+                        Some(capture),
+                        permit,
+                        Some(CommandStopReason::DeadlineExceeded),
+                        scope,
+                        policy.label,
+                        detail,
+                    ));
                 }
             }
         }
@@ -601,17 +820,12 @@ where
 
 #[cfg(all(unix, not(target_os = "fuchsia")))]
 fn capture_start_failure<T>(
-    child: &mut Child,
-    label: &str,
-    termination_scope: CommandTerminationScope,
+    _child: &mut Child,
+    _label: &str,
+    _termination_scope: CommandTerminationScope,
     error: anyhow::Error,
 ) -> Result<T> {
-    match terminate_without_capture(child, label, termination_scope) {
-        Ok(()) => Err(error),
-        Err(cleanup_error) => Err(error.context(format!(
-            "also failed to terminate {label}: {cleanup_error:#}"
-        ))),
-    }
+    Err(error)
 }
 
 #[cfg(any(not(unix), target_os = "fuchsia"))]
@@ -718,18 +932,12 @@ enum ReapOutcome {
         scope: CommandTerminationScope,
     },
     Completed(ExitStatus),
-    TerminationFailed {
-        status: ExitStatus,
-        error: io::Error,
-    },
 }
 
 impl ReapOutcome {
     const fn status(&self) -> ExitStatus {
         match self {
-            Self::Terminated { status, .. }
-            | Self::Completed(status)
-            | Self::TerminationFailed { status, .. } => *status,
+            Self::Terminated { status, .. } | Self::Completed(status) => *status,
         }
     }
 }
@@ -740,39 +948,242 @@ enum StoppedOutput {
         scope: CommandTerminationScope,
     },
     Completed(Output),
+    CleanupUnconfirmed {
+        capture: OutputCapture,
+        scope: CommandTerminationScope,
+        detail: String,
+    },
 }
 
-fn terminate_and_collect(
-    child: &mut Child,
-    capture: OutputCapture,
-    label: &str,
+enum BoundedReapOutcome {
+    Reaped(ReapOutcome),
+    CleanupUnconfirmed {
+        scope: CommandTerminationScope,
+        detail: String,
+    },
+}
+
+struct CommandRecovery {
+    child: Child,
+    capture: Option<OutputCapture>,
     termination_scope: CommandTerminationScope,
-) -> Result<StoppedOutput> {
-    let outcome = terminate_and_reap(child, label, termination_scope)?;
-    let output = output_from_capture(outcome.status(), capture, label)?;
-    match outcome {
-        ReapOutcome::Terminated { scope, .. } => Ok(StoppedOutput::Terminated { output, scope }),
-        ReapOutcome::Completed(_) => Ok(StoppedOutput::Completed(output)),
-        ReapOutcome::TerminationFailed { error, .. } => {
-            Err(error).with_context(|| format!("failed to terminate {label}"))
+    _permit: CommandPermit,
+}
+
+impl Drop for CommandRecovery {
+    fn drop(&mut self) {
+        if let Some(capture) = self.capture.as_mut() {
+            let _capture_result = capture.drain_available();
+        }
+        let _termination_result = request_termination(&mut self.child, self.termination_scope);
+        let _reap_result = self.child.try_wait();
+    }
+}
+
+fn start_command_recovery_worker() -> std::result::Result<mpsc::SyncSender<CommandRecovery>, String>
+{
+    let (sender, receiver) = mpsc::sync_channel(MAX_CONCURRENT_COMMANDS);
+    thread::Builder::new()
+        .name("command-process-recovery".to_owned())
+        .spawn(move || run_command_recovery_queue(&receiver))
+        .map_err(|error| format!("failed to start command recovery worker: {error}"))?;
+    Ok(sender)
+}
+
+fn command_recovery_sender() -> Result<mpsc::SyncSender<CommandRecovery>> {
+    match &*COMMAND_RECOVERY {
+        Ok(sender) => Ok(sender.clone()),
+        Err(error) => bail!(error.clone()),
+    }
+}
+
+fn handoff_command_recovery(
+    sender: mpsc::SyncSender<CommandRecovery>,
+    recovery: CommandRecovery,
+) -> std::result::Result<(), CommandRecovery> {
+    sender.try_send(recovery).map_err(|error| match error {
+        mpsc::TrySendError::Full(recovery) | mpsc::TrySendError::Disconnected(recovery) => recovery,
+    })
+}
+
+fn run_command_recovery_queue(receiver: &mpsc::Receiver<CommandRecovery>) {
+    let mut pending = VecDeque::new();
+    loop {
+        if pending.is_empty() {
+            match receiver.recv() {
+                Ok(recovery) => pending.push_back(recovery),
+                Err(_) => return,
+            }
+        }
+        pending.extend(receiver.try_iter());
+        let pass_count = pending.len();
+        for _ in 0..pass_count {
+            let Some(mut recovery) = pending.pop_front() else {
+                break;
+            };
+            if !recover_command_process(&mut recovery) {
+                pending.push_back(recovery);
+            }
+        }
+        if !pending.is_empty() {
+            thread::sleep(TERMINATION_RETRY_INTERVAL);
         }
     }
 }
 
-fn terminate_after_capture_failure(
+fn recover_command_process(recovery: &mut CommandRecovery) -> bool {
+    if let Some(capture) = recovery.capture.as_mut() {
+        let _capture_result = capture.drain_available();
+    }
+    let _termination_result = request_termination(&mut recovery.child, recovery.termination_scope);
+    match recovery.child.try_wait() {
+        Ok(Some(_)) => true,
+        Ok(None) | Err(_) => false,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cleanup_unconfirmed_error(
+    sender: mpsc::SyncSender<CommandRecovery>,
+    child: Child,
+    capture: Option<OutputCapture>,
+    permit: CommandPermit,
+    reason: Option<CommandStopReason>,
+    scope: CommandTerminationScope,
+    label: &str,
+    detail: String,
+) -> anyhow::Error {
+    let recovery_status = match handoff_command_recovery(
+        sender,
+        CommandRecovery {
+            child,
+            capture,
+            termination_scope: scope,
+            _permit: permit,
+        },
+    ) {
+        Ok(()) => "process recovery ownership accepted",
+        Err(_recovery) => {
+            "process recovery ownership was unavailable; one final nonblocking cleanup attempt was made"
+        }
+    };
+    CommandCleanupUnconfirmed::new(
+        reason,
+        scope,
+        format!(
+            "{label} cleanup was not confirmed within {} ms after command stop: {detail}; {recovery_status}",
+            TERMINATION_REAP_WINDOW.as_millis(),
+        ),
+    )
+    .into()
+}
+
+fn terminate_and_collect_bounded_with<R, W>(
     child: &mut Child,
     capture: OutputCapture,
     label: &str,
     termination_scope: CommandTerminationScope,
-) -> Result<()> {
-    let outcome = terminate_and_reap(child, label, termination_scope)?;
-    drop(capture);
-    match outcome {
-        ReapOutcome::Terminated { .. } | ReapOutcome::Completed(_) => Ok(()),
-        ReapOutcome::TerminationFailed { error, .. } => {
-            Err(error).with_context(|| format!("failed to terminate {label}"))
+    request_stop: &mut R,
+    poll_reap: &mut W,
+) -> Result<StoppedOutput>
+where
+    R: FnMut(&mut Child, CommandTerminationScope) -> io::Result<CommandTerminationScope>,
+    W: FnMut(&mut Child) -> io::Result<Option<ExitStatus>>,
+{
+    match terminate_and_reap_bounded_with(child, label, termination_scope, request_stop, poll_reap)?
+    {
+        BoundedReapOutcome::Reaped(outcome) => {
+            let output = output_from_capture(outcome.status(), capture, label)?;
+            match outcome {
+                ReapOutcome::Terminated { scope, .. } => {
+                    Ok(StoppedOutput::Terminated { output, scope })
+                }
+                ReapOutcome::Completed(_) => Ok(StoppedOutput::Completed(output)),
+            }
+        }
+        BoundedReapOutcome::CleanupUnconfirmed { scope, detail } => {
+            Ok(StoppedOutput::CleanupUnconfirmed {
+                capture,
+                scope,
+                detail,
+            })
         }
     }
+}
+
+fn terminate_and_reap_bounded_with<R, W>(
+    child: &mut Child,
+    label: &str,
+    termination_scope: CommandTerminationScope,
+    request_stop: &mut R,
+    poll_reap: &mut W,
+) -> Result<BoundedReapOutcome>
+where
+    R: FnMut(&mut Child, CommandTerminationScope) -> io::Result<CommandTerminationScope>,
+    W: FnMut(&mut Child) -> io::Result<Option<ExitStatus>>,
+{
+    let mut last_error = match poll_reap(child) {
+        Ok(Some(status)) => {
+            return Ok(BoundedReapOutcome::Reaped(ReapOutcome::Completed(status)));
+        }
+        Ok(None) => None,
+        Err(error) => Some(error),
+    };
+    let started = Instant::now();
+    let deadline = started
+        .checked_add(TERMINATION_REAP_WINDOW)
+        .unwrap_or(started);
+    let request_retry_window = TERMINATION_RETRY_WINDOW.min(TERMINATION_REAP_WINDOW / 2);
+    let request_retry_deadline = started.checked_add(request_retry_window).unwrap_or(started);
+    let mut requested_scope = None;
+    loop {
+        if requested_scope.is_none() {
+            match request_stop(child, termination_scope) {
+                Ok(scope) => requested_scope = Some(scope),
+                Err(error) => last_error = Some(error),
+            }
+            if requested_scope.is_none() && Instant::now() >= request_retry_deadline {
+                match child.kill() {
+                    Ok(()) => requested_scope = Some(CommandTerminationScope::DirectChild),
+                    Err(error) => last_error = Some(error),
+                }
+            }
+        }
+        match poll_reap(child) {
+            Ok(Some(status)) => {
+                let outcome = requested_scope.map_or_else(
+                    || ReapOutcome::Completed(status),
+                    |scope| requested_reap_outcome(status, scope),
+                );
+                return Ok(BoundedReapOutcome::Reaped(outcome));
+            }
+            Ok(None) => {}
+            Err(error) => last_error = Some(error),
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        thread::sleep(TERMINATION_RETRY_INTERVAL);
+    }
+    if requested_scope.is_none() {
+        match child.kill() {
+            Ok(()) => requested_scope = Some(CommandTerminationScope::DirectChild),
+            Err(error) => last_error = Some(error),
+        }
+        if let Ok(Some(status)) = poll_reap(child) {
+            let outcome = requested_scope.map_or_else(
+                || ReapOutcome::Completed(status),
+                |scope| requested_reap_outcome(status, scope),
+            );
+            return Ok(BoundedReapOutcome::Reaped(outcome));
+        }
+    }
+    let scope = requested_scope.unwrap_or(termination_scope);
+    let detail = last_error.map_or_else(
+        || format!("{label} direct child was not reaped after termination request"),
+        |error| format!("{label} direct child was not reaped; last cleanup error: {error}"),
+    );
+    Ok(BoundedReapOutcome::CleanupUnconfirmed { scope, detail })
 }
 
 fn output_from_capture(status: ExitStatus, capture: OutputCapture, label: &str) -> Result<Output> {
@@ -784,28 +1195,7 @@ fn output_from_capture(status: ExitStatus, capture: OutputCapture, label: &str) 
     })
 }
 
-#[cfg(all(unix, not(target_os = "fuchsia")))]
-fn terminate_without_capture(
-    child: &mut Child,
-    label: &str,
-    termination_scope: CommandTerminationScope,
-) -> Result<()> {
-    match terminate_and_reap(child, label, termination_scope)? {
-        ReapOutcome::Terminated { .. } | ReapOutcome::Completed(_) => Ok(()),
-        ReapOutcome::TerminationFailed { error, .. } => {
-            Err(error).with_context(|| format!("failed to terminate {label}"))
-        }
-    }
-}
-
-fn terminate_and_reap(
-    child: &mut Child,
-    label: &str,
-    termination_scope: CommandTerminationScope,
-) -> Result<ReapOutcome> {
-    terminate_and_reap_with(child, label, termination_scope, request_termination)
-}
-
+#[cfg(test)]
 fn terminate_and_reap_with<F>(
     child: &mut Child,
     label: &str,
@@ -815,54 +1205,11 @@ fn terminate_and_reap_with<F>(
 where
     F: FnMut(&mut Child, CommandTerminationScope) -> io::Result<CommandTerminationScope>,
 {
-    if let Ok(Some(status)) = child.try_wait() {
-        return Ok(ReapOutcome::Completed(status));
-    }
-    let mut last_error: io::Error;
-
-    let retry_started = Instant::now();
-    let retry_deadline = retry_started
-        .checked_add(TERMINATION_RETRY_WINDOW)
-        .unwrap_or(retry_started);
-    loop {
-        match request(child, termination_scope) {
-            Ok(scope) => {
-                let status = wait_reaped(child, label)?;
-                return Ok(requested_reap_outcome(status, scope));
-            }
-            Err(error) => last_error = error,
-        }
-
-        match child.try_wait() {
-            Ok(Some(status)) => return Ok(ReapOutcome::Completed(status)),
-            Ok(None) => {}
-            Err(_) => {}
-        }
-        if Instant::now() >= retry_deadline {
-            break;
-        }
-        thread::sleep(TERMINATION_RETRY_INTERVAL);
-    }
-
-    match child.kill() {
-        Ok(()) => {
-            let status = wait_reaped(child, label)?;
-            Ok(requested_reap_outcome(
-                status,
-                CommandTerminationScope::DirectChild,
-            ))
-        }
-        Err(fallback_error) => {
-            if let Ok(Some(status)) = child.try_wait() {
-                return Ok(ReapOutcome::Completed(status));
-            }
-            let status = wait_reaped(child, label)?;
-            let error = io::Error::new(
-                last_error.kind(),
-                format!("{last_error}; direct-child fallback also failed: {fallback_error}"),
-            );
-            Ok(ReapOutcome::TerminationFailed { status, error })
-        }
+    let mut poll = Child::try_wait;
+    match terminate_and_reap_bounded_with(child, label, termination_scope, &mut request, &mut poll)?
+    {
+        BoundedReapOutcome::Reaped(outcome) => Ok(outcome),
+        BoundedReapOutcome::CleanupUnconfirmed { detail, .. } => bail!(detail),
     }
 }
 
@@ -872,18 +1219,6 @@ fn requested_reap_outcome(status: ExitStatus, scope: CommandTerminationScope) ->
         return ReapOutcome::Completed(status);
     }
     ReapOutcome::Terminated { status, scope }
-}
-
-fn wait_reaped(child: &mut Child, label: &str) -> Result<ExitStatus> {
-    loop {
-        match child.wait() {
-            Ok(status) => return Ok(status),
-            Err(error) if error.kind() == ErrorKind::Interrupted => {}
-            Err(error) => {
-                return Err(error).with_context(|| format!("failed to reap stopped {label}"));
-            }
-        }
-    }
 }
 
 #[cfg(all(unix, not(target_os = "fuchsia")))]
@@ -1297,10 +1632,17 @@ mod tests {
             .context("escaped command deadline overflow")?;
         let started = Instant::now();
 
-        let result = run_command_controlled(
+        // This regression owns its command budget: the assertion below is
+        // specifically about post-spawn process-group teardown, while the
+        // shared production budget may legitimately expire this short control
+        // deadline before spawning when unrelated command tests run in parallel.
+        let budget = CommandBudget::new(1);
+        let result = run_command_inner_with(
             escaped_pipe_holder_command(&ready, &direct_pid, &escaped_pid),
             test_policy(Duration::from_millis(1)),
-            CommandControl::new(CancellationToken::new(), deadline),
+            Some(CommandControl::new(CancellationToken::new(), deadline)),
+            &budget,
+            Child::try_wait,
         );
         let elapsed = started.elapsed();
         let error = command_error(
@@ -1555,6 +1897,137 @@ mod tests {
             bail!("termination request was not retried: {attempts} attempt(s)");
         }
         assert_process_gone(&pid, Duration::from_secs(2))?;
+        Ok(())
+    }
+
+    #[test]
+    fn stalled_reap_is_handed_off_with_typed_cleanup_uncertainty() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let pid = directory.path().join("pid");
+        let budget = CommandBudget::new(1);
+        let deadline = Instant::now()
+            .checked_add(Duration::from_millis(50))
+            .context("stalled-reap command deadline overflow")?;
+        let started = Instant::now();
+
+        let result = run_command_inner_with_termination(
+            shell_command("printf '%s' \"$$\" > \"$1\"; while :; do :; done", &[&pid]),
+            test_policy(Duration::from_millis(1)),
+            Some(CommandControl::new(CancellationToken::new(), deadline)),
+            &budget,
+            Child::try_wait,
+            request_termination,
+            |_child| Ok(None),
+        );
+        let elapsed = started.elapsed();
+        let error = command_error(result, "stalled-reap command unexpectedly completed")?;
+
+        let cleanup = error
+            .downcast_ref::<CommandCleanupUnconfirmed>()
+            .context("stalled reap lost typed cleanup uncertainty")?;
+        if cleanup.reason() != Some(CommandStopReason::DeadlineExceeded) {
+            bail!("stalled reap lost its stop reason: {cleanup}");
+        }
+        if elapsed >= Duration::from_secs(1) {
+            bail!("stalled reap exceeded bounded handoff budget: {elapsed:?}");
+        }
+        assert_process_gone(&pid, Duration::from_secs(2))?;
+        Ok(())
+    }
+
+    #[test]
+    fn initial_reap_poll_error_is_killed_and_handed_to_recovery() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let pid = directory.path().join("pid");
+        let budget = CommandBudget::new(1);
+        let deadline = Instant::now()
+            .checked_add(Duration::from_millis(50))
+            .context("poll-error command deadline overflow")?;
+
+        let result = run_command_inner_with_termination(
+            shell_command("printf '%s' \"$$\" > \"$1\"; while :; do :; done", &[&pid]),
+            test_policy(Duration::from_millis(1)),
+            Some(CommandControl::new(CancellationToken::new(), deadline)),
+            &budget,
+            Child::try_wait,
+            request_termination,
+            |_child| Err(io::Error::other("injected initial reap poll failure")),
+        );
+        let error = command_error(result, "reap-poll-error command unexpectedly completed")?;
+        let cleanup = error
+            .downcast_ref::<CommandCleanupUnconfirmed>()
+            .context("initial reap poll error lost typed cleanup uncertainty")?;
+
+        if cleanup.reason() != Some(CommandStopReason::DeadlineExceeded)
+            || !cleanup
+                .to_string()
+                .contains("injected initial reap poll failure")
+        {
+            bail!("initial reap poll error lost cleanup evidence: {cleanup}");
+        }
+        assert_process_gone(&pid, Duration::from_secs(2))?;
+        Ok(())
+    }
+
+    #[test]
+    fn recovery_owner_retains_command_admission_until_reap() -> Result<()> {
+        let budget = CommandBudget::new(1);
+        let policy = test_policy(Duration::from_millis(1));
+        let permit = budget.acquire(&policy, None, Some(Instant::now() + TEST_TIMEOUT))?;
+        let mut command = shell_command("while :; do :; done", &[]);
+        let termination_scope = configure_termination_scope(&mut command);
+        let capture_setup = CaptureSetup::configure(&mut command, policy.label)?;
+        let mut child = command.spawn()?;
+        let capture = capture_setup.start(&mut child, policy.label, termination_scope)?;
+        let mut recovery = CommandRecovery {
+            child,
+            capture: Some(capture),
+            termination_scope,
+            _permit: permit,
+        };
+        let blocked_deadline = Instant::now()
+            .checked_add(Duration::from_millis(50))
+            .context("recovery admission deadline overflow")?;
+
+        let blocked = budget
+            .acquire(
+                &policy,
+                Some(&CommandControl::new(
+                    CancellationToken::new(),
+                    blocked_deadline,
+                )),
+                None,
+            )
+            .err()
+            .context("recovery owner released command admission before reap")?;
+        let blocked = blocked
+            .downcast_ref::<CommandTerminated>()
+            .context("recovery admission wait lost typed termination")?;
+        if blocked.reason() != CommandStopReason::DeadlineExceeded
+            || blocked.scope() != CommandTerminationScope::NoProcess
+        {
+            bail!("unexpected recovery admission evidence: {blocked}");
+        }
+
+        let reap_deadline = Instant::now()
+            .checked_add(Duration::from_secs(2))
+            .context("recovery owner reap deadline overflow")?;
+        while !recover_command_process(&mut recovery) {
+            if Instant::now() >= reap_deadline {
+                bail!("recovery owner did not reap its retained command");
+            }
+            thread::sleep(TERMINATION_RETRY_INTERVAL);
+        }
+        drop(recovery);
+        let available = budget.acquire(
+            &policy,
+            Some(&CommandControl::new(
+                CancellationToken::new(),
+                Instant::now() + TEST_TIMEOUT,
+            )),
+            None,
+        )?;
+        drop(available);
         Ok(())
     }
 

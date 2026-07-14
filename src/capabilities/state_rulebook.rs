@@ -8,7 +8,10 @@ use super::{
     runtime_evidence,
     runtime_inputs::{CapabilityRuntimeInputs, ResolvedConnector},
 };
-use crate::source_routing::network_adapter_policy_for_connector;
+use crate::{
+    source_routing::network_adapter_policy_for_connector,
+    support::settings_backup::SETTINGS_BACKUP_MAX_BYTES,
+};
 
 pub(super) fn capability_state(
     inputs: &CapabilityRuntimeInputs,
@@ -109,6 +112,23 @@ fn storage_state(
         connector,
         sub_capabilities,
     );
+    let state = if connector.id == "logoscore_cli_storage_module"
+        && inputs
+            .source_report_for("storage")
+            .is_some_and(|report| !logoscore_backup_download_contract_supported(report))
+    {
+        merge_state_constraints(
+            state,
+            vec!["storage.backup.sync_read_by_cid".to_owned()],
+            vec!["Storage module lacks the bounded CLI backup download contract".to_owned()],
+            vec![
+                "storage.backup.sync_read_by_cid requires Storage download v2 operation identity and LogosCore watch v1 readiness"
+                    .to_owned(),
+            ],
+        )
+    } else {
+        state
+    };
     if connector.id != "direct_storage_rest" || inputs.storage_mutating_diagnostics_enabled {
         return state;
     }
@@ -123,6 +143,112 @@ fn storage_state(
         vec!["Storage mutating diagnostics are disabled".to_owned()],
         Vec::new(),
     )
+}
+
+fn logoscore_backup_download_contract_supported(report: &serde_json::Value) -> bool {
+    let Some(module_info) = storage_module_info_value(report) else {
+        return false;
+    };
+    let methods = module_info
+        .get("methods")
+        .and_then(serde_json::Value::as_array);
+    let events = module_info
+        .get("events")
+        .and_then(serde_json::Value::as_array);
+    let method_matches = |name: &str, signature: &str| {
+        methods.is_some_and(|methods| {
+            methods.iter().any(|method| {
+                method.get("name").and_then(serde_json::Value::as_str) == Some(name)
+                    && method.get("signature").and_then(serde_json::Value::as_str)
+                        == Some(signature)
+                    && method
+                        .get("isInvokable")
+                        .and_then(serde_json::Value::as_bool)
+                        == Some(true)
+            })
+        })
+    };
+    let metadata_supported = method_matches("downloadProtocol", "downloadProtocol()")
+        && method_matches(
+            "downloadToUrlV2",
+            "downloadToUrlV2(QString,QString,bool,int,QString,int)",
+        )
+        && method_matches("downloadCancelV2", "downloadCancelV2(QString)")
+        && events.is_some_and(|events| {
+            events.iter().any(|event| {
+                event.get("name").and_then(serde_json::Value::as_str)
+                    == Some("storageDownloadDoneV2")
+                    && event.get("signature").and_then(serde_json::Value::as_str)
+                        == Some("storageDownloadDoneV2(QString)")
+            })
+        });
+    metadata_supported && logoscore_backup_download_readiness_supported(report)
+}
+
+fn logoscore_backup_download_readiness_supported(report: &serde_json::Value) -> bool {
+    report
+        .get("probes")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|probes| {
+            probes.iter().any(|probe| {
+                probe.get("probe_key").and_then(serde_json::Value::as_str)
+                    == Some("backupDownloadReadiness")
+                    && probe.get("ok").and_then(serde_json::Value::as_bool) == Some(true)
+                    && probe
+                        .pointer("/value/shared_staging")
+                        .and_then(serde_json::Value::as_bool)
+                        == Some(true)
+                    && probe
+                        .pointer("/value/contract/protocol")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("logos.storage.download")
+                    && probe
+                        .pointer("/value/contract/version")
+                        .and_then(serde_json::Value::as_u64)
+                        == Some(2)
+                    && probe
+                        .pointer("/value/contract/moduleOperationIdOwner")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("caller")
+                    && probe
+                        .pointer("/value/contract/cancelTimeoutMs")
+                        .and_then(serde_json::Value::as_u64)
+                        == Some(15_000)
+                    && probe
+                        .pointer("/value/contract/maxDownloadBytes")
+                        .and_then(serde_json::Value::as_u64)
+                        .is_some_and(|max_bytes| max_bytes >= SETTINGS_BACKUP_MAX_BYTES as u64)
+                    && probe
+                        .pointer("/value/watch_protocol/protocol")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("logoscore.watch")
+                    && probe
+                        .pointer("/value/watch_protocol/version")
+                        .and_then(serde_json::Value::as_u64)
+                        == Some(1)
+                    && probe
+                        .pointer("/value/watch_protocol/ready")
+                        .and_then(serde_json::Value::as_bool)
+                        == Some(true)
+            })
+        })
+}
+
+fn storage_module_info_value(report: &serde_json::Value) -> Option<&serde_json::Value> {
+    let module_info = report.get("module_info")?;
+    if module_info.get("ok").is_some()
+        && module_info.get("ok").and_then(serde_json::Value::as_bool) != Some(true)
+    {
+        return None;
+    }
+    [
+        module_info.pointer("/value/value"),
+        module_info.get("value"),
+        Some(module_info),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|value| value.get("methods").is_some())
 }
 
 fn delivery_state(

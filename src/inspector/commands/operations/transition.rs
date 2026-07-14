@@ -35,6 +35,9 @@ pub(super) enum RuntimeOperationTransition {
     CancellationUnconfirmed {
         error: String,
     },
+    CleanupUnconfirmed {
+        error: String,
+    },
     TimedOut {
         error: String,
     },
@@ -278,15 +281,43 @@ pub(super) fn apply_runtime_operation_transition(
             Ok(TransitionDisposition::Applied)
         }
         RuntimeOperationTransition::CancellationUnconfirmed { error } => {
+            let disposition = if record.operation.status == RuntimeOperationStatus::Canceling {
+                TransitionDisposition::EvidenceOnly
+            } else {
+                apply_cancel_requested(record)?
+            };
             push_runtime_operation_event_locked(
                 record,
                 "cancellation_unconfirmed",
-                "adapter stopped locally without remote termination evidence",
+                "adapter cleanup lacks remote termination evidence",
                 record.operation.progress,
                 None,
                 Some(error),
             )?;
-            Ok(TransitionDisposition::EvidenceOnly)
+            Ok(disposition)
+        }
+        RuntimeOperationTransition::CleanupUnconfirmed { error } => {
+            let disposition = if record.operation.status == RuntimeOperationStatus::Canceling {
+                TransitionDisposition::EvidenceOnly
+            } else {
+                record.operation.status = RuntimeOperationStatus::Canceling;
+                TransitionDisposition::Applied
+            };
+            if record.operation.error.is_none() {
+                let (retained, redacted_bytes) =
+                    bounded_terminal_operation_error(Some(error.clone()));
+                record.operation.error = retained;
+                record.error_redacted_bytes = redacted_bytes;
+            }
+            push_runtime_operation_event_locked(
+                record,
+                "cleanup_unconfirmed",
+                "adapter cleanup lacks remote termination evidence",
+                record.operation.progress,
+                None,
+                Some(error),
+            )?;
+            Ok(disposition)
         }
         RuntimeOperationTransition::TimedOut { error } => {
             terminalize(
@@ -764,6 +795,9 @@ fn stale_transition_message(transition: &RuntimeOperationTransition) -> &'static
         }
         RuntimeOperationTransition::CancellationUnconfirmed { .. } => {
             "unconfirmed cancellation arrived after terminal state"
+        }
+        RuntimeOperationTransition::CleanupUnconfirmed { .. } => {
+            "unconfirmed cleanup arrived after terminal state"
         }
         RuntimeOperationTransition::TimedOut { .. } => "timeout arrived after terminal state",
         RuntimeOperationTransition::Shutdown { .. } => "shutdown arrived after terminal state",

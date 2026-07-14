@@ -6,7 +6,7 @@ use crate::modules::logos_core::{
     ModuleTransportKind, SharedModuleTransport,
 };
 use crate::support::command_runner::{
-    CommandStopReason, CommandTerminated, CommandTerminationScope,
+    CommandCleanupUnconfirmed, CommandStopReason, CommandTerminated, CommandTerminationScope,
 };
 use anyhow::Result;
 
@@ -16,8 +16,8 @@ use super::{
     outcome::RuntimeOperationOutcome,
     storage,
     supervisor::{
-        OperationAdapterClosed, OperationControl, OperationInterrupted, OperationStopReason,
-        TerminationEvidence,
+        OperationAdapterClosed, OperationCleanupUnconfirmed, OperationControl,
+        OperationInterrupted, OperationStopReason, TerminationEvidence,
     },
     wallet,
 };
@@ -30,6 +30,12 @@ struct ControlledModuleTransport {
 impl ModuleTransport for ControlledModuleTransport {
     fn kind(&self) -> ModuleTransportKind {
         self.transport.kind()
+    }
+
+    fn logoscore_cli_transport(
+        &self,
+    ) -> Option<&crate::modules::logos_core::LogoscoreCliTransport> {
+        self.transport.logoscore_cli_transport()
     }
 
     fn call(&self, call: ModuleCall) -> ModuleCallFuture<'_> {
@@ -99,6 +105,9 @@ pub(super) fn normalize_command_execution<T>(
     no_process_evidence: TerminationEvidence,
 ) -> Result<T> {
     result.map_err(|error| {
+        if error.downcast_ref::<CommandCleanupUnconfirmed>().is_some() {
+            return OperationCleanupUnconfirmed::new(error.to_string()).into();
+        }
         let Some(terminated) = error.downcast_ref::<CommandTerminated>() else {
             return error;
         };
@@ -153,6 +162,9 @@ where
 
 fn normalize_execution_result<T>(result: Result<T>) -> Result<T> {
     result.map_err(|error| {
+        if error.downcast_ref::<CommandCleanupUnconfirmed>().is_some() {
+            return OperationCleanupUnconfirmed::new(error.to_string()).into();
+        }
         if let Some(terminated) = error.downcast_ref::<ModuleCallTerminated>() {
             let reason = match terminated.reason() {
                 ModuleCallStopReason::CancelRequested => OperationStopReason::CancelRequested,
