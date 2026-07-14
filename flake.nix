@@ -3,6 +3,10 @@
 
   inputs = {
     logos-module-builder.url = "github:logos-co/logos-module-builder/0.2.0";
+    logos-module-builder.inputs.logos-protocol.follows = "logos-protocol";
+    logos-protocol.url = "path:./nix/logos-protocol-overlay";
+    logos-protocol.inputs.logos-nix.follows = "logos-module-builder/logos-nix";
+    logos-protocol.inputs.nixpkgs.follows = "logos-module-builder/nixpkgs";
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
   };
 

@@ -1,0 +1,3314 @@
+diff --git a/cpp/CMakeLists.txt b/cpp/CMakeLists.txt
+index 1c024fd..dc27b9d 100644
+--- a/cpp/CMakeLists.txt
++++ b/cpp/CMakeLists.txt
+@@ -22,6 +22,7 @@ set(PROTOCOL_SOURCES
+     logos_protocol.h
+     logos_module_impl.h
+     logos_call_error.h
++    logos_async_outcome.h
+     logos_protocol.cpp
+     logos_types.cpp
+     logos_types.h
+@@ -187,7 +188,7 @@ configure_package_config_file(
+ )
+ write_basic_package_version_file(
+     "${CMAKE_CURRENT_BINARY_DIR}/logos-protocolConfigVersion.cmake"
+-    VERSION 0.1.0
++    VERSION 0.2.1
+     COMPATIBILITY SameMajorVersion
+ )
+ install(FILES
+@@ -203,6 +204,7 @@ install(FILES
+     logos_protocol.h
+     logos_module_impl.h
+     logos_call_error.h
++    logos_async_outcome.h
+     logos_types.h
+     logos_api_client.h
+     logos_api_consumer.h
+diff --git a/cpp/implementations/mock/mock_transport.h b/cpp/implementations/mock/mock_transport.h
+index 0131d79..728448f 100644
+--- a/cpp/implementations/mock/mock_transport.h
++++ b/cpp/implementations/mock/mock_transport.h
+@@ -29,17 +29,17 @@ public:
+         return MockStore::instance().recordAndReturn(m_moduleName, methodName, args);
+     }
+ 
+-    void callMethodAsync(const QString& /*authToken*/,
+-                         const QString& methodName,
+-                         const QVariantList& args,
+-                         int /*timeoutMs*/,
+-                         AsyncResultCallback callback) override
++    void callMethodAsyncOutcome(const QString& /*authToken*/,
++                                const QString& methodName,
++                                const QVariantList& args,
++                                int /*timeoutMs*/,
++                                AsyncOutcomeCallback callback) override
+     {
+         if (!callback) return;
+         QString mod = m_moduleName;
+         QTimer::singleShot(0, [mod, methodName, args, callback]() {
+             QVariant result = MockStore::instance().recordAndReturn(mod, methodName, args);
+-            callback(result);
++            callback(logos::AsyncCallOutcome::success(std::move(result)));
+         });
+     }
+ 
+diff --git a/cpp/implementations/plain/plain_logos_object.cpp b/cpp/implementations/plain/plain_logos_object.cpp
+index 6c9b829..9a7108c 100644
+--- a/cpp/implementations/plain/plain_logos_object.cpp
++++ b/cpp/implementations/plain/plain_logos_object.cpp
+@@ -20,6 +20,7 @@ PlainLogosObject::PlainLogosObject(std::string objectName,
+                                    std::shared_ptr<RpcConnectionBase> conn)
+     : m_objectName(std::move(objectName))
+     , m_conn(std::move(conn))
++    , m_completionState(std::make_shared<CompletionState>())
+ {
+ }
+ 
+@@ -64,85 +65,118 @@ QVariant PlainLogosObject::callMethod(const QString& authToken,
+     if (value.typeId() == QMetaType::QVariantMap) {
+         const QVariantMap m = value.toMap();
+         if (m.contains(logos::pendingCallKey()))
+-            return awaitCompletion(m.value(logos::pendingCallKey()).toString(), timeoutMs);
++            return awaitCompletion(m_completionState,
++                                   m.value(logos::pendingCallKey()).toString(),
++                                   timeoutMs);
+     }
+     return value;
+ }
+ 
+ void PlainLogosObject::ensureCompletionSub()
+ {
++    const std::shared_ptr<CompletionState> state = m_completionState;
+     {
+-        std::lock_guard<std::mutex> g(m_completionMu);
+-        if (m_completionSubscribed) return;
+-        m_completionSubscribed = true;
++        std::lock_guard<std::mutex> g(state->mutex);
++        if (state->subscribed) return;
++        state->subscribed = true;
+     }
+     // Reuse the normal event subscription path (tracked in m_subs, so
+     // disconnectEvents() tears it down). The handler fires on the connection's
+     // IO thread; it buffers the result and wakes any waiter.
+-    onEvent(logos::callCompleteEvent(), [this](const QString&, const QVariantList& data) {
++    onEvent(logos::callCompleteEvent(), [state](const QString&, const QVariantList& data) {
+         if (data.size() != 2) return;
+         const QString callId = data.at(0).toString();
+         {
+-            std::lock_guard<std::mutex> g(m_completionMu);
+-            m_completions[callId] = data.at(1);
++            std::lock_guard<std::mutex> g(state->mutex);
++            state->completions[callId] = data.at(1);
+         }
+-        m_completionCv.notify_all();
++        state->cv.notify_all();
+     });
+ }
+ 
+-QVariant PlainLogosObject::awaitCompletion(const QString& callId, int timeoutMs)
++QVariant PlainLogosObject::awaitCompletion(
++    const std::shared_ptr<CompletionState>& state,
++    const QString& callId,
++    int timeoutMs)
+ {
+-    std::unique_lock<std::mutex> lk(m_completionMu);
++    std::unique_lock<std::mutex> lk(state->mutex);
+     const auto deadline = std::chrono::steady_clock::now()
+         + std::chrono::milliseconds(timeoutMs > 0 ? timeoutMs : 30000);
+-    const bool got = m_completionCv.wait_until(lk, deadline,
+-        [&] { return m_completions.count(callId) > 0; });
++    const bool got = state->cv.wait_until(lk, deadline,
++        [&] { return state->completions.count(callId) > 0; });
+     if (!got) {
+         qWarning() << "PlainLogosObject: deferred call" << callId << "timed out";
+         return QVariant();
+     }
+-    const QVariant result = m_completions[callId];
+-    m_completions.erase(callId);
++    const QVariant result = state->completions[callId];
++    state->completions.erase(callId);
+     return result;
+ }
+ 
++logos::AsyncCallOutcome PlainLogosObject::awaitCompletionOutcome(
++    const std::shared_ptr<CompletionState>& state,
++    const QString& callId,
++    int timeoutMs,
++    const std::string& objectName)
++{
++    std::unique_lock<std::mutex> lk(state->mutex);
++    const auto deadline = std::chrono::steady_clock::now()
++        + std::chrono::milliseconds(timeoutMs > 0 ? timeoutMs : 30000);
++    const bool got = state->cv.wait_until(lk, deadline,
++        [&] { return state->completions.count(callId) > 0; });
++    if (!got) {
++        return logos::AsyncCallOutcome::failure(
++            "timeout", "timed out waiting for deferred module result", objectName);
++    }
++    QVariant result = state->completions[callId];
++    state->completions.erase(callId);
++    return logos::AsyncCallOutcome::success(std::move(result));
++}
++
+ namespace {
+ 
+-// Hand `callback(result)` over to the Qt event loop so PlainLogosObject's
+-// async path matches LogosObject's interface contract: callbacks are
+-// always delivered on a subsequent event-loop iteration, on the Qt
+-// thread, never synchronously and never racing with QObjects/UI code.
++// Hand `callback(result)` over to the Qt event loop when one exists. Plain
++// consumers do not require QCoreApplication, so a process without Qt runtime
++// state receives the callback from a detached protocol worker instead.
+ //
+ // Using QCoreApplication::instance() as the anchor means the queued
+ // invocation lands on whichever thread runs the Qt event loop in this
+ // process, regardless of which worker thread completed the future.
+-// If the application has shut down (instance() is null), we drop the
+-// callback rather than invoke it from an arbitrary thread.
+-void postToQtEventLoop(PlainLogosObject::AsyncResultCallback callback,
+-                       QVariant result)
++// Both branches are deferred: this helper never invokes user code inline.
++void postToQtEventLoop(PlainLogosObject::AsyncOutcomeCallback callback,
++                       logos::AsyncCallOutcome outcome)
+ {
+     QCoreApplication* app = QCoreApplication::instance();
+-    if (!app) return;
++    if (!app) {
++        std::thread(
++            [callback = std::move(callback), outcome = std::move(outcome)]() mutable {
++                callback(std::move(outcome));
++            })
++            .detach();
++        return;
++    }
+     QMetaObject::invokeMethod(app,
+-        [callback = std::move(callback), result = std::move(result)]() mutable {
+-            callback(result);
++        [callback = std::move(callback), outcome = std::move(outcome)]() mutable {
++            callback(std::move(outcome));
+         },
+         Qt::QueuedConnection);
+ }
+ 
+ } // anonymous namespace
+ 
+-void PlainLogosObject::callMethodAsync(const QString& authToken,
+-                                       const QString& methodName,
+-                                       const QVariantList& args,
+-                                       int timeoutMs,
+-                                       AsyncResultCallback callback)
++void PlainLogosObject::callMethodAsyncOutcome(const QString& authToken,
++                                              const QString& methodName,
++                                              const QVariantList& args,
++                                              int timeoutMs,
++                                              AsyncOutcomeCallback callback)
+ {
+     if (!callback) return;
+     if (!m_conn || !m_conn->isOpen()) {
+         // Defer even the failure path — LogosObject's contract requires
+         // callbacks on a subsequent event-loop iteration, never inline.
+-        postToQtEventLoop(std::move(callback), QVariant());
++        postToQtEventLoop(std::move(callback), logos::AsyncCallOutcome::failure(
++            "object_unavailable", "plain transport connection is unavailable",
++            m_objectName));
+         return;
+     }
+ 
+@@ -157,28 +191,47 @@ void PlainLogosObject::callMethodAsync(const QString& authToken,
+ 
+     auto fut = std::make_shared<std::future<ResultMessage>>(
+         m_conn->sendCall(std::move(msg)));
++    const std::shared_ptr<CompletionState> completionState = m_completionState;
++    const std::string objectName = m_objectName;
+ 
+     // Waiter thread is per-call but the callback hops back to the Qt
+     // event loop before running, so it never races with Qt objects. A
+     // future iteration can fold this wait into the shared Asio
+     // io_context (the connection already runs on it) so we don't spin
+     // up a thread per pending RPC.
+-    std::thread([this, fut, timeoutMs, callback = std::move(callback)]() mutable {
++    std::thread([fut, timeoutMs, callback = std::move(callback),
++                 completionState, objectName]() mutable {
+         if (fut->wait_for(std::chrono::milliseconds(timeoutMs))
+             != std::future_status::ready) {
+-            postToQtEventLoop(std::move(callback), QVariant());
++            postToQtEventLoop(std::move(callback), logos::AsyncCallOutcome::failure(
++                "timeout", "timed out waiting for module result", objectName));
+             return;
+         }
+         auto res = fut->get();
+-        QVariant value = res.ok ? rpcValueToQVariant(res.value) : QVariant();
++        if (!res.ok) {
++            std::string code = "invoke_failed";
++            if (res.errCode == "TRANSPORT_ERROR") code = "transport_error";
++            else if (res.errCode == "TRANSPORT_CLOSED") code = "transport_closed";
++            else if (res.errCode == "MODULE_NOT_LOADED") code = "object_unavailable";
++            postToQtEventLoop(std::move(callback), logos::AsyncCallOutcome::failure(
++                std::move(code), res.err.empty() ? "module call failed" : res.err,
++                objectName));
++            return;
++        }
++        QVariant value = rpcValueToQVariant(res.value);
+         // Resolve a "multi" provider's deferred completion (sentinel → wait for
+         // the completion event) right here on the waiter thread.
+         if (value.typeId() == QMetaType::QVariantMap) {
+             const QVariantMap m = value.toMap();
+             if (m.contains(logos::pendingCallKey()))
+-                value = awaitCompletion(m.value(logos::pendingCallKey()).toString(), timeoutMs);
++                return postToQtEventLoop(std::move(callback),
++                    awaitCompletionOutcome(
++                        completionState,
++                        m.value(logos::pendingCallKey()).toString(), timeoutMs,
++                        objectName));
+         }
+-        postToQtEventLoop(std::move(callback), std::move(value));
++        postToQtEventLoop(std::move(callback),
++                          logos::AsyncCallOutcome::success(std::move(value)));
+     }).detach();
+ }
+ 
+diff --git a/cpp/implementations/plain/plain_logos_object.h b/cpp/implementations/plain/plain_logos_object.h
+index 87f6df1..e3dafad 100644
+--- a/cpp/implementations/plain/plain_logos_object.h
++++ b/cpp/implementations/plain/plain_logos_object.h
+@@ -34,11 +34,11 @@ public:
+                         const QVariantList& args,
+                         int timeoutMs) override;
+ 
+-    void callMethodAsync(const QString& authToken,
+-                         const QString& methodName,
+-                         const QVariantList& args,
+-                         int timeoutMs,
+-                         AsyncResultCallback callback) override;
++    void callMethodAsyncOutcome(const QString& authToken,
++                                const QString& methodName,
++                                const QVariantList& args,
++                                int timeoutMs,
++                                AsyncOutcomeCallback callback) override;
+ 
+     bool informModuleToken(const QString& authToken,
+                            const QString& moduleName,
+@@ -53,25 +53,36 @@ public:
+     quintptr id() const override;
+ 
+ private:
++    struct CompletionState {
++        std::mutex mutex;
++        std::condition_variable cv;
++        std::map<QString, QVariant> completions;
++        bool subscribed = false;
++    };
++
+     // Deferred ("multi") completion rendezvous. A multi provider returns a
+     // pending sentinel (logos::pendingCallKey) from callMethod and later pushes
+     // the real result as a logos::callCompleteEvent event keyed by callId. We
+     // subscribe to that event EAGERLY (before any call can defer) so a completion
+     // racing ahead of the waiter is buffered, then block the caller until the
+     // matching callId lands. The completion arrives on the connection's IO
+-    // thread; the caller waits on another thread — m_completionMu/Cv bridge them.
++    // thread; the caller waits on another thread. Shared CompletionState bridges
++    // them and outlives this handle when an async call races release().
+     void ensureCompletionSub();
+-    QVariant awaitCompletion(const QString& callId, int timeoutMs);
++    static QVariant awaitCompletion(const std::shared_ptr<CompletionState>& state,
++                                    const QString& callId,
++                                    int timeoutMs);
++    static logos::AsyncCallOutcome awaitCompletionOutcome(
++        const std::shared_ptr<CompletionState>& state,
++        const QString& callId,
++        int timeoutMs,
++        const std::string& objectName);
+ 
+     std::string                          m_objectName;
+     std::shared_ptr<RpcConnectionBase>   m_conn;
+     std::mutex                           m_mu;
+     std::vector<std::pair<QString, EventCallback>> m_subs;
+-
+-    std::mutex                           m_completionMu;
+-    std::condition_variable              m_completionCv;
+-    std::map<QString, QVariant>          m_completions;
+-    bool                                 m_completionSubscribed = false;
++    std::shared_ptr<CompletionState>      m_completionState;
+ };
+ 
+ } // namespace logos::plain
+diff --git a/cpp/implementations/plain/rpc_connection.h b/cpp/implementations/plain/rpc_connection.h
+index 7613bc0..846b8a4 100644
+--- a/cpp/implementations/plain/rpc_connection.h
++++ b/cpp/implementations/plain/rpc_connection.h
+@@ -45,6 +45,7 @@ public:
+ 
+     virtual void start() = 0;
+     virtual void stop(const std::string& reason = "stopped") = 0;
++    virtual void detachHandler() = 0;
+     virtual bool isOpen() const = 0;
+ 
+     virtual std::future<ResultMessage>        sendCall(CallMessage msg) = 0;
+@@ -85,6 +86,7 @@ public:
+ 
+     void start() override;
+     void stop(const std::string& reason = "stopped") override;
++    void detachHandler() override;
+     bool isOpen() const override { return !m_stopped.load(); }
+ 
+     std::future<ResultMessage>        sendCall(CallMessage msg) override;
+@@ -116,6 +118,7 @@ private:
+     Stream                                       m_stream;
+     std::shared_ptr<IWireCodec>                  m_codec;
+     IncomingCallHandler*                         m_handler;
++    std::mutex                                   m_handlerMutex;
+     boost::asio::strand<boost::asio::any_io_executor> m_strand;
+ 
+     // Read side
+@@ -169,6 +172,16 @@ void RpcConnection<Stream>::stop(const std::string& reason)
+     fail(reason);
+ }
+ 
++template <typename Stream>
++void RpcConnection<Stream>::detachHandler()
++{
++    // Host shutdown calls this before the IncomingCallHandler is destroyed.
++    // Serializing with dispatch guarantees no IO callback can invoke the raw
++    // host pointer after detachHandler() returns.
++    std::lock_guard<std::mutex> g(m_handlerMutex);
++    m_handler = nullptr;
++}
++
+ template <typename Stream>
+ void RpcConnection<Stream>::doRead()
+ {
+@@ -249,36 +262,41 @@ void RpcConnection<Stream>::dispatchIncoming(AnyMessage msg)
+             if (wildcardCb) wildcardCb(m);
+ 
+         } else if constexpr (std::is_same_v<T, CallMessage>) {
+-            if (!m_handler) return;
+             auto self = this->shared_from_this();
++            std::lock_guard<std::mutex> g(m_handlerMutex);
++            if (!m_handler) return;
+             m_handler->onCall(m, [self](ResultMessage res) {
+                 self->writeFrame(encodeFrame(*self->m_codec, AnyMessage{std::move(res)}));
+             });
+ 
+         } else if constexpr (std::is_same_v<T, MethodsMessage>) {
+-            if (!m_handler) return;
+             auto self = this->shared_from_this();
++            std::lock_guard<std::mutex> g(m_handlerMutex);
++            if (!m_handler) return;
+             m_handler->onMethods(m, [self](MethodsResultMessage res) {
+                 self->writeFrame(encodeFrame(*self->m_codec, AnyMessage{std::move(res)}));
+             });
+ 
+         } else if constexpr (std::is_same_v<T, SubscribeMessage>) {
+-            if (!m_handler) return;
+             // weak_ptr capture so the host's stored sink doesn't keep the
+             // connection alive past its natural lifetime — without this,
+             // `[self]` would leak every subscribed connection until
+             // unsubscribe (which a crashing client never sends).
+             std::weak_ptr<RpcConnection<Stream>> weak = this->shared_from_this();
+             const void* connId = static_cast<const void*>(this);
++            std::lock_guard<std::mutex> g(m_handlerMutex);
++            if (!m_handler) return;
+             m_handler->onSubscribe(m, [weak](EventMessage evt) {
+                 if (auto self = weak.lock()) self->sendEvent(std::move(evt));
+             }, connId);
+ 
+         } else if constexpr (std::is_same_v<T, UnsubscribeMessage>) {
++            std::lock_guard<std::mutex> g(m_handlerMutex);
+             if (m_handler)
+                 m_handler->onUnsubscribe(m, static_cast<const void*>(this));
+ 
+         } else if constexpr (std::is_same_v<T, TokenMessage>) {
++            std::lock_guard<std::mutex> g(m_handlerMutex);
+             if (m_handler) m_handler->onToken(m);
+         }
+     }, std::move(msg));
+@@ -429,9 +447,12 @@ void RpcConnection<Stream>::fail(const std::string& reason)
+     // Notify the dispatch handler so it can drop any subscriptions still
+     // keyed to this connection. Without this, a connection that drops
+     // without sending Unsubscribe leaks sinks in the host's per-event map.
+-    if (m_handler) {
+-        try { m_handler->onConnectionClosed(static_cast<const void*>(this)); }
+-        catch (...) {}
++    {
++        std::lock_guard<std::mutex> g(m_handlerMutex);
++        if (m_handler) {
++            try { m_handler->onConnectionClosed(static_cast<const void*>(this)); }
++            catch (...) {}
++        }
+     }
+ 
+     if (errCb) errCb(reason);
+diff --git a/cpp/implementations/plain/rpc_server.cpp b/cpp/implementations/plain/rpc_server.cpp
+index 7c8a25f..0aa11ba 100644
+--- a/cpp/implementations/plain/rpc_server.cpp
++++ b/cpp/implementations/plain/rpc_server.cpp
+@@ -55,11 +55,15 @@ void RpcServerTcp::stop()
+     {
+         std::lock_guard<std::mutex> g(m_mu);
+         m_stopped = true;
++        m_handler = nullptr;
+         boost::system::error_code ignore;
+         m_acceptor.close(ignore);
+         conns.swap(m_conns);
+     }
+-    for (auto& c : conns) c->stop("server stopped");
++    for (auto& c : conns) {
++        c->detachHandler();
++        c->stop("server stopped");
++    }
+ }
+ 
+ void RpcServerTcp::doAccept()
+@@ -69,22 +73,23 @@ void RpcServerTcp::doAccept()
+         [self](const boost::system::error_code& ec,
+                boost::asio::ip::tcp::socket socket) {
+             if (ec) return;  // acceptor probably closed; quietly exit.
+-            auto conn = std::make_shared<TcpConnection>(
+-                std::move(socket), self->m_codec, self->m_handler);
++            std::shared_ptr<TcpConnection> conn;
++            std::weak_ptr<RpcServerTcp> weakSelf = self;
+             {
+                 std::lock_guard<std::mutex> g(self->m_mu);
+-                if (self->m_stopped) { conn->stop("server stopped"); return; }
++                if (self->m_stopped) return;
++                conn = std::make_shared<TcpConnection>(
++                    std::move(socket), self->m_codec, self->m_handler);
+                 self->m_conns.push_back(conn);
++                conn->setErrorHandler([weakSelf, conn](const std::string&) {
++                    auto s = weakSelf.lock();
++                    if (!s) return;
++                    std::lock_guard<std::mutex> g(s->m_mu);
++                    s->m_conns.erase(
++                        std::remove(s->m_conns.begin(), s->m_conns.end(), conn),
++                        s->m_conns.end());
++                });
+             }
+-            std::weak_ptr<RpcServerTcp> weakSelf = self;
+-            conn->setErrorHandler([weakSelf, conn](const std::string&) {
+-                auto s = weakSelf.lock();
+-                if (!s) return;
+-                std::lock_guard<std::mutex> g(s->m_mu);
+-                s->m_conns.erase(
+-                    std::remove(s->m_conns.begin(), s->m_conns.end(), conn),
+-                    s->m_conns.end());
+-            });
+             conn->start();
+             self->doAccept();
+         });
+@@ -134,11 +139,15 @@ void RpcServerSsl::stop()
+     {
+         std::lock_guard<std::mutex> g(m_mu);
+         m_stopped = true;
++        m_handler = nullptr;
+         boost::system::error_code ignore;
+         m_acceptor.close(ignore);
+         conns.swap(m_conns);
+     }
+-    for (auto& c : conns) c->stop("server stopped");
++    for (auto& c : conns) {
++        c->detachHandler();
++        c->stop("server stopped");
++    }
+ }
+ 
+ void RpcServerSsl::doAccept()
+@@ -171,22 +180,23 @@ void RpcServerSsl::doAccept()
+                     // duration of async_handshake (so the buffer
+                     // outlives the dispatch); now move the underlying
+                     // stream into the connection by value.
+-                    auto conn = std::make_shared<SslConnection>(
+-                        std::move(*stream), self->m_codec, self->m_handler);
++                    std::shared_ptr<SslConnection> conn;
++                    std::weak_ptr<RpcServerSsl> weakSelf = self;
+                     {
+                         std::lock_guard<std::mutex> g(self->m_mu);
+-                        if (self->m_stopped) { conn->stop("server stopped"); return; }
++                        if (self->m_stopped) return;
++                        conn = std::make_shared<SslConnection>(
++                            std::move(*stream), self->m_codec, self->m_handler);
+                         self->m_conns.push_back(conn);
++                        conn->setErrorHandler([weakSelf, conn](const std::string&) {
++                            auto s = weakSelf.lock();
++                            if (!s) return;
++                            std::lock_guard<std::mutex> g(s->m_mu);
++                            s->m_conns.erase(
++                                std::remove(s->m_conns.begin(), s->m_conns.end(), conn),
++                                s->m_conns.end());
++                        });
+                     }
+-                    std::weak_ptr<RpcServerSsl> weakSelf = self;
+-                    conn->setErrorHandler([weakSelf, conn](const std::string&) {
+-                        auto s = weakSelf.lock();
+-                        if (!s) return;
+-                        std::lock_guard<std::mutex> g(s->m_mu);
+-                        s->m_conns.erase(
+-                            std::remove(s->m_conns.begin(), s->m_conns.end(), conn),
+-                            s->m_conns.end());
+-                    });
+                     conn->start();
+                 });
+             self->doAccept();
+diff --git a/cpp/implementations/qt_local/local_transport.cpp b/cpp/implementations/qt_local/local_transport.cpp
+index 55d1c3e..d0529fc 100644
+--- a/cpp/implementations/qt_local/local_transport.cpp
++++ b/cpp/implementations/qt_local/local_transport.cpp
+@@ -3,6 +3,7 @@
+ #include "../../module_proxy.h"
+ #include <QDebug>
+ #include <QMetaObject>
++#include <QPointer>
+ #include <QTimer>
+ 
+ // ── LocalLogosObject ─────────────────────────────────────────────────────────
+@@ -41,8 +42,8 @@ private:
+ 
+ class LocalLogosObject : public LogosObject {
+ public:
+-    explicit LocalLogosObject(ModuleProxy* proxy)
+-        : m_proxy(proxy), m_helper(nullptr)
++    LocalLogosObject(ModuleProxy* proxy, QString objectName)
++        : m_proxy(proxy), m_helper(nullptr), m_objectName(std::move(objectName))
+     {
+         qDebug() << "[LogosObject] Created LocalLogosObject wrapping ModuleProxy" << reinterpret_cast<quintptr>(proxy);
+     }
+@@ -62,21 +63,37 @@ public:
+         return m_proxy->callRemoteMethod(authToken, methodName, args);
+     }
+ 
+-    void callMethodAsync(const QString& authToken,
+-                         const QString& methodName,
+-                         const QVariantList& args,
+-                         int /*timeoutMs*/,
+-                         AsyncResultCallback callback) override
++    void callMethodAsyncOutcome(const QString& authToken,
++                                const QString& methodName,
++                                const QVariantList& args,
++                                int /*timeoutMs*/,
++                                AsyncOutcomeCallback callback) override
+     {
+         if (!callback) return;
+         if (!m_proxy) {
+-            QTimer::singleShot(0, [callback]() { callback(QVariant()); });
++            const QString origin = m_objectName;
++            QTimer::singleShot(0, [callback, origin]() {
++                callback(logos::AsyncCallOutcome::failure(
++                    "object_unavailable", "local module object is unavailable",
++                    origin.toStdString()));
++            });
+             return;
+         }
+-        ModuleProxy* proxy = m_proxy;
+-        QTimer::singleShot(0, [proxy, authToken, methodName, args, callback]() {
+-            QVariant result = proxy->callRemoteMethod(authToken, methodName, args);
+-            callback(result);
++        QPointer<ModuleProxy> proxy(m_proxy);
++        const QString origin = m_objectName;
++        QTimer::singleShot(0, [proxy, authToken, methodName, args, callback,
++                              origin]() mutable {
++            if (!proxy) {
++                callback(logos::AsyncCallOutcome::failure(
++                    "object_unavailable", "local module object is unavailable",
++                    origin.toStdString()));
++                return;
++            }
++            logos::AsyncCallOutcome outcome =
++                proxy->callRemoteMethodOutcome(authToken, methodName, args);
++            if (!outcome.ok() && outcome.error.origin.empty())
++                outcome.error.origin = origin.toStdString();
++            callback(std::move(outcome));
+         });
+     }
+ 
+@@ -105,7 +122,9 @@ public:
+ 
+     void disconnectEvents() override
+     {
+-        delete m_helper;
++        if (m_helper && m_proxy)
++            QObject::disconnect(m_proxy, nullptr, m_helper, nullptr);
++        if (m_helper) m_helper->deleteLater();
+         m_helper = nullptr;
+     }
+ 
+@@ -129,6 +148,7 @@ public:
+     {
+         // Local mode: we don't own the ModuleProxy, just stop using it
+         disconnectEvents();
++        delete this;
+     }
+ 
+     quintptr id() const override { return reinterpret_cast<quintptr>(m_proxy); }
+@@ -136,6 +156,7 @@ public:
+ private:
+     ModuleProxy* m_proxy;
+     EventHelper* m_helper;
++    QString m_objectName;
+ };
+ 
+ // ── LocalTransportHost ───────────────────────────────────────────────────────
+@@ -188,7 +209,7 @@ LogosObject* LocalTransportConnection::requestObject(const QString& objectName,
+     }
+ 
+     qDebug() << "[LogosObject] LocalTransportConnection: returning LocalLogosObject for:" << objectName;
+-    return new LocalLogosObject(proxy);
++    return new LocalLogosObject(proxy, objectName);
+ }
+ 
+ #include "local_transport.moc"
+diff --git a/cpp/implementations/qt_remote/remote_transport.cpp b/cpp/implementations/qt_remote/remote_transport.cpp
+index 56aedc4..cd804c2 100644
+--- a/cpp/implementations/qt_remote/remote_transport.cpp
++++ b/cpp/implementations/qt_remote/remote_transport.cpp
+@@ -14,6 +14,11 @@
+ #include <QJsonArray>
+ #include <QVariantMap>
+ 
++#include <atomic>
++#include <memory>
++#include <string>
++#include <utility>
++
+ // ── RemoteLogosObject ────────────────────────────────────────────────────────
+ 
+ namespace {
+@@ -50,8 +55,8 @@ private:
+ 
+ class RemoteLogosObject : public LogosObject {
+ public:
+-    explicit RemoteLogosObject(QObject* replica)
+-        : m_replica(replica), m_helper(nullptr)
++    RemoteLogosObject(QObject* replica, QString objectName)
++        : m_replica(replica), m_helper(nullptr), m_objectName(std::move(objectName))
+     {
+         qDebug() << "[LogosObject] Created RemoteLogosObject wrapping QRemoteObjectReplica" << reinterpret_cast<quintptr>(replica);
+         if (m_replica) {
+@@ -87,7 +92,9 @@ public:
+                         // first (mirrors the QPointer guard in invokeRemoteMethodAsync).
+                         if (cb)
+                             QTimer::singleShot(0, m_helper,
+-                                [cb = std::move(cb), result]() { cb(result); });
++                                [cb = std::move(cb), result]() {
++                                    cb(logos::AsyncCallOutcome::success(result));
++                                });
+                     }
+                 });
+         }
+@@ -146,15 +153,20 @@ public:
+         return resolveDeferred(pendingCall.returnValue(), timeoutMs);
+     }
+ 
+-    void callMethodAsync(const QString& authToken,
+-                         const QString& methodName,
+-                         const QVariantList& args,
+-                         int timeoutMs,
+-                         AsyncResultCallback callback) override
++    void callMethodAsyncOutcome(const QString& authToken,
++                                const QString& methodName,
++                                const QVariantList& args,
++                                int timeoutMs,
++                                AsyncOutcomeCallback callback) override
+     {
+         if (!callback) return;
+         if (!m_replica) {
+-            QTimer::singleShot(0, [callback]() { callback(QVariant()); });
++            const QString origin = m_objectName;
++            QTimer::singleShot(0, [callback, origin]() {
++                callback(logos::AsyncCallOutcome::failure(
++                    "object_unavailable", "remote module replica is unavailable",
++                    origin.toStdString()));
++            });
+             return;
+         }
+ 
+@@ -173,11 +185,20 @@ public:
+ 
+         if (!success) {
+             qWarning() << "RemoteLogosObject: Failed to invoke callRemoteMethod on replica (async)";
+-            QTimer::singleShot(0, [callback]() { callback(QVariant()); });
++            const QString origin = m_objectName;
++            QTimer::singleShot(0, [callback, origin]() {
++                callback(logos::AsyncCallOutcome::failure(
++                    "invoke_failed", "failed to invoke callRemoteMethod on replica",
++                    origin.toStdString()));
++            });
+             return;
+         }
+ 
+         auto* watcher = new QRemoteObjectPendingCallWatcher(pendingCall);
++        auto completed = std::make_shared<std::atomic_bool>(false);
++        auto completeOnce = [completed, callback](logos::AsyncCallOutcome outcome) mutable {
++            if (!completed->exchange(true)) callback(std::move(outcome));
++        };
+ 
+         // Timeout timer -- parented to the watcher so it is auto-deleted
+         // when the watcher is destroyed, preventing late timeout callbacks.
+@@ -186,14 +207,25 @@ public:
+ 
+         // Success handler -- delivers result on the consumer's thread
+         QObject::connect(watcher, &QRemoteObjectPendingCallWatcher::finished,
+-                         watcher, [this, callback, timer, timeoutMs](QRemoteObjectPendingCallWatcher* w) {
++                         watcher, [this, completeOnce, completed, timer, timeoutMs](QRemoteObjectPendingCallWatcher* w) mutable {
++            if (completed->load()) {
++                w->deleteLater();
++                return;
++            }
+             timer->stop(); // cancel timeout
+             QVariant result;
+-            if (w->error() == QRemoteObjectPendingCall::NoError) {
+-                result = w->returnValue();
+-            } else {
++            if (w->error() != QRemoteObjectPendingCall::NoError) {
+                 qWarning() << "RemoteLogosObject: async callMethod error:" << w->error();
++                const auto errorValue = static_cast<int>(w->error());
++                w->deleteLater();
++                completeOnce(logos::AsyncCallOutcome::failure(
++                    "transport_error",
++                    "remote call failed with Qt Remote Objects error "
++                        + std::to_string(errorValue),
++                    m_objectName.toStdString()));
++                return;
+             }
++            result = w->returnValue();
+             w->deleteLater();
+             // A "multi" provider may have deferred the result: wait for the
+             // completion event instead of delivering the pending sentinel.
+@@ -201,25 +233,35 @@ public:
+                 const QVariantMap m = result.toMap();
+                 if (m.contains(logos::pendingCallKey())) {
+                     const QString callId = m.value(logos::pendingCallKey()).toString();
+-                    if (m_completions.contains(callId)) { callback(m_completions.take(callId)); return; }
+-                    m_asyncCompletionCbs.insert(callId, callback);
+-                    // Bound the wait: deliver an empty result once if it never lands.
++                    if (m_completions.contains(callId)) {
++                        completeOnce(logos::AsyncCallOutcome::success(
++                            m_completions.take(callId)));
++                        return;
++                    }
++                    m_asyncCompletionCbs.insert(callId, completeOnce);
++                    // Bound the wait and report a typed timeout if it never lands.
+                     QTimer::singleShot(timeoutMs, m_helper, [this, callId]() {
+                         if (m_asyncCompletionCbs.contains(callId)) {
+                             auto cb = m_asyncCompletionCbs.take(callId);
+-                            if (cb) cb(QVariant());
++                            if (cb) cb(logos::AsyncCallOutcome::failure(
++                                "timeout", "timed out waiting for deferred module result",
++                                m_objectName.toStdString()));
+                         }
+                     });
+                     return;
+                 }
+             }
+-            callback(result);
++            completeOnce(logos::AsyncCallOutcome::success(std::move(result)));
+         }, Qt::QueuedConnection);
+ 
+-        // Timeout handler -- stops the watcher and delivers empty result
+-        QObject::connect(timer, &QTimer::timeout, watcher, [watcher, callback]() {
++        // Timeout handler -- stops the watcher and reports a typed failure.
++        QObject::connect(timer, &QTimer::timeout, watcher,
++                         [this, watcher, completeOnce, completed]() mutable {
++            if (completed->load()) return;
+             qWarning() << "RemoteLogosObject: async callMethod timed out";
+-            callback(QVariant());
++            completeOnce(logos::AsyncCallOutcome::failure(
++                "timeout", "timed out waiting for remote module result",
++                m_objectName.toStdString()));
+             watcher->deleteLater(); // also destroys the timer (child)
+         });
+ 
+@@ -368,7 +410,8 @@ private:
+     // Touched only on the consumer event-loop thread.
+     QHash<QString, QVariant> m_completions;
+     QHash<QString, QEventLoop*> m_completionWaiters;
+-    QHash<QString, AsyncResultCallback> m_asyncCompletionCbs;
++    QHash<QString, AsyncOutcomeCallback> m_asyncCompletionCbs;
++    QString m_objectName;
+ };
+ 
+ // ── RemoteTransportHost ──────────────────────────────────────────────────────
+@@ -499,7 +542,7 @@ LogosObject* RemoteTransportConnection::requestObject(const QString& objectName,
+     }
+ 
+     qDebug() << "[LogosObject] RemoteTransportConnection: returning RemoteLogosObject for:" << objectName;
+-    return new RemoteLogosObject(replica);
++    return new RemoteLogosObject(replica, objectName);
+ }
+ 
+ #include "remote_transport.moc"
+diff --git a/cpp/logos_api_client.cpp b/cpp/logos_api_client.cpp
+index acc93ec..be12c9c 100644
+--- a/cpp/logos_api_client.cpp
++++ b/cpp/logos_api_client.cpp
+@@ -151,17 +151,30 @@ void LogosAPIClient::invokeRemoteMethodAsync(const QString& objectName, const QS
+                                               Timeout timeout)
+ {
+     if (!callback) return;
++    invokeRemoteMethodAsyncOutcome(objectName, methodName, args,
++        [callback = std::move(callback)](logos::AsyncCallOutcome outcome) mutable {
++            callback(outcome.ok() ? std::move(outcome.value) : QVariant());
++        }, timeout);
++}
++
++void LogosAPIClient::invokeRemoteMethodAsyncOutcome(
++    const QString& objectName, const QString& methodName, const QVariantList& args,
++    AsyncOutcomeCallback callback, Timeout timeout)
++{
++    if (!callback) return;
+ 
+     // The async path acquires a replica too, so it must also run on the owner
+     // thread. Unlike the sync path we post non-blocking (QueuedConnection): the
+     // worker caller returns immediately and the result callback fires on the
+     // owner thread when the reply arrives.
+     if (QThread::currentThread() != this->thread()) {
++        QPointer<LogosAPIClient> self(this);
+         QMetaObject::invokeMethod(this,
+-            [this, objectName, methodName, args,
++            [self, objectName, methodName, args,
+              callback = std::move(callback), timeout]() mutable {
+-                invokeRemoteMethodAsync(objectName, methodName, args,
+-                                        std::move(callback), timeout);
++                if (!self) return;
++                self->invokeRemoteMethodAsyncOutcome(
++                    objectName, methodName, args, std::move(callback), timeout);
+             },
+             Qt::QueuedConnection);
+         return;
+@@ -188,9 +201,13 @@ void LogosAPIClient::invokeRemoteMethodAsync(const QString& objectName, const QS
+         // thread, reached above, so no lock is needed.
+         m_pendingHandshakes[objectName].push_back(
+             [this, objectName, methodName, args, timeout, cb = std::move(callback)]
+-            (const QString& tok) mutable {
+-                m_consumer->invokeRemoteMethodAsync(tok, objectName, methodName, args,
+-                                                    std::move(cb), timeout);
++            (const QString& tok, const logos::CallError& error) mutable {
++                if (!error.ok()) {
++                    cb({ {}, error });
++                    return;
++                }
++                m_consumer->invokeRemoteMethodAsyncOutcome(
++                    tok, objectName, methodName, args, std::move(cb), timeout);
+             });
+         if (m_pendingHandshakes[objectName].size() > 1)
+             return;  // a handshake for this target is already in flight
+@@ -202,32 +219,39 @@ void LogosAPIClient::invokeRemoteMethodAsync(const QString& objectName, const QS
+         // requestModule round-trip is in flight, the guard goes null and we drop
+         // the queued continuations instead of dereferencing dangling memory.
+         QPointer<LogosAPIClient> self(this);
+-        m_capability_consumer->invokeRemoteMethodAsync(
++        m_capability_consumer->invokeRemoteMethodAsyncOutcome(
+             capabilityToken,
+             QStringLiteral("capability_module"),
+             QStringLiteral("requestModule"),
+             QVariantList() << origin << objectName,
+-            [self, objectName](const QVariant& tokenResult) mutable {
++            [self, objectName](logos::AsyncCallOutcome tokenOutcome) mutable {
+                 if (!self) return;  // client destroyed mid-flight
+-                const QString tok = tokenResult.toString();
++                const QString tok = tokenOutcome.ok()
++                    ? tokenOutcome.value.toString() : QString();
+                 // Cache the minted token before draining so future calls skip the handshake — m_pendingHandshakes only coalesces the first burst, the cache stops a second burst from racing the same rotation.
+                 if (!tok.isEmpty()) self->m_token_manager->saveToken(objectName, tok);
+                 // Drain every continuation queued for this target with the one
+                 // minted token — the target was informed of exactly this token.
+-                // An empty tok (handshake failed) still flows through: the
+-                // consumer call is then rejected and each callback fires with an
+-                // invalid QVariant, so callers never hang.
++                // Preserve the transport error, or synthesize a capability error
++                // when the capability module succeeds without returning a token.
+                 auto it = self->m_pendingHandshakes.find(objectName);
+                 if (it == self->m_pendingHandshakes.end()) return;
+-                std::vector<std::function<void(const QString&)>> calls = std::move(it.value());
++                std::vector<PendingHandshakeCall> calls = std::move(it.value());
+                 self->m_pendingHandshakes.erase(it);
+-                for (auto& c : calls) c(tok);
++                logos::CallError error = std::move(tokenOutcome.error);
++                if (error.ok() && tok.isEmpty()) {
++                    error.code = "capability_unavailable";
++                    error.message = "capability module returned no token";
++                    error.origin = "capability_module";
++                }
++                for (auto& c : calls) c(tok, error);
+             },
+             timeout);
+         return;
+     }
+ 
+-    m_consumer->invokeRemoteMethodAsync(token, objectName, methodName, args, std::move(callback), timeout);
++    m_consumer->invokeRemoteMethodAsyncOutcome(
++        token, objectName, methodName, args, std::move(callback), timeout);
+ }
+ 
+ void LogosAPIClient::invokeRemoteMethodAsync(const QString& objectName, const QString& methodName,
+diff --git a/cpp/logos_api_client.h b/cpp/logos_api_client.h
+index 5422e83..f430a15 100644
+--- a/cpp/logos_api_client.h
++++ b/cpp/logos_api_client.h
+@@ -11,6 +11,7 @@
+ #include <vector>
+ 
+ #include "logos_call_error.h"
++#include "logos_async_outcome.h"
+ #include "logos_mode.h"
+ #include "logos_transport_config.h"
+ #include <nlohmann/json.hpp>
+@@ -188,6 +189,13 @@ public:
+     }
+ 
+     using AsyncResultCallback = std::function<void(QVariant)>;
++    using AsyncOutcomeCallback = std::function<void(logos::AsyncCallOutcome)>;
++
++    void invokeRemoteMethodAsyncOutcome(const QString& objectName,
++                                        const QString& methodName,
++                                        const QVariantList& args,
++                                        AsyncOutcomeCallback callback,
++                                        Timeout timeout = Timeout());
+ 
+     void invokeRemoteMethodAsync(const QString& objectName, const QString& methodName,
+                                  const QVariantList& args, AsyncResultCallback callback,
+@@ -293,7 +301,9 @@ private:
+     // calls carry a superseded token and get rejected. Touched only on the
+     // owner thread (invokeRemoteMethodAsync marshals there), so it needs no
+     // lock. Appended last per the ABI note above; defaults to empty.
+-    QMap<QString, std::vector<std::function<void(const QString&)>>> m_pendingHandshakes;
++    using PendingHandshakeCall =
++        std::function<void(const QString&, const logos::CallError&)>;
++    QMap<QString, std::vector<PendingHandshakeCall>> m_pendingHandshakes;
+ };
+ 
+ #endif // LOGOS_API_CLIENT_H
+diff --git a/cpp/logos_api_consumer.cpp b/cpp/logos_api_consumer.cpp
+index f46be66..0c54c7b 100644
+--- a/cpp/logos_api_consumer.cpp
++++ b/cpp/logos_api_consumer.cpp
+@@ -137,16 +137,33 @@ void LogosAPIConsumer::invokeRemoteMethodAsync(const QString& authToken, const Q
+                                                 const QVariantList& args,
+                                                 AsyncResultCallback callback,
+                                                 Timeout timeout)
++{
++    if (!callback) return;
++    invokeRemoteMethodAsyncOutcome(authToken, objectName, methodName, args,
++        [callback = std::move(callback)](logos::AsyncCallOutcome outcome) mutable {
++            callback(outcome.ok() ? std::move(outcome.value) : QVariant());
++        }, timeout);
++}
++
++void LogosAPIConsumer::invokeRemoteMethodAsyncOutcome(
++    const QString& authToken, const QString& objectName, const QString& methodName,
++    const QVariantList& args, AsyncOutcomeCallback callback, Timeout timeout)
+ {
+     if (!callback) {
+-        qWarning() << "LogosAPIConsumer: invokeRemoteMethodAsync called with null callback";
++        qWarning() << "LogosAPIConsumer::invokeRemoteMethodAsyncOutcome called with null callback";
+         return;
+     }
+ 
+     LogosObject* plugin = m_transport->requestObject(objectName, timeout.ms);
+     if (!plugin) {
+         qWarning() << "LogosAPIConsumer: Failed to acquire plugin/replica for object:" << objectName;
+-        QTimer::singleShot(0, this, [callback]() { callback(QVariant()); });
++        QTimer::singleShot(0, this, [callback, objectName]() {
++            callback(logos::AsyncCallOutcome::failure(
++                "object_unavailable",
++                "failed to acquire remote object '" + objectName.toStdString()
++                    + "' (module not loaded, not published, or transport failure)",
++                objectName.toStdString()));
++        });
+         return;
+     }
+ 
+@@ -156,8 +173,8 @@ void LogosAPIConsumer::invokeRemoteMethodAsync(const QString& authToken, const Q
+     // No re-queuing needed -- the transport already delivers on a deferred
+     // event-loop iteration (QTimer / QueuedConnection).
+     QPointer<LogosAPIConsumer> self(this);
+-    plugin->callMethodAsync(authToken, methodName, args, timeout.ms,
+-        [plugin, callback, self](QVariant result) {
++    plugin->callMethodAsyncOutcome(authToken, methodName, args, timeout.ms,
++        [plugin, callback, self](logos::AsyncCallOutcome outcome) mutable {
+             // Deliver the result before release(): destroying the replica can
+             // invalidate storage that QVariant still references for some return
+             // types (matches sync invokeRemoteMethod: callMethod then release).
+@@ -165,7 +182,7 @@ void LogosAPIConsumer::invokeRemoteMethodAsync(const QString& authToken, const Q
+                 plugin->release();
+                 return;
+             }
+-            callback(result);
++            callback(std::move(outcome));
+             plugin->release();
+         });
+ }
+diff --git a/cpp/logos_api_consumer.h b/cpp/logos_api_consumer.h
+index 2157d64..f9a274a 100644
+--- a/cpp/logos_api_consumer.h
++++ b/cpp/logos_api_consumer.h
+@@ -12,6 +12,7 @@
+ #include <string>
+ 
+ #include "logos_call_error.h"
++#include "logos_async_outcome.h"
+ #include "logos_mode.h"
+ #include "logos_transport_config.h"
+ 
+@@ -109,6 +110,15 @@ public:
+                                  AsyncResultCallback callback,
+                                  Timeout timeout = Timeout());
+ 
++    using AsyncOutcomeCallback = std::function<void(logos::AsyncCallOutcome)>;
++
++    void invokeRemoteMethodAsyncOutcome(const QString& authToken,
++                                        const QString& objectName,
++                                        const QString& methodName,
++                                        const QVariantList& args,
++                                        AsyncOutcomeCallback callback,
++                                        Timeout timeout = Timeout());
++
+     /**
+      * @brief Register an event listener via LogosObject's callback mechanism
+      * @param originObject The LogosObject that will emit the event
+diff --git a/cpp/logos_async_outcome.h b/cpp/logos_async_outcome.h
+new file mode 100644
+index 0000000..6f6a431
+--- /dev/null
++++ b/cpp/logos_async_outcome.h
+@@ -0,0 +1,34 @@
++#ifndef LOGOS_ASYNC_OUTCOME_H
++#define LOGOS_ASYNC_OUTCOME_H
++
++#include "logos_call_error.h"
++
++#include <QVariant>
++
++#include <string>
++#include <utility>
++
++namespace logos {
++
++struct AsyncCallOutcome {
++    QVariant value;
++    CallError error;
++
++    bool ok() const { return error.ok(); }
++
++    static AsyncCallOutcome success(QVariant value = QVariant())
++    {
++        return { std::move(value), {} };
++    }
++
++    static AsyncCallOutcome failure(std::string code,
++                                    std::string message,
++                                    std::string origin)
++    {
++        return { {}, { std::move(code), std::move(message), std::move(origin) } };
++    }
++};
++
++} // namespace logos
++
++#endif // LOGOS_ASYNC_OUTCOME_H
+diff --git a/cpp/logos_call_error.h b/cpp/logos_call_error.h
+index 34e6564..8e7356f 100644
+--- a/cpp/logos_call_error.h
++++ b/cpp/logos_call_error.h
+@@ -15,9 +15,9 @@ namespace logos {
+ // contract rather than an enum so the set can grow (transport-level codes,
+ // provider dispatch errors) without an ABI break.
+ //
+-// Currently produced:
+-//   "object_unavailable" — the target module/object could not be acquired
+-//                          (not loaded, not published, or transport failure).
++// Canonical infrastructure codes currently include object_unavailable,
++// invoke_failed, transport_error, transport_closed, timeout, and
++// capability_unavailable. Provider/domain error codes may extend this set.
+ struct CallError {
+     std::string code;     // empty = no error
+     std::string message;
+diff --git a/cpp/logos_object.h b/cpp/logos_object.h
+index cedaddd..299a1cf 100644
+--- a/cpp/logos_object.h
++++ b/cpp/logos_object.h
+@@ -8,6 +8,8 @@
+ #include <functional>
+ #include <cstdint>
+ 
++#include "logos_async_outcome.h"
++
+ /**
+  * @brief Abstract interface for a module object handle.
+  *
+@@ -34,12 +36,14 @@ public:
+                                 int timeoutMs) = 0;
+ 
+     using AsyncResultCallback = std::function<void(QVariant)>;
++    using AsyncOutcomeCallback = std::function<void(logos::AsyncCallOutcome)>;
+ 
+     /**
+      * @brief Invoke a method asynchronously; result is delivered via callback.
+      *
+-     * Returns immediately. The callback is always invoked on a subsequent
+-     * event-loop iteration, never synchronously inside this call.
++     * Returns immediately. The callback is never invoked synchronously inside
++     * this call. Qt-backed transports use a subsequent event-loop iteration;
++     * Qt-free transports may use an internal protocol worker thread.
+      *
+      * @param authToken Authentication token for the operation
+      * @param methodName Method to call on the underlying module
+@@ -51,7 +55,14 @@ public:
+                                  const QString& methodName,
+                                  const QVariantList& args,
+                                  int timeoutMs,
+-                                 AsyncResultCallback callback) = 0;
++                                 AsyncResultCallback callback)
++    {
++        if (!callback) return;
++        callMethodAsyncOutcome(authToken, methodName, args, timeoutMs,
++            [callback = std::move(callback)](logos::AsyncCallOutcome outcome) mutable {
++                callback(outcome.ok() ? std::move(outcome.value) : QVariant());
++            });
++    }
+ 
+     /**
+      * @brief Deliver a module token to the underlying module.
+@@ -114,6 +125,26 @@ public:
+      * @brief Stable identity value suitable for use as a hash key.
+      */
+     virtual quintptr id() const = 0;
++
++    /**
++     * @brief Typed asynchronous invocation preserving success-null vs failure.
++     *
++     * Appended after the original virtual surface so existing method slots stay
++     * stable. Legacy subclasses that only override callMethodAsync remain source
++     * compatible; their QVariant result is treated as a successful outcome.
++     */
++    virtual void callMethodAsyncOutcome(const QString& authToken,
++                                        const QString& methodName,
++                                        const QVariantList& args,
++                                        int timeoutMs,
++                                        AsyncOutcomeCallback callback)
++    {
++        if (!callback) return;
++        callMethodAsync(authToken, methodName, args, timeoutMs,
++            [callback = std::move(callback)](QVariant value) mutable {
++                callback(logos::AsyncCallOutcome::success(std::move(value)));
++            });
++    }
+ };
+ 
+ #endif // LOGOS_OBJECT_H
+diff --git a/cpp/logos_protocol.cpp b/cpp/logos_protocol.cpp
+index b3a3e76..6d673e9 100644
+--- a/cpp/logos_protocol.cpp
++++ b/cpp/logos_protocol.cpp
+@@ -6,6 +6,7 @@
+ #include "logos_object.h"
+ #include "logos_transport_config.h"
+ #include "logos_transport_config_json.h"
++#include "logos_thread_marshal.h"
+ #include "logos_types.h"
+ #include "token_manager.h"
+ 
+@@ -13,16 +14,21 @@
+ 
+ #include <QJsonArray>
+ #include <QJsonDocument>
++#include <QMetaObject>
+ #include <QMetaType>
++#include <QPointer>
+ #include <QString>
+ #include <QVariant>
+ #include <QVariantList>
++#include <QThread>
+ 
+ #include <cstdlib>
+ #include <cstring>
+ #include <memory>
+ #include <mutex>
+ #include <string>
++#include <utility>
++#include <vector>
+ 
+ namespace {
+ 
+@@ -71,6 +77,7 @@ bool parseTransportJson(const char* transport_json, LogosTransportConfig& out)
+ struct CbGuard {
+     std::recursive_mutex mutex;
+     bool alive = true;
++    std::size_t activeCallbacks = 0;
+ };
+ 
+ Timeout lpTimeout(int timeout_ms)
+@@ -98,17 +105,125 @@ bool parseArgs(const char* args_json, const QString& origin,
+ 
+ } // namespace
+ 
+-struct lp_client {
++struct ClientState;
++
++struct SubscriptionState {
++    std::recursive_mutex mutex;
++    bool alive = true;
++    LogosObject* object = nullptr;
++    LogosAPIClient* owner = nullptr;
++};
++
++struct ClientState {
++    std::mutex lifecycle;
+     LogosAPIClient* client = nullptr;
++    bool closing = false;
++    bool retirementDeferred = false;
++    bool reentrantRetirement = false;
++    std::size_t activeOperations = 0;
+     QString target;
+     QString origin;
+     std::shared_ptr<CbGuard> guard;
++    std::vector<std::weak_ptr<SubscriptionState>> subscriptions;
+ };
+ 
+-struct lp_subscription {
++class ClientLease {
++public:
++    ClientLease() = default;
++    ClientLease(const ClientLease&) = delete;
++    ClientLease& operator=(const ClientLease&) = delete;
++    ~ClientLease();
++
++    LogosAPIClient* client = nullptr;
++    QString target;
++    QString origin;
+     std::shared_ptr<CbGuard> guard;
++    std::shared_ptr<ClientState> state;
++};
++
++struct lp_client {
++    std::shared_ptr<ClientState> state;
++};
++
++struct lp_subscription {
++    std::shared_ptr<SubscriptionState> state;
+ };
+ 
++static void closeSubscription(const std::shared_ptr<SubscriptionState>& sub)
++{
++    if (!sub) return;
++    // Keep the subscription lock through the NON-BLOCKING enqueue. This makes
++    // detachment and release scheduling one ordered step: a concurrent client
++    // destroy cannot observe a detached object and queue client deletion before
++    // the object release has itself been queued. Event delivery may wait for
++    // this short critical section, but teardown never waits for the Qt owner.
++    std::lock_guard<std::recursive_mutex> lock(sub->mutex);
++    sub->alive = false;
++    LogosObject* object = std::exchange(sub->object, nullptr);
++    LogosAPIClient* owner = std::exchange(sub->owner, nullptr);
++    if (object && owner) {
++        if (QThread::currentThread() == owner->thread()) {
++            object->release();
++        } else {
++            QMetaObject::invokeMethod(
++                owner, [object]() { object->release(); }, Qt::QueuedConnection);
++        }
++    }
++}
++
++static void retireClient(LogosAPIClient* client, bool reentrantCallback)
++{
++    if (!client) return;
++    if (QThread::currentThread() == client->thread() && !reentrantCallback) {
++        delete client;
++    } else {
++        // QObject::deleteLater() is thread-safe and returns immediately. Release
++        // tasks were queued first, so physical object teardown precedes client
++        // retirement once the owner event loop can run again.
++        client->deleteLater();
++    }
++}
++
++static bool acquireClientLease(const std::shared_ptr<ClientState>& state,
++                               ClientLease& lease)
++{
++    if (!state) return false;
++    std::lock_guard<std::mutex> lock(state->lifecycle);
++    if (state->closing || !state->client) return false;
++    ++state->activeOperations;
++    lease.state = state;
++    lease.client = state->client;
++    lease.target = state->target;
++    lease.origin = state->origin;
++    lease.guard = state->guard;
++    return true;
++}
++
++ClientLease::~ClientLease()
++{
++    if (!state) return;
++
++    LogosAPIClient* retiringClient = nullptr;
++    bool reentrantRetirement = false;
++    {
++        std::lock_guard<std::mutex> lock(state->lifecycle);
++        --state->activeOperations;
++        if (state->activeOperations == 0) {
++            if (state->retirementDeferred) {
++                retiringClient = std::exchange(state->client, nullptr);
++                reentrantRetirement = state->reentrantRetirement;
++                state->retirementDeferred = false;
++            }
++        }
++    }
++    state.reset();
++
++    // Physical retirement never blocks the releasing thread. An owner-thread
++    // operation can delete directly after its client call has returned; a
++    // foreign last lease posts deleteLater to the Qt owner.
++    retireClient(retiringClient, reentrantRetirement);
++}
++
+ struct lp_provider {
+     std::string moduleName;
+     std::string transportSetJson;
+@@ -194,26 +309,67 @@ lp_client* lp_client_create(const char* target_module,
+     qRegisterMetaType<LogosResult>("LogosResult");
+ 
+     auto* handle = new lp_client();
+-    handle->target = QString::fromUtf8(target_module);
+-    handle->origin = QString::fromUtf8(origin_module);
+-    handle->guard = std::make_shared<CbGuard>();
++    handle->state = std::make_shared<ClientState>();
++    handle->state->target = QString::fromUtf8(target_module);
++    handle->state->origin = QString::fromUtf8(origin_module);
++    handle->state->guard = std::make_shared<CbGuard>();
+     // No QObject parent: the handle owns the client. Constructed on the
+     // calling thread, which becomes the owner thread (see header contract).
+-    handle->client = new LogosAPIClient(handle->target, handle->origin,
+-                                        &TokenManager::instance(),
+-                                        targetCfg, capabilityCfg);
++    handle->state->client = new LogosAPIClient(
++        handle->state->target, handle->state->origin, &TokenManager::instance(),
++        targetCfg, capabilityCfg);
+     return handle;
+ }
+ 
+ void lp_client_destroy(lp_client* client)
+ {
+     if (!client) return;
++    const std::shared_ptr<ClientState> state = client->state;
++    if (!state) {
++        delete client;
++        return;
++    }
++
+     {
+-        // Block until no user callback is mid-flight, then forbid new ones.
+-        std::lock_guard<std::recursive_mutex> lock(client->guard->mutex);
+-        client->guard->alive = false;
++        std::lock_guard<std::mutex> lock(state->lifecycle);
++        if (state->closing) return;
++        state->closing = true;
+     }
+-    delete client->client;
++
++    bool reentrantCallback = false;
++    {
++        // Block until no callback on another thread is mid-flight. A callback
++        // may destroy its own client; recursive_mutex makes that path explicit,
++        // and QObject retirement is deferred until its stack unwinds.
++        std::lock_guard<std::recursive_mutex> lock(state->guard->mutex);
++        reentrantCallback = state->guard->activeCallbacks != 0;
++        state->guard->alive = false;
++    }
++
++    std::vector<std::weak_ptr<SubscriptionState>> subscriptions;
++    {
++        std::lock_guard<std::mutex> lock(state->lifecycle);
++        subscriptions = state->subscriptions;
++        state->subscriptions.clear();
++    }
++    // Never hold the client lifecycle mutex while waiting for an active event
++    // callback. User callbacks may re-enter any lp_* operation, including one
++    // that needs the lifecycle mutex. Subscription closure is idempotent and
++    // serialized by the subscription mutex, so it can safely race an explicit
++    // lp_unsubscribe(). The client remains alive until every closure finishes.
++    for (const auto& weak : subscriptions) closeSubscription(weak.lock());
++
++    LogosAPIClient* retiringClient = nullptr;
++    {
++        std::lock_guard<std::mutex> lock(state->lifecycle);
++        state->reentrantRetirement = reentrantCallback;
++        if (state->activeOperations == 0) {
++            retiringClient = std::exchange(state->client, nullptr);
++        } else {
++            state->retirementDeferred = true;
++        }
++    }
++    retireClient(retiringClient, reentrantCallback);
+     delete client;
+ }
+ 
+@@ -228,23 +384,32 @@ int lp_invoke(lp_client* client,
+ {
+     if (out_result_json) *out_result_json = nullptr;
+     if (out_error_json) *out_error_json = nullptr;
+-    if (!client || !client->client || !method || !*method) {
++    if (!client || !client->state || !method || !*method) {
+         if (out_error_json)
+             *out_error_json = lpStrdup(makeErrorJson(
+                 "invalid_arg", "client and method are required", ""));
+         return LP_ERR_INVALID_ARG;
+     }
+ 
++    const std::shared_ptr<ClientState> state = client->state;
++    ClientLease lease;
++    if (!acquireClientLease(state, lease)) {
++        if (out_error_json)
++            *out_error_json = lpStrdup(makeErrorJson(
++                "client_closed", "client is closing or closed", ""));
++        return LP_ERR_UNAVAILABLE;
++    }
++
+     QVariantList args;
+     std::string error;
+-    if (!parseArgs(args_json, client->origin, args, error)) {
++    if (!parseArgs(args_json, lease.origin, args, error)) {
+         if (out_error_json) *out_error_json = lpStrdup(error);
+         return LP_ERR_INVALID_ARG;
+     }
+ 
+     logos::CallError callErr;
+-    const QVariant result = client->client->invokeRemoteMethod(
+-        client->target, QString::fromUtf8(method), args, lpTimeout(timeout_ms), &callErr);
++    const QVariant result = lease.client->invokeRemoteMethod(
++        lease.target, QString::fromUtf8(method), args, lpTimeout(timeout_ms), &callErr);
+ 
+     if (!callErr.ok()) {
+         if (out_error_json)
+@@ -265,24 +430,69 @@ int lp_invoke_async(lp_client* client,
+                     lp_result_cb cb,
+                     void* user_data)
+ {
+-    if (!client || !client->client || !method || !*method || !cb)
++    if (!client || !client->state || !method || !*method || !cb)
+         return LP_ERR_INVALID_ARG;
+ 
++    const std::shared_ptr<ClientState> state = client->state;
++    ClientLease lease;
++    if (!acquireClientLease(state, lease)) return LP_ERR_UNAVAILABLE;
++
+     QVariantList args;
+     std::string error;
+-    if (!parseArgs(args_json, client->origin, args, error))
++    if (!parseArgs(args_json, lease.origin, args, error))
+         return LP_ERR_INVALID_ARG;
+ 
+-    std::shared_ptr<CbGuard> guard = client->guard;
+-    client->client->invokeRemoteMethodAsync(
+-        client->target, QString::fromUtf8(method), args,
+-        [guard, cb, user_data](QVariant result) {
++    std::shared_ptr<CbGuard> guard = lease.guard;
++    const QString target = lease.target;
++    const QString methodName = QString::fromUtf8(method);
++    const QString origin = lease.target;
++    const Timeout timeout = lpTimeout(timeout_ms);
++    auto outcomeCallback =
++        [guard, cb, user_data, origin](logos::AsyncCallOutcome outcome) {
+             std::lock_guard<std::recursive_mutex> lock(guard->mutex);
+             if (!guard->alive) return;  // client destroyed: drop the result
+-            const std::string json = logos::qvariantToNlohmann(result).dump();
+-            cb(1, json.c_str(), user_data);
+-        },
+-        lpTimeout(timeout_ms));
++            ++guard->activeCallbacks;
++            try {
++                std::string json;
++                int ok = 0;
++                if (outcome.ok()) {
++                    json = logos::qvariantToNlohmann(outcome.value).dump();
++                    ok = 1;
++                } else {
++                    json = makeErrorJson(outcome.error.code.c_str(),
++                                         outcome.error.message,
++                                         outcome.error.origin);
++                }
++                try { cb(ok, json.c_str(), user_data); } catch (...) {}
++            } catch (...) {
++                const std::string json = makeErrorJson(
++                    "internal_error", "failed to serialize asynchronous result",
++                    origin.toStdString());
++                try { cb(0, json.c_str(), user_data); } catch (...) {}
++            }
++            --guard->activeCallbacks;
++        };
++
++    // Admission from a foreign thread is asynchronous too. Queue it without
++    // holding the client lease so a close operation can finish while the Qt
++    // owner is blocked. The callback guard also serializes queued admission
++    // with logical teardown: destroy either observes an already-admitted call,
++    // or clears `alive` first and the queued call becomes a no-op.
++    QPointer<LogosAPIClient> guardedClient(lease.client);
++    auto admit = [guard, guardedClient, target, methodName, args,
++                  outcomeCallback = std::move(outcomeCallback), timeout]() mutable {
++        std::lock_guard<std::recursive_mutex> lock(guard->mutex);
++        if (!guard->alive || !guardedClient) return;
++        guardedClient->invokeRemoteMethodAsyncOutcome(
++            target, methodName, args, std::move(outcomeCallback), timeout);
++    };
++
++    if (QThread::currentThread() == lease.client->thread()) {
++        admit();
++    } else if (!QMetaObject::invokeMethod(
++                   lease.client, std::move(admit), Qt::QueuedConnection)) {
++        return LP_ERR_INTERNAL;
++    }
+     return LP_OK;
+ }
+ 
+@@ -293,45 +503,65 @@ lp_subscription* lp_subscribe(lp_client* client,
+                               lp_event_cb cb,
+                               void* user_data)
+ {
+-    if (!client || !client->client || !event_name || !*event_name || !cb)
++    if (!client || !client->state || !event_name || !*event_name || !cb)
+         return nullptr;
+ 
+-    LogosObject* object = client->client->requestObject(client->target);
++    const std::shared_ptr<ClientState> clientState = client->state;
++    ClientLease lease;
++    if (!acquireClientLease(clientState, lease)) return nullptr;
++
++    LogosObject* object = lease.client->requestObject(lease.target);
+     if (!object) return nullptr;
+ 
+     auto* sub = new lp_subscription();
+-    sub->guard = std::make_shared<CbGuard>();
++    sub->state = std::make_shared<SubscriptionState>();
++    sub->state->object = object;
++    sub->state->owner = lease.client;
+ 
+-    std::shared_ptr<CbGuard> subGuard = sub->guard;
+-    std::shared_ptr<CbGuard> clientGuard = client->guard;
+-    client->client->onEvent(
++    const std::shared_ptr<SubscriptionState> subState = sub->state;
++    const std::shared_ptr<CbGuard> clientGuard = lease.guard;
++    lease.client->onEvent(
+         object, QString::fromUtf8(event_name),
+-        [subGuard, clientGuard, cb, user_data](const QString& name,
++        [subState, clientGuard, cb, user_data](const QString& name,
+                                                const QVariantList& data) {
+-            std::lock_guard<std::recursive_mutex> subLock(subGuard->mutex);
+-            if (!subGuard->alive) return;  // unsubscribed
++            std::lock_guard<std::recursive_mutex> subLock(subState->mutex);
++            if (!subState->alive) return;  // unsubscribed
+             std::lock_guard<std::recursive_mutex> clientLock(clientGuard->mutex);
+             if (!clientGuard->alive) return;  // client destroyed
+-            nlohmann::json payload = nlohmann::json::array();
+-            for (const QVariant& v : data)
+-                payload.push_back(logos::qvariantToNlohmann(v));
+-            const std::string json = payload.dump();
+-            const QByteArray nameUtf8 = name.toUtf8();
+-            cb(nameUtf8.constData(), json.c_str(), user_data);
++            ++clientGuard->activeCallbacks;
++            try {
++                nlohmann::json payload = nlohmann::json::array();
++                for (const QVariant& v : data)
++                    payload.push_back(logos::qvariantToNlohmann(v));
++                const std::string json = payload.dump();
++                const QByteArray nameUtf8 = name.toUtf8();
++                try { cb(nameUtf8.constData(), json.c_str(), user_data); }
++                catch (...) {}
++            } catch (...) {}
++            --clientGuard->activeCallbacks;
+         });
++
++    bool committed = false;
++    {
++        std::lock_guard<std::mutex> lock(clientState->lifecycle);
++        if (!clientState->closing && clientState->client == lease.client) {
++            clientState->subscriptions.push_back(subState);
++            committed = true;
++        }
++    }
++    if (!committed) {
++        closeSubscription(subState);
++        delete sub;
++        return nullptr;
++    }
+     return sub;
+ }
+ 
+ void lp_unsubscribe(lp_subscription* sub)
+ {
+     if (!sub) return;
+-    {
+-        // The underlying transport keeps its listener; this guard makes it
+-        // inert, which is what the ABI promises ("the callback will not
+-        // fire again").
+-        std::lock_guard<std::recursive_mutex> lock(sub->guard->mutex);
+-        sub->guard->alive = false;
+-    }
++    const std::shared_ptr<SubscriptionState> subState = sub->state;
++    closeSubscription(subState);
+     delete sub;
+ }
+ 
+@@ -339,10 +569,21 @@ void lp_unsubscribe(lp_subscription* sub)
+ 
+ char* lp_get_methods(lp_client* client)
+ {
+-    if (!client || !client->client) return nullptr;
+-    LogosObject* object = client->client->requestObject(client->target);
+-    if (!object) return nullptr;
+-    const QJsonArray methods = object->getMethods();
++    if (!client || !client->state) return nullptr;
++    const std::shared_ptr<ClientState> state = client->state;
++    ClientLease lease;
++    if (!acquireClientLease(state, lease)) return nullptr;
++    bool acquired = false;
++    const QJsonArray methods = logos::runOnOwnerThread(
++        lease.client, [&]() -> QJsonArray {
++            LogosObject* object = lease.client->requestObject(lease.target);
++            if (!object) return {};
++            acquired = true;
++            const QJsonArray result = object->getMethods();
++            object->release();
++            return result;
++        });
++    if (!acquired) return nullptr;
+     const QByteArray json =
+         QJsonDocument(methods).toJson(QJsonDocument::Compact);
+     return lpStrdup(std::string(json.constData(),
+@@ -373,11 +614,16 @@ int lp_inform_module_token(lp_client* client,
+                            const char* module_name,
+                            const char* token)
+ {
+-    if (!client || !client->client || !auth_token || !module_name || !token)
++    if (!client || !client->state || !auth_token || !module_name || !token)
+         return LP_ERR_INVALID_ARG;
+-    const bool ok = client->client->informModuleToken(
+-        QString::fromUtf8(auth_token), QString::fromUtf8(module_name),
+-        QString::fromUtf8(token));
++    const std::shared_ptr<ClientState> state = client->state;
++    ClientLease lease;
++    if (!acquireClientLease(state, lease)) return LP_ERR_UNAVAILABLE;
++    const bool ok = logos::runOnOwnerThread(lease.client, [&]() {
++        return lease.client->informModuleToken(
++            QString::fromUtf8(auth_token), QString::fromUtf8(module_name),
++            QString::fromUtf8(token));
++    });
+     return ok ? LP_OK : LP_ERR_INTERNAL;
+ }
+ 
+diff --git a/cpp/logos_protocol.h b/cpp/logos_protocol.h
+index 83e0352..9cf32dd 100644
+--- a/cpp/logos_protocol.h
++++ b/cpp/logos_protocol.h
+@@ -57,8 +57,8 @@
+ // load and forward multi modules without modification. A pre-0.2 *consumer*
+ // would see the raw sentinel rather than awaiting it — graceful, not a crash.
+ #define LOGOS_PROTOCOL_VERSION_MINOR 2
+-#define LOGOS_PROTOCOL_VERSION_PATCH 0
+-#define LOGOS_PROTOCOL_VERSION_STRING "0.2.0"
++#define LOGOS_PROTOCOL_VERSION_PATCH 1
++#define LOGOS_PROTOCOL_VERSION_STRING "0.2.1"
+ 
+ #ifdef __cplusplus
+ extern "C" {
+@@ -149,7 +149,10 @@ lp_client* lp_client_create(const char* target_module,
+                             const char* capability_transport_json);
+ 
+ /** Destroy a client. After this returns, no further callbacks fire for the
+- *  client or its subscriptions. */
++ *  client or its subscriptions. Logical close is synchronous; QObject-backed
++ *  transport resources may be released later on the owner event loop. A
++ *  foreign caller does not wait for owner-loop progress, but does wait for an
++ *  already-running user callback to finish. */
+ void lp_client_destroy(lp_client* client);
+ 
+ /**
+@@ -160,8 +163,7 @@ void lp_client_destroy(lp_client* client);
+  * `timeout_ms <= 0` selects the default timeout.
+  *
+  * On LP_OK: *out_result_json (if non-NULL) receives the result JSON value
+- * (may be "null" — today's protocol does not distinguish "no result" from
+- * a failed call at this level; that matches existing behavior).
++ * (which may be the successful value "null").
+  * On failure: *out_error_json (if non-NULL) receives the canonical error
+  * object. Both out-strings are owned by the caller (lp_string_free).
+  */
+@@ -173,9 +175,13 @@ int lp_invoke(lp_client* client,
+               char** out_error_json);
+ 
+ /**
+- * Asynchronous variant of lp_invoke. Returns LP_OK if the call was
+- * dispatched; `cb` then fires exactly once with the result (from the
+- * client's owner thread). Safe to call from any thread.
++ * Asynchronous variant of lp_invoke. Returns LP_OK once the call is accepted
++ * for asynchronous admission; a foreign caller does not wait for owner-loop
++ * progress. `cb` then fires exactly once unless client destruction cancels
++ * queued admission or the pending callback. Successful JSON `null` is
++ * `ok != 0` with `json == "null"`; unavailability, transport failure, and
++ * timeout are `ok == 0` with a canonical error object. Safe to call from any
++ * thread.
+  */
+ int lp_invoke_async(lp_client* client,
+                     const char* method,
+@@ -195,7 +201,9 @@ lp_subscription* lp_subscribe(lp_client* client,
+                               void* user_data);
+ 
+ /** Cancel a subscription. After this returns the callback will not fire
+- *  again (already-running invocations are allowed to finish first). */
++ *  again (already-running invocations are allowed to finish first). Logical
++ *  cancellation does not wait for owner-loop progress; QObject-backed
++ *  resource release may finish later on that loop. */
+ void lp_unsubscribe(lp_subscription* sub);
+ 
+ /** Introspect the target module's methods/events as a JSON array (the
+diff --git a/cpp/module_proxy.cpp b/cpp/module_proxy.cpp
+index 19c2786..3813a1c 100644
+--- a/cpp/module_proxy.cpp
++++ b/cpp/module_proxy.cpp
+@@ -6,6 +6,7 @@
+ #include <QJsonObject>
+ #include <QJsonValue>
+ #include <algorithm>
++#include <exception>
+ 
+ ModuleProxy::ModuleProxy(LogosProviderObject* provider, QObject* parent)
+     : QObject(parent)
+@@ -64,27 +65,41 @@ bool ModuleProxy::saveToken(const QString& from_module_name, const QString& toke
+ }
+ 
+ QVariant ModuleProxy::callRemoteMethod(const QString& authToken, const QString& methodName, const QVariantList& args)
++{
++    logos::AsyncCallOutcome outcome =
++        callRemoteMethodOutcome(authToken, methodName, args);
++    return outcome.ok() ? std::move(outcome.value) : QVariant();
++}
++
++logos::AsyncCallOutcome ModuleProxy::callRemoteMethodOutcome(
++    const QString& authToken,
++    const QString& methodName,
++    const QVariantList& args)
+ {
+     if (!m_provider) {
+         qWarning() << "ModuleProxy: Cannot call method on null provider:" << methodName;
+-        return QVariant();
++        return logos::AsyncCallOutcome::failure(
++            "object_unavailable", "module provider is unavailable", "");
+     }
+ 
++    const std::string origin = m_provider->providerName().toStdString();
++
+     if (methodName.isEmpty()) {
+         qWarning() << "ModuleProxy: Method name cannot be empty";
+-        return QVariant();
++        return logos::AsyncCallOutcome::failure(
++            "invoke_failed", "method name cannot be empty", origin);
+     }
+ 
+     if (methodName == "getPluginMethods" && args.isEmpty()) {
+-        return QVariant(getPluginMethods());
++        return logos::AsyncCallOutcome::success(QVariant(getPluginMethods()));
+     }
+ 
+     if (methodName == "getPluginEvents" && args.isEmpty()) {
+-        return QVariant(getPluginEvents());
++        return logos::AsyncCallOutcome::success(QVariant(getPluginEvents()));
+     }
+ 
+     if (methodName == "getPluginInterface" && args.isEmpty()) {
+-        return QVariant(getPluginInterface());
++        return logos::AsyncCallOutcome::success(QVariant(getPluginInterface()));
+     }
+     // NOTE: the three getPlugin* introspection calls above intentionally stay
+     // ungated. They expose only the method/event signatures (no business logic
+@@ -96,14 +111,54 @@ QVariant ModuleProxy::callRemoteMethod(const QString& authToken, const QString&
+     if (!isAuthorized(authToken)) {
+         qWarning() << "ModuleProxy: rejecting unauthorized call to" << methodName
+                    << "- auth token not recognized";
+-        return QVariant();
++        return logos::AsyncCallOutcome::failure(
++            "invoke_failed", "module call is not authorized", origin);
+     }
+ 
+-    // SECURITY: never log call arguments — they routinely carry secrets
+-    // (mnemonics, passwords, tokens, key material). Log only the method name and
+-    // the argument count, matching the other transport call sites.
+-    qDebug() << "ModuleProxy: callRemoteMethod" << methodName << "args:" << args.size();
+-    return m_provider->callMethod(methodName, args);
++    try {
++        // A provider uses invalid QVariant for a valid JSON null, so dispatch
++        // failures cannot be inferred from the returned value. Validate against
++        // a declared interface before dispatch when metadata is available.
++        const QJsonArray interface = getPluginInterface();
++        if (!interface.isEmpty()) {
++            bool invokable = false;
++            for (const QJsonValue& entry : interface) {
++                const QJsonObject method = entry.toObject();
++                const bool isEvent =
++                    method.value(QStringLiteral("type")).toString()
++                    == QStringLiteral("event");
++                if (!isEvent
++                    && method.value(QStringLiteral("name")).toString() == methodName
++                    && method.value(QStringLiteral("isInvokable")).toBool(true)) {
++                    invokable = true;
++                    break;
++                }
++            }
++            if (!invokable) {
++                qWarning() << "ModuleProxy: rejecting unknown or non-invokable method"
++                           << methodName;
++                return logos::AsyncCallOutcome::failure(
++                    "invoke_failed", "method is unknown or not invokable", origin);
++            }
++        }
++
++        // SECURITY: never log call arguments — they routinely carry secrets
++        // (mnemonics, passwords, tokens, key material). Log only the method name
++        // and argument count, matching the other transport call sites.
++        qDebug() << "ModuleProxy: callRemoteMethod" << methodName
++                 << "args:" << args.size();
++        return logos::AsyncCallOutcome::success(
++            m_provider->callMethod(methodName, args));
++    } catch (const std::exception& error) {
++        qWarning() << "ModuleProxy: provider call failed for" << methodName
++                   << ":" << error.what();
++        return logos::AsyncCallOutcome::failure(
++            "invoke_failed", "module provider failed during dispatch", origin);
++    } catch (...) {
++        qWarning() << "ModuleProxy: provider call failed for" << methodName;
++        return logos::AsyncCallOutcome::failure(
++            "invoke_failed", "module provider failed during dispatch", origin);
++    }
+ }
+ 
+ namespace {
+diff --git a/cpp/module_proxy.h b/cpp/module_proxy.h
+index 1f8d945..67fe9f9 100644
+--- a/cpp/module_proxy.h
++++ b/cpp/module_proxy.h
+@@ -8,6 +8,8 @@
+ #include <QString>
+ #include <QJsonArray>
+ 
++#include "logos_async_outcome.h"
++
+ class LogosProviderObject;
+ 
+ /**
+@@ -28,6 +30,10 @@ public:
+     ~ModuleProxy();
+ 
+     Q_INVOKABLE QVariant callRemoteMethod(const QString& authToken, const QString& methodName, const QVariantList& args = QVariantList());
++    logos::AsyncCallOutcome callRemoteMethodOutcome(
++        const QString& authToken,
++        const QString& methodName,
++        const QVariantList& args = QVariantList());
+     Q_INVOKABLE bool informModuleToken(const QString& authToken, const QString& moduleName, const QString& token);
+     bool saveToken(const QString& from_module_name, const QString& token);
+     // getPluginInterface() returns the module's whole interface (methods AND
+diff --git a/nix/default.nix b/nix/default.nix
+index ddae4b5..ec8387d 100644
+--- a/nix/default.nix
++++ b/nix/default.nix
+@@ -3,7 +3,7 @@
+ 
+ {
+   pname = "logos-protocol";
+-  version = "0.2.0";
++  version = "0.2.1";
+ 
+   # Common native build inputs
+   nativeBuildInputs = [
+diff --git a/tests/protocol/CMakeLists.txt b/tests/protocol/CMakeLists.txt
+index b24491f..4908e21 100644
+--- a/tests/protocol/CMakeLists.txt
++++ b/tests/protocol/CMakeLists.txt
+@@ -8,6 +8,7 @@ add_executable(protocol_tests
+     test_universal_provider_dispatch.cpp
+     test_lp_client.cpp
+     test_call_error.cpp
++    test_local_async_outcome.cpp
+     # Component tests that moved here with their code (from logos-cpp-sdk)
+     test_token_manager.cpp
+     test_mock_store.cpp
+@@ -50,4 +51,17 @@ target_link_libraries(protocol_tests PRIVATE
+     Qt${QT_VERSION_MAJOR}::Test
+ )
+ 
+-gtest_discover_tests(protocol_tests)
++gtest_discover_tests(protocol_tests PROPERTIES TIMEOUT 60)
++
++# Separate process deliberately omits QCoreApplication. Plain consumers must
++# still receive every accepted async completion without a Qt event loop.
++add_executable(plain_no_event_loop_tests
++    test_plain_no_event_loop.cpp
++)
++
++target_link_libraries(plain_no_event_loop_tests PRIVATE
++    logos_protocol
++    GTest::gtest_main
++)
++
++gtest_discover_tests(plain_no_event_loop_tests)
+diff --git a/tests/protocol/test_concurrent_dispatch.cpp b/tests/protocol/test_concurrent_dispatch.cpp
+index a1e5326..68fcccd 100644
+--- a/tests/protocol/test_concurrent_dispatch.cpp
++++ b/tests/protocol/test_concurrent_dispatch.cpp
+@@ -39,6 +39,7 @@
+ #include <chrono>
+ #include <cstdint>
+ #include <memory>
++#include <string>
+ #include <thread>
+ 
+ using namespace logos::plain;
+@@ -245,3 +246,60 @@ TEST_F(ConcurrentDispatchTest, SingleProviderSerializesAsync)
+     // The same fan-out at a "single" provider serializes — peak 1.
+     EXPECT_EQ(peakOverlapAsync(/*multi=*/false, /*n=*/4), 1);
+ }
++
++TEST_F(ConcurrentDispatchTest, AsyncWaiterSurvivesImmediateObjectRelease)
++{
++    LogosTransportConfig cfg;
++    cfg.protocol = LogosProtocol::Tcp;
++    cfg.host = "127.0.0.1";
++    cfg.port = 0;
++
++    auto host = std::make_unique<PlainTransportHost>(cfg);
++    ASSERT_TRUE(host->start());
++
++    SlowProvider provider(/*multi=*/true);
++    ModuleProxy proxy(&provider);
++    proxy.saveToken(QStringLiteral("core"), QStringLiteral("tok"));
++    ASSERT_TRUE(host->publishObject("slow_mod", &proxy));
++
++    const QString endpoint = host->endpoint();
++    const uint16_t port = endpoint.mid(endpoint.lastIndexOf(':') + 1).toUShort();
++    LogosTransportConfig clientCfg = cfg;
++    clientCfg.port = port;
++    auto connection = std::make_unique<PlainTransportConnection>(clientCfg);
++    ASSERT_TRUE(connection->connectToHost());
++
++    LogosObject* object = connection->requestObject("slow_mod", 2000);
++    ASSERT_NE(object, nullptr);
++
++    std::atomic<bool> done{false};
++    bool ok = true;
++    std::string errorCode;
++    object->callMethodAsyncOutcome(
++        QStringLiteral("tok"), QStringLiteral("slow"), QVariantList{ 300 }, 100,
++        [&done, &ok, &errorCode](logos::AsyncCallOutcome outcome) {
++            ok = outcome.ok();
++            errorCode = outcome.error.code;
++            done = true;
++        });
++
++    // The public handle may be released as soon as asynchronous admission
++    // returns. Its detached waiter must retain only shared rendezvous state,
++    // never dereference the deleted PlainLogosObject.
++    object->release();
++
++    for (int i = 0; i < 500 && !done.load(); ++i) {
++        QCoreApplication::processEvents();
++        std::this_thread::sleep_for(std::chrono::milliseconds(10));
++    }
++    ASSERT_TRUE(done.load());
++    EXPECT_FALSE(ok);
++    EXPECT_EQ(errorCode, "timeout");
++
++    // Let SlowProvider's detached completion worker finish before its fixture
++    // storage is destroyed.
++    for (int i = 0; i < 40; ++i) {
++        QCoreApplication::processEvents();
++        std::this_thread::sleep_for(std::chrono::milliseconds(10));
++    }
++}
+diff --git a/tests/protocol/test_local_async_outcome.cpp b/tests/protocol/test_local_async_outcome.cpp
+new file mode 100644
+index 0000000..0cc823e
+--- /dev/null
++++ b/tests/protocol/test_local_async_outcome.cpp
+@@ -0,0 +1,160 @@
++#include <gtest/gtest.h>
++
++#include "local_transport.h"
++#include "logos_provider_interface.h"
++#include "module_proxy.h"
++#include "plugin_registry.h"
++
++#include <QCoreApplication>
++#include <QJsonArray>
++#include <QJsonObject>
++#include <QVariant>
++
++#include <atomic>
++#include <chrono>
++#include <optional>
++#include <stdexcept>
++#include <thread>
++
++namespace {
++
++class OutcomeProvider final : public LogosProviderObject {
++public:
++    QVariant callMethod(const QString& method, const QVariantList&) override
++    {
++        ++calls;
++        if (method == QLatin1String("throws"))
++            throw std::runtime_error("provider failure");
++        return QVariant();
++    }
++
++    bool informModuleToken(const QString&, const QString&) override { return true; }
++
++    QJsonArray getMethods() override
++    {
++        return {
++            QJsonObject{
++                { QStringLiteral("name"), QStringLiteral("returnsNull") },
++                { QStringLiteral("isInvokable"), true },
++            },
++            QJsonObject{
++                { QStringLiteral("name"), QStringLiteral("throws") },
++                { QStringLiteral("isInvokable"), true },
++            },
++        };
++    }
++
++    void setEventListener(EventCallback) override {}
++    void init(void*) override {}
++    QString providerName() const override { return QStringLiteral("outcome_module"); }
++    QString providerVersion() const override { return QStringLiteral("1.0.0"); }
++
++    std::atomic<int> calls{0};
++};
++
++logos::AsyncCallOutcome invoke(LogosObject* object,
++                               const QString& token,
++                               const QString& method)
++{
++    std::optional<logos::AsyncCallOutcome> captured;
++    std::atomic<int> callbackCount{0};
++    object->callMethodAsyncOutcome(token, method, {}, 1000,
++        [&captured, &callbackCount](logos::AsyncCallOutcome outcome) {
++            captured = std::move(outcome);
++            ++callbackCount;
++        });
++
++    const auto deadline = std::chrono::steady_clock::now()
++        + std::chrono::seconds(5);
++    while (!captured && std::chrono::steady_clock::now() < deadline) {
++        QCoreApplication::processEvents();
++        std::this_thread::sleep_for(std::chrono::milliseconds(1));
++    }
++    EXPECT_TRUE(captured.has_value());
++    EXPECT_EQ(callbackCount.load(), 1);
++    return captured.value_or(logos::AsyncCallOutcome::failure(
++        "test_timeout", "local callback was not delivered", "outcome_module"));
++}
++
++class LocalAsyncOutcomeTest : public ::testing::Test {
++protected:
++    void SetUp() override
++    {
++        proxy.saveToken(QStringLiteral("caller"), QStringLiteral("issued-token"));
++        PluginRegistry::registerPlugin(&proxy, moduleName);
++        object = connection.requestObject(moduleName, 1000);
++        ASSERT_NE(object, nullptr);
++    }
++
++    void TearDown() override
++    {
++        if (object) object->release();
++        PluginRegistry::unregisterPlugin(moduleName);
++    }
++
++    const QString moduleName = QStringLiteral("outcome_module");
++    OutcomeProvider provider;
++    ModuleProxy proxy{&provider};
++    LocalTransportConnection connection;
++    LogosObject* object = nullptr;
++};
++
++} // namespace
++
++TEST_F(LocalAsyncOutcomeTest, PreservesSuccessfulNull)
++{
++    const logos::AsyncCallOutcome outcome = invoke(
++        object, QStringLiteral("issued-token"), QStringLiteral("returnsNull"));
++    EXPECT_TRUE(outcome.ok());
++    EXPECT_FALSE(outcome.value.isValid());
++    EXPECT_EQ(provider.calls.load(), 1);
++}
++
++TEST_F(LocalAsyncOutcomeTest, UnauthorizedCallIsFailure)
++{
++    const logos::AsyncCallOutcome outcome = invoke(
++        object, QStringLiteral("not-issued"), QStringLiteral("returnsNull"));
++    EXPECT_FALSE(outcome.ok());
++    EXPECT_EQ(outcome.error.code, "invoke_failed");
++    EXPECT_EQ(outcome.error.origin, "outcome_module");
++    EXPECT_EQ(provider.calls.load(), 0);
++}
++
++TEST_F(LocalAsyncOutcomeTest, UnknownMethodIsFailure)
++{
++    const logos::AsyncCallOutcome outcome = invoke(
++        object, QStringLiteral("issued-token"), QStringLiteral("missing"));
++    EXPECT_FALSE(outcome.ok());
++    EXPECT_EQ(outcome.error.code, "invoke_failed");
++    EXPECT_EQ(outcome.error.origin, "outcome_module");
++    EXPECT_EQ(provider.calls.load(), 0);
++}
++
++TEST_F(LocalAsyncOutcomeTest, ProviderExceptionIsFailure)
++{
++    const logos::AsyncCallOutcome outcome = invoke(
++        object, QStringLiteral("issued-token"), QStringLiteral("throws"));
++    EXPECT_FALSE(outcome.ok());
++    EXPECT_EQ(outcome.error.code, "invoke_failed");
++    EXPECT_EQ(outcome.error.origin, "outcome_module");
++    EXPECT_EQ(provider.calls.load(), 1);
++}
++
++TEST(LocalAsyncOutcomeWithoutProviderTest, NullProviderIsFailure)
++{
++    const QString moduleName = QStringLiteral("null_provider_module");
++    ModuleProxy proxy(nullptr);
++    PluginRegistry::registerPlugin(&proxy, moduleName);
++    LocalTransportConnection connection;
++    LogosObject* object = connection.requestObject(moduleName, 1000);
++    ASSERT_NE(object, nullptr);
++
++    const logos::AsyncCallOutcome outcome = invoke(
++        object, QStringLiteral("token"), QStringLiteral("anyMethod"));
++    EXPECT_FALSE(outcome.ok());
++    EXPECT_EQ(outcome.error.code, "object_unavailable");
++    EXPECT_EQ(outcome.error.origin, "null_provider_module");
++
++    object->release();
++    PluginRegistry::unregisterPlugin(moduleName);
++}
+diff --git a/tests/protocol/test_lp_client.cpp b/tests/protocol/test_lp_client.cpp
+index 87901c2..2e49255 100644
+--- a/tests/protocol/test_lp_client.cpp
++++ b/tests/protocol/test_lp_client.cpp
+@@ -2,14 +2,24 @@
+ 
+ #include "logos_protocol.h"
+ #include "logos_mock.h"
++#include "module_proxy.h"
++#include "plugin_registry.h"
+ 
+ #include <QByteArray>
+ #include <QCoreApplication>
+ #include <QElapsedTimer>
++#include <QMetaObject>
++#include <QThread>
+ #include <QVariant>
+ 
+ #include <atomic>
++#include <chrono>
++#include <condition_variable>
++#include <mutex>
+ #include <string>
++#include <thread>
++#include <utility>
++#include <vector>
+ 
+ #include <nlohmann/json.hpp>
+ 
+@@ -30,6 +40,106 @@ nlohmann::json parsed(const char* json)
+     return nlohmann::json::parse(json, nullptr, /*allow_exceptions=*/false);
+ }
+ 
++bool waitUntil(const std::atomic<bool>& flag,
++               std::chrono::milliseconds timeout = std::chrono::seconds(5))
++{
++    const auto deadline = std::chrono::steady_clock::now() + timeout;
++    while (!flag.load() && std::chrono::steady_clock::now() < deadline)
++        std::this_thread::sleep_for(std::chrono::milliseconds(1));
++    return flag.load();
++}
++
++class ThreadGate {
++public:
++    void block()
++    {
++        std::unique_lock<std::mutex> lock(m_mutex);
++        m_entered = true;
++        m_changed.notify_all();
++        m_changed.wait(lock, [this]() { return m_released; });
++    }
++
++    bool waitUntilEntered()
++    {
++        std::unique_lock<std::mutex> lock(m_mutex);
++        return m_changed.wait_for(lock, std::chrono::seconds(5),
++                                  [this]() { return m_entered; });
++    }
++
++    void release()
++    {
++        std::lock_guard<std::mutex> lock(m_mutex);
++        m_released = true;
++        m_changed.notify_all();
++    }
++
++private:
++    std::mutex m_mutex;
++    std::condition_variable m_changed;
++    bool m_entered = false;
++    bool m_released = false;
++};
++
++// Runs a real qt_local client, its ModuleProxy, and event callbacks on a
++// dedicated Qt owner thread. Tests stay on the main thread so a lifecycle
++// regression is bounded by CTest's timeout instead of freezing all assertions.
++class LocalOwnerHarness {
++public:
++    explicit LocalOwnerHarness(std::string moduleName)
++        : m_moduleName(std::move(moduleName))
++        , m_context(new QObject())
++    {
++        m_owner.start();
++        m_context->moveToThread(&m_owner);
++        QMetaObject::invokeMethod(m_context, [this]() {
++            m_proxy = new ModuleProxy(nullptr);
++            m_client = lp_client_create(
++                m_moduleName.c_str(), "owner_race_origin", nullptr, nullptr);
++        }, Qt::BlockingQueuedConnection);
++        PluginRegistry::registerPlugin(
++            m_proxy, QString::fromStdString(m_moduleName));
++    }
++
++    ~LocalOwnerHarness()
++    {
++        if (m_client) lp_client_destroy(m_client);
++        PluginRegistry::unregisterPlugin(
++            QString::fromStdString(m_moduleName));
++        QMetaObject::invokeMethod(m_context, [this]() {
++            delete m_proxy;
++            m_proxy = nullptr;
++        }, Qt::BlockingQueuedConnection);
++        QThread* mainThread = QCoreApplication::instance()->thread();
++        QMetaObject::invokeMethod(m_context, [this, mainThread]() {
++            m_context->moveToThread(mainThread);
++        }, Qt::BlockingQueuedConnection);
++        m_owner.quit();
++        m_owner.wait();
++        delete m_context;
++    }
++
++    LocalOwnerHarness(const LocalOwnerHarness&) = delete;
++    LocalOwnerHarness& operator=(const LocalOwnerHarness&) = delete;
++
++    lp_client* client() const { return m_client; }
++    lp_client* takeClient() { return std::exchange(m_client, nullptr); }
++    QObject* context() const { return m_context; }
++
++    bool queueEvent(const QString& name, const QVariantList& data = {})
++    {
++        return QMetaObject::invokeMethod(
++            m_proxy, "eventResponse", Qt::QueuedConnection,
++            Q_ARG(QString, name), Q_ARG(QVariantList, data));
++    }
++
++private:
++    std::string m_moduleName;
++    QThread m_owner;
++    QObject* m_context = nullptr;
++    ModuleProxy* m_proxy = nullptr;
++    lp_client* m_client = nullptr;
++};
++
+ } // namespace
+ 
+ class LpClientTest : public ::testing::Test {
+@@ -154,6 +264,666 @@ TEST_F(LpClientTest, InvokeAsyncDeliversResult)
+     EXPECT_DOUBLE_EQ(parsed(capture.json.c_str()).get<double>(), 7.0);
+ }
+ 
++TEST_F(LpClientTest, InvokeAsyncPreservesSuccessfulJsonNull)
++{
++    m_mock->when("mod", "returnsNull").thenReturn(QVariant());
++
++    lp_client* client = lp_client_create("mod", "origin", nullptr, nullptr);
++    ASSERT_NE(client, nullptr);
++    LpClientGuard guard(client);
++
++    struct Capture {
++        std::atomic<bool> done{false};
++        int ok = 0;
++        std::string json;
++    } capture;
++
++    ASSERT_EQ(lp_invoke_async(client, "returnsNull", "[]", 1000,
++        [](int ok, const char* json, void* data) {
++            auto* capture = static_cast<Capture*>(data);
++            capture->ok = ok;
++            capture->json = json ? json : "";
++            capture->done = true;
++        }, &capture), LP_OK);
++
++    QElapsedTimer timer;
++    timer.start();
++    while (!capture.done && timer.elapsed() < 5000)
++        QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
++
++    ASSERT_TRUE(capture.done);
++    EXPECT_EQ(capture.ok, 1);
++    EXPECT_EQ(capture.json, "null");
++}
++
++TEST_F(LpClientTest, InvokeAsyncUnavailableIsCanonicalError)
++{
++    ASSERT_EQ(lp_set_mode("local"), LP_OK);
++    ASSERT_EQ(lp_token_save("missing_async", "test-token"), LP_OK);
++    lp_client* client = lp_client_create(
++        "missing_async", "origin", nullptr, nullptr);
++    ASSERT_NE(client, nullptr);
++    LpClientGuard guard(client);
++
++    struct Capture {
++        std::atomic<bool> done{false};
++        int ok = 1;
++        std::string json;
++    } capture;
++
++    ASSERT_EQ(lp_invoke_async(client, "anyMethod", "[]", 1000,
++        [](int ok, const char* json, void* data) {
++            auto* capture = static_cast<Capture*>(data);
++            capture->ok = ok;
++            capture->json = json ? json : "";
++            capture->done = true;
++        }, &capture), LP_OK);
++
++    QElapsedTimer timer;
++    timer.start();
++    while (!capture.done && timer.elapsed() < 5000)
++        QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
++
++    ASSERT_TRUE(capture.done);
++    EXPECT_EQ(capture.ok, 0);
++    const nlohmann::json error = parsed(capture.json.c_str());
++    ASSERT_TRUE(error.is_object());
++    EXPECT_EQ(error.value("code", std::string{}), "object_unavailable");
++    EXPECT_EQ(error.value("origin", std::string{}), "missing_async");
++}
++
++TEST_F(LpClientTest, ForeignThreadInvokeDestroyedFromForeignThreadHasNoLateCallback)
++{
++    m_mock->when("mod", "queued").thenReturn(QVariant(7));
++    lp_client* client = lp_client_create("mod", "origin", nullptr, nullptr);
++    ASSERT_NE(client, nullptr);
++
++    std::atomic<int> callbackCount{0};
++    int invokeResult = LP_ERR_INTERNAL;
++    std::thread invoker([&] {
++        invokeResult = lp_invoke_async(client, "queued", "[]", 1000,
++            [](int, const char*, void* data) {
++                static_cast<std::atomic<int>*>(data)->fetch_add(1);
++            }, &callbackCount);
++    });
++    invoker.join();
++    ASSERT_EQ(invokeResult, LP_OK);
++
++    std::atomic<bool> destroyEntered{false};
++    std::atomic<bool> destroyReturned{false};
++    std::thread destroyer([&] {
++        destroyEntered = true;
++        lp_client_destroy(client);
++        destroyReturned = true;
++    });
++    while (!destroyEntered.load()) std::this_thread::yield();
++    std::this_thread::sleep_for(std::chrono::milliseconds(20));
++
++    QElapsedTimer timer;
++    timer.start();
++    while (!destroyReturned.load() && timer.elapsed() < 5000)
++        QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
++    destroyer.join();
++    ASSERT_TRUE(destroyReturned.load());
++
++    timer.restart();
++    while (timer.elapsed() < 100)
++        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
++    EXPECT_EQ(callbackCount.load(), 0);
++}
++
++TEST_F(LpClientTest, UnsubscribeQuiescesEventDelivery)
++{
++    ASSERT_EQ(lp_set_mode("local"), LP_OK);
++    ModuleProxy proxy(nullptr);
++    PluginRegistry::registerPlugin(&proxy, QStringLiteral("event_mod"));
++
++    lp_client* client = lp_client_create("event_mod", "origin", nullptr, nullptr);
++    ASSERT_NE(client, nullptr);
++    LpClientGuard guard(client);
++    std::atomic<int> count{0};
++    lp_subscription* sub = lp_subscribe(
++        client, "ticked",
++        [](const char*, const char*, void* data) {
++            static_cast<std::atomic<int>*>(data)->fetch_add(1);
++        }, &count);
++    ASSERT_NE(sub, nullptr);
++
++    emit proxy.eventResponse("ticked", QVariantList{ 1 });
++    EXPECT_EQ(count.load(), 1);
++    lp_unsubscribe(sub);
++    emit proxy.eventResponse("ticked", QVariantList{ 2 });
++    EXPECT_EQ(count.load(), 1);
++
++    PluginRegistry::unregisterPlugin(QStringLiteral("event_mod"));
++}
++
++TEST_F(LpClientTest, ClientDestroyQuiescesSubscriptionsBeforeUnsubscribe)
++{
++    ASSERT_EQ(lp_set_mode("local"), LP_OK);
++    ModuleProxy proxy(nullptr);
++    PluginRegistry::registerPlugin(&proxy, QStringLiteral("event_close_mod"));
++
++    lp_client* client = lp_client_create(
++        "event_close_mod", "origin", nullptr, nullptr);
++    ASSERT_NE(client, nullptr);
++    std::atomic<int> count{0};
++    lp_subscription* sub = lp_subscribe(
++        client, "ticked",
++        [](const char*, const char*, void* data) {
++            static_cast<std::atomic<int>*>(data)->fetch_add(1);
++        }, &count);
++    ASSERT_NE(sub, nullptr);
++
++    lp_client_destroy(client);
++    emit proxy.eventResponse("ticked", QVariantList{ 1 });
++    EXPECT_EQ(count.load(), 0);
++    lp_unsubscribe(sub);
++    PluginRegistry::unregisterPlugin(QStringLiteral("event_close_mod"));
++}
++
++TEST_F(LpClientTest, ForeignUnsubscribeDoesNotDeadlockBehindQueuedQtEvent)
++{
++    ASSERT_EQ(lp_set_mode("local"), LP_OK);
++    LocalOwnerHarness harness("queued_unsubscribe_mod");
++    ASSERT_NE(harness.client(), nullptr);
++
++    std::atomic<int> callbackCount{0};
++    lp_subscription* sub = lp_subscribe(
++        harness.client(), "ticked",
++        [](const char*, const char*, void* data) {
++            static_cast<std::atomic<int>*>(data)->fetch_add(1);
++        }, &callbackCount);
++    ASSERT_NE(sub, nullptr);
++
++    ThreadGate ownerGate;
++    ASSERT_TRUE(QMetaObject::invokeMethod(
++        harness.context(), [&ownerGate]() { ownerGate.block(); },
++        Qt::QueuedConnection));
++    ASSERT_TRUE(ownerGate.waitUntilEntered());
++    ASSERT_TRUE(harness.queueEvent(QStringLiteral("ticked"), { 1 }));
++
++    std::atomic<bool> closeStarted{false};
++    std::atomic<bool> closeReturned{false};
++    std::thread closer([&]() {
++        closeStarted = true;
++        lp_unsubscribe(sub);
++        closeReturned = true;
++    });
++    ASSERT_TRUE(waitUntil(closeStarted));
++    ASSERT_TRUE(waitUntil(closeReturned));
++    EXPECT_EQ(callbackCount.load(), 0);
++
++    ownerGate.release();
++    closer.join();
++    EXPECT_EQ(callbackCount.load(), 0);
++}
++
++TEST_F(LpClientTest, ForeignDestroyDoesNotDeadlockBehindQueuedQtEvent)
++{
++    ASSERT_EQ(lp_set_mode("local"), LP_OK);
++    LocalOwnerHarness harness("queued_destroy_mod");
++    lp_client* client = harness.takeClient();
++    ASSERT_NE(client, nullptr);
++
++    std::atomic<int> callbackCount{0};
++    lp_subscription* sub = lp_subscribe(
++        client, "ticked",
++        [](const char*, const char*, void* data) {
++            static_cast<std::atomic<int>*>(data)->fetch_add(1);
++        }, &callbackCount);
++    ASSERT_NE(sub, nullptr);
++
++    ThreadGate ownerGate;
++    ASSERT_TRUE(QMetaObject::invokeMethod(
++        harness.context(), [&ownerGate]() { ownerGate.block(); },
++        Qt::QueuedConnection));
++    ASSERT_TRUE(ownerGate.waitUntilEntered());
++    ASSERT_TRUE(harness.queueEvent(QStringLiteral("ticked"), { 1 }));
++
++    std::atomic<bool> destroyStarted{false};
++    std::atomic<bool> destroyReturned{false};
++    std::thread destroyer([&]() {
++        destroyStarted = true;
++        lp_client_destroy(client);
++        destroyReturned = true;
++    });
++    ASSERT_TRUE(waitUntil(destroyStarted));
++    ASSERT_TRUE(waitUntil(destroyReturned));
++    EXPECT_EQ(callbackCount.load(), 0);
++
++    ownerGate.release();
++    destroyer.join();
++    EXPECT_EQ(callbackCount.load(), 0);
++    lp_unsubscribe(sub);
++}
++
++TEST_F(LpClientTest, ForeignDestroyReturnsWhileQtOwnerIsNotPumping)
++{
++    ASSERT_EQ(lp_set_mode("mock"), LP_OK);
++    std::atomic<int> physicalReleaseCount{0};
++    MockStore::instance().setMockObjectReleaseProbe(&physicalReleaseCount);
++
++    LocalOwnerHarness harness("blocked_owner_destroy_mod");
++    lp_client* client = harness.takeClient();
++    ASSERT_NE(client, nullptr);
++    lp_subscription* sub = lp_subscribe(
++        client, "ticked", [](const char*, const char*, void*) {}, nullptr);
++    ASSERT_NE(sub, nullptr);
++
++    // Simulate an outer bridge close waiting on the foreign teardown without
++    // pumping Qt. Logical destroy must finish anyway; physical object release
++    // remains queued until this owner resumes.
++    ThreadGate ownerGate;
++    ASSERT_TRUE(QMetaObject::invokeMethod(
++        harness.context(), [&ownerGate]() { ownerGate.block(); },
++        Qt::QueuedConnection));
++    ASSERT_TRUE(ownerGate.waitUntilEntered());
++
++    std::atomic<bool> destroyReturned{false};
++    std::thread destroyer([&]() {
++        lp_client_destroy(client);
++        destroyReturned = true;
++    });
++    ASSERT_TRUE(waitUntil(destroyReturned));
++    EXPECT_EQ(physicalReleaseCount.load(), 0);
++    destroyer.join();
++
++    std::atomic<bool> queueDrained{false};
++    ASSERT_TRUE(QMetaObject::invokeMethod(
++        harness.context(), [&queueDrained]() { queueDrained = true; },
++        Qt::QueuedConnection));
++    ownerGate.release();
++    ASSERT_TRUE(waitUntil(queueDrained));
++    EXPECT_EQ(physicalReleaseCount.load(), 1);
++
++    lp_unsubscribe(sub);
++    MockStore::instance().setMockObjectReleaseProbe(nullptr);
++}
++
++TEST_F(LpClientTest, ForeignAsyncAdmissionReturnsAndDestroyCancelsWhileOwnerIsBlocked)
++{
++    ASSERT_EQ(lp_set_mode("mock"), LP_OK);
++    m_mock->when("blocked_async_mod", "mutate").thenReturn(QVariant(7));
++
++    LocalOwnerHarness harness("blocked_async_mod");
++    lp_client* client = harness.takeClient();
++    ASSERT_NE(client, nullptr);
++
++    ThreadGate ownerGate;
++    ASSERT_TRUE(QMetaObject::invokeMethod(
++        harness.context(), [&ownerGate]() { ownerGate.block(); },
++        Qt::QueuedConnection));
++    ASSERT_TRUE(ownerGate.waitUntilEntered());
++
++    std::atomic<int> callbackCount{0};
++    std::atomic<bool> invokeReturned{false};
++    int invokeStatus = LP_ERR_INTERNAL;
++    std::thread invoker([&]() {
++        invokeStatus = lp_invoke_async(
++            client, "mutate", "[]", 1000,
++            [](int, const char*, void* data) {
++                static_cast<std::atomic<int>*>(data)->fetch_add(1);
++            },
++            &callbackCount);
++        invokeReturned = true;
++    });
++    ASSERT_TRUE(waitUntil(invokeReturned));
++    invoker.join();
++    ASSERT_EQ(invokeStatus, LP_OK);
++
++    std::atomic<bool> destroyReturned{false};
++    std::thread destroyer([&]() {
++        lp_client_destroy(client);
++        destroyReturned = true;
++    });
++    ASSERT_TRUE(waitUntil(destroyReturned));
++    destroyer.join();
++
++    std::atomic<bool> queueDrained{false};
++    ASSERT_TRUE(QMetaObject::invokeMethod(
++        harness.context(), [&queueDrained]() { queueDrained = true; },
++        Qt::QueuedConnection));
++    ownerGate.release();
++    ASSERT_TRUE(waitUntil(queueDrained));
++
++    EXPECT_EQ(callbackCount.load(), 0);
++    EXPECT_FALSE(m_mock->wasCalled("blocked_async_mod", "mutate"));
++}
++
++TEST_F(LpClientTest, ForeignUnsubscribeWaitsForActiveQtEvent)
++{
++    ASSERT_EQ(lp_set_mode("local"), LP_OK);
++    LocalOwnerHarness harness("active_unsubscribe_mod");
++    ASSERT_NE(harness.client(), nullptr);
++
++    ThreadGate callbackGate;
++    std::atomic<int> callbackCount{0};
++    struct CallbackContext {
++        ThreadGate* gate;
++        std::atomic<int>* count;
++    } context{ &callbackGate, &callbackCount };
++    lp_subscription* sub = lp_subscribe(
++        harness.client(), "ticked",
++        [](const char*, const char*, void* data) {
++            auto* context = static_cast<CallbackContext*>(data);
++            context->count->fetch_add(1);
++            context->gate->block();
++        }, &context);
++    ASSERT_NE(sub, nullptr);
++    ASSERT_TRUE(harness.queueEvent(QStringLiteral("ticked"), { 1 }));
++    ASSERT_TRUE(callbackGate.waitUntilEntered());
++
++    std::atomic<bool> closeReturned{false};
++    std::thread closer([&]() {
++        lp_unsubscribe(sub);
++        closeReturned = true;
++    });
++    std::this_thread::sleep_for(std::chrono::milliseconds(50));
++    EXPECT_FALSE(closeReturned.load());
++    callbackGate.release();
++    ASSERT_TRUE(waitUntil(closeReturned));
++    closer.join();
++
++    ASSERT_TRUE(harness.queueEvent(QStringLiteral("ticked"), { 2 }));
++    std::atomic<bool> queueDrained{false};
++    ASSERT_TRUE(QMetaObject::invokeMethod(
++        harness.context(), [&queueDrained]() { queueDrained = true; },
++        Qt::QueuedConnection));
++    ASSERT_TRUE(waitUntil(queueDrained));
++    EXPECT_EQ(callbackCount.load(), 1);
++}
++
++TEST_F(LpClientTest, ForeignDestroyWaitsForActiveQtEvent)
++{
++    ASSERT_EQ(lp_set_mode("local"), LP_OK);
++    LocalOwnerHarness harness("active_destroy_mod");
++    lp_client* client = harness.takeClient();
++    ASSERT_NE(client, nullptr);
++
++    ThreadGate callbackGate;
++    std::atomic<int> callbackCount{0};
++    struct CallbackContext {
++        ThreadGate* gate;
++        std::atomic<int>* count;
++    } context{ &callbackGate, &callbackCount };
++    lp_subscription* sub = lp_subscribe(
++        client, "ticked",
++        [](const char*, const char*, void* data) {
++            auto* context = static_cast<CallbackContext*>(data);
++            context->count->fetch_add(1);
++            context->gate->block();
++        }, &context);
++    ASSERT_NE(sub, nullptr);
++    ASSERT_TRUE(harness.queueEvent(QStringLiteral("ticked"), { 1 }));
++    ASSERT_TRUE(callbackGate.waitUntilEntered());
++
++    std::atomic<bool> destroyReturned{false};
++    std::thread destroyer([&]() {
++        lp_client_destroy(client);
++        destroyReturned = true;
++    });
++    std::this_thread::sleep_for(std::chrono::milliseconds(50));
++    EXPECT_FALSE(destroyReturned.load());
++    callbackGate.release();
++    ASSERT_TRUE(waitUntil(destroyReturned));
++    destroyer.join();
++
++    ASSERT_TRUE(harness.queueEvent(QStringLiteral("ticked"), { 2 }));
++    std::atomic<bool> queueDrained{false};
++    ASSERT_TRUE(QMetaObject::invokeMethod(
++        harness.context(), [&queueDrained]() { queueDrained = true; },
++        Qt::QueuedConnection));
++    ASSERT_TRUE(waitUntil(queueDrained));
++    EXPECT_EQ(callbackCount.load(), 1);
++    lp_unsubscribe(sub);
++}
++
++TEST_F(LpClientTest, ForeignApisDoNotPinLifecycleAcrossOwnerDispatch)
++{
++    enum class ForeignApi { Invoke, Subscribe, GetMethods, InformToken };
++    const std::vector<ForeignApi> cases{
++        ForeignApi::Invoke,
++        ForeignApi::Subscribe,
++        ForeignApi::GetMethods,
++        ForeignApi::InformToken,
++    };
++
++    int caseNumber = 0;
++    for (const ForeignApi api : cases) {
++        SCOPED_TRACE(caseNumber);
++        ASSERT_EQ(lp_set_mode("local"), LP_OK);
++        LocalOwnerHarness harness(
++            "lifecycle_api_mod_" + std::to_string(caseNumber++));
++        ASSERT_NE(harness.client(), nullptr);
++
++        struct RaceContext {
++            ForeignApi api;
++            lp_client* client;
++            std::thread worker;
++            std::atomic<bool> foreignStarted{false};
++            std::atomic<bool> foreignReturned{false};
++            std::atomic<bool> reentrantReturned{false};
++            lp_subscription* extraSubscription = nullptr;
++        } context{ api, harness.client() };
++
++        lp_subscription* trigger = lp_subscribe(
++            harness.client(), "race",
++            [](const char*, const char*, void* data) {
++                auto* context = static_cast<RaceContext*>(data);
++                context->worker = std::thread([context]() {
++                    context->foreignStarted = true;
++                    switch (context->api) {
++                    case ForeignApi::Invoke: {
++                        char* result = nullptr;
++                        char* error = nullptr;
++                        (void)lp_invoke(context->client, "noop", "[]", 1000,
++                                        &result, &error);
++                        lp_string_free(result);
++                        lp_string_free(error);
++                        break;
++                    }
++                    case ForeignApi::Subscribe:
++                        context->extraSubscription = lp_subscribe(
++                            context->client, "other",
++                            [](const char*, const char*, void*) {}, nullptr);
++                        break;
++                    case ForeignApi::GetMethods: {
++                        char* methods = lp_get_methods(context->client);
++                        lp_string_free(methods);
++                        break;
++                    }
++                    case ForeignApi::InformToken:
++                        (void)lp_inform_module_token(
++                            context->client, "auth", "origin", "token");
++                        break;
++                    }
++                    context->foreignReturned = true;
++                });
++                while (!context->foreignStarted.load())
++                    std::this_thread::yield();
++                std::this_thread::sleep_for(std::chrono::milliseconds(50));
++
++                // Old code blocks here: the foreign API owns lifecycle while
++                // waiting for this same owner thread. A lease leaves lifecycle
++                // unlocked, so callback re-entry remains admissible.
++                const int status = lp_invoke_async(
++                    context->client, "reentrant", "[]", 1000,
++                    [](int, const char*, void*) {}, nullptr);
++                context->reentrantReturned = status == LP_OK;
++            }, &context);
++        ASSERT_NE(trigger, nullptr);
++        ASSERT_TRUE(harness.queueEvent(QStringLiteral("race"), { 1 }));
++        ASSERT_TRUE(waitUntil(context.reentrantReturned));
++        ASSERT_TRUE(waitUntil(context.foreignReturned));
++        context.worker.join();
++        if (context.extraSubscription)
++            lp_unsubscribe(context.extraSubscription);
++        lp_unsubscribe(trigger);
++    }
++}
++
++TEST_F(LpClientTest, OwnerCallbackDestroyDefersAcceptedForeignLease)
++{
++    ASSERT_EQ(lp_set_mode("local"), LP_OK);
++    LocalOwnerHarness harness("deferred_retirement_mod");
++    lp_client* client = harness.takeClient();
++    ASSERT_NE(client, nullptr);
++
++    struct RaceContext {
++        lp_client* client;
++        std::thread worker;
++        std::atomic<bool> foreignStarted{false};
++        std::atomic<bool> foreignReturned{false};
++        std::atomic<bool> destroyReturned{false};
++    } context{ client };
++
++    lp_subscription* trigger = lp_subscribe(
++        client, "race",
++        [](const char*, const char*, void* data) {
++            auto* context = static_cast<RaceContext*>(data);
++            context->worker = std::thread([context]() {
++                context->foreignStarted = true;
++                char* methods = lp_get_methods(context->client);
++                lp_string_free(methods);
++                context->foreignReturned = true;
++            });
++            while (!context->foreignStarted.load())
++                std::this_thread::yield();
++            std::this_thread::sleep_for(std::chrono::milliseconds(50));
++            lp_client_destroy(context->client);
++            context->destroyReturned = true;
++        }, &context);
++    ASSERT_NE(trigger, nullptr);
++    ASSERT_TRUE(harness.queueEvent(QStringLiteral("race"), { 1 }));
++    ASSERT_TRUE(waitUntil(context.destroyReturned));
++    ASSERT_TRUE(waitUntil(context.foreignReturned));
++    context.worker.join();
++    lp_unsubscribe(trigger);
++}
++
++TEST_F(LpClientTest, ForeignDestroyDefersAcceptedForeignLease)
++{
++    ASSERT_EQ(lp_set_mode("local"), LP_OK);
++    LocalOwnerHarness harness("waited_retirement_mod");
++    lp_client* client = harness.takeClient();
++    ASSERT_NE(client, nullptr);
++
++    ThreadGate ownerGate;
++    ASSERT_TRUE(QMetaObject::invokeMethod(
++        harness.context(), [&ownerGate]() { ownerGate.block(); },
++        Qt::QueuedConnection));
++    ASSERT_TRUE(ownerGate.waitUntilEntered());
++
++    std::atomic<bool> apiStarted{false};
++    std::atomic<bool> apiReturned{false};
++    std::thread caller([&]() {
++        apiStarted = true;
++        char* methods = lp_get_methods(client);
++        lp_string_free(methods);
++        apiReturned = true;
++    });
++    ASSERT_TRUE(waitUntil(apiStarted));
++    std::this_thread::sleep_for(std::chrono::milliseconds(50));
++    EXPECT_FALSE(apiReturned.load());
++
++    std::atomic<bool> destroyReturned{false};
++    std::thread destroyer([&]() {
++        lp_client_destroy(client);
++        destroyReturned = true;
++    });
++    ASSERT_TRUE(waitUntil(destroyReturned));
++    EXPECT_FALSE(apiReturned.load());
++
++    ownerGate.release();
++    ASSERT_TRUE(waitUntil(apiReturned));
++    caller.join();
++    destroyer.join();
++}
++
++TEST_F(LpClientTest, CallbackMayDestroyItsClientWithoutLateCallback)
++{
++    m_mock->when("mod", "closeFromCallback").thenReturn(QVariant(9));
++    lp_client* client = lp_client_create("mod", "origin", nullptr, nullptr);
++    ASSERT_NE(client, nullptr);
++
++    struct Context {
++        lp_client* client = nullptr;
++        std::atomic<int> count{0};
++    } context{ client };
++    ASSERT_EQ(lp_invoke_async(client, "closeFromCallback", "[]", 1000,
++        [](int ok, const char*, void* data) {
++            auto* context = static_cast<Context*>(data);
++            if (ok) context->count.fetch_add(1);
++            lp_client_destroy(context->client);
++        }, &context), LP_OK);
++
++    QElapsedTimer timer;
++    timer.start();
++    while (context.count.load() == 0 && timer.elapsed() < 5000)
++        QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
++    ASSERT_EQ(context.count.load(), 1);
++    timer.restart();
++    while (timer.elapsed() < 100)
++        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
++    EXPECT_EQ(context.count.load(), 1);
++}
++
++TEST_F(LpClientTest, ReentrantDestroyDuringConcurrentCloseReturnsSafely)
++{
++    m_mock->when("mod", "closeRace").thenReturn(QVariant(9));
++    lp_client* client = lp_client_create("mod", "origin", nullptr, nullptr);
++    ASSERT_NE(client, nullptr);
++
++    struct Context {
++        lp_client* client = nullptr;
++        std::atomic<bool> callbackEntered{false};
++        std::atomic<bool> outerStarted{false};
++        std::atomic<bool> nestedReturned{false};
++        std::atomic<bool> outerReturned{false};
++        std::thread destroyer;
++    } context{ client };
++
++    ASSERT_EQ(lp_invoke_async(client, "closeRace", "[]", 1000,
++        [](int, const char*, void* data) {
++            auto* context = static_cast<Context*>(data);
++            context->callbackEntered = true;
++            context->destroyer = std::thread([context] {
++                context->outerStarted = true;
++                lp_client_destroy(context->client);
++                context->outerReturned = true;
++            });
++            while (!context->outerStarted.load()) std::this_thread::yield();
++
++            // Wait until the foreign destroyer has marked the handle closing.
++            // Calls admitted before that transition are harmless: teardown's
++            // callback guard drops their queued completions.
++            int status = LP_OK;
++            QElapsedTimer timer;
++            timer.start();
++            while (status != LP_ERR_UNAVAILABLE && timer.elapsed() < 5000) {
++                status = lp_invoke_async(
++                    context->client, "closeRace", "[]", 1000,
++                    [](int, const char*, void*) {}, nullptr);
++                std::this_thread::yield();
++            }
++            if (status == LP_ERR_UNAVAILABLE) {
++                lp_client_destroy(context->client);
++                context->nestedReturned = true;
++            }
++        }, &context), LP_OK);
++
++    QElapsedTimer timer;
++    timer.start();
++    while (!context.outerReturned.load() && timer.elapsed() < 5000)
++        QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
++    if (context.destroyer.joinable()) context.destroyer.join();
++
++    EXPECT_TRUE(context.callbackEntered.load());
++    EXPECT_TRUE(context.nestedReturned.load());
++    EXPECT_TRUE(context.outerReturned.load());
++}
++
+ TEST_F(LpClientTest, InvalidArgsJsonIsRejected)
+ {
+     lp_client* client = lp_client_create("mod", "origin", nullptr, nullptr);
+diff --git a/tests/protocol/test_mock_transport.cpp b/tests/protocol/test_mock_transport.cpp
+index c5c3325..e483a99 100644
+--- a/tests/protocol/test_mock_transport.cpp
++++ b/tests/protocol/test_mock_transport.cpp
+@@ -2,6 +2,36 @@
+ #include "mock_transport.h"
+ #include "mock_store.h"
+ 
++#include <type_traits>
++
++namespace {
++
++// Source-compatibility fixture: third-party transports written against 0.2.0
++// only override the original QVariant callback. The new typed entry point must
++// not make those subclasses abstract or reinterpret a null value as failure.
++class LegacyAsyncObject final : public LogosObject {
++public:
++    QVariant callMethod(const QString&, const QString&, const QVariantList&,
++                        int) override { return {}; }
++    void callMethodAsync(const QString&, const QString&, const QVariantList&,
++                         int, AsyncResultCallback callback) override
++    {
++        callback(QVariant());
++    }
++    bool informModuleToken(const QString&, const QString&, const QString&,
++                           int) override { return true; }
++    void onEvent(const QString&, EventCallback) override {}
++    void disconnectEvents() override {}
++    void emitEvent(const QString&, const QVariantList&) override {}
++    QJsonArray getMethods() override { return {}; }
++    void release() override {}
++    quintptr id() const override { return 1; }
++};
++
++static_assert(!std::is_abstract_v<LegacyAsyncObject>);
++
++} // namespace
++
+ class MockTransportTest : public ::testing::Test {
+ protected:
+     void SetUp() override
+@@ -104,3 +134,16 @@ TEST_F(MockTransportTest, ModuleName)
+     MockLogosObject obj("my_module");
+     EXPECT_EQ(obj.moduleName(), "my_module");
+ }
++
++TEST_F(MockTransportTest, LegacyAsyncSubclassAdaptsNullAsTypedSuccess)
++{
++    LegacyAsyncObject obj;
++    int callbacks = 0;
++    obj.callMethodAsyncOutcome({}, {}, {}, 1000,
++        [&callbacks](logos::AsyncCallOutcome outcome) {
++            ++callbacks;
++            EXPECT_TRUE(outcome.ok());
++            EXPECT_FALSE(outcome.value.isValid());
++        });
++    EXPECT_EQ(callbacks, 1);
++}
+diff --git a/tests/protocol/test_plain_no_event_loop.cpp b/tests/protocol/test_plain_no_event_loop.cpp
+new file mode 100644
+index 0000000..9242cba
+--- /dev/null
++++ b/tests/protocol/test_plain_no_event_loop.cpp
+@@ -0,0 +1,146 @@
++#include <gtest/gtest.h>
++
++#include "incoming_call_handler.h"
++#include "json_codec.h"
++#include "logos_protocol.h"
++#include "rpc_server.h"
++
++#include <QCoreApplication>
++
++#include <boost/asio/executor_work_guard.hpp>
++#include <boost/asio/io_context.hpp>
++
++#include <atomic>
++#include <chrono>
++#include <condition_variable>
++#include <memory>
++#include <mutex>
++#include <string>
++#include <thread>
++
++namespace {
++
++class NullResultHandler final : public logos::plain::IncomingCallHandler {
++public:
++    void onCall(const logos::plain::CallMessage& request,
++                CallReply reply) override
++    {
++        logos::plain::ResultMessage result;
++        result.id = request.id;
++        result.ok = true;
++        result.value = logos::plain::RpcValue();
++        reply(std::move(result));
++    }
++
++    void onMethods(const logos::plain::MethodsMessage& request,
++                   MethodsReply reply) override
++    {
++        logos::plain::MethodsResultMessage result;
++        result.id = request.id;
++        result.ok = true;
++        reply(std::move(result));
++    }
++
++    void onSubscribe(const logos::plain::SubscribeMessage&, EventSink,
++                     const void*) override {}
++    void onUnsubscribe(const logos::plain::UnsubscribeMessage&,
++                       const void*) override {}
++    void onConnectionClosed(const void*) override {}
++    void onToken(const logos::plain::TokenMessage&) override {}
++};
++
++class PlainServerGuard {
++public:
++    PlainServerGuard()
++        : work(boost::asio::make_work_guard(io))
++        , server(std::make_shared<logos::plain::RpcServerTcp>(
++              io, "127.0.0.1", 0,
++              std::make_shared<logos::plain::JsonCodec>(), &handler))
++        , worker([this] { io.run(); })
++    {
++    }
++
++    ~PlainServerGuard()
++    {
++        server->stop();
++        work.reset();
++        io.stop();
++        if (worker.joinable()) worker.join();
++    }
++
++    bool start() { return server->start(); }
++    uint16_t port() const { return server->boundPort(); }
++
++private:
++    NullResultHandler handler;
++    boost::asio::io_context io;
++    boost::asio::executor_work_guard<boost::asio::io_context::executor_type> work;
++    std::shared_ptr<logos::plain::RpcServerTcp> server;
++    std::thread worker;
++};
++
++} // namespace
++
++TEST(PlainNoEventLoopTest, AcceptedCAbiCallCompletesExactlyOnce)
++{
++    ASSERT_EQ(QCoreApplication::instance(), nullptr);
++
++    PlainServerGuard server;
++    ASSERT_TRUE(server.start());
++    const std::string transport =
++        "{\"protocol\":\"tcp\",\"host\":\"127.0.0.1\",\"port\":"
++        + std::to_string(server.port()) + ",\"codec\":\"json\"}";
++
++    ASSERT_EQ(lp_set_mode("remote"), LP_OK);
++    ASSERT_EQ(lp_token_save("plain_no_event_loop", "issued-token"), LP_OK);
++    lp_client* client = lp_client_create(
++        "plain_no_event_loop", "test_origin", transport.c_str(),
++        transport.c_str());
++    ASSERT_NE(client, nullptr);
++
++    std::mutex mutex;
++    std::condition_variable cv;
++    std::atomic<int> callbackCount{0};
++    int ok = 0;
++    std::string json;
++    const std::thread::id callerThread = std::this_thread::get_id();
++    std::thread::id callbackThread;
++
++    struct Capture {
++        std::mutex* mutex;
++        std::condition_variable* cv;
++        std::atomic<int>* callbackCount;
++        int* ok;
++        std::string* json;
++        std::thread::id* callbackThread;
++    } capture{&mutex, &cv, &callbackCount, &ok, &json, &callbackThread};
++
++    ASSERT_EQ(lp_invoke_async(
++        client, "returnsNull", "[]", 1000,
++        [](int callbackOk, const char* resultJson, void* data) {
++            auto* capture = static_cast<Capture*>(data);
++            {
++                std::lock_guard<std::mutex> lock(*capture->mutex);
++                *capture->ok = callbackOk;
++                *capture->json = resultJson ? resultJson : "";
++                *capture->callbackThread = std::this_thread::get_id();
++                ++*capture->callbackCount;
++            }
++            capture->cv->notify_one();
++        },
++        &capture), LP_OK);
++
++    {
++        std::unique_lock<std::mutex> lock(mutex);
++        ASSERT_TRUE(cv.wait_for(lock, std::chrono::seconds(5), [&] {
++            return callbackCount.load() != 0;
++        }));
++    }
++    std::this_thread::sleep_for(std::chrono::milliseconds(20));
++
++    EXPECT_EQ(callbackCount.load(), 1);
++    EXPECT_EQ(ok, 1);
++    EXPECT_EQ(json, "null");
++    EXPECT_NE(callbackThread, callerThread);
++    lp_client_destroy(client);
++}
+diff --git a/tests/protocol/test_remote_transport_events.cpp b/tests/protocol/test_remote_transport_events.cpp
+index a892dc5..0187329 100644
+--- a/tests/protocol/test_remote_transport_events.cpp
++++ b/tests/protocol/test_remote_transport_events.cpp
+@@ -23,6 +23,7 @@
+ #include "logos_async_dispatch.h"
+ #include "logos_instance.h"
+ #include "logos_provider_interface.h"
++#include "logos_protocol.h"
+ #include "module_proxy.h"
+ #include "remote_transport.h"
+ 
+@@ -35,6 +36,8 @@
+ #include <chrono>
+ #include <thread>
+ 
++#include <nlohmann/json.hpp>
++
+ namespace {
+ 
+ QCoreApplication* ensureApp() {
+@@ -262,3 +265,88 @@ TEST_F(RemoteEventTest, ReleaseFromAsyncCompletionCallbackDoesNotCrash)
+     pumpEventLoop(200);
+     // NOTE: obj was already released inside the callback — do not touch it here.
+ }
++
++TEST_F(RemoteEventTest, DeferredAsyncTimeoutIsReportedExactlyOnce)
++{
++    const QString registryUrl = LogosInstance::id("async_timeout_module");
++
++    RemoteTransportHost host(registryUrl);
++    DeferredProvider provider;
++    ModuleProxy proxy(&provider);
++    ASSERT_TRUE(proxy.saveToken(QStringLiteral("test_caller"),
++                                QStringLiteral("tok-1")));
++    ASSERT_TRUE(host.publishObject("async_timeout_module", &proxy));
++
++    RemoteTransportConnection conn(registryUrl);
++    ASSERT_TRUE(conn.connectToHost());
++    LogosObject* obj = conn.requestObject("async_timeout_module", 5000);
++    ASSERT_NE(obj, nullptr);
++
++    std::atomic<int> delivered{0};
++    logos::AsyncCallOutcome captured;
++    obj->callMethodAsyncOutcome(
++        QStringLiteral("tok-1"), QStringLiteral("asyncWork"), QVariantList{}, 50,
++        [&](logos::AsyncCallOutcome outcome) {
++            captured = std::move(outcome);
++            delivered.fetch_add(1);
++        });
++
++    for (int i = 0; i < 40 && delivered.load() == 0; ++i) pumpEventLoop(25);
++    ASSERT_EQ(delivered.load(), 1);
++    EXPECT_FALSE(captured.ok());
++    EXPECT_EQ(captured.error.code, "timeout");
++    EXPECT_EQ(captured.error.origin, "async_timeout_module");
++
++    pumpEventLoop(150);
++    EXPECT_EQ(delivered.load(), 1);
++    obj->release();
++    pumpEventLoop(50);
++}
++
++TEST_F(RemoteEventTest, CAbiDeferredTimeoutReturnsCanonicalErrorExactlyOnce)
++{
++    const QString moduleName = QStringLiteral("lp_async_timeout_module");
++    const QString registryUrl = LogosInstance::id(moduleName);
++
++    RemoteTransportHost host(registryUrl);
++    DeferredProvider provider;
++    ModuleProxy proxy(&provider);
++    ASSERT_TRUE(proxy.saveToken(QStringLiteral("test_caller"),
++                                QStringLiteral("tok-1")));
++    ASSERT_TRUE(host.publishObject(moduleName, &proxy));
++    ASSERT_EQ(lp_set_mode("remote"), LP_OK);
++    ASSERT_EQ(lp_token_save("lp_async_timeout_module", "tok-1"), LP_OK);
++
++    lp_client* client = lp_client_create(
++        "lp_async_timeout_module", "test_caller", nullptr, nullptr);
++    ASSERT_NE(client, nullptr);
++    struct Capture {
++        std::atomic<int> delivered{0};
++        int ok = 1;
++        std::string json;
++    } capture;
++
++    ASSERT_EQ(lp_invoke_async(client, "asyncWork", "[]", 50,
++        [](int ok, const char* json, void* data) {
++            auto* capture = static_cast<Capture*>(data);
++            capture->ok = ok;
++            capture->json = json ? json : "";
++            capture->delivered.fetch_add(1);
++        }, &capture), LP_OK);
++
++    for (int i = 0; i < 40 && capture.delivered.load() == 0; ++i)
++        pumpEventLoop(25);
++    ASSERT_EQ(capture.delivered.load(), 1);
++    EXPECT_EQ(capture.ok, 0);
++    const nlohmann::json error = nlohmann::json::parse(
++        capture.json, nullptr, false);
++    ASSERT_TRUE(error.is_object());
++    EXPECT_EQ(error.value("code", std::string{}), "timeout");
++    EXPECT_EQ(error.value("origin", std::string{}),
++              "lp_async_timeout_module");
++
++    pumpEventLoop(150);
++    EXPECT_EQ(capture.delivered.load(), 1);
++    lp_client_destroy(client);
++    pumpEventLoop(50);
++}
