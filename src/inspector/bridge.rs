@@ -203,25 +203,34 @@ mod tests {
             kind: crate::modules::logos_core::ModuleTransportKind::Module,
         })?;
 
-        let result = bridge.call_module_value(
-            INSPECTOR_MODULE,
-            "storageFetch",
-            json!([{
-                "adapter": { "source_mode": "module", "inputs": {} },
-                "payload": { "cid": "cid-2" },
-                "mutating_enabled": true
-            }]),
-        );
+        let cases = [
+            ("storageFetch", json!({ "cid": "cid-2" })),
+            (
+                "storageUploadBackupCatalogEntry",
+                json!({ "backup_catalog_id": "backup-2", "block_size": 65536 }),
+            ),
+        ];
+        for (method, payload) in cases {
+            let result = bridge.call_module_value(
+                INSPECTOR_MODULE,
+                method,
+                json!([{
+                    "adapter": { "source_mode": "module", "inputs": {} },
+                    "payload": payload,
+                    "mutating_enabled": true
+                }]),
+            );
 
-        let Err(error) = result else {
-            bail!("host-backed direct operation should fail before dispatch");
-        };
-        anyhow::ensure!(
-            error
-                .to_string()
-                .contains("host-backed operation `storageFetch` requires `runtimeOperationStart`"),
-            "unexpected direct host operation error: {error:#}"
-        );
+            let Err(error) = result else {
+                bail!("host-backed direct operation should fail before dispatch");
+            };
+            anyhow::ensure!(
+                error.to_string().contains(&format!(
+                    "host-backed operation `{method}` requires `runtimeOperationStart`"
+                )),
+                "unexpected direct host operation error: {error:#}"
+            );
+        }
         let calls = calls
             .lock()
             .map_err(|error| anyhow::anyhow!("recorded call lock failed: {error}"))?;

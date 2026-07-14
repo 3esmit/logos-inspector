@@ -4,7 +4,11 @@ use anyhow::{Context as _, Result, bail};
 use serde_json::{Value, json};
 use tokio::io::AsyncWriteExt as _;
 
-use crate::{modules::logos_core::SharedModuleTransport, source_routing::storage_layer};
+use crate::{
+    modules::logos_core::SharedModuleTransport,
+    source_routing::storage_layer,
+    support::backup_catalog::{attach_remote_backup_metadata, backup_payload_bytes},
+};
 
 use super::spec::{
     AffectedContextField, AffectedContextKey, OperationClass, OperationCommand,
@@ -21,6 +25,7 @@ pub(super) enum StorageCommand {
     DownloadManifest,
     Fetch,
     UploadUrl,
+    UploadBackupCatalogEntry,
     DownloadToUrl,
     Remove,
 }
@@ -32,19 +37,21 @@ impl StorageCommand {
             Self::DownloadManifest => OperationMethod::StorageDownloadManifest,
             Self::Fetch => OperationMethod::StorageFetch,
             Self::UploadUrl => OperationMethod::StorageUploadUrl,
+            Self::UploadBackupCatalogEntry => OperationMethod::StorageUploadBackupCatalogEntry,
             Self::DownloadToUrl => OperationMethod::StorageDownloadToUrl,
             Self::Remove => OperationMethod::StorageRemove,
         }
     }
 
-    const fn operation(self) -> storage_layer::StorageOperation {
+    const fn operation(self) -> Option<storage_layer::StorageOperation> {
         match self {
-            Self::Manifests => storage_layer::StorageOperation::Manifests,
-            Self::DownloadManifest => storage_layer::StorageOperation::DownloadManifest,
-            Self::Fetch => storage_layer::StorageOperation::Fetch,
-            Self::UploadUrl => storage_layer::StorageOperation::Upload,
-            Self::DownloadToUrl => storage_layer::StorageOperation::Download,
-            Self::Remove => storage_layer::StorageOperation::Remove,
+            Self::Manifests => Some(storage_layer::StorageOperation::Manifests),
+            Self::DownloadManifest => Some(storage_layer::StorageOperation::DownloadManifest),
+            Self::Fetch => Some(storage_layer::StorageOperation::Fetch),
+            Self::UploadUrl => Some(storage_layer::StorageOperation::Upload),
+            Self::UploadBackupCatalogEntry => None,
+            Self::DownloadToUrl => Some(storage_layer::StorageOperation::Download),
+            Self::Remove => Some(storage_layer::StorageOperation::Remove),
         }
     }
 }
@@ -94,6 +101,17 @@ pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
         AffectedContextField::required(AffectedContextKey::Path),
     ]),
     OperationDefinition::new(
+        OperationCommand::Storage(StorageCommand::UploadBackupCatalogEntry),
+        "storageUploadBackupCatalogEntry",
+        "Backup upload",
+        OperationClass::Mutating,
+    )
+    .with_context_inputs(&[
+        AffectedContextField::required(AffectedContextKey::Source),
+        AffectedContextField::optional(AffectedContextKey::Endpoint),
+        AffectedContextField::required(AffectedContextKey::BackupCatalogId),
+    ]),
+    OperationDefinition::new(
         OperationCommand::Storage(StorageCommand::DownloadToUrl),
         "storageDownloadToUrl",
         "Storage download",
@@ -127,10 +145,14 @@ pub(super) async fn execute(
     cancel_requested: &AtomicBool,
     module_transport: SharedModuleTransport,
 ) -> Result<RuntimeOperationOutcome> {
-    let request = storage_layer::StorageOperationRequest::parse(
-        request.node_request()?,
-        command.operation(),
-    )?;
+    if command == StorageCommand::UploadBackupCatalogEntry {
+        return execute_backup_catalog_upload(request, module_transport).await;
+    }
+    let operation = command
+        .operation()
+        .context("storage command has no standard operation")?;
+    let request =
+        storage_layer::StorageOperationRequest::parse(request.node_request()?, operation)?;
     match storage_layer::execute_operation(request, module_transport).await? {
         storage_layer::StorageOperationOutput::Outcome(outcome) => Ok(outcome.into()),
         storage_layer::StorageOperationOutput::Download(download) => {
@@ -149,17 +171,85 @@ pub(super) fn add_operation_context(
     request: &RuntimeOperationRequest,
     context: &mut serde_json::Map<String, Value>,
 ) -> Result<()> {
-    let operation_request = storage_layer::StorageOperationRequest::parse(
-        request.node_request()?,
-        command.operation(),
-    )?;
+    if command == StorageCommand::UploadBackupCatalogEntry {
+        let upload =
+            storage_layer::StorageBackupUploadRequest::parse_request(request.node_request()?)?;
+        context.insert(
+            "backupCatalogId".to_owned(),
+            json!(upload.backup_catalog_id()),
+        );
+        return Ok(());
+    }
+    let operation = command
+        .operation()
+        .context("storage command has no standard operation")?;
+    let operation_request =
+        storage_layer::StorageOperationRequest::parse(request.node_request()?, operation)?;
     context.extend(operation_request.context().clone());
     Ok(())
 }
 
 pub(super) fn validate(command: StorageCommand, request: &RuntimeOperationRequest) -> Result<()> {
-    storage_layer::StorageOperationRequest::parse(request.node_request()?, command.operation())
-        .map(|_| ())
+    if command == StorageCommand::UploadBackupCatalogEntry {
+        return storage_layer::StorageBackupUploadRequest::parse_request(request.node_request()?)
+            .map(|_| ());
+    }
+    let operation = command
+        .operation()
+        .context("storage command has no standard operation")?;
+    storage_layer::StorageOperationRequest::parse(request.node_request()?, operation).map(|_| ())
+}
+
+async fn execute_backup_catalog_upload(
+    request: &RuntimeOperationRequest,
+    module_transport: SharedModuleTransport,
+) -> Result<RuntimeOperationOutcome> {
+    let request =
+        storage_layer::StorageBackupUploadRequest::parse_request(request.node_request()?)?;
+    request
+        .client()
+        .ensure_managed_byte_upload_supported(&module_transport)?;
+    let backup_catalog_id = request.backup_catalog_id().to_owned();
+    let payload_catalog_id = backup_catalog_id.clone();
+    let bytes = tokio::task::spawn_blocking(move || backup_payload_bytes(&payload_catalog_id))
+        .await
+        .context("backup payload worker failed")??;
+    let upload = request
+        .client()
+        .upload_bytes(
+            &module_transport,
+            "logos-inspector-settings-backup.json",
+            &bytes,
+            request.block_size(),
+        )
+        .await
+        .context("failed to upload settings backup through Storage")?;
+    let cid = required_backup_upload_cid(&upload)?;
+    let metadata_catalog_id = backup_catalog_id.clone();
+    let metadata_cid = cid.clone();
+    let catalog_entry = tokio::task::spawn_blocking(move || {
+        attach_remote_backup_metadata(&metadata_catalog_id, &metadata_cid, Some("logos_storage"))
+    })
+    .await
+    .context("backup catalog metadata worker failed")??;
+    Ok(RuntimeOperationOutcome::Completed(json!({
+        "cid": cid,
+        "bytes": bytes.len(),
+        "endpoint": request.client().source(),
+        "backup_catalog_id": backup_catalog_id,
+        "catalog_entry": catalog_entry,
+        "upload": upload,
+    })))
+}
+
+fn required_backup_upload_cid(upload: &Value) -> Result<String> {
+    upload
+        .get("cid")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .context("Storage backup upload returned no CID")
 }
 
 pub(super) async fn storage_rest_download_tracked(
@@ -232,4 +322,62 @@ pub(super) async fn storage_rest_download_tracked(
         "source": if request.local_only() { "local" } else { "network" },
         "endpoint": request.endpoint(),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use anyhow::{Context as _, Result};
+    use serde_json::json;
+
+    use super::*;
+    use crate::{
+        inspector::commands::operations::runtime_operation_request_from_value,
+        modules::logos_core::UnavailableModuleTransport,
+    };
+
+    #[tokio::test]
+    async fn backup_upload_executor_rejects_basecamp_before_catalog_read() -> Result<()> {
+        let request = runtime_operation_request_from_value(json!({
+            "domain": "storage",
+            "method": "storageUploadBackupCatalogEntry",
+            "adapter": { "source_mode": "module", "inputs": {} },
+            "mutating_enabled": true,
+            "payload": {
+                "backup_catalog_id": "missing-backup-must-not-be-read",
+                "block_size": 65536
+            }
+        }))?;
+        let transport: SharedModuleTransport =
+            Arc::new(UnavailableModuleTransport::basecamp_protocol_gate());
+
+        let error = execute_backup_catalog_upload(&request, transport)
+            .await
+            .err()
+            .context("Basecamp backup upload should fail")?;
+
+        anyhow::ensure!(
+            error.to_string()
+                == "Basecamp module source does not support Inspector-managed byte staging",
+            "unexpected executor error: {error:#}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn backup_upload_completion_requires_nonempty_string_cid() -> Result<()> {
+        let cases = [json!({}), json!({ "cid": null }), json!({ "cid": "  " })];
+        for upload in cases {
+            anyhow::ensure!(
+                required_backup_upload_cid(&upload).is_err(),
+                "malformed upload CID was accepted: {upload}"
+            );
+        }
+        anyhow::ensure!(
+            required_backup_upload_cid(&json!({ "cid": "  cid-1  " }))? == "cid-1",
+            "upload CID was not normalized"
+        );
+        Ok(())
+    }
 }

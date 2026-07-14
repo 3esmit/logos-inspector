@@ -117,7 +117,8 @@ QtObject {
             return model.shell.currentView === "overview"
                 && root.intervalFor("dashboard") > 0
         case "storageOperation":
-            return root.storageApp() && root.storageApp().operation.running
+            return (root.storageApp() && root.storageApp().operation.running)
+                || model.backupCatalogUploadRunning === true
         case "deliveryOperation":
             return root.deliveryApp() && root.deliveryApp().operation.running
         case "socialStoreQuery":
@@ -143,7 +144,7 @@ QtObject {
         case "dashboard":
             return model.refreshDashboard()
         case "storageOperation":
-            return root.storageApp() ? root.storageApp().pollStorageOperation(false) : null
+            return root.pollStorageOperations()
         case "deliveryOperation":
             return root.deliveryApp() ? root.deliveryApp().pollDeliveryOperation(false) : null
         case "socialStoreQuery":
@@ -175,6 +176,22 @@ QtObject {
 
     function storageApp() {
         return model && model.storageApp ? model.storageApp : null
+    }
+
+    function pollStorageOperations() {
+        let result = null
+        const storage = root.storageApp()
+        if (storage && storage.operation.running) {
+            result = storage.pollStorageOperation(false)
+        }
+        if (model.backupCatalogUploadRunning === true && model.backupCatalog
+                && typeof model.backupCatalog.pollUpload === "function") {
+            const uploadResult = model.backupCatalog.pollUpload()
+            if (result === null) {
+                result = uploadResult
+            }
+        }
+        return result
     }
 
     function deliveryApp() {

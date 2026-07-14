@@ -241,9 +241,23 @@ QtObject {
     property Domains.BackupCatalogState backupCatalog: Domains.BackupCatalogState {
         id: backupCatalogState
 
+        storageAdapterInitialization: root.sourceRouting.storageOperationAdapter()
+        storageMutatingDiagnosticsEnabled: root.storageMutatingDiagnosticsEnabled
         gateway: QtObject {
             function call(method, args, label) {
                 return root.callInspector(method, args || [], label)
+            }
+
+            function startRuntimeOperation(request, showResult, callback) {
+                return root.runtimeOperationStart(request, showResult === true, callback)
+            }
+
+            function runtimeOperationStatus(operationId, showResult, callback) {
+                return root.runtimeOperationStatus(operationId, showResult === true, callback)
+            }
+
+            function appendOperationHistory(operation, detail) {
+                root.appendOperationHistory(operation, detail)
             }
         }
     }
@@ -251,6 +265,7 @@ QtObject {
     property alias backupCatalogLoaded: backupCatalogState.loaded
     property alias backupCatalogError: backupCatalogState.error
     property alias backupCatalogRevision: backupCatalogState.revision
+    property alias backupCatalogUploadRunning: backupCatalogState.uploadRunning
     property Domains.BackupImportState backupImport: Domains.BackupImportState {
         id: backupImportState
 

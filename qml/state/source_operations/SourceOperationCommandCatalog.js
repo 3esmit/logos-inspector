@@ -22,6 +22,8 @@ function storageActionForMethod(method) {
         return "cache"
     case "storageUploadUrl":
         return "upload"
+    case "storageUploadBackupCatalogEntry":
+        return "backup_upload"
     case "storageDownloadToUrl":
         return "download"
     case "storageRemove":
@@ -46,6 +48,8 @@ function storageRequiredInputs(action, args) {
         ]
     case "upload":
         return [{ key: "path", label: qsTr("File path"), value: values[0] }]
+    case "backup_upload":
+        return [{ key: "backup_catalog_id", label: qsTr("Backup catalog ID"), value: values[0] }]
     default:
         return []
     }

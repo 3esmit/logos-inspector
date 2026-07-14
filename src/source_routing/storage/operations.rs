@@ -157,22 +157,38 @@ impl StorageClient {
         bytes: &[u8],
         block_size: u64,
     ) -> Result<Value> {
+        self.ensure_managed_byte_upload_supported(module_transport)?;
         match &self.adapter {
             StorageOperationAdapter::Module(ModuleTransportKind::Module) => {
                 bail!("Basecamp module source does not support Inspector-managed byte staging")
             }
             StorageOperationAdapter::Module(ModuleTransportKind::LogoscoreCli) => {
-                if module_transport.kind() != ModuleTransportKind::LogoscoreCli {
-                    bail!(
-                        "resolved module transport `logoscore_cli` is unavailable; active transport is `{}`",
-                        module_transport.kind().as_str()
-                    );
-                }
                 transport::module_upload_bytes(filename, bytes, block_size).await
             }
             StorageOperationAdapter::Rest { endpoint } => {
                 transport::upload_bytes(endpoint, filename, bytes, block_size).await
             }
+        }
+    }
+
+    pub(crate) fn ensure_managed_byte_upload_supported(
+        &self,
+        module_transport: &SharedModuleTransport,
+    ) -> Result<()> {
+        match &self.adapter {
+            StorageOperationAdapter::Module(ModuleTransportKind::Module) => {
+                bail!("Basecamp module source does not support Inspector-managed byte staging")
+            }
+            StorageOperationAdapter::Module(ModuleTransportKind::LogoscoreCli)
+                if module_transport.kind() != ModuleTransportKind::LogoscoreCli =>
+            {
+                bail!(
+                    "resolved module transport `logoscore_cli` is unavailable; active transport is `{}`",
+                    module_transport.kind().as_str()
+                )
+            }
+            StorageOperationAdapter::Module(ModuleTransportKind::LogoscoreCli)
+            | StorageOperationAdapter::Rest { .. } => Ok(()),
         }
     }
 
@@ -575,8 +591,7 @@ pub(crate) struct StorageBackupUploadRequest {
 }
 
 impl StorageBackupUploadRequest {
-    pub(crate) fn parse(args: &Args) -> Result<Self> {
-        let request = NodeOperationRequest::from_bridge_args(args)?;
+    pub(crate) fn parse_request(request: &NodeOperationRequest) -> Result<Self> {
         request.require_mutating("settings backup action")?;
         let payload: BackupUploadPayload = request.payload("settings backup")?;
         Ok(Self {
@@ -710,6 +725,8 @@ const fn default_block_size() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use anyhow::Result;
     use serde_json::json;
 
@@ -791,6 +808,58 @@ mod tests {
                 }
             ),
             "Storage LogosCore CLI plan lost transport identity"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn backup_upload_request_preserves_typed_identity_and_block_size() -> Result<()> {
+        let request = request(json!({
+            "adapter": { "source_mode": "logoscore_cli", "inputs": {} },
+            "mutating_enabled": true,
+            "payload": {
+                "backup_catalog_id": "backup-1",
+                "block_size": 32768
+            }
+        }))?;
+
+        let request = StorageBackupUploadRequest::parse_request(&request)?;
+
+        anyhow::ensure!(
+            request.backup_catalog_id() == "backup-1"
+                && request.block_size() == 32_768
+                && request.client().source() == "logoscore call storage_module",
+            "backup upload request lost typed input identity"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn basecamp_managed_byte_upload_fails_closed_before_transport() -> Result<()> {
+        let request = request(json!({
+            "adapter": { "source_mode": "module", "inputs": {} },
+            "mutating_enabled": true,
+            "payload": {
+                "backup_catalog_id": "backup-1",
+                "block_size": 65536
+            }
+        }))?;
+        let request = StorageBackupUploadRequest::parse_request(&request)?;
+        let module_transport: SharedModuleTransport = Arc::new(
+            crate::modules::logos_core::UnavailableModuleTransport::basecamp_protocol_gate(),
+        );
+
+        let error = request
+            .client()
+            .upload_bytes(&module_transport, "backup.json", b"payload", 65_536)
+            .await
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("Basecamp managed byte upload should fail"))?;
+
+        anyhow::ensure!(
+            error.to_string()
+                == "Basecamp module source does not support Inspector-managed byte staging",
+            "unexpected Basecamp byte-staging error: {error:#}"
         );
         Ok(())
     }

@@ -119,6 +119,14 @@ TestCase {
         model.blockchainModuleEventRevision = 0
         model.blockchainLastEventText = ""
         model.storageApp.operationSession.clearActive()
+        model.backupCatalog.invalidateUpload("")
+        model.backupCatalog.entries = []
+        model.backupCatalog.loaded = false
+        model.backupCatalog.error = ""
+        model.backupCatalog.revision = 0
+        model.settingsBackupCid = ""
+        model.settingsRestoreCid = ""
+        model.settingsBackupStatus = ""
         model.runtimeOperations = ({})
         model.runtimeOperationEventSeq = ({})
         model.runtimeOperationHistory = []
@@ -236,6 +244,19 @@ TestCase {
         model.walletBinary = "/usr/bin/lee-wallet"
         model.walletHome = "/tmp/wallet-home"
         model.localWalletStatus = readyWalletStatus("profile")
+    }
+
+    function backupUploadOperation(id, status, result, cursor) {
+        return {
+            operationId: String(id || "backup-upload-1"),
+            domain: "storage",
+            method: "storageUploadBackupCatalogEntry",
+            label: "Backup upload",
+            status: String(status || "completed"),
+            eventCursor: Number(cursor || 1),
+            result: result === undefined ? null : result,
+            error: status === "failed" ? "upload failed" : ""
+        }
     }
 
     function setActiveZone(channelId) {
@@ -1936,17 +1957,15 @@ TestCase {
                 text: "OK",
                 error: ""
             },
-            storageUploadBackupCatalogEntry: {
+            runtimeOperationStart: {
                 ok: true,
-                value: { cid: "cid-blocked" },
-                text: "OK",
-                error: ""
+                value: backupUploadOperation("blocked", "completed", { cid: "cid-blocked" })
             }
         }
 
         verify(!model.backupSettingsToStorage(true))
         verify(!fakeHost.calls.some(function (call) { return call.method === "createLocalSettingsBackup" }))
-        verify(!fakeHost.calls.some(function (call) { return call.method === "storageUploadBackupCatalogEntry" }))
+        verify(!fakeHost.calls.some(function (call) { return call.method === "runtimeOperationStart" }))
         verify(model.settingsBackupStatus.indexOf("upload capability") >= 0)
     }
 
@@ -1965,16 +1984,14 @@ TestCase {
         model.storageSourceMode = "rest"
         model.storageMutatingDiagnosticsEnabled = true
         fakeHost.responses = {
-            storageUploadBackupCatalogEntry: {
+            runtimeOperationStart: {
                 ok: true,
-                value: { cid: "cid-blocked" },
-                text: "OK",
-                error: ""
+                value: backupUploadOperation("blocked", "completed", { cid: "cid-blocked" })
             }
         }
 
-        compare(model.backupImport.uploadBackupCatalogEntry("backup-blocked"), null)
-        verify(!fakeHost.calls.some(function (call) { return call.method === "storageUploadBackupCatalogEntry" }))
+        verify(!model.backupImport.uploadBackupCatalogEntry("backup-blocked"))
+        verify(!fakeHost.calls.some(function (call) { return call.method === "runtimeOperationStart" }))
         verify(model.settingsBackupStatus.indexOf("upload capability") >= 0)
     }
 
@@ -2022,17 +2039,23 @@ TestCase {
                 text: "OK",
                 error: ""
             },
-            storageUploadBackupCatalogEntry: {
+            runtimeOperationStart: {
                 ok: true,
-                value: { cid: "cid-module", backup_catalog_id: "backup-module" },
-                text: "OK",
-                error: ""
+                value: backupUploadOperation("backup-module-op", "completed", {
+                    cid: "cid-module",
+                    backup_catalog_id: "backup-module",
+                    catalog_entry: {
+                        backup_catalog_id: "backup-module",
+                        remote: { cid: "cid-module" }
+                    }
+                })
             }
         }
 
         verify(model.settingsBackupAvailable())
         verify(model.backupSettingsToStorage(false))
-        const calls = fakeHost.calls.filter(function (call) { return call.method === "storageUploadBackupCatalogEntry" })
+        tryVerify(function () { return callCountFor("runtimeOperationStart") === 1 })
+        const calls = fakeHost.calls.filter(function (call) { return call.method === "runtimeOperationStart" })
         compare(calls.length, 1)
         compare(calls[0].args[0].adapter.source_mode, "metrics")
         verify(calls[0].args[0].adapter.inputs.rest_endpoint === undefined)
@@ -2101,25 +2124,24 @@ TestCase {
                 text: "OK",
                 error: ""
             },
-            storageUploadBackupCatalogEntry: {
+            runtimeOperationStart: {
                 ok: true,
-                value: {
+                value: backupUploadOperation("backup-upload-1", "completed", {
                     cid: "cid-backup",
                     backup_catalog_id: "backup-1",
                     catalog_entry: {
                         backup_catalog_id: "backup-1",
                         remote: { cid: "cid-backup" }
                     }
-                },
-                text: "OK",
-                error: ""
+                })
             }
         }
 
         verify(model.backupSettingsToStorage(true))
+        tryVerify(function () { return model.settingsBackupCid === "cid-backup" })
 
         const backupCalls = fakeHost.calls.filter(function (call) {
-            return call.method === "storageUploadBackupCatalogEntry"
+            return call.method === "runtimeOperationStart"
         })
         compare(backupCalls.length, 1)
         const backupRequest = backupCalls[0].args[0]
@@ -2149,7 +2171,7 @@ TestCase {
         }
         let uploadCallIndex = -1
         for (let i = 0; i < fakeHost.calls.length; ++i) {
-            if (fakeHost.calls[i].method === "storageUploadBackupCatalogEntry") {
+            if (fakeHost.calls[i].method === "runtimeOperationStart") {
                 uploadCallIndex = i
                 break
             }
