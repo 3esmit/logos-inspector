@@ -1,20 +1,17 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
-use super::super::content_area_enabled;
-use super::ItemAreaReport;
+use super::super::{
+    BackupImportArea, BackupImportOptions,
+    import_options::{ConflictDecision, ItemAreaReport},
+    normalized_account_idl_selection_key,
+};
 
 pub(super) struct MergeArrayPlan {
     pub(super) rows: Vec<Value>,
     pub(super) report: ItemAreaReport,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ConflictDecision {
-    ReplaceExisting,
-    SkipBackupItem,
 }
 
 pub(super) fn merge_array_by_key(
@@ -22,8 +19,8 @@ pub(super) fn merge_array_by_key(
     incoming: Option<&Value>,
     key_fn: fn(&Value) -> String,
     label_fn: fn(&Value) -> String,
-    area: &str,
-    options: Option<&Value>,
+    area: BackupImportArea,
+    options: &BackupImportOptions,
     require_conflict_decisions: bool,
 ) -> Result<MergeArrayPlan> {
     let mut rows = Vec::new();
@@ -35,14 +32,13 @@ pub(super) fn merge_array_by_key(
         }
         rows.push(value.clone());
     }
-    let selected_keys = selected_item_keys(options, area)?;
     let mut report = ItemAreaReport::default();
     for value in incoming.and_then(Value::as_array).into_iter().flatten() {
         let key = key_fn(value);
         if key.is_empty() {
             continue;
         }
-        let selected = item_is_selected(selected_keys.as_ref(), &key);
+        let selected = options.item_is_selected(area, &key);
         let label = label_fn(value);
         let Some(index) = index_by_key.get(&key).copied() else {
             report.items.push(item_identity(
@@ -93,7 +89,7 @@ pub(super) fn merge_array_by_key(
             ));
             continue;
         }
-        match conflict_decision(options, area, &key)? {
+        match options.conflict_decision(area, &key) {
             Some(ConflictDecision::ReplaceExisting) => {
                 if let Some(row) = rows.get_mut(index) {
                     *row = value.clone();
@@ -127,7 +123,10 @@ pub(super) fn merge_array_by_key(
             }
             None => {
                 if require_conflict_decisions {
-                    bail!("backup import conflict decision is required for {area} item `{key}`");
+                    bail!(
+                        "backup import conflict decision is required for {} item `{key}`",
+                        area.as_str()
+                    );
                 }
                 report.items.push(item_identity(
                     area, &key, &label, true, true, true, "required",
@@ -144,8 +143,8 @@ pub(super) fn merge_array_by_key(
 pub(super) fn merge_object_field(
     current: Option<&Value>,
     incoming: &Value,
-    area: &str,
-    options: Option<&Value>,
+    area: BackupImportArea,
+    options: &BackupImportOptions,
     require_conflict_decisions: bool,
     report: &mut ItemAreaReport,
 ) -> Result<Value> {
@@ -155,7 +154,9 @@ pub(super) fn merge_object_field(
     };
     if let Some(incoming_object) = incoming.as_object() {
         for (key, value) in incoming_object {
-            let selected = item_is_selected(selected_item_keys(options, area)?.as_ref(), key);
+            let selected_item_key =
+                normalized_account_idl_selection_key(value).unwrap_or_else(|| key.to_lowercase());
+            let selected = options.item_is_selected(area, &selected_item_key);
             let label = format!("Account selection {key}");
             let conflict = result_object
                 .get(key)
@@ -164,7 +165,7 @@ pub(super) fn merge_object_field(
                 continue;
             }
             if conflict {
-                match conflict_decision(options, area, key)? {
+                match options.conflict_decision(area, key) {
                     Some(ConflictDecision::ReplaceExisting) => {
                         report.conflicts.push(conflict_identity(
                             area,
@@ -185,7 +186,8 @@ pub(super) fn merge_object_field(
                     None => {
                         if require_conflict_decisions {
                             bail!(
-                                "backup import conflict decision is required for {area} item `{key}`"
+                                "backup import conflict decision is required for {} item `{key}`",
+                                area.as_str()
                             );
                         }
                         report
@@ -202,7 +204,7 @@ pub(super) fn merge_object_field(
 }
 
 pub(super) fn item_report_for_array(
-    area: &str,
+    area: BackupImportArea,
     incoming: Option<&Value>,
     key_fn: fn(&Value) -> String,
     label_fn: fn(&Value) -> String,
@@ -226,84 +228,8 @@ pub(super) fn item_report_for_array(
     report
 }
 
-fn selected_item_keys(options: Option<&Value>, area: &str) -> Result<Option<HashSet<String>>> {
-    let Some(items) = options
-        .and_then(|value| value.get("items").or_else(|| value.get("selected_items")))
-        .and_then(|value| value.get(area))
-    else {
-        return Ok(None);
-    };
-    match items {
-        Value::Array(values) => {
-            let mut keys = HashSet::new();
-            for value in values {
-                let key = item_option_key(value)?;
-                if !key.is_empty() {
-                    keys.insert(key);
-                }
-            }
-            Ok(Some(keys))
-        }
-        Value::Object(object) => {
-            let mut keys = HashSet::new();
-            for (key, value) in object {
-                if content_area_enabled(Some(value), key)? {
-                    keys.insert(key.to_owned());
-                }
-            }
-            Ok(Some(keys))
-        }
-        _ => bail!("backup import item selection for `{area}` must be an array or object"),
-    }
-}
-
-fn item_option_key(value: &Value) -> Result<String> {
-    if let Some(key) = value.as_str() {
-        return Ok(key.trim().to_owned());
-    }
-    if let Some(key) = value.get("key").and_then(Value::as_str) {
-        return Ok(key.trim().to_owned());
-    }
-    bail!("backup import selected item must be a key string or object")
-}
-
-fn item_is_selected(selected_keys: Option<&HashSet<String>>, key: &str) -> bool {
-    selected_keys.is_none_or(|keys| keys.contains(key))
-}
-
-fn conflict_decision(
-    options: Option<&Value>,
-    area: &str,
-    key: &str,
-) -> Result<Option<ConflictDecision>> {
-    let Some(value) = options
-        .and_then(|value| {
-            value
-                .get("conflicts")
-                .or_else(|| value.get("conflict_decisions"))
-                .or_else(|| value.get("conflictDecisions"))
-        })
-        .and_then(|value| value.get(area))
-        .and_then(|value| value.get(key))
-    else {
-        return Ok(None);
-    };
-    let text = value
-        .as_str()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .context("backup import conflict decision must be a string")?;
-    match text.to_lowercase().replace('-', "_").as_str() {
-        "replace" | "replace_existing" | "use_backup" => {
-            Ok(Some(ConflictDecision::ReplaceExisting))
-        }
-        "skip" | "skip_backup_item" | "keep_existing" => Ok(Some(ConflictDecision::SkipBackupItem)),
-        other => bail!("unsupported backup import conflict decision `{other}`"),
-    }
-}
-
 fn item_identity(
-    area: &str,
+    area: BackupImportArea,
     key: &str,
     label: &str,
     selected: bool,
@@ -312,7 +238,7 @@ fn item_identity(
     decision: &str,
 ) -> Value {
     json!({
-        "area": area,
+        "area": area.as_str(),
         "key": key,
         "label": if label.trim().is_empty() { key } else { label },
         "selected": selected,
@@ -322,9 +248,9 @@ fn item_identity(
     })
 }
 
-fn conflict_identity(area: &str, key: &str, label: &str, decision: &str) -> Value {
+fn conflict_identity(area: BackupImportArea, key: &str, label: &str, decision: &str) -> Value {
     json!({
-        "area": area,
+        "area": area.as_str(),
         "key": key,
         "label": if label.trim().is_empty() { key } else { label },
         "decision": decision,

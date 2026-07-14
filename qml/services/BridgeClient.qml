@@ -33,7 +33,7 @@ QtObject {
             value: null,
             text: "",
             error: "Logos bridge call failed: host_changed"
-        })
+        }, true)
     }
 
     signal moduleEventReceived(string moduleName, string eventName, var args)
@@ -96,6 +96,9 @@ QtObject {
             root.basecampAsyncBridgeSchema,
             reportedBasecampSchema
         )
+        const authoritativeCompletion = basecampPolling
+            && moduleName === "logos_inspector"
+            && method === "settingsBackupImportApply"
         let startArgsJson = ""
         if (basecampPolling) {
             try {
@@ -126,13 +129,18 @@ QtObject {
             startArgsJson: startArgsJson,
             startInFlight: false,
             startAttempts: 0,
+            startAttemptId: 0,
             nextStartAtMs: 0,
             requestLifecycle: requestLifecycle,
             backendToken: "",
             pollInFlight: false,
             pollAttempts: 0,
+            pollAttemptId: 0,
             nextPollAtMs: 0,
-            deadlineMs: basecampPolling ? Date.now() + root.basecampAsyncTimeoutMs : 0
+            authoritativeCompletion: authoritativeCompletion,
+            deadlineMs: basecampPolling && !authoritativeCompletion
+                ? Date.now() + root.basecampAsyncTimeoutMs
+                : 0
         }
         root.pendingCalls = pending
 
@@ -219,17 +227,22 @@ QtObject {
                 || entry.route !== "basecamp_poll"
                 || entry.phase !== "starting"
                 || entry.startInFlight
-                || entry.host !== root.host
-                || entry.hostEpoch !== root.hostEpoch) {
+                || (!entry.authoritativeCompletion
+                    && (entry.host !== root.host
+                        || entry.hostEpoch !== root.hostEpoch))) {
             return false
         }
-        const remainingMs = entry.deadlineMs - Date.now()
-        if (remainingMs <= 0) {
+        const remainingMs = entry.authoritativeCompletion
+            ? root.basecampAsyncStartAttemptTimeoutMs
+            : entry.deadlineMs - Date.now()
+        if (!entry.authoritativeCompletion && remainingMs <= 0) {
             root.timeoutBasecampCall(requestId, entry)
             return false
         }
         entry.startInFlight = true
         entry.startAttempts += 1
+        entry.startAttemptId = Number(entry.startAttemptId || 0) + 1
+        const startAttemptId = entry.startAttemptId
         const requestHost = entry.host
         const requestHostEpoch = entry.hostEpoch
         const expectedCorrelationId = entry.correlationId
@@ -255,6 +268,7 @@ QtObject {
                         requestHostEpoch,
                         expectedCorrelationId,
                         requestLifecycle,
+                        startAttemptId,
                         response
                     )
                     return
@@ -289,6 +303,20 @@ QtObject {
             }
         )
         if (!dispatched) {
+            const current = root.copyPendingCalls()
+            const currentEntry = current[requestId]
+            if (!currentEntry
+                    || currentEntry.phase !== "starting"
+                    || currentEntry.startAttemptId !== startAttemptId) {
+                return false
+            }
+            if (currentEntry.authoritativeCompletion) {
+                currentEntry.startInFlight = false
+                currentEntry.nextStartAtMs = Date.now()
+                    + root.basecampPollBackoffMs(currentEntry.startAttempts)
+                root.pendingCalls = current
+                return false
+            }
             root.finishAsyncCall(requestId, {
                 ok: false,
                 value: null,
@@ -305,6 +333,7 @@ QtObject {
             requestHostEpoch,
             expectedCorrelationId,
             requestLifecycle,
+            startAttemptId,
             response) {
         const value = response && response.ok === true ? response.value : null
         const token = value && typeof value.token === "string" ? value.token : ""
@@ -323,8 +352,9 @@ QtObject {
         if (!entry
                 || entry.host !== requestHost
                 || entry.hostEpoch !== requestHostEpoch
-                || root.host !== requestHost
-                || root.hostEpoch !== requestHostEpoch) {
+                || (!entry.authoritativeCompletion
+                    && (root.host !== requestHost
+                        || root.hostEpoch !== requestHostEpoch))) {
             if (token.length && correlationMatches) {
                 root.markBasecampRequestTokenSettled(requestLifecycle, token)
                 root.abandonBasecampToken(requestHost, token)
@@ -340,9 +370,19 @@ QtObject {
             }
             return
         }
+        const accepted = response
+            && response.ok === true
+            && schema === root.basecampAsyncBridgeSchema
+            && token.length
+            && correlationMatches
+            && entry.correlationId === expectedCorrelationId
+        if (entry.startAttemptId !== startAttemptId && !accepted) {
+            return
+        }
         if (!response || response.ok !== true) {
-            if (BridgeEnvelope.retryableBasecampPollError(response)
-                    && Date.now() < entry.deadlineMs) {
+            if (entry.authoritativeCompletion
+                    || (BridgeEnvelope.retryableBasecampPollError(response)
+                        && Date.now() < entry.deadlineMs)) {
                 const pending = root.copyPendingCalls()
                 const pendingEntry = pending[requestId]
                 if (pendingEntry && pendingEntry.phase === "starting") {
@@ -368,6 +408,17 @@ QtObject {
                 || !token.length
                 || !correlationMatches
                 || entry.correlationId !== expectedCorrelationId) {
+            if (entry.authoritativeCompletion) {
+                const retry = root.copyPendingCalls()
+                const retryEntry = retry[requestId]
+                if (retryEntry && retryEntry.phase === "starting") {
+                    retryEntry.startInFlight = false
+                    retryEntry.nextStartAtMs = Date.now()
+                        + root.basecampPollBackoffMs(retryEntry.startAttempts)
+                    root.pendingCalls = retry
+                }
+                return
+            }
             if (token.length && correlationMatches) {
                 root.markBasecampRequestTokenSettled(requestLifecycle, token)
                 root.abandonBasecampToken(requestHost, token)
@@ -409,7 +460,7 @@ QtObject {
             if (!entry || entry.route !== "basecamp_poll") {
                 continue
             }
-            if (now >= entry.deadlineMs) {
+            if (!entry.authoritativeCompletion && now >= entry.deadlineMs) {
                 root.timeoutBasecampCall(requestId, entry)
                 continue
             }
@@ -425,7 +476,8 @@ QtObject {
             if (entry.pollInFlight) {
                 continue
             }
-            if (entry.pollAttempts >= root.basecampAsyncMaxPollAttempts) {
+            if (!entry.authoritativeCompletion
+                    && entry.pollAttempts >= root.basecampAsyncMaxPollAttempts) {
                 root.timeoutBasecampCall(requestId, entry)
                 continue
             }
@@ -433,8 +485,9 @@ QtObject {
                     || inFlight >= root.basecampAsyncMaxPollsInFlight) {
                 continue
             }
-            root.pollBasecampCall(requestId)
-            inFlight += 1
+            if (root.pollBasecampCall(requestId)) {
+                inFlight += 1
+            }
         }
     }
 
@@ -449,23 +502,27 @@ QtObject {
                 || entry.phase !== "polling"
                 || entry.pollInFlight
                 || !entry.backendToken.length
-                || entry.host !== root.host
-                || entry.hostEpoch !== root.hostEpoch) {
+                || (!entry.authoritativeCompletion
+                    && (entry.host !== root.host
+                        || entry.hostEpoch !== root.hostEpoch))) {
             return false
         }
-        if (Date.now() >= entry.deadlineMs
-                || entry.pollAttempts >= root.basecampAsyncMaxPollAttempts) {
+        if ((!entry.authoritativeCompletion && Date.now() >= entry.deadlineMs)
+                || (!entry.authoritativeCompletion
+                    && entry.pollAttempts >= root.basecampAsyncMaxPollAttempts)) {
             root.timeoutBasecampCall(requestId, entry)
             return false
         }
         entry.pollInFlight = true
         entry.pollAttempts += 1
+        entry.pollAttemptId = Number(entry.pollAttemptId || 0) + 1
+        const pollAttemptId = entry.pollAttemptId
         const token = entry.backendToken
         const requestHost = entry.host
         const requestHostEpoch = entry.hostEpoch
         const requestLifecycle = entry.requestLifecycle
         root.pendingCalls = pending
-        BridgeEnvelope.pollBasecampInspectorCall(
+        const dispatched = BridgeEnvelope.pollBasecampInspectorCall(
             requestHost,
             token,
             root.basecampAsyncTimeoutMs,
@@ -477,15 +534,47 @@ QtObject {
                         requestHost,
                         requestHostEpoch,
                         token,
+                        pollAttemptId,
                         response
                     )
                 }
             }
         )
-        return true
+        if (dispatched) {
+            return true
+        }
+        const current = root.copyPendingCalls()
+        const currentEntry = current[requestId]
+        if (!currentEntry
+                || currentEntry.phase !== "polling"
+                || currentEntry.pollAttemptId !== pollAttemptId) {
+            return false
+        }
+        if (currentEntry.authoritativeCompletion) {
+            currentEntry.pollInFlight = false
+            currentEntry.nextPollAtMs = Date.now()
+                + root.basecampPollBackoffMs(currentEntry.pollAttempts)
+            root.pendingCalls = current
+            return false
+        }
+        root.markBasecampRequestTokenSettled(currentEntry.requestLifecycle, token)
+        root.abandonBasecampToken(requestHost, token)
+        root.finishAsyncCall(requestId, {
+            ok: false,
+            value: null,
+            text: "",
+            error: "Logos bridge call failed: Basecamp inspector async bridge unavailable"
+        }, requestHostEpoch)
+        return false
     }
 
-    function handleBasecampPoll(requestId, requestHost, requestHostEpoch, token, response) {
+    function handleBasecampPoll(
+            requestId,
+            requestHost,
+            requestHostEpoch,
+            token,
+            pollAttemptId,
+            response) {
         if (root.closed) {
             return
         }
@@ -495,13 +584,27 @@ QtObject {
                 || entry.host !== requestHost
                 || entry.hostEpoch !== requestHostEpoch
                 || entry.backendToken !== token
-                || root.host !== requestHost
-                || root.hostEpoch !== requestHostEpoch) {
+                || (!entry.authoritativeCompletion
+                    && (root.host !== requestHost
+                        || root.hostEpoch !== requestHostEpoch))) {
+            return
+        }
+        const value = response && response.ok === true ? response.value : null
+        const schema = value ? String(value.schema || "") : ""
+        const responseToken = value ? String(value.token || "") : ""
+        const status = value ? String(value.status || "") : ""
+        if (entry.pollAttemptId !== pollAttemptId
+                && !(entry.authoritativeCompletion
+                    && schema === root.basecampAsyncBridgeSchema
+                    && responseToken === token
+                    && status === "ready"
+                    && typeof value.responseJson === "string")) {
             return
         }
         if (!response || response.ok !== true) {
-            if (BridgeEnvelope.retryableBasecampPollError(response)
-                    && Date.now() < entry.deadlineMs) {
+            if (entry.authoritativeCompletion
+                    || (BridgeEnvelope.retryableBasecampPollError(response)
+                        && Date.now() < entry.deadlineMs)) {
                 entry.pollInFlight = false
                 entry.nextPollAtMs = Date.now() + root.basecampPollBackoffMs(entry.pollAttempts)
                 root.pendingCalls = pending
@@ -517,11 +620,14 @@ QtObject {
             }, requestHostEpoch)
             return
         }
-        const value = response.value
-        const schema = value ? String(value.schema || "") : ""
-        const responseToken = value ? String(value.token || "") : ""
-        const status = value ? String(value.status || "") : ""
         if (schema !== root.basecampAsyncBridgeSchema || responseToken !== token) {
+            if (entry.authoritativeCompletion) {
+                entry.pollInFlight = false
+                entry.nextPollAtMs = Date.now()
+                    + root.basecampPollBackoffMs(entry.pollAttempts)
+                root.pendingCalls = pending
+                return
+            }
             root.markBasecampRequestTokenSettled(entry.requestLifecycle, token)
             root.abandonBasecampToken(requestHost, token)
             root.finishAsyncCall(requestId, {
@@ -546,6 +652,12 @@ QtObject {
                 BridgeEnvelope.parseResponseJson(value.responseJson),
                 requestHostEpoch
             )
+            return
+        }
+        if (entry.authoritativeCompletion) {
+            entry.pollInFlight = false
+            entry.nextPollAtMs = Date.now() + root.basecampPollBackoffMs(entry.pollAttempts)
+            root.pendingCalls = pending
             return
         }
         root.markBasecampRequestTokenSettled(entry.requestLifecycle, token)
@@ -853,12 +965,25 @@ QtObject {
         }
     }
 
-    function failPendingCalls(response) {
+    function failPendingCalls(response, retainAuthoritative) {
         const pending = root.pendingCalls || {}
-        root.pendingCalls = ({})
+        const retained = {}
+        const failed = {}
         let firstError = ""
         for (const requestId in pending) {
             const entry = pending[requestId]
+            if (retainAuthoritative === true
+                    && entry
+                    && entry.route === "basecamp_poll"
+                    && entry.authoritativeCompletion === true) {
+                retained[requestId] = entry
+            } else {
+                failed[requestId] = entry
+            }
+        }
+        root.pendingCalls = retained
+        for (const requestId in failed) {
+            const entry = failed[requestId]
             if (entry
                     && entry.route === "basecamp_poll"
                     && entry.backendToken

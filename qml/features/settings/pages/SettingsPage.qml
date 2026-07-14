@@ -419,6 +419,7 @@ ColumnLayout {
                         primary: true
                         enabled: !settingsRoot.model.shell.busy
                             && !settingsRoot.model.backupCatalogTransferRunning
+                            && !settingsRoot.model.backupCatalogImportRunning
                             && settingsRoot.model.backupContentsSelected(settingsRoot.model.settingsBackupContents)
                             && (!settingsRoot.model.settingsBackupEncrypted || settingsRoot.model.walletHomeConfigured())
                         Layout.preferredWidth: 128
@@ -435,6 +436,7 @@ ColumnLayout {
                         text: qsTr("Upload")
                         enabled: !settingsRoot.model.shell.busy
                             && !settingsRoot.model.backupCatalogTransferRunning
+                            && !settingsRoot.model.backupCatalogImportRunning
                             && settingsRoot.model.settingsBackupAvailable()
                             && settingsRoot.model.backupContentsSelected(settingsRoot.model.settingsBackupContents)
                             && (!settingsRoot.model.settingsBackupEncrypted || settingsRoot.model.walletHomeConfigured())
@@ -447,6 +449,7 @@ ColumnLayout {
                         text: qsTr("Download")
                         enabled: !settingsRoot.model.shell.busy
                             && !settingsRoot.model.backupCatalogTransferRunning
+                            && !settingsRoot.model.backupCatalogImportRunning
                             && settingsRoot.model.settingsBackupDownloadAvailable()
                             && settingsBackupCidField.text.trim().length > 0
                         Layout.preferredWidth: 116
@@ -526,6 +529,7 @@ ColumnLayout {
                                 text: qsTr("Restore")
                                 enabled: !settingsRoot.model.shell.busy
                                     && !settingsRoot.model.backupCatalogTransferRunning
+                                    && !settingsRoot.model.backupCatalogImportRunning
                                 Layout.preferredWidth: 96
                                 onClicked: {
                                     settingsRoot.pendingSettingsRestoreBackupId = String(backupCatalogRow.modelData.backup_catalog_id || "")
@@ -540,6 +544,7 @@ ColumnLayout {
                                 text: qsTr("Upload")
                                 enabled: !settingsRoot.model.shell.busy
                                     && !settingsRoot.model.backupCatalogTransferRunning
+                                    && !settingsRoot.model.backupCatalogImportRunning
                                     && settingsRoot.model.settingsBackupAvailable()
                                 Layout.preferredWidth: 88
                                 onClicked: settingsRoot.model.backupImport.uploadBackupCatalogEntry(
@@ -570,6 +575,7 @@ ColumnLayout {
         confirmText: qsTr("Download")
         confirmEnabled: settingsRoot.pendingSettingsDownloadCid.length > 0
             && !settingsRoot.model.backupCatalogTransferRunning
+            && !settingsRoot.model.backupCatalogImportRunning
         onAccepted: settingsRoot.model.downloadSettingsBackupToCatalog(
             settingsRoot.pendingSettingsDownloadCid)
     }
@@ -852,6 +858,7 @@ ColumnLayout {
                         primary: true
                         enabled: settingsRoot.pendingImportConfirmEnabled()
                             && !settingsRoot.model.backupCatalogTransferRunning
+                            && !settingsRoot.model.backupCatalogImportRunning
                         onClicked: {
                             const options = settingsRoot.copyPendingSettingsRestoreOptions()
                             localSettingsRestoreConfirm.close()

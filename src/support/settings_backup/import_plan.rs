@@ -1,14 +1,15 @@
 use std::path::Path;
 
-#[cfg(test)]
-use anyhow::Context as _;
-use anyhow::{Result, bail};
+use anyhow::{Context as _, Result};
 use serde_json::{Value, json};
 
 #[cfg(test)]
 use crate::support::state_store::{load_idl_state, load_settings_state};
 
-use super::{RestoredState, set_object_field};
+use super::{
+    BackupImportArea, BackupImportMode, BackupImportOptions, BackupImportSelection, RestoredState,
+    import_options::ItemAreaReport, set_object_field,
+};
 
 mod merge_engine;
 
@@ -29,30 +30,10 @@ pub(super) struct ImportCurrentRequirements {
     pub(super) idl: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ImportMode {
-    Replace,
-    Merge,
-    Skip,
-}
-
-pub(super) struct ImportSelection {
-    pub(super) settings: ImportMode,
-    pub(super) favorites: ImportMode,
-    pub(super) idl_registry: ImportMode,
-    pub(super) wallet_profile: ImportMode,
-}
-
 #[derive(Default)]
 pub(super) struct ImportItemReport {
     pub(super) favorites: ItemAreaReport,
     pub(super) idl_registry: ItemAreaReport,
-}
-
-#[derive(Default)]
-pub(super) struct ItemAreaReport {
-    pub(super) items: Vec<Value>,
-    pub(super) conflicts: Vec<Value>,
 }
 
 pub(super) struct PlannedSettingsState {
@@ -65,42 +46,18 @@ pub(super) struct PlannedIdlState {
     pub(super) idl_registry: ItemAreaReport,
 }
 
-impl ImportSelection {
-    fn from_value(options: Option<&Value>) -> Result<Self> {
-        let selection = Self {
-            settings: replace_only_mode_setting(
-                options,
-                &["settings", "app_settings"],
-                ImportMode::Skip,
-            )?,
-            favorites: mode_setting(options, &["favorites"], ImportMode::Skip)?,
-            idl_registry: mode_setting(
-                options,
-                &["idl_registry", "idls", "idl"],
-                ImportMode::Skip,
-            )?,
-            wallet_profile: replace_only_mode_setting(
-                options,
-                &["wallet_profile", "wallet"],
-                ImportMode::Skip,
-            )?,
-        };
-        Ok(selection)
-    }
-}
-
 #[cfg(test)]
 pub(super) fn build_import_plan(
     state: &RestoredState,
-    options: Option<&Value>,
+    options: &BackupImportOptions,
     require_conflict_decisions: bool,
 ) -> Result<ImportPlan> {
-    let selection = ImportSelection::from_value(options)?;
-    let current_settings = needs_current_settings(&selection, state)
+    let selection = options.selection();
+    let current_settings = needs_current_settings(selection, state)
         .then(load_settings_state)
         .transpose()
         .context("failed to load current settings for backup import")?;
-    let current_idl = (selection.idl_registry == ImportMode::Merge)
+    let current_idl = (selection.mode(BackupImportArea::IdlRegistry) == BackupImportMode::Merge)
         .then(load_idl_state)
         .transpose()
         .context("failed to load current IDL state for backup import")?;
@@ -116,33 +73,34 @@ pub(super) fn build_import_plan(
 
 pub(super) fn build_import_plan_with_current(
     state: &RestoredState,
-    options: Option<&Value>,
+    options: &BackupImportOptions,
     require_conflict_decisions: bool,
     current_settings: Option<&Value>,
     current_idl: Option<&Value>,
 ) -> Result<ImportPlan> {
-    let selection = ImportSelection::from_value(options)?;
+    let selection = options.selection();
 
     let planned_settings = planned_settings_state(
         state.settings.as_ref(),
         current_settings,
-        &selection,
         options,
         require_conflict_decisions,
     )?;
     let planned_idl = planned_idl_state(
         state.idl.as_ref(),
         current_idl,
-        selection.idl_registry,
         options,
         require_conflict_decisions,
     )?;
-    let wallet = if selection.wallet_profile != ImportMode::Skip {
+    let wallet = if selection.mode(BackupImportArea::WalletProfile) != BackupImportMode::Skip {
         state.wallet.clone()
     } else {
         None
     };
-    let warnings = wallet_import_warnings(state.wallet.as_ref(), selection.wallet_profile);
+    let warnings = wallet_import_warnings(
+        state.wallet.as_ref(),
+        selection.mode(BackupImportArea::WalletProfile),
+    );
     let settings = planned_settings.state;
     let idl = planned_idl.state;
 
@@ -152,12 +110,18 @@ pub(super) fn build_import_plan_with_current(
     let favorites_count = planned_favorites_count(
         settings.as_ref(),
         state.summary.favorites_count,
-        selection.favorites,
+        selection.mode(BackupImportArea::Favorites),
     );
     let idl_count = planned_idl_count(
         idl.as_ref(),
         state.summary.idl_count,
-        selection.idl_registry,
+        selection.mode(BackupImportArea::IdlRegistry),
+    );
+    let applied_areas = selection.applied_areas(
+        state.settings.is_some() && selection.mode(BackupImportArea::Settings).is_selected(),
+        state.settings.is_some() && selection.mode(BackupImportArea::Favorites).is_selected(),
+        idl_applied,
+        wallet_applied,
     );
     let item_report = ImportItemReport {
         favorites: planned_settings.favorites,
@@ -176,10 +140,10 @@ pub(super) fn build_import_plan_with_current(
             "favorites": favorites_count,
             "idl_count": idl_count,
             "modes": {
-                "settings": mode_name(selection.settings),
-                "favorites": mode_name(selection.favorites),
-                "idl_registry": mode_name(selection.idl_registry),
-                "wallet_profile": mode_name(selection.wallet_profile)
+                "settings": selection.mode(BackupImportArea::Settings).as_str(),
+                "favorites": selection.mode(BackupImportArea::Favorites).as_str(),
+                "idl_registry": selection.mode(BackupImportArea::IdlRegistry).as_str(),
+                "wallet_profile": selection.mode(BackupImportArea::WalletProfile).as_str()
             },
             "items": {
                 "favorites": item_report.favorites.items,
@@ -190,7 +154,7 @@ pub(super) fn build_import_plan_with_current(
                 "idl_registry": item_report.idl_registry.conflicts
             },
             "warnings": warnings,
-            "applied_areas": applied_areas(settings_applied, idl_applied, wallet_applied, favorites_count),
+            "applied_areas": applied_areas.into_iter().map(BackupImportArea::as_str).collect::<Vec<_>>(),
             "operation_policy": {
                 "restart_policy": "safe_read_poll_only",
                 "auto_restart_classes": ["read", "poll", "probe"],
@@ -202,17 +166,17 @@ pub(super) fn build_import_plan_with_current(
 
 pub(super) fn current_state_requirements(
     state: &RestoredState,
-    options: Option<&Value>,
-) -> Result<ImportCurrentRequirements> {
-    let selection = ImportSelection::from_value(options)?;
-    Ok(ImportCurrentRequirements {
-        settings: needs_current_settings(&selection, state),
-        idl: selection.idl_registry == ImportMode::Merge,
-    })
+    options: &BackupImportOptions,
+) -> ImportCurrentRequirements {
+    let selection = options.selection();
+    ImportCurrentRequirements {
+        settings: needs_current_settings(selection, state),
+        idl: selection.mode(BackupImportArea::IdlRegistry) == BackupImportMode::Merge,
+    }
 }
 
-fn wallet_import_warnings(wallet: Option<&Value>, mode: ImportMode) -> Vec<Value> {
-    if mode == ImportMode::Skip {
+fn wallet_import_warnings(wallet: Option<&Value>, mode: BackupImportMode) -> Vec<Value> {
+    if mode == BackupImportMode::Skip {
         return Vec::new();
     }
     let Some(wallet) = wallet else {
@@ -314,33 +278,33 @@ fn warning_value(area: &str, key: &str, message: &str) -> Value {
 pub(super) fn planned_settings_state(
     backup_settings: Option<&Value>,
     current_settings: Option<&Value>,
-    selection: &ImportSelection,
-    options: Option<&Value>,
+    options: &BackupImportOptions,
     require_conflict_decisions: bool,
 ) -> Result<PlannedSettingsState> {
+    let selection = options.selection();
     let Some(backup_settings) = backup_settings else {
         return Ok(PlannedSettingsState {
             state: None,
             favorites: ItemAreaReport::default(),
         });
     };
-    let mut target = match selection.settings {
-        ImportMode::Replace => Some(backup_settings.clone()),
-        ImportMode::Merge => Some(merge_settings(current_settings, backup_settings)?),
-        ImportMode::Skip => None,
+    let mut target = match selection.mode(BackupImportArea::Settings) {
+        BackupImportMode::Replace => Some(backup_settings.clone()),
+        BackupImportMode::Merge => Some(merge_settings(current_settings, backup_settings)?),
+        BackupImportMode::Skip => None,
     };
-    let mut favorites_report = match selection.favorites {
-        ImportMode::Replace | ImportMode::Merge => item_report_for_array(
-            "favorites",
+    let mut favorites_report = match selection.mode(BackupImportArea::Favorites) {
+        BackupImportMode::Replace | BackupImportMode::Merge => item_report_for_array(
+            BackupImportArea::Favorites,
             backup_settings.get("favorites"),
             favorite_entry_key,
             favorite_entry_label,
         ),
-        ImportMode::Skip => ItemAreaReport::default(),
+        BackupImportMode::Skip => ItemAreaReport::default(),
     };
-    match selection.favorites {
-        ImportMode::Replace => {
-            if selection.settings == ImportMode::Skip {
+    match selection.mode(BackupImportArea::Favorites) {
+        BackupImportMode::Replace => {
+            if selection.mode(BackupImportArea::Settings) == BackupImportMode::Skip {
                 let mut value = current_settings.cloned().unwrap_or_else(|| json!({}));
                 set_object_field(
                     &mut value,
@@ -353,13 +317,13 @@ pub(super) fn planned_settings_state(
                 target = Some(value);
             }
         }
-        ImportMode::Merge => {
+        BackupImportMode::Merge => {
             let plan = merge_array_by_key(
                 current_settings.and_then(|value| value.get("favorites")),
                 backup_settings.get("favorites"),
                 favorite_entry_key,
                 favorite_entry_label,
-                "favorites",
+                BackupImportArea::Favorites,
                 options,
                 require_conflict_decisions,
             )?;
@@ -371,12 +335,18 @@ pub(super) fn planned_settings_state(
             set_object_field(&mut value, "favorites", Value::Array(plan.rows))?;
             target = Some(value);
         }
-        ImportMode::Skip => {
-            if let Some(value) = target.as_mut()
-                && let Some(current_favorites) =
+        BackupImportMode::Skip => {
+            if let Some(value) = target.as_mut() {
+                if let Some(current_favorites) =
                     current_settings.and_then(|value| value.get("favorites"))
-            {
-                set_object_field(value, "favorites", current_favorites.clone())?;
+                {
+                    set_object_field(value, "favorites", current_favorites.clone())?;
+                } else {
+                    value
+                        .as_object_mut()
+                        .context("backup settings state must be an object")?
+                        .remove("favorites");
+                }
             }
         }
     }
@@ -389,10 +359,10 @@ pub(super) fn planned_settings_state(
 pub(super) fn planned_idl_state(
     backup_idl: Option<&Value>,
     current_idl: Option<&Value>,
-    mode: ImportMode,
-    options: Option<&Value>,
+    options: &BackupImportOptions,
     require_conflict_decisions: bool,
 ) -> Result<PlannedIdlState> {
+    let mode = options.mode(BackupImportArea::IdlRegistry);
     let Some(backup_idl) = backup_idl else {
         return Ok(PlannedIdlState {
             state: None,
@@ -400,24 +370,24 @@ pub(super) fn planned_idl_state(
         });
     };
     let mut idl_report = match mode {
-        ImportMode::Replace | ImportMode::Merge => item_report_for_array(
-            "idl_registry",
+        BackupImportMode::Replace | BackupImportMode::Merge => item_report_for_array(
+            BackupImportArea::IdlRegistry,
             backup_idl.get("idls"),
             idl_entry_key,
             idl_entry_label,
         ),
-        ImportMode::Skip => ItemAreaReport::default(),
+        BackupImportMode::Skip => ItemAreaReport::default(),
     };
     let state = match mode {
-        ImportMode::Replace => Some(backup_idl.clone()),
-        ImportMode::Merge => {
+        BackupImportMode::Replace => Some(backup_idl.clone()),
+        BackupImportMode::Merge => {
             let mut value = current_idl.cloned().unwrap_or_else(|| json!({}));
             let plan = merge_array_by_key(
                 current_idl.and_then(|value| value.get("idls")),
                 backup_idl.get("idls"),
                 idl_entry_key,
                 idl_entry_label,
-                "idl_registry",
+                BackupImportArea::IdlRegistry,
                 options,
                 require_conflict_decisions,
             )?;
@@ -427,7 +397,7 @@ pub(super) fn planned_idl_state(
                 let merged = merge_object_field(
                     current_idl.and_then(|value| value.get("account_idl_selections")),
                     backup_selections,
-                    "idl_registry",
+                    BackupImportArea::IdlRegistry,
                     options,
                     require_conflict_decisions,
                     &mut idl_report,
@@ -436,7 +406,7 @@ pub(super) fn planned_idl_state(
             }
             Some(value)
         }
-        ImportMode::Skip => None,
+        BackupImportMode::Skip => None,
     };
     Ok(PlannedIdlState {
         state,
@@ -456,22 +426,22 @@ fn merge_settings(current: Option<&Value>, backup: &Value) -> Result<Value> {
     Ok(value)
 }
 
-fn needs_current_settings(selection: &ImportSelection, state: &RestoredState) -> bool {
+fn needs_current_settings(selection: &BackupImportSelection, state: &RestoredState) -> bool {
     state.settings.is_some()
-        && (selection.settings == ImportMode::Merge
-            || selection.favorites == ImportMode::Merge
-            || (selection.settings == ImportMode::Replace
-                && selection.favorites == ImportMode::Skip)
-            || (selection.settings == ImportMode::Skip
-                && selection.favorites == ImportMode::Replace))
+        && (selection.mode(BackupImportArea::Settings) == BackupImportMode::Merge
+            || selection.mode(BackupImportArea::Favorites) == BackupImportMode::Merge
+            || (selection.mode(BackupImportArea::Settings) == BackupImportMode::Replace
+                && selection.mode(BackupImportArea::Favorites) == BackupImportMode::Skip)
+            || (selection.mode(BackupImportArea::Settings) == BackupImportMode::Skip
+                && selection.mode(BackupImportArea::Favorites) == BackupImportMode::Replace))
 }
 
 fn planned_favorites_count(
     settings: Option<&Value>,
     fallback_count: usize,
-    favorites_mode: ImportMode,
+    favorites_mode: BackupImportMode,
 ) -> usize {
-    if favorites_mode == ImportMode::Skip {
+    if favorites_mode == BackupImportMode::Skip {
         return 0;
     }
     settings
@@ -480,87 +450,15 @@ fn planned_favorites_count(
         .map_or(fallback_count, Vec::len)
 }
 
-fn planned_idl_count(idl: Option<&Value>, fallback_count: usize, idl_mode: ImportMode) -> usize {
-    if idl_mode == ImportMode::Skip {
+fn planned_idl_count(
+    idl: Option<&Value>,
+    fallback_count: usize,
+    idl_mode: BackupImportMode,
+) -> usize {
+    if idl_mode == BackupImportMode::Skip {
         return 0;
     }
     idl.and_then(|value| value.get("idls"))
         .and_then(Value::as_array)
         .map_or(fallback_count, Vec::len)
-}
-
-fn applied_areas(
-    settings_applied: bool,
-    idl_applied: bool,
-    wallet_applied: bool,
-    favorites_count: usize,
-) -> Vec<&'static str> {
-    let mut areas = Vec::new();
-    if settings_applied {
-        areas.push("settings");
-    }
-    if favorites_count > 0 {
-        areas.push("favorites");
-    }
-    if idl_applied {
-        areas.push("idl_registry");
-    }
-    if wallet_applied {
-        areas.push("wallet_profile");
-    }
-    areas
-}
-
-fn mode_setting(
-    options: Option<&Value>,
-    keys: &[&str],
-    default_mode: ImportMode,
-) -> Result<ImportMode> {
-    let Some(options) = options.and_then(Value::as_object) else {
-        return Ok(default_mode);
-    };
-    for key in keys {
-        if let Some(value) = options.get(*key) {
-            return parse_import_mode(value, key);
-        }
-    }
-    Ok(default_mode)
-}
-
-fn replace_only_mode_setting(
-    options: Option<&Value>,
-    keys: &[&str],
-    default_mode: ImportMode,
-) -> Result<ImportMode> {
-    let mode = mode_setting(options, keys, default_mode)?;
-    if mode == ImportMode::Merge {
-        bail!(
-            "backup import mode `merge` is not supported for `{}`",
-            keys.first().copied().unwrap_or("area")
-        );
-    }
-    Ok(mode)
-}
-
-fn parse_import_mode(value: &Value, key: &str) -> Result<ImportMode> {
-    match value
-        .as_str()
-        .unwrap_or_default()
-        .trim()
-        .to_lowercase()
-        .as_str()
-    {
-        "" | "replace" => Ok(ImportMode::Replace),
-        "merge" => Ok(ImportMode::Merge),
-        "skip" | "none" | "not_import" | "not import" => Ok(ImportMode::Skip),
-        other => bail!("unsupported backup import mode `{other}` for `{key}`"),
-    }
-}
-
-fn mode_name(mode: ImportMode) -> &'static str {
-    match mode {
-        ImportMode::Replace => "replace",
-        ImportMode::Merge => "merge",
-        ImportMode::Skip => "skip",
-    }
 }

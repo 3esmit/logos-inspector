@@ -16,6 +16,20 @@ TestCase {
         id: fakeHost
     }
 
+    AsyncBridgeHostFixture {
+        id: asyncImportHost
+    }
+
+    Timer {
+        id: importHeartbeat
+
+        property int ticks: 0
+
+        interval: 1
+        repeat: true
+        onTriggered: ticks += 1
+    }
+
     QtObject {
         id: basecampHost
 
@@ -53,6 +67,12 @@ TestCase {
     }
 
     BridgeClient {
+        id: asyncImportBridgeClient
+
+        host: asyncImportHost
+    }
+
+    BridgeClient {
         id: basecampBridgeClient
 
         host: basecampHost
@@ -78,10 +98,14 @@ TestCase {
     }
 
     function init() {
+        importHeartbeat.stop()
+        importHeartbeat.ticks = 0
+        model.bridge = bridgeClient
         model.chainPages.invalidateOperations("test reset")
         basecampModel.chainPages.invalidateOperations("test reset")
         wait(0)
         fakeHost.reset()
+        asyncImportHost.reset()
         basecampHost.callCount = 0
         basecampHost.lastModule = ""
         basecampHost.lastMethod = ""
@@ -124,6 +148,9 @@ TestCase {
         model.storageApp.operationSession.clearActive()
         model.backupCatalog.invalidateUpload("")
         model.backupCatalog.invalidateDownload("")
+        model.backupCatalog.importGeneration += 1
+        model.backupCatalog.pendingImportCatalogId = ""
+        model.backupCatalog.importCompletion = null
         model.backupCatalog.entries = []
         model.backupCatalog.loaded = false
         model.backupCatalog.error = ""
@@ -537,8 +564,12 @@ TestCase {
     }
 
     function callIndexFor(method) {
-        for (let i = 0; i < fakeHost.calls.length; ++i) {
-            if (String(fakeHost.calls[i].method || "") === method) {
+        return callIndexForHost(fakeHost, method)
+    }
+
+    function callIndexForHost(host, method) {
+        for (let i = 0; i < host.calls.length; ++i) {
+            if (String(host.calls[i].method || "") === method) {
                 return i
             }
         }
@@ -2764,19 +2795,25 @@ TestCase {
     }
 
     function test_backup_import_apply_projects_backend_transaction_result() {
-        fakeHost.responses = {
+        model.bridge = asyncImportBridgeClient
+        asyncImportHost.deferAsyncRequests = true
+        asyncImportHost.responses = {
             settingsBackupImportApply: {
                 ok: true,
                 value: {
+                    terminal: true,
+                    phase: "Applied",
+                    outcome: "applied",
                     applied: true,
                     blocked: false,
                     encrypted: false,
                     favorites: 1,
                     idl_count: 0,
                     selectedAreas: ["settings"],
+                    appliedAreas: ["settings"],
                     importId: "backup_import:backup-1",
                     backupCatalogId: "backup-1",
-                    operation_events: [{
+                    operationEvents: [{
                         domain: "backup",
                         method: "settingsBackupImportPolicy",
                         status: "stopped_for_import",
@@ -2789,6 +2826,21 @@ TestCase {
                         backupCatalogId: "backup-1",
                         reason: "affected_operation_stopped_for_import",
                         detail: "Stopped affected operation before backup import."
+                    }, {
+                        domain: "backup",
+                        method: "settingsBackupImportApply",
+                        status: "applied_for_import",
+                        label: "Settings backup import",
+                        operationId: "backup_import:backup-1",
+                        operationClass: "backup",
+                        restartPolicy: "manual_required",
+                        importId: "backup_import:backup-1",
+                        backupCatalogId: "backup-1",
+                        phase: "Applied",
+                        outcome: "applied",
+                        reason: "backup_import_applied",
+                        terminal: true,
+                        detail: ""
                     }]
                 },
                 text: "OK",
@@ -2808,17 +2860,29 @@ TestCase {
             }
         }
 
-        const result = model.backupImport.restoreLocalSettingsBackup("backup-1", {
+        const admitted = model.backupImport.restoreLocalSettingsBackup("backup-1", {
             settings: "replace",
             favorites: "skip",
             idl_registry: "skip",
             wallet_profile: "skip"
         })
 
-        verify(result !== null)
-        compare(callIndexFor("settingsBackupImportApply"), 0)
-        verify(callIndexFor("loadSettingsState") > 0)
-        verify(!fakeHost.calls.some(function (call) {
+        verify(admitted)
+        compare(callIndexForHost(asyncImportHost, "settingsBackupImportApply"), 0)
+        verify(model.backupCatalogImportRunning)
+        compare(asyncImportHost.pendingAsyncRequests.length, 1)
+        importHeartbeat.start()
+        tryVerify(function () { return importHeartbeat.ticks > 0 }, 100)
+        importHeartbeat.stop()
+        verify(model.backupCatalogImportRunning)
+        compare(callIndexForHost(asyncImportHost, "loadSettingsState"), -1)
+
+        verify(asyncImportHost.completeAsyncAt(0))
+        tryVerify(function () {
+            return callIndexForHost(asyncImportHost, "loadSettingsState") > 0
+        })
+        verify(!model.backupCatalogImportRunning)
+        verify(!asyncImportHost.calls.some(function (call) {
             return call.method === "runtimeOperationCancel"
                 || call.method === "previewLocalSettingsRestore"
                 || call.method === "restoreLocalSettingsBackup"
@@ -2828,24 +2892,30 @@ TestCase {
             return row.status === "stopped_for_import"
                 && row.importId === "backup_import:backup-1"
         }))
-        verify(backupRows.some(function (row) {
+        const appliedRows = backupRows.filter(function (row) {
             return row.status === "applied_for_import"
-                && row.reason === "backup_import_applied_for_import"
-        }))
+        })
+        compare(appliedRows.length, 1)
+        compare(appliedRows[0].reason, "backup_import_applied")
     }
 
     function test_backup_import_apply_reports_backend_block_decision() {
-        fakeHost.responses = {
+        model.bridge = asyncImportBridgeClient
+        asyncImportHost.responses = {
             settingsBackupImportApply: {
                 ok: true,
                 value: {
+                    terminal: true,
+                    phase: "RolledBack",
+                    outcome: "blocked",
                     applied: false,
                     blocked: true,
                     blockedOperationLabel: "Submit transaction",
                     selectedAreas: ["wallet_profile"],
+                    appliedAreas: [],
                     importId: "backup_import:backup-wallet",
                     backupCatalogId: "backup-wallet",
-                    operation_events: [{
+                    operationEvents: [{
                         domain: "backup",
                         method: "settingsBackupImportPolicy",
                         status: "blocked_for_import",
@@ -2858,6 +2928,21 @@ TestCase {
                         backupCatalogId: "backup-wallet",
                         reason: "affected_operation_blocked_for_import",
                         detail: "Blocked backup import while affected operation is running."
+                    }, {
+                        domain: "backup",
+                        method: "settingsBackupImportApply",
+                        status: "blocked_for_import",
+                        label: "Settings backup import",
+                        operationId: "backup_import:backup-wallet",
+                        operationClass: "backup",
+                        restartPolicy: "manual_required",
+                        importId: "backup_import:backup-wallet",
+                        backupCatalogId: "backup-wallet",
+                        phase: "RolledBack",
+                        outcome: "blocked",
+                        reason: "backup_import_blocked",
+                        terminal: true,
+                        detail: ""
                     }]
                 },
                 text: "OK",
@@ -2865,16 +2950,18 @@ TestCase {
             }
         }
 
-        const result = model.backupImport.restoreLocalSettingsBackup("backup-wallet", {
+        const admitted = model.backupImport.restoreLocalSettingsBackup("backup-wallet", {
             settings: "skip",
             favorites: "skip",
             idl_registry: "skip",
             wallet_profile: "replace"
         })
 
-        compare(result, null)
-        verify(model.settingsBackupStatus.indexOf("Submit transaction") >= 0)
-        verify(!fakeHost.calls.some(function (call) {
+        verify(admitted)
+        tryVerify(function () {
+            return model.settingsBackupStatus.indexOf("Submit transaction") >= 0
+        })
+        verify(!asyncImportHost.calls.some(function (call) {
             return call.method === "loadWalletState"
                 || call.method === "runtimeOperationCancel"
         }))

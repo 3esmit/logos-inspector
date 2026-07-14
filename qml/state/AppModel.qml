@@ -271,6 +271,21 @@ QtObject {
                 return root.callInspector(method, args || [], label)
             }
 
+            function supportsAsync() {
+                return root.bridgeSupportsAsync()
+            }
+
+            function request(method, args, label, showResult, callback) {
+                return root.requestModuleAsync(
+                    root.inspectorModule,
+                    method,
+                    args || [],
+                    label,
+                    showResult === true,
+                    callback
+                )
+            }
+
             function startRuntimeOperation(request, showResult, callback) {
                 return root.runtimeOperationStart(request, showResult === true, callback)
             }
@@ -291,6 +306,7 @@ QtObject {
     property alias backupCatalogUploadRunning: backupCatalogState.uploadRunning
     property alias backupCatalogDownloadRunning: backupCatalogState.downloadRunning
     property alias backupCatalogTransferRunning: backupCatalogState.transferRunning
+    property alias backupCatalogImportRunning: backupCatalogState.importRunning
     property Domains.BackupImportState backupImport: Domains.BackupImportState {
         id: backupImportState
 

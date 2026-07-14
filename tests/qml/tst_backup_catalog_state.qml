@@ -12,6 +12,16 @@ TestCase {
         id: gateway
     }
 
+    Timer {
+        id: importHeartbeat
+
+        property int ticks: 0
+
+        interval: 1
+        repeat: true
+        onTriggered: ticks += 1
+    }
+
     Domains.BackupCatalogState {
         id: catalog
 
@@ -60,8 +70,13 @@ TestCase {
     }
 
     function init() {
+        importHeartbeat.stop()
+        importHeartbeat.ticks = 0
         catalog.invalidateUpload("")
         catalog.invalidateDownload("")
+        catalog.importGeneration += 1
+        catalog.pendingImportCatalogId = ""
+        catalog.importCompletion = null
         gateway.reset()
         catalog.entries = []
         catalog.loaded = false
@@ -169,6 +184,39 @@ TestCase {
         }
     }
 
+    function importResult(catalogId, phase, outcome, selectedAreas, appliedAreas) {
+        const expectedCatalogId = String(catalogId || "backup-1")
+        const expectedPhase = String(phase || "Applied")
+        const expectedOutcome = String(outcome || "applied")
+        const importId = "backup_import:" + expectedCatalogId
+        const selected = selectedAreas === undefined ? ["settings"] : selectedAreas
+        const applied = appliedAreas === undefined
+            ? (expectedOutcome === "applied" ? selected : [])
+            : appliedAreas
+        return {
+            terminal: true,
+            phase: expectedPhase,
+            outcome: expectedOutcome,
+            importId: importId,
+            backupCatalogId: expectedCatalogId,
+            backup_catalog_id: expectedCatalogId,
+            selectedAreas: selected,
+            appliedAreas: applied,
+            operationEvents: [{
+                domain: "backup",
+                method: "settingsBackupImportApply",
+                status: catalog.importTerminalStatus(expectedOutcome),
+                operationId: importId,
+                importId: importId,
+                backupCatalogId: expectedCatalogId,
+                phase: expectedPhase,
+                outcome: expectedOutcome,
+                restartPolicy: "manual_required",
+                terminal: true
+            }]
+        }
+    }
+
     function test_load_reads_catalog_entries() {
         gateway.callResponses = ({
             loadBackupCatalog: {
@@ -263,29 +311,174 @@ TestCase {
         compare(catalog.rows()[0].remote.cid, "z-cid")
     }
 
-    function test_apply_import_calls_transaction_method() {
-        gateway.callResponses = ({
+    function test_apply_import_requests_async_terminal_transaction() {
+        gateway.requestResponses = ({
             settingsBackupImportApply: {
                 ok: true,
-                value: {
-                    restored: true,
-                    backup_catalog_id: "backup-1",
-                    favorites: 2,
-                    idl_count: 1
-                },
+                value: importResult("backup-1", "Applied", "applied", ["favorites"], ["favorites"]),
                 text: "OK",
                 error: ""
             }
         })
+        let callbackCount = 0
+        let completion = null
 
-        const summary = catalog.applyImport("backup-1", { wallet_home: "/tmp/wallet" }, { favorites: "merge" })
+        const admitted = catalog.applyImport(
+            "backup-1",
+            { wallet_home: "/tmp/wallet" },
+            { favorites: "merge" },
+            function (response) {
+                callbackCount += 1
+                completion = response
+            }
+        )
 
-        verify(summary !== null)
+        verify(admitted)
         compare(gateway.lastMethod, "settingsBackupImportApply")
         compare(gateway.lastArgs[0], "backup-1")
         compare(gateway.lastArgs[1].wallet_home, "/tmp/wallet")
         compare(gateway.lastArgs[2].favorites, "merge")
-        compare(summary.favorites, 2)
+        compare(gateway.lastShowResult, false)
+        compare(callbackCount, 1)
+        verify(completion.ok)
+        compare(completion.value.outcome, "applied")
+        verify(!catalog.importRunning)
+    }
+
+    function test_apply_import_correlates_once_and_serializes_catalog_mutation() {
+        gateway.deferRequests = true
+        let callbackCount = 0
+        let completion = null
+
+        verify(catalog.applyImport("backup-active", {}, { settings: "replace" }, function (response) {
+            callbackCount += 1
+            completion = response
+        }))
+        verify(catalog.importRunning)
+        compare(gateway.requestCount, 1)
+        const originalCallback = gateway.pendingRequests[0].callback
+
+        compare(catalog.createLocal("Blocked", false, {}, {}), null)
+        compare(catalog.attachRemote("backup-active", "cid-other", "logos_storage"), null)
+        verify(!catalog.uploadLocal("backup-active", function () {}))
+        verify(!catalog.downloadRemote("cid-other", function () {}))
+        verify(!catalog.applyImport("backup-other", {}, {}, function () {}))
+        compare(gateway.requestCount, 1)
+        verify(catalog.error.indexOf("backup import") >= 0)
+
+        const response = {
+            ok: true,
+            value: importResult("backup-active", "Applied", "applied", ["settings"], ["settings"]),
+            text: "OK",
+            error: ""
+        }
+        verify(gateway.completeRequestAt(0, response))
+        compare(callbackCount, 1)
+        verify(completion.ok)
+        verify(!catalog.importRunning)
+
+        originalCallback(response)
+        compare(callbackCount, 1)
+    }
+
+    function test_apply_import_requires_native_async_capability() {
+        gateway.asyncSupported = false
+        let completion = null
+
+        verify(!catalog.applyImport("backup-1", {}, { settings: "replace" }, function (response) {
+            completion = response
+        }))
+
+        compare(gateway.requestCount, 0)
+        verify(completion !== null)
+        verify(!completion.ok)
+        verify(completion.error.indexOf("Asynchronous backup import") >= 0)
+        verify(!catalog.importRunning)
+    }
+
+    function test_deferred_import_keeps_qml_event_loop_responsive() {
+        gateway.deferRequests = true
+        let callbackCount = 0
+
+        verify(catalog.applyImport("backup-1", {}, { settings: "replace" }, function () {
+            callbackCount += 1
+        }))
+        importHeartbeat.start()
+        tryVerify(function () { return importHeartbeat.ticks > 0 }, 100)
+        importHeartbeat.stop()
+
+        verify(catalog.importRunning)
+        compare(callbackCount, 0)
+        verify(gateway.completeRequestAt(0, {
+            ok: true,
+            value: importResult("backup-1", "Applied", "applied", ["settings"], ["settings"]),
+            text: "OK",
+            error: ""
+        }))
+        compare(callbackCount, 1)
+        verify(!catalog.importRunning)
+    }
+
+    function test_apply_import_rejects_foreign_or_malformed_terminal_results() {
+        const wrongCatalog = importResult("foreign", "Applied", "applied", ["settings"], ["settings"])
+        const nonTerminal = importResult("backup-1", "Applied", "applied", ["settings"], ["settings"])
+        nonTerminal.terminal = false
+        const wrongOutcome = importResult("backup-1", "Applied", "rolled_back", ["settings"], [])
+        const invalidAreas = importResult("backup-1", "Applied", "applied", ["settings", "settings"], ["settings"])
+        const uncorrelatedEvent = importResult("backup-1", "Applied", "applied", ["settings"], ["settings"])
+        uncorrelatedEvent.operationEvents = [{
+            importId: "backup_import:foreign",
+            backupCatalogId: "backup-1"
+        }]
+        const missingEventIdentity = importResult("backup-1", "Applied", "applied", ["settings"], ["settings"])
+        delete missingEventIdentity.operationEvents[0].importId
+        const noTerminalEvent = importResult("backup-1", "Applied", "applied", ["settings"], ["settings"])
+        noTerminalEvent.operationEvents = []
+        const duplicateTerminalEvent = importResult("backup-1", "Applied", "applied", ["settings"], ["settings"])
+        duplicateTerminalEvent.operationEvents.push(duplicateTerminalEvent.operationEvents[0])
+        const staleRestartPolicy = importResult("backup-1", "Applied", "applied", ["settings"], ["settings"])
+        staleRestartPolicy.operationEvents[0].restartPolicy = "safe_read_polling"
+        const nonFinalTerminalEvent = importResult("backup-1", "Applied", "applied", ["settings"], ["settings"])
+        nonFinalTerminalEvent.operationEvents.push({
+            domain: "backup",
+            method: "settingsBackupImportPolicy",
+            importId: nonFinalTerminalEvent.importId,
+            backupCatalogId: nonFinalTerminalEvent.backupCatalogId
+        })
+        const values = [
+            wrongCatalog,
+            nonTerminal,
+            wrongOutcome,
+            invalidAreas,
+            uncorrelatedEvent,
+            missingEventIdentity,
+            noTerminalEvent,
+            duplicateTerminalEvent,
+            staleRestartPolicy,
+            nonFinalTerminalEvent
+        ]
+
+        for (let i = 0; i < values.length; ++i) {
+            gateway.requestResponses = ({
+                settingsBackupImportApply: {
+                    ok: true,
+                    value: values[i],
+                    text: "OK",
+                    error: ""
+                }
+            })
+            let callbackCount = 0
+            let completion = null
+            verify(catalog.applyImport("backup-1", {}, { settings: "replace" }, function (response) {
+                callbackCount += 1
+                completion = response
+            }))
+            compare(callbackCount, 1)
+            verify(completion !== null)
+            verify(!completion.ok)
+            verify(catalog.error.length > 0)
+            verify(!catalog.importRunning)
+        }
     }
 
     function test_preview_import_calls_transaction_method() {
@@ -415,7 +608,7 @@ TestCase {
 
         compare(catalog.createLocal("Blocked", false, {}, {}), null)
         compare(catalog.attachRemote("backup-active", "cid-other", "logos_storage"), null)
-        compare(catalog.applyImport("backup-active", {}, {}), null)
+        verify(!catalog.applyImport("backup-active", {}, {}))
 
         compare(gateway.callCount, callsBeforeMutations)
         verify(catalog.transferRunning)

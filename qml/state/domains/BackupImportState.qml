@@ -8,6 +8,7 @@ QtObject {
     required property var catalog
     required property var operationHistory
     readonly property string backupCatalogError: String(catalog.error || "")
+    readonly property bool running: catalog.importRunning === true
 
     function defaultSettingsBackupContents() {
         return SettingsProfile.defaultBackupContents()
@@ -34,60 +35,76 @@ QtObject {
     }
 
     function restoreLocalSettingsBackup(backupCatalogId, options) {
-        const result = catalog.applyImport(
-            backupCatalogId,
+        const catalogId = String(backupCatalogId || "").trim()
+        let completed = false
+        const admitted = catalog.applyImport(
+            catalogId,
             model.walletProfile(),
-            options && typeof options === "object" ? options : ({})
+            options && typeof options === "object" ? options : ({}),
+            function (response) {
+                completed = true
+                completeLocalSettingsImport(response, catalogId)
+            }
         )
-        if (!result) {
+        if (!admitted && !completed) {
             model.settingsBackupStatus = backupCatalogError.length
                 ? backupCatalogError
                 : qsTr("Local backup restore failed.")
-            return null
+        }
+        if (admitted && !completed) {
+            model.settingsBackupStatus = qsTr("Backup import started.")
+        }
+        return admitted
+    }
+
+    function completeLocalSettingsImport(response, requestedCatalogId) {
+        if (!response || response.ok !== true || !response.value) {
+            model.settingsBackupStatus = String(response && response.error
+                || backupCatalogError || qsTr("Local backup restore failed."))
+            return false
         }
 
+        const result = response.value
+        if (String(result.backupCatalogId || "") !== String(requestedCatalogId || "")) {
+            model.settingsBackupStatus = qsTr("Backup import returned a different backup catalog ID.")
+            return false
+        }
         recordOperationEvents(result)
-        if (result.applied !== true) {
+        const phase = String(result.phase || "")
+        const outcome = String(result.outcome || "")
+        if (phase !== "Applied" || outcome !== "applied") {
             const blockedLabel = String(result.blockedOperationLabel || "")
-            model.settingsBackupStatus = blockedLabel.length
-                ? qsTr("Backup import blocked by running operation %1.").arg(blockedLabel)
-                : qsTr("Backup import is blocked by an affected running operation.")
-            return null
+            if (outcome === "blocked") {
+                model.settingsBackupStatus = blockedLabel.length
+                    ? qsTr("Backup import blocked by running operation %1.").arg(blockedLabel)
+                    : qsTr("Backup import is blocked by an affected running operation.")
+            } else if (outcome === "rolled_back") {
+                model.settingsBackupStatus = qsTr("Backup import failed; prior local state was restored.")
+            } else if (outcome === "recovery_required") {
+                model.settingsBackupStatus = qsTr("Backup import requires local state recovery before further changes.")
+            } else {
+                model.settingsBackupStatus = qsTr("Backup import returned an unsupported terminal outcome.")
+            }
+            return false
         }
 
-        const selectedAreas = Array.isArray(result.selectedAreas) ? result.selectedAreas : []
-        const touchesSettings = selectedAreas.indexOf("settings") >= 0
-            || selectedAreas.indexOf("favorites") >= 0
-        if (touchesSettings) {
+        const appliedAreas = Array.isArray(result.appliedAreas) ? result.appliedAreas : []
+        const settingsApplied = appliedAreas.indexOf("settings") >= 0
+        const favoritesApplied = appliedAreas.indexOf("favorites") >= 0
+        const walletApplied = appliedAreas.indexOf("wallet_profile") >= 0
+        if (settingsApplied || favoritesApplied) {
             model.loadSettingsState()
-            model.settingsBackupEncrypted = result.encrypted === true
         }
-        if (selectedAreas.indexOf("idl_registry") >= 0) {
+        if (appliedAreas.indexOf("idl_registry") >= 0) {
             model.loadIdlState()
         }
-        if (selectedAreas.indexOf("wallet_profile") >= 0) {
+        if (walletApplied) {
             model.loadWalletState()
             model.checkLocalWalletProfile(false)
         }
-        if (touchesSettings || selectedAreas.indexOf("wallet_profile") >= 0) {
+        if (settingsApplied || walletApplied) {
             model.loadCapabilityRegistry()
         }
-
-        operationHistory.append({
-            domain: "backup",
-            method: "settingsBackupImportApply",
-            status: "applied_for_import",
-            label: qsTr("Settings backup import"),
-            operationClass: "backup",
-            affectedInputs: affectedInputs(selectedAreas),
-            restartPolicy: "safe_read_polling",
-            confirmationRequired: true,
-            importId: String(result.importId || ""),
-            backupCatalogId: String(result.backupCatalogId || backupCatalogId || ""),
-            reason: "backup_import_applied_for_import",
-            provenance: ["backup_import_coordinator", "runtime_operation_registry", "local_backup_catalog"],
-            result: result
-        }, qsTr("Local backup import applied."))
 
         model.settingsBackupStatus = result.encrypted === true
             ? qsTr("Imported encrypted backup: %1 IDLs and %2 favorites.")
@@ -96,12 +113,12 @@ QtObject {
             : qsTr("Imported %1 IDLs and %2 favorites from local backup.")
                 .arg(Number(result.idl_count || 0))
                 .arg(Number(result.favorites || 0))
-        return result
+        return true
     }
 
     function recordOperationEvents(result) {
-        const events = result && Array.isArray(result.operation_events)
-            ? result.operation_events : []
+        const events = result && Array.isArray(result.operationEvents)
+            ? result.operationEvents : []
         for (let i = 0; i < events.length; ++i) {
             const event = events[i] || {}
             if (event.operation && typeof event.operation === "object") {
@@ -131,13 +148,6 @@ QtObject {
         default:
             return qsTr("not affected")
         }
-    }
-
-    function affectedInputs(selectedAreas) {
-        const areas = Array.isArray(selectedAreas) ? selectedAreas : []
-        return areas.map(function (area) {
-            return { key: "backup_area", value: String(area || "") }
-        })
     }
 
     function uploadBackupCatalogEntry(backupCatalogId, onComplete) {
