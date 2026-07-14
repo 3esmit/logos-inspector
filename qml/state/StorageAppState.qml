@@ -276,11 +276,14 @@ QtObject {
         return detail.join(" / ")
     }
 
-    function applyStorageModuleEvent(eventName, args, onResponse) {
+    function applyStorageModuleEvent(eventName, args, onResponse, forwardRuntimeEvent) {
         const event = args && args.__moduleEventEnvelope === true ? args : {
             moduleName: moduleName,
             eventName: String(eventName || ""),
             args: Array.isArray(args) ? args : (args === undefined || args === null ? [] : [args])
+        }
+        if (forwardRuntimeEvent === false) {
+            return true
         }
         return storageOperations.ingestModuleEvent(event, onResponse)
     }

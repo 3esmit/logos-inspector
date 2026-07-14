@@ -22,6 +22,10 @@ use serde_json::Value;
 use tokio::sync::oneshot;
 
 const HOST_TRANSPORT_ABI_VERSION: u32 = 1;
+const ASYNC_WORKER_QUEUE_CAPACITY: usize = 128;
+const EVENT_REJECTED: i32 = 0;
+const EVENT_ACCEPTED: i32 = 1;
+const EVENT_BACKPRESSURE: i32 = -1;
 const HOST_CLOSED_ERROR: &str = "Basecamp host transport closed: host_closed";
 const REQUEST_CANCELLED_ERROR: &str = "Basecamp bridge request cancelled";
 const ASYNC_REQUIRED_ERROR: &str =
@@ -69,7 +73,7 @@ struct SynchronousCore {
 struct AsynchronousCore {
     state: Arc<AsyncState>,
     host: Arc<HostState>,
-    sender: mpsc::Sender<WorkerCommand>,
+    sender: mpsc::SyncSender<WorkerCommand>,
     worker: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -132,6 +136,11 @@ enum WorkerCommand {
         module: String,
         method: String,
         args_json: String,
+    },
+    ModuleEvent {
+        module: String,
+        event: String,
+        args: Vec<Value>,
     },
     Stop,
 }
@@ -506,7 +515,7 @@ impl AsynchronousCore {
         let bridge = InspectorBridge::with_shared_module_transport(transport)
             .map_err(|error| format!("failed to initialize asynchronous bridge: {error}"))?;
         let state = AsyncState::new();
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver) = mpsc::sync_channel(ASYNC_WORKER_QUEUE_CAPACITY);
         let worker_state = Arc::clone(&state);
         let worker = thread::Builder::new()
             .name("logos-inspector-core".to_owned())
@@ -554,7 +563,7 @@ impl AsynchronousCore {
         );
         let sent = self
             .sender
-            .send(WorkerCommand::Call {
+            .try_send(WorkerCommand::Call {
                 bridge_request_id,
                 ingress_token,
                 module,
@@ -575,6 +584,22 @@ impl AsynchronousCore {
 
     fn cancel(&self, bridge_request_id: BridgeRequestId) -> bool {
         self.state.cancel(bridge_request_id)
+    }
+
+    fn enqueue_module_event(&self, module: String, event: String, args: Vec<Value>) -> i32 {
+        let registry = lock(&self.state.registry);
+        if registry.phase != LifecyclePhase::Open {
+            return EVENT_REJECTED;
+        }
+        match self.sender.try_send(WorkerCommand::ModuleEvent {
+            module,
+            event,
+            args,
+        }) {
+            Ok(()) => EVENT_ACCEPTED,
+            Err(mpsc::TrySendError::Full(_)) => EVENT_BACKPRESSURE,
+            Err(mpsc::TrySendError::Disconnected(_)) => EVENT_REJECTED,
+        }
     }
 
     fn close(&self) {
@@ -634,6 +659,15 @@ fn run_worker(
                     invoke_core_reply(pending, bridge_request_id, &response);
                     state.finish_callback(bridge_request_id, completion_token);
                 }
+            }
+            WorkerCommand::ModuleEvent {
+                module,
+                event,
+                args,
+            } => {
+                let _result = catch_unwind(AssertUnwindSafe(|| {
+                    bridge.ingest_module_event(&module, &event, args)
+                }));
             }
             WorkerCommand::Stop => break,
         }
@@ -820,6 +854,33 @@ pub unsafe extern "C" fn logos_inspector_core_call_module_async(
     i32::from(accepted)
 }
 
+/// Copies and queues one asynchronous host module event.
+///
+/// # Safety
+///
+/// `handle` must be null or live. All string pointers must remain readable
+/// NUL-terminated UTF-8 for this call. The host must quiesce event ingress
+/// before its close callback returns.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn logos_inspector_core_ingest_module_event(
+    handle: *mut LogosInspectorCore,
+    module: *const c_char,
+    event: *const c_char,
+    args_json: *const c_char,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        let Ok((core, module, event, args)) = module_event_inputs(handle, module, event, args_json)
+        else {
+            return EVENT_REJECTED;
+        };
+        match &core.mode {
+            CoreMode::Synchronous(_) => EVENT_REJECTED,
+            CoreMode::Asynchronous(core) => core.enqueue_module_event(module, event, args),
+        }
+    }))
+    .unwrap_or(EVENT_REJECTED)
+}
+
 /// Cancels one accepted asynchronous bridge call.
 ///
 /// # Safety
@@ -909,6 +970,31 @@ fn call_module_inputs(
         c_string(method, "method")?,
         c_string(args_json, "args JSON")?,
     ))
+}
+
+fn module_event_inputs(
+    handle: *mut LogosInspectorCore,
+    module: *const c_char,
+    event: *const c_char,
+    args_json: *const c_char,
+) -> Result<(&'static LogosInspectorCore, String, String, Vec<Value>), String> {
+    let module = c_string(module, "module")?;
+    let event = c_string(event, "event")?;
+    let args_json = c_string(args_json, "module event args JSON")?;
+    let module = module.trim();
+    let event = event.trim();
+    if module.is_empty() {
+        return Err("module is required".to_owned());
+    }
+    if event.is_empty() {
+        return Err("event is required".to_owned());
+    }
+    let args = serde_json::from_str::<Value>(&args_json)
+        .map_err(|error| format!("module event args are not valid JSON: {error}"))?;
+    let Value::Array(args) = args else {
+        return Err("module event args must be a JSON array".to_owned());
+    };
+    Ok((core_ref(handle)?, module.to_owned(), event.to_owned(), args))
 }
 
 fn core_ref(handle: *mut LogosInspectorCore) -> Result<&'static LogosInspectorCore, String> {
@@ -1604,6 +1690,83 @@ mod tests {
         })
     }
 
+    fn ingest_test_module_event(
+        handle: *mut LogosInspectorCore,
+        module: &str,
+        event: &str,
+        args_json: &str,
+    ) -> Result<i32, Box<dyn std::error::Error>> {
+        let module = CString::new(module)?;
+        let event = CString::new(event)?;
+        let args_json = CString::new(args_json)?;
+        // SAFETY: every string remains readable for this call. The ingress
+        // function copies accepted inputs before returning.
+        Ok(unsafe {
+            logos_inspector_core_ingest_module_event(
+                handle,
+                module.as_ptr(),
+                event.as_ptr(),
+                args_json.as_ptr(),
+            )
+        })
+    }
+
+    fn operation_status(
+        handle: *mut LogosInspectorCore,
+        bridge_request_id: u64,
+        operation_id: &str,
+    ) -> Result<Value, Box<dyn std::error::Error>> {
+        let collector = Arc::new(ReplyCollector::default());
+        let drops = Arc::new(AtomicUsize::new(0));
+        let context = reply_context(&collector, &drops);
+        let args = serde_json::json!([operation_id]).to_string();
+        if enqueue_test_call(
+            handle,
+            bridge_request_id,
+            "logos_inspector",
+            "runtimeOperationStatus",
+            &args,
+            context,
+        )? != 1
+        {
+            // SAFETY: rejected ingress leaves its callback context caller-owned.
+            unsafe {
+                drop(Box::from_raw(context.cast::<ReplyContext>()));
+            }
+            return err("runtime operation status ingress was rejected");
+        }
+        let replies = collector.wait_for_replies(1)?;
+        if drops.load(Ordering::Acquire) != 1 {
+            return err("runtime operation status callback context was not released once");
+        }
+        Ok(serde_json::from_str(&replies[0].1)?)
+    }
+
+    fn wait_for_operation_status(
+        handle: *mut LogosInspectorCore,
+        operation_id: &str,
+        expected: &str,
+        mut bridge_request_id: u64,
+    ) -> Result<Value, Box<dyn std::error::Error>> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let status = operation_status(handle, bridge_request_id, operation_id)?;
+            if status.pointer("/value/status").and_then(Value::as_str) == Some(expected) {
+                return Ok(status);
+            }
+            if Instant::now() >= deadline {
+                return Err(std::io::Error::other(format!(
+                    "runtime operation did not reach {expected}: {status}"
+                ))
+                .into());
+            }
+            bridge_request_id = bridge_request_id
+                .checked_add(1)
+                .ok_or_else(|| std::io::Error::other("status request id space exhausted"))?;
+            thread::yield_now();
+        }
+    }
+
     #[test]
     fn call_returns_error_for_null_handle() -> TestResult {
         let method = CString::new("moduleVersion")?;
@@ -2226,6 +2389,229 @@ mod tests {
             thread::yield_now();
         }
         handle.close();
+        if drops.load(Ordering::Acquire) != 1 {
+            return err("runtime operation start callback context was not released once");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn module_event_ingress_validates_inputs_and_lifecycle() -> TestResult {
+        let module = CString::new("delivery_module")?;
+        let event = CString::new("messageSent")?;
+        let args = CString::new("[\"request-1\"]")?;
+
+        // SAFETY: null is an accepted rejected-handle path.
+        if unsafe {
+            logos_inspector_core_ingest_module_event(
+                ptr::null_mut(),
+                module.as_ptr(),
+                event.as_ptr(),
+                args.as_ptr(),
+            )
+        } != EVENT_REJECTED
+        {
+            return err("null handle accepted a module event");
+        }
+
+        let synchronous = logos_inspector_core_new();
+        if synchronous.is_null() {
+            return err("failed to create synchronous core handle");
+        }
+        if ingest_test_module_event(
+            synchronous,
+            "delivery_module",
+            "messageSent",
+            "[\"request-1\"]",
+        )? != EVENT_REJECTED
+        {
+            // SAFETY: this test owns the synchronous handle.
+            unsafe {
+                logos_inspector_core_free(synchronous);
+            }
+            return err("synchronous handle accepted asynchronous module event ingress");
+        }
+        // SAFETY: this test owns the synchronous handle.
+        unsafe {
+            logos_inspector_core_free(synchronous);
+        }
+
+        let host = TestHost::new();
+        let handle = TestCoreHandle::new(&host)?;
+        if ingest_test_module_event(handle.as_ptr(), "", "messageSent", "[]")? != EVENT_REJECTED
+            || ingest_test_module_event(handle.as_ptr(), "delivery_module", "", "[]")?
+                != EVENT_REJECTED
+            || ingest_test_module_event(handle.as_ptr(), "delivery_module", "messageSent", "{bad")?
+                != EVENT_REJECTED
+            || ingest_test_module_event(handle.as_ptr(), "delivery_module", "messageSent", "null")?
+                != EVENT_REJECTED
+        {
+            return err("invalid module event input was accepted");
+        }
+        if ingest_test_module_event(
+            handle.as_ptr(),
+            "delivery_module",
+            "messageSent",
+            "[\"unknown\"]",
+        )? != EVENT_ACCEPTED
+        {
+            return err("valid module event input was rejected");
+        }
+        handle.close();
+        if ingest_test_module_event(
+            handle.as_ptr(),
+            "delivery_module",
+            "messageSent",
+            "[\"late\"]",
+        )? != EVENT_REJECTED
+        {
+            return err("closed handle accepted a module event");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn module_event_ingress_rejects_when_bounded_worker_queue_is_full() -> TestResult {
+        let host = TestHost::new();
+        host.block_dispatch();
+        let handle = TestCoreHandle::new(&host)?;
+        let collector = Arc::new(ReplyCollector::default());
+        let drops = Arc::new(AtomicUsize::new(0));
+        if enqueue_test_call(
+            handle.as_ptr(),
+            47,
+            "storage_module",
+            "space",
+            "[]",
+            reply_context(&collector, &drops),
+        )? != 1
+        {
+            return err("gated host call was rejected");
+        }
+        host.wait_for_dispatch_entry()?;
+        let request = host.wait_for_request()?;
+
+        for index in 0..ASYNC_WORKER_QUEUE_CAPACITY {
+            let args = serde_json::json!([format!("request-{index}")]).to_string();
+            if ingest_test_module_event(handle.as_ptr(), "delivery_module", "messageSent", &args)?
+                != EVENT_ACCEPTED
+            {
+                host.release_dispatch();
+                return err("bounded module event queue rejected before capacity");
+            }
+        }
+        if ingest_test_module_event(
+            handle.as_ptr(),
+            "delivery_module",
+            "messageSent",
+            "[\"overflow\"]",
+        )? != EVENT_BACKPRESSURE
+        {
+            host.release_dispatch();
+            return err("bounded module event queue accepted overflow");
+        }
+
+        host.release_dispatch();
+        host.complete(request.id, 1, "1", false)?;
+        collector.wait_for_replies(1)?;
+        if drops.load(Ordering::Acquire) != 1 {
+            return err("gated host call callback context was not released once");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn early_foreign_thread_module_event_completes_detached_operation_once() -> TestResult {
+        let host = TestHost::new();
+        let handle = TestCoreHandle::new(&host)?;
+        let collector = Arc::new(ReplyCollector::default());
+        let drops = Arc::new(AtomicUsize::new(0));
+        let args = serde_json::json!([{
+            "domain": "delivery",
+            "method": "deliverySend",
+            "adapter": { "source_mode": "module", "inputs": {} },
+            "mutating_enabled": true,
+            "payload": { "topic": "/topic", "payload": "hello" }
+        }])
+        .to_string();
+        if enqueue_test_call(
+            handle.as_ptr(),
+            46,
+            "logos_inspector",
+            "runtimeOperationStart",
+            &args,
+            reply_context(&collector, &drops),
+        )? != 1
+        {
+            return err("runtime operation start ingress was rejected");
+        }
+        let replies = collector.wait_for_replies(1)?;
+        let start_response: Value = serde_json::from_str(&replies[0].1)?;
+        let Some(operation_id) = start_response
+            .pointer("/value/operationId")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+        else {
+            return err("runtime operation start did not return operation identity");
+        };
+        let request = host.wait_for_request()?;
+        if request.module != "delivery_module" || request.method != "send" {
+            return err("runtime operation did not reach delivery host adapter");
+        }
+
+        let handle_address = handle.as_ptr().expose_provenance();
+        let event_result = thread::spawn(move || {
+            ingest_test_module_event(
+                ptr::with_exposed_provenance_mut(handle_address),
+                "delivery_module",
+                "messageSent",
+                "[\"request-46\",\"hash-original\"]",
+            )
+            .map_err(|error| error.to_string())
+        })
+        .join()
+        .map_err(|_| std::io::Error::other("module event ingress thread panicked"))??;
+        if event_result != EVENT_ACCEPTED {
+            return err("foreign-thread module event was rejected");
+        }
+
+        let pending = operation_status(handle.as_ptr(), 4_600, &operation_id)?;
+        if pending.pointer("/value/status").and_then(Value::as_str) != Some("running") {
+            return Err(std::io::Error::other(format!(
+                "early module event did not remain pending before host reply: {pending}"
+            ))
+            .into());
+        }
+        host.complete(request.id, 1, "\"request-46\"", true)?;
+
+        let completed =
+            wait_for_operation_status(handle.as_ptr(), &operation_id, "completed", 4_601)?;
+        if completed.pointer("/value/result/0").and_then(Value::as_str) != Some("request-46")
+            || completed.pointer("/value/result/1").and_then(Value::as_str) != Some("hash-original")
+        {
+            return Err(std::io::Error::other(format!(
+                "early module event result was not replayed: {completed}"
+            ))
+            .into());
+        }
+
+        if ingest_test_module_event(
+            handle.as_ptr(),
+            "delivery_module",
+            "messageSent",
+            "[\"request-46\",\"hash-replacement\"]",
+        )? != EVENT_ACCEPTED
+        {
+            return err("duplicate module event ingress was rejected at queue boundary");
+        }
+        let after_duplicate = operation_status(handle.as_ptr(), 4_700, &operation_id)?;
+        if after_duplicate
+            .pointer("/value/result/1")
+            .and_then(Value::as_str)
+            != Some("hash-original")
+        {
+            return err("duplicate module event replaced terminal operation result");
+        }
         if drops.load(Ordering::Acquire) != 1 {
             return err("runtime operation start callback context was not released once");
         }

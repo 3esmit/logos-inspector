@@ -1,6 +1,11 @@
-function handle(root, event) {
+function handle(root, event, forwardRuntimeEvent) {
     const eventName = String(event && event.eventName ? event.eventName : "")
-    const submitted = root.storageApp.applyStorageModuleEvent(eventName, event)
+    const submitted = root.storageApp.applyStorageModuleEvent(
+        eventName,
+        event,
+        undefined,
+        forwardRuntimeEvent
+    )
     if (rawEventInvalidatesStorageObservations(eventName)) {
         root.queryNetworkConnection("storage", false)
         root.storageApp.refreshManifests(false)

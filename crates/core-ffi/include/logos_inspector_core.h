@@ -9,6 +9,9 @@ extern "C" {
 typedef struct LogosInspectorCore LogosInspectorCore;
 
 #define LOGOS_INSPECTOR_HOST_TRANSPORT_ABI_VERSION 1u
+#define LOGOS_INSPECTOR_EVENT_REJECTED 0
+#define LOGOS_INSPECTOR_EVENT_ACCEPTED 1
+#define LOGOS_INSPECTOR_EVENT_BACKPRESSURE -1
 
 typedef void (*LogosInspectorCoreReplyFn)(
     void* context,
@@ -66,11 +69,12 @@ LogosInspectorCore* logos_inspector_core_new(void);
  * one late reply; either outcome is safe.
  *
  * Reply callbacks may run on any thread and may overlap dispatch, cancel, and
- * host close. Before host close returns, every in-progress reply callback must
- * have returned and no future reply callback may begin. payload_json is a
- * borrowed NUL-terminated UTF-8 string for the reply call. ok == 1 requires
- * valid JSON, including literal null; other values report an error payload.
- * No C or C++ callback may throw or unwind across this ABI boundary.
+ * host close. Before host close returns, every in-progress reply callback and
+ * host-initiated module-event ingress call must have returned, and neither may
+ * begin later. payload_json is a borrowed NUL-terminated UTF-8 string for the
+ * reply call. ok == 1 requires valid JSON, including literal null; other values
+ * report an error payload. No C or C++ callback may throw or unwind across this
+ * ABI boundary.
  */
 LogosInspectorCore* logos_inspector_core_new_with_host_transport(
     const LogosInspectorHostTransportV1* transport);
@@ -118,6 +122,28 @@ int32_t logos_inspector_core_call_module_async(
     const char* args_json,
     LogosInspectorCoreReplyFn reply,
     void* reply_context);
+
+/*
+ * Copies and queues one host module event without waiting for Rust processing.
+ * args_json must be a valid JSON array representing the callback arguments.
+ * Returns EVENT_ACCEPTED when validated and queued before close began,
+ * EVENT_REJECTED for invalid input or a closing handle, and
+ * EVENT_BACKPRESSURE when the bounded ingress queue is full. Accepted events
+ * share FIFO worker ordering with bridge calls. This function may run on any
+ * thread and may race call, cancel, or close. The host must quiesce these calls
+ * before its close callback returns.
+ *
+ * The core does not retry. On BACKPRESSURE, a native event owner must copy and
+ * retry the event without blocking the host callback, or begin host shutdown;
+ * dropping the event and continuing is forbidden because it could strand an
+ * accepted Runtime Operation. A host must not advertise native event ownership
+ * to QML until it implements that policy.
+ */
+int32_t logos_inspector_core_ingest_module_event(
+    LogosInspectorCore* handle,
+    const char* module,
+    const char* event,
+    const char* args_json);
 
 /*
  * Return 1 claims a pending bridge request and selects cancellation as its one
