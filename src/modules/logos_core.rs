@@ -4,7 +4,10 @@ use std::{
     path::{Path, PathBuf},
     pin::Pin,
     process::Command,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU8, Ordering},
+    },
     time::Duration,
 };
 
@@ -12,8 +15,14 @@ use anyhow::{Context as _, Result, bail};
 use serde::{Serialize, Serializer};
 use serde_json::Value;
 use tempfile::TempDir;
+use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 
-use crate::support::command_runner::{CommandRunPolicy, output_text, run_command};
+use crate::support::command_runner::{
+    CommandControl, CommandRunPolicy, CommandStopReason, CommandTerminated,
+    CommandTerminationScope, output_text, run_command, run_command_controlled,
+};
+use crate::support::work_tracker::{BlockingWorkGuard, BlockingWorkTracker};
 
 const LOGOSCORE_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const LOGOSCORE_OUTPUT_LIMIT: usize = 4096;
@@ -166,10 +175,183 @@ pub type ModuleCallFuture<'a> = Pin<Box<dyn Future<Output = Result<ModuleCallRep
 pub type ModuleDiagnosticFuture<'a> = Pin<Box<dyn Future<Output = Result<Value>> + Send + 'a>>;
 pub type SharedModuleTransport = Arc<dyn ModuleTransport>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModuleCallStopReason {
+    CancelRequested,
+    DeadlineExceeded,
+    Shutdown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModuleCallTerminationEvidence {
+    ProcessTerminated,
+    LocallyAbandoned,
+    NotStarted,
+}
+
+#[derive(Clone)]
+pub struct ModuleCallControl {
+    cancellation: CancellationToken,
+    deadline: Instant,
+    stop_reason: Arc<AtomicU8>,
+    blocking_work: BlockingWorkTracker,
+}
+
+impl ModuleCallControl {
+    pub(crate) fn new(
+        cancellation: CancellationToken,
+        deadline: Instant,
+        stop_reason: Arc<AtomicU8>,
+    ) -> Self {
+        Self {
+            cancellation,
+            deadline,
+            stop_reason,
+            blocking_work: BlockingWorkTracker::new(),
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn with_blocking_work_tracker(mut self, tracker: BlockingWorkTracker) -> Self {
+        self.blocking_work = tracker;
+        self
+    }
+
+    pub(crate) fn blocking_worker_guard(&self) -> Result<BlockingWorkGuard> {
+        self.blocking_work.worker_guard()
+    }
+
+    #[must_use]
+    pub fn cancellation(&self) -> &CancellationToken {
+        &self.cancellation
+    }
+
+    #[must_use]
+    pub const fn deadline(&self) -> Instant {
+        self.deadline
+    }
+
+    #[must_use]
+    pub fn stop_reason(&self) -> ModuleCallStopReason {
+        match self.stop_reason.load(Ordering::Acquire) {
+            2 => ModuleCallStopReason::DeadlineExceeded,
+            3 => ModuleCallStopReason::Shutdown,
+            _ => ModuleCallStopReason::CancelRequested,
+        }
+    }
+
+    fn check_active(&self) -> std::result::Result<(), ModuleCallTerminated> {
+        if self.cancellation.is_cancelled() {
+            return Err(ModuleCallTerminated::new(
+                self.stop_reason(),
+                ModuleCallTerminationEvidence::NotStarted,
+            ));
+        }
+        if Instant::now() >= self.deadline {
+            return Err(ModuleCallTerminated::new(
+                ModuleCallStopReason::DeadlineExceeded,
+                ModuleCallTerminationEvidence::NotStarted,
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct ModuleCallTerminated {
+    reason: ModuleCallStopReason,
+    evidence: ModuleCallTerminationEvidence,
+}
+
+impl ModuleCallTerminated {
+    #[must_use]
+    pub const fn new(
+        reason: ModuleCallStopReason,
+        evidence: ModuleCallTerminationEvidence,
+    ) -> Self {
+        Self { reason, evidence }
+    }
+
+    #[must_use]
+    pub const fn reason(&self) -> ModuleCallStopReason {
+        self.reason
+    }
+
+    #[must_use]
+    pub const fn evidence(&self) -> ModuleCallTerminationEvidence {
+        self.evidence
+    }
+}
+
+impl std::fmt::Display for ModuleCallTerminated {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let reason = match self.reason {
+            ModuleCallStopReason::CancelRequested => "cancellation requested",
+            ModuleCallStopReason::DeadlineExceeded => "deadline exceeded",
+            ModuleCallStopReason::Shutdown => "shutdown requested",
+        };
+        let evidence = match self.evidence {
+            ModuleCallTerminationEvidence::ProcessTerminated => "process terminated and reaped",
+            ModuleCallTerminationEvidence::LocallyAbandoned => {
+                "local work stopped; remote termination unknown"
+            }
+            ModuleCallTerminationEvidence::NotStarted => "external process was not started",
+        };
+        write!(formatter, "module call stopped after {reason}: {evidence}")
+    }
+}
+
+impl std::error::Error for ModuleCallTerminated {}
+
+#[derive(Debug)]
+pub struct ModuleTransportClosed {
+    message: String,
+}
+
+impl ModuleTransportClosed {
+    #[must_use]
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for ModuleTransportClosed {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ModuleTransportClosed {}
+
 pub trait ModuleTransport: Send + Sync {
     fn kind(&self) -> ModuleTransportKind;
 
     fn call(&self, call: ModuleCall) -> ModuleCallFuture<'_>;
+
+    fn call_controlled(
+        &self,
+        call: ModuleCall,
+        control: ModuleCallControl,
+    ) -> ModuleCallFuture<'_> {
+        Box::pin(async move {
+            control.check_active()?;
+            let call = self.call(call);
+            tokio::select! {
+                biased;
+                result = call => result,
+                () = control.cancellation.cancelled() => Err(ModuleCallTerminated::new(
+                    control.stop_reason(),
+                    ModuleCallTerminationEvidence::LocallyAbandoned,
+                ).into()),
+                () = tokio::time::sleep_until(control.deadline) => Err(ModuleCallTerminated::new(
+                    ModuleCallStopReason::DeadlineExceeded,
+                    ModuleCallTerminationEvidence::LocallyAbandoned,
+                ).into()),
+            }
+        })
+    }
 
     fn status(&self) -> ModuleDiagnosticFuture<'_> {
         let adapter = self.kind();
@@ -300,6 +482,77 @@ impl ModuleTransport for LogoscoreCliTransport {
         })
     }
 
+    fn call_controlled(
+        &self,
+        call: ModuleCall,
+        control: ModuleCallControl,
+    ) -> ModuleCallFuture<'_> {
+        let runtime = self.runtime.clone();
+        Box::pin(async move {
+            let transport = call.transport();
+            if transport != ModuleTransportKind::LogoscoreCli {
+                bail!(
+                    "LogosCore CLI transport cannot execute `{}` calls",
+                    transport.as_str()
+                );
+            }
+            let module = call.module().to_owned();
+            let method = call.method().to_owned();
+            let args = call
+                .args()
+                .iter()
+                .cloned()
+                .map(|value| match value {
+                    Value::String(value) => value,
+                    value => value.to_string(),
+                })
+                .collect::<Vec<_>>();
+            let module_label = module.clone();
+            let method_label = method.clone();
+            let command_control = CommandControl::new(
+                control.cancellation().clone(),
+                control.deadline().into_std(),
+            );
+            control.check_active()?;
+            let worker_guard = control.blocking_worker_guard()?;
+            let output = tokio::task::spawn_blocking(move || {
+                let _worker_guard = worker_guard;
+                runtime.call_controlled(&module, &method, &args, command_control)
+            })
+            .await
+            .context("LogosCore CLI module-call worker failed")?;
+            let output = match output {
+                Ok(output) => output,
+                Err(error) => {
+                    if let Some(terminated) = error.downcast_ref::<CommandTerminated>() {
+                        let reason = match terminated.reason() {
+                            CommandStopReason::CancelRequested => control.stop_reason(),
+                            CommandStopReason::DeadlineExceeded => {
+                                ModuleCallStopReason::DeadlineExceeded
+                            }
+                        };
+                        let evidence = match terminated.scope() {
+                            CommandTerminationScope::NoProcess => {
+                                ModuleCallTerminationEvidence::NotStarted
+                            }
+                            CommandTerminationScope::DirectChild
+                            | CommandTerminationScope::ProcessGroup => {
+                                ModuleCallTerminationEvidence::LocallyAbandoned
+                            }
+                        };
+                        return Err(ModuleCallTerminated::new(reason, evidence).into());
+                    }
+                    return Err(error);
+                }
+            };
+            let value = normalize_module_call_value(&module_label, &method_label, output.value)?;
+            Ok(ModuleCallReply::new(
+                ModuleTransportKind::LogoscoreCli,
+                value,
+            ))
+        })
+    }
+
     fn status(&self) -> ModuleDiagnosticFuture<'_> {
         let runtime = self.runtime.clone();
         Box::pin(async move {
@@ -363,8 +616,19 @@ impl LogoscoreCliRuntime {
         self.run_json(["status", "--json"], timeout)
     }
 
+    pub(crate) fn status_controlled(&self, control: CommandControl) -> Result<LogosCoreOutput> {
+        self.run_json_controlled(["status", "--json"], control)
+    }
+
     pub(crate) fn list_modules(&self) -> Result<LogosCoreOutput> {
         self.run_json(["list-modules", "--json"], command_timeout())
+    }
+
+    pub(crate) fn list_modules_controlled(
+        &self,
+        control: CommandControl,
+    ) -> Result<LogosCoreOutput> {
+        self.run_json_controlled(["list-modules", "--json"], control)
     }
 
     pub(crate) fn module_info(&self, module: &str) -> Result<LogosCoreOutput> {
@@ -372,6 +636,17 @@ impl LogoscoreCliRuntime {
             bail!("module name is required");
         }
         self.run_json(["module-info", module, "--json"], command_timeout())
+    }
+
+    pub(crate) fn module_info_controlled(
+        &self,
+        module: &str,
+        control: CommandControl,
+    ) -> Result<LogosCoreOutput> {
+        if module.trim().is_empty() {
+            bail!("module name is required");
+        }
+        self.run_json_controlled(["module-info", module, "--json"], control)
     }
 
     pub(crate) fn require_module_method(
@@ -385,6 +660,23 @@ impl LogoscoreCliRuntime {
             .context("failed to list logoscore modules")?;
         let module_info = self
             .module_info(module)
+            .with_context(|| format!("failed to inspect logoscore module `{module}`"))?;
+        module_discovery(module, &modules.value, &module_info.value)?
+            .require_method(method, signature)
+    }
+
+    pub(crate) fn require_module_method_controlled(
+        &self,
+        module: &str,
+        method: &str,
+        signature: &str,
+        control: CommandControl,
+    ) -> Result<()> {
+        let modules = self
+            .list_modules_controlled(control.clone())
+            .context("failed to list logoscore modules")?;
+        let module_info = self
+            .module_info_controlled(module, control)
             .with_context(|| format!("failed to inspect logoscore module `{module}`"))?;
         module_discovery(module, &modules.value, &module_info.value)?
             .require_method(method, signature)
@@ -410,6 +702,30 @@ impl LogoscoreCliRuntime {
         Ok(())
     }
 
+    pub(crate) fn ensure_module_loaded_controlled(
+        &self,
+        module: &str,
+        control: CommandControl,
+    ) -> Result<()> {
+        let modules = self
+            .list_modules_controlled(control.clone())
+            .context("failed to list logoscore modules")?;
+        let rows = module_rows(&modules.value)?;
+        let Some(row) = rows
+            .iter()
+            .find(|candidate| candidate.get("name").and_then(Value::as_str) == Some(module))
+        else {
+            bail!("logoscore module `{module}` is not listed");
+        };
+        if row.get("status").and_then(Value::as_str) == Some("loaded") {
+            return Ok(());
+        }
+
+        self.run_json_controlled(["load-module", module, "--json"], control)
+            .with_context(|| format!("failed to load logoscore module `{module}`"))?;
+        Ok(())
+    }
+
     pub(crate) fn call(
         &self,
         module: &str,
@@ -418,6 +734,19 @@ impl LogoscoreCliRuntime {
     ) -> Result<LogosCoreOutput> {
         let command_args = call_arguments(module, method, args)?;
         let mut output = self.run_json(command_args, command_timeout())?;
+        normalize_call_value(&mut output.value);
+        Ok(output)
+    }
+
+    pub(crate) fn call_controlled(
+        &self,
+        module: &str,
+        method: &str,
+        args: &[String],
+        control: CommandControl,
+    ) -> Result<LogosCoreOutput> {
+        let command_args = call_arguments(module, method, args)?;
+        let mut output = self.run_json_controlled(command_args, control)?;
         normalize_call_value(&mut output.value);
         Ok(output)
     }
@@ -431,6 +760,19 @@ impl LogoscoreCliRuntime {
     ) -> Result<Value> {
         self.require_module_method(module, method, signature)?;
         serde_json::to_value(self.call(module, method, args)?)
+            .context("failed to serialize logoscore call output")
+    }
+
+    pub(crate) fn call_checked_controlled(
+        &self,
+        module: &str,
+        method: &str,
+        signature: &str,
+        args: &[String],
+        control: CommandControl,
+    ) -> Result<Value> {
+        self.require_module_method_controlled(module, method, signature, control.clone())?;
+        serde_json::to_value(self.call_controlled(module, method, args, control)?)
             .context("failed to serialize logoscore call output")
     }
 
@@ -455,6 +797,10 @@ impl LogoscoreCliRuntime {
 
     pub(crate) fn stop(&self) -> Result<LogosCoreOutput> {
         self.run_json(["stop", "--json"], command_timeout())
+    }
+
+    pub(crate) fn stop_controlled(&self, control: CommandControl) -> Result<LogosCoreOutput> {
+        self.run_json_controlled(["stop", "--json"], control)
     }
 
     pub(crate) fn stage_shared_file(
@@ -485,6 +831,14 @@ impl LogoscoreCliRuntime {
     {
         run_json_with(&self.runner, args, timeout)
     }
+
+    fn run_json_controlled<I, S>(&self, args: I, control: CommandControl) -> Result<LogosCoreOutput>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        run_json_with_controlled(&self.runner, args, control)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -507,8 +861,13 @@ pub fn module_info(module: &str) -> Result<LogosCoreOutput> {
     configured_runtime().module_info(module)
 }
 
-pub(crate) fn require_module_method(module: &str, method: &str, signature: &str) -> Result<()> {
-    configured_runtime().require_module_method(module, method, signature)
+pub(crate) fn require_module_method_controlled(
+    module: &str,
+    method: &str,
+    signature: &str,
+    control: CommandControl,
+) -> Result<()> {
+    configured_runtime().require_module_method_controlled(module, method, signature, control)
 }
 
 pub(crate) fn stage_shared_file(filename: &str, bytes: &[u8]) -> Result<LogoscoreSharedFile> {
@@ -649,6 +1008,15 @@ pub fn call(module: &str, method: &str, args: &[String]) -> Result<LogosCoreOutp
     configured_runtime().call(module, method, args)
 }
 
+pub(crate) fn call_controlled(
+    module: &str,
+    method: &str,
+    args: &[String],
+    control: CommandControl,
+) -> Result<LogosCoreOutput> {
+    configured_runtime().call_controlled(module, method, args, control)
+}
+
 fn call_arguments(module: &str, method: &str, args: &[String]) -> Result<Vec<String>> {
     if module.trim().is_empty() {
         bail!("module name is required");
@@ -686,6 +1054,45 @@ where
             output_limit: LOGOSCORE_OUTPUT_LIMIT,
         },
     )?;
+    let stderr = output_text(&output.stderr, &[], LOGOSCORE_OUTPUT_LIMIT);
+    let value = parse_json_stdout(&runner.label, &output.stdout)?;
+    let stderr = (!stderr.is_empty()).then_some(stderr);
+    Ok(LogosCoreOutput {
+        runner: runner.label.clone(),
+        value,
+        stderr,
+    })
+}
+
+fn run_json_with_controlled<I, S>(
+    runner: &LogosCoreRunner,
+    args: I,
+    control: CommandControl,
+) -> Result<LogosCoreOutput>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let command = command_for_runner(runner, args);
+    let output = run_command_controlled(
+        command,
+        CommandRunPolicy {
+            label: &runner.label,
+            // Controlled commands have one authority: CommandControl's absolute deadline.
+            timeout: Duration::ZERO,
+            poll_interval: LOGOSCORE_POLL_INTERVAL,
+            redactions: &[],
+            output_limit: LOGOSCORE_OUTPUT_LIMIT,
+        },
+        control,
+    )?;
+    logos_core_output(runner, output)
+}
+
+fn logos_core_output(
+    runner: &LogosCoreRunner,
+    output: std::process::Output,
+) -> Result<LogosCoreOutput> {
     let stderr = output_text(&output.stderr, &[], LOGOSCORE_OUTPUT_LIMIT);
     let value = parse_json_stdout(&runner.label, &output.stdout)?;
     let stderr = (!stderr.is_empty()).then_some(stderr);
@@ -874,9 +1281,12 @@ fn module_value_error_text(value: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        Mutex,
-        atomic::{AtomicUsize, Ordering},
+    use std::{
+        sync::{
+            Mutex,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
     };
 
     use super::*;
@@ -922,6 +1332,168 @@ mod tests {
                 ))
             })
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn controlled_cli_call_does_not_overclaim_remote_termination() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir()?;
+        let program = directory.path().join("logoscore-test");
+        let pid_path = directory.path().join("logoscore-test.pid");
+        fs::write(
+            &program,
+            "#!/bin/sh\nprintf '%s' \"$$\" > \"${0}.pid\"\nwhile :; do :; done\n",
+        )?;
+        let mut permissions = fs::metadata(&program)?.permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&program, permissions)?;
+        let transport = LogoscoreCliTransport {
+            runtime: LogoscoreCliRuntime {
+                runner: LogosCoreRunner {
+                    program: program.to_string_lossy().into_owned(),
+                    sudo_user: None,
+                    home: None,
+                    config_dir: None,
+                    label: "test logoscore".to_owned(),
+                },
+            },
+        };
+        let cancellation = CancellationToken::new();
+        let cancel_request = cancellation.clone();
+        let pid_for_cancel = pid_path.clone();
+        let canceler = tokio::spawn(async move {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !pid_for_cancel.exists() {
+                if Instant::now() >= deadline {
+                    bail!("timed out waiting for CLI child process");
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            cancel_request.cancel();
+            Ok::<(), anyhow::Error>(())
+        });
+        let control = ModuleCallControl::new(
+            cancellation,
+            Instant::now() + Duration::from_secs(5),
+            Arc::new(AtomicU8::new(1)),
+        );
+        let call = ModuleCall::new(
+            ModuleTransportKind::LogoscoreCli,
+            "storage_module",
+            "get",
+            vec![],
+        )?;
+
+        let Err(error) = transport.call_controlled(call, control).await else {
+            bail!("canceled CLI module call unexpectedly completed");
+        };
+        canceler.await.context("CLI canceler task failed")??;
+        let terminated = error
+            .downcast_ref::<ModuleCallTerminated>()
+            .context("CLI cancellation lost typed termination evidence")?;
+        anyhow::ensure!(
+            terminated.reason() == ModuleCallStopReason::CancelRequested
+                && terminated.evidence() == ModuleCallTerminationEvidence::LocallyAbandoned,
+            "unexpected CLI termination evidence: {terminated:?}"
+        );
+        anyhow::ensure!(
+            terminated
+                .to_string()
+                .contains("remote termination unknown"),
+            "CLI termination message overclaimed remote effect: {terminated}"
+        );
+        let pid = fs::read_to_string(&pid_path)?;
+        let alive = Command::new("sh")
+            .arg("-c")
+            .arg("kill -0 \"$1\" 2>/dev/null")
+            .arg("logoscore-reap-probe")
+            .arg(pid.trim())
+            .status()?;
+        anyhow::ensure!(!alive.success(), "CLI child was not reaped");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn pre_canceled_cli_call_reports_that_no_external_process_started() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let marker = directory.path().join("unexpected-start");
+        let transport = LogoscoreCliTransport {
+            runtime: LogoscoreCliRuntime {
+                runner: LogosCoreRunner {
+                    program: marker.to_string_lossy().into_owned(),
+                    sudo_user: None,
+                    home: None,
+                    config_dir: None,
+                    label: "test logoscore".to_owned(),
+                },
+            },
+        };
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let control = ModuleCallControl::new(
+            cancellation,
+            Instant::now() + Duration::from_secs(5),
+            Arc::new(AtomicU8::new(1)),
+        );
+        let call = ModuleCall::new(
+            ModuleTransportKind::LogoscoreCli,
+            "storage_module",
+            "get",
+            vec![],
+        )?;
+
+        let Err(error) = transport.call_controlled(call, control).await else {
+            bail!("pre-canceled CLI module call unexpectedly completed");
+        };
+        let terminated = error
+            .downcast_ref::<ModuleCallTerminated>()
+            .context("pre-canceled CLI call lost typed termination evidence")?;
+        anyhow::ensure!(
+            terminated.reason() == ModuleCallStopReason::CancelRequested
+                && terminated.evidence() == ModuleCallTerminationEvidence::NotStarted,
+            "unexpected pre-canceled CLI evidence: {terminated:?}"
+        );
+        anyhow::ensure!(!marker.exists(), "pre-canceled CLI call started a process");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn default_controlled_transport_preflights_before_call_invocation() -> Result<()> {
+        let transport =
+            RecordingTransport::new(ModuleTransportKind::Module, ModuleTransportKind::Module);
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let control = ModuleCallControl::new(
+            cancellation,
+            Instant::now() + Duration::from_secs(5),
+            Arc::new(AtomicU8::new(1)),
+        );
+        let call = ModuleCall::new(ModuleTransportKind::Module, "storage_module", "get", vec![])?;
+
+        let controlled = transport.call_controlled(call, control);
+        anyhow::ensure!(
+            transport.calls.load(Ordering::Acquire) == 0,
+            "controlled transport invoked call while constructing a queued future"
+        );
+        let Err(error) = controlled.await else {
+            bail!("pre-canceled default transport call unexpectedly completed");
+        };
+        let terminated = error
+            .downcast_ref::<ModuleCallTerminated>()
+            .context("default transport preflight lost typed termination evidence")?;
+        anyhow::ensure!(
+            terminated.reason() == ModuleCallStopReason::CancelRequested
+                && terminated.evidence() == ModuleCallTerminationEvidence::NotStarted,
+            "unexpected default transport preflight evidence: {terminated:?}"
+        );
+        anyhow::ensure!(
+            transport.calls.load(Ordering::Acquire) == 0,
+            "pre-canceled default transport invoked call"
+        );
+        Ok(())
     }
 
     #[tokio::test]

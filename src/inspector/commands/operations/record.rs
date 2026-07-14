@@ -1,9 +1,6 @@
 use std::{
     collections::{HashMap, VecDeque},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Mutex},
 };
 
 use anyhow::{Context as _, Result, bail};
@@ -103,7 +100,6 @@ pub(super) struct RuntimeOperationRecord {
     pub(super) operation: RuntimeOperation,
     pub(super) restart_request: Option<RuntimeOperationRequest>,
     pub(super) events: Vec<RuntimeOperationEvent>,
-    pub(super) cancel_requested: Arc<AtomicBool>,
     pub(super) pending_module_name: Option<&'static str>,
     pub(super) next_event_cursor: EventCursor,
 }
@@ -176,9 +172,6 @@ impl RuntimeOperationRegistry {
         };
         ensure_record_event_cursor_capacity(record, replay_count.saturating_add(1))?;
         let previous_record = should_replay.then(|| record.clone());
-        let previous_cancel_requested = previous_record
-            .as_ref()
-            .map(|record| record.cancel_requested.load(Ordering::Relaxed));
         let previous_pending_events = should_replay
             .then(|| {
                 pending_module_name
@@ -197,11 +190,6 @@ impl RuntimeOperationRegistry {
         if result.is_err()
             && let Some(previous_record) = previous_record
         {
-            if let Some(previous_cancel_requested) = previous_cancel_requested {
-                previous_record
-                    .cancel_requested
-                    .store(previous_cancel_requested, Ordering::Relaxed);
-            }
             state.records.insert(operation_id.clone(), previous_record);
             if let Some(module_name) = pending_module_name {
                 match previous_pending_events {
@@ -219,7 +207,16 @@ impl RuntimeOperationRegistry {
         result
     }
 
+    #[cfg(test)]
     pub(super) fn ingest_module_event(&self, event: ModuleEventEnvelope) -> Result<Value> {
+        self.ingest_module_event_with_settlement(event)
+            .map(|(value, _)| value)
+    }
+
+    pub(super) fn ingest_module_event_with_settlement(
+        &self,
+        event: ModuleEventEnvelope,
+    ) -> Result<(Value, Option<RuntimeOperationId>)> {
         let mut state = self
             .state
             .lock()
@@ -244,7 +241,14 @@ impl RuntimeOperationRegistry {
             | ModuleEventIngressResult::Deferred { .. }
             | ModuleEventIngressResult::Ambiguous { .. }) => unchanged,
         };
-        Ok(result.as_value(&state.records))
+        let settled_operation_id = result.operation_id().and_then(|operation_id| {
+            state
+                .records
+                .get(operation_id)
+                .filter(|record| record.operation.status.is_terminal())
+                .map(|_| operation_id.clone())
+        });
+        Ok((result.as_value(&state.records), settled_operation_id))
     }
 
     pub(super) fn value(&self, operation_id: &RuntimeOperationId) -> Result<Value> {
@@ -441,9 +445,14 @@ fn transition_settles_pending_module(transition: &RuntimeOperationTransition) ->
     matches!(
         transition,
         RuntimeOperationTransition::Resolved(_)
+            | RuntimeOperationTransition::ExecutionFailed { .. }
             | RuntimeOperationTransition::CancellationConfirmed { .. }
             | RuntimeOperationTransition::TimedOut { .. }
             | RuntimeOperationTransition::Shutdown { .. }
+            | RuntimeOperationTransition::CleanupFailed { .. }
+            | RuntimeOperationTransition::TaskPanicked { .. }
+            | RuntimeOperationTransition::TaskAborted { .. }
+            | RuntimeOperationTransition::AdapterClosed { .. }
     )
 }
 
@@ -533,7 +542,6 @@ fn remove_operation_from_pending_module_events(
 pub(super) fn running_runtime_operation_record(
     operation_id: RuntimeOperationId,
     request: &RuntimeOperationRequest,
-    cancel_requested: Arc<AtomicBool>,
     now: u64,
 ) -> Result<RuntimeOperationRecord> {
     let context = runtime_operation_context(request)?;
@@ -568,7 +576,6 @@ pub(super) fn running_runtime_operation_record(
         },
         restart_request: Some(request.clone()),
         events: Vec::new(),
-        cancel_requested,
         pending_module_name: runtime_operation_pending_module(request),
         next_event_cursor: EventCursor::new(1),
     })
@@ -775,7 +782,6 @@ mod tests {
         registry.insert(running_runtime_operation_record(
             operation_id(id)?,
             &module_request()?,
-            Arc::new(AtomicBool::new(false)),
             1,
         )?)
     }
@@ -812,12 +818,7 @@ mod tests {
             json!(["default"]),
             "Wallet accounts",
         )?;
-        let record = running_runtime_operation_record(
-            operation_id("wallet-read-1")?,
-            &request,
-            Arc::new(AtomicBool::new(false)),
-            1,
-        )?;
+        let record = running_runtime_operation_record(operation_id("wallet-read-1")?, &request, 1)?;
 
         let value = runtime_operation_value(&record.operation);
 
@@ -862,12 +863,8 @@ mod tests {
                 "local_only": false
             }
         }))?;
-        let record = running_runtime_operation_record(
-            operation_id("storage-download-1")?,
-            &request,
-            Arc::new(AtomicBool::new(false)),
-            1,
-        )?;
+        let record =
+            running_runtime_operation_record(operation_id("storage-download-1")?, &request, 1)?;
 
         if record.restart_request.is_none()
             || record.operation.backend != "rest"
@@ -897,12 +894,8 @@ mod tests {
             "mutating_enabled": true,
             "payload": { "path": "/tmp/a" }
         }))?;
-        let mut record = running_runtime_operation_record(
-            operation_id("operation-1")?,
-            &request,
-            Arc::new(AtomicBool::new(false)),
-            10,
-        )?;
+        let mut record =
+            running_runtime_operation_record(operation_id("operation-1")?, &request, 10)?;
         record.operation.status = RuntimeOperationStatus::AwaitingExternal;
         record.operation.bridge_callback_id = Some(BridgeCallbackId::new(7));
         record.operation.module_session_id =
@@ -970,18 +963,8 @@ mod tests {
         )?;
         let registry = RuntimeOperationRegistry::default();
         let id = operation_id("operation-1")?;
-        registry.insert(running_runtime_operation_record(
-            id.clone(),
-            &request,
-            Arc::new(AtomicBool::new(false)),
-            1,
-        )?)?;
-        let duplicate = running_runtime_operation_record(
-            id.clone(),
-            &request,
-            Arc::new(AtomicBool::new(false)),
-            2,
-        )?;
+        registry.insert(running_runtime_operation_record(id.clone(), &request, 1)?)?;
+        let duplicate = running_runtime_operation_record(id.clone(), &request, 2)?;
 
         let Err(error) = registry.insert(duplicate) else {
             bail!("duplicate operation id was accepted");
@@ -1007,12 +990,8 @@ mod tests {
             json!(["default"]),
             "Wallet accounts",
         )?;
-        let mut record = running_runtime_operation_record(
-            operation_id("operation-1")?,
-            &request,
-            Arc::new(AtomicBool::new(false)),
-            1,
-        )?;
+        let mut record =
+            running_runtime_operation_record(operation_id("operation-1")?, &request, 1)?;
         record.next_event_cursor = EventCursor::new(u64::MAX);
 
         let Err(error) = push_runtime_operation_event_locked(
@@ -1059,7 +1038,7 @@ mod tests {
 
         registry.transition(
             &id,
-            RuntimeOperationTransition::Resolved(Ok(accepted_outcome("session-early")?)),
+            RuntimeOperationTransition::Resolved(accepted_outcome("session-early")?),
         )?;
 
         let value = registry.value(&id)?;
@@ -1092,12 +1071,12 @@ mod tests {
 
         registry.transition(
             &first,
-            RuntimeOperationTransition::Resolved(Ok(accepted_outcome("session-first")?)),
+            RuntimeOperationTransition::Resolved(accepted_outcome("session-first")?),
         )?;
         anyhow::ensure!(registry.pending_module_event_count("storage_module")? == 1);
         registry.transition(
             &second,
-            RuntimeOperationTransition::Resolved(Ok(accepted_outcome("session-second")?)),
+            RuntimeOperationTransition::Resolved(accepted_outcome("session-second")?),
         )?;
 
         anyhow::ensure!(
@@ -1120,13 +1099,13 @@ mod tests {
 
         registry.transition(
             &early,
-            RuntimeOperationTransition::Resolved(Ok(RuntimeOperationOutcome::Completed(
+            RuntimeOperationTransition::Resolved(RuntimeOperationOutcome::Completed(
                 json!({ "completed": true }),
-            ))),
+            )),
         )?;
         registry.transition(
             &late,
-            RuntimeOperationTransition::Resolved(Ok(accepted_outcome("session-late")?)),
+            RuntimeOperationTransition::Resolved(accepted_outcome("session-late")?),
         )?;
 
         anyhow::ensure!(
@@ -1155,7 +1134,7 @@ mod tests {
 
         registry.transition(
             &id,
-            RuntimeOperationTransition::Resolved(Ok(accepted_outcome("session-32")?)),
+            RuntimeOperationTransition::Resolved(accepted_outcome("session-32")?),
         )?;
 
         let value = registry.value(&id)?;
@@ -1201,7 +1180,7 @@ mod tests {
 
         let Err(error) = registry.transition(
             &id,
-            RuntimeOperationTransition::Resolved(Ok(accepted_outcome("session-preflight")?)),
+            RuntimeOperationTransition::Resolved(accepted_outcome("session-preflight")?),
         ) else {
             bail!("exhausted replay cursor accepted transition");
         };

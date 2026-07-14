@@ -1,4 +1,10 @@
+use std::time::Duration;
+
 use super::{blockchain, delivery, lez, local_nodes, storage, wallet};
+
+const READ_OPERATION_DEADLINE: Duration = Duration::from_secs(30);
+const MUTATING_OPERATION_DEADLINE: Duration = Duration::from_secs(5 * 60);
+const SIGNING_OPERATION_DEADLINE: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OperationDomain {
@@ -135,6 +141,7 @@ pub(super) struct OperationDefinition {
     label: &'static str,
     cancellable: bool,
     exclusive_group: Option<OperationExclusiveGroup>,
+    deadline: Duration,
     policy: OperationPolicyDefinition,
 }
 
@@ -151,6 +158,13 @@ impl OperationDefinition {
             label,
             cancellable: false,
             exclusive_group: None,
+            deadline: match class {
+                OperationClass::ReadPoll => READ_OPERATION_DEADLINE,
+                OperationClass::Destructive
+                | OperationClass::Lifecycle
+                | OperationClass::Mutating => MUTATING_OPERATION_DEADLINE,
+                OperationClass::SigningSubmission => SIGNING_OPERATION_DEADLINE,
+            },
             policy: OperationPolicyDefinition::new(class),
         }
     }
@@ -195,6 +209,10 @@ impl OperationDefinition {
 
     pub(super) const fn exclusive_group(self) -> Option<OperationExclusiveGroup> {
         self.exclusive_group
+    }
+
+    pub(super) const fn deadline(self) -> Duration {
+        self.deadline
     }
 
     pub(super) const fn policy(self) -> OperationPolicyDefinition {
@@ -521,6 +539,29 @@ mod tests {
         }
         if storage_upload.exclusive_group().is_some() {
             bail!("storageUploadUrl should not own an exclusive group");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn every_operation_definition_owns_a_class_specific_deadline() -> Result<()> {
+        for method in OperationMethod::ALL {
+            let definition = operation_definition(*method)
+                .with_context(|| format!("definition missing for {method:?}"))?;
+            let expected = match definition.policy().class() {
+                OperationClass::ReadPoll => READ_OPERATION_DEADLINE,
+                OperationClass::Destructive
+                | OperationClass::Lifecycle
+                | OperationClass::Mutating => MUTATING_OPERATION_DEADLINE,
+                OperationClass::SigningSubmission => SIGNING_OPERATION_DEADLINE,
+            };
+            if definition.deadline() != expected {
+                bail!(
+                    "operation `{}` has deadline {:?}; expected {expected:?}",
+                    definition.name(),
+                    definition.deadline()
+                );
+            }
         }
         Ok(())
     }

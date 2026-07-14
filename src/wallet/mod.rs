@@ -17,6 +17,7 @@ mod instruction;
 mod profile;
 mod runner;
 
+use crate::support::command_runner::CommandControl;
 pub use instruction::{
     InstructionPlanField, LocalWalletInstructionPlanReport, LocalWalletInstructionReport,
     LocalWalletInstructionRequest, ResolvedInstructionAccount, ResolvedInstructionArg,
@@ -29,7 +30,8 @@ use profile::{
     resolve_local_wallet_profile, wallet_home_is_configured,
 };
 use runner::{
-    CliLocalWalletRunner, LocalWalletInvocation, LocalWalletRunner, local_wallet_output_text,
+    CliLocalWalletRunner, ControlledCliLocalWalletRunner, LocalWalletInvocation, LocalWalletRunner,
+    local_wallet_output_text,
 };
 
 pub const LOCAL_WALLET_HOME_ENV: &str = "LEE_WALLET_HOME_DIR";
@@ -198,6 +200,18 @@ pub fn local_wallet_deploy_program(
     local_wallet_deploy_program_with_runner(&CliLocalWalletRunner, profile, program_path)
 }
 
+pub(crate) fn local_wallet_deploy_program_controlled(
+    profile: Value,
+    program_path: impl AsRef<Path>,
+    control: CommandControl,
+) -> Result<LocalWalletDeployReport> {
+    local_wallet_deploy_program_with_runner(
+        &ControlledCliLocalWalletRunner::new(control),
+        profile,
+        program_path,
+    )
+}
+
 fn local_wallet_deploy_program_with_runner<R: LocalWalletRunner>(
     runner: &R,
     profile: Value,
@@ -234,6 +248,13 @@ pub fn local_wallet_sync_private(profile: Value) -> Result<LocalWalletSyncPrivat
     local_wallet_sync_private_with_runner(&CliLocalWalletRunner, profile)
 }
 
+pub(crate) fn local_wallet_sync_private_controlled(
+    profile: Value,
+    control: CommandControl,
+) -> Result<LocalWalletSyncPrivateReport> {
+    local_wallet_sync_private_with_runner(&ControlledCliLocalWalletRunner::new(control), profile)
+}
+
 fn local_wallet_sync_private_with_runner<R: LocalWalletRunner>(
     runner: &R,
     profile: Value,
@@ -262,6 +283,13 @@ fn local_wallet_sync_private_with_runner<R: LocalWalletRunner>(
 
 pub fn local_wallet_accounts(profile: Value) -> Result<LocalWalletAccountsReport> {
     local_wallet_accounts_with_runner(&CliLocalWalletRunner, profile)
+}
+
+pub(crate) fn local_wallet_accounts_controlled(
+    profile: Value,
+    control: CommandControl,
+) -> Result<LocalWalletAccountsReport> {
+    local_wallet_accounts_with_runner(&ControlledCliLocalWalletRunner::new(control), profile)
 }
 
 fn local_wallet_accounts_with_runner<R: LocalWalletRunner>(
@@ -305,6 +333,20 @@ pub fn local_wallet_create_account(
     label: Option<&str>,
 ) -> Result<LocalWalletCommandReport> {
     local_wallet_create_account_with_runner(&CliLocalWalletRunner, profile, privacy, label)
+}
+
+pub(crate) fn local_wallet_create_account_controlled(
+    profile: Value,
+    privacy: &str,
+    label: Option<&str>,
+    control: CommandControl,
+) -> Result<LocalWalletCommandReport> {
+    local_wallet_create_account_with_runner(
+        &ControlledCliLocalWalletRunner::new(control),
+        profile,
+        privacy,
+        label,
+    )
 }
 
 fn local_wallet_create_account_with_runner<R: LocalWalletRunner>(
@@ -364,6 +406,18 @@ pub fn local_wallet_send_transaction(
     request: Value,
 ) -> Result<LocalWalletCommandReport> {
     local_wallet_send_transaction_with_runner(&CliLocalWalletRunner, profile, request)
+}
+
+pub(crate) fn local_wallet_send_transaction_controlled(
+    profile: Value,
+    request: Value,
+    control: CommandControl,
+) -> Result<LocalWalletCommandReport> {
+    local_wallet_send_transaction_with_runner(
+        &ControlledCliLocalWalletRunner::new(control),
+        profile,
+        request,
+    )
 }
 
 fn local_wallet_send_transaction_with_runner<R: LocalWalletRunner>(
@@ -458,6 +512,14 @@ fn local_wallet_send_transaction_with_runner<R: LocalWalletRunner>(
 
 pub fn local_wallet_command(profile: Value, args: Vec<String>) -> Result<LocalWalletCommandReport> {
     local_wallet_command_with_runner(&CliLocalWalletRunner, profile, args)
+}
+
+pub(crate) fn local_wallet_command_controlled(
+    profile: Value,
+    args: Vec<String>,
+    control: CommandControl,
+) -> Result<LocalWalletCommandReport> {
+    local_wallet_command_with_runner(&ControlledCliLocalWalletRunner::new(control), profile, args)
 }
 
 fn local_wallet_command_with_runner<R: LocalWalletRunner>(
@@ -940,6 +1002,50 @@ mod tests {
 
     use super::runner::LocalWalletOutput;
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn controlled_wallet_accounts_reaps_cli_at_absolute_deadline() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        use crate::support::command_runner::{
+            CommandStopReason, CommandTerminated, CommandTerminationScope,
+        };
+
+        let directory = tempfile::tempdir()?;
+        let wallet_home = directory.path().join("wallet-home");
+        std::fs::create_dir(&wallet_home)?;
+        std::fs::write(wallet_home.join("wallet_config.json"), b"{}")?;
+        let wallet_binary = directory.path().join("wallet-test");
+        std::fs::write(&wallet_binary, b"#!/bin/sh\nwhile :; do :; done\n")?;
+        let mut permissions = std::fs::metadata(&wallet_binary)?.permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&wallet_binary, permissions)?;
+        let deadline = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_millis(250))
+            .context("wallet test deadline overflow")?;
+
+        let error = local_wallet_accounts_controlled(
+            json!({
+                "wallet_binary": wallet_binary,
+                "wallet_home": wallet_home,
+                "network_profile": "local"
+            }),
+            CommandControl::new(tokio_util::sync::CancellationToken::new(), deadline),
+        )
+        .err()
+        .context("deadline-bound wallet command unexpectedly completed")?;
+        let terminated = error
+            .downcast_ref::<CommandTerminated>()
+            .context("wallet deadline lost typed command termination")?;
+
+        anyhow::ensure!(
+            terminated.reason() == CommandStopReason::DeadlineExceeded
+                && terminated.scope() == CommandTerminationScope::ProcessGroup,
+            "wallet deadline returned wrong termination evidence: {terminated}"
+        );
+        Ok(())
+    }
 
     #[derive(Debug)]
     struct FakeRunner {

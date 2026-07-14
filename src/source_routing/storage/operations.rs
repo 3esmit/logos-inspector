@@ -9,7 +9,9 @@ use crate::source_routing::{
     ModuleEventCorrelationKind, ModuleTerminalEventContract, NodeOperationOutcome,
     NodeOperationRequest, ObservableOperationAcceptance, StorageSourceMode,
 };
-use crate::support::{args::Args, settings_backup::SETTINGS_BACKUP_MAX_BYTES};
+use crate::support::{
+    args::Args, command_runner::CommandControl, settings_backup::SETTINGS_BACKUP_MAX_BYTES,
+};
 
 use super::{layer::STORAGE_SOURCE_MODES, transport};
 
@@ -150,12 +152,13 @@ impl StorageClient {
         }
     }
 
-    pub(crate) async fn upload_bytes(
+    pub(crate) async fn upload_bytes_controlled(
         &self,
         module_transport: &SharedModuleTransport,
         filename: &str,
         bytes: &[u8],
         block_size: u64,
+        control: CommandControl,
     ) -> Result<Value> {
         self.ensure_managed_byte_upload_supported(module_transport)?;
         match &self.adapter {
@@ -163,10 +166,12 @@ impl StorageClient {
                 bail!("Basecamp module source does not support Inspector-managed byte staging")
             }
             StorageOperationAdapter::Module(ModuleTransportKind::LogoscoreCli) => {
-                transport::module_upload_bytes(filename, bytes, block_size).await
+                transport::module_upload_bytes_controlled(filename, bytes, block_size, control)
+                    .await
             }
             StorageOperationAdapter::Rest { endpoint } => {
-                transport::upload_bytes(endpoint, filename, bytes, block_size).await
+                transport::upload_bytes_controlled(endpoint, filename, bytes, block_size, control)
+                    .await
             }
         }
     }
@@ -207,10 +212,11 @@ impl StorageClient {
         }
     }
 
-    pub(crate) async fn download_backup_bytes(
+    pub(crate) async fn download_backup_bytes_controlled(
         &self,
         cid: &str,
         local_only: bool,
+        control: CommandControl,
     ) -> Result<Vec<u8>> {
         match &self.adapter {
             StorageOperationAdapter::Module(ModuleTransportKind::Module) => {
@@ -220,8 +226,14 @@ impl StorageClient {
                 bail!("LogosCore CLI Storage adapter does not support backup read-by-CID bytes")
             }
             StorageOperationAdapter::Rest { endpoint } => {
-                transport::download_bytes(endpoint, cid, local_only, SETTINGS_BACKUP_MAX_BYTES)
-                    .await
+                transport::download_bytes_controlled(
+                    endpoint,
+                    cid,
+                    local_only,
+                    SETTINGS_BACKUP_MAX_BYTES,
+                    control,
+                )
+                .await
             }
         }
     }
@@ -758,6 +770,16 @@ mod tests {
         NodeOperationRequest::from_value(&value)
     }
 
+    fn command_control() -> Result<CommandControl> {
+        let deadline = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_secs(30))
+            .context("storage test deadline overflow")?;
+        Ok(CommandControl::new(
+            tokio_util::sync::CancellationToken::new(),
+            deadline,
+        ))
+    }
+
     #[test]
     fn rest_download_plan_owns_transport_inputs() -> Result<()> {
         let request = request(json!({
@@ -937,7 +959,11 @@ mod tests {
             let request = StorageBackupDownloadRequest::parse_request(&request)?;
             let error = request
                 .client()
-                .download_backup_bytes(request.cid(), request.local_only())
+                .download_backup_bytes_controlled(
+                    request.cid(),
+                    request.local_only(),
+                    command_control()?,
+                )
                 .await
                 .err()
                 .context("module backup download should fail")?;
@@ -1021,7 +1047,13 @@ mod tests {
 
         let error = request
             .client()
-            .upload_bytes(&module_transport, "backup.json", b"payload", 65_536)
+            .upload_bytes_controlled(
+                &module_transport,
+                "backup.json",
+                b"payload",
+                65_536,
+                command_control()?,
+            )
             .await
             .err()
             .ok_or_else(|| anyhow::anyhow!("Basecamp managed byte upload should fail"))?;

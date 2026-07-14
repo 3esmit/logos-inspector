@@ -6,7 +6,10 @@ use std::{
 use anyhow::{Context as _, Result, bail};
 use serde_json::Value;
 
-use crate::support::time::now_millis;
+use crate::support::{
+    command_runner::{CommandControl, CommandTerminated},
+    time::now_millis,
+};
 
 use super::adapters::{NodeActionPolicy, NodeConfigContext, adapter_for};
 use super::commands::{
@@ -28,6 +31,11 @@ const DEFAULT_DEPLOYMENT: &str = "local";
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct LocalNodeActionWorkspace;
 
+pub(super) struct LocalNodeActionResult {
+    pub(super) report: LocalNodeOperationReport,
+    pub(super) interruption: Option<anyhow::Error>,
+}
+
 impl LocalNodeActionWorkspace {
     pub(super) fn system() -> Self {
         Self
@@ -40,13 +48,15 @@ impl LocalNodeActionWorkspace {
         runtime_config_root: &Path,
         normalized_profile: &str,
         request: &LocalNodeActionRequest,
-    ) -> LocalNodeOperationReport {
+        control: Option<&CommandControl>,
+    ) -> LocalNodeActionResult {
         dispatch_action(
             state,
             runtime,
             runtime_config_root,
             normalized_profile,
             request,
+            control,
         )
     }
 }
@@ -57,23 +67,51 @@ fn dispatch_action(
     runtime_config_root: &Path,
     normalized_profile: &str,
     request: &LocalNodeActionRequest,
-) -> LocalNodeOperationReport {
+    control: Option<&CommandControl>,
+) -> LocalNodeActionResult {
+    if let Some(control) = control
+        && let Err(error) = control.check_active()
+    {
+        return interrupted_operation(request, request.node, error.into());
+    }
     match request.action {
-        NodeAction::StartRuntime => runtime_start(state, runtime, runtime_config_root, request),
-        NodeAction::StopRuntime => runtime_stop(state, runtime, request),
+        NodeAction::StartRuntime => {
+            runtime_start(state, runtime, runtime_config_root, request, control)
+        }
+        NodeAction::StopRuntime => runtime_stop(state, runtime, request, control),
         NodeAction::NewNetwork => new_network(state, runtime.as_ref(), request),
         NodeAction::LoadNetwork => load_network(state, runtime.as_ref(), request),
         NodeAction::DeleteNetwork => delete_network(state, runtime.as_ref(), request),
         NodeAction::ResetNetwork => reset_network(state, runtime.as_ref(), request),
         NodeAction::Install => node_install(state, normalized_profile, request),
-        NodeAction::Initialize => {
-            node_initialize(state, runtime.as_ref(), normalized_profile, request)
-        }
-        NodeAction::Uninstall => {
-            node_uninstall(state, runtime.as_ref(), normalized_profile, request)
-        }
-        NodeAction::Start => node_start(state, runtime.as_ref(), normalized_profile, request),
-        NodeAction::Stop => node_stop(state, runtime.as_ref(), normalized_profile, request),
+        NodeAction::Initialize => node_initialize(
+            state,
+            runtime.as_ref(),
+            normalized_profile,
+            request,
+            control,
+        ),
+        NodeAction::Uninstall => node_uninstall(
+            state,
+            runtime.as_ref(),
+            normalized_profile,
+            request,
+            control,
+        ),
+        NodeAction::Start => node_start(
+            state,
+            runtime.as_ref(),
+            normalized_profile,
+            request,
+            control,
+        ),
+        NodeAction::Stop => node_stop(
+            state,
+            runtime.as_ref(),
+            normalized_profile,
+            request,
+            control,
+        ),
         NodeAction::Purge => node_purge(state, normalized_profile, request),
     }
 }
@@ -82,7 +120,7 @@ fn new_network(
     state: &mut LocalNodesState,
     runtime: Option<&LogoscoreRuntimeProfile>,
     request: &LocalNodeActionRequest,
-) -> LocalNodeOperationReport {
+) -> LocalNodeActionResult {
     operation_result(request, None, || {
         require_runtime_stopped(runtime)?;
         let id = request
@@ -132,7 +170,7 @@ fn load_network(
     state: &mut LocalNodesState,
     runtime: Option<&LogoscoreRuntimeProfile>,
     request: &LocalNodeActionRequest,
-) -> LocalNodeOperationReport {
+) -> LocalNodeActionResult {
     operation_result(request, None, || {
         require_runtime_stopped(runtime)?;
         let workspace = request
@@ -167,7 +205,7 @@ fn delete_network(
     state: &mut LocalNodesState,
     runtime: Option<&LogoscoreRuntimeProfile>,
     request: &LocalNodeActionRequest,
-) -> LocalNodeOperationReport {
+) -> LocalNodeActionResult {
     operation_result(request, None, || {
         require_runtime_stopped(runtime)?;
         let network_id = target_network_id(state, request)?;
@@ -199,7 +237,7 @@ fn reset_network(
     state: &mut LocalNodesState,
     runtime: Option<&LogoscoreRuntimeProfile>,
     request: &LocalNodeActionRequest,
-) -> LocalNodeOperationReport {
+) -> LocalNodeActionResult {
     operation_result(request, None, || {
         require_runtime_stopped(runtime)?;
         let network_id = target_network_id(state, request)?;
@@ -234,7 +272,8 @@ fn runtime_start(
     runtime: &mut Option<LogoscoreRuntimeProfile>,
     runtime_config_root: &Path,
     request: &LocalNodeActionRequest,
-) -> LocalNodeOperationReport {
+    control: Option<&CommandControl>,
+) -> LocalNodeActionResult {
     operation_result(request, None, || {
         let mut profile = LogoscoreRuntimeProfile::create_or_restart(
             runtime_config_root,
@@ -248,7 +287,10 @@ fn runtime_start(
             super::process::spawn_detached(command, "Inspector-managed logoscore daemon")?;
         profile.daemon_process_id = Some(process_id);
         reset_module_contexts(state);
-        let readiness = profile.wait_until_ready();
+        let readiness = match control {
+            Some(control) => profile.wait_until_ready_controlled(control),
+            None => profile.wait_until_ready(),
+        };
         let still_running = profile.is_running();
         *runtime = Some(profile);
         match readiness {
@@ -257,6 +299,7 @@ fn runtime_start(
                 detail: "Inspector-managed logoscore daemon is ready".to_owned(),
                 command: Some(display),
             }),
+            Err(error) if is_control_interruption(&error) => Err(error),
             Err(error) if still_running => Ok(OperationOutcome {
                 status: "starting".to_owned(),
                 detail: error.to_string(),
@@ -275,7 +318,8 @@ fn runtime_stop(
     state: &mut LocalNodesState,
     runtime: &mut Option<LogoscoreRuntimeProfile>,
     request: &LocalNodeActionRequest,
-) -> LocalNodeOperationReport {
+    control: Option<&CommandControl>,
+) -> LocalNodeActionResult {
     operation_result(request, None, || {
         let Some(profile) = runtime.as_mut() else {
             return Ok(OperationOutcome {
@@ -301,8 +345,16 @@ fn runtime_stop(
             });
         }
         let cli = profile.cli_runtime()?;
-        let value = cli.stop()?.value;
-        if profile.wait_until_stopped() {
+        let value = match control {
+            Some(control) => cli.stop_controlled(control.clone())?,
+            None => cli.stop()?,
+        }
+        .value;
+        let stopped = match control {
+            Some(control) => profile.wait_until_stopped_controlled(control)?,
+            None => profile.wait_until_stopped(),
+        };
+        if stopped {
             profile.daemon_process_id = None;
             reset_module_contexts(state);
             return Ok(OperationOutcome {
@@ -323,7 +375,7 @@ fn node_install(
     state: &mut LocalNodesState,
     _profile: &str,
     request: &LocalNodeActionRequest,
-) -> LocalNodeOperationReport {
+) -> LocalNodeActionResult {
     let node = request.node;
     operation_result(request, node, || {
         let kind = required_node(request)?;
@@ -363,7 +415,8 @@ fn node_initialize(
     runtime: Option<&LogoscoreRuntimeProfile>,
     _profile: &str,
     request: &LocalNodeActionRequest,
-) -> LocalNodeOperationReport {
+    control: Option<&CommandControl>,
+) -> LocalNodeActionResult {
     let node = request.node;
     operation_result(request, node, || {
         let kind = required_node(request)?;
@@ -394,9 +447,9 @@ fn node_initialize(
         .with_context(|| format!("{} initialization is not implemented", adapter.label()))?;
         let cli = runtime.cli_runtime()?;
         if ensure_loaded {
-            ensure_module_loaded(&spec, Some(&cli))?;
+            ensure_module_loaded(&spec, Some(&cli), control)?;
         }
-        match execute_command_spec(&spec, Some(&cli)) {
+        match execute_command_spec(&spec, Some(&cli), control) {
             Ok(value) => {
                 config.installed = true;
                 config.package_path = Some(spec.program.clone());
@@ -410,6 +463,7 @@ fn node_initialize(
                     command: Some(spec.display),
                 })
             }
+            Err(error) if is_control_interruption(&error) => Err(error),
             Err(error) => Ok(OperationOutcome {
                 status: "failed".to_owned(),
                 detail: error.to_string(),
@@ -424,7 +478,8 @@ fn node_uninstall(
     runtime: Option<&LogoscoreRuntimeProfile>,
     _profile: &str,
     request: &LocalNodeActionRequest,
-) -> LocalNodeOperationReport {
+    control: Option<&CommandControl>,
+) -> LocalNodeActionResult {
     let node = request.node;
     operation_result(request, node, || {
         let kind = required_node(request)?;
@@ -476,7 +531,7 @@ fn node_uninstall(
             ));
         };
         let cli = runtime.cli_runtime()?;
-        match execute_command_spec(&spec, Some(&cli)) {
+        match execute_command_spec(&spec, Some(&cli), control) {
             Ok(value) => {
                 clear_module_context(config);
                 record.updated_at = now_millis();
@@ -487,6 +542,7 @@ fn node_uninstall(
                     command: Some(spec.display),
                 })
             }
+            Err(error) if is_control_interruption(&error) => Err(error),
             Err(error) => Ok(OperationOutcome {
                 status: "failed".to_owned(),
                 detail: error.to_string(),
@@ -501,7 +557,8 @@ fn node_start(
     runtime: Option<&LogoscoreRuntimeProfile>,
     _profile: &str,
     request: &LocalNodeActionRequest,
-) -> LocalNodeOperationReport {
+    control: Option<&CommandControl>,
+) -> LocalNodeActionResult {
     let node = request.node;
     operation_result(request, node, || {
         let kind = required_node(request)?;
@@ -522,7 +579,7 @@ fn node_start(
         )
         .with_context(|| format!("{} start is not implemented", adapter.label()))?;
         if policy == NodeActionPolicy::ExecuteDetached {
-            return match execute_command_spec(&spec, None) {
+            return match execute_command_spec(&spec, None, control) {
                 Ok(value) => {
                     config.process_id = value
                         .get("pid")
@@ -537,6 +594,7 @@ fn node_start(
                         command: Some(spec.display),
                     })
                 }
+                Err(error) if is_control_interruption(&error) => Err(error),
                 Err(error) => Ok(OperationOutcome {
                     status: "failed".to_owned(),
                     detail: error.to_string(),
@@ -571,9 +629,9 @@ fn node_start(
         }
         let cli = runtime.cli_runtime()?;
         if ensure_loaded {
-            ensure_module_loaded(&spec, Some(&cli))?;
+            ensure_module_loaded(&spec, Some(&cli), control)?;
         }
-        match execute_command_spec(&spec, Some(&cli)) {
+        match execute_command_spec(&spec, Some(&cli), control) {
             Ok(value) => {
                 config.installed = true;
                 if has_event_contract(kind, NodeAction::Start) {
@@ -591,6 +649,7 @@ fn node_start(
                     command: Some(spec.display),
                 })
             }
+            Err(error) if is_control_interruption(&error) => Err(error),
             Err(error) => Ok(OperationOutcome {
                 status: "failed".to_owned(),
                 detail: error.to_string(),
@@ -605,7 +664,8 @@ fn node_stop(
     runtime: Option<&LogoscoreRuntimeProfile>,
     _profile: &str,
     request: &LocalNodeActionRequest,
-) -> LocalNodeOperationReport {
+    control: Option<&CommandControl>,
+) -> LocalNodeActionResult {
     let node = request.node;
     operation_result(request, node, || {
         let kind = required_node(request)?;
@@ -659,7 +719,7 @@ fn node_stop(
         )
         .with_context(|| format!("{} stop is not implemented", adapter.label()))?;
         let cli = runtime.cli_runtime()?;
-        match execute_command_spec(&spec, Some(&cli)) {
+        match execute_command_spec(&spec, Some(&cli), control) {
             Ok(value) => {
                 if has_event_contract(kind, NodeAction::Stop) {
                     config.lifecycle_state = NodeLifecycleState::Stopping;
@@ -676,6 +736,7 @@ fn node_stop(
                     command: Some(spec.display),
                 })
             }
+            Err(error) if is_control_interruption(&error) => Err(error),
             Err(error) => Ok(OperationOutcome {
                 status: "failed".to_owned(),
                 detail: error.to_string(),
@@ -689,7 +750,7 @@ fn node_purge(
     state: &mut LocalNodesState,
     _profile: &str,
     request: &LocalNodeActionRequest,
-) -> LocalNodeOperationReport {
+) -> LocalNodeActionResult {
     let node = request.node;
     operation_result(request, node, || {
         let kind = required_node(request)?;
@@ -809,21 +870,37 @@ fn operation_result(
     request: &LocalNodeActionRequest,
     node: Option<NodeKind>,
     operation: impl FnOnce() -> Result<OperationOutcome>,
-) -> LocalNodeOperationReport {
+) -> LocalNodeActionResult {
     let timestamp = now_millis();
     match operation() {
-        Ok(outcome) => LocalNodeOperationReport {
-            id: format!("op-{timestamp}"),
-            time: timestamp.to_string(),
-            timestamp_millis: timestamp,
-            action: request.action,
-            node,
-            network_id: request.network_id.clone(),
-            status: outcome.status,
-            detail: outcome.detail,
-            command: outcome.command,
+        Ok(outcome) => LocalNodeActionResult {
+            report: LocalNodeOperationReport {
+                id: format!("op-{timestamp}"),
+                time: timestamp.to_string(),
+                timestamp_millis: timestamp,
+                action: request.action,
+                node,
+                network_id: request.network_id.clone(),
+                status: outcome.status,
+                detail: outcome.detail,
+                command: outcome.command,
+            },
+            interruption: None,
         },
-        Err(error) => LocalNodeOperationReport {
+        Err(error) => interrupted_operation(request, node, error),
+    }
+}
+
+fn interrupted_operation(
+    request: &LocalNodeActionRequest,
+    node: Option<NodeKind>,
+    error: anyhow::Error,
+) -> LocalNodeActionResult {
+    let timestamp = now_millis();
+    let detail = error.to_string();
+    let interruption = is_control_interruption(&error).then_some(error);
+    LocalNodeActionResult {
+        report: LocalNodeOperationReport {
             id: format!("op-{timestamp}"),
             time: timestamp.to_string(),
             timestamp_millis: timestamp,
@@ -831,10 +908,15 @@ fn operation_result(
             node,
             network_id: request.network_id.clone(),
             status: "failed".to_owned(),
-            detail: error.to_string(),
+            detail,
             command: None,
         },
+        interruption,
     }
+}
+
+fn is_control_interruption(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<CommandTerminated>().is_some()
 }
 
 fn required_node(request: &LocalNodeActionRequest) -> Result<NodeKind> {

@@ -1,11 +1,12 @@
 use std::{
+    io::Write as _,
     path::{Path, PathBuf},
-    sync::atomic::{AtomicBool, Ordering},
 };
 
-use anyhow::{Context as _, Result, bail};
+#[cfg(test)]
+use anyhow::bail;
+use anyhow::{Context as _, Result};
 use serde_json::{Value, json};
-use tokio::io::AsyncWriteExt as _;
 
 #[cfg(test)]
 use crate::support::settings_backup::SETTINGS_BACKUP_MAX_BYTES;
@@ -16,8 +17,10 @@ use crate::{
         attach_remote_backup_metadata, backup_payload_bytes,
         record_remote_settings_backup_payload_in_dir,
     },
+    support::command_runner::CommandControl,
     support::settings_backup::ensure_settings_backup_size,
     support::state_store::config_dir,
+    support::work_tracker::BlockingWorkGuard,
 };
 
 use super::spec::{
@@ -25,8 +28,15 @@ use super::spec::{
     OperationDefinition, OperationExclusiveGroup, OperationMethod,
 };
 use super::{
-    RuntimeOperationRegistry, RuntimeOperationRequest, identity::RuntimeOperationId,
-    outcome::RuntimeOperationOutcome, transition::RuntimeOperationTransition,
+    RuntimeOperationRegistry, RuntimeOperationRequest,
+    dispatch::normalize_command_execution,
+    identity::RuntimeOperationId,
+    outcome::RuntimeOperationOutcome,
+    supervisor::{
+        OperationCommitGuard, OperationControl, OperationInterrupted, OperationStopReason,
+        TerminationEvidence,
+    },
+    transition::RuntimeOperationTransition,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,18 +191,18 @@ pub(super) async fn execute(
     request: &RuntimeOperationRequest,
     registry: &RuntimeOperationRegistry,
     operation_id: &RuntimeOperationId,
-    cancel_requested: &AtomicBool,
+    control: &OperationControl,
     module_transport: SharedModuleTransport,
 ) -> Result<RuntimeOperationOutcome> {
     match command {
         StorageCommand::UploadPayload => {
-            return execute_payload_upload(request, module_transport).await;
+            return execute_payload_upload(request, control, module_transport).await;
         }
         StorageCommand::UploadBackupCatalogEntry => {
-            return execute_backup_catalog_upload(request, module_transport).await;
+            return execute_backup_catalog_upload(request, control, module_transport).await;
         }
         StorageCommand::DownloadBackupCatalogEntry => {
-            return execute_backup_catalog_download(request).await;
+            return execute_backup_catalog_download(request, control).await;
         }
         _ => {}
     }
@@ -206,7 +216,7 @@ pub(super) async fn execute(
         storage_layer::StorageOperationOutput::Download(download) => {
             let cid = download.cid().to_owned();
             let path = download.path().to_owned();
-            storage_rest_download_tracked(&download, registry, operation_id, cancel_requested)
+            storage_rest_download_tracked(&download, registry, operation_id, control)
                 .await
                 .with_context(|| format!("failed to download storage CID {cid} to `{path}`"))
                 .map(RuntimeOperationOutcome::Completed)
@@ -284,6 +294,7 @@ pub(super) fn validate(command: StorageCommand, request: &RuntimeOperationReques
 
 async fn execute_payload_upload(
     request: &RuntimeOperationRequest,
+    control: &OperationControl,
     module_transport: SharedModuleTransport,
 ) -> Result<RuntimeOperationOutcome> {
     let request =
@@ -291,21 +302,34 @@ async fn execute_payload_upload(
     request
         .client()
         .ensure_managed_byte_upload_supported(&module_transport)?;
+    ensure_not_interrupted(control)?;
     let payload = request.payload().clone();
-    let bytes = tokio::task::spawn_blocking(move || serde_json::to_vec_pretty(&payload))
-        .await
-        .context("storage payload serialization worker failed")?
-        .context("failed to serialize storage payload")?;
-    let upload = request
+    let worker_guard = control.blocking_worker_guard()?;
+    let bytes = tokio::task::spawn_blocking(move || {
+        let _worker_guard = worker_guard;
+        serde_json::to_vec_pretty(&payload)
+    })
+    .await
+    .context("storage payload serialization worker failed")?
+    .context("failed to serialize storage payload")?;
+    ensure_not_interrupted(control)?;
+    let result = request
         .client()
-        .upload_bytes(
+        .upload_bytes_controlled(
             &module_transport,
             request.filename(),
             &bytes,
             request.block_size(),
+            command_control(control),
         )
-        .await
-        .context("failed to upload payload through Storage")?;
+        .await;
+    let upload = normalize_command_execution(
+        result,
+        control,
+        TerminationEvidence::LocalOnly,
+        TerminationEvidence::LocalOnly,
+    )
+    .context("failed to upload payload through Storage")?;
     let cid = required_payload_upload_cid(&upload)?;
     Ok(RuntimeOperationOutcome::Completed(json!({
         "cid": cid,
@@ -328,6 +352,7 @@ fn required_payload_upload_cid(upload: &Value) -> Result<String> {
 
 async fn execute_backup_catalog_upload(
     request: &RuntimeOperationRequest,
+    control: &OperationControl,
     module_transport: SharedModuleTransport,
 ) -> Result<RuntimeOperationOutcome> {
     let request =
@@ -335,30 +360,48 @@ async fn execute_backup_catalog_upload(
     request
         .client()
         .ensure_managed_byte_upload_supported(&module_transport)?;
+    ensure_not_interrupted(control)?;
     let backup_catalog_id = request.backup_catalog_id().to_owned();
     let payload_catalog_id = backup_catalog_id.clone();
-    let bytes = tokio::task::spawn_blocking(move || backup_payload_bytes(&payload_catalog_id))
-        .await
-        .context("backup payload worker failed")??;
+    let worker_guard = control.blocking_worker_guard()?;
+    let bytes = tokio::task::spawn_blocking(move || {
+        let _worker_guard = worker_guard;
+        backup_payload_bytes(&payload_catalog_id)
+    })
+    .await
+    .context("backup payload worker failed")??;
     ensure_settings_backup_size(bytes.len())?;
-    let upload = request
+    ensure_not_interrupted(control)?;
+    let result = request
         .client()
-        .upload_bytes(
+        .upload_bytes_controlled(
             &module_transport,
             "logos-inspector-settings-backup.json",
             &bytes,
             request.block_size(),
+            command_control(control),
         )
-        .await
-        .context("failed to upload settings backup through Storage")?;
+        .await;
+    let upload = normalize_command_execution(
+        result,
+        control,
+        TerminationEvidence::LocalOnly,
+        TerminationEvidence::LocalOnly,
+    )
+    .context("failed to upload settings backup through Storage")?;
     let cid = required_backup_upload_cid(&upload)?;
     let metadata_catalog_id = backup_catalog_id.clone();
     let metadata_cid = cid.clone();
-    let catalog_entry = tokio::task::spawn_blocking(move || {
-        attach_remote_backup_metadata(&metadata_catalog_id, &metadata_cid, Some("logos_storage"))
-    })
-    .await
-    .context("backup catalog metadata worker failed")??;
+    let catalog_entry =
+        non_cancellable_file_commit(control, "backup catalog metadata commit", move || {
+            attach_remote_backup_metadata(
+                &metadata_catalog_id,
+                &metadata_cid,
+                Some("logos_storage"),
+            )
+        })
+        .await
+        .context("backup catalog metadata commit failed")?;
     Ok(RuntimeOperationOutcome::Completed(json!({
         "cid": cid,
         "bytes": bytes.len(),
@@ -371,38 +414,52 @@ async fn execute_backup_catalog_upload(
 
 async fn execute_backup_catalog_download(
     request: &RuntimeOperationRequest,
+    control: &OperationControl,
 ) -> Result<RuntimeOperationOutcome> {
-    execute_backup_catalog_download_in_dir(request, None).await
+    execute_backup_catalog_download_in_dir(request, control, None).await
 }
 
 async fn execute_backup_catalog_download_in_dir(
     request: &RuntimeOperationRequest,
+    control: &OperationControl,
     catalog_base_dir: Option<PathBuf>,
 ) -> Result<RuntimeOperationOutcome> {
     let request =
         storage_layer::StorageBackupDownloadRequest::parse_request(request.node_request()?)?;
     let cid = request.cid().to_owned();
     let local_only = request.local_only();
-    let bytes = request
+    let result = request
         .client()
-        .download_backup_bytes(&cid, local_only)
-        .await
-        .with_context(|| format!("failed to download settings backup CID {cid}"))?;
+        .download_backup_bytes_controlled(&cid, local_only, command_control(control))
+        .await;
+    let bytes = normalize_command_execution(
+        result,
+        control,
+        TerminationEvidence::Confirmed,
+        TerminationEvidence::LocalOnly,
+    )
+    .with_context(|| format!("failed to download settings backup CID {cid}"))?;
     let endpoint = request
         .client()
         .endpoint()
         .context("settings backup download requires storage REST source")?
         .to_owned();
-    let result = tokio::task::spawn_blocking(move || {
-        let base_dir = match catalog_base_dir {
-            Some(base_dir) => base_dir,
-            None => config_dir()?,
-        };
-        downloaded_backup_result(&base_dir, &bytes, &cid, &endpoint, local_only)
-    })
-    .await
-    .context("backup download recorder worker failed")??;
+    ensure_not_interrupted(control)?;
+    let result =
+        non_cancellable_file_commit(control, "backup download catalog commit", move || {
+            let base_dir = match catalog_base_dir {
+                Some(base_dir) => base_dir,
+                None => config_dir()?,
+            };
+            downloaded_backup_result(&base_dir, &bytes, &cid, &endpoint, local_only)
+        })
+        .await
+        .context("backup download catalog commit failed")?;
     Ok(RuntimeOperationOutcome::Completed(result))
+}
+
+fn command_control(control: &OperationControl) -> CommandControl {
+    control.command_control()
 }
 
 fn downloaded_backup_result(
@@ -450,12 +507,9 @@ pub(super) async fn storage_rest_download_tracked(
     request: &storage_layer::StorageDownloadRequest,
     registry: &RuntimeOperationRegistry,
     operation_id: &RuntimeOperationId,
-    cancel_requested: &AtomicBool,
+    control: &OperationControl,
 ) -> Result<Value> {
-    if cancel_requested.load(Ordering::Relaxed) {
-        bail!("storage download canceled");
-    }
-    let response = storage_layer::download_response(request).await?;
+    let response = interruptible(control, storage_layer::download_response(request)).await??;
     registry.transition(
         operation_id,
         RuntimeOperationTransition::Progress {
@@ -464,51 +518,86 @@ pub(super) async fn storage_rest_download_tracked(
         },
     )?;
     let path = request.path();
-    let temp_path = format!("{path}.part");
-    let mut file = tokio::fs::File::create(&temp_path)
-        .await
-        .with_context(|| format!("failed to create download file `{temp_path}`"))?;
+    let temp_path = control
+        .disposable_file_path()
+        .context("storage download has no supervised staging file")?;
+    ensure_not_interrupted(control)?;
+    let open_path = temp_path.to_owned();
+    let open_control = control.clone();
+    let lifetime_guard = control.blocking_worker_guard()?;
+    let mut file = interruptible(
+        control,
+        blocking_file_work("storage download staging-file open", move || {
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&open_path)
+                .with_context(|| {
+                    format!(
+                        "failed to create download staging file `{}`",
+                        open_path.display()
+                    )
+                })?;
+            open_control.mark_disposable_file_created();
+            Ok(TrackedStagingFile {
+                file,
+                _lifetime_guard: lifetime_guard,
+            })
+        }),
+    )
+    .await??;
     let mut response = response;
     let mut bytes = 0_u64;
-    let result = async {
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .context("failed to read storage download response chunk")?
-        {
-            if cancel_requested.load(Ordering::Relaxed) {
-                bail!("storage download canceled");
-            }
-            file.write_all(&chunk)
-                .await
-                .with_context(|| format!("failed to write download file `{temp_path}`"))?;
-            bytes = bytes.saturating_add(u64::try_from(chunk.len()).unwrap_or(u64::MAX));
-            registry.transition(
-                operation_id,
-                RuntimeOperationTransition::Progress {
-                    bytes_written: bytes,
-                    content_length: None,
-                },
-            )?;
-        }
-        file.flush()
-            .await
-            .with_context(|| format!("failed to flush download file `{temp_path}`"))?;
-        Ok::<(), anyhow::Error>(())
+    while let Some(chunk) = interruptible(control, response.chunk())
+        .await?
+        .context("failed to read storage download response chunk")?
+    {
+        let chunk_len = chunk.len();
+        let write_path = temp_path.to_owned();
+        file = interruptible(
+            control,
+            blocking_file_work("storage download staging-file write", move || {
+                file.file.write_all(&chunk).with_context(|| {
+                    format!("failed to write download file `{}`", write_path.display())
+                })?;
+                Ok(file)
+            }),
+        )
+        .await??;
+        bytes = bytes.saturating_add(u64::try_from(chunk_len).unwrap_or(u64::MAX));
+        registry.transition(
+            operation_id,
+            RuntimeOperationTransition::Progress {
+                bytes_written: bytes,
+                content_length: None,
+            },
+        )?;
     }
-    .await;
+    let flush_path = temp_path.to_owned();
+    file = interruptible(
+        control,
+        blocking_file_work("storage download staging-file flush", move || {
+            file.file.flush().with_context(|| {
+                format!("failed to flush download file `{}`", flush_path.display())
+            })?;
+            Ok(file)
+        }),
+    )
+    .await??;
     drop(file);
-    if let Err(error) = result {
-        let _ignored = tokio::fs::remove_file(&temp_path).await;
-        return Err(error);
-    }
-    if cancel_requested.load(Ordering::Relaxed) {
-        let _ignored = tokio::fs::remove_file(&temp_path).await;
-        bail!("storage download canceled");
-    }
-    tokio::fs::rename(&temp_path, path)
-        .await
-        .with_context(|| format!("failed to move `{temp_path}` to `{path}`"))?;
+    ensure_not_interrupted(control)?;
+    let rename_from = temp_path.to_owned();
+    let rename_to = PathBuf::from(path);
+    non_cancellable_file_commit(control, "storage download staging-file commit", move || {
+        std::fs::rename(&rename_from, &rename_to).with_context(|| {
+            format!(
+                "failed to move `{}` to `{}`",
+                rename_from.display(),
+                rename_to.display()
+            )
+        })
+    })
+    .await?;
     Ok(json!({
         "cid": request.cid(),
         "path": path,
@@ -518,13 +607,125 @@ pub(super) async fn storage_rest_download_tracked(
     }))
 }
 
+struct TrackedStagingFile {
+    // Field order is intentional: close the file before releasing the lifetime barrier.
+    file: std::fs::File,
+    _lifetime_guard: BlockingWorkGuard,
+}
+
+struct TrackedCommitOutput<T> {
+    // Field order is intentional: dispose commit output before releasing either barrier.
+    result: Result<T>,
+    _worker_guard: BlockingWorkGuard,
+    _commit_guard: OperationCommitGuard,
+}
+
+async fn blocking_file_work<T, F>(label: &'static str, work: F) -> Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T> + Send + 'static,
+{
+    tokio::task::spawn_blocking(work)
+        .await
+        .with_context(|| format!("{label} worker failed"))?
+}
+
+async fn non_cancellable_file_commit<T, F>(
+    control: &OperationControl,
+    label: &'static str,
+    commit: F,
+) -> Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T> + Send + 'static,
+{
+    let commit_guard = control.begin_non_cancellable_commit()?;
+    let worker_guard = control.blocking_worker_guard()?;
+    let output = tokio::task::spawn_blocking(move || TrackedCommitOutput {
+        result: commit(),
+        _worker_guard: worker_guard,
+        _commit_guard: commit_guard,
+    })
+    .await
+    .with_context(|| format!("{label} worker failed"))?;
+    let TrackedCommitOutput {
+        result,
+        _worker_guard,
+        _commit_guard,
+    } = output;
+    result
+}
+
+pub(super) fn operation_disposable_file(
+    request: &RuntimeOperationRequest,
+    operation_id: &RuntimeOperationId,
+) -> Result<Option<PathBuf>> {
+    if request.command() != OperationCommand::Storage(StorageCommand::DownloadToUrl) {
+        return Ok(None);
+    }
+    let payload: Value = request.node_request()?.payload("storage download")?;
+    let path = payload
+        .get("path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .context("storage download path is required")?;
+    let target = PathBuf::from(path);
+    let mut staging = target.as_os_str().to_os_string();
+    staging.push(format!(".part.{}", operation_id.as_str()));
+    Ok(Some(PathBuf::from(staging)))
+}
+
+async fn interruptible<F, T>(control: &OperationControl, future: F) -> Result<T>
+where
+    F: std::future::Future<Output = T>,
+{
+    tokio::select! {
+        biased;
+        value = future => Ok(value),
+        () = control.cancellation().cancelled() => Err(interruption(control).into()),
+        () = tokio::time::sleep_until(control.deadline()) => {
+            Err(OperationInterrupted::confirmed(
+                OperationStopReason::DeadlineExceeded,
+                "storage download deadline elapsed",
+            ).into())
+        }
+    }
+}
+
+fn ensure_not_interrupted(control: &OperationControl) -> Result<()> {
+    if control.cancellation().is_cancelled() {
+        return Err(interruption(control).into());
+    }
+    if tokio::time::Instant::now() >= control.deadline() {
+        return Err(OperationInterrupted::confirmed(
+            OperationStopReason::DeadlineExceeded,
+            "storage operation deadline elapsed",
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn interruption(control: &OperationControl) -> OperationInterrupted {
+    let reason = control
+        .stop_reason()
+        .unwrap_or(OperationStopReason::CancelRequested);
+    let message = match reason {
+        OperationStopReason::CancelRequested => "storage operation cancellation observed",
+        OperationStopReason::DeadlineExceeded => "storage operation deadline elapsed",
+        OperationStopReason::Shutdown => "storage operation stopped during shutdown",
+    };
+    OperationInterrupted::confirmed(reason, message)
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
         fs,
         io::{Read as _, Write as _},
         net::TcpListener,
-        sync::Arc,
+        sync::{Arc, mpsc},
         thread,
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
@@ -534,9 +735,263 @@ mod tests {
 
     use super::*;
     use crate::{
-        inspector::commands::operations::runtime_operation_request_from_value,
+        inspector::commands::operations::{
+            RuntimeOperations, runtime_operation_request_from_value,
+            supervisor::test_operation_control,
+        },
         modules::logos_core::UnavailableModuleTransport,
     };
+
+    const SUPERVISOR_TEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+    fn operation_control() -> OperationControl {
+        test_operation_control(Duration::from_secs(30))
+    }
+
+    #[test]
+    fn canceled_download_removes_owned_staging_file_before_terminal_status() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let target = directory.path().join("canceled-download.bin");
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let endpoint = format!("http://{}", listener.local_addr()?);
+        let (release_server, await_release) = mpsc::channel();
+        let server = thread::spawn(move || -> Result<Vec<u8>> {
+            let (mut stream, _) = listener.accept()?;
+            stream.set_read_timeout(Some(SUPERVISOR_TEST_TIMEOUT))?;
+            let request = read_http_headers(&mut stream)?;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: 1024\r\nConnection: close\r\n\r\n"
+            )?;
+            stream.flush()?;
+            await_release
+                .recv_timeout(SUPERVISOR_TEST_TIMEOUT)
+                .context("storage download test server was not released")?;
+            Ok(request)
+        });
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let operations = RuntimeOperations::default();
+        let request = storage_download_runtime_request(&endpoint, &target, "cid-cancel-cleanup")?;
+
+        let started = operations.start(&runtime, request.clone())?;
+        let operation_id = started
+            .get("operationId")
+            .and_then(Value::as_str)
+            .context("started storage download has no operation id")?
+            .to_owned();
+        let staging =
+            operation_disposable_file(&request, &RuntimeOperationId::parse(&operation_id)?)?
+                .context("storage download has no staging path")?;
+        runtime.block_on(wait_for_path_state(&staging, true, SUPERVISOR_TEST_TIMEOUT))?;
+
+        let canceling = operations.cancel(&operation_id)?;
+
+        anyhow::ensure!(
+            canceling.get("status").and_then(Value::as_str) == Some("canceling"),
+            "cancel request did not expose canceling state: {canceling}"
+        );
+        let canceled = runtime.block_on(wait_for_canceled_after_cleanup(
+            &operations,
+            &operation_id,
+            &staging,
+            &target,
+            SUPERVISOR_TEST_TIMEOUT,
+        ))?;
+        anyhow::ensure!(
+            !staging.exists() && !target.exists(),
+            "canceled status became visible before staging cleanup: operation={canceled}, staging={}, target={}",
+            staging.exists(),
+            target.exists()
+        );
+
+        release_server
+            .send(())
+            .map_err(|_| anyhow::anyhow!("failed to release storage download test server"))?;
+        let request_bytes = server
+            .join()
+            .map_err(|_| anyhow::anyhow!("storage download cleanup test server panicked"))??;
+        anyhow::ensure!(
+            std::str::from_utf8(&request_bytes)?
+                .starts_with("GET /data/cid-cancel-cleanup/network/stream HTTP/1.1\r\n"),
+            "storage download used unexpected request route"
+        );
+        operations.shutdown(&runtime)?;
+        Ok(())
+    }
+
+    #[test]
+    fn failed_download_preserves_preexisting_staging_file() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let target = directory.path().join("preexisting-staging.bin");
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let endpoint = format!("http://{}", listener.local_addr()?);
+        let server = thread::spawn(move || -> Result<Vec<u8>> {
+            let (mut stream, _) = listener.accept()?;
+            stream.set_read_timeout(Some(SUPERVISOR_TEST_TIMEOUT))?;
+            let request = read_http_headers(&mut stream)?;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            )?;
+            stream.flush()?;
+            Ok(request)
+        });
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let operations = RuntimeOperations::default();
+        let request =
+            storage_download_runtime_request(&endpoint, &target, "cid-preexisting-staging")?;
+
+        let started = operations.start(&runtime, request.clone())?;
+        let operation_id = started
+            .get("operationId")
+            .and_then(Value::as_str)
+            .context("started storage download has no operation id")?
+            .to_owned();
+        let staging =
+            operation_disposable_file(&request, &RuntimeOperationId::parse(&operation_id)?)?
+                .context("storage download has no staging path")?;
+        fs::write(&staging, b"preexisting")?;
+
+        let failed = runtime.block_on(wait_for_terminal_status(
+            &operations,
+            &operation_id,
+            "failed",
+            SUPERVISOR_TEST_TIMEOUT,
+        ))?;
+
+        anyhow::ensure!(
+            fs::read(&staging)? == b"preexisting",
+            "supervisor deleted or replaced staging file it did not create"
+        );
+        anyhow::ensure!(
+            !target.exists(),
+            "failed download unexpectedly created target: {failed}"
+        );
+        let request_bytes = server
+            .join()
+            .map_err(|_| anyhow::anyhow!("preexisting staging test server panicked"))??;
+        anyhow::ensure!(
+            std::str::from_utf8(&request_bytes)?
+                .starts_with("GET /data/cid-preexisting-staging/network/stream HTTP/1.1\r\n"),
+            "storage download used unexpected request route"
+        );
+        operations.shutdown(&runtime)?;
+        Ok(())
+    }
+
+    async fn wait_for_canceled_after_cleanup(
+        operations: &RuntimeOperations,
+        operation_id: &str,
+        staging: &Path,
+        target: &Path,
+        timeout: Duration,
+    ) -> Result<Value> {
+        let deadline = tokio::time::Instant::now()
+            .checked_add(timeout)
+            .context("canceled-operation wait deadline overflow")?;
+        loop {
+            let staging_existed_before_status = staging.exists();
+            let target_existed_before_status = target.exists();
+            let operation = operations.status(operation_id)?;
+            let status = operation
+                .get("status")
+                .and_then(Value::as_str)
+                .context("runtime operation status is missing")?;
+            if status == "canceled" {
+                anyhow::ensure!(
+                    !staging_existed_before_status && !target_existed_before_status,
+                    "canceled status was observable before cleanup: {operation}"
+                );
+                return Ok(operation);
+            }
+            if matches!(status, "completed" | "dispatched" | "failed" | "timed_out") {
+                bail!("runtime operation reached `{status}` instead of `canceled`: {operation}");
+            }
+            if tokio::time::Instant::now() >= deadline {
+                bail!(
+                    "timed out waiting for runtime operation `{operation_id}` to cancel: {operation}"
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+
+    fn storage_download_runtime_request(
+        endpoint: &str,
+        target: &Path,
+        cid: &str,
+    ) -> Result<RuntimeOperationRequest> {
+        runtime_operation_request_from_value(json!({
+            "domain": "storage",
+            "method": "storageDownloadToUrl",
+            "adapter": {
+                "source_mode": "rest",
+                "inputs": { "rest_endpoint": endpoint }
+            },
+            "mutating_enabled": true,
+            "payload": {
+                "cid": cid,
+                "path": target.to_string_lossy(),
+                "local_only": false
+            }
+        }))
+    }
+
+    async fn wait_for_path_state(path: &Path, expected: bool, timeout: Duration) -> Result<()> {
+        let deadline = tokio::time::Instant::now()
+            .checked_add(timeout)
+            .context("path-state wait deadline overflow")?;
+        loop {
+            if path.exists() == expected {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                bail!(
+                    "timed out waiting for {} to {}",
+                    path.display(),
+                    if expected { "exist" } else { "be removed" }
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+
+    async fn wait_for_terminal_status(
+        operations: &RuntimeOperations,
+        operation_id: &str,
+        expected: &str,
+        timeout: Duration,
+    ) -> Result<Value> {
+        let deadline = tokio::time::Instant::now()
+            .checked_add(timeout)
+            .context("operation-status wait deadline overflow")?;
+        loop {
+            let operation = operations.status(operation_id)?;
+            let status = operation
+                .get("status")
+                .and_then(Value::as_str)
+                .context("runtime operation status is missing")?;
+            if status == expected {
+                return Ok(operation);
+            }
+            if matches!(
+                status,
+                "completed" | "dispatched" | "failed" | "canceled" | "timed_out"
+            ) {
+                bail!("runtime operation reached `{status}` instead of `{expected}`: {operation}");
+            }
+            if tokio::time::Instant::now() >= deadline {
+                bail!(
+                    "timed out waiting for runtime operation `{operation_id}` to reach `{expected}`: {operation}"
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
 
     #[tokio::test]
     async fn backup_upload_executor_rejects_basecamp_before_catalog_read() -> Result<()> {
@@ -553,7 +1008,7 @@ mod tests {
         let transport: SharedModuleTransport =
             Arc::new(UnavailableModuleTransport::basecamp_host_not_configured());
 
-        let error = execute_backup_catalog_upload(&request, transport)
+        let error = execute_backup_catalog_upload(&request, &operation_control(), transport)
             .await
             .err()
             .context("Basecamp backup upload should fail")?;
@@ -603,8 +1058,12 @@ mod tests {
             "payload": { "cid": "cid-restore", "local_only": false }
         }))?;
 
-        let outcome =
-            execute_backup_catalog_download_in_dir(&request, Some(base_dir.clone())).await?;
+        let outcome = execute_backup_catalog_download_in_dir(
+            &request,
+            &operation_control(),
+            Some(base_dir.clone()),
+        )
+        .await?;
         let RuntimeOperationOutcome::Completed(result) = outcome else {
             bail!("backup download should complete");
         };
@@ -674,8 +1133,12 @@ mod tests {
             "payload": { "cid": "cid-local", "local_only": true }
         }))?;
 
-        let outcome =
-            execute_backup_catalog_download_in_dir(&request, Some(base_dir.clone())).await?;
+        let outcome = execute_backup_catalog_download_in_dir(
+            &request,
+            &operation_control(),
+            Some(base_dir.clone()),
+        )
+        .await?;
         let RuntimeOperationOutcome::Completed(result) = outcome else {
             bail!("local-only backup download should complete");
         };
@@ -726,18 +1189,20 @@ mod tests {
             "payload": { "cid": "cid-invalid", "local_only": false }
         }))?;
 
-        let error = execute_backup_catalog_download_in_dir(&request, Some(base_dir.clone()))
-            .await
-            .err()
-            .context("invalid backup JSON should fail")?;
+        let error = execute_backup_catalog_download_in_dir(
+            &request,
+            &operation_control(),
+            Some(base_dir.clone()),
+        )
+        .await
+        .err()
+        .context("invalid backup JSON should fail")?;
         server
             .join()
             .map_err(|_| anyhow::anyhow!("invalid JSON test server panicked"))??;
 
         anyhow::ensure!(
-            error
-                .to_string()
-                .contains("settings backup CID cid-invalid did not contain JSON"),
+            format!("{error:#}").contains("settings backup CID cid-invalid did not contain JSON"),
             "unexpected invalid backup error: {error:#}"
         );
         anyhow::ensure!(
@@ -809,10 +1274,14 @@ mod tests {
                 "payload": { "cid": format!("cid-{label}"), "local_only": false }
             }))?;
 
-            let error = execute_backup_catalog_download_in_dir(&request, Some(base_dir.clone()))
-                .await
-                .err()
-                .context("invalid backup envelope should fail")?;
+            let error = execute_backup_catalog_download_in_dir(
+                &request,
+                &operation_control(),
+                Some(base_dir.clone()),
+            )
+            .await
+            .err()
+            .context("invalid backup envelope should fail")?;
             server
                 .join()
                 .map_err(|_| anyhow::anyhow!("invalid envelope test server panicked"))??;
@@ -855,10 +1324,14 @@ mod tests {
             "payload": { "cid": "cid-oversized", "local_only": false }
         }))?;
 
-        let error = execute_backup_catalog_download_in_dir(&request, Some(base_dir.clone()))
-            .await
-            .err()
-            .context("oversized backup download should fail")?;
+        let error = execute_backup_catalog_download_in_dir(
+            &request,
+            &operation_control(),
+            Some(base_dir.clone()),
+        )
+        .await
+        .err()
+        .context("oversized backup download should fail")?;
         server
             .join()
             .map_err(|_| anyhow::anyhow!("oversized download test server panicked"))??;
@@ -898,10 +1371,14 @@ mod tests {
                 "payload": { "cid": "cid-module", "local_only": false }
             }))?;
 
-            let error = execute_backup_catalog_download_in_dir(&request, Some(base_dir.clone()))
-                .await
-                .err()
-                .context("module backup download should fail")?;
+            let error = execute_backup_catalog_download_in_dir(
+                &request,
+                &operation_control(),
+                Some(base_dir.clone()),
+            )
+            .await
+            .err()
+            .context("module backup download should fail")?;
             anyhow::ensure!(
                 format!("{error:#}").contains(expected_error),
                 "unexpected module backup download error: {error:#}"
@@ -930,7 +1407,7 @@ mod tests {
         let transport: SharedModuleTransport =
             Arc::new(UnavailableModuleTransport::basecamp_host_not_configured());
 
-        let error = execute_payload_upload(&request, transport)
+        let error = execute_payload_upload(&request, &operation_control(), transport)
             .await
             .err()
             .context("Basecamp payload upload should fail")?;
@@ -939,6 +1416,39 @@ mod tests {
             error.to_string()
                 == "Basecamp module source does not support Inspector-managed byte staging",
             "unexpected executor error: {error:#}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn payload_upload_observes_control_before_serialization_or_transport() -> Result<()> {
+        let request = runtime_operation_request_from_value(json!({
+            "domain": "storage",
+            "method": "storageUploadPayload",
+            "adapter": {
+                "source_mode": "rest",
+                "inputs": { "rest_endpoint": "http://127.0.0.1:1" }
+            },
+            "mutating_enabled": true,
+            "payload": {
+                "filename": "must-not-upload.json",
+                "payload": { "kind": "must-not-serialize" },
+                "block_size": 65536
+            }
+        }))?;
+        let control = operation_control();
+        control.cancellation().cancel();
+        let transport: SharedModuleTransport =
+            Arc::new(UnavailableModuleTransport::basecamp_host_not_configured());
+
+        let error = execute_payload_upload(&request, &control, transport)
+            .await
+            .err()
+            .context("canceled payload upload unexpectedly started")?;
+
+        anyhow::ensure!(
+            error.downcast_ref::<OperationInterrupted>().is_some(),
+            "payload upload lost typed pre-effect interruption: {error:#}"
         );
         Ok(())
     }
@@ -978,7 +1488,7 @@ mod tests {
         let transport: SharedModuleTransport =
             Arc::new(UnavailableModuleTransport::basecamp_host_not_configured());
 
-        let outcome = execute_payload_upload(&request, transport).await?;
+        let outcome = execute_payload_upload(&request, &operation_control(), transport).await?;
         let RuntimeOperationOutcome::Completed(result) = outcome else {
             bail!("payload upload should complete");
         };

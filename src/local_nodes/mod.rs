@@ -1,5 +1,7 @@
 use anyhow::Result;
 
+use crate::support::command_runner::CommandControl;
+
 mod action_engine;
 mod action_workspace;
 mod adapters;
@@ -33,6 +35,20 @@ pub fn local_nodes_action(
     confirmation: Option<&str>,
 ) -> Result<LocalNodeReport> {
     action_engine::LocalNodeActionEngine::system()?.apply(profile, request, confirmation)
+}
+
+pub(crate) fn local_nodes_action_controlled(
+    profile: &str,
+    request: LocalNodeActionRequest,
+    confirmation: Option<&str>,
+    control: CommandControl,
+) -> Result<LocalNodeReport> {
+    action_engine::LocalNodeActionEngine::system()?.apply_controlled(
+        profile,
+        request,
+        confirmation,
+        control,
+    )
 }
 
 #[cfg(test)]
@@ -273,9 +289,10 @@ mod tests {
             &config,
             "local",
             &request,
+            None,
         );
-        if operation.status != "created" {
-            bail!("unexpected operation status: {}", operation.status);
+        if operation.report.status != "created" {
+            bail!("unexpected operation status: {}", operation.report.status);
         }
         let record = state.active_devnet().context("missing active devnet")?;
         let storage = record
@@ -314,6 +331,56 @@ mod tests {
         }
         fs::remove_dir_all(&config)
             .with_context(|| format!("failed to remove {}", config.display()))?;
+        Ok(())
+    }
+
+    #[test]
+    fn controlled_action_stops_before_local_state_mutation() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let mut state = LocalNodesState::default_for_config_dir(directory.path());
+        let mut runtime = None;
+        let request = LocalNodeActionRequest {
+            action: NodeAction::NewNetwork,
+            node: None,
+            network_id: Some("must-not-exist".to_owned()),
+            workspace_path: None,
+            runtime_modules_dir: None,
+            runtime_binary_path: None,
+            label: None,
+        };
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        cancellation.cancel();
+        let deadline = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_secs(5))
+            .context("local node test deadline overflow")?;
+        let control = CommandControl::new(cancellation, deadline);
+
+        let operation = action_workspace::LocalNodeActionWorkspace::system().apply(
+            &mut state,
+            &mut runtime,
+            directory.path(),
+            "local",
+            &request,
+            Some(&control),
+        );
+
+        anyhow::ensure!(
+            operation
+                .interruption
+                .as_ref()
+                .and_then(|error| {
+                    error.downcast_ref::<crate::support::command_runner::CommandTerminated>()
+                })
+                .is_some(),
+            "controlled LocalNodes stop lost typed interruption"
+        );
+        anyhow::ensure!(
+            operation.report.status == "failed"
+                && state.active_devnet.is_none()
+                && state.devnets.is_empty(),
+            "controlled LocalNodes action mutated state: {:?}",
+            state.active_devnet
+        );
         Ok(())
     }
 
@@ -469,10 +536,11 @@ mod tests {
             &config,
             "local",
             &request,
+            None,
         );
 
-        if operation.status != "created" {
-            bail!("unexpected operation status: {}", operation.status);
+        if operation.report.status != "created" {
+            bail!("unexpected operation status: {}", operation.report.status);
         }
         if state.active_devnet.as_deref() != Some("demo-net") {
             bail!("unexpected active devnet: {:?}", state.active_devnet);

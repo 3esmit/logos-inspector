@@ -2,14 +2,19 @@ use anyhow::{Context as _, Result};
 use serde_json::Value;
 
 use crate::{
-    local_wallet_accounts, local_wallet_command, local_wallet_create_account,
-    local_wallet_send_transaction, local_wallet_sync_private, support::args::Args,
-    support::confirmation::ConfirmationPolicy,
+    support::{args::Args, command_runner::CommandControl, confirmation::ConfirmationPolicy},
+    wallet::{
+        local_wallet_accounts_controlled, local_wallet_command_controlled,
+        local_wallet_create_account_controlled, local_wallet_send_transaction_controlled,
+        local_wallet_sync_private_controlled,
+    },
 };
 
 use super::super::value::{blocking_value, to_value};
 use super::RuntimeOperationRequest;
+use super::dispatch::normalize_command_execution;
 use super::spec::{OperationClass, OperationCommand, OperationDefinition, OperationMethod};
+use super::supervisor::{OperationControl, TerminationEvidence};
 use super::wallet_args::{confirmed_wallet_args, wallet_profile_arg};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,35 +74,48 @@ pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
 pub(super) async fn execute(
     command: WalletCommand,
     request: &RuntimeOperationRequest,
+    control: &OperationControl,
 ) -> Result<Value> {
     match command {
-        WalletCommand::CreateAccount => execute_wallet_create_account(request).await,
-        WalletCommand::SendTransaction => execute_wallet_send_transaction(request).await,
-        WalletCommand::Command => execute_wallet_command(request).await,
-        WalletCommand::SyncPrivate => execute_wallet_sync_private(request).await,
-        WalletCommand::Accounts => execute_wallet_accounts(request).await,
+        WalletCommand::CreateAccount => execute_wallet_create_account(request, control).await,
+        WalletCommand::SendTransaction => execute_wallet_send_transaction(request, control).await,
+        WalletCommand::Command => execute_wallet_command(request, control).await,
+        WalletCommand::SyncPrivate => execute_wallet_sync_private(request, control).await,
+        WalletCommand::Accounts => execute_wallet_accounts(request, control).await,
     }
 }
 
 pub(super) async fn execute_wallet_create_account(
     request: &RuntimeOperationRequest,
+    control: &OperationControl,
 ) -> Result<Value> {
     let args = confirmed_wallet_args(request, 3, ConfirmationPolicy::WalletCreateAccount)?;
     let profile = wallet_profile_arg(&args)?;
     let privacy = args.string(1, "account privacy")?.to_owned();
     let label = args.optional_string(2).map(ToOwned::to_owned);
-    blocking_value("wallet account creation", move || {
-        to_value(local_wallet_create_account(
+    let command_control = command_control(control);
+    let worker_guard = control.blocking_worker_guard()?;
+    let result = blocking_value("wallet account creation", move || {
+        let _worker_guard = worker_guard;
+        to_value(local_wallet_create_account_controlled(
             profile,
             &privacy,
             label.as_deref(),
+            command_control,
         )?)
     })
-    .await
+    .await;
+    normalize_command_execution(
+        result,
+        control,
+        TerminationEvidence::LocalOnly,
+        TerminationEvidence::Confirmed,
+    )
 }
 
 pub(super) async fn execute_wallet_send_transaction(
     request: &RuntimeOperationRequest,
+    control: &OperationControl,
 ) -> Result<Value> {
     let args = confirmed_wallet_args(request, 2, ConfirmationPolicy::WalletSendTransaction)?;
     let profile = wallet_profile_arg(&args)?;
@@ -105,13 +123,29 @@ pub(super) async fn execute_wallet_send_transaction(
         .value(1)
         .cloned()
         .context("wallet send request is required")?;
-    blocking_value("wallet transaction send", move || {
-        to_value(local_wallet_send_transaction(profile, send_request)?)
+    let command_control = command_control(control);
+    let worker_guard = control.blocking_worker_guard()?;
+    let result = blocking_value("wallet transaction send", move || {
+        let _worker_guard = worker_guard;
+        to_value(local_wallet_send_transaction_controlled(
+            profile,
+            send_request,
+            command_control,
+        )?)
     })
-    .await
+    .await;
+    normalize_command_execution(
+        result,
+        control,
+        TerminationEvidence::LocalOnly,
+        TerminationEvidence::Confirmed,
+    )
 }
 
-pub(super) async fn execute_wallet_command(request: &RuntimeOperationRequest) -> Result<Value> {
+pub(super) async fn execute_wallet_command(
+    request: &RuntimeOperationRequest,
+    control: &OperationControl,
+) -> Result<Value> {
     let args = confirmed_wallet_args(request, 2, ConfirmationPolicy::WalletCommand)?;
     let command_args = serde_json::from_value::<Vec<String>>(
         args.value(1)
@@ -120,28 +154,70 @@ pub(super) async fn execute_wallet_command(request: &RuntimeOperationRequest) ->
     )
     .context("wallet command arguments must be a string array")?;
     let profile = wallet_profile_arg(&args)?;
-    blocking_value("wallet command", move || {
-        to_value(local_wallet_command(profile, command_args)?)
+    let command_control = command_control(control);
+    let worker_guard = control.blocking_worker_guard()?;
+    let result = blocking_value("wallet command", move || {
+        let _worker_guard = worker_guard;
+        to_value(local_wallet_command_controlled(
+            profile,
+            command_args,
+            command_control,
+        )?)
     })
-    .await
+    .await;
+    normalize_command_execution(
+        result,
+        control,
+        TerminationEvidence::LocalOnly,
+        TerminationEvidence::Confirmed,
+    )
 }
 
 pub(super) async fn execute_wallet_sync_private(
     request: &RuntimeOperationRequest,
+    control: &OperationControl,
 ) -> Result<Value> {
     let args = confirmed_wallet_args(request, 1, ConfirmationPolicy::WalletSyncPrivate)?;
     let profile = wallet_profile_arg(&args)?;
-    blocking_value("private wallet sync", move || {
-        to_value(local_wallet_sync_private(profile)?)
+    let command_control = command_control(control);
+    let worker_guard = control.blocking_worker_guard()?;
+    let result = blocking_value("private wallet sync", move || {
+        let _worker_guard = worker_guard;
+        to_value(local_wallet_sync_private_controlled(
+            profile,
+            command_control,
+        )?)
     })
-    .await
+    .await;
+    normalize_command_execution(
+        result,
+        control,
+        TerminationEvidence::LocalOnly,
+        TerminationEvidence::Confirmed,
+    )
 }
 
-pub(super) async fn execute_wallet_accounts(request: &RuntimeOperationRequest) -> Result<Value> {
+pub(super) async fn execute_wallet_accounts(
+    request: &RuntimeOperationRequest,
+    control: &OperationControl,
+) -> Result<Value> {
     let args = Args::new(request.args.clone())?;
     let profile = wallet_profile_arg(&args)?;
-    blocking_value("wallet accounts", move || {
-        to_value(local_wallet_accounts(profile)?)
+    let command_control = command_control(control);
+    let worker_guard = control.blocking_worker_guard()?;
+    let result = blocking_value("wallet accounts", move || {
+        let _worker_guard = worker_guard;
+        to_value(local_wallet_accounts_controlled(profile, command_control)?)
     })
-    .await
+    .await;
+    normalize_command_execution(
+        result,
+        control,
+        TerminationEvidence::Confirmed,
+        TerminationEvidence::Confirmed,
+    )
+}
+
+fn command_control(control: &OperationControl) -> CommandControl {
+    control.command_control()
 }

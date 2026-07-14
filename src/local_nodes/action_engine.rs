@@ -5,6 +5,7 @@ use std::{
 
 use anyhow::{Context as _, Result};
 
+use crate::support::command_runner::CommandControl;
 use crate::support::{confirmation::ConfirmationPolicy, state_store::config_dir};
 
 use super::action_workspace::LocalNodeActionWorkspace;
@@ -68,6 +69,26 @@ impl LocalNodeActionEngine {
         request: LocalNodeActionRequest,
         confirmation: Option<&str>,
     ) -> Result<LocalNodeReport> {
+        self.apply_inner(profile, request, confirmation, None)
+    }
+
+    pub(super) fn apply_controlled(
+        &self,
+        profile: &str,
+        request: LocalNodeActionRequest,
+        confirmation: Option<&str>,
+        control: CommandControl,
+    ) -> Result<LocalNodeReport> {
+        self.apply_inner(profile, request, confirmation, Some(control))
+    }
+
+    fn apply_inner(
+        &self,
+        profile: &str,
+        request: LocalNodeActionRequest,
+        confirmation: Option<&str>,
+        control: Option<CommandControl>,
+    ) -> Result<LocalNodeReport> {
         ConfirmationPolicy::LocalNodeAction.require(confirmation)?;
 
         let _state_lock = acquire_state_lock()?;
@@ -83,15 +104,19 @@ impl LocalNodeActionEngine {
             self.runtime_store.config_root(),
             workflow.profile(),
             &request,
+            control.as_ref(),
         );
-        if !matches!(operation.status.as_str(), "starting" | "stopping")
+        if !matches!(operation.report.status.as_str(), "starting" | "stopping")
             && let Some(watch) = watch
         {
             cancel_event_watch(watch);
         }
-        state.push_operation(operation);
+        state.push_operation(operation.report);
         self.store.save(&state)?;
         self.runtime_store.save(runtime.as_ref())?;
+        if let Some(interruption) = operation.interruption {
+            return Err(interruption);
+        }
         Ok(self.projector.report(profile, &state, runtime.as_ref()))
     }
 

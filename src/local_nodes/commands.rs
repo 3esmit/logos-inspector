@@ -8,6 +8,7 @@ use super::{NodeAction, NodeKind, process::spawn_detached};
 use crate::{
     modules::logos_core::LogoscoreCliRuntime,
     source_routing::{ManagedModuleCallSpec, ManagedNodeContract},
+    support::command_runner::CommandControl,
 };
 
 #[derive(Debug, Clone)]
@@ -43,24 +44,43 @@ pub(super) fn command_spec_for(
 pub(super) fn ensure_module_loaded(
     spec: &LocalNodeCommandSpec,
     runtime: Option<&LogoscoreCliRuntime>,
+    control: Option<&CommandControl>,
 ) -> Result<()> {
     let CommandBackend::LogosCore { contract, .. } = &spec.backend else {
         return Ok(());
     };
     let runtime = runtime.context("an Inspector-managed logoscore runtime is required")?;
-    contract.ensure_loaded(runtime)
+    match control {
+        Some(control) => {
+            runtime.ensure_module_loaded_controlled(contract.module_id(), control.clone())
+        }
+        None => contract.ensure_loaded(runtime),
+    }
 }
 
 pub(super) fn execute_command_spec(
     spec: &LocalNodeCommandSpec,
     runtime: Option<&LogoscoreCliRuntime>,
+    control: Option<&CommandControl>,
 ) -> Result<Value> {
     match &spec.backend {
         CommandBackend::LogosCore { contract, call } => {
             let runtime = runtime.context("an Inspector-managed logoscore runtime is required")?;
-            contract.call(runtime, call)
+            match control {
+                Some(control) => runtime.call_checked_controlled(
+                    contract.module_id(),
+                    call.method,
+                    call.signature,
+                    &call.args,
+                    control.clone(),
+                ),
+                None => contract.call(runtime, call),
+            }
         }
         CommandBackend::SpawnProcess => {
+            if let Some(control) = control {
+                control.check_active()?;
+            }
             let mut command = Command::new(&spec.program);
             for arg in &spec.args {
                 command.arg(arg);

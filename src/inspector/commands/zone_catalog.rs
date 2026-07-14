@@ -102,6 +102,7 @@ trait ChannelSourceConfigStore: Send + Sync {
 }
 
 type SourceMonitorFuture<'a> = Pin<Box<dyn Future<Output = Result<u64>> + Send + 'a>>;
+type SourceMonitorShutdownFuture<'a> = Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
 type SequencerAttestorFuture<'a> = Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>>;
 
 trait SequencerTargetAttestor: Send + Sync {
@@ -126,6 +127,8 @@ trait ZoneSourceMonitor: Send + Sync {
         catalog_verified: bool,
         configs: Vec<ChannelSourceConfig>,
     ) -> SourceMonitorFuture<'a>;
+
+    fn shutdown(&self) -> SourceMonitorShutdownFuture<'_>;
 }
 
 impl ZoneSourceMonitor for ChannelSourceMonitor {
@@ -144,6 +147,10 @@ impl ZoneSourceMonitor for ChannelSourceMonitor {
                 .await
                 .map_err(anyhow::Error::from)
         })
+    }
+
+    fn shutdown(&self) -> SourceMonitorShutdownFuture<'_> {
+        Box::pin(async move { self.shutdown().await.map_err(anyhow::Error::from) })
     }
 }
 
@@ -281,6 +288,14 @@ impl ZoneCatalogCommandInterface {
                 to_value(self.evidence_payload_release(runtime, request)?)
             }
         }
+    }
+
+    pub(crate) async fn shutdown(&self) -> Result<()> {
+        let (service_result, monitor_result) =
+            tokio::join!(self.service.shutdown(), self.monitor.shutdown());
+        service_result.context("failed to shut down zone catalog service")?;
+        monitor_result.context("failed to shut down channel source monitor")?;
+        Ok(())
     }
 
     fn configure(
@@ -1439,6 +1454,10 @@ mod tests {
                 }
                 Ok(state.snapshot.observation_revision)
             })
+        }
+
+        fn shutdown(&self) -> SourceMonitorShutdownFuture<'_> {
+            Box::pin(async { Ok(()) })
         }
     }
 

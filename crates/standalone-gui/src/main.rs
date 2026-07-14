@@ -16,6 +16,11 @@ fn main() -> Result<()> {
     if let Some(app) = app.as_mut() {
         app.exec();
     }
+    let begin_close = bridge::begin_close();
+    drop(engine);
+    let shutdown = bridge::shutdown();
+    begin_close?;
+    shutdown?;
 
     Ok(())
 }
