@@ -180,12 +180,16 @@ impl RuntimeOperations {
     pub(crate) fn wait_for_result(&self, operation_id: &str) -> Result<Value> {
         let operation_id = RuntimeOperationId::parse(operation_id)?;
         loop {
-            let operation = self
+            let (operation, result_purged, acknowledgement_purged) = self
                 .registry
                 .inspect(|records| {
-                    records
-                        .get(&operation_id)
-                        .map(|record| record.operation.clone())
+                    records.get(&operation_id).map(|record| {
+                        (
+                            record.operation.clone(),
+                            record.result_purged,
+                            record.acknowledgement_purged,
+                        )
+                    })
                 })?
                 .with_context(|| {
                     format!(
@@ -195,9 +199,17 @@ impl RuntimeOperations {
                 })?;
             match operation.status {
                 RuntimeOperationStatus::Completed => {
+                    if result_purged {
+                        bail!("runtime operation result was purged by bounded history policy");
+                    }
                     return Ok(operation.result.unwrap_or(Value::Null));
                 }
                 RuntimeOperationStatus::AwaitingExternal | RuntimeOperationStatus::Dispatched => {
+                    if acknowledgement_purged {
+                        bail!(
+                            "runtime operation acknowledgement was purged by bounded history policy"
+                        );
+                    }
                     return Ok(operation.acknowledgement.unwrap_or(Value::Null));
                 }
                 RuntimeOperationStatus::Canceled => {
@@ -567,6 +579,41 @@ mod tests {
 
         anyhow::ensure!(result.get("manifests") == Some(&json!([])));
         anyhow::ensure!(operations.len()? == 1);
+        Ok(())
+    }
+
+    #[test]
+    fn blocking_wait_fails_explicitly_when_oversized_result_is_immediately_purged() -> Result<()> {
+        let operations = RuntimeOperations::default();
+        let request = runtime_operation_request_from_value(json!({
+            "domain": "storage",
+            "method": "storageManifests",
+            "adapter": {
+                "source_mode": "rest",
+                "inputs": { "rest_endpoint": "http://127.0.0.1:8080" }
+            },
+            "payload": {}
+        }))?;
+        operations.insert_test_running_operation("oversized-result", request)?;
+        let operation_id = RuntimeOperationId::parse("oversized-result")?;
+        operations.registry.transition(
+            &operation_id,
+            RuntimeOperationTransition::Resolved(outcome::RuntimeOperationOutcome::Completed(
+                json!({ "payload": "x".repeat(33 * 1024 * 1024) }),
+            )),
+        )?;
+
+        let error = operations
+            .wait_for_result(operation_id.as_str())
+            .err()
+            .context("purged result should not be returned as null success")?;
+        anyhow::ensure!(
+            error.to_string() == "runtime operation result was purged by bounded history policy"
+        );
+        let value = operations.value(operation_id.as_str())?;
+        anyhow::ensure!(value.get("status") == Some(&json!("completed")));
+        anyhow::ensure!(value.get("result") == Some(&Value::Null));
+        anyhow::ensure!(value.get("resultPurged") == Some(&json!(true)));
         Ok(())
     }
 }

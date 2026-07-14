@@ -43,7 +43,42 @@ function runtimeSnapshotIsNewer(current, candidate) {
     if (previousCursor === null || nextCursor === null) {
         return true
     }
-    return nextCursor > previousCursor
+    if (nextCursor !== previousCursor) {
+        return nextCursor > previousCursor
+    }
+    return sameCursorProgressIsNewer(previous, next)
+}
+
+function sameCursorProgressIsNewer(previous, candidate) {
+    if (String(previous.status || "") !== String(candidate.status || "")) {
+        return false
+    }
+    const fields = ["progress", "bytesWritten", "coalescedCount", "updatedAt"]
+    let advanced = false
+    for (let i = 0; i < fields.length; ++i) {
+        const field = fields[i]
+        const previousValue = runtimeMonotonicNumber(previous[field])
+        const candidateValue = runtimeMonotonicNumber(candidate[field])
+        if (previousValue !== null && candidateValue === null) {
+            return false
+        }
+        if (previousValue !== null && candidateValue < previousValue) {
+            return false
+        }
+        if (i < 3 && ((previousValue === null && candidateValue !== null)
+                || (previousValue !== null && candidateValue > previousValue))) {
+            advanced = true
+        }
+    }
+    return advanced
+}
+
+function runtimeMonotonicNumber(value) {
+    if (value === undefined || value === null || value === "" || typeof value === "boolean") {
+        return null
+    }
+    const number = Number(value)
+    return Number.isFinite(number) && number >= 0 ? number : null
 }
 
 function runtimeEventCursor(operation) {
@@ -52,7 +87,7 @@ function runtimeEventCursor(operation) {
         return null
     }
     const cursor = Number(value)
-    return Number.isFinite(cursor) && cursor >= 0 ? cursor : null
+    return Number.isSafeInteger(cursor) && cursor >= 0 ? cursor : null
 }
 
 function runtimeStatusText(operation, defaultLabel) {

@@ -1,7 +1,10 @@
 use anyhow::{Context as _, Result, bail};
 use serde_json::Value;
 
-use super::spec::{OperationMethod, OperationRoute, operation_route};
+use super::{
+    record::MAX_WIRE_EVENT_CURSOR,
+    spec::{OperationMethod, OperationRoute, operation_route},
+};
 use crate::support::args::Args;
 
 pub(crate) trait OperationRunner {
@@ -171,8 +174,20 @@ fn runtime_operation_status(runner: &impl OperationRunner, args: &Value) -> Resu
 
 fn runtime_operation_events(runner: &impl OperationRunner, args: &Value) -> Result<Value> {
     let args = Args::new(args.clone())?;
+    let argument_count = args.iter().count();
+    if !(1..=2).contains(&argument_count) {
+        bail!("runtime operation events accepts an operation id and optional cursor");
+    }
     let operation_id = args.string(0, "runtime operation id")?;
-    let after_seq = args.value(1).and_then(Value::as_u64).unwrap_or(0);
+    let after_seq = match args.value(1) {
+        Some(value) => value
+            .as_u64()
+            .context("runtime operation event cursor must be an unsigned integer")?,
+        None => 0,
+    };
+    if after_seq > MAX_WIRE_EVENT_CURSOR {
+        bail!("runtime operation event cursor exceeds JavaScript safe integer range");
+    }
     runner.events(operation_id, after_seq)
 }
 
@@ -440,6 +455,53 @@ mod tests {
         }
         if !runner.calls().is_empty() {
             bail!("unexpected runner calls");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_operation_events_accepts_only_an_optional_safe_integer_cursor() -> Result<()> {
+        let runner = FakeRunner::default();
+        let command = operation_bridge_command("runtimeOperationEvents")
+            .context("runtime operation events command")?;
+
+        handle_operation_command(&runner, command, &json!(["operation-1"]))?;
+        handle_operation_command(
+            &runner,
+            command,
+            &json!(["operation-1", MAX_WIRE_EVENT_CURSOR]),
+        )?;
+        anyhow::ensure!(
+            runner.calls()
+                == vec![
+                    RunnerCall::Events("operation-1".to_owned(), 0),
+                    RunnerCall::Events("operation-1".to_owned(), MAX_WIRE_EVENT_CURSOR),
+                ]
+        );
+
+        let cases = [
+            (
+                json!([]),
+                "runtime operation events accepts an operation id and optional cursor",
+            ),
+            (
+                json!(["operation-1", 0, 1]),
+                "runtime operation events accepts an operation id and optional cursor",
+            ),
+            (
+                json!(["operation-1", "1"]),
+                "runtime operation event cursor must be an unsigned integer",
+            ),
+            (
+                json!(["operation-1", MAX_WIRE_EVENT_CURSOR + 1]),
+                "runtime operation event cursor exceeds JavaScript safe integer range",
+            ),
+        ];
+        for (args, expected) in cases {
+            let error = handle_operation_command(&runner, command, &args)
+                .err()
+                .context("invalid cursor should fail")?;
+            anyhow::ensure!(error.to_string() == expected);
         }
         Ok(())
     }

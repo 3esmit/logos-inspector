@@ -135,6 +135,11 @@ TestCase {
         model.runtimeOperationEventSeq = ({})
         model.runtimeOperationHistory = []
         model.runtimeOperationsRevision = 0
+        model.operationHistory.runtimeOperationEventFacts = ({})
+        model.operationHistory.runtimeOperationPollGenerations = ({})
+        model.operationHistory.runtimeOperationPendingPolls = ({})
+        model.operationHistory.runtimeOperationTerminalOrder = []
+        model.operationHistory.runtimeOperationCursorOrder = []
         model.networkConnectionStatus = ({})
         model.networkConnectionStatusRevision = 0
         model.dashboardMetricHistory = ({})
@@ -179,6 +184,8 @@ TestCase {
         basecampModel.storageSourceMode = "module"
         basecampModel.sourcePolicy = ({})
         basecampModel.sourcePolicyLoaded = false
+        model.networkConfigurationRevision = 0
+        model.blockchainConfigurationRevision = 0
         basecampModel.capabilityRegistryLoaded = true
         basecampModel.capabilityRegistryReport = appModelTestCapabilityRegistry()
         model.registeredIdls.clear()
@@ -562,6 +569,43 @@ TestCase {
                 ? call.args[0] || null : null
             return request && String(request.method || "") === String(method || "")
         }).length
+    }
+
+    function runtimeEventsResponse(operationId, backend, eventCursor) {
+        const cursor = Number(eventCursor)
+        return {
+            ok: true,
+            value: {
+                operation: {
+                    operationId: String(operationId || ""),
+                    domain: "storage",
+                    backend: String(backend || "rest"),
+                    method: "storageManifests",
+                    status: "running",
+                    eventCursor: cursor,
+                    progress: 0.5,
+                    bytesWritten: 50,
+                    updatedAt: 2
+                },
+                events: [{
+                    operationId: String(operationId || ""),
+                    seq: cursor,
+                    eventCursor: cursor,
+                    phase: "running"
+                }],
+                oldestSeq: cursor,
+                nextSeq: cursor + 1,
+                eventCursor: cursor,
+                droppedCount: 0,
+                coalescedCount: 0,
+                retainedCount: 1,
+                retainedBytes: 128,
+                historyTruncated: false,
+                resetRequired: false
+            },
+            text: "OK",
+            error: ""
+        }
     }
 
     function test_basecamp_bridge_routes_inspector_calls_through_generic_call() {
@@ -1195,6 +1239,118 @@ TestCase {
         compare(fakeHost.lastMethod, "runtimeOperationStart")
         compare(fakeHost.lastArgs[0].method, "deliverySend")
         compare(model.runtimeOperations["op-2"].domain, "delivery")
+    }
+
+    function test_runtime_events_poll_is_completion_paced_per_operation() {
+        const operationId = "events-one-in-flight"
+        model.updateRuntimeOperation({
+            operationId: operationId,
+            domain: "storage",
+            backend: "rest",
+            method: "storageManifests",
+            status: "running",
+            eventCursor: 0,
+            progress: 0,
+            bytesWritten: 0,
+            updatedAt: 1
+        })
+        fakeHost.responses = {
+            runtimeOperationEvents: runtimeEventsResponse(operationId, "rest", 1)
+        }
+        let callbackCount = 0
+
+        const first = model.runtimeOperationEvents(operationId, 0, false, function () {
+            callbackCount += 1
+        })
+        const duplicate = model.runtimeOperationEvents(operationId, 0, false, function () {
+            callbackCount += 1
+        })
+
+        verify(first !== null)
+        compare(duplicate, null)
+        compare(model.operationHistory.pendingEventPollCount, 1)
+        tryCompare(model.operationHistory, "pendingEventPollCount", 0)
+        compare(callbackCount, 1)
+        compare(callCountFor("runtimeOperationEvents"), 1)
+        compare(model.runtimeOperationEventSeq[operationId], 1)
+        compare(model.operationHistory.eventFacts(operationId).nextSeq, 2)
+    }
+
+    function test_runtime_events_poll_rejects_stale_configuration_and_backend() {
+        const operationId = "events-stale-context"
+        model.updateRuntimeOperation({
+            operationId: operationId,
+            domain: "storage",
+            backend: "rest",
+            method: "storageManifests",
+            status: "running",
+            eventCursor: 0,
+            progress: 0,
+            bytesWritten: 0,
+            updatedAt: 1
+        })
+        fakeHost.responses = {
+            runtimeOperationEvents: runtimeEventsResponse(operationId, "rest", 1)
+        }
+        let callbackCount = 0
+
+        model.runtimeOperationEvents(operationId, 0, false, function () {
+            callbackCount += 1
+        })
+        model.networkConfigurationRevision += 1
+        tryCompare(model.operationHistory, "pendingEventPollCount", 0)
+        compare(callbackCount, 0)
+        compare(model.runtimeOperationEventSeq[operationId], undefined)
+
+        model.runtimeOperationEvents(operationId, 0, false, function () {
+            callbackCount += 1
+        })
+        model.updateRuntimeOperation({
+            operationId: operationId,
+            domain: "storage",
+            backend: "module",
+            method: "storageManifests",
+            status: "running",
+            eventCursor: 1,
+            progress: 0.1,
+            bytesWritten: 10,
+            updatedAt: 2
+        })
+        tryCompare(model.operationHistory, "pendingEventPollCount", 0)
+        compare(callbackCount, 0)
+        compare(model.runtimeOperationEventSeq[operationId], undefined)
+        compare(model.runtimeOperations[operationId].backend, "module")
+    }
+
+    function test_runtime_events_poll_surfaces_malformed_typed_window() {
+        const operationId = "events-malformed-window"
+        model.updateRuntimeOperation({
+            operationId: operationId,
+            domain: "storage",
+            backend: "rest",
+            method: "storageManifests",
+            status: "running",
+            eventCursor: 0,
+            progress: 0,
+            bytesWritten: 0,
+            updatedAt: 1
+        })
+        const malformed = runtimeEventsResponse(operationId, "rest", 1)
+        malformed.value.nextSeq = "2"
+        fakeHost.responses = { runtimeOperationEvents: malformed }
+        let received = null
+
+        model.runtimeOperationEvents(operationId, 0, false, function (response) {
+            received = response
+        })
+
+        tryVerify(function () { return received !== null })
+        verify(!received.ok)
+        verify(String(received.error || "").indexOf(
+            "invalid runtime operation event window: cursor_facts") >= 0)
+        compare(model.operationHistory.pendingEventPollCount, 0)
+        compare(model.runtimeOperationEventSeq[operationId], undefined)
+        compare(model.runtimeOperations[operationId].eventCursor, 0)
     }
 
     function test_storage_operation_session_projects_through_runtime_gateway() {

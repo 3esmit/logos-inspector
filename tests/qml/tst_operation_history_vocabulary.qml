@@ -87,6 +87,70 @@ TestCase {
             status: "canceling",
             eventCursor: 3
         }))
+        verify(OperationHistoryVocabulary.runtimeSnapshotIsNewer({
+            operationId: "operation-1",
+            status: "running",
+            eventCursor: 4,
+            progress: 0.2,
+            bytesWritten: 20,
+            coalescedCount: 1,
+            updatedAt: 10
+        }, {
+            operationId: "operation-1",
+            status: "running",
+            eventCursor: 4,
+            progress: 0.3,
+            bytesWritten: 30,
+            coalescedCount: 2,
+            updatedAt: 11
+        }))
+        verify(!OperationHistoryVocabulary.runtimeSnapshotIsNewer({
+            operationId: "operation-1",
+            status: "running",
+            eventCursor: 4,
+            progress: 0.3,
+            bytesWritten: 30,
+            updatedAt: 11
+        }, {
+            operationId: "operation-1",
+            status: "running",
+            eventCursor: 4,
+            progress: 0.25,
+            bytesWritten: 29,
+            updatedAt: 12
+        }))
+        verify(!OperationHistoryVocabulary.runtimeSnapshotIsNewer({
+            operationId: "operation-1",
+            status: "running",
+            eventCursor: 4,
+            progress: 0.3,
+            bytesWritten: 30,
+            coalescedCount: 2,
+            updatedAt: 11
+        }, {
+            operationId: "operation-1",
+            status: "running",
+            eventCursor: 4,
+            progress: 0.3,
+            bytesWritten: 30,
+            coalescedCount: 2,
+            updatedAt: 12
+        }))
+        verify(!OperationHistoryVocabulary.runtimeSnapshotIsNewer({
+            operationId: "operation-1",
+            status: "running",
+            eventCursor: 4,
+            progress: 0.3,
+            bytesWritten: 30,
+            updatedAt: 11
+        }, {
+            operationId: "operation-1",
+            status: "canceling",
+            eventCursor: 4,
+            progress: 0.3,
+            bytesWritten: 30,
+            updatedAt: 12
+        }))
         verify(!OperationHistoryVocabulary.runtimeSnapshotIsNewer({
             operationId: "operation-1",
             status: "completed",

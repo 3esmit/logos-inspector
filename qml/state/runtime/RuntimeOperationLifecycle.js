@@ -35,20 +35,52 @@ function runtimeOperationStatus(root, operationId, showResult, callback) {
 function runtimeOperationEvents(root, operationId, afterSeq, showResult, callback) {
     with (root) {
         const id = String(operationId || "")
-        if (!id.length) {
+        const after = safeEventSequence(afterSeq === undefined || afterSeq === null ? 0 : afterSeq)
+        if (!id.length || after === null) {
             return null
         }
-        return requestModuleAsync(inspectorModule, "runtimeOperationEvents", [id, Number(afterSeq || 0)], qsTr("Runtime operation events"), showResult === true, function (response) {
+        const history = root.operationHistory || null
+        const guarded = history
+            && typeof history.beginEventPoll === "function"
+            && typeof history.finishEventPoll === "function"
+            && typeof history.abandonEventPoll === "function"
+        const ticket = guarded
+            ? history.beginEventPoll(id, after, runtimeOperationPollContext(root, id)) : null
+        if (guarded && !ticket) {
+            return null
+        }
+        let completion = null
+        let callbackDelivered = false
+        let dispatch = null
+        try {
+            dispatch = requestModuleAsync(inspectorModule, "runtimeOperationEvents", [id, after], qsTr("Runtime operation events"), showResult === true, function (response) {
+            if (callbackDelivered) {
+                return
+            }
+            if (guarded && completion === null) {
+                completion = history.finishEventPoll(
+                    ticket,
+                    response,
+                    runtimeOperationPollContext(root, id)
+                )
+            }
+            normalizeInvalidEventResponse(response, completion)
+            if (guarded && (!completion
+                    || (completion.accepted !== true && completion.invalid !== true))) {
+                return
+            }
+            callbackDelivered = true
             if (response && response.ok && response.value
                     && matchesOperationId(response.value.operation, id)) {
-                coreUpdateRuntimeOperation(root, response.value.operation)
-                const eventCursor = responseEventCursor(response.value)
-                if (root.operationHistory && typeof root.operationHistory.setEventSeq === "function") {
-                    root.operationHistory.setEventSeq(id, eventCursor)
-                } else {
+                if (!guarded) {
+                    coreUpdateRuntimeOperation(root, response.value.operation)
+                    const eventCursor = responseEventCursor(response.value)
                     const currentValue = runtimeOperationEventSeq[id]
                     const current = Number(currentValue)
-                    if (currentValue === undefined || !Number.isFinite(current) || eventCursor > current) {
+                    if (eventCursor !== null
+                            && (currentValue === undefined
+                                || !Number.isSafeInteger(current)
+                                || eventCursor > current)) {
                         const next = copyObject(runtimeOperationEventSeq)
                         next[id] = eventCursor
                         runtimeOperationEventSeq = next
@@ -58,7 +90,28 @@ function runtimeOperationEvents(root, operationId, afterSeq, showResult, callbac
             if (callback) {
                 callback(response)
             }
-        })
+        }, guarded ? function (response) {
+            completion = history.finishEventPoll(
+                ticket,
+                response,
+                runtimeOperationPollContext(root, id)
+            )
+            if (completion && completion.invalid === true) {
+                normalizeInvalidEventResponse(response, completion)
+                return true
+            }
+            return completion && completion.accepted === true
+            } : null)
+        } catch (error) {
+            if (guarded) {
+                history.abandonEventPoll(ticket)
+            }
+            throw error
+        }
+        if (guarded && (dispatch === null || dispatch === undefined || dispatch === false)) {
+            history.abandonEventPoll(ticket)
+        }
+        return dispatch
     }
 }
 
@@ -137,11 +190,16 @@ function runtimeOperationTerminal(root, operation) {
 function runtimeOperationResponse(root, operation) {
     const status = String(operation && operation.status ? operation.status : "")
     const ok = OperationHistoryVocabulary.isRuntimeSuccessfulTerminalStatus(status)
+    const payloadPurged = operation && (status === "completed"
+        ? operation.resultPurged === true
+        : status === "dispatched" && operation.acknowledgementPurged === true)
     return {
-        ok: ok,
+        ok: ok && !payloadPurged,
         value: operation && operation.result !== undefined && operation.result !== null ? operation.result : operation,
         text: "",
-        error: ok ? "" : String(operation && operation.error ? operation.error : "")
+        error: payloadPurged
+            ? qsTr("Runtime operation result is no longer retained in bounded history.")
+            : ok ? "" : String(operation && operation.error ? operation.error : "")
     }
 }
 
@@ -208,6 +266,70 @@ function responseEventCursor(value) {
     const raw = response.eventCursor !== undefined && response.eventCursor !== null
         ? response.eventCursor
         : response.nextSeq
-    const cursor = Number(raw)
-    return Number.isFinite(cursor) && cursor >= 0 ? cursor : 0
+    return safeEventSequence(raw)
+}
+
+function runtimeOperationPollContext(root, operationId) {
+    const history = root && root.operationHistory ? root.operationHistory : null
+    const operations = history && history.runtimeOperations
+        ? history.runtimeOperations : root && root.runtimeOperations ? root.runtimeOperations : ({})
+    const operation = operations[String(operationId || "")] || null
+    const bridge = root && root.bridge ? root.bridge : null
+    const hostEpoch = bridge ? safeEventSequence(bridge.hostEpoch) : 0
+    const backendIdentity = operation && history
+            && typeof history.operationBackendIdentity === "function"
+        ? history.operationBackendIdentity(operation) : ""
+    const backendRevision = operation && history
+            && typeof history.operationBackendRevision === "function"
+        ? history.operationBackendRevision(operation) : ""
+    return {
+        hostEpoch: hostEpoch === null ? 0 : hostEpoch,
+        hostIdentity: bridge && bridge.host !== undefined ? bridge.host : null,
+        configurationIdentity: runtimeConfigurationIdentity(root),
+        backendIdentity: backendIdentity,
+        backendRevision: backendRevision
+    }
+}
+
+function runtimeConfigurationIdentity(root) {
+    const value = root || ({})
+    return JSON.stringify([
+        numericIdentity(value.networkConfigurationRevision),
+        numericIdentity(value.blockchainConfigurationRevision),
+        String(value.blockchainConfigurationSignature || ""),
+        String(value.networkProfile || ""),
+        String(value.blockchainSourceMode || ""),
+        String(value.nodeUrl || ""),
+        String(value.messagingSourceMode || ""),
+        String(value.messagingRestUrl || ""),
+        String(value.messagingNetworkPreset || ""),
+        String(value.storageSourceMode || ""),
+        String(value.storageRestUrl || ""),
+        String(value.storageNetworkPreset || "")
+    ])
+}
+
+function numericIdentity(value) {
+    const number = Number(value)
+    return Number.isSafeInteger(number) ? number : 0
+}
+
+function safeEventSequence(value) {
+    if (value === undefined || value === null || value === "" || typeof value === "boolean") {
+        return null
+    }
+    const number = Number(value)
+    return Number.isSafeInteger(number) && number >= 0 ? number : null
+}
+
+function normalizeInvalidEventResponse(response, completion) {
+    if (!response || !completion || completion.invalid !== true) {
+        return false
+    }
+    response.ok = false
+    response.value = null
+    response.text = ""
+    response.error = "invalid runtime operation event window: "
+        + String(completion.error || "invalid_event_window")
+    return true
 }
