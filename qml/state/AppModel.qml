@@ -289,6 +289,8 @@ QtObject {
     property alias backupCatalogError: backupCatalogState.error
     property alias backupCatalogRevision: backupCatalogState.revision
     property alias backupCatalogUploadRunning: backupCatalogState.uploadRunning
+    property alias backupCatalogDownloadRunning: backupCatalogState.downloadRunning
+    property alias backupCatalogTransferRunning: backupCatalogState.transferRunning
     property Domains.BackupImportState backupImport: Domains.BackupImportState {
         id: backupImportState
 
@@ -1047,7 +1049,9 @@ QtObject {
 
     function backupSettingsToStorage(encrypted, contents) { return AppModelIdentity.backupSettingsToStorage(root, encrypted, contents || settingsBackupContents) }
 
-    function restoreSettingsFromStorage(cid, useWallet) { return AppModelIdentity.restoreSettingsFromStorage(root, cid, useWallet) }
+    function downloadSettingsBackupToCatalog(cid) { return AppModelIdentity.downloadSettingsBackupToCatalog(root, cid) }
+
+    function restoreSettingsFromStorage(cid, useWallet) { return downloadSettingsBackupToCatalog(cid) }
 
     function settingsBackupAvailable() { return AppModelIdentity.settingsBackupAvailable(root) }
 

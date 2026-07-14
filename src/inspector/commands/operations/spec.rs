@@ -31,6 +31,7 @@ define_operation_methods!(
     StorageUploadUrl,
     StorageUploadPayload,
     StorageUploadBackupCatalogEntry,
+    StorageDownloadBackupCatalogEntry,
     StorageDownloadToUrl,
     StorageRemove,
     DeliverySubscribe,
@@ -93,6 +94,7 @@ pub(super) enum AffectedContextKey {
     Path,
     Filename,
     BackupCatalogId,
+    DownloadScope,
     SlotRange,
     BlockId,
     TransactionId,
@@ -244,6 +246,7 @@ impl OperationPolicyDefinition {
 }
 
 const STORAGE_DOWNLOAD_START_ALIAS: &str = "storageDownloadStart";
+const STORAGE_RESTORE_SETTINGS_ALIAS: &str = "storageRestoreSettings";
 
 const OPERATION_DEFINITION_SETS: &[&[OperationDefinition]] = &[
     storage::OPERATION_DEFINITIONS,
@@ -324,6 +327,7 @@ impl AffectedContextKey {
             Self::Path => "path",
             Self::Filename => "filename",
             Self::BackupCatalogId => "backupCatalogId",
+            Self::DownloadScope => "downloadScope",
             Self::SlotRange => "slotRange",
             Self::BlockId => "blockId",
             Self::TransactionId => "transactionId",
@@ -382,6 +386,10 @@ pub(crate) fn operation_route(method: &str) -> Option<OperationRoute> {
         return operation_definition(OperationMethod::StorageDownloadToUrl)
             .map(|definition| definition.route(true));
     }
+    if method == STORAGE_RESTORE_SETTINGS_ALIAS {
+        return operation_definition(OperationMethod::StorageDownloadBackupCatalogEntry)
+            .map(|definition| definition.route(false));
+    }
     let method = OperationMethod::from_str(method)?;
     operation_definition(method).map(|definition| definition.route(false))
 }
@@ -390,7 +398,7 @@ pub(crate) fn operation_route(method: &str) -> Option<OperationRoute> {
 pub(crate) fn operation_method_names() -> impl Iterator<Item = &'static str> {
     operation_definitions()
         .map(|entry| entry.name)
-        .chain(std::iter::once(STORAGE_DOWNLOAD_START_ALIAS))
+        .chain([STORAGE_DOWNLOAD_START_ALIAS, STORAGE_RESTORE_SETTINGS_ALIAS])
 }
 
 pub(crate) fn normalized_operation_method(method: &str) -> String {
@@ -471,6 +479,26 @@ mod tests {
             bail!("unexpected storage download alias route: {route:?}");
         }
 
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_backup_restore_alias_routes_to_canonical_typed_operation() -> Result<()> {
+        let route = operation_route("storageRestoreSettings")
+            .context("legacy backup restore alias route missing")?;
+        let definition = operation_definition(route.method)
+            .context("canonical backup download definition missing")?;
+
+        if route.domain != OperationDomain::Storage
+            || route.method != OperationMethod::StorageDownloadBackupCatalogEntry
+            || route.start_async
+            || definition.name() != "storageDownloadBackupCatalogEntry"
+            || definition.policy().class() != OperationClass::Mutating
+            || definition.policy().restart_policy() != RestartPolicy::ManualRequired
+            || !definition.policy().confirmation_required()
+        {
+            bail!("legacy backup restore alias lost canonical policy: {route:?}");
+        }
         Ok(())
     }
 
@@ -596,6 +624,9 @@ mod tests {
         if names.contains(STORAGE_DOWNLOAD_START_ALIAS) {
             bail!("storage download alias collides with a direct operation name");
         }
+        if names.contains(STORAGE_RESTORE_SETTINGS_ALIAS) {
+            bail!("backup restore alias collides with a direct operation name");
+        }
 
         Ok(())
     }
@@ -658,6 +689,16 @@ mod tests {
                 OperationCommand::Storage(storage::StorageCommand::UploadBackupCatalogEntry),
                 "storageUploadBackupCatalogEntry",
                 "Backup upload",
+                OperationDomain::Storage,
+                OperationClass::Mutating,
+                false,
+                None,
+            ),
+            (
+                OperationMethod::StorageDownloadBackupCatalogEntry,
+                OperationCommand::Storage(storage::StorageCommand::DownloadBackupCatalogEntry),
+                "storageDownloadBackupCatalogEntry",
+                "Backup download",
                 OperationDomain::Storage,
                 OperationClass::Mutating,
                 false,
@@ -991,6 +1032,15 @@ mod tests {
                     AffectedContextField::required(AffectedContextKey::Source),
                     AffectedContextField::optional(AffectedContextKey::Endpoint),
                     AffectedContextField::required(AffectedContextKey::BackupCatalogId),
+                ],
+            ),
+            (
+                OperationMethod::StorageDownloadBackupCatalogEntry,
+                &[
+                    AffectedContextField::required(AffectedContextKey::Source),
+                    AffectedContextField::optional(AffectedContextKey::Endpoint),
+                    AffectedContextField::required(AffectedContextKey::Cid),
+                    AffectedContextField::required(AffectedContextKey::DownloadScope),
                 ],
             ),
             (

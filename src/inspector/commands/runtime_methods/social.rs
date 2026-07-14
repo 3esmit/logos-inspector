@@ -17,6 +17,8 @@ use crate::{
 use super::super::value::to_value;
 use super::RuntimeMethodEntry;
 
+const SHARED_IDL_DOWNLOAD_MAX_BYTES: usize = 16 * 1024 * 1024;
+
 pub(super) const METHOD_CATALOG: &[RuntimeMethodEntry] = &[
     RuntimeMethodEntry::sync("socialCommentTopic", social_comment_topic),
     RuntimeMethodEntry::sync("socialZoneCommentTopic", social_zone_comment_topic),
@@ -160,10 +162,11 @@ fn hydrate_shared_idl_payload(
         return Ok(());
     }
     let bytes = runtime
-        .block_on(storage.download_bytes(
+        .block_on(storage.download_bytes_bounded(
             idl_cid,
             local_only,
             "shared IDL CID fetch through storage_module needs storageDownloadDone correlation; use Direct REST source for synchronous shared IDL fetch",
+            SHARED_IDL_DOWNLOAD_MAX_BYTES,
         ))
         .with_context(|| format!("failed to fetch shared IDL CID {idl_cid}"))?;
     let text = String::from_utf8(bytes).context("shared IDL CID payload is not UTF-8")?;
@@ -178,4 +181,80 @@ fn hydrate_shared_idl_payload(
     let _idl_value: Value =
         serde_json::from_str(idl_json.as_str()).context("shared IDL JSON is not valid JSON")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        io::{Read as _, Write as _},
+        net::TcpListener,
+        thread,
+        time::Duration,
+    };
+
+    use anyhow::{Context as _, Result, bail};
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn shared_idl_hydration_has_its_own_explicit_download_bound() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let endpoint = format!("http://{}", listener.local_addr()?);
+        let server = thread::spawn(move || -> Result<()> {
+            let (mut stream, _) = listener.accept()?;
+            stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let bytes = stream.read(&mut buffer)?;
+                if bytes == 0 {
+                    bail!("shared IDL request headers were incomplete");
+                }
+                request.extend_from_slice(
+                    buffer
+                        .get(..bytes)
+                        .context("shared IDL request chunk was invalid")?,
+                );
+            }
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                SHARED_IDL_DOWNLOAD_MAX_BYTES.saturating_add(1)
+            )?;
+            Ok(())
+        });
+        let storage = storage_layer::StorageClient::from_initialization(&json!({
+            "source_mode": "rest",
+            "inputs": { "rest_endpoint": endpoint }
+        }))?;
+        let mut payload = SocialPayload::LezAccountIdl {
+            version: 1,
+            identity: json!({}),
+            account_id: "account-1".to_owned(),
+            program_id: "program-1".to_owned(),
+            idl_name: "IDL".to_owned(),
+            idl_json: String::new(),
+            idl_cid: "cid-idl".to_owned(),
+            storage: Some(json!({})),
+            created_at: "1".to_owned(),
+            scope: None,
+        };
+        let runtime = Runtime::new()?;
+
+        let error = hydrate_shared_idl_payload(&runtime, &storage, false, &mut payload)
+            .err()
+            .context("oversized shared IDL should fail")?;
+        server
+            .join()
+            .map_err(|_| anyhow::anyhow!("shared IDL test server panicked"))??;
+
+        if !format!("{error:#}").contains(&format!(
+            "http response body exceeded {} byte limit",
+            SHARED_IDL_DOWNLOAD_MAX_BYTES
+        )) {
+            bail!("unexpected shared IDL size error: {error:#}");
+        }
+        Ok(())
+    }
 }

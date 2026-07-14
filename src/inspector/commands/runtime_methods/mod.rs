@@ -183,6 +183,24 @@ mod tests {
     }
 
     #[test]
+    fn remote_settings_backup_download_is_owned_by_runtime_operations() {
+        assert!(lookup("storageRestoreSettings").is_none());
+        assert!(lookup("storageDownloadBackupCatalogEntry").is_none());
+        assert!(
+            crate::inspector::commands::operations::operation_bridge_command(
+                "storageDownloadBackupCatalogEntry"
+            )
+            .is_some()
+        );
+        assert!(
+            crate::inspector::commands::operations::operation_bridge_command(
+                "storageRestoreSettings"
+            )
+            .is_some()
+        );
+    }
+
+    #[test]
     fn storage_payload_upload_is_owned_by_runtime_operations() {
         assert!(lookup("storageUploadPayload").is_none());
         assert!(

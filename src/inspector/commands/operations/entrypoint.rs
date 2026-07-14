@@ -508,6 +508,38 @@ mod tests {
     }
 
     #[test]
+    fn legacy_backup_restore_alias_uses_canonical_operation_owner() -> Result<()> {
+        let runner = FakeRunner::default();
+        let args = json!([{
+            "adapter": {
+                "source_mode": "rest",
+                "inputs": { "rest_endpoint": "http://storage" }
+            },
+            "mutating_enabled": false,
+            "payload": { "cid": "cid-restore", "local_only": false }
+        }]);
+
+        let command = operation_bridge_command("storageRestoreSettings")
+            .context("legacy backup restore operation command")?;
+        let value = handle_operation_command(&runner, command, &args)?;
+
+        if value != json!({ "operation": "storageDownloadBackupCatalogEntry" }) {
+            bail!("unexpected response: {value:?}");
+        }
+        if runner.calls()
+            != vec![RunnerCall::RunOperation {
+                domain: "storage".to_owned(),
+                method: "storageDownloadBackupCatalogEntry".to_owned(),
+                args,
+                label: "Backup download".to_owned(),
+            }]
+        {
+            bail!("legacy backup restore escaped canonical operation owner");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn handle_operation_command_keeps_payload_upload_on_blocking_compatibility_route() -> Result<()>
     {
         let runner = FakeRunner::default();

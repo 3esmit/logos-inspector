@@ -125,7 +125,9 @@ QtObject {
                 && root.intervalFor("dashboard") > 0
         case "storageOperation":
             return (root.storageApp() && root.storageApp().operation.running)
+                || model.backupCatalogTransferRunning === true
                 || model.backupCatalogUploadRunning === true
+                || model.backupCatalogDownloadRunning === true
         case "deliveryOperation":
             return root.deliveryApp() && root.deliveryApp().operation.running
         case "socialOperation":
@@ -195,12 +197,15 @@ QtObject {
         if (storage && storage.operation.running) {
             result = storage.pollStorageOperation(false)
         }
-        if (model.backupCatalogUploadRunning === true && model.backupCatalog
+        if (model.backupCatalog && model.backupCatalogUploadRunning === true
                 && typeof model.backupCatalog.pollUpload === "function") {
             const uploadResult = model.backupCatalog.pollUpload()
-            if (result === null) {
-                result = uploadResult
-            }
+            result = result === null ? uploadResult : result
+        }
+        if (model.backupCatalog && model.backupCatalogDownloadRunning === true
+                && typeof model.backupCatalog.pollDownload === "function") {
+            const downloadResult = model.backupCatalog.pollDownload()
+            result = result === null ? downloadResult : result
         }
         return result
     }

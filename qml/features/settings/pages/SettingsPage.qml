@@ -17,7 +17,7 @@ ColumnLayout {
 
     required property Theme theme
     required property AppModel model
-    property string pendingSettingsRestoreCid: ""
+    property string pendingSettingsDownloadCid: ""
     property alias pendingSettingsRestoreBackupId: backupRestoreDialog.backupId
     property alias pendingSettingsRestoreOptions: backupRestoreDialog.options
     property alias pendingSettingsRestorePlan: backupRestoreDialog.plan
@@ -418,6 +418,7 @@ ColumnLayout {
                         text: qsTr("Create Local")
                         primary: true
                         enabled: !settingsRoot.model.shell.busy
+                            && !settingsRoot.model.backupCatalogTransferRunning
                             && settingsRoot.model.backupContentsSelected(settingsRoot.model.settingsBackupContents)
                             && (!settingsRoot.model.settingsBackupEncrypted || settingsRoot.model.walletHomeConfigured())
                         Layout.preferredWidth: 128
@@ -433,7 +434,7 @@ ColumnLayout {
                         theme: settingsRoot.theme
                         text: qsTr("Upload")
                         enabled: !settingsRoot.model.shell.busy
-                            && !settingsRoot.model.backupCatalogUploadRunning
+                            && !settingsRoot.model.backupCatalogTransferRunning
                             && settingsRoot.model.settingsBackupAvailable()
                             && settingsRoot.model.backupContentsSelected(settingsRoot.model.settingsBackupContents)
                             && (!settingsRoot.model.settingsBackupEncrypted || settingsRoot.model.walletHomeConfigured())
@@ -445,12 +446,13 @@ ColumnLayout {
                         theme: settingsRoot.theme
                         text: qsTr("Download")
                         enabled: !settingsRoot.model.shell.busy
+                            && !settingsRoot.model.backupCatalogTransferRunning
                             && settingsRoot.model.settingsBackupDownloadAvailable()
                             && settingsBackupCidField.text.trim().length > 0
                         Layout.preferredWidth: 116
                         onClicked: {
-                            settingsRoot.pendingSettingsRestoreCid = settingsBackupCidField.text.trim()
-                            settingsRestoreConfirm.open()
+                            settingsRoot.pendingSettingsDownloadCid = settingsBackupCidField.text.trim()
+                            settingsDownloadConfirm.open()
                         }
                     }
 
@@ -523,6 +525,7 @@ ColumnLayout {
                                 theme: settingsRoot.theme
                                 text: qsTr("Restore")
                                 enabled: !settingsRoot.model.shell.busy
+                                    && !settingsRoot.model.backupCatalogTransferRunning
                                 Layout.preferredWidth: 96
                                 onClicked: {
                                     settingsRoot.pendingSettingsRestoreBackupId = String(backupCatalogRow.modelData.backup_catalog_id || "")
@@ -536,7 +539,7 @@ ColumnLayout {
                                 theme: settingsRoot.theme
                                 text: qsTr("Upload")
                                 enabled: !settingsRoot.model.shell.busy
-                                    && !settingsRoot.model.backupCatalogUploadRunning
+                                    && !settingsRoot.model.backupCatalogTransferRunning
                                     && settingsRoot.model.settingsBackupAvailable()
                                 Layout.preferredWidth: 88
                                 onClicked: settingsRoot.model.backupImport.uploadBackupCatalogEntry(
@@ -559,14 +562,16 @@ ColumnLayout {
     }
 
     ConfirmActionPopup {
-        id: settingsRestoreConfirm
+        id: settingsDownloadConfirm
 
         theme: settingsRoot.theme
         title: qsTr("Download backup")
         message: qsTr("This downloads the CID into the Local Backup Catalog. Import is done from the catalog.")
         confirmText: qsTr("Download")
-        confirmEnabled: settingsRoot.pendingSettingsRestoreCid.length > 0
-        onAccepted: settingsRoot.model.restoreSettingsFromStorage(settingsRoot.pendingSettingsRestoreCid, settingsRoot.model.settingsBackupEncrypted)
+        confirmEnabled: settingsRoot.pendingSettingsDownloadCid.length > 0
+            && !settingsRoot.model.backupCatalogTransferRunning
+        onAccepted: settingsRoot.model.downloadSettingsBackupToCatalog(
+            settingsRoot.pendingSettingsDownloadCid)
     }
 
     Item {
@@ -846,6 +851,7 @@ ColumnLayout {
                         text: qsTr("Import")
                         primary: true
                         enabled: settingsRoot.pendingImportConfirmEnabled()
+                            && !settingsRoot.model.backupCatalogTransferRunning
                         onClicked: {
                             const options = settingsRoot.copyPendingSettingsRestoreOptions()
                             localSettingsRestoreConfirm.close()

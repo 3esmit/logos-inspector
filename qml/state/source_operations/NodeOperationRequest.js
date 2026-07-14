@@ -34,6 +34,11 @@ function storagePayload(method, args) {
             backup_catalog_id: String(values[0] || ""),
             block_size: Number(values[1] || 65536)
         }
+    case "storageDownloadBackupCatalogEntry":
+        return {
+            cid: String(values[0] || ""),
+            local_only: values[1] === true
+        }
     case "storageDownloadToUrl":
         return {
             cid: String(values[0] || ""),

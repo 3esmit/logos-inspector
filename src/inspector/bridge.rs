@@ -97,7 +97,15 @@ impl InspectorBridge {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::{
+        env, fs,
+        io::{Read as _, Write as _},
+        net::TcpListener,
+        process::Command,
+        sync::{Arc, Mutex},
+        thread,
+        time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    };
 
     use anyhow::bail;
 
@@ -106,6 +114,11 @@ mod tests {
         RuntimeOperationRequest, runtime_operation_request_from_value,
     };
     use crate::support::args::Args;
+
+    const BACKUP_ALIAS_CHILD_ENV: &str = "LOGOS_INSPECTOR_BACKUP_ALIAS_TEST_CHILD";
+    const BACKUP_ALIAS_ENDPOINT_ENV: &str = "LOGOS_INSPECTOR_BACKUP_ALIAS_TEST_ENDPOINT";
+    const BACKUP_ALIAS_TEST_NAME: &str =
+        "inspector::bridge::tests::standalone_legacy_backup_alias_downloads_without_applying";
 
     #[derive(Clone)]
     struct RecordingModuleTransport {
@@ -217,6 +230,10 @@ mod tests {
                 "storageUploadBackupCatalogEntry",
                 json!({ "backup_catalog_id": "backup-2", "block_size": 65536 }),
             ),
+            (
+                "storageDownloadBackupCatalogEntry",
+                json!({ "cid": "cid-backup", "local_only": false }),
+            ),
         ];
         for (method, payload) in cases {
             let result = bridge.call_module_value(
@@ -239,10 +256,147 @@ mod tests {
                 "unexpected direct host operation error: {error:#}"
             );
         }
+        let legacy = bridge.call_module_value(
+            INSPECTOR_MODULE,
+            "storageRestoreSettings",
+            json!([{
+                "adapter": { "source_mode": "module", "inputs": {} },
+                "payload": { "cid": "cid-legacy", "local_only": false },
+                "mutating_enabled": false
+            }]),
+        );
+        let Err(error) = legacy else {
+            bail!("legacy host-backed backup restore should fail before dispatch");
+        };
+        anyhow::ensure!(
+            error.to_string().contains(
+                "host-backed operation `storageDownloadBackupCatalogEntry` requires `runtimeOperationStart`"
+            ),
+            "legacy alias did not resolve through canonical host gate: {error:#}"
+        );
         let calls = calls
             .lock()
             .map_err(|error| anyhow::anyhow!("recorded call lock failed: {error}"))?;
         anyhow::ensure!(calls.is_empty(), "direct host operation reached transport");
+        Ok(())
+    }
+
+    #[test]
+    fn standalone_legacy_backup_alias_downloads_without_applying() -> Result<()> {
+        if env::var_os(BACKUP_ALIAS_CHILD_ENV).is_some() {
+            let endpoint = env::var(BACKUP_ALIAS_ENDPOINT_ENV)
+                .context("backup alias child endpoint is missing")?;
+            let bridge = InspectorBridge::standalone()?;
+            let result = bridge.call_module_value(
+                INSPECTOR_MODULE,
+                "storageRestoreSettings",
+                json!([{
+                    "adapter": {
+                        "source_mode": "rest",
+                        "inputs": { "rest_endpoint": endpoint }
+                    },
+                    "payload": { "cid": "cid-legacy-rest", "local_only": false },
+                    "mutating_enabled": false
+                }]),
+            )?;
+
+            anyhow::ensure!(
+                result.get("downloaded") == Some(&json!(true))
+                    && result.get("restored") == Some(&json!(false))
+                    && result.get("cid") == Some(&json!("cid-legacy-rest"))
+                    && result.pointer("/catalog_entry/remote/cid")
+                        == Some(&json!("cid-legacy-rest")),
+                "legacy backup alias result drifted: {result:?}"
+            );
+            return Ok(());
+        }
+
+        let base_dir = unique_bridge_test_dir("backup-alias")?;
+        fs::create_dir_all(&base_dir)?;
+        let sentinels = [
+            ("settings.json", br#"{"sentinel":"settings"}"#.as_slice()),
+            ("idls.json", br#"{"sentinel":"idls"}"#.as_slice()),
+            ("wallet.json", br#"{"sentinel":"wallet"}"#.as_slice()),
+        ];
+        for (name, bytes) in sentinels {
+            fs::write(base_dir.join(name), bytes)?;
+        }
+
+        let payload = serde_json::to_vec(&json!({
+            "kind": "logos-inspector-settings-backup",
+            "version": 1,
+            "encrypted": false,
+            "state": { "settings": { "favorites": [] } }
+        }))?;
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        listener.set_nonblocking(true)?;
+        let endpoint = format!("http://{}", listener.local_addr()?);
+        let server = thread::spawn(move || -> Result<Vec<u8>> {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let (mut stream, _) = loop {
+                match listener.accept() {
+                    Ok(connection) => break connection,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if Instant::now() >= deadline {
+                            bail!("backup alias test server timed out waiting for request");
+                        }
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            };
+            stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+            let request = read_bridge_http_headers(&mut stream)?;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                payload.len()
+            )?;
+            stream.write_all(&payload)?;
+            Ok(request)
+        });
+
+        let output = Command::new(env::current_exe()?)
+            .arg("--exact")
+            .arg(BACKUP_ALIAS_TEST_NAME)
+            .arg("--nocapture")
+            .env(BACKUP_ALIAS_CHILD_ENV, "1")
+            .env(BACKUP_ALIAS_ENDPOINT_ENV, &endpoint)
+            .env("LOGOS_INSPECTOR_CONFIG_DIR", &base_dir)
+            .output()
+            .context("failed to run isolated backup alias test")?;
+        let request = server
+            .join()
+            .map_err(|_| anyhow::anyhow!("backup alias test server panicked"))??;
+
+        anyhow::ensure!(
+            output.status.success(),
+            "isolated backup alias test failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let request = std::str::from_utf8(&request)?;
+        anyhow::ensure!(
+            request.starts_with("GET /data/cid-legacy-rest/network/stream HTTP/1.1\r\n"),
+            "legacy alias used unexpected REST route: {request}"
+        );
+        for (name, expected) in sentinels {
+            let actual = fs::read(base_dir.join(name))?;
+            anyhow::ensure!(
+                actual == expected,
+                "legacy backup alias modified application state file `{name}`"
+            );
+        }
+        let catalog: Value =
+            serde_json::from_slice(&fs::read(base_dir.join("backup_catalog.json"))?)?;
+        anyhow::ensure!(
+            catalog
+                .get("entries")
+                .and_then(Value::as_array)
+                .is_some_and(|entries| entries.len() == 1),
+            "legacy backup alias did not record exactly one catalog entry: {catalog:?}"
+        );
+        fs::remove_dir_all(&base_dir)?;
         Ok(())
     }
 
@@ -969,5 +1123,35 @@ mod tests {
             bail!("expected operation registry cleanup, found {operations_len}",);
         }
         Ok(())
+    }
+
+    fn read_bridge_http_headers(stream: &mut std::net::TcpStream) -> Result<Vec<u8>> {
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 1024];
+        loop {
+            let bytes = stream.read(&mut buffer)?;
+            if bytes == 0 {
+                bail!("bridge test HTTP headers were incomplete");
+            }
+            request.extend_from_slice(
+                buffer
+                    .get(..bytes)
+                    .context("bridge test HTTP header chunk was invalid")?,
+            );
+            if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                return Ok(request);
+            }
+        }
+    }
+
+    fn unique_bridge_test_dir(label: &str) -> Result<std::path::PathBuf> {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .context("system clock is before Unix epoch")?
+            .as_nanos();
+        Ok(env::temp_dir().join(format!(
+            "logos-inspector-bridge-{label}-{}-{nanos}",
+            std::process::id()
+        )))
     }
 }

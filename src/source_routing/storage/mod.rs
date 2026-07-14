@@ -9,8 +9,8 @@ pub(crate) use layer::{
     STORAGE_SOURCE_MODES, managed_config, managed_contract, module_report, report_inputs,
 };
 pub(crate) use operations::{
-    StorageBackupUploadRequest, StorageClient, StorageDownloadRequest, StorageExistsRequest,
-    StorageOperation, StorageOperationOutput, StorageOperationRequest, StoragePayloadUploadRequest,
-    StorageRestoreRequest, download_response, execute_operation,
+    StorageBackupDownloadRequest, StorageBackupUploadRequest, StorageClient,
+    StorageDownloadRequest, StorageExistsRequest, StorageOperation, StorageOperationOutput,
+    StorageOperationRequest, StoragePayloadUploadRequest, download_response, execute_operation,
 };
 pub(crate) use plan::storage_module_probe_plan;

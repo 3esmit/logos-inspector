@@ -123,6 +123,7 @@ TestCase {
         model.blockchainLastEventText = ""
         model.storageApp.operationSession.clearActive()
         model.backupCatalog.invalidateUpload("")
+        model.backupCatalog.invalidateDownload("")
         model.backupCatalog.entries = []
         model.backupCatalog.loaded = false
         model.backupCatalog.error = ""
@@ -254,15 +255,72 @@ TestCase {
     }
 
     function backupUploadOperation(id, status, result, cursor) {
+        const initialization = model.sourceRouting.storageOperationAdapter()
+        const inputs = initialization.inputs || ({})
+        const catalogId = String(result && result.backup_catalog_id || "backup-1")
         return {
             operationId: String(id || "backup-upload-1"),
             domain: "storage",
             method: "storageUploadBackupCatalogEntry",
+            backend: String(initialization.source_mode || ""),
             label: "Backup upload",
             status: String(status || "completed"),
             eventCursor: Number(cursor || 1),
+            context: {
+                source: String(initialization.source_mode || ""),
+                endpoint: String(inputs.rest_endpoint || ""),
+                mutatingEnabled: model.storageMutatingDiagnosticsEnabled === true,
+                backupCatalogId: catalogId
+            },
             result: result === undefined ? null : result,
             error: status === "failed" ? "upload failed" : ""
+        }
+    }
+
+    function backupUploadResult(catalogId, cid, payloadId) {
+        const initialization = model.sourceRouting.storageOperationAdapter()
+        const inputs = initialization.inputs || ({})
+        const source = String(initialization.source_mode || "")
+        const endpoint = String(inputs.rest_endpoint || "").length
+            ? String(inputs.rest_endpoint)
+            : source === "module"
+                ? "module storage_module"
+                : source === "logoscore_cli"
+                    ? "logoscore call storage_module" : ""
+        return {
+            cid: String(cid || "cid-backup"),
+            bytes: 128,
+            endpoint: endpoint,
+            backup_catalog_id: String(catalogId || "backup-1"),
+            catalog_entry: {
+                backup_catalog_id: String(catalogId || "backup-1"),
+                payload_id: String(payloadId || "sha256:upload"),
+                encrypted: false,
+                remote: {
+                    cid: String(cid || "cid-backup"),
+                    provider: "logos_storage"
+                }
+            }
+        }
+    }
+
+    function backupDownloadOperation(id, status, cid, result, cursor) {
+        return {
+            operationId: String(id || "backup-download-1"),
+            domain: "storage",
+            method: "storageDownloadBackupCatalogEntry",
+            backend: "rest",
+            label: "Backup download",
+            status: String(status || "completed"),
+            eventCursor: Number(cursor || 1),
+            context: {
+                source: "rest",
+                endpoint: model.configuredStorageRestUrl(),
+                cid: String(cid || "cid-restore"),
+                downloadScope: "network"
+            },
+            result: result === undefined ? null : result,
+            error: status === "failed" ? "download failed" : ""
         }
     }
 
@@ -2198,14 +2256,10 @@ TestCase {
             },
             runtimeOperationStart: {
                 ok: true,
-                value: backupUploadOperation("backup-module-op", "completed", {
-                    cid: "cid-module",
-                    backup_catalog_id: "backup-module",
-                    catalog_entry: {
-                        backup_catalog_id: "backup-module",
-                        remote: { cid: "cid-module" }
-                    }
-                })
+                value: backupUploadOperation(
+                    "backup-module-op",
+                    "completed",
+                    backupUploadResult("backup-module", "cid-module", "sha256:module"))
             }
         }
 
@@ -2283,14 +2337,10 @@ TestCase {
             },
             runtimeOperationStart: {
                 ok: true,
-                value: backupUploadOperation("backup-upload-1", "completed", {
-                    cid: "cid-backup",
-                    backup_catalog_id: "backup-1",
-                    catalog_entry: {
-                        backup_catalog_id: "backup-1",
-                        remote: { cid: "cid-backup" }
-                    }
-                })
+                value: backupUploadOperation(
+                    "backup-upload-1",
+                    "completed",
+                    backupUploadResult("backup-1", "cid-backup", "sha256:abc"))
             }
         }
 
@@ -2397,40 +2447,36 @@ TestCase {
         compare(entry.backup_version_label, "1720000000")
     }
 
-    function test_settings_restore_from_storage_downloads_catalog_only() {
+    function test_settings_download_to_catalog_downloads_catalog_only() {
         model.settingsStateLoaded = true
         model.idlStateLoaded = true
         model.walletStateLoaded = true
         model.storageMutatingDiagnosticsEnabled = false
         configureReadyWallet()
         fakeHost.responses = {
-            storageRestoreSettings: {
+            runtimeOperationStart: {
                 ok: true,
-                value: {
-                    downloaded: true,
-                    restored: false,
-                    encrypted: true,
-                    cid: "cid-restore",
-                    backup_catalog_id: "backup-restore",
-                    payload_id: "sha256:remote",
-                    catalog_entry: {
+                value: backupDownloadOperation(
+                    "backup-download-1", "completed", "cid-restore", {
+                        downloaded: true,
+                        restored: false,
+                        encrypted: true,
+                        cid: "cid-restore",
                         backup_catalog_id: "backup-restore",
                         payload_id: "sha256:remote",
-                        remote: { cid: "cid-restore" }
-                    }
-                },
-                text: "OK",
-                error: ""
-            },
-            loadBackupCatalog: {
-                ok: true,
-                value: {
-                    version: 1,
-                    entries: [{
-                        backup_catalog_id: "backup-restore",
-                        remote: { cid: "cid-restore" }
-                    }]
-                },
+                        catalog_entry: {
+                            backup_catalog_id: "backup-restore",
+                            payload_id: "sha256:remote",
+                            encrypted: true,
+                            remote: {
+                                cid: "cid-restore",
+                                provider: "logos_storage"
+                            }
+                        },
+                        bytes: 128,
+                        endpoint: model.configuredStorageRestUrl(),
+                        source: "network"
+                    }),
                 text: "OK",
                 error: ""
             }
@@ -2438,22 +2484,97 @@ TestCase {
 
         const previousBackupCid = model.settingsBackupCid
         fakeHost.calls = []
-        verify(model.restoreSettingsFromStorage("cid-restore", true))
+        verify(model.downloadSettingsBackupToCatalog("cid-restore"))
+        tryVerify(function () {
+            return fakeHost.calls.some(function (call) {
+                return call.method === "runtimeOperationStart"
+            })
+        })
+        tryVerify(function () { return model.backupCatalogRows().length === 1 })
 
         const downloadCalls = fakeHost.calls.filter(function (call) {
-            return call.method === "storageRestoreSettings"
+            return call.method === "runtimeOperationStart"
         })
         compare(downloadCalls.length, 1)
+        compare(downloadCalls[0].args[0].domain, "storage")
+        compare(downloadCalls[0].args[0].method, "storageDownloadBackupCatalogEntry")
+        compare(downloadCalls[0].args[0].adapter.source_mode, "rest")
+        compare(downloadCalls[0].args[0].adapter.inputs.rest_endpoint, model.configuredStorageRestUrl())
+        compare(downloadCalls[0].args[0].mutating_enabled, false)
         compare(downloadCalls[0].args[0].payload.cid, "cid-restore")
-        verify(fakeHost.calls.some(function (call) { return call.method === "loadBackupCatalog" }))
+        compare(downloadCalls[0].args[0].payload.local_only, false)
+        verify(!fakeHost.calls.some(function (call) { return call.method === "storageRestoreSettings" }))
+        verify(!fakeHost.calls.some(function (call) { return call.method === "loadBackupCatalog" }))
         verify(!fakeHost.calls.some(function (call) { return call.method === "loadSettingsState" }))
         verify(!fakeHost.calls.some(function (call) { return call.method === "loadIdlState" }))
         verify(!fakeHost.calls.some(function (call) { return call.method === "loadWalletState" }))
         verify(!fakeHost.calls.some(function (call) { return call.method === "saveSettingsState" }))
         verify(!fakeHost.calls.some(function (call) { return call.method === "saveIdlState" }))
         verify(!fakeHost.calls.some(function (call) { return call.method === "saveWalletState" }))
+        verify(!fakeHost.calls.some(function (call) { return call.method === "settingsBackupImportPreview" }))
+        verify(!fakeHost.calls.some(function (call) { return call.method === "settingsBackupImportApply" }))
         compare(model.settingsBackupCid, previousBackupCid)
+        compare(model.backupCatalogRows().length, 1)
+        compare(model.backupCatalogRows()[0].backup_catalog_id, "backup-restore")
         verify(model.settingsBackupStatus.indexOf("Downloaded") >= 0)
+    }
+
+    function test_settings_download_to_catalog_reports_async_start_then_terminal_catalog_record() {
+        fakeHost.responses = {
+            runtimeOperationStart: {
+                ok: true,
+                value: backupDownloadOperation(
+                    "backup-download-running", "running", "cid-async", null, 1)
+            },
+            runtimeOperationStatus: {
+                ok: true,
+                value: backupDownloadOperation(
+                    "backup-download-running", "completed", "cid-async", {
+                        downloaded: true,
+                        restored: false,
+                        encrypted: false,
+                        cid: "cid-async",
+                        backup_catalog_id: "backup-async",
+                        payload_id: "sha256:async",
+                        catalog_entry: {
+                            backup_catalog_id: "backup-async",
+                            payload_id: "sha256:async",
+                            encrypted: false,
+                            remote: {
+                                cid: "cid-async",
+                                provider: "logos_storage"
+                            }
+                        },
+                        bytes: 64,
+                        endpoint: model.configuredStorageRestUrl(),
+                        source: "network"
+                    }, 2)
+            }
+        }
+
+        verify(model.downloadSettingsBackupToCatalog("cid-async"))
+        verify(model.backupCatalogDownloadRunning)
+        verify(model.backupCatalogTransferRunning)
+        verify(model.settingsBackupStatus.indexOf("started") >= 0)
+        tryVerify(function () {
+            return model.backupCatalog.downloadSession.view.running
+                && !model.backupCatalog.downloadSession.view.startPending
+        })
+
+        model.backupCatalog.pollDownload()
+
+        tryVerify(function () { return !model.backupCatalogDownloadRunning })
+        verify(!model.backupCatalogTransferRunning)
+        tryVerify(function () { return model.settingsBackupStatus.indexOf("Downloaded") >= 0 })
+        tryVerify(function () { return model.backupCatalogRows().length === 1 })
+        compare(model.backupCatalogRows()[0].backup_catalog_id, "backup-async")
+        verify(!fakeHost.calls.some(function (call) {
+            return call.method === "storageRestoreSettings"
+                || call.method === "settingsBackupImportApply"
+                || call.method === "saveSettingsState"
+                || call.method === "saveIdlState"
+                || call.method === "saveWalletState"
+        }))
     }
 
     function test_backup_import_preview_uses_backend_transaction_plan() {

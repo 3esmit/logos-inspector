@@ -103,26 +103,6 @@ pub(crate) fn parse_json_body(
         .with_context(|| format!("{invalid_context}: {}", response_excerpt(body)))
 }
 
-pub(crate) async fn read_response_bytes(
-    request: reqwest::RequestBuilder,
-    label: &str,
-    body_context: &'static str,
-) -> Result<Vec<u8>> {
-    let response = request
-        .send()
-        .await
-        .with_context(|| format!("failed to call {label}"))?;
-    let status = response.status();
-    let bytes = response.bytes().await.context(body_context)?;
-    if !status.is_success() {
-        bail!(
-            "http call `{label}` failed with status {status}: {}",
-            response_excerpt_bytes(&bytes)
-        );
-    }
-    Ok(bytes.to_vec())
-}
-
 pub(crate) async fn read_response_bytes_bounded(
     request: reqwest::RequestBuilder,
     label: &str,

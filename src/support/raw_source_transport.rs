@@ -3,7 +3,7 @@ use reqwest::Response;
 use serde_json::{Value, json};
 
 use super::http_response::{
-    expect_success_response, expect_success_response_bounded, read_response_bytes,
+    expect_success_response, expect_success_response_bounded, read_response_bytes_bounded,
     read_response_json, read_response_json_bounded, read_response_text,
 };
 
@@ -101,12 +101,13 @@ pub(crate) async fn request_text(
     read_response_text(request, label, body_context, allow_no_content).await
 }
 
-pub(crate) async fn request_bytes(
+pub(crate) async fn request_bytes_bounded(
     request: reqwest::RequestBuilder,
     label: &str,
     body_context: &'static str,
+    max_bytes: usize,
 ) -> Result<Vec<u8>> {
-    read_response_bytes(request, label, body_context).await
+    read_response_bytes_bounded(request, label, body_context, false, max_bytes).await
 }
 
 pub(crate) async fn request_success(

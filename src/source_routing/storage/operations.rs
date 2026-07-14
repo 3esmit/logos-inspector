@@ -9,7 +9,7 @@ use crate::source_routing::{
     ModuleEventCorrelationKind, ModuleTerminalEventContract, NodeOperationOutcome,
     NodeOperationRequest, ObservableOperationAcceptance, StorageSourceMode,
 };
-use crate::support::args::Args;
+use crate::support::{args::Args, settings_backup::SETTINGS_BACKUP_MAX_BYTES};
 
 use super::{layer::STORAGE_SOURCE_MODES, transport};
 
@@ -192,16 +192,36 @@ impl StorageClient {
         }
     }
 
-    pub(crate) async fn download_bytes(
+    pub(crate) async fn download_bytes_bounded(
         &self,
         cid: &str,
         local_only: bool,
         module_error: &str,
+        max_bytes: usize,
     ) -> Result<Vec<u8>> {
         match &self.adapter {
             StorageOperationAdapter::Module(_) => bail!("{module_error}"),
             StorageOperationAdapter::Rest { endpoint } => {
-                transport::download_bytes(endpoint, cid, local_only).await
+                transport::download_bytes(endpoint, cid, local_only, max_bytes).await
+            }
+        }
+    }
+
+    pub(crate) async fn download_backup_bytes(
+        &self,
+        cid: &str,
+        local_only: bool,
+    ) -> Result<Vec<u8>> {
+        match &self.adapter {
+            StorageOperationAdapter::Module(ModuleTransportKind::Module) => {
+                bail!("Basecamp Storage module does not expose backup read-by-CID bytes")
+            }
+            StorageOperationAdapter::Module(ModuleTransportKind::LogoscoreCli) => {
+                bail!("LogosCore CLI Storage adapter does not support backup read-by-CID bytes")
+            }
+            StorageOperationAdapter::Rest { endpoint } => {
+                transport::download_bytes(endpoint, cid, local_only, SETTINGS_BACKUP_MAX_BYTES)
+                    .await
             }
         }
     }
@@ -665,16 +685,15 @@ struct RestorePayload {
     local_only: bool,
 }
 
-pub(crate) struct StorageRestoreRequest {
+pub(crate) struct StorageBackupDownloadRequest {
     client: StorageClient,
     cid: String,
     local_only: bool,
 }
 
-impl StorageRestoreRequest {
-    pub(crate) fn parse(args: &Args) -> Result<Self> {
-        let request = NodeOperationRequest::from_bridge_args(args)?;
-        let payload: RestorePayload = request.payload("settings restore")?;
+impl StorageBackupDownloadRequest {
+    pub(crate) fn parse_request(request: &NodeOperationRequest) -> Result<Self> {
+        let payload: RestorePayload = request.payload("settings backup download")?;
         Ok(Self {
             client: StorageClient::from_initialization(request.adapter())?,
             cid: required_text(payload.cid, "backup CID")?,
@@ -692,6 +711,10 @@ impl StorageRestoreRequest {
 
     pub(crate) const fn local_only(&self) -> bool {
         self.local_only
+    }
+
+    pub(crate) const fn download_scope(&self) -> &'static str {
+        if self.local_only { "local" } else { "network" }
     }
 }
 
@@ -830,6 +853,100 @@ mod tests {
                 && request.client().source() == "logoscore call storage_module",
             "backup upload request lost typed input identity"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn backup_download_request_preserves_typed_rest_identity_and_scope() -> Result<()> {
+        let request = request(json!({
+            "adapter": {
+                "source_mode": "rest",
+                "inputs": { "rest_endpoint": "http://storage" }
+            },
+            "mutating_enabled": false,
+            "payload": { "cid": " cid-1 ", "local_only": true }
+        }))?;
+
+        let request = StorageBackupDownloadRequest::parse_request(&request)?;
+
+        anyhow::ensure!(
+            request.cid() == "cid-1"
+                && request.local_only()
+                && request.download_scope() == "local"
+                && request.client().endpoint() == Some("http://storage")
+                && request.client().source() == "http://storage",
+            "backup download request lost typed REST identity"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn backup_download_request_rejects_blank_cid_and_metrics_source() -> Result<()> {
+        let blank = request(json!({
+            "adapter": {
+                "source_mode": "rest",
+                "inputs": { "rest_endpoint": "http://storage" }
+            },
+            "mutating_enabled": false,
+            "payload": { "cid": "  " }
+        }))?;
+        let metrics = request(json!({
+            "adapter": {
+                "source_mode": "metrics",
+                "inputs": { "metrics_endpoint": "http://metrics" }
+            },
+            "mutating_enabled": false,
+            "payload": { "cid": "cid-1" }
+        }))?;
+
+        anyhow::ensure!(
+            StorageBackupDownloadRequest::parse_request(&blank)
+                .err()
+                .is_some_and(|error| error.to_string().contains("backup CID is required")),
+            "blank backup CID was accepted"
+        );
+        anyhow::ensure!(
+            StorageBackupDownloadRequest::parse_request(&metrics)
+                .err()
+                .is_some_and(|error| error.to_string().contains(
+                    "Storage data actions require storage REST or module source, not metrics"
+                )),
+            "metrics source was accepted for backup download"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn backup_download_module_errors_preserve_adapter_identity() -> Result<()> {
+        let cases = [
+            (
+                "module",
+                "Basecamp Storage module does not expose backup read-by-CID bytes",
+            ),
+            (
+                "logoscore_cli",
+                "LogosCore CLI Storage adapter does not support backup read-by-CID bytes",
+            ),
+        ];
+        for (source_mode, expected) in cases {
+            let request = request(json!({
+                "adapter": { "source_mode": source_mode, "inputs": {} },
+                "mutating_enabled": false,
+                "payload": { "cid": "cid-1" }
+            }))?;
+            let request = StorageBackupDownloadRequest::parse_request(&request)?;
+            let error = request
+                .client()
+                .download_backup_bytes(request.cid(), request.local_only())
+                .await
+                .err()
+                .context("module backup download should fail")?;
+
+            anyhow::ensure!(
+                error.to_string() == expected,
+                "adapter identity collapsed: {error:#}"
+            );
+        }
         Ok(())
     }
 

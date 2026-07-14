@@ -25,7 +25,10 @@ use crate::{
 const BACKUP_KIND: &str = "logos-inspector-settings-backup";
 const BACKUP_VERSION: u64 = 1;
 const ENCRYPTION_SCHEME: &str = "xchacha20poly1305-wallet-config-v1";
+const ENCRYPTION_TAG_BYTES: usize = 16;
 const WALLET_CONFIG_FILE: &str = "wallet_config.json";
+
+pub(crate) const SETTINGS_BACKUP_MAX_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RestoreSummary {
@@ -35,6 +38,29 @@ pub(crate) struct RestoreSummary {
     pub favorites_count: usize,
     pub idl_count: usize,
     pub encrypted: bool,
+}
+
+pub(crate) fn ensure_settings_backup_size(byte_len: usize) -> Result<()> {
+    if byte_len > SETTINGS_BACKUP_MAX_BYTES {
+        bail!(
+            "settings backup payload exceeded {} byte limit",
+            SETTINGS_BACKUP_MAX_BYTES
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_app_settings_backup_envelope(payload: &Value) -> Result<()> {
+    validate_backup_identity(payload)?;
+    if payload
+        .get("encrypted")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        encrypted_backup_material(payload).map(|_| ())
+    } else {
+        restorable_backup_state(payload).map(|_| ())
+    }
 }
 
 pub(crate) fn export_app_settings_backup(
@@ -364,22 +390,11 @@ fn restored_state_from_payload(
         payload.clone()
     };
 
-    if plain.get("kind").and_then(Value::as_str) != Some(BACKUP_KIND) {
-        bail!("backup payload kind is not supported");
-    }
-    if plain.get("version").and_then(Value::as_u64) != Some(BACKUP_VERSION) {
-        bail!("backup payload version is not supported");
-    }
-    let state = plain
-        .get("state")
-        .and_then(Value::as_object)
-        .context("backup payload state is missing")?;
+    validate_backup_identity(&plain)?;
+    let state = restorable_backup_state(&plain)?;
     let settings = state.get("settings").cloned();
     let idl = state.get("idls").or_else(|| state.get("idl")).cloned();
     let wallet = state.get("wallet").cloned();
-    if settings.is_none() && idl.is_none() && wallet.is_none() {
-        bail!("backup payload does not contain restorable state");
-    }
     let favorites_count = settings
         .as_ref()
         .and_then(|value| value.get("favorites"))
@@ -408,7 +423,52 @@ fn restored_state_from_payload(
     })
 }
 
+fn validate_backup_identity(payload: &Value) -> Result<()> {
+    if payload.get("kind").and_then(Value::as_str) != Some(BACKUP_KIND) {
+        bail!("backup payload kind is not supported");
+    }
+    if payload.get("version").and_then(Value::as_u64) != Some(BACKUP_VERSION) {
+        bail!("backup payload version is not supported");
+    }
+    Ok(())
+}
+
+fn restorable_backup_state(payload: &Value) -> Result<&serde_json::Map<String, Value>> {
+    let state = payload
+        .get("state")
+        .and_then(Value::as_object)
+        .context("backup payload state is missing")?;
+    if !state.contains_key("settings")
+        && !state.contains_key("idls")
+        && !state.contains_key("idl")
+        && !state.contains_key("wallet")
+    {
+        bail!("backup payload does not contain restorable state");
+    }
+    Ok(state)
+}
+
 fn decrypt_backup_payload(payload: &Value, wallet_profile: Option<&Value>) -> Result<Value> {
+    let (salt, nonce, ciphertext) = encrypted_backup_material(payload)?;
+    let key = wallet_backup_key(wallet_profile, &salt)?;
+    let cipher =
+        XChaCha20Poly1305::new_from_slice(&key).context("invalid backup encryption key")?;
+    let aad = backup_encryption_aad();
+    let plaintext = cipher
+        .decrypt(
+            XNonce::from_slice(&nonce),
+            Payload {
+                msg: &ciphertext,
+                aad: aad.as_bytes(),
+            },
+        )
+        .map_err(|_| {
+            anyhow::anyhow!("failed to decrypt backup payload with the configured wallet")
+        })?;
+    serde_json::from_slice(&plaintext).context("decrypted backup payload is not valid JSON")
+}
+
+fn encrypted_backup_material(payload: &Value) -> Result<([u8; 16], [u8; 24], Vec<u8>)> {
     let encryption = payload
         .get("encryption")
         .and_then(Value::as_object)
@@ -432,22 +492,10 @@ fn decrypt_backup_payload(payload: &Value, wallet_profile: Option<&Value>) -> Re
                 .context("encrypted backup ciphertext is missing")?,
         )
         .context("encrypted backup ciphertext is not valid base64")?;
-    let key = wallet_backup_key(wallet_profile, &salt)?;
-    let cipher =
-        XChaCha20Poly1305::new_from_slice(&key).context("invalid backup encryption key")?;
-    let aad = backup_encryption_aad();
-    let plaintext = cipher
-        .decrypt(
-            XNonce::from_slice(&nonce),
-            Payload {
-                msg: &ciphertext,
-                aad: aad.as_bytes(),
-            },
-        )
-        .map_err(|_| {
-            anyhow::anyhow!("failed to decrypt backup payload with the configured wallet")
-        })?;
-    serde_json::from_slice(&plaintext).context("decrypted backup payload is not valid JSON")
+    if ciphertext.len() < ENCRYPTION_TAG_BYTES {
+        bail!("encrypted backup ciphertext has invalid length");
+    }
+    Ok((salt, nonce, ciphertext))
 }
 
 fn decode_fixed_base64<const N: usize>(value: Option<&str>, label: &str) -> Result<[u8; N]> {
@@ -525,6 +573,87 @@ fn unix_time_text() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_backup_size_contract_accepts_limit_and_rejects_overflow() -> Result<()> {
+        ensure_settings_backup_size(SETTINGS_BACKUP_MAX_BYTES)?;
+        let error = ensure_settings_backup_size(SETTINGS_BACKUP_MAX_BYTES.saturating_add(1))
+            .err()
+            .context("oversized settings backup should fail")?;
+
+        if !error.to_string().contains(&format!(
+            "settings backup payload exceeded {} byte limit",
+            SETTINGS_BACKUP_MAX_BYTES
+        )) {
+            bail!("unexpected settings backup size error: {error:#}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn settings_backup_envelope_rejects_unrestorable_payloads_without_decrypting() -> Result<()> {
+        let invalid = [
+            (
+                json!({
+                    "kind": "other-backup",
+                    "version": 1,
+                    "encrypted": false,
+                    "state": { "settings": {} }
+                }),
+                "backup payload kind is not supported",
+            ),
+            (
+                json!({
+                    "kind": BACKUP_KIND,
+                    "version": 2,
+                    "encrypted": false,
+                    "state": { "settings": {} }
+                }),
+                "backup payload version is not supported",
+            ),
+            (
+                json!({
+                    "kind": BACKUP_KIND,
+                    "version": BACKUP_VERSION,
+                    "encrypted": false,
+                    "state": {}
+                }),
+                "backup payload does not contain restorable state",
+            ),
+            (
+                json!({
+                    "kind": BACKUP_KIND,
+                    "version": BACKUP_VERSION,
+                    "encrypted": true,
+                    "state": { "settings": {} }
+                }),
+                "encrypted backup metadata is missing",
+            ),
+        ];
+
+        for (payload, expected) in invalid {
+            let error = validate_app_settings_backup_envelope(&payload)
+                .err()
+                .context("invalid settings backup envelope should fail")?;
+            if !error.to_string().contains(expected) {
+                bail!("unexpected backup envelope error: {error:#}");
+            }
+        }
+
+        validate_app_settings_backup_envelope(&json!({
+            "kind": BACKUP_KIND,
+            "version": BACKUP_VERSION,
+            "encrypted": true,
+            "encryption": {
+                "scheme": ENCRYPTION_SCHEME,
+                "salt": BASE64_STANDARD.encode([0_u8; 16]),
+                "nonce": BASE64_STANDARD.encode([0_u8; 24]),
+                "key_source": "wallet_config"
+            },
+            "ciphertext": BASE64_STANDARD.encode([0_u8; ENCRYPTION_TAG_BYTES])
+        }))?;
+        Ok(())
+    }
 
     #[test]
     fn plain_backup_payload_contains_settings_idls_and_wallet() -> Result<()> {
@@ -606,6 +735,7 @@ mod tests {
         if payload.get("encrypted").and_then(Value::as_bool) != Some(true) {
             bail!("expected encrypted backup payload");
         }
+        validate_app_settings_backup_envelope(&payload)?;
         let restored = restored_state_from_payload(&payload, Some(&wallet_profile))?;
 
         if !restored.summary.encrypted || restored.summary.favorites_count != 1 {
