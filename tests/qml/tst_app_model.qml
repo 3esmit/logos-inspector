@@ -42,7 +42,7 @@ TestCase {
                 })
                 return serializeResults ? JSON.stringify(response) : response
             }
-            return "direct"
+            return JSON.stringify("direct")
         }
     }
 

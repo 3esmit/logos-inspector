@@ -19,12 +19,14 @@ TestCase {
         property string lastModule: ""
         property string lastMethod: ""
         property var lastArgs: []
+        property string directResponseJson: "\"direct\""
 
         function reset() {
             callCount = 0
             lastModule = ""
             lastMethod = ""
             lastArgs = []
+            directResponseJson = "\"direct\""
         }
 
         function callModule(moduleName, method, args) {
@@ -43,7 +45,7 @@ TestCase {
                     error: ""
                 })
             }
-            return "direct"
+            return directResponseJson
         }
     }
 
@@ -205,6 +207,11 @@ TestCase {
             testRoot.receivedEvent = eventName
             testRoot.receivedArgs = args
         }
+
+        onCallbackFailed: function (error) {
+            testRoot.callbackFailureCount += 1
+            testRoot.callbackFailure = error
+        }
     }
 
     property string receivedModule: ""
@@ -213,6 +220,8 @@ TestCase {
     property var asyncResponse: null
     property int asyncCallbackCount: 0
     property bool legacyQueueDrained: false
+    property int callbackFailureCount: 0
+    property string callbackFailure: ""
 
     function init() {
         client.host = standaloneHost
@@ -232,12 +241,15 @@ TestCase {
         client.nextRequestId = 1
         client.pendingCalls = ({})
         client.moduleEventSubscriptions = ({})
+        client.moduleEventRegistrations = []
         receivedModule = ""
         receivedEvent = ""
         receivedArgs = null
         asyncResponse = null
         asyncCallbackCount = 0
         legacyQueueDrained = false
+        callbackFailureCount = 0
+        callbackFailure = ""
     }
 
     function test_standalone_json_host_round_trips_module_call() {
@@ -355,6 +367,71 @@ TestCase {
         compare(asyncResponse.value.available, 12)
     }
 
+    function test_basecamp_direct_values_do_not_collide_with_inspector_envelope() {
+        client.host = basecampAsyncHost
+
+        client.callModuleAsync("storage_module", "domainResult", [], function (response) {
+            asyncResponse = response
+        })
+        basecampAsyncHost.complete(JSON.stringify({
+            ok: false,
+            error: "domain value",
+            payload: 7
+        }))
+
+        verify(asyncResponse.ok)
+        compare(asyncResponse.value.ok, false)
+        compare(asyncResponse.value.error, "domain value")
+        compare(asyncResponse.value.payload, 7)
+
+        client.host = basecampHost
+        basecampHost.directResponseJson = JSON.stringify({
+            ok: false,
+            error: "domain value",
+            payload: 8
+        })
+        const syncResponse = client.callModule("storage_module", "domainResult", [])
+
+        verify(syncResponse.ok)
+        compare(syncResponse.value.ok, false)
+        compare(syncResponse.value.error, "domain value")
+        compare(syncResponse.value.payload, 8)
+    }
+
+    function test_basecamp_module_version_normalizes_reserved_host_error() {
+        client.host = basecampAsyncHost
+
+        client.callModuleAsync("logos_inspector", "moduleVersion", [], function (response) {
+            asyncResponse = response
+        })
+        basecampAsyncHost.complete(JSON.stringify({ error: "Module not connected" }))
+
+        verify(!asyncResponse.ok)
+        compare(asyncResponse.error, "Logos bridge call failed: Module not connected")
+    }
+
+    function test_basecamp_direct_call_normalizes_reserved_host_errors() {
+        client.host = basecampAsyncHost
+
+        client.callModuleAsync("storage_module", "space", [], function (response) {
+            asyncResponse = response
+        })
+        basecampAsyncHost.complete(JSON.stringify({
+            error: "timeout",
+            module: "storage_module",
+            method: "space"
+        }))
+
+        verify(!asyncResponse.ok)
+        compare(asyncResponse.error, "Logos bridge call failed: timeout")
+
+        client.host = basecampHost
+        basecampHost.directResponseJson = "not-json"
+        const malformed = client.callModule("storage_module", "space", [])
+        verify(!malformed.ok)
+        verify(malformed.error.indexOf("invalid response JSON") >= 0)
+    }
+
     function test_basecamp_async_host_normalizes_transport_error() {
         client.host = basecampAsyncHost
 
@@ -441,6 +518,27 @@ TestCase {
         verify(!asyncResponse.ok)
     }
 
+    function test_host_replacement_drains_all_callbacks_when_one_throws() {
+        client.host = basecampAsyncHost
+        let firstCount = 0
+        let secondCount = 0
+        client.callModuleAsync("logos_inspector", "first", [], function () {
+            firstCount += 1
+            throw new Error("first callback failed")
+        })
+        client.callModuleAsync("logos_inspector", "second", [], function () {
+            secondCount += 1
+        })
+
+        client.host = replacementBasecampAsyncHost
+
+        compare(firstCount, 1)
+        compare(secondCount, 1)
+        compare(callbackFailureCount, 1)
+        compare(callbackFailure, "first callback failed")
+        compare(Object.keys(client.pendingCalls).length, 0)
+    }
+
     function test_host_replacement_cancels_queued_legacy_fallback() {
         client.host = basecampHost
         client.callModuleAsync("logos_inspector", "blockchainNode", [], function (response) {
@@ -485,6 +583,41 @@ TestCase {
         basecampAsyncHost.subscriptionResult = true
         verify(client.subscribeModuleEvent("storage_module", "storageUploadDone"))
         compare(basecampAsyncHost.subscriptionCallCount, 2)
+    }
+
+    function test_module_event_registration_is_not_duplicated_after_host_return() {
+        client.host = basecampAsyncHost
+        verify(client.subscribeModuleEvent("storage_module", "storageUploadDone"))
+        compare(basecampAsyncHost.subscriptionCallCount, 1)
+
+        client.host = replacementBasecampAsyncHost
+        verify(client.subscribeModuleEvent("storage_module", "storageUploadDone"))
+        compare(replacementBasecampAsyncHost.subscriptionCallCount, 1)
+
+        client.host = basecampAsyncHost
+        verify(client.subscribeModuleEvent("storage_module", "storageUploadDone"))
+        compare(basecampAsyncHost.subscriptionCallCount, 1)
+    }
+
+    function test_compatibility_module_event_ignores_old_host_callback() {
+        client.host = eventHost
+        verify(client.subscribeModuleEvent("storage_module", "storageUploadDone"))
+        const staleCallback = eventHost.subscribedCallback
+
+        client.host = basecampAsyncHost
+        client.host = eventHost
+        verify(client.subscribeModuleEvent("storage_module", "storageUploadDone"))
+        const currentCallback = eventHost.subscribedCallback
+        staleCallback({ cid: "stale" })
+
+        compare(receivedModule, "")
+        compare(receivedEvent, "")
+        compare(receivedArgs, null)
+
+        currentCallback({ cid: "current" })
+        compare(receivedModule, "storage_module")
+        compare(receivedEvent, "storageUploadDone")
+        compare(receivedArgs.cid, "current")
     }
 
     function test_compatibility_module_event_subscription_normalizes_payload() {

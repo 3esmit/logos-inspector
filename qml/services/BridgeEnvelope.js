@@ -42,15 +42,14 @@ function callBasecampModule(host, moduleName, method, args) {
     try {
         if (moduleName === "logos_inspector" && method !== "moduleVersion") {
             const raw = host.callModule(moduleName, "call", [method, JSON.stringify(args || [])])
-            return parseBasecampResponseJson(raw)
+            return parseBasecampInspectorResponseJson(raw)
         }
-        const value = host.callModule(moduleName, method, args || [])
-        return {
-            ok: true,
-            value: value,
-            text: BridgeHelpers.formatValue(value),
-            error: ""
-        }
+        const raw = host.callModule(moduleName, method, args || [])
+        return parseBasecampDirectResponseJson(
+            raw,
+            moduleName,
+            method
+        )
     } catch (error) {
         return callError(error)
     }
@@ -85,12 +84,16 @@ function dispatchAsync(host, requestId, moduleName, method, args, finish) {
                 "call",
                 [method, JSON.stringify(args || [])],
                 function (responseJson) {
-                    complete(parseBasecampResponseJson(responseJson))
+                    complete(parseBasecampInspectorResponseJson(responseJson))
                 }
             )
         } else {
             host["callModuleAsync"](moduleName, method, args || [], function (responseJson) {
-                complete(parseBasecampResponseJson(responseJson))
+                complete(parseBasecampDirectResponseJson(
+                    responseJson,
+                    moduleName,
+                    method
+                ))
             })
         }
         return true
@@ -104,22 +107,71 @@ function parseResponseJson(responseJson) {
     return BridgeHelpers.parseModuleResponseJson(responseJson)
 }
 
-function parseBasecampResponseJson(responseJson) {
+function parseBasecampInspectorResponseJson(responseJson) {
     const decoded = BridgeHelpers.parseJson(responseJson)
-    if (decoded.ok
-            && decoded.value
-            && typeof decoded.value === "object"
-            && !Array.isArray(decoded.value)
-            && typeof decoded.value.ok !== "boolean"
-            && typeof decoded.value.error === "string") {
-        return {
-            ok: false,
-            value: null,
-            text: "",
-            error: "Logos bridge call failed: " + decoded.value.error
-        }
+    if (decoded.ok && isHostErrorObject(decoded.value)) {
+        return hostErrorResponse(decoded.value.error)
     }
     return BridgeHelpers.parseModuleResponseJson(responseJson)
+}
+
+function parseBasecampDirectResponseJson(responseJson, moduleName, method) {
+    const decoded = BridgeHelpers.parseJson(responseJson)
+    if (!decoded.ok) {
+        return hostErrorResponse("invalid response JSON: " + decoded.error)
+    }
+    if (isReservedHostError(decoded.value, moduleName, method)) {
+        return hostErrorResponse(decoded.value.error)
+    }
+    return directResponse(decoded.value)
+}
+
+function directResponse(value) {
+    return {
+        ok: true,
+        value: value,
+        text: BridgeHelpers.formatValue(value),
+        error: ""
+    }
+}
+
+function hostErrorResponse(error) {
+    return {
+        ok: false,
+        value: null,
+        text: "",
+        error: "Logos bridge call failed: " + String(error || "unknown host error")
+    }
+}
+
+function isHostErrorObject(value) {
+    return value
+        && typeof value === "object"
+        && !Array.isArray(value)
+        && typeof value.ok !== "boolean"
+        && typeof value.error === "string"
+}
+
+function isReservedHostError(value, moduleName, method) {
+    if (!isHostErrorObject(value)) {
+        return false
+    }
+    const keys = Object.keys(value).sort()
+    if (keys.length === 3
+            && keys[0] === "error"
+            && keys[1] === "method"
+            && keys[2] === "module") {
+        return value.error === "timeout"
+            && String(value.module || "") === String(moduleName || "")
+            && String(value.method || "") === String(method || "")
+    }
+    if (keys.length !== 1 || keys[0] !== "error") {
+        return false
+    }
+    return value.error === "view modules must be called via logos.module()"
+        || value.error === "LogosAPI not available"
+        || value.error === "Module not connected"
+        || value.error === "Invalid response"
 }
 
 function callError(error) {

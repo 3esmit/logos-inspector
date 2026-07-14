@@ -84,6 +84,7 @@ TestCase {
         fakeHost.subscriptions = []
         replacementHost.subscriptions = []
         bridge.moduleEventSubscriptions = ({})
+        bridge.moduleEventRegistrations = []
         model.deliveryModuleEvents = []
         model.deliveryModuleEventRevision = 0
         model.deliveryConnectionStatus = ""
@@ -126,10 +127,13 @@ TestCase {
     function test_host_swap_resubscribes_catalog() {
         intake.install()
         compare(fakeHost.subscriptions.length, 17)
+        const staleCallback = fakeHost.subscriptions[0].callback
 
         bridge.host = replacementHost
 
         tryVerify(function () { return replacementHost.subscriptions.length === 17 })
+        staleCallback({ requestId: "stale" })
+        compare(model.deliveryModuleEvents.length, 0)
     }
 
     function test_ingest_delivery_message_merges_social_comment() {
