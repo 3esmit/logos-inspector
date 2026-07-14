@@ -206,6 +206,14 @@ mod tests {
         let cases = [
             ("storageFetch", json!({ "cid": "cid-2" })),
             (
+                "storageUploadPayload",
+                json!({
+                    "filename": "shared-idl.json",
+                    "payload": { "kind": "shared-idl" },
+                    "block_size": 65536
+                }),
+            ),
+            (
                 "storageUploadBackupCatalogEntry",
                 json!({ "backup_catalog_id": "backup-2", "block_size": 65536 }),
             ),

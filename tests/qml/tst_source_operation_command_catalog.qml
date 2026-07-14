@@ -7,6 +7,8 @@ TestCase {
 
     function test_storage_commands_map_methods_to_actions_and_inputs() {
         const upload = SourceOperationCommandCatalog.storageCommand("storageUploadUrl", ["/tmp/file.bin"])
+        const payloadUpload = SourceOperationCommandCatalog.storageCommand(
+            "storageUploadPayload", ["shared-idl.json", { kind: "shared-idl" }])
         const backupUpload = SourceOperationCommandCatalog.storageCommand(
             "storageUploadBackupCatalogEntry", ["backup-1"])
         const exists = SourceOperationCommandCatalog.storageCommand("storageExists", ["cid"])
@@ -16,6 +18,12 @@ TestCase {
         compare(upload.requiredInputs[0].key, "path")
         compare(upload.requiredInputs[0].value, "/tmp/file.bin")
         verify(upload.runtime)
+
+        compare(payloadUpload.action, "payload_upload")
+        compare(payloadUpload.requiredInputs.length, 1)
+        compare(payloadUpload.requiredInputs[0].key, "filename")
+        compare(payloadUpload.requiredInputs[0].value, "shared-idl.json")
+        verify(payloadUpload.runtime)
 
         compare(backupUpload.action, "backup_upload")
         compare(backupUpload.requiredInputs.length, 1)

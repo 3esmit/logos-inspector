@@ -77,6 +77,16 @@ ColumnLayout {
         Layout.fillWidth: true
     }
 
+    StatusMessage {
+        objectName: "commentSendError"
+        visible: String(root.panelState().sendError || "").length > 0
+        theme: root.theme
+        tone: "warning"
+        title: qsTr("Comment not posted")
+        message: String(root.panelState().sendError || "")
+        Layout.fillWidth: true
+    }
+
     ColumnLayout {
         visible: root.comments().length > 0
         spacing: root.theme.gapSmall
@@ -165,8 +175,7 @@ ColumnLayout {
             text: qsTr("Next page")
             enabled: !root.panelState().loading && !root.panelState().exhausted && root.storeAvailable()
             Layout.preferredWidth: 122
-            onClicked: root.model.social.loadComments(root.topic, false,
-                root.model.social.socialCommentPageSize, root.expectedAccountId)
+            onClicked: root.model.social.loadComments(root.topic, false, root.model.social.socialCommentPageSize, root.expectedAccountId)
         }
 
         Text {
@@ -250,8 +259,7 @@ ColumnLayout {
                 text: root.identityView.defaultMode === "manual" ? qsTr("Manual") : qsTr("Per topic")
                 selected: root.identityView.defaultMode !== "manual"
                 Layout.preferredWidth: 116
-                onClicked: root.model.social.setIdentityDefaultMode(
-                    root.identityView.defaultMode === "manual" ? "perConversation" : "manual")
+                onClicked: root.model.social.setIdentityDefaultMode(root.identityView.defaultMode === "manual" ? "perConversation" : "manual")
             }
 
             Item {
@@ -262,6 +270,7 @@ ColumnLayout {
 
     TextAreaField {
         id: commentBody
+        objectName: "commentBody"
 
         theme: root.theme
         label: qsTr("Comment")
@@ -275,8 +284,9 @@ ColumnLayout {
         Layout.fillWidth: true
 
         Text {
+            objectName: "commentSendHint"
             text: root.sendHint()
-            color: root.writeAvailable() ? root.theme.textDim : root.theme.warning
+            color: String(root.panelState().sendError || "").length > 0 || !root.writeAvailable() ? root.theme.warning : root.theme.textDim
             textFormat: Text.PlainText
             elide: Text.ElideRight
             font.pixelSize: root.theme.secondaryText
@@ -285,6 +295,7 @@ ColumnLayout {
         }
 
         ActionButton {
+            objectName: "commentPostButton"
             theme: root.theme
             text: qsTr("Post")
             primary: true
@@ -303,10 +314,12 @@ ColumnLayout {
         confirmText: qsTr("Post")
         confirmEnabled: root.writeAvailable() && commentBody.text.trim().length > 0
         onAccepted: {
-            if (root.model.social.postComment(root.topic, commentBody.text,
-                    root.composerIdentityKey, root.entityRef)) {
-                commentBody.text = ""
-            }
+            const draft = commentBody.text
+            root.model.social.postComment(root.topic, draft, root.composerIdentityKey, root.entityRef, function (response) {
+                if (response && response.ok === true && commentBody.text === draft) {
+                    commentBody.text = ""
+                }
+            })
         }
     }
 
@@ -314,8 +327,7 @@ ColumnLayout {
         if (!root.topic.length || !root.storeAvailable()) {
             return
         }
-        root.model.social.loadComments(root.topic, true,
-            root.model.social.socialCommentPageSize, root.expectedAccountId)
+        root.model.social.loadComments(root.topic, true, root.model.social.socialCommentPageSize, root.expectedAccountId)
     }
 
     function storeGate() {
@@ -331,7 +343,7 @@ ColumnLayout {
     }
 
     function writeAvailable() {
-        return root.writeGate().enabled === true
+        return root.commentView.writeAvailable === true
     }
 
     function storeUnavailableText() {
@@ -400,11 +412,14 @@ ColumnLayout {
     }
 
     function sendHint() {
+        if (root.panelState().sending === true) {
+            return qsTr("Posting comment")
+        }
+        if (String(root.panelState().sendError || "").length > 0) {
+            return String(root.panelState().sendError)
+        }
         if (!root.writeAvailable()) {
             return root.writeUnavailableText()
-        }
-        if (!root.model.messagingMutatingDiagnosticsEnabled) {
-            return qsTr("Mutating diagnostics off")
         }
         return qsTr("Public JSON message")
     }

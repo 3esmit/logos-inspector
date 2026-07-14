@@ -259,6 +259,40 @@ TestCase {
         }
     }
 
+    function socialUploadOperation(id, result) {
+        return {
+            operationId: String(id || "social-upload-1"),
+            domain: "storage",
+            method: "storageUploadPayload",
+            label: "Upload shared IDL",
+            status: "completed",
+            eventCursor: 1,
+            context: {
+                source: "rest",
+                filename: "logos-inspector-shared-idl.json"
+            },
+            result: result,
+            error: ""
+        }
+    }
+
+    function socialSendOperation(id, topic, result) {
+        return {
+            operationId: String(id || "social-send-1"),
+            domain: "delivery",
+            method: "deliverySend",
+            label: "Share IDL",
+            status: "completed",
+            eventCursor: 1,
+            context: {
+                source: "rest",
+                contentTopic: String(topic || "")
+            },
+            result: result,
+            error: ""
+        }
+    }
+
     function setActiveZone(channelId) {
         const zoneId = String(channelId || "22".repeat(32))
         const scope = { kind: "genesis_id", genesis_id: "11".repeat(32) }
@@ -372,6 +406,18 @@ TestCase {
         return fakeHost.calls.filter(function (call) {
             return String(call.method || "") === method
         }).length
+    }
+
+    function runtimeOperationCallIndex(method) {
+        for (let i = 0; i < fakeHost.calls.length; ++i) {
+            const call = fakeHost.calls[i] || {}
+            const request = call.method === "runtimeOperationStart" && call.args
+                ? call.args[0] || null : null
+            if (request && String(request.method || "") === String(method || "")) {
+                return i
+            }
+        }
+        return -1
     }
 
     function test_basecamp_bridge_routes_inspector_calls_through_generic_call() {
@@ -1854,21 +1900,28 @@ TestCase {
                 text: "OK",
                 error: ""
             },
-            storageUploadPayload: {
-                ok: true,
-                value: {
-                    cid: "cid-idl"
-                },
-                text: "OK",
-                error: ""
-            },
-            deliverySend: {
-                ok: true,
-                value: {
-                    messageHash: "hash-1"
-                },
-                text: "OK",
-                error: ""
+            runtimeOperationStart: function (args) {
+                const request = args[0] || {}
+                if (request.method === "storageUploadPayload") {
+                    return {
+                        ok: true,
+                        value: socialUploadOperation("idl-upload", {
+                            cid: "cid-idl",
+                            filename: "logos-inspector-shared-idl.json",
+                            endpoint: model.configuredStorageRestUrl()
+                        }),
+                        text: "OK",
+                        error: ""
+                    }
+                }
+                return {
+                    ok: true,
+                    value: socialSendOperation("idl-send", request.payload.topic, {
+                        messageHash: "hash-1"
+                    }),
+                    text: "OK",
+                    error: ""
+                }
             }
         }
 
@@ -1878,8 +1931,12 @@ TestCase {
             json: "{\"name\":\"Shared\",\"accounts\":[]}"
         }))
 
-        const uploadIndex = callIndexFor("storageUploadPayload")
-        const sendIndex = callIndexFor("deliverySend")
+        tryVerify(function () {
+            return runtimeOperationCallIndex("deliverySend")
+                > runtimeOperationCallIndex("storageUploadPayload")
+        })
+        const uploadIndex = runtimeOperationCallIndex("storageUploadPayload")
+        const sendIndex = runtimeOperationCallIndex("deliverySend")
         verify(uploadIndex >= 0)
         verify(sendIndex > uploadIndex)
         const uploadRequest = fakeHost.calls[uploadIndex].args[0]
@@ -1890,6 +1947,8 @@ TestCase {
         compare(deliveryPayload.version, 2)
         compare(deliveryPayload.scope.zone_id, model.zoneInspection.activeZoneId)
         verify(deliveryPayload.idl_json === undefined)
+        compare(callCountFor("storageUploadPayload"), 0)
+        compare(callCountFor("deliverySend"), 0)
     }
 
     function test_publish_account_idl_uploads_through_logoscore_cli() {
@@ -1910,17 +1969,25 @@ TestCase {
                 text: "OK",
                 error: ""
             },
-            storageUploadPayload: {
-                ok: true,
-                value: { cid: "cid-idl" },
-                text: "OK",
-                error: ""
-            },
-            deliverySend: {
-                ok: true,
-                value: { messageHash: "hash-1" },
-                text: "OK",
-                error: ""
+            runtimeOperationStart: function (args) {
+                const request = args[0] || {}
+                return request.method === "storageUploadPayload" ? {
+                    ok: true,
+                    value: socialUploadOperation("idl-upload-cli", {
+                        cid: "cid-idl",
+                        filename: "logos-inspector-shared-idl.json",
+                        endpoint: "logoscore call storage_module"
+                    }),
+                    text: "OK",
+                    error: ""
+                } : {
+                    ok: true,
+                    value: socialSendOperation("idl-send-cli", request.payload.topic, {
+                        messageHash: "hash-1"
+                    }),
+                    text: "OK",
+                    error: ""
+                }
             }
         }
 
@@ -1930,10 +1997,16 @@ TestCase {
                 json: "{\"name\":\"Shared\",\"accounts\":[]}"
             }))
 
-        const uploadIndex = callIndexFor("storageUploadPayload")
+        tryVerify(function () {
+            return runtimeOperationCallIndex("deliverySend")
+                > runtimeOperationCallIndex("storageUploadPayload")
+        })
+        const uploadIndex = runtimeOperationCallIndex("storageUploadPayload")
         verify(uploadIndex >= 0)
         compare(fakeHost.calls[uploadIndex].args[0].adapter.source_mode, "logoscore_cli")
-        verify(callIndexFor("deliverySend") > uploadIndex)
+        verify(runtimeOperationCallIndex("deliverySend") > uploadIndex)
+        compare(callCountFor("storageUploadPayload"), 0)
+        compare(callCountFor("deliverySend"), 0)
     }
 
     function test_settings_backup_blocks_when_upload_gate_unavailable() {

@@ -183,6 +183,17 @@ mod tests {
     }
 
     #[test]
+    fn storage_payload_upload_is_owned_by_runtime_operations() {
+        assert!(lookup("storageUploadPayload").is_none());
+        assert!(
+            crate::inspector::commands::operations::operation_bridge_command(
+                "storageUploadPayload"
+            )
+            .is_some()
+        );
+    }
+
+    #[test]
     fn runtime_catalog_defines_host_synchronous_execution_policy() {
         assert!(
             lookup("sourcePolicy").is_some_and(RuntimeMethodEntry::allows_host_synchronous_call)

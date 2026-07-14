@@ -29,6 +29,7 @@ define_operation_methods!(
     StorageDownloadManifest,
     StorageFetch,
     StorageUploadUrl,
+    StorageUploadPayload,
     StorageUploadBackupCatalogEntry,
     StorageDownloadToUrl,
     StorageRemove,
@@ -90,6 +91,7 @@ pub(super) enum AffectedContextKey {
     Endpoint,
     Cid,
     Path,
+    Filename,
     BackupCatalogId,
 }
 
@@ -317,6 +319,7 @@ impl AffectedContextKey {
             Self::Endpoint => "endpoint",
             Self::Cid => "cid",
             Self::Path => "path",
+            Self::Filename => "filename",
             Self::BackupCatalogId => "backupCatalogId",
         }
     }
@@ -629,6 +632,16 @@ mod tests {
                 OperationCommand::Storage(storage::StorageCommand::UploadUrl),
                 "storageUploadUrl",
                 "Storage upload",
+                OperationDomain::Storage,
+                OperationClass::Mutating,
+                false,
+                None,
+            ),
+            (
+                OperationMethod::StorageUploadPayload,
+                OperationCommand::Storage(storage::StorageCommand::UploadPayload),
+                "storageUploadPayload",
+                "Storage payload upload",
                 OperationDomain::Storage,
                 OperationClass::Mutating,
                 false,
@@ -956,6 +969,14 @@ mod tests {
                     AffectedContextField::required(AffectedContextKey::Source),
                     AffectedContextField::optional(AffectedContextKey::Endpoint),
                     AffectedContextField::required(AffectedContextKey::Path),
+                ],
+            ),
+            (
+                OperationMethod::StorageUploadPayload,
+                &[
+                    AffectedContextField::required(AffectedContextKey::Source),
+                    AffectedContextField::optional(AffectedContextKey::Endpoint),
+                    AffectedContextField::required(AffectedContextKey::Filename),
                 ],
             ),
             (
