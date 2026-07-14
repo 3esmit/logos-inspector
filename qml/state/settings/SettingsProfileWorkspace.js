@@ -91,11 +91,11 @@ function applyProfileIndex(root, index) {
 }
 
 function sourceIndexFor(root, family, value, optionsModel) {
-    return root.model.sourceModeIndexFor(family, value, optionsModel)
+    return root.model.sourceRouting.sourceModeIndexFor(family, value, optionsModel)
 }
 
 function sourceModeAt(root, index, optionsModel) {
-    return root.model.sourceModeAt(index, optionsModel)
+    return root.model.sourceRouting.sourceModeAt(index, optionsModel)
 }
 
 function refreshSourceOptions(root, coreOptions, deliveryOptions, storageOptions) {

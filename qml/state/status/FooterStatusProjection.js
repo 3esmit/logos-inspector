@@ -155,7 +155,7 @@ function footerFieldValue(root, key) {
     case "storage.module":
         return root.moduleDisplayStatus("storage")
     case "storage.network":
-        return root.model.storageNetworkPreset || root.model.storageSourceTarget()
+        return root.model.storageNetworkPreset || root.model.sourceRouting.storageSourceTarget()
     case "storage.node_reachable":
         return root.connectionReachableStatus("storage")
     case "storage.nat_mode":

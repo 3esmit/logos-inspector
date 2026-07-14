@@ -498,7 +498,7 @@ function postSocialComment(root, topic, body, identityKey, entityRef, onComplete
 }
 
 function socialMessageSourceAvailable(root) {
-    const mode = String(root.gateway.effectiveMessagingSourceMode(root.messagingSourceMode) || "").toLowerCase()
+    const mode = String(root.sourceRouting.effectiveMessagingSourceMode(root.messagingSourceMode) || "").toLowerCase()
     return mode === "rest" || mode === "module"
 }
 

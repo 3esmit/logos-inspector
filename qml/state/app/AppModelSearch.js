@@ -594,9 +594,9 @@ function openStorageCid(root, cid) {
         selectView("storage", false)
         shell.setResult(qsTr("Storage CID"), qsTr("Storage CID context: %1").arg(value), false, {
             cid: value,
-            source: root.storageSourceTarget()
+            source: root.sourceRouting.storageSourceTarget()
         })
-        if (root.storageSourceTarget().length > 0) {
+        if (root.sourceRouting.storageSourceTarget().length > 0) {
             root.queryNetworkConnection("storage", false, true)
         }
     }

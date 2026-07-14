@@ -10,10 +10,11 @@ function build(model, theme, family) {
     const pending = model.networkConnectionIsPending(networkKind)
     const sourceName = storage ? model.sourceRouting.storageSourceLabel()
         : model.sourceRouting.deliverySourceLabel()
-    const sourceTarget = storage ? model.storageSourceTarget() : model.deliverySourceTarget()
+    const sourceTarget = storage ? model.sourceRouting.storageSourceTarget()
+        : model.sourceRouting.deliverySourceTarget()
     const sourceMode = storage
         ? model.sourceRouting.effectiveStorageSourceMode(model.storageSourceMode)
-        : model.effectiveMessagingSourceMode(model.messagingSourceMode)
+        : model.sourceRouting.effectiveMessagingSourceMode(model.messagingSourceMode)
 
     const page = {
         model: model,
@@ -251,7 +252,7 @@ function deliveryView(page, common) {
         return SourceObservation.deliveryProtocolRow(page, label, protocolId, signalKey)
     }
     page.deliverySourceMode = function () {
-        return page.model.effectiveMessagingSourceMode(page.model.messagingSourceMode)
+        return page.model.sourceRouting.effectiveMessagingSourceMode(page.model.messagingSourceMode)
     }
     page.moduleMetricsText = function () {
         return SourceObservation.deliveryModuleMetricsText(page)

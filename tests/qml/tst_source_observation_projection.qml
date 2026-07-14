@@ -8,12 +8,19 @@ TestCase {
     name: "SourceObservationProjection"
 
     QtObject {
+        id: sourceRoutingStub
+
+        function storageSourceTarget() { return "http://storage" }
+    }
+
+    QtObject {
         id: storageModel
 
         property int storageRollingWindow: 30
         property string storageCidProbe: ""
         property string storageDataDir: "/tmp/storage"
         property bool storageMutatingDiagnosticsEnabled: false
+        property var sourceRouting: sourceRoutingStub
         property var metricValues: ({
             "storage.active_uploads": 4,
             "storage.active_downloads": 2,
@@ -24,7 +31,6 @@ TestCase {
 
         function dashboardMetricValue(key) { return metricValues[String(key || "")] }
         function valueText(value) { return String(value) }
-        function storageSourceTarget() { return "http://storage" }
         function storageDisplayPath(value) { return String(value || "") }
         function sourceCapabilityAvailable(report, key) { return false }
     }

@@ -7,13 +7,21 @@ TestCase {
     name: "SettingsProfileWorkspace"
 
     QtObject {
-        id: sourceRouting
+        id: sourceRoutingStub
 
         function sourceModeOptions(family) {
             return [
                 { value: family + "-auto", label: "Auto" },
                 { value: family + "-rest", label: "REST" }
             ]
+        }
+
+        function sourceModeIndexFor(family, value, options) {
+            return String(value || "") === family + "-rest" ? 1 : 0
+        }
+
+        function sourceModeAt(index, options) {
+            return options.get(index).value
         }
     }
 
@@ -22,7 +30,7 @@ TestCase {
 
         property string nodeUrl: "https://node/"
         property string networkProfile: "default"
-        property var sourceRouting: sourceRouting
+        property var sourceRouting: sourceRoutingStub
         property var localWalletStatus: null
         property string localWalletStatusError: ""
         property bool settingsBackupEncrypted: false
@@ -39,8 +47,6 @@ TestCase {
 
         function networkConnectionRate(kind) { return kind === "slow" ? 15 : 0 }
         function networkProfileOptions() { return [{ key: "default", label: "Default" }, { key: "custom", label: "Custom" }] }
-        function sourceModeIndexFor(family, value, options) { return String(value || "") === family + "-rest" ? 1 : 0 }
-        function sourceModeAt(index, options) { return options.get(index).value }
         function profileIndexFor(value) { return value === "custom" ? 1 : 0 }
         function networkProfileLabel(value) { return value === "custom" ? "Custom" : "Default" }
         function networkProfileSummary(value) { return value === "custom" ? "Manual endpoints" : "Default endpoints" }

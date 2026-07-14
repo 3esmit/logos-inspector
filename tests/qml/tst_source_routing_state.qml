@@ -163,4 +163,32 @@ TestCase {
         compare(args[1], "payload")
     }
 
+    function test_logoscore_cli_storage_report_uses_structured_adapter_initialization() {
+        state.connectorConfig = ({
+            scopes: {
+                storage: {
+                    connector_id: "logoscore_cli_storage_module",
+                    provenance: "build_default"
+                }
+            }
+        })
+        const sourceMode = state.connectorSourceMode("storage", state.storageSourceMode)
+
+        const args = state.storageSourceReportArgs(
+            sourceMode,
+            "http://unused-storage",
+            "http://unused-metrics",
+            "cid-test",
+            true,
+            true
+        )
+
+        compare(sourceMode, "logoscore_cli")
+        compare(args.length, 1)
+        compare(args[0].source_mode, "logoscore_cli")
+        compare(Object.keys(args[0].inputs).length, 0)
+        compare(args[0].options.cid, "cid-test")
+        compare(args[0].options.privileged_debug_enabled, true)
+    }
+
 }

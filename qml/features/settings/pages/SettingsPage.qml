@@ -322,7 +322,7 @@ ColumnLayout {
                     InfoField {
                         theme: settingsRoot.theme
                         label: qsTr("Storage REST")
-                        value: settingsRoot.model.configuredStorageRestUrl()
+                        value: settingsRoot.model.sourceRouting.configuredStorageRestUrl()
                     }
 
                     FieldRow {
@@ -1071,7 +1071,7 @@ ColumnLayout {
             kind: "blockchain"
             pageWidth: settingsRoot.width
             busy: settingsRoot.model.shell.busy
-            connectionType: settingsRoot.model.blockchainSourceLabel()
+            connectionType: settingsRoot.model.sourceRouting.blockchainSourceLabel()
             endpointLabel: qsTr("RPC URL")
             endpoint: settingsRoot.model.nodeUrl
             primaryFieldVisible: settingsRoot.model.sourceRouting.sourceModeUsesInput(

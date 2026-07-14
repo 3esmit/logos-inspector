@@ -56,7 +56,7 @@ Item {
         root.schedulePageLoaderUpdate()
         const initialReference = root.initialReferenceFromArguments()
         Qt.callLater(function () {
-            appModel.loadSourcePolicy()
+            appModel.sourceRouting.loadSourcePolicy()
             appModel.loadSettingsState()
             appModel.startZoneInspection()
             appModel.loadCapabilityRegistry()
