@@ -14,6 +14,8 @@ use super::{
 const SOURCE_PROBE_TIMEOUT: Duration = Duration::from_secs(8);
 
 pub(crate) type ChannelSourceProbeFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
+pub(crate) type SequencerAttestorFuture =
+    Pin<Box<dyn Future<Output = Result<String, ChannelSourceProbeFailure>> + Send + 'static>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -29,6 +31,45 @@ pub enum ChannelSourceFailureKind {
 pub(crate) struct ChannelSourceProbeFailure {
     pub(crate) kind: ChannelSourceFailureKind,
     pub(crate) diagnostic: String,
+}
+
+pub(crate) trait SequencerTargetAttestor: Send + Sync + 'static {
+    fn attest(self: Arc<Self>, target: ChannelSourceTarget) -> SequencerAttestorFuture;
+}
+
+pub(crate) struct DefaultSequencerTargetAttestor {
+    transport: Arc<dyn ChannelSourceProbeTransport>,
+}
+
+impl DefaultSequencerTargetAttestor {
+    #[must_use]
+    pub(crate) fn with_module_transport(
+        module_transport: SharedModuleTransport,
+        module_transport_kind: ModuleTransportKind,
+    ) -> Self {
+        Self {
+            transport: Arc::new(DefaultChannelSourceProbeTransport::new(
+                module_transport,
+                module_transport_kind,
+            )),
+        }
+    }
+}
+
+impl SequencerTargetAttestor for DefaultSequencerTargetAttestor {
+    fn attest(self: Arc<Self>, target: ChannelSourceTarget) -> SequencerAttestorFuture {
+        Box::pin(async move {
+            match tokio::time::timeout(
+                SOURCE_PROBE_TIMEOUT,
+                self.transport.clone().sequencer_channel_id(target),
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(_) => Err(ChannelSourceProbeFailure::timeout()),
+            }
+        })
+    }
 }
 
 impl std::fmt::Display for ChannelSourceProbeFailure {
@@ -160,19 +201,6 @@ impl DefaultChannelSourceProbe {
                 module_transport_kind,
             )),
         }
-    }
-}
-
-pub(crate) async fn attest_sequencer_target(target: ChannelSourceTarget) -> anyhow::Result<String> {
-    match tokio::time::timeout(
-        SOURCE_PROBE_TIMEOUT,
-        Arc::new(DefaultChannelSourceProbeTransport::default()).sequencer_channel_id(target),
-    )
-    .await
-    {
-        Ok(Ok(channel_id)) => Ok(channel_id),
-        Ok(Err(failure)) => Err(anyhow::Error::new(failure)),
-        Err(_) => Err(anyhow::Error::new(ChannelSourceProbeFailure::timeout())),
     }
 }
 

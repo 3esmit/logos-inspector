@@ -3,6 +3,8 @@ use std::path::Path;
 use anyhow::{Context as _, Result};
 use serde_json::{Value, json};
 
+use crate::source_routing::channel_sources::normalized_settings_state_from_backup;
+
 #[cfg(test)]
 use crate::support::state_store::{load_idl_state, load_settings_state};
 
@@ -101,7 +103,18 @@ pub(super) fn build_import_plan_with_current(
         state.wallet.as_ref(),
         selection.mode(BackupImportArea::WalletProfile),
     );
-    let settings = planned_settings.state;
+    let settings = planned_settings
+        .state
+        .as_ref()
+        .map(|settings| {
+            normalized_settings_state_from_backup(
+                settings,
+                current_settings.context(
+                    "current settings are required to rebase Channel source configuration revisions",
+                )?,
+            )
+        })
+        .transpose()?;
     let idl = planned_idl.state;
 
     let settings_applied = settings.is_some();
@@ -428,12 +441,8 @@ fn merge_settings(current: Option<&Value>, backup: &Value) -> Result<Value> {
 
 fn needs_current_settings(selection: &BackupImportSelection, state: &RestoredState) -> bool {
     state.settings.is_some()
-        && (selection.mode(BackupImportArea::Settings) == BackupImportMode::Merge
-            || selection.mode(BackupImportArea::Favorites) == BackupImportMode::Merge
-            || (selection.mode(BackupImportArea::Settings) == BackupImportMode::Replace
-                && selection.mode(BackupImportArea::Favorites) == BackupImportMode::Skip)
-            || (selection.mode(BackupImportArea::Settings) == BackupImportMode::Skip
-                && selection.mode(BackupImportArea::Favorites) == BackupImportMode::Replace))
+        && (selection.mode(BackupImportArea::Settings).is_selected()
+            || selection.mode(BackupImportArea::Favorites).is_selected())
 }
 
 fn planned_favorites_count(

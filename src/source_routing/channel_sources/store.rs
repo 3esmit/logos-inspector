@@ -1,6 +1,9 @@
 use std::{
     collections::BTreeSet,
+    future::Future,
     path::{Path, PathBuf},
+    pin::Pin,
+    sync::Arc,
 };
 
 #[cfg(test)]
@@ -11,6 +14,7 @@ use serde_json::{Map, Value, json};
 
 use crate::{
     inspection::NetworkScope,
+    modules::logos_core::{ModuleTransportKind, SharedModuleTransport},
     support::{
         config_path::settings_state_path,
         local_state::{
@@ -21,15 +25,163 @@ use crate::{
 
 use super::config::{
     ChannelSourceConfig, ChannelSourceConfigApplyRequest, ChannelSourceConfigMutation,
-    ChannelSourceRole, ConfiguredIndexerSource, ConfiguredSequencerSource,
+    ChannelSourceRole, ChannelSourceTarget, ConfiguredIndexerSource, ConfiguredSequencerSource,
     PersistedSequencerAttestation, SequencerAttestationReceipt, generate_source_id,
     normalize_channel_id, normalize_channel_source_configs, normalize_label,
     normalize_network_scope, validate_source_id,
+};
+use super::probe::{
+    ChannelSourceFailureKind, DefaultSequencerTargetAttestor, SequencerTargetAttestor,
 };
 
 const SETTINGS_VERSION: u64 = 2;
 const CHANNEL_SOURCE_CONFIGS_KEY: &str = "channel_source_configs";
 const SOURCE_ID_GENERATION_ATTEMPTS: usize = 8;
+
+pub(crate) type ChannelSourceConfigMutationFuture =
+    Pin<Box<dyn Future<Output = Result<ChannelSourceConfigApplyOutcome>> + Send + 'static>>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChannelSourceAttestationOutcome {
+    NotRequired,
+    Persisted,
+    Pending,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ChannelSourceConfigApplyOutcome {
+    pub(crate) config: ChannelSourceConfig,
+    pub(crate) attestation: ChannelSourceAttestationOutcome,
+}
+
+pub(crate) trait ChannelSourceConfigMutationInterface: Send + Sync + 'static {
+    fn load(&self) -> Result<Vec<ChannelSourceConfig>>;
+
+    fn apply(
+        self: Arc<Self>,
+        request: ChannelSourceConfigApplyRequest,
+    ) -> ChannelSourceConfigMutationFuture;
+}
+
+#[derive(Clone)]
+pub(crate) struct SettingsChannelSourceConfigMutation {
+    path: Option<PathBuf>,
+    attestor: Arc<dyn SequencerTargetAttestor>,
+}
+
+impl SettingsChannelSourceConfigMutation {
+    #[must_use]
+    pub(crate) fn with_module_transport(
+        module_transport: SharedModuleTransport,
+        module_transport_kind: ModuleTransportKind,
+    ) -> Self {
+        Self {
+            path: None,
+            attestor: Arc::new(DefaultSequencerTargetAttestor::with_module_transport(
+                module_transport,
+                module_transport_kind,
+            )),
+        }
+    }
+
+    async fn apply_request(
+        &self,
+        request: ChannelSourceConfigApplyRequest,
+    ) -> Result<ChannelSourceConfigApplyOutcome> {
+        let store = self.store()?;
+        let prepared = store.prepare_mutation(request)?;
+        let (receipt, attestation) = self.attest(&prepared).await?;
+        let config = store.commit_prepared_mutation(prepared, receipt)?;
+        Ok(ChannelSourceConfigApplyOutcome {
+            config,
+            attestation,
+        })
+    }
+
+    async fn attest(
+        &self,
+        prepared: &PreparedChannelSourceMutation,
+    ) -> Result<(
+        Option<SequencerAttestationReceipt>,
+        ChannelSourceAttestationOutcome,
+    )> {
+        let Some(plan) = prepared.attestation.as_ref() else {
+            return Ok((None, ChannelSourceAttestationOutcome::NotRequired));
+        };
+        match self.attestor.clone().attest(plan.target.clone()).await {
+            Ok(reported_channel_id) => {
+                let reported_channel_id = normalize_channel_id(&reported_channel_id)?;
+                if reported_channel_id != prepared.channel_id {
+                    bail!("Sequencer attestation reported another Channel");
+                }
+                Ok((
+                    Some(SequencerAttestationReceipt {
+                        reported_channel_id,
+                        target_fingerprint: plan.target.fingerprint(),
+                        attested_at_unix: crate::support::time::now_millis() / 1_000,
+                    }),
+                    ChannelSourceAttestationOutcome::Persisted,
+                ))
+            }
+            Err(failure)
+                if plan.allow_pending
+                    && matches!(
+                        failure.kind,
+                        ChannelSourceFailureKind::Timeout | ChannelSourceFailureKind::Unavailable
+                    ) =>
+            {
+                Ok((None, ChannelSourceAttestationOutcome::Pending))
+            }
+            Err(failure) => {
+                Err(anyhow::Error::new(failure).context("Sequencer Channel attestation failed"))
+            }
+        }
+    }
+
+    fn store(&self) -> Result<SettingsStore> {
+        self.path
+            .clone()
+            .map(SettingsStore::new)
+            .map_or_else(|| settings_state_path().map(SettingsStore::new), Ok)
+    }
+
+    #[cfg(test)]
+    fn with_store(store: &SettingsStore, attestor: Arc<dyn SequencerTargetAttestor>) -> Self {
+        Self {
+            path: Some(store.path.clone()),
+            attestor,
+        }
+    }
+}
+
+impl ChannelSourceConfigMutationInterface for SettingsChannelSourceConfigMutation {
+    fn load(&self) -> Result<Vec<ChannelSourceConfig>> {
+        let store = self.store()?;
+        let guard = settings_guard(&store.path)?;
+        Ok(store.load_document_locked(&guard)?.channel_source_configs)
+    }
+
+    fn apply(
+        self: Arc<Self>,
+        request: ChannelSourceConfigApplyRequest,
+    ) -> ChannelSourceConfigMutationFuture {
+        Box::pin(async move { self.apply_request(request).await })
+    }
+}
+
+struct PreparedChannelSourceMutation {
+    network_scope: NetworkScope,
+    channel_id: String,
+    expected_config_revision: u64,
+    mutation: ChannelSourceConfigMutation,
+    base_config: Option<ChannelSourceConfig>,
+    attestation: Option<SequencerAttestationPlan>,
+}
+
+struct SequencerAttestationPlan {
+    target: ChannelSourceTarget,
+    allow_pending: bool,
+}
 
 pub fn load_channel_source_configs() -> Result<Vec<ChannelSourceConfig>> {
     let store = SettingsStore::new(settings_state_path()?);
@@ -37,19 +189,14 @@ pub fn load_channel_source_configs() -> Result<Vec<ChannelSourceConfig>> {
     Ok(store.load_document_locked(&guard)?.channel_source_configs)
 }
 
+#[deprecated(note = "use the channelSourceConfigApply command transaction")]
 pub fn apply_channel_source_config(
     request: ChannelSourceConfigApplyRequest,
 ) -> Result<ChannelSourceConfig> {
     SettingsStore::new(settings_state_path()?).apply(request)
 }
 
-pub(crate) fn apply_channel_source_config_with_attestation(
-    request: ChannelSourceConfigApplyRequest,
-    attestation: Option<SequencerAttestationReceipt>,
-) -> Result<ChannelSourceConfig> {
-    SettingsStore::new(settings_state_path()?).apply_with_attestation(request, attestation)
-}
-
+#[deprecated(note = "use the channelSourceConfigApply retry_attestation command transaction")]
 pub fn record_sequencer_attestation(
     network_scope: NetworkScope,
     channel_id: &str,
@@ -92,8 +239,17 @@ pub(crate) fn settings_state_from_stored(stored: &StoredBytes) -> Result<Value> 
     document.into_value()
 }
 
-pub(crate) fn normalized_settings_state_from_backup(state: &Value) -> Result<Value> {
-    SettingsDocument::from_value(state.clone())?.into_value()
+pub(crate) fn normalized_settings_state_from_backup(
+    state: &Value,
+    current_state: &Value,
+) -> Result<Value> {
+    let mut incoming = SettingsDocument::from_value(state.clone())?;
+    let current = SettingsDocument::from_value(current_state.clone())?;
+    rebase_imported_config_revisions(
+        &mut incoming.channel_source_configs,
+        &current.channel_source_configs,
+    )?;
+    incoming.into_value()
 }
 
 #[derive(Debug, Clone)]
@@ -135,45 +291,82 @@ impl SettingsStore {
         self.apply_with_attestation(request, None)
     }
 
-    fn apply_with_attestation(
+    fn prepare_mutation(
         &self,
         request: ChannelSourceConfigApplyRequest,
-        attestation: Option<SequencerAttestationReceipt>,
-    ) -> Result<ChannelSourceConfig> {
-        let mut guard = settings_guard(&self.path)?;
-        let mut document = self.load_document_locked(&guard)?;
+    ) -> Result<PreparedChannelSourceMutation> {
+        let guard = settings_guard(&self.path)?;
+        let document = self.load_document_locked(&guard)?;
         let network_scope = normalize_network_scope(request.network_scope)?;
         let channel_id = normalize_channel_id(&request.channel_id)?;
-        let existing = document
+        let base_config = document
             .channel_source_configs
             .iter()
             .find(|config| config.network_scope == network_scope && config.channel_id == channel_id)
             .cloned();
-        let current_revision = existing.as_ref().map_or(0, |config| config.config_revision);
+        let current_revision = base_config
+            .as_ref()
+            .map_or(0, |config| config.config_revision);
         if current_revision != request.expected_config_revision {
             bail!(
                 "Channel source configuration revision conflict: expected {}, current {current_revision}",
                 request.expected_config_revision
             );
         }
+        let (mutation, attestation) =
+            normalized_mutation_plan(request.mutation, base_config.as_ref())?;
+        Ok(PreparedChannelSourceMutation {
+            network_scope,
+            channel_id,
+            expected_config_revision: request.expected_config_revision,
+            mutation,
+            base_config,
+            attestation,
+        })
+    }
 
-        let mut config = existing.unwrap_or_else(|| ChannelSourceConfig {
-            network_scope: network_scope.clone(),
-            channel_id: channel_id.clone(),
+    fn commit_prepared_mutation(
+        &self,
+        prepared: PreparedChannelSourceMutation,
+        attestation: Option<SequencerAttestationReceipt>,
+    ) -> Result<ChannelSourceConfig> {
+        let mut guard = settings_guard(&self.path)?;
+        let mut document = self.load_document_locked(&guard)?;
+        let current = document
+            .channel_source_configs
+            .iter()
+            .find(|config| {
+                config.network_scope == prepared.network_scope
+                    && config.channel_id == prepared.channel_id
+            })
+            .cloned();
+        if current != prepared.base_config {
+            let current_revision = current.as_ref().map_or(0, |config| config.config_revision);
+            bail!(
+                "Channel source configuration revision conflict: exact target changed after revision {} was read, current {current_revision}",
+                prepared.expected_config_revision
+            );
+        }
+
+        let mut config = current.unwrap_or_else(|| ChannelSourceConfig {
+            network_scope: prepared.network_scope.clone(),
+            channel_id: prepared.channel_id.clone(),
             config_revision: 0,
             sequencer_sources: Vec::new(),
             selected_sequencer_source_id: None,
             indexer_source: None,
         });
         let mut source_ids = configured_source_ids(&document.channel_source_configs);
-        apply_mutation(&mut config, request.mutation, &mut source_ids, attestation)?;
-        config.config_revision = current_revision
+        apply_mutation(&mut config, prepared.mutation, &mut source_ids, attestation)?;
+        config.config_revision = prepared
+            .expected_config_revision
             .checked_add(1)
             .context("Channel source configuration revision overflow")?;
         config = config.normalized()?;
 
         if let Some(current) = document.channel_source_configs.iter_mut().find(|current| {
-            current.network_scope == network_scope && current.channel_id == channel_id
+            current.network_scope == prepared.network_scope
+                && current.channel_id == prepared.channel_id
         }) {
             *current = config.clone();
         } else {
@@ -181,6 +374,15 @@ impl SettingsStore {
         }
         self.write_document_locked(&mut guard, &document)?;
         Ok(config)
+    }
+
+    fn apply_with_attestation(
+        &self,
+        request: ChannelSourceConfigApplyRequest,
+        attestation: Option<SequencerAttestationReceipt>,
+    ) -> Result<ChannelSourceConfig> {
+        let prepared = self.prepare_mutation(request)?;
+        self.commit_prepared_mutation(prepared, attestation)
     }
 
     fn record_attestation(
@@ -337,6 +539,124 @@ impl SettingsStore {
     }
 }
 
+fn normalized_mutation_plan(
+    mutation: ChannelSourceConfigMutation,
+    config: Option<&ChannelSourceConfig>,
+) -> Result<(
+    ChannelSourceConfigMutation,
+    Option<SequencerAttestationPlan>,
+)> {
+    match mutation {
+        ChannelSourceConfigMutation::AddSequencer {
+            label,
+            target,
+            allow_insecure_http,
+        } => {
+            let label = normalize_label(label)?;
+            let target = target.normalized(ChannelSourceRole::Sequencer, allow_insecure_http)?;
+            Ok((
+                ChannelSourceConfigMutation::AddSequencer {
+                    label,
+                    target: target.clone(),
+                    allow_insecure_http,
+                },
+                Some(SequencerAttestationPlan {
+                    target,
+                    allow_pending: true,
+                }),
+            ))
+        }
+        ChannelSourceConfigMutation::UpdateSequencer {
+            source_id,
+            label,
+            target,
+            allow_insecure_http,
+        } => {
+            let source_id = validate_source_id(&source_id)?;
+            let label = normalize_label(label)?;
+            let target = target.normalized(ChannelSourceRole::Sequencer, allow_insecure_http)?;
+            let source = required_sequencer_source(config, &source_id)?;
+            let attestation = (source.target != target).then(|| SequencerAttestationPlan {
+                target: target.clone(),
+                allow_pending: true,
+            });
+            Ok((
+                ChannelSourceConfigMutation::UpdateSequencer {
+                    source_id,
+                    label,
+                    target,
+                    allow_insecure_http,
+                },
+                attestation,
+            ))
+        }
+        ChannelSourceConfigMutation::RemoveSequencer { source_id } => {
+            let source_id = validate_source_id(&source_id)?;
+            required_sequencer_source(config, &source_id)?;
+            Ok((
+                ChannelSourceConfigMutation::RemoveSequencer { source_id },
+                None,
+            ))
+        }
+        ChannelSourceConfigMutation::SelectSequencer { source_id } => {
+            let source_id = source_id.as_deref().map(validate_source_id).transpose()?;
+            if let Some(source_id) = source_id.as_ref() {
+                required_sequencer_source(config, source_id)?;
+            }
+            Ok((
+                ChannelSourceConfigMutation::SelectSequencer { source_id },
+                None,
+            ))
+        }
+        ChannelSourceConfigMutation::RetryAttestation { source_id } => {
+            let source_id = validate_source_id(&source_id)?;
+            let source = required_sequencer_source(config, &source_id)?;
+            Ok((
+                ChannelSourceConfigMutation::RetryAttestation { source_id },
+                Some(SequencerAttestationPlan {
+                    target: source.target.clone(),
+                    allow_pending: false,
+                }),
+            ))
+        }
+        ChannelSourceConfigMutation::SetIndexer {
+            label,
+            target,
+            allow_insecure_http,
+        } => Ok((
+            ChannelSourceConfigMutation::SetIndexer {
+                label: normalize_label(label)?,
+                target: target.normalized(ChannelSourceRole::Indexer, allow_insecure_http)?,
+                allow_insecure_http,
+            },
+            None,
+        )),
+        ChannelSourceConfigMutation::RemoveIndexer => {
+            if config
+                .and_then(|config| config.indexer_source.as_ref())
+                .is_none()
+            {
+                bail!("Indexer source does not exist");
+            }
+            Ok((ChannelSourceConfigMutation::RemoveIndexer, None))
+        }
+    }
+}
+
+fn required_sequencer_source<'a>(
+    config: Option<&'a ChannelSourceConfig>,
+    source_id: &str,
+) -> Result<&'a ConfiguredSequencerSource> {
+    config
+        .and_then(|config| {
+            config
+                .sequencer_sources
+                .iter()
+                .find(|source| source.source_id == source_id)
+        })
+        .with_context(|| format!("Sequencer source `{source_id}` does not exist"))
+}
+
 #[derive(Debug, Clone)]
 struct SettingsDocument {
     fields: Map<String, Value>,
@@ -418,6 +738,35 @@ impl Default for SettingsDocument {
             channel_source_configs: Vec::new(),
         }
     }
+}
+
+fn rebase_imported_config_revisions(
+    incoming: &mut [ChannelSourceConfig],
+    current: &[ChannelSourceConfig],
+) -> Result<()> {
+    for config in incoming {
+        let existing = current.iter().find(|candidate| {
+            candidate.network_scope == config.network_scope
+                && candidate.channel_id == config.channel_id
+        });
+        config.config_revision = match existing {
+            None => 1,
+            Some(existing) if same_config_semantics(existing, config) => existing.config_revision,
+            Some(existing) => existing
+                .config_revision
+                .checked_add(1)
+                .context("Channel source configuration revision overflow during backup import")?,
+        };
+    }
+    Ok(())
+}
+
+fn same_config_semantics(left: &ChannelSourceConfig, right: &ChannelSourceConfig) -> bool {
+    let mut left = left.clone();
+    let mut right = right.clone();
+    left.config_revision = 1;
+    right.config_revision = 1;
+    left == right
 }
 
 fn apply_mutation(
@@ -627,7 +976,8 @@ fn saved_report(path: &Path, durability: DirectoryDurability) -> Value {
 #[cfg(test)]
 mod tests {
     use std::{
-        sync::{Arc, Barrier},
+        collections::VecDeque,
+        sync::{Arc, Barrier, Mutex},
         thread,
     };
 
@@ -635,6 +985,85 @@ mod tests {
     use crate::source_routing::channel_sources::{ChannelSourceRole, ChannelSourceTarget};
 
     use super::super::layer::module_id_for_role;
+    use super::super::probe::{ChannelSourceProbeFailure, SequencerAttestorFuture};
+
+    enum FakeAttestation {
+        Reported(String),
+        Failed(ChannelSourceFailureKind),
+    }
+
+    type AttestationHook = Box<dyn FnOnce() -> Result<()> + Send>;
+
+    struct FakeAttestor {
+        replies: Mutex<VecDeque<FakeAttestation>>,
+        calls: Mutex<Vec<ChannelSourceTarget>>,
+        hook: Mutex<Option<AttestationHook>>,
+    }
+
+    impl FakeAttestor {
+        fn new(replies: impl IntoIterator<Item = FakeAttestation>) -> Self {
+            Self {
+                replies: Mutex::new(replies.into_iter().collect()),
+                calls: Mutex::new(Vec::new()),
+                hook: Mutex::new(None),
+            }
+        }
+
+        fn with_hook(
+            replies: impl IntoIterator<Item = FakeAttestation>,
+            hook: AttestationHook,
+        ) -> Self {
+            Self {
+                replies: Mutex::new(replies.into_iter().collect()),
+                calls: Mutex::new(Vec::new()),
+                hook: Mutex::new(Some(hook)),
+            }
+        }
+
+        fn call_count(&self) -> Result<usize> {
+            self.calls
+                .lock()
+                .map(|calls| calls.len())
+                .map_err(|_| anyhow::anyhow!("fake attestor calls lock poisoned"))
+        }
+    }
+
+    impl SequencerTargetAttestor for FakeAttestor {
+        fn attest(self: Arc<Self>, target: ChannelSourceTarget) -> SequencerAttestorFuture {
+            let result = (|| {
+                self.calls
+                    .lock()
+                    .map_err(|_| fake_probe_failure(ChannelSourceFailureKind::Protocol))?
+                    .push(target);
+                if let Some(hook) = self
+                    .hook
+                    .lock()
+                    .map_err(|_| fake_probe_failure(ChannelSourceFailureKind::Protocol))?
+                    .take()
+                {
+                    hook().map_err(|_| fake_probe_failure(ChannelSourceFailureKind::Protocol))?;
+                }
+                match self
+                    .replies
+                    .lock()
+                    .map_err(|_| fake_probe_failure(ChannelSourceFailureKind::Protocol))?
+                    .pop_front()
+                    .ok_or_else(|| fake_probe_failure(ChannelSourceFailureKind::Protocol))?
+                {
+                    FakeAttestation::Reported(channel_id) => Ok(channel_id),
+                    FakeAttestation::Failed(kind) => Err(fake_probe_failure(kind)),
+                }
+            })();
+            Box::pin(async move { result })
+        }
+    }
+
+    fn fake_probe_failure(kind: ChannelSourceFailureKind) -> ChannelSourceProbeFailure {
+        ChannelSourceProbeFailure {
+            kind,
+            diagnostic: format!("fake {kind:?} attestation failure"),
+        }
+    }
 
     #[test]
     fn fresh_settings_have_no_global_l2_configuration() -> Result<()> {
@@ -878,6 +1307,462 @@ mod tests {
             bail!("explicit attestation retry did not persist receipt: {retried:?}");
         }
         cleanup_test_dir(&directory)
+    }
+
+    #[tokio::test]
+    async fn mutation_interface_rejects_stale_and_retains_receipt_without_probe() -> Result<()> {
+        let (directory, store) = test_store("interface-no-probe")?;
+        let initial = attested_config('8', '1', 4, 3040);
+        let source_id = first_sequencer_source(&initial)?.source_id.clone();
+        store.write_document_unlocked(&SettingsDocument {
+            channel_source_configs: vec![initial.clone()],
+            ..SettingsDocument::default()
+        })?;
+        let attestor = Arc::new(FakeAttestor::new(std::iter::empty()));
+        let interface = SettingsChannelSourceConfigMutation::with_store(&store, attestor.clone());
+
+        let stale = interface
+            .apply_request(apply_request(
+                '8',
+                3,
+                ChannelSourceConfigMutation::UpdateSequencer {
+                    source_id: source_id.clone(),
+                    label: Some("ignored".to_owned()),
+                    target: rpc_target(3040),
+                    allow_insecure_http: false,
+                },
+            ))
+            .await;
+        if stale.is_ok() || attestor.call_count()? != 0 {
+            bail!("stale mutation reached attestation or succeeded");
+        }
+
+        let outcome = interface
+            .apply_request(apply_request(
+                '8',
+                4,
+                ChannelSourceConfigMutation::UpdateSequencer {
+                    source_id: source_id.clone(),
+                    label: Some(" Renamed ".to_owned()),
+                    target: rpc_target(3040),
+                    allow_insecure_http: false,
+                },
+            ))
+            .await?;
+        let source = first_sequencer_source(&outcome.config)?;
+        if outcome.attestation != ChannelSourceAttestationOutcome::NotRequired
+            || outcome.config.config_revision != 5
+            || source.source_id != source_id
+            || source.label.as_deref() != Some("Renamed")
+            || source.channel_attestation != first_sequencer_source(&initial)?.channel_attestation
+            || attestor.call_count()? != 0
+        {
+            bail!("label-only mutation changed attestation contract: {outcome:?}");
+        }
+        cleanup_test_dir(&directory)
+    }
+
+    #[tokio::test]
+    async fn target_change_attests_once_and_atomically_replaces_receipt() -> Result<()> {
+        let (directory, store) = test_store("interface-target-change")?;
+        let initial = attested_config('9', '2', 7, 3040);
+        let source_id = first_sequencer_source(&initial)?.source_id.clone();
+        store.write_document_unlocked(&SettingsDocument {
+            channel_source_configs: vec![initial.clone()],
+            ..SettingsDocument::default()
+        })?;
+        let attestor = Arc::new(FakeAttestor::new([FakeAttestation::Reported(channel_id(
+            '9',
+        ))]));
+        let interface = SettingsChannelSourceConfigMutation::with_store(&store, attestor.clone());
+
+        let outcome = interface
+            .apply_request(apply_request(
+                '9',
+                7,
+                ChannelSourceConfigMutation::UpdateSequencer {
+                    source_id: source_id.clone(),
+                    label: Some("Moved".to_owned()),
+                    target: rpc_target(3041),
+                    allow_insecure_http: false,
+                },
+            ))
+            .await?;
+        let source = first_sequencer_source(&outcome.config)?;
+        if outcome.attestation != ChannelSourceAttestationOutcome::Persisted
+            || outcome.config.config_revision != 8
+            || source.source_id != source_id
+            || source.target != rpc_target(3041)
+            || !matches!(
+                &source.channel_attestation,
+                PersistedSequencerAttestation::PersistedAttested {
+                    channel_id: reported,
+                    target_fingerprint,
+                    ..
+                } if reported == &channel_id('9')
+                    && target_fingerprint == &rpc_target(3041).fingerprint()
+            )
+            || attestor.call_count()? != 1
+        {
+            bail!("target mutation did not replace attestation atomically: {outcome:?}");
+        }
+        cleanup_test_dir(&directory)
+    }
+
+    #[tokio::test]
+    async fn attestation_failure_policy_distinguishes_pending_fatal_and_mismatch() -> Result<()> {
+        for (index, kind) in [
+            ChannelSourceFailureKind::Timeout,
+            ChannelSourceFailureKind::Unavailable,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let (directory, store) = test_store(&format!("pending-{index}"))?;
+            let attestor = Arc::new(FakeAttestor::new([FakeAttestation::Failed(kind)]));
+            let interface = SettingsChannelSourceConfigMutation::with_store(&store, attestor);
+            let outcome = interface
+                .apply_request(add_sequencer_request('a', 0, 3050 + index as u16))
+                .await?;
+            if outcome.attestation != ChannelSourceAttestationOutcome::Pending
+                || !matches!(
+                    first_sequencer_source(&outcome.config)?.channel_attestation,
+                    PersistedSequencerAttestation::Pending
+                )
+            {
+                bail!("recoverable attestation failure did not persist pending: {outcome:?}");
+            }
+            cleanup_test_dir(&directory)?;
+        }
+
+        for (index, kind) in [
+            ChannelSourceFailureKind::Protocol,
+            ChannelSourceFailureKind::Incomplete,
+            ChannelSourceFailureKind::Unsupported,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let (directory, store) = test_store(&format!("fatal-{index}"))?;
+            let attestor = Arc::new(FakeAttestor::new([FakeAttestation::Failed(kind)]));
+            let interface = SettingsChannelSourceConfigMutation::with_store(&store, attestor);
+            if interface
+                .apply_request(add_sequencer_request('b', 0, 3060 + index as u16))
+                .await
+                .is_ok()
+                || !store
+                    .load_document_unlocked()?
+                    .channel_source_configs
+                    .is_empty()
+            {
+                bail!("fatal attestation failure changed settings");
+            }
+            cleanup_test_dir(&directory)?;
+        }
+
+        let (mismatch_directory, mismatch_store) = test_store("reported-mismatch")?;
+        let mismatch_attestor = Arc::new(FakeAttestor::new([FakeAttestation::Reported(
+            channel_id('d'),
+        )]));
+        let mismatch_interface =
+            SettingsChannelSourceConfigMutation::with_store(&mismatch_store, mismatch_attestor);
+        let mismatch = mismatch_interface
+            .apply_request(add_sequencer_request('c', 0, 3070))
+            .await;
+        if mismatch.is_ok()
+            || !mismatch_store
+                .load_document_unlocked()?
+                .channel_source_configs
+                .is_empty()
+        {
+            bail!("reported Channel mismatch changed settings");
+        }
+        cleanup_test_dir(&mismatch_directory)
+    }
+
+    #[tokio::test]
+    async fn retry_and_non_target_mutations_keep_attestor_policy_explicit() -> Result<()> {
+        let (directory, store) = test_store("interface-attestor-policy")?;
+        let mut initial = persisted_config('6', valid_source_id('b'));
+        initial.config_revision = 3;
+        let source_id = first_sequencer_source(&initial)?.source_id.clone();
+        store.write_document_unlocked(&SettingsDocument {
+            channel_source_configs: vec![initial.clone()],
+            ..SettingsDocument::default()
+        })?;
+
+        let retry_attestor = Arc::new(FakeAttestor::new([FakeAttestation::Failed(
+            ChannelSourceFailureKind::Unavailable,
+        )]));
+        let retry_interface =
+            SettingsChannelSourceConfigMutation::with_store(&store, retry_attestor.clone());
+        if retry_interface
+            .apply_request(apply_request(
+                '6',
+                3,
+                ChannelSourceConfigMutation::RetryAttestation {
+                    source_id: source_id.clone(),
+                },
+            ))
+            .await
+            .is_ok()
+            || retry_attestor.call_count()? != 1
+            || store
+                .load_document_unlocked()?
+                .channel_source_configs
+                .first()
+                != Some(&initial)
+        {
+            bail!("explicit retry converted unavailable attestation into pending mutation");
+        }
+
+        let unused_attestor = Arc::new(FakeAttestor::new(std::iter::empty()));
+        let interface =
+            SettingsChannelSourceConfigMutation::with_store(&store, unused_attestor.clone());
+        for invalid in [
+            apply_request(
+                '6',
+                3,
+                ChannelSourceConfigMutation::UpdateSequencer {
+                    source_id: source_id.clone(),
+                    label: None,
+                    target: ChannelSourceTarget::Rpc {
+                        endpoint: "https://sequencer.example/?secret=true".to_owned(),
+                    },
+                    allow_insecure_http: false,
+                },
+            ),
+            apply_request(
+                '6',
+                3,
+                ChannelSourceConfigMutation::UpdateSequencer {
+                    source_id: valid_source_id('c'),
+                    label: None,
+                    target: rpc_target(3041),
+                    allow_insecure_http: false,
+                },
+            ),
+        ] {
+            if interface.apply_request(invalid).await.is_ok() {
+                bail!("invalid target/source mutation succeeded");
+            }
+        }
+        if unused_attestor.call_count()? != 0 {
+            bail!("invalid mutation reached attestor");
+        }
+
+        let selected = interface
+            .apply_request(apply_request(
+                '6',
+                3,
+                ChannelSourceConfigMutation::SelectSequencer {
+                    source_id: Some(source_id.clone()),
+                },
+            ))
+            .await?;
+        let removed = interface
+            .apply_request(apply_request(
+                '6',
+                4,
+                ChannelSourceConfigMutation::RemoveSequencer { source_id },
+            ))
+            .await?;
+        let indexed = interface
+            .apply_request(apply_request(
+                '6',
+                5,
+                ChannelSourceConfigMutation::SetIndexer {
+                    label: Some("Indexer".to_owned()),
+                    target: module_target(module_id_for_role(ChannelSourceRole::Indexer)),
+                    allow_insecure_http: false,
+                },
+            ))
+            .await?;
+        let unindexed = interface
+            .apply_request(apply_request(
+                '6',
+                6,
+                ChannelSourceConfigMutation::RemoveIndexer,
+            ))
+            .await?;
+        if selected.config.config_revision != 4
+            || removed.config.config_revision != 5
+            || indexed.config.config_revision != 6
+            || unindexed.config.config_revision != 7
+            || [selected, removed, indexed, unindexed]
+                .iter()
+                .any(|outcome| outcome.attestation != ChannelSourceAttestationOutcome::NotRequired)
+            || unused_attestor.call_count()? != 0
+        {
+            bail!("non-target mutation invoked attestor or drifted revisions");
+        }
+        cleanup_test_dir(&directory)
+    }
+
+    #[tokio::test]
+    async fn exact_target_cas_conflicts_but_preserves_unrelated_concurrent_state() -> Result<()> {
+        let (conflict_directory, conflict_store) = test_store("exact-cas-conflict")?;
+        let initial = attested_config('d', '3', 11, 3040);
+        let source_id = first_sequencer_source(&initial)?.source_id.clone();
+        conflict_store.write_document_unlocked(&SettingsDocument {
+            channel_source_configs: vec![initial.clone()],
+            ..SettingsDocument::default()
+        })?;
+        let hook_store = conflict_store.clone();
+        let attestor = Arc::new(FakeAttestor::with_hook(
+            [FakeAttestation::Reported(channel_id('d'))],
+            Box::new(move || {
+                let mut raced = hook_store.load_document_unlocked()?;
+                first_sequencer_source_mut(
+                    raced
+                        .channel_source_configs
+                        .first_mut()
+                        .context("raced target config missing")?,
+                )?
+                .label = Some("Backup race".to_owned());
+                hook_store.write_document_unlocked(&raced)
+            }),
+        ));
+        let interface =
+            SettingsChannelSourceConfigMutation::with_store(&conflict_store, attestor.clone());
+        let result = interface
+            .apply_request(apply_request(
+                'd',
+                11,
+                ChannelSourceConfigMutation::UpdateSequencer {
+                    source_id: source_id.clone(),
+                    label: Some("Target edit".to_owned()),
+                    target: rpc_target(3041),
+                    allow_insecure_http: false,
+                },
+            ))
+            .await;
+        let retained = conflict_store.load_document_unlocked()?;
+        let retained_config = retained
+            .channel_source_configs
+            .first()
+            .context("conflicted config missing")?;
+        if result.is_ok()
+            || attestor.call_count()? != 1
+            || retained_config.config_revision != 11
+            || first_sequencer_source(retained_config)?.source_id != source_id
+            || first_sequencer_source(retained_config)?.label.as_deref() != Some("Backup race")
+            || first_sequencer_source(retained_config)?.target != rpc_target(3040)
+            || first_sequencer_source(retained_config)?.channel_attestation
+                != first_sequencer_source(&initial)?.channel_attestation
+        {
+            bail!("exact-target CAS did not reject same-revision content race");
+        }
+        cleanup_test_dir(&conflict_directory)?;
+
+        let (merge_directory, merge_store) = test_store("exact-cas-unrelated")?;
+        let target_config = attested_config('e', '4', 5, 3040);
+        let target_source_id = first_sequencer_source(&target_config)?.source_id.clone();
+        merge_store.write_document_unlocked(&SettingsDocument {
+            channel_source_configs: vec![target_config],
+            ..SettingsDocument::default()
+        })?;
+        let hook_store = merge_store.clone();
+        let attestor = Arc::new(FakeAttestor::with_hook(
+            [FakeAttestation::Reported(channel_id('e'))],
+            Box::new(move || {
+                let mut concurrent = hook_store.load_document_unlocked()?;
+                concurrent
+                    .fields
+                    .insert("theme".to_owned(), Value::String("concurrent".to_owned()));
+                concurrent
+                    .channel_source_configs
+                    .push(attested_config('f', '5', 9, 4040));
+                hook_store.write_document_unlocked(&concurrent)
+            }),
+        ));
+        let interface = SettingsChannelSourceConfigMutation::with_store(&merge_store, attestor);
+        let outcome = interface
+            .apply_request(apply_request(
+                'e',
+                5,
+                ChannelSourceConfigMutation::UpdateSequencer {
+                    source_id: target_source_id,
+                    label: Some("Updated".to_owned()),
+                    target: rpc_target(3041),
+                    allow_insecure_http: false,
+                },
+            ))
+            .await?;
+        let merged = merge_store.load_document_unlocked()?;
+        if outcome.config.config_revision != 6
+            || merged.fields.get("theme") != Some(&Value::String("concurrent".to_owned()))
+            || merged.channel_source_configs.len() != 2
+            || !merged
+                .channel_source_configs
+                .iter()
+                .any(|config| config.channel_id == channel_id('f') && config.config_revision == 9)
+        {
+            bail!("successful target CAS overwrote unrelated concurrent settings");
+        }
+        cleanup_test_dir(&merge_directory)
+    }
+
+    #[test]
+    fn backup_import_rebases_revision_matrix_and_rejects_overflow() -> Result<()> {
+        let identical = attested_config('1', '6', 7, 3040);
+        let changed_current = attested_config('2', '7', 4, 3041);
+        let removed = attested_config('3', '8', 12, 3042);
+        let mut identical_import = identical.clone();
+        identical_import.config_revision = 99;
+        let mut changed_import = changed_current.clone();
+        changed_import.config_revision = 88;
+        first_sequencer_source_mut(&mut changed_import)?.label = Some("Imported label".to_owned());
+        let mut new_import = attested_config('4', '9', 45, 3043);
+        new_import.config_revision = 45;
+        let current = settings_value(vec![identical.clone(), changed_current.clone(), removed])?;
+        let incoming = settings_value(vec![
+            identical_import,
+            changed_import.clone(),
+            new_import.clone(),
+        ])?;
+
+        let rebased = normalized_settings_state_from_backup(&incoming, &current)?;
+        let configs = settings_configs(&rebased)?;
+        let revision = |channel: char| {
+            configs
+                .iter()
+                .find(|config| config.channel_id == channel_id(channel))
+                .map(|config| config.config_revision)
+        };
+        let changed = configs
+            .iter()
+            .find(|config| config.channel_id == channel_id('2'))
+            .context("changed imported config missing")?;
+        let added = configs
+            .iter()
+            .find(|config| config.channel_id == channel_id('4'))
+            .context("new imported config missing")?;
+        if revision('1') != Some(7)
+            || revision('2') != Some(5)
+            || revision('3').is_some()
+            || revision('4') != Some(1)
+            || first_sequencer_source(changed)?.source_id
+                != first_sequencer_source(&changed_import)?.source_id
+            || first_sequencer_source(changed)?.target
+                != first_sequencer_source(&changed_import)?.target
+            || first_sequencer_source(changed)?.channel_attestation
+                != first_sequencer_source(&changed_import)?.channel_attestation
+            || first_sequencer_source(added)?.source_id
+                != first_sequencer_source(&new_import)?.source_id
+        {
+            bail!("backup revision rebase matrix drifted: {configs:?}");
+        }
+
+        let mut maximum = attested_config('5', 'a', u64::MAX, 3044);
+        let maximum_current = settings_value(vec![maximum.clone()])?;
+        first_sequencer_source_mut(&mut maximum)?.label = Some("Changed".to_owned());
+        maximum.config_revision = 1;
+        let maximum_incoming = settings_value(vec![maximum])?;
+        if normalized_settings_state_from_backup(&maximum_incoming, &maximum_current).is_ok() {
+            bail!("changed backup import advanced a maximum configuration revision");
+        }
+        Ok(())
     }
 
     #[test]
@@ -1294,6 +2179,34 @@ mod tests {
             selected_sequencer_source_id: None,
             indexer_source: None,
         }
+    }
+
+    fn attested_config(
+        channel_character: char,
+        source_character: char,
+        revision: u64,
+        port: u16,
+    ) -> ChannelSourceConfig {
+        let mut config = persisted_config(channel_character, valid_source_id(source_character));
+        config.config_revision = revision;
+        let target = rpc_target(port);
+        if let Some(source) = config.sequencer_sources.first_mut() {
+            source.target = target.clone();
+            source.channel_attestation = PersistedSequencerAttestation::PersistedAttested {
+                channel_id: config.channel_id.clone(),
+                target_fingerprint: target.fingerprint(),
+                attested_at_unix: 1,
+            };
+        }
+        config
+    }
+
+    fn settings_value(configs: Vec<ChannelSourceConfig>) -> Result<Value> {
+        SettingsDocument {
+            channel_source_configs: configs,
+            ..SettingsDocument::default()
+        }
+        .into_value()
     }
 
     fn valid_source_id(character: char) -> String {

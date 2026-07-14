@@ -19,14 +19,16 @@ pub use monitor::{
     ChannelSourceObservationSet, ChannelSourceProbeStage,
 };
 pub use probe::ChannelSourceFailureKind;
+#[allow(deprecated)]
 pub use store::{
     apply_channel_source_config, load_channel_source_configs, record_sequencer_attestation,
 };
 
-pub(crate) use config::normalize_channel_id;
-pub(crate) use probe::attest_sequencer_target;
 pub(crate) use store::{
-    apply_channel_source_config_with_attestation, load_settings_state,
+    ChannelSourceAttestationOutcome, ChannelSourceConfigMutationInterface,
+    SettingsChannelSourceConfigMutation, load_settings_state,
     normalized_settings_state_from_backup, rebind_channel_source_configs, save_user_settings_state,
     settings_state_from_stored,
 };
+#[cfg(test)]
+pub(crate) use store::{ChannelSourceConfigApplyOutcome, ChannelSourceConfigMutationFuture};

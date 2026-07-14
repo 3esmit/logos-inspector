@@ -38,6 +38,7 @@ fn module_transport_port_is_publicly_composable() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn source_routing_exposes_adapter_boundaries() {
     let _ = logos_inspector::source_routing::network_profiles;
     let _ = logos_inspector::source_routing::resolve_network_endpoints;
@@ -45,6 +46,8 @@ fn source_routing_exposes_adapter_boundaries() {
     let _ = logos_inspector::source_routing::delivery_source_report;
     let _ = logos_inspector::source_routing::storage_source_report;
     let _ = logos_inspector::source_routing::channel_sources::load_channel_source_configs;
+    let _ = logos_inspector::source_routing::channel_sources::apply_channel_source_config;
+    let _ = logos_inspector::source_routing::channel_sources::record_sequencer_attestation;
     let _ = logos_inspector::source_routing::channel_sources::ChannelSourceTarget::Module {
         module_id: "lez_core".to_owned(),
     };

@@ -35,12 +35,9 @@ use crate::{
     inspector::value::to_value,
     modules::logos_core::{ModuleTransportKind, SharedModuleTransport},
     source_routing::channel_sources::{
-        ChannelSourceConfig, ChannelSourceConfigMutation, ChannelSourceMonitor,
-        ChannelSourceMonitorSnapshot, ChannelSourceRole, ChannelSourceTarget,
-        SequencerAttestationReceipt, apply_channel_source_config_with_attestation,
-        attest_sequencer_target, load_channel_source_configs, normalize_channel_id,
+        ChannelSourceAttestationOutcome, ChannelSourceConfig, ChannelSourceConfigMutationInterface,
+        ChannelSourceMonitor, ChannelSourceMonitorSnapshot, SettingsChannelSourceConfigMutation,
     },
-    support::time::now_millis,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,31 +89,8 @@ pub(crate) fn zone_catalog_command_names() -> impl Iterator<Item = &'static str>
     COMMANDS.iter().map(|(name, _)| *name)
 }
 
-trait ChannelSourceConfigStore: Send + Sync {
-    fn load(&self) -> Result<Vec<ChannelSourceConfig>>;
-    fn apply(
-        &self,
-        request: ChannelSourceApplyRequest,
-        attestation: Option<SequencerAttestationReceipt>,
-    ) -> Result<ChannelSourceConfig>;
-}
-
 type SourceMonitorFuture<'a> = Pin<Box<dyn Future<Output = Result<u64>> + Send + 'a>>;
 type SourceMonitorShutdownFuture<'a> = Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
-type SequencerAttestorFuture<'a> = Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>>;
-
-trait SequencerTargetAttestor: Send + Sync {
-    fn attest<'a>(&'a self, target: ChannelSourceTarget) -> SequencerAttestorFuture<'a>;
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-struct DirectSequencerTargetAttestor;
-
-impl SequencerTargetAttestor for DirectSequencerTargetAttestor {
-    fn attest<'a>(&'a self, target: ChannelSourceTarget) -> SequencerAttestorFuture<'a> {
-        Box::pin(async move { attest_sequencer_target(target).await })
-    }
-}
 
 trait ZoneSourceMonitor: Send + Sync {
     fn snapshot(&self) -> ChannelSourceMonitorSnapshot;
@@ -154,28 +128,10 @@ impl ZoneSourceMonitor for ChannelSourceMonitor {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-struct SettingsChannelSourceConfigStore;
-
-impl ChannelSourceConfigStore for SettingsChannelSourceConfigStore {
-    fn load(&self) -> Result<Vec<ChannelSourceConfig>> {
-        load_channel_source_configs()
-    }
-
-    fn apply(
-        &self,
-        request: ChannelSourceApplyRequest,
-        attestation: Option<SequencerAttestationReceipt>,
-    ) -> Result<ChannelSourceConfig> {
-        apply_channel_source_config_with_attestation(request, attestation)
-    }
-}
-
 pub(crate) struct ZoneCatalogCommandInterface {
     service: ZoneCatalogService,
     monitor: Arc<dyn ZoneSourceMonitor>,
-    sequencer_attestor: Arc<dyn SequencerTargetAttestor>,
-    source_store: Arc<dyn ChannelSourceConfigStore>,
+    source_store: Arc<dyn ChannelSourceConfigMutationInterface>,
     evidence: ZoneEvidenceCommandInterface,
     state: Mutex<ZoneProjectionLedger>,
 }
@@ -188,32 +144,33 @@ impl ZoneCatalogCommandInterface {
         module_transport: SharedModuleTransport,
         module_transport_kind: ModuleTransportKind,
     ) -> Self {
+        let source_store = Arc::new(SettingsChannelSourceConfigMutation::with_module_transport(
+            module_transport.clone(),
+            module_transport_kind,
+        ));
         Self::with_dependencies(
             runtime,
             worker,
-            Arc::new(SettingsChannelSourceConfigStore),
+            source_store,
             Arc::new(ChannelSourceMonitor::with_module_transport(
                 runtime.handle(),
                 module_transport,
                 module_transport_kind,
             )),
-            Arc::new(DirectSequencerTargetAttestor),
         )
     }
 
     fn with_dependencies(
         runtime: &Runtime,
         worker: Arc<dyn ZoneCatalogWorker>,
-        source_store: Arc<dyn ChannelSourceConfigStore>,
+        source_store: Arc<dyn ChannelSourceConfigMutationInterface>,
         monitor: Arc<dyn ZoneSourceMonitor>,
-        sequencer_attestor: Arc<dyn SequencerTargetAttestor>,
     ) -> Self {
         Self::with_all_dependencies(
             runtime,
             worker,
             source_store,
             monitor,
-            sequencer_attestor,
             Arc::new(DirectEvidenceBlockReader),
         )
     }
@@ -221,15 +178,13 @@ impl ZoneCatalogCommandInterface {
     fn with_all_dependencies(
         runtime: &Runtime,
         worker: Arc<dyn ZoneCatalogWorker>,
-        source_store: Arc<dyn ChannelSourceConfigStore>,
+        source_store: Arc<dyn ChannelSourceConfigMutationInterface>,
         monitor: Arc<dyn ZoneSourceMonitor>,
-        sequencer_attestor: Arc<dyn SequencerTargetAttestor>,
         evidence_reader: Arc<dyn EvidenceBlockReader>,
     ) -> Self {
         Self {
             service: ZoneCatalogService::new(runtime.handle(), worker),
             monitor,
-            sequencer_attestor,
             source_store,
             evidence: ZoneEvidenceCommandInterface::new(evidence_reader),
             state: Mutex::new(ZoneProjectionLedger::default()),
@@ -421,49 +376,22 @@ impl ZoneCatalogCommandInterface {
         if request.network_scope != catalog.metadata.network_scope {
             bail!("Channel source configuration belongs to a stale network scope");
         }
-        let configs = {
+        {
             let state = self.lock_state()?;
             if !state.contains_channel(&request.channel_id) {
                 bail!("Channel is not present in current Zone Catalog projection");
             }
-            state.configs_snapshot()
-        };
-        validate_source_mutation_revision(&request, &configs)?;
-        let (attestation, attestation_warning) = if let Some(plan) =
-            sequencer_attestation_plan(&request, &configs)?
-        {
-            match runtime.block_on(self.sequencer_attestor.attest(plan.target.clone())) {
-                Ok(reported_channel_id) => {
-                    let reported_channel_id = normalize_channel_id(&reported_channel_id)?;
-                    if reported_channel_id != request.channel_id {
-                        bail!("Sequencer attestation reported another Channel");
-                    }
-                    (
-                        Some(SequencerAttestationReceipt {
-                            reported_channel_id,
-                            target_fingerprint: plan.target.fingerprint(),
-                            attested_at_unix: now_millis() / 1_000,
-                        }),
-                        None,
-                    )
-                }
-                Err(_error) if plan.allow_pending => (
-                    None,
-                    Some(ChannelSourceAttestationWarning {
-                        code: ChannelSourceAttestationWarningCode::PendingAttestation,
-                        recovery: ChannelSourceAttestationRecovery::Retry,
-                        message: "Sequencer Channel attestation is pending; retry when the source is available."
-                            .to_owned(),
-                    }),
-                ),
-                Err(error) => {
-                    return Err(error.context("Sequencer Channel attestation retry failed"));
-                }
-            }
-        } else {
-            (None, None)
-        };
-        let config = self.source_store.apply(request, attestation)?;
+        }
+        let outcome = runtime.block_on(self.source_store.clone().apply(request))?;
+        let attestation_warning = (outcome.attestation == ChannelSourceAttestationOutcome::Pending)
+            .then(|| ChannelSourceAttestationWarning {
+                code: ChannelSourceAttestationWarningCode::PendingAttestation,
+                recovery: ChannelSourceAttestationRecovery::Retry,
+                message:
+                    "Sequencer Channel attestation is pending; retry when the source is available."
+                        .to_owned(),
+            });
+        let config = outcome.config;
         self.refresh(runtime)?;
         let service = self.service.report();
         let state = self.lock_state()?;
@@ -533,98 +461,6 @@ impl ZoneCatalogCommandInterface {
     }
 }
 
-fn validate_source_mutation_revision(
-    request: &ChannelSourceApplyRequest,
-    configs: &[ChannelSourceConfig],
-) -> Result<()> {
-    let current = configs
-        .iter()
-        .find(|config| {
-            config.network_scope == request.network_scope && config.channel_id == request.channel_id
-        })
-        .map_or(0, |config| config.config_revision);
-    if current != request.expected_config_revision {
-        bail!(
-            "Channel source configuration revision conflict: expected {}, current {current}",
-            request.expected_config_revision
-        );
-    }
-    Ok(())
-}
-
-struct SequencerAttestationPlan {
-    target: ChannelSourceTarget,
-    allow_pending: bool,
-}
-
-fn sequencer_attestation_plan(
-    request: &ChannelSourceApplyRequest,
-    configs: &[ChannelSourceConfig],
-) -> Result<Option<SequencerAttestationPlan>> {
-    match &request.mutation {
-        ChannelSourceConfigMutation::AddSequencer {
-            target,
-            allow_insecure_http,
-            ..
-        } => Ok(Some(SequencerAttestationPlan {
-            target: target
-                .clone()
-                .normalized(ChannelSourceRole::Sequencer, *allow_insecure_http)?,
-            allow_pending: true,
-        })),
-        ChannelSourceConfigMutation::UpdateSequencer {
-            source_id,
-            target,
-            allow_insecure_http,
-            ..
-        } => {
-            let target = target
-                .clone()
-                .normalized(ChannelSourceRole::Sequencer, *allow_insecure_http)?;
-            let config = configs
-                .iter()
-                .find(|config| {
-                    config.network_scope == request.network_scope
-                        && config.channel_id == request.channel_id
-                })
-                .context("Channel source configuration does not exist")?;
-            let source = config
-                .sequencer_sources
-                .iter()
-                .find(|source| source.source_id == *source_id)
-                .with_context(|| format!("Sequencer source `{source_id}` does not exist"))?;
-            Ok(
-                (source.target != target).then_some(SequencerAttestationPlan {
-                    target,
-                    allow_pending: true,
-                }),
-            )
-        }
-        ChannelSourceConfigMutation::RetryAttestation { source_id } => {
-            let config = configs
-                .iter()
-                .find(|config| {
-                    config.network_scope == request.network_scope
-                        && config.channel_id == request.channel_id
-                })
-                .context("Channel source configuration does not exist")?;
-            let source = config
-                .sequencer_sources
-                .iter()
-                .find(|source| source.source_id == *source_id)
-                .with_context(|| format!("Sequencer source `{source_id}` does not exist"))?;
-            Ok(Some(SequencerAttestationPlan {
-                target: source.target.clone(),
-                allow_pending: false,
-            }))
-        }
-        ChannelSourceConfigMutation::RemoveSequencer { .. }
-        | ChannelSourceConfigMutation::SelectSequencer { .. }
-        | ChannelSourceConfigMutation::SetIndexer { .. }
-        | ChannelSourceConfigMutation::RemoveIndexer => Ok(None),
-    }
-}
-
 fn synchronize_monitor(
     runtime: &Runtime,
     monitor: &dyn ZoneSourceMonitor,
@@ -690,6 +526,8 @@ fn usize_to_u64(value: usize) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
+
     use anyhow::{Result, bail};
     use serde_json::json;
     use tokio::sync::mpsc;
@@ -708,8 +546,7 @@ mod tests {
         },
         inspector::commands::zone_evidence::EvidenceBlockFuture,
         source_routing::channel_sources::{
-            ChannelSourceConfigMutation, ChannelSourceTarget, ConfiguredSequencerSource,
-            PersistedSequencerAttestation,
+            ChannelSourceTarget, ConfiguredSequencerSource, PersistedSequencerAttestation,
         },
     };
 
@@ -730,7 +567,6 @@ mod tests {
             Arc::new(worker),
             store.clone(),
             monitor,
-            Arc::new(UnusedAttestor),
         );
 
         let configured = interface.bridge_call(
@@ -871,6 +707,9 @@ mod tests {
             bail!("unexpected Zone detail report: {detail}");
         }
 
+        store.queue_apply(Err(anyhow::anyhow!(
+            "Channel source configuration revision conflict: expected 1, current 2"
+        )))?;
         let conflict = interface.bridge_call(
             &runtime,
             ZoneCatalogCommand::ApplySourceConfig,
@@ -928,7 +767,6 @@ mod tests {
             Arc::new(worker),
             Arc::new(FakeSourceStore::default()),
             Arc::new(FakeMonitor::default()),
-            Arc::new(UnusedAttestor),
         );
         interface.bridge_call(
             &runtime,
@@ -973,15 +811,15 @@ mod tests {
             1,
             1,
         )]));
+        store.queue_apply(Err(anyhow::anyhow!(
+            "Sequencer attestation reported another Channel"
+        )))?;
         let (worker, mut started) = PublishingWorker::new(snapshot(network_scope.clone()));
         let interface = ZoneCatalogCommandInterface::with_dependencies(
             &runtime,
             Arc::new(worker),
             store.clone(),
             Arc::new(FakeMonitor::default()),
-            Arc::new(FixedAttestor {
-                reported_channel_id: identity('b'),
-            }),
         );
         interface.bridge_call(
             &runtime,
@@ -1030,22 +868,35 @@ mod tests {
         let runtime = Runtime::new()?;
         let network_scope = scope('4');
         let channel_id = identity('a');
-        let store = Arc::new(FakeSourceStore::new(vec![config(
-            &network_scope,
-            &channel_id,
-            'c',
-            1,
-            1,
-        )]));
+        let initial = config(&network_scope, &channel_id, 'c', 1, 1);
+        let mut applied = initial.clone();
+        let target = ChannelSourceTarget::Rpc {
+            endpoint: "https://backup.example/".to_owned(),
+        };
+        applied.sequencer_sources.push(ConfiguredSequencerSource {
+            source_id: source_id('e'),
+            label: Some("Backup".to_owned()),
+            target: target.clone(),
+            channel_attestation: PersistedSequencerAttestation::PersistedAttested {
+                channel_id: channel_id.clone(),
+                target_fingerprint: target.fingerprint(),
+                attested_at_unix: 2,
+            },
+        });
+        applied.config_revision = 2;
+        let store = Arc::new(FakeSourceStore::new(vec![initial]));
+        store.queue_apply(Ok(
+            crate::source_routing::channel_sources::ChannelSourceConfigApplyOutcome {
+                config: applied,
+                attestation: ChannelSourceAttestationOutcome::Persisted,
+            },
+        ))?;
         let (worker, mut started) = PublishingWorker::new(snapshot(network_scope.clone()));
         let interface = ZoneCatalogCommandInterface::with_dependencies(
             &runtime,
             Arc::new(worker),
             store,
             Arc::new(FakeMonitor::default()),
-            Arc::new(FixedAttestor {
-                reported_channel_id: channel_id.clone(),
-            }),
         );
         interface.bridge_call(
             &runtime,
@@ -1097,20 +948,30 @@ mod tests {
         let runtime = Runtime::new()?;
         let network_scope = scope('5');
         let channel_id = identity('a');
-        let store = Arc::new(FakeSourceStore::new(vec![config(
-            &network_scope,
-            &channel_id,
-            'c',
-            1,
-            1,
-        )]));
+        let initial = config(&network_scope, &channel_id, 'c', 1, 1);
+        let mut applied = initial.clone();
+        applied.sequencer_sources.push(ConfiguredSequencerSource {
+            source_id: source_id('e'),
+            label: None,
+            target: ChannelSourceTarget::Rpc {
+                endpoint: "https://offline.example/".to_owned(),
+            },
+            channel_attestation: PersistedSequencerAttestation::Pending,
+        });
+        applied.config_revision = 2;
+        let store = Arc::new(FakeSourceStore::new(vec![initial]));
+        store.queue_apply(Ok(
+            crate::source_routing::channel_sources::ChannelSourceConfigApplyOutcome {
+                config: applied,
+                attestation: ChannelSourceAttestationOutcome::Pending,
+            },
+        ))?;
         let (worker, mut started) = PublishingWorker::new(snapshot(network_scope.clone()));
         let interface = ZoneCatalogCommandInterface::with_dependencies(
             &runtime,
             Arc::new(worker),
             store,
             Arc::new(FakeMonitor::default()),
-            Arc::new(UnusedAttestor),
         );
         interface.bridge_call(
             &runtime,
@@ -1172,7 +1033,6 @@ mod tests {
             Arc::new(worker),
             Arc::new(FakeSourceStore::default()),
             Arc::new(FakeMonitor::default()),
-            Arc::new(UnusedAttestor),
             Arc::new(FakeEvidenceReader {
                 block: Mutex::new(Some(block)),
             }),
@@ -1302,12 +1162,18 @@ mod tests {
     #[derive(Default)]
     struct FakeSourceStore {
         configs: Mutex<Vec<ChannelSourceConfig>>,
+        apply_results: Mutex<
+            VecDeque<
+                Result<crate::source_routing::channel_sources::ChannelSourceConfigApplyOutcome>,
+            >,
+        >,
     }
 
     impl FakeSourceStore {
         fn new(configs: Vec<ChannelSourceConfig>) -> Self {
             Self {
                 configs: Mutex::new(configs),
+                apply_results: Mutex::new(VecDeque::new()),
             }
         }
 
@@ -1318,9 +1184,20 @@ mod tests {
                 .map_err(|_| anyhow::anyhow!("fake source store lock poisoned"))? = configs;
             Ok(())
         }
+
+        fn queue_apply(
+            &self,
+            result: Result<crate::source_routing::channel_sources::ChannelSourceConfigApplyOutcome>,
+        ) -> Result<()> {
+            self.apply_results
+                .lock()
+                .map_err(|_| anyhow::anyhow!("fake source result lock poisoned"))?
+                .push_back(result);
+            Ok(())
+        }
     }
 
-    impl ChannelSourceConfigStore for FakeSourceStore {
+    impl ChannelSourceConfigMutationInterface for FakeSourceStore {
         fn load(&self) -> Result<Vec<ChannelSourceConfig>> {
             Ok(self
                 .configs
@@ -1330,81 +1207,36 @@ mod tests {
         }
 
         fn apply(
-            &self,
-            request: ChannelSourceApplyRequest,
-            attestation: Option<SequencerAttestationReceipt>,
-        ) -> Result<ChannelSourceConfig> {
-            let mut configs = self
-                .configs
+            self: Arc<Self>,
+            _request: ChannelSourceApplyRequest,
+        ) -> crate::source_routing::channel_sources::ChannelSourceConfigMutationFuture {
+            let result = self
+                .apply_results
                 .lock()
-                .map_err(|_| anyhow::anyhow!("fake source store lock poisoned"))?;
-            let config = configs
-                .iter_mut()
-                .find(|config| {
-                    config.network_scope == request.network_scope
-                        && config.channel_id == request.channel_id
-                })
-                .context("fake Channel source configuration does not exist")?;
-            if config.config_revision != request.expected_config_revision {
-                bail!(
-                    "Channel source configuration revision conflict: expected {}, current {}",
-                    request.expected_config_revision,
-                    config.config_revision
-                );
-            }
-            match request.mutation {
-                ChannelSourceConfigMutation::SelectSequencer { source_id } => {
-                    if attestation.is_some() {
-                        bail!("selection received an unexpected attestation");
-                    }
-                    config.selected_sequencer_source_id = source_id;
-                }
-                ChannelSourceConfigMutation::AddSequencer { label, target, .. } => {
-                    let target = target.normalized(ChannelSourceRole::Sequencer, false)?;
-                    let channel_attestation = if let Some(receipt) = attestation {
-                        if receipt.target_fingerprint != target.fingerprint()
-                            || receipt.reported_channel_id != config.channel_id
-                        {
-                            bail!("fake attestation does not match source mutation");
-                        }
-                        PersistedSequencerAttestation::PersistedAttested {
-                            channel_id: receipt.reported_channel_id,
-                            target_fingerprint: receipt.target_fingerprint,
-                            attested_at_unix: receipt.attested_at_unix,
-                        }
+                .map_err(|_| anyhow::anyhow!("fake source result lock poisoned"))
+                .and_then(|mut results| {
+                    results
+                        .pop_front()
+                        .context("fake source mutation result was not configured")?
+                });
+            if let Ok(outcome) = &result {
+                let update = self.configs.lock().map(|mut configs| {
+                    if let Some(current) = configs.iter_mut().find(|current| {
+                        current.network_scope == outcome.config.network_scope
+                            && current.channel_id == outcome.config.channel_id
+                    }) {
+                        *current = outcome.config.clone();
                     } else {
-                        PersistedSequencerAttestation::Pending
-                    };
-                    config.sequencer_sources.push(ConfiguredSequencerSource {
-                        source_id: source_id('e'),
-                        label,
-                        target,
-                        channel_attestation,
+                        configs.push(outcome.config.clone());
+                    }
+                });
+                if update.is_err() {
+                    return Box::pin(async {
+                        Err(anyhow::anyhow!("fake source store lock poisoned"))
                     });
                 }
-                _ => bail!("fake source store only supports selection"),
             }
-            config.config_revision = config.config_revision.saturating_add(1);
-            Ok(config.clone())
-        }
-    }
-
-    struct UnusedAttestor;
-
-    impl SequencerTargetAttestor for UnusedAttestor {
-        fn attest<'a>(&'a self, _target: ChannelSourceTarget) -> SequencerAttestorFuture<'a> {
-            Box::pin(async { bail!("unexpected Sequencer attestation") })
-        }
-    }
-
-    struct FixedAttestor {
-        reported_channel_id: String,
-    }
-
-    impl SequencerTargetAttestor for FixedAttestor {
-        fn attest<'a>(&'a self, _target: ChannelSourceTarget) -> SequencerAttestorFuture<'a> {
-            let channel_id = self.reported_channel_id.clone();
-            Box::pin(async move { Ok(channel_id) })
+            Box::pin(async move { result })
         }
     }
 
