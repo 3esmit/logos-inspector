@@ -11,8 +11,9 @@ use super::{
     identity::RuntimeOperationId,
     outcome::RuntimeOperationOutcome,
     record::{
-        RuntimeOperation, RuntimeOperationRecord, RuntimeOperationStatus, operation_progress,
-        push_runtime_operation_event_locked, runtime_operation_value,
+        RuntimeOperation, RuntimeOperationRecord, RuntimeOperationStatus,
+        bounded_terminal_operation_error, operation_progress, push_runtime_operation_event_locked,
+        runtime_operation_record_value,
     },
 };
 
@@ -91,7 +92,7 @@ impl ModuleEventIngressResult {
         let operation_id = self.operation_id();
         let operation = operation_id
             .and_then(|operation_id| records.get(operation_id))
-            .map(|record| runtime_operation_value(&record.operation));
+            .map(runtime_operation_record_value);
         let operation_ids = match self {
             Self::Deferred { operation_ids }
             | Self::Uncorrelated { operation_ids }
@@ -220,13 +221,21 @@ pub(super) fn apply_runtime_operation_transition(
             bytes_written,
             content_length,
         } => {
-            record.operation.bytes_written = bytes_written;
-            if content_length.is_some() {
-                record.operation.content_length = content_length;
+            record.operation.bytes_written = record.operation.bytes_written.max(bytes_written);
+            if let Some(content_length) = content_length {
+                record.operation.content_length = Some(
+                    record
+                        .operation
+                        .content_length
+                        .map_or(content_length, |current| current.max(content_length)),
+                );
             }
-            let progress = operation_progress(
-                record.operation.bytes_written,
-                record.operation.content_length,
+            let progress = monotonic_progress(
+                record.operation.progress,
+                operation_progress(
+                    record.operation.bytes_written,
+                    record.operation.content_length,
+                ),
             );
             push_runtime_operation_event_locked(
                 record,
@@ -360,6 +369,14 @@ pub(super) fn apply_runtime_operation_transition(
     })
 }
 
+fn monotonic_progress(previous: Option<f64>, candidate: Option<f64>) -> Option<f64> {
+    match (previous, candidate) {
+        (Some(previous), Some(candidate)) => Some(previous.max(candidate)),
+        (Some(previous), None) => Some(previous),
+        (None, candidate) => candidate,
+    }
+}
+
 pub(super) fn apply_module_event_ingress(
     records: &mut HashMap<RuntimeOperationId, RuntimeOperationRecord>,
     event: &ModuleEventEnvelope,
@@ -426,17 +443,11 @@ fn apply_record_mutation<T>(
     record: &mut RuntimeOperationRecord,
     apply: impl FnOnce(&mut RuntimeOperationRecord) -> Result<T>,
 ) -> Result<T> {
-    let previous_operation = record.operation.clone();
-    let previous_events = record.events.clone();
-    let previous_next_event_cursor = record.next_event_cursor;
-    let previous_pending_module_name = record.pending_module_name;
+    let previous_record = record.clone();
     match apply(record) {
         Ok(value) => Ok(value),
         Err(error) => {
-            record.operation = previous_operation;
-            record.events = previous_events;
-            record.next_event_cursor = previous_next_event_cursor;
-            record.pending_module_name = previous_pending_module_name;
+            *record = previous_record;
             Err(error)
         }
     }
@@ -466,7 +477,7 @@ fn apply_outcome(
             record.operation.module_session_id = correlation.session_id().cloned();
             record.operation.module_request_id = correlation.request_id().cloned();
             record.operation.terminal_event = Some(terminal_event);
-            record.operation.acknowledgement = Some(acknowledgement.clone());
+            record.operation.acknowledgement = Some(acknowledgement);
             record.operation.result = None;
             record.operation.error = None;
             record.operation.terminal_reason = None;
@@ -479,16 +490,16 @@ fn apply_outcome(
                 "accepted",
                 "operation accepted; awaiting correlated module event",
                 progress,
-                Some(acknowledgement),
+                None,
                 None,
             )?;
         }
         RuntimeOperationOutcome::Dispatched(acknowledgement) => {
-            record.operation.acknowledgement = Some(acknowledgement.clone());
+            record.operation.acknowledgement = Some(acknowledgement);
             terminalize(
                 record,
                 RuntimeOperationStatus::Dispatched,
-                Some(acknowledgement),
+                None,
                 None,
                 "completion_unobservable",
                 "dispatched",
@@ -639,12 +650,20 @@ fn apply_module_event_progress(
             record.operation.bytes_written.max(bytes)
         };
     }
-    if content_length.is_some() {
-        record.operation.content_length = content_length;
+    if let Some(content_length) = content_length {
+        record.operation.content_length = Some(
+            record
+                .operation
+                .content_length
+                .map_or(content_length, |current| current.max(content_length)),
+        );
     }
-    record.operation.progress = operation_progress(
-        record.operation.bytes_written,
-        record.operation.content_length,
+    record.operation.progress = monotonic_progress(
+        record.operation.progress,
+        operation_progress(
+            record.operation.bytes_written,
+            record.operation.content_length,
+        ),
     );
 }
 
@@ -669,12 +688,15 @@ fn terminalize(
         TerminalProgress::Preserve => record.operation.progress,
         TerminalProgress::Complete => Some(1.0),
     };
+    let (error, error_redacted_bytes) = bounded_terminal_operation_error(error);
     record.operation.status = status;
-    record.operation.result = result.clone();
-    record.operation.error = error.clone();
+    record.operation.result = result;
+    record.operation.error = error;
+    record.error_redacted_bytes = error_redacted_bytes;
     record.operation.terminal_reason = Some(terminal_reason.to_owned());
+    record.restart_request = None;
     record.pending_module_name = None;
-    push_runtime_operation_event_locked(record, phase, message, progress, result, error)
+    push_runtime_operation_event_locked(record, phase, message, progress, None, None)
 }
 
 fn accepted_correlation_problem(
@@ -1034,8 +1056,11 @@ mod tests {
                     "totalBytes": 8
                 }))
         );
-        anyhow::ensure!(event_cursors(record) == vec![1, 2, 3, 4]);
-        anyhow::ensure!(record.operation.event_cursor == EventCursor::new(4));
+        anyhow::ensure!(event_cursors(record) == vec![1, 2, 3]);
+        anyhow::ensure!(record.operation.event_cursor == EventCursor::new(3));
+        let record_value = runtime_operation_record_value(record);
+        anyhow::ensure!(record_value.get("droppedCount") == Some(&json!(1)));
+        anyhow::ensure!(record_value.get("historyTruncated") == Some(&json!(true)));
         Ok(())
     }
 

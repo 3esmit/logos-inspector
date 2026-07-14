@@ -30,6 +30,15 @@ use super::{
 };
 
 const MAX_PENDING_MODULE_EVENTS_PER_MODULE: usize = 32;
+const MAX_RETAINED_EVENTS_PER_OPERATION: usize = 256;
+const MAX_RETAINED_EVENT_BYTES_PER_OPERATION: usize = 256 * 1024;
+const MAX_INLINE_EVENT_PAYLOAD_BYTES: usize = 16 * 1024;
+const MAX_RETAINED_TERMINAL_RECORDS: usize = 128;
+const MAX_RETAINED_TERMINAL_PAYLOAD_BYTES: usize = 32 * 1024 * 1024;
+const TERMINAL_RECORD_MAX_AGE_MILLIS: u64 = 24 * 60 * 60 * 1_000;
+const PROGRESS_COALESCE_INTERVAL_MILLIS: u64 = 250;
+const PROGRESS_COALESCE_DELTA: f64 = 0.01;
+pub(super) const MAX_WIRE_EVENT_CURSOR: u64 = 9_007_199_254_740_991;
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct RuntimeOperationRegistry {
@@ -40,6 +49,8 @@ pub(super) struct RuntimeOperationRegistry {
 struct RuntimeOperationRegistryState {
     records: HashMap<RuntimeOperationId, RuntimeOperationRecord>,
     pending_module_events: HashMap<String, VecDeque<PendingModuleEvent>>,
+    terminal_records: VecDeque<RuntimeOperationId>,
+    retained_terminal_payload_bytes: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -93,15 +104,34 @@ pub(super) struct RuntimeOperationEvent {
     result: Option<Value>,
     error: Option<String>,
     timestamp: u64,
+    class: RuntimeOperationEventClass,
+    redacted_payload_bytes: usize,
+    serialized_bytes: usize,
 }
 
 #[derive(Debug, Clone)]
 pub(super) struct RuntimeOperationRecord {
     pub(super) operation: RuntimeOperation,
     pub(super) restart_request: Option<RuntimeOperationRequest>,
-    pub(super) events: Vec<RuntimeOperationEvent>,
+    pub(super) events: VecDeque<RuntimeOperationEvent>,
     pub(super) pending_module_name: Option<&'static str>,
     pub(super) next_event_cursor: EventCursor,
+    retained_event_bytes: usize,
+    dropped_event_count: u64,
+    coalesced_event_count: u64,
+    history_truncated: bool,
+    terminal_at: Option<u64>,
+    retained_terminal_payload_bytes: usize,
+    pub(super) result_purged: bool,
+    pub(super) acknowledgement_purged: bool,
+    pub(super) error_redacted_bytes: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeOperationEventClass {
+    Progress,
+    Terminal,
+    Evidence,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,6 +152,7 @@ impl RuntimeOperationRegistry {
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("runtime operation registry is unavailable"))?;
+        sweep_terminal_history(&mut state, now_millis());
         let operation_id = record.operation.operation_id.clone();
         if state.records.contains_key(&operation_id) {
             bail!(
@@ -137,7 +168,9 @@ impl RuntimeOperationRegistry {
         {
             bail!("{}", exclusive_operation_message(group));
         }
-        state.records.insert(operation_id, record);
+        state.records.insert(operation_id.clone(), record);
+        track_newly_terminal_record(&mut state, &operation_id, now_millis());
+        sweep_terminal_history(&mut state, now_millis());
         Ok(())
     }
 
@@ -150,6 +183,7 @@ impl RuntimeOperationRegistry {
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("runtime operation registry is unavailable"))?;
+        sweep_terminal_history(&mut state, now_millis());
         let Some(record) = state.records.get(operation_id) else {
             return apply_runtime_operation_transition(
                 &mut state.records,
@@ -204,6 +238,10 @@ impl RuntimeOperationRegistry {
                 }
             }
         }
+        if result.is_ok() {
+            track_newly_terminal_record(&mut state, operation_id, now_millis());
+            sweep_terminal_history(&mut state, now_millis());
+        }
         result
     }
 
@@ -221,6 +259,7 @@ impl RuntimeOperationRegistry {
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("runtime operation registry is unavailable"))?;
+        sweep_terminal_history(&mut state, now_millis());
         let result = apply_module_event_ingress(&mut state.records, &event)?;
         let result = match result {
             unchanged @ (ModuleEventIngressResult::Unknown
@@ -241,14 +280,20 @@ impl RuntimeOperationRegistry {
             | ModuleEventIngressResult::Deferred { .. }
             | ModuleEventIngressResult::Ambiguous { .. }) => unchanged,
         };
-        let settled_operation_id = result.operation_id().and_then(|operation_id| {
+        let operation_id = result.operation_id().cloned();
+        if let Some(operation_id) = &operation_id {
+            track_newly_terminal_record(&mut state, operation_id, now_millis());
+        }
+        let settled_operation_id = operation_id.as_ref().and_then(|operation_id| {
             state
                 .records
                 .get(operation_id)
                 .filter(|record| record.operation.status.is_terminal())
                 .map(|_| operation_id.clone())
         });
-        Ok((result.as_value(&state.records), settled_operation_id))
+        let value = result.as_value(&state.records);
+        sweep_terminal_history(&mut state, now_millis());
+        Ok((value, settled_operation_id))
     }
 
     pub(super) fn value(&self, operation_id: &RuntimeOperationId) -> Result<Value> {
@@ -259,7 +304,7 @@ impl RuntimeOperationRegistry {
                     operation_id.as_str()
                 )
             })?;
-            Ok(runtime_operation_value(&record.operation))
+            Ok(runtime_operation_record_value(record))
         })?
     }
 
@@ -275,18 +320,32 @@ impl RuntimeOperationRegistry {
                     operation_id.as_str()
                 )
             })?;
+            let oldest = oldest_retained_event_cursor(record);
+            let next = record.next_event_cursor;
+            let stale = after
+                .value()
+                .checked_add(1)
+                .is_none_or(|candidate| candidate < oldest.value());
+            let future = after >= next;
+            let reset_required = stale || future;
             let events = record
                 .events
                 .iter()
-                .filter(|event| event.cursor > after)
+                .filter(|event| reset_required || event.cursor > after)
                 .map(runtime_operation_event_value)
                 .collect::<Vec<_>>();
-            let next = record.events.last().map_or(after, |event| event.cursor);
             Ok(json!({
-                "operation": runtime_operation_value(&record.operation),
+                "operation": runtime_operation_record_value(record),
                 "events": events,
-                "eventCursor": next.value(),
+                "oldestSeq": oldest.value(),
                 "nextSeq": next.value(),
+                "eventCursor": record.operation.event_cursor.value(),
+                "droppedCount": record.dropped_event_count,
+                "coalescedCount": record.coalesced_event_count,
+                "retainedCount": record.events.len(),
+                "retainedBytes": record.retained_event_bytes,
+                "historyTruncated": record.history_truncated,
+                "resetRequired": reset_required,
             }))
         })?
     }
@@ -295,10 +354,11 @@ impl RuntimeOperationRegistry {
         &self,
         inspect: impl FnOnce(&HashMap<RuntimeOperationId, RuntimeOperationRecord>) -> T,
     ) -> Result<T> {
-        let state = self
+        let mut state = self
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("runtime operation registry is unavailable"))?;
+        sweep_terminal_history(&mut state, now_millis());
         Ok(inspect(&state.records))
     }
 
@@ -307,8 +367,7 @@ impl RuntimeOperationRegistry {
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("runtime operation registry is unavailable"))?;
-        state.records.remove(operation_id);
-        remove_operation_from_pending_module_events(&mut state, operation_id);
+        remove_record(&mut state, operation_id);
         Ok(())
     }
 
@@ -319,15 +378,178 @@ impl RuntimeOperationRegistry {
 
     #[cfg(test)]
     pub(super) fn pending_module_event_count(&self, module_name: &str) -> Result<usize> {
-        let state = self
+        let mut state = self
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("runtime operation registry is unavailable"))?;
+        sweep_terminal_history(&mut state, now_millis());
         Ok(state
             .pending_module_events
             .get(module_name)
             .map_or(0, VecDeque::len))
     }
+
+    #[cfg(test)]
+    fn sweep_at(&self, now: u64) -> Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("runtime operation registry is unavailable"))?;
+        sweep_terminal_history(&mut state, now);
+        Ok(())
+    }
+}
+
+fn track_newly_terminal_record(
+    state: &mut RuntimeOperationRegistryState,
+    operation_id: &RuntimeOperationId,
+    terminal_at: u64,
+) {
+    let retained_payload_bytes = {
+        let Some(record) = state.records.get_mut(operation_id) else {
+            return;
+        };
+        if !record.operation.status.is_terminal() || record.terminal_at.is_some() {
+            return;
+        }
+        record.terminal_at = Some(terminal_at);
+        record.restart_request = None;
+        record.retained_terminal_payload_bytes =
+            retained_operation_payload_bytes(&record.operation);
+        record.retained_terminal_payload_bytes
+    };
+    state.retained_terminal_payload_bytes = state
+        .retained_terminal_payload_bytes
+        .saturating_add(retained_payload_bytes);
+    state.terminal_records.push_back(operation_id.clone());
+}
+
+fn retained_operation_payload_bytes(operation: &RuntimeOperation) -> usize {
+    operation
+        .result
+        .as_ref()
+        .map_or(0, serialized_value_bytes)
+        .saturating_add(
+            operation
+                .acknowledgement
+                .as_ref()
+                .map_or(0, serialized_value_bytes),
+        )
+        .saturating_add(operation.error.as_ref().map_or(0, String::len))
+}
+
+fn serialized_value_bytes(value: &Value) -> usize {
+    value.to_string().len()
+}
+
+fn sweep_terminal_history(state: &mut RuntimeOperationRegistryState, now: u64) {
+    state.terminal_records.retain(|operation_id| {
+        state.records.get(operation_id).is_some_and(|record| {
+            record.operation.status.is_terminal() && record.terminal_at.is_some()
+        })
+    });
+    state.retained_terminal_payload_bytes = state
+        .terminal_records
+        .iter()
+        .filter_map(|operation_id| state.records.get(operation_id))
+        .fold(0usize, |total, record| {
+            total.saturating_add(record.retained_terminal_payload_bytes)
+        });
+
+    let expired_operation_ids = state
+        .terminal_records
+        .iter()
+        .filter(|operation_id| {
+            state
+                .records
+                .get(*operation_id)
+                .and_then(|record| record.terminal_at)
+                .is_some_and(|terminal_at| {
+                    now.saturating_sub(terminal_at) >= TERMINAL_RECORD_MAX_AGE_MILLIS
+                })
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    for operation_id in expired_operation_ids {
+        remove_record(state, &operation_id);
+    }
+    while state.terminal_records.len() > MAX_RETAINED_TERMINAL_RECORDS {
+        evict_oldest_terminal_record(state);
+    }
+    while state.retained_terminal_payload_bytes > MAX_RETAINED_TERMINAL_PAYLOAD_BYTES {
+        if !purge_oldest_terminal_payload(state) {
+            state.retained_terminal_payload_bytes = 0;
+            break;
+        }
+    }
+}
+
+fn evict_oldest_terminal_record(state: &mut RuntimeOperationRegistryState) {
+    let Some(operation_id) = state.terminal_records.pop_front() else {
+        return;
+    };
+    remove_record(state, &operation_id);
+}
+
+fn purge_oldest_terminal_payload(state: &mut RuntimeOperationRegistryState) -> bool {
+    let operation_id = state
+        .terminal_records
+        .iter()
+        .find(|operation_id| {
+            state.records.get(*operation_id).is_some_and(|record| {
+                record.operation.result.is_some() || record.operation.acknowledgement.is_some()
+            })
+        })
+        .cloned();
+    let Some(operation_id) = operation_id else {
+        return false;
+    };
+    let Some(record) = state.records.get_mut(&operation_id) else {
+        return false;
+    };
+    if record.operation.acknowledgement.is_some() {
+        let bytes = record
+            .operation
+            .acknowledgement
+            .as_ref()
+            .map_or(0, serialized_value_bytes);
+        record.operation.acknowledgement = None;
+        record.acknowledgement_purged = true;
+        record.retained_terminal_payload_bytes =
+            record.retained_terminal_payload_bytes.saturating_sub(bytes);
+        state.retained_terminal_payload_bytes =
+            state.retained_terminal_payload_bytes.saturating_sub(bytes);
+        return true;
+    }
+    let bytes = record
+        .operation
+        .result
+        .as_ref()
+        .map_or(0, serialized_value_bytes);
+    record.operation.result = None;
+    record.result_purged = true;
+    record.retained_terminal_payload_bytes =
+        record.retained_terminal_payload_bytes.saturating_sub(bytes);
+    state.retained_terminal_payload_bytes =
+        state.retained_terminal_payload_bytes.saturating_sub(bytes);
+    true
+}
+
+fn remove_record(
+    state: &mut RuntimeOperationRegistryState,
+    operation_id: &RuntimeOperationId,
+) -> Option<RuntimeOperationRecord> {
+    state
+        .terminal_records
+        .retain(|candidate| candidate != operation_id);
+    let removed = state.records.remove(operation_id);
+    if let Some(record) = &removed {
+        state.retained_terminal_payload_bytes = state
+            .retained_terminal_payload_bytes
+            .saturating_sub(record.retained_terminal_payload_bytes);
+    }
+    remove_operation_from_pending_module_events(state, operation_id);
+    removed
 }
 
 fn pending_module_event_candidates(
@@ -424,7 +646,7 @@ fn ensure_event_cursor_capacity(
         };
         let mut cursor = record.next_event_cursor;
         for _ in 0..*required {
-            cursor = cursor.next()?;
+            cursor = checked_next_event_cursor(cursor)?;
         }
     }
     Ok(())
@@ -436,7 +658,7 @@ fn ensure_record_event_cursor_capacity(
 ) -> Result<()> {
     let mut cursor = record.next_event_cursor;
     for _ in 0..required_events {
-        cursor = cursor.next()?;
+        cursor = checked_next_event_cursor(cursor)?;
     }
     Ok(())
 }
@@ -575,9 +797,18 @@ pub(super) fn running_runtime_operation_record(
             updated_at: now,
         },
         restart_request: Some(request.clone()),
-        events: Vec::new(),
+        events: VecDeque::with_capacity(MAX_RETAINED_EVENTS_PER_OPERATION),
         pending_module_name: runtime_operation_pending_module(request),
         next_event_cursor: EventCursor::new(1),
+        retained_event_bytes: 0,
+        dropped_event_count: 0,
+        coalesced_event_count: 0,
+        history_truncated: false,
+        terminal_at: None,
+        retained_terminal_payload_bytes: 0,
+        result_purged: false,
+        acknowledgement_purged: false,
+        error_redacted_bytes: 0,
     })
 }
 
@@ -618,16 +849,49 @@ pub(super) fn push_runtime_operation_event_locked(
     result: Option<Value>,
     error: Option<String>,
 ) -> Result<()> {
-    let cursor = record.next_event_cursor;
-    let next_event_cursor = cursor.next()?;
-    if let Some(value) = progress {
-        record.operation.progress = Some(value);
+    let timestamp = now_millis().max(record.operation.updated_at);
+    let progress = progress.map(|candidate| {
+        record
+            .operation
+            .progress
+            .map_or(candidate, |previous| previous.max(candidate))
+    });
+    let class = runtime_operation_event_class(phase);
+    if class == RuntimeOperationEventClass::Evidence
+        && record.operation.status.is_terminal()
+        && record
+            .events
+            .iter()
+            .any(|event| event.class == RuntimeOperationEventClass::Terminal)
+    {
+        record.operation.updated_at = timestamp;
+        record.dropped_event_count = increment_wire_counter(record.dropped_event_count);
+        record.history_truncated = true;
+        return Ok(());
     }
-    let timestamp = now_millis();
-    record.operation.updated_at = timestamp;
-    record.next_event_cursor = next_event_cursor;
-    record.operation.event_cursor = cursor;
-    record.events.push(RuntimeOperationEvent {
+    if class == RuntimeOperationEventClass::Progress
+        && let Some(previous) = record.events.back()
+        && should_coalesce_progress(previous, progress, timestamp)
+    {
+        if let Some(value) = progress {
+            record.operation.progress = Some(value);
+        }
+        record.operation.updated_at = timestamp;
+        record.coalesced_event_count = increment_wire_counter(record.coalesced_event_count);
+        record.history_truncated = true;
+        return Ok(());
+    }
+
+    let (result, result_redacted_bytes) = bounded_inline_event_result(
+        result,
+        event_payload_location(phase).unwrap_or("event.result"),
+    );
+    let (error, error_redacted_bytes) = bounded_inline_event_error(error);
+    let redacted_payload_bytes = result_redacted_bytes.saturating_add(error_redacted_bytes);
+
+    let cursor = record.next_event_cursor;
+    let next_event_cursor = checked_next_event_cursor(cursor)?;
+    let mut event = RuntimeOperationEvent {
         cursor,
         operation_id: record.operation.operation_id.clone(),
         client_request_id: record.operation.client_request_id.clone(),
@@ -642,13 +906,186 @@ pub(super) fn push_runtime_operation_event_locked(
         result,
         error,
         timestamp,
-    });
+        class,
+        redacted_payload_bytes,
+        serialized_bytes: 0,
+    };
+    finalize_event_size(&mut event)?;
+    let event_was_redacted = event.redacted_payload_bytes > 0;
+    if let Some(value) = progress {
+        record.operation.progress = Some(value);
+    }
+    record.operation.updated_at = timestamp;
+    record.next_event_cursor = next_event_cursor;
+    record.operation.event_cursor = cursor;
+    record.retained_event_bytes = record
+        .retained_event_bytes
+        .saturating_add(event.serialized_bytes);
+    if event_was_redacted {
+        record.history_truncated = true;
+    }
+    record.events.push_back(event);
+    enforce_event_retention(record);
     Ok(())
+}
+
+fn checked_next_event_cursor(cursor: EventCursor) -> Result<EventCursor> {
+    let next = cursor.next()?;
+    if next.value() > MAX_WIRE_EVENT_CURSOR {
+        bail!("runtime operation event cursor exceeds JavaScript safe integer range");
+    }
+    Ok(next)
+}
+
+fn runtime_operation_event_class(phase: &str) -> RuntimeOperationEventClass {
+    match phase {
+        "progress" | "external_progress" => RuntimeOperationEventClass::Progress,
+        "completed"
+        | "external_completion"
+        | "external_failure"
+        | "dispatched"
+        | "failed"
+        | "canceled"
+        | "timed_out" => RuntimeOperationEventClass::Terminal,
+        _ => RuntimeOperationEventClass::Evidence,
+    }
+}
+
+fn should_coalesce_progress(
+    previous: &RuntimeOperationEvent,
+    progress: Option<f64>,
+    timestamp: u64,
+) -> bool {
+    if previous.class != RuntimeOperationEventClass::Progress {
+        return false;
+    }
+    let elapsed = timestamp.saturating_sub(previous.timestamp);
+    let delta = match (previous.progress, progress) {
+        (Some(previous), Some(current)) => (current - previous).abs(),
+        (None, None) => 0.0,
+        (Some(_), None) | (None, Some(_)) => f64::INFINITY,
+    };
+    elapsed < PROGRESS_COALESCE_INTERVAL_MILLIS && delta < PROGRESS_COALESCE_DELTA
+}
+
+fn bounded_inline_event_result(
+    result: Option<Value>,
+    payload_location: &'static str,
+) -> (Option<Value>, usize) {
+    let Some(result) = result else {
+        return (None, 0);
+    };
+    let bytes = serialized_value_bytes(&result);
+    if bytes <= MAX_INLINE_EVENT_PAYLOAD_BYTES {
+        return (Some(result), 0);
+    }
+    (
+        Some(json!({
+            "redacted": true,
+            "reason": "inline_payload_limit",
+            "originalBytes": bytes,
+            "limitBytes": MAX_INLINE_EVENT_PAYLOAD_BYTES,
+            "payloadLocation": payload_location,
+        })),
+        bytes,
+    )
+}
+
+fn bounded_inline_event_error(error: Option<String>) -> (Option<String>, usize) {
+    let Some(error) = error else {
+        return (None, 0);
+    };
+    let bytes = error.len();
+    if bytes <= MAX_INLINE_EVENT_PAYLOAD_BYTES {
+        return (Some(error), 0);
+    }
+    (
+        Some(format!(
+            "runtime operation evidence redacted: {bytes} bytes exceeded {MAX_INLINE_EVENT_PAYLOAD_BYTES}-byte inline limit"
+        )),
+        bytes,
+    )
+}
+
+pub(super) fn bounded_terminal_operation_error(error: Option<String>) -> (Option<String>, usize) {
+    let Some(error) = error else {
+        return (None, 0);
+    };
+    let bytes = error.len();
+    if bytes <= MAX_INLINE_EVENT_PAYLOAD_BYTES {
+        return (Some(error), 0);
+    }
+    (
+        Some(format!(
+            "runtime operation error redacted: {bytes} bytes exceeded {MAX_INLINE_EVENT_PAYLOAD_BYTES}-byte retained limit"
+        )),
+        bytes,
+    )
+}
+
+fn serialized_event_bytes(event: &RuntimeOperationEvent) -> Result<usize> {
+    serde_json::to_vec(&runtime_operation_event_value(event))
+        .map(|value| value.len())
+        .context("runtime operation event could not be measured")
+}
+
+fn finalize_event_size(event: &mut RuntimeOperationEvent) -> Result<()> {
+    event.serialized_bytes = serialized_event_bytes(event)?;
+    if event.serialized_bytes <= MAX_RETAINED_EVENT_BYTES_PER_OPERATION {
+        return Ok(());
+    }
+
+    let original_bytes = event.serialized_bytes;
+    event.client_request_id = None;
+    event.bridge_callback_id = None;
+    event.module_session_id = None;
+    event.module_request_id = None;
+    event.result = Some(json!({
+        "redacted": true,
+        "reason": "event_metadata_limit",
+        "originalBytes": original_bytes,
+        "limitBytes": MAX_RETAINED_EVENT_BYTES_PER_OPERATION,
+        "payloadLocation": event_payload_location(&event.phase).unwrap_or("event.metadata"),
+    }));
+    event.error = None;
+    event.redacted_payload_bytes = event.redacted_payload_bytes.saturating_add(original_bytes);
+    event.serialized_bytes = serialized_event_bytes(event)?;
+    if event.serialized_bytes > MAX_RETAINED_EVENT_BYTES_PER_OPERATION {
+        bail!("runtime operation event metadata exceeds retained byte limit");
+    }
+    Ok(())
+}
+
+fn enforce_event_retention(record: &mut RuntimeOperationRecord) {
+    while record.events.len() > MAX_RETAINED_EVENTS_PER_OPERATION
+        || record.retained_event_bytes > MAX_RETAINED_EVENT_BYTES_PER_OPERATION
+    {
+        let removed = record.events.pop_front();
+        let Some(removed) = removed else {
+            break;
+        };
+        record.retained_event_bytes = record
+            .retained_event_bytes
+            .saturating_sub(removed.serialized_bytes);
+        record.dropped_event_count = increment_wire_counter(record.dropped_event_count);
+        record.history_truncated = true;
+    }
+}
+
+fn increment_wire_counter(value: u64) -> u64 {
+    value.saturating_add(1).min(MAX_WIRE_EVENT_CURSOR)
+}
+
+fn oldest_retained_event_cursor(record: &RuntimeOperationRecord) -> EventCursor {
+    record
+        .events
+        .front()
+        .map_or(record.next_event_cursor, |event| event.cursor)
 }
 
 pub(super) fn operation_progress(bytes_written: u64, content_length: Option<u64>) -> Option<f64> {
     match content_length {
-        Some(total) if total > 0 => Some(bytes_written as f64 / total as f64),
+        Some(total) if total > 0 => Some((bytes_written as f64 / total as f64).min(1.0)),
         _ => None,
     }
 }
@@ -706,6 +1143,51 @@ pub(super) fn runtime_operation_value(operation: &RuntimeOperation) -> Value {
     value
 }
 
+pub(super) fn runtime_operation_record_value(record: &RuntimeOperationRecord) -> Value {
+    let mut value = runtime_operation_value(&record.operation);
+    let oldest = oldest_retained_event_cursor(record);
+    if let Value::Object(target) = &mut value {
+        target.insert("oldestSeq".to_owned(), json!(oldest.value()));
+        target.insert(
+            "nextSeq".to_owned(),
+            json!(record.next_event_cursor.value()),
+        );
+        target.insert("droppedCount".to_owned(), json!(record.dropped_event_count));
+        target.insert(
+            "coalescedCount".to_owned(),
+            json!(record.coalesced_event_count),
+        );
+        target.insert("retainedCount".to_owned(), json!(record.events.len()));
+        target.insert(
+            "retainedBytes".to_owned(),
+            json!(record.retained_event_bytes),
+        );
+        target.insert(
+            "historyTruncated".to_owned(),
+            json!(record.history_truncated),
+        );
+        target.insert("terminalAt".to_owned(), json!(record.terminal_at));
+        target.insert("resultPurged".to_owned(), json!(record.result_purged));
+        target.insert(
+            "acknowledgementPurged".to_owned(),
+            json!(record.acknowledgement_purged),
+        );
+        target.insert(
+            "retainedPayloadBytes".to_owned(),
+            json!(record.retained_terminal_payload_bytes),
+        );
+        target.insert(
+            "errorRedacted".to_owned(),
+            json!(record.error_redacted_bytes > 0),
+        );
+        target.insert(
+            "redactedErrorBytes".to_owned(),
+            json!(record.error_redacted_bytes),
+        );
+    }
+    value
+}
+
 pub(super) fn runtime_operation_event_value(event: &RuntimeOperationEvent) -> Value {
     json!({
         "seq": event.cursor.value(),
@@ -722,11 +1204,23 @@ pub(super) fn runtime_operation_event_value(event: &RuntimeOperationEvent) -> Va
         "method": event.method,
         "phase": event.phase,
         "message": event.message,
+        "payloadLocation": event_payload_location(event.phase.as_str()),
         "progress": event.progress,
         "result": event.result,
         "error": event.error,
         "timestamp": event.timestamp,
+        "payloadRedacted": event.redacted_payload_bytes > 0,
+        "redactedPayloadBytes": event.redacted_payload_bytes,
     })
+}
+
+fn event_payload_location(phase: &str) -> Option<&'static str> {
+    match phase {
+        "accepted" | "dispatched" => Some("operation.acknowledgement"),
+        "completed" | "external_completion" => Some("operation.result"),
+        "failed" | "external_failure" | "canceled" | "timed_out" => Some("operation.error"),
+        _ => None,
+    }
 }
 
 fn terminal_event_contract_value(contract: &ModuleTerminalEventContract) -> Value {
@@ -942,7 +1436,7 @@ mod tests {
                     })),
             "runtime identity wire fields drifted: {value}"
         );
-        let event = record.events.first().context("accepted event")?;
+        let event = record.events.front().context("accepted event")?;
         let event_value = runtime_operation_event_value(event);
         anyhow::ensure!(
             event_value.get("eventCursor") == Some(&json!(1))
@@ -1193,6 +1687,618 @@ mod tests {
                 && registry.pending_module_event_count("storage_module")? == 1,
             "replay preflight failure lost pending conversation state: {value}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn ten_thousand_progress_updates_keep_a_bounded_contiguous_terminal_window() -> Result<()> {
+        let registry = RuntimeOperationRegistry::default();
+        let id = operation_id("bounded-progress")?;
+        let request = RuntimeOperationRequest::from_call(
+            super::super::spec::OperationMethod::LocalWalletAccounts,
+            json!(["default"]),
+            "Wallet accounts",
+        )?;
+        registry.insert(running_runtime_operation_record(id.clone(), &request, 1)?)?;
+        registry.transition(&id, RuntimeOperationTransition::Started)?;
+        for bytes_written in 1..=10_000 {
+            registry.transition(
+                &id,
+                RuntimeOperationTransition::Progress {
+                    bytes_written,
+                    content_length: Some(10_000),
+                },
+            )?;
+        }
+        registry.transition(
+            &id,
+            RuntimeOperationTransition::Resolved(RuntimeOperationOutcome::Completed(
+                json!({ "complete": true }),
+            )),
+        )?;
+
+        registry.inspect(|records| -> Result<()> {
+            let record = records.get(&id).context("bounded progress record")?;
+            anyhow::ensure!(record.events.len() <= MAX_RETAINED_EVENTS_PER_OPERATION);
+            anyhow::ensure!(record.retained_event_bytes <= MAX_RETAINED_EVENT_BYTES_PER_OPERATION);
+            anyhow::ensure!(record.coalesced_event_count > 0);
+            anyhow::ensure!(record.restart_request.is_none());
+            anyhow::ensure!(record.operation.result == Some(json!({ "complete": true })));
+            let terminal = record.events.back().context("terminal event")?;
+            anyhow::ensure!(terminal.class == RuntimeOperationEventClass::Terminal);
+            anyhow::ensure!(terminal.result.is_none());
+            anyhow::ensure!(event_payload_location(&terminal.phase) == Some("operation.result"));
+            let mut expected = oldest_retained_event_cursor(record).value();
+            for event in &record.events {
+                anyhow::ensure!(event.cursor.value() == expected);
+                expected = expected
+                    .checked_add(1)
+                    .context("retained cursor overflow")?;
+            }
+            anyhow::ensure!(expected == record.next_event_cursor.value());
+            Ok(())
+        })??;
+        Ok(())
+    }
+
+    #[test]
+    fn coalesced_progress_keeps_emitted_event_immutable_until_cumulative_threshold() -> Result<()> {
+        let request = RuntimeOperationRequest::from_call(
+            super::super::spec::OperationMethod::LocalWalletAccounts,
+            json!(["default"]),
+            "Wallet accounts",
+        )?;
+        let mut record =
+            running_runtime_operation_record(operation_id("coalesced-progress")?, &request, 1)?;
+        push_runtime_operation_event_locked(
+            &mut record,
+            "progress",
+            "operation progress",
+            Some(0.0),
+            None,
+            None,
+        )?;
+        let future_timestamp = now_millis().saturating_add(60_000);
+        record.operation.updated_at = future_timestamp;
+        record
+            .events
+            .back_mut()
+            .context("initial progress event")?
+            .timestamp = future_timestamp;
+        let emitted =
+            runtime_operation_event_value(record.events.front().context("initial progress event")?);
+
+        push_runtime_operation_event_locked(
+            &mut record,
+            "progress",
+            "operation progress",
+            Some(0.005),
+            None,
+            None,
+        )?;
+        anyhow::ensure!(record.events.len() == 1);
+        anyhow::ensure!(record.next_event_cursor == EventCursor::new(2));
+        anyhow::ensure!(record.operation.event_cursor == EventCursor::new(1));
+        anyhow::ensure!(record.operation.progress == Some(0.005));
+        anyhow::ensure!(record.operation.updated_at == future_timestamp);
+        anyhow::ensure!(record.coalesced_event_count == 1);
+        anyhow::ensure!(
+            runtime_operation_event_value(
+                record.events.front().context("immutable progress event")?
+            ) == emitted
+        );
+
+        push_runtime_operation_event_locked(
+            &mut record,
+            "progress",
+            "operation progress",
+            Some(0.02),
+            None,
+            None,
+        )?;
+        anyhow::ensure!(record.events.len() == 2);
+        anyhow::ensure!(record.operation.event_cursor == EventCursor::new(2));
+        anyhow::ensure!(record.next_event_cursor == EventCursor::new(3));
+        Ok(())
+    }
+
+    #[test]
+    fn progress_snapshot_never_regresses_at_the_same_cursor() -> Result<()> {
+        let registry = RuntimeOperationRegistry::default();
+        let id = operation_id("monotonic-progress")?;
+        let request = RuntimeOperationRequest::from_call(
+            super::super::spec::OperationMethod::LocalWalletAccounts,
+            json!(["default"]),
+            "Wallet accounts",
+        )?;
+        registry.insert(running_runtime_operation_record(id.clone(), &request, 1)?)?;
+        registry.transition(
+            &id,
+            RuntimeOperationTransition::Progress {
+                bytes_written: 150,
+                content_length: Some(100),
+            },
+        )?;
+        let first = registry.value(&id)?;
+        registry.transition(
+            &id,
+            RuntimeOperationTransition::Progress {
+                bytes_written: 50,
+                content_length: Some(200),
+            },
+        )?;
+        let second = registry.value(&id)?;
+
+        anyhow::ensure!(second.get("bytesWritten") == Some(&json!(150)));
+        anyhow::ensure!(second.get("contentLength") == Some(&json!(200)));
+        anyhow::ensure!(second.get("progress") == Some(&json!(1.0)));
+        anyhow::ensure!(second.get("eventCursor") == first.get("eventCursor"));
+        anyhow::ensure!(
+            second.get("updatedAt").and_then(Value::as_u64)
+                >= first.get("updatedAt").and_then(Value::as_u64)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_event_survives_progress_prefix_eviction() -> Result<()> {
+        let request = RuntimeOperationRequest::from_call(
+            super::super::spec::OperationMethod::LocalWalletAccounts,
+            json!(["default"]),
+            "Wallet accounts",
+        )?;
+        let mut record =
+            running_runtime_operation_record(operation_id("terminal-pressure")?, &request, 1)?;
+        for index in 0..(MAX_RETAINED_EVENTS_PER_OPERATION + 32) {
+            push_runtime_operation_event_locked(
+                &mut record,
+                "progress",
+                "operation progress",
+                Some(index as f64 * 0.02),
+                None,
+                None,
+            )?;
+        }
+        push_runtime_operation_event_locked(
+            &mut record,
+            "completed",
+            "operation completed",
+            Some(1.0),
+            None,
+            None,
+        )?;
+
+        anyhow::ensure!(record.events.len() == MAX_RETAINED_EVENTS_PER_OPERATION);
+        anyhow::ensure!(record.dropped_event_count > 0);
+        anyhow::ensure!(oldest_retained_event_cursor(&record).value() > 1);
+        anyhow::ensure!(
+            record
+                .events
+                .back()
+                .is_some_and(|event| event.class == RuntimeOperationEventClass::Terminal)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn post_terminal_evidence_pressure_keeps_terminal_marker_and_contiguous_cursor() -> Result<()> {
+        let registry = RuntimeOperationRegistry::default();
+        let id = operation_id("terminal-stale-pressure")?;
+        let request = RuntimeOperationRequest::from_call(
+            super::super::spec::OperationMethod::LocalWalletAccounts,
+            json!(["default"]),
+            "Wallet accounts",
+        )?;
+        registry.insert(running_runtime_operation_record(id.clone(), &request, 1)?)?;
+        registry.transition(
+            &id,
+            RuntimeOperationTransition::Resolved(RuntimeOperationOutcome::Completed(
+                json!({ "complete": true }),
+            )),
+        )?;
+        for index in 0..(MAX_RETAINED_EVENTS_PER_OPERATION + 32) {
+            let disposition = registry.transition(
+                &id,
+                RuntimeOperationTransition::Progress {
+                    bytes_written: index as u64,
+                    content_length: Some(MAX_RETAINED_EVENTS_PER_OPERATION as u64 + 32),
+                },
+            )?;
+            anyhow::ensure!(disposition == TransitionDisposition::Stale);
+        }
+
+        let response = registry.events(&id, EventCursor::new(0))?;
+        anyhow::ensure!(response.get("eventCursor") == Some(&json!(1)));
+        anyhow::ensure!(response.get("nextSeq") == Some(&json!(2)));
+        anyhow::ensure!(response.get("oldestSeq") == Some(&json!(1)));
+        anyhow::ensure!(response.get("retainedCount") == Some(&json!(1)));
+        anyhow::ensure!(response.get("historyTruncated") == Some(&json!(true)));
+        anyhow::ensure!(
+            response.get("droppedCount") == Some(&json!(MAX_RETAINED_EVENTS_PER_OPERATION + 32))
+        );
+        let terminal = response
+            .get("events")
+            .and_then(Value::as_array)
+            .and_then(|events| events.first())
+            .context("retained terminal marker")?;
+        anyhow::ensure!(terminal.get("phase") == Some(&json!("completed")));
+        anyhow::ensure!(terminal.get("payloadLocation") == Some(&json!("operation.result")));
+        Ok(())
+    }
+
+    #[test]
+    fn large_terminal_error_is_bounded_and_owned_only_by_operation_record() -> Result<()> {
+        let registry = RuntimeOperationRegistry::default();
+        let id = operation_id("terminal-error")?;
+        let request = RuntimeOperationRequest::from_call(
+            super::super::spec::OperationMethod::LocalWalletAccounts,
+            json!(["default"]),
+            "Wallet accounts",
+        )?;
+        registry.insert(running_runtime_operation_record(id.clone(), &request, 1)?)?;
+        let original_error_bytes = MAX_INLINE_EVENT_PAYLOAD_BYTES + 1;
+        registry.transition(
+            &id,
+            RuntimeOperationTransition::ExecutionFailed {
+                error: "x".repeat(original_error_bytes),
+            },
+        )?;
+
+        let value = registry.value(&id)?;
+        anyhow::ensure!(value.get("errorRedacted") == Some(&json!(true)));
+        anyhow::ensure!(value.get("redactedErrorBytes") == Some(&json!(original_error_bytes)));
+        anyhow::ensure!(
+            value
+                .get("error")
+                .and_then(Value::as_str)
+                .is_some_and(|error| error.contains("error redacted"))
+        );
+        registry.inspect(|records| -> Result<()> {
+            let record = records.get(&id).context("terminal error record")?;
+            let terminal = record.events.back().context("terminal error marker")?;
+            anyhow::ensure!(terminal.error.is_none());
+            anyhow::ensure!(terminal.result.is_none());
+            anyhow::ensure!(event_payload_location(&terminal.phase) == Some("operation.error"));
+            anyhow::ensure!(terminal.serialized_bytes <= MAX_RETAINED_EVENT_BYTES_PER_OPERATION);
+            Ok(())
+        })??;
+        Ok(())
+    }
+
+    #[test]
+    fn event_window_reports_stale_and_future_cursor_resets() -> Result<()> {
+        let registry = RuntimeOperationRegistry::default();
+        let id = operation_id("cursor-window")?;
+        insert_module_operation(&registry, id.as_str())?;
+        {
+            let mut state = registry
+                .state
+                .lock()
+                .map_err(|_| anyhow::anyhow!("registry unavailable"))?;
+            let record = state.records.get_mut(&id).context("cursor record")?;
+            for index in 0..(MAX_RETAINED_EVENTS_PER_OPERATION + 32) {
+                push_runtime_operation_event_locked(
+                    record,
+                    "audit",
+                    &format!("audit event {index}"),
+                    None,
+                    None,
+                    None,
+                )?;
+            }
+        }
+
+        let reset = registry.events(&id, EventCursor::new(0))?;
+        let oldest = reset
+            .get("oldestSeq")
+            .and_then(Value::as_u64)
+            .context("oldest sequence")?;
+        let next = reset
+            .get("nextSeq")
+            .and_then(Value::as_u64)
+            .context("next sequence")?;
+        anyhow::ensure!(oldest > 1);
+        anyhow::ensure!(reset.get("resetRequired") == Some(&json!(true)));
+        anyhow::ensure!(
+            reset.get("events").and_then(Value::as_array).map(Vec::len)
+                == Some(MAX_RETAINED_EVENTS_PER_OPERATION)
+        );
+
+        let boundary = registry.events(&id, EventCursor::new(oldest - 1))?;
+        anyhow::ensure!(boundary.get("resetRequired") == Some(&json!(false)));
+        let future = registry.events(&id, EventCursor::new(next))?;
+        anyhow::ensure!(future.get("resetRequired") == Some(&json!(true)));
+        anyhow::ensure!(future.get("events") == reset.get("events"));
+        Ok(())
+    }
+
+    #[test]
+    fn oversized_event_evidence_is_replaced_by_a_location_marker() -> Result<()> {
+        let request = RuntimeOperationRequest::from_call(
+            super::super::spec::OperationMethod::LocalWalletAccounts,
+            json!(["default"]),
+            "Wallet accounts",
+        )?;
+        let mut record =
+            running_runtime_operation_record(operation_id("redacted-evidence")?, &request, 1)?;
+        push_runtime_operation_event_locked(
+            &mut record,
+            "audit",
+            "oversized evidence",
+            None,
+            Some(json!({ "payload": "x".repeat(MAX_INLINE_EVENT_PAYLOAD_BYTES + 1) })),
+            None,
+        )?;
+
+        let event = record.events.front().context("redacted event")?;
+        let value = runtime_operation_event_value(event);
+        anyhow::ensure!(value.get("payloadRedacted") == Some(&json!(true)));
+        anyhow::ensure!(
+            value.get("result").and_then(|result| result.get("reason"))
+                == Some(&json!("inline_payload_limit"))
+        );
+        anyhow::ensure!(
+            value
+                .get("result")
+                .and_then(|result| result.get("payloadLocation"))
+                == Some(&json!("event.result"))
+        );
+        anyhow::ensure!(event.serialized_bytes <= MAX_RETAINED_EVENT_BYTES_PER_OPERATION);
+        anyhow::ensure!(record.history_truncated);
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_count_and_age_eviction_never_remove_active_records() -> Result<()> {
+        let registry = RuntimeOperationRegistry::default();
+        let request = RuntimeOperationRequest::from_call(
+            super::super::spec::OperationMethod::LocalWalletAccounts,
+            json!(["default"]),
+            "Wallet accounts",
+        )?;
+        let active = operation_id("active-retained")?;
+        registry.insert(running_runtime_operation_record(
+            active.clone(),
+            &request,
+            1,
+        )?)?;
+        let mut first_terminal = None;
+        for index in 0..=MAX_RETAINED_TERMINAL_RECORDS {
+            let id = operation_id(&format!("terminal-{index}"))?;
+            if first_terminal.is_none() {
+                first_terminal = Some(id.clone());
+            }
+            registry.insert(running_runtime_operation_record(id.clone(), &request, 1)?)?;
+            registry.transition(
+                &id,
+                RuntimeOperationTransition::Resolved(RuntimeOperationOutcome::Completed(
+                    json!({ "index": index }),
+                )),
+            )?;
+            if index == 0 {
+                let mut state = registry
+                    .state
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("registry unavailable"))?;
+                state
+                    .pending_module_events
+                    .entry("storage_module".to_owned())
+                    .or_default()
+                    .push_back(PendingModuleEvent {
+                        event: module_event("evicted-session", "evicted-cid")?,
+                        candidate_operation_ids: vec![id.clone()],
+                    });
+            }
+        }
+
+        let first_terminal = first_terminal.context("first terminal id")?;
+        anyhow::ensure!(registry.value(&first_terminal).is_err());
+        anyhow::ensure!(registry.value(&active).is_ok());
+        anyhow::ensure!(registry.pending_module_event_count("storage_module")? == 0);
+        anyhow::ensure!(registry.len()? == MAX_RETAINED_TERMINAL_RECORDS + 1);
+
+        registry.sweep_at(
+            now_millis()
+                .checked_add(TERMINAL_RECORD_MAX_AGE_MILLIS)
+                .and_then(|value| value.checked_add(1))
+                .context("age sweep time overflow")?,
+        )?;
+        anyhow::ensure!(registry.value(&active).is_ok());
+        anyhow::ensure!(registry.len()? == 1);
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_payload_pressure_purges_oldest_result_but_keeps_tombstone() -> Result<()> {
+        let registry = RuntimeOperationRegistry::default();
+        let request = RuntimeOperationRequest::from_call(
+            super::super::spec::OperationMethod::LocalWalletAccounts,
+            json!(["default"]),
+            "Wallet accounts",
+        )?;
+        let first = operation_id("payload-first")?;
+        let second = operation_id("payload-second")?;
+        registry.insert(running_runtime_operation_record(
+            first.clone(),
+            &request,
+            1,
+        )?)?;
+        registry.insert(running_runtime_operation_record(
+            second.clone(),
+            &request,
+            1,
+        )?)?;
+        let payload = || json!({ "payload": "x".repeat(17 * 1024 * 1024) });
+        registry.transition(
+            &first,
+            RuntimeOperationTransition::Resolved(RuntimeOperationOutcome::Completed(payload())),
+        )?;
+        registry.transition(
+            &second,
+            RuntimeOperationTransition::Resolved(RuntimeOperationOutcome::Completed(payload())),
+        )?;
+
+        let first_value = registry.value(&first)?;
+        anyhow::ensure!(first_value.get("result") == Some(&Value::Null));
+        anyhow::ensure!(first_value.get("resultPurged") == Some(&json!(true)));
+        anyhow::ensure!(first_value.get("status") == Some(&json!("completed")));
+        registry.inspect(|records| -> Result<()> {
+            let second_record = records.get(&second).context("second payload record")?;
+            anyhow::ensure!(second_record.operation.result.is_some());
+            Ok(())
+        })??;
+        let state = registry
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("registry unavailable"))?;
+        anyhow::ensure!(
+            state.retained_terminal_payload_bytes <= MAX_RETAINED_TERMINAL_PAYLOAD_BYTES
+        );
+        drop(state);
+        anyhow::ensure!(registry.len()? == 2);
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_payload_pressure_purges_oldest_acknowledgement_without_result_alias() -> Result<()>
+    {
+        let registry = RuntimeOperationRegistry::default();
+        let request = RuntimeOperationRequest::from_call(
+            super::super::spec::OperationMethod::LocalWalletAccounts,
+            json!(["default"]),
+            "Wallet accounts",
+        )?;
+        let first = operation_id("ack-first")?;
+        let second = operation_id("ack-second")?;
+        registry.insert(running_runtime_operation_record(
+            first.clone(),
+            &request,
+            1,
+        )?)?;
+        registry.insert(running_runtime_operation_record(
+            second.clone(),
+            &request,
+            1,
+        )?)?;
+        let acknowledgement = || json!({ "dispatch": "x".repeat(17 * 1024 * 1024) });
+        registry.transition(
+            &first,
+            RuntimeOperationTransition::Resolved(RuntimeOperationOutcome::Dispatched(
+                acknowledgement(),
+            )),
+        )?;
+        registry.transition(
+            &second,
+            RuntimeOperationTransition::Resolved(RuntimeOperationOutcome::Dispatched(
+                acknowledgement(),
+            )),
+        )?;
+
+        let first_value = registry.value(&first)?;
+        anyhow::ensure!(first_value.get("acknowledgement") == Some(&Value::Null));
+        anyhow::ensure!(first_value.get("acknowledgementPurged") == Some(&json!(true)));
+        anyhow::ensure!(first_value.get("result") == Some(&Value::Null));
+        registry.inspect(|records| -> Result<()> {
+            let first_record = records
+                .get(&first)
+                .context("first acknowledgement record")?;
+            let terminal = first_record
+                .events
+                .back()
+                .context("dispatched terminal event")?;
+            anyhow::ensure!(terminal.result.is_none());
+            anyhow::ensure!(
+                event_payload_location(&terminal.phase) == Some("operation.acknowledgement")
+            );
+            anyhow::ensure!(
+                records
+                    .get(&second)
+                    .context("second acknowledgement record")?
+                    .operation
+                    .acknowledgement
+                    .is_some()
+            );
+            Ok(())
+        })??;
+        Ok(())
+    }
+
+    #[test]
+    fn combined_terminal_payload_purges_acknowledgement_before_authoritative_result() -> Result<()>
+    {
+        let registry = RuntimeOperationRegistry::default();
+        let request = RuntimeOperationRequest::from_call(
+            super::super::spec::OperationMethod::LocalWalletAccounts,
+            json!(["default"]),
+            "Wallet accounts",
+        )?;
+        let id = operation_id("combined-payload")?;
+        registry.insert(running_runtime_operation_record(id.clone(), &request, 1)?)?;
+        {
+            let mut state = registry
+                .state
+                .lock()
+                .map_err(|_| anyhow::anyhow!("registry unavailable"))?;
+            state
+                .records
+                .get_mut(&id)
+                .context("combined payload record")?
+                .operation
+                .acknowledgement = Some(json!({ "dispatch": "x".repeat(17 * 1024 * 1024) }));
+        }
+        registry.transition(
+            &id,
+            RuntimeOperationTransition::Resolved(RuntimeOperationOutcome::Completed(json!({
+                "payload": "x".repeat(17 * 1024 * 1024)
+            }))),
+        )?;
+
+        let value = registry.value(&id)?;
+        anyhow::ensure!(value.get("acknowledgement") == Some(&Value::Null));
+        anyhow::ensure!(value.get("acknowledgementPurged") == Some(&json!(true)));
+        anyhow::ensure!(value.get("resultPurged") == Some(&json!(false)));
+        anyhow::ensure!(value.get("result").is_some_and(Value::is_object));
+        Ok(())
+    }
+
+    #[test]
+    fn event_cursor_allocation_stops_before_unsafe_exclusive_next_value() -> Result<()> {
+        let request = RuntimeOperationRequest::from_call(
+            super::super::spec::OperationMethod::LocalWalletAccounts,
+            json!(["default"]),
+            "Wallet accounts",
+        )?;
+        let mut record =
+            running_runtime_operation_record(operation_id("safe-cursor")?, &request, 1)?;
+        record.next_event_cursor = EventCursor::new(MAX_WIRE_EVENT_CURSOR - 1);
+        push_runtime_operation_event_locked(
+            &mut record,
+            "audit",
+            "last safe event",
+            None,
+            None,
+            None,
+        )?;
+        let previous = record.clone();
+
+        let error = push_runtime_operation_event_locked(
+            &mut record,
+            "audit",
+            "unsafe event",
+            None,
+            None,
+            None,
+        )
+        .err()
+        .context("unsafe cursor should fail")?;
+
+        anyhow::ensure!(
+            error.to_string()
+                == "runtime operation event cursor exceeds JavaScript safe integer range"
+        );
+        anyhow::ensure!(record.events.len() == previous.events.len());
+        anyhow::ensure!(record.next_event_cursor == previous.next_event_cursor);
+        anyhow::ensure!(record.operation.event_cursor == previous.operation.event_cursor);
         Ok(())
     }
 }
