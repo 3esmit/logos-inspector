@@ -30,6 +30,10 @@ const HOST_CLOSED_ERROR: &str = "Basecamp host transport closed: host_closed";
 const REQUEST_CANCELLED_ERROR: &str = "Basecamp bridge request cancelled";
 const ASYNC_REQUIRED_ERROR: &str =
     "host transport handles require logos_inspector_core_call_module_async";
+const LOCAL_CALL_BACKPRESSURE_ERROR: &str = "Basecamp bridge worker queue is full";
+const LOCAL_CALL_REENTRANT_ERROR: &str =
+    "host-local synchronous calls cannot reenter the Basecamp bridge worker";
+const WORKER_UNAVAILABLE_ERROR: &str = "Basecamp bridge worker is unavailable";
 
 pub type LogosInspectorCoreReplyFn = unsafe extern "C" fn(*mut c_void, u64, *const c_char);
 pub type LogosInspectorHostReplyFn = unsafe extern "C" fn(*mut c_void, u64, i32, *const c_char);
@@ -74,6 +78,7 @@ struct AsynchronousCore {
     state: Arc<AsyncState>,
     host: Arc<HostState>,
     sender: mpsc::SyncSender<WorkerCommand>,
+    worker_thread_id: thread::ThreadId,
     worker: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -114,6 +119,8 @@ struct PendingHostCall {
 struct AsyncState {
     registry: Mutex<AsyncRegistry>,
     closed: Condvar,
+    #[cfg(test)]
+    queued_local_calls: std::sync::atomic::AtomicUsize,
 }
 
 struct AsyncRegistry {
@@ -130,6 +137,11 @@ struct PendingCoreRequest {
 }
 
 enum WorkerCommand {
+    LocalCall {
+        method: String,
+        args_json: String,
+        reply: mpsc::SyncSender<String>,
+    },
     Call {
         bridge_request_id: BridgeRequestId,
         ingress_token: IngressRequestToken,
@@ -399,6 +411,8 @@ impl AsyncState {
                 completing: HashMap::new(),
             }),
             closed: Condvar::new(),
+            #[cfg(test)]
+            queued_local_calls: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 
@@ -521,12 +535,53 @@ impl AsynchronousCore {
             .name("logos-inspector-core".to_owned())
             .spawn(move || run_worker(bridge, receiver, &worker_state))
             .map_err(|error| format!("failed to start asynchronous bridge worker: {error}"))?;
+        let worker_thread_id = worker.thread().id();
         Ok(Self {
             state,
             host,
             sender,
+            worker_thread_id,
             worker: Mutex::new(Some(worker)),
         })
+    }
+
+    fn call_local_inspector(&self, method: String, args_json: String) -> String {
+        if !InspectorBridge::allows_host_synchronous_call(&method) {
+            return InspectorBridge::error_json(ASYNC_REQUIRED_ERROR);
+        }
+        if thread::current().id() == self.worker_thread_id {
+            return InspectorBridge::error_json(LOCAL_CALL_REENTRANT_ERROR);
+        }
+
+        let (reply, response) = mpsc::sync_channel(1);
+        let registry = lock(&self.state.registry);
+        if registry.phase != LifecyclePhase::Open {
+            return InspectorBridge::error_json(HOST_CLOSED_ERROR);
+        }
+        #[cfg(test)]
+        self.state.queued_local_calls.fetch_add(1, Ordering::AcqRel);
+        let enqueue_result = self.sender.try_send(WorkerCommand::LocalCall {
+            method,
+            args_json,
+            reply,
+        });
+        #[cfg(test)]
+        if enqueue_result.is_err() {
+            self.state.queued_local_calls.fetch_sub(1, Ordering::AcqRel);
+        }
+        drop(registry);
+        match enqueue_result {
+            Ok(()) => {}
+            Err(mpsc::TrySendError::Full(_)) => {
+                return InspectorBridge::error_json(LOCAL_CALL_BACKPRESSURE_ERROR);
+            }
+            Err(mpsc::TrySendError::Disconnected(_)) => {
+                return InspectorBridge::error_json(WORKER_UNAVAILABLE_ERROR);
+            }
+        }
+        response
+            .recv()
+            .unwrap_or_else(|_| InspectorBridge::error_json(WORKER_UNAVAILABLE_ERROR))
     }
 
     fn enqueue(
@@ -637,6 +692,21 @@ fn run_worker(
 ) {
     while let Ok(command) = receiver.recv() {
         match command {
+            WorkerCommand::LocalCall {
+                method,
+                args_json,
+                reply,
+            } => {
+                #[cfg(test)]
+                state.queued_local_calls.fetch_sub(1, Ordering::AcqRel);
+                let response = match catch_unwind(AssertUnwindSafe(|| {
+                    bridge.call_inspector_json(&method, &args_json)
+                })) {
+                    Ok(response) => response,
+                    Err(_) => InspectorBridge::error_json("asynchronous bridge worker panicked"),
+                };
+                let _sent = reply.send(response).is_ok();
+            }
             WorkerCommand::Call {
                 bridge_request_id,
                 ingress_token,
@@ -717,8 +787,10 @@ pub unsafe extern "C" fn logos_inspector_core_new_with_host_transport(
 /// # Safety
 ///
 /// `handle` must be null or a live pointer returned by a constructor in this
-/// library. Close may race async call/cancel, but must not be called
-/// reentrantly from a core reply or host transport callback.
+/// library. Close may race async call/cancel and
+/// `logos_inspector_core_call` on a host-transport handle while the allocation
+/// remains live. Join every racing call and close before free. Close must not
+/// be called reentrantly from a core reply or host transport callback.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn logos_inspector_core_close(handle: *mut LogosInspectorCore) {
     if handle.is_null() {
@@ -740,8 +812,9 @@ pub unsafe extern "C" fn logos_inspector_core_close(handle: *mut LogosInspectorC
 ///
 /// `handle` must be null or a pointer returned by a constructor in this
 /// library that has not already been released. Free must not race another ABI
-/// call or callback and must not be called reentrantly from a core reply or
-/// host transport callback.
+/// call or callback. Join every racing host-transport call and close before
+/// invoking free. Free must not be called reentrantly from a core reply or host
+/// transport callback.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn logos_inspector_core_free(handle: *mut LogosInspectorCore) {
     if handle.is_null() {
@@ -761,12 +834,19 @@ pub unsafe extern "C" fn logos_inspector_core_free(handle: *mut LogosInspectorCo
 
 /// Calls a method on the embedded `logos_inspector` bridge.
 ///
+/// Host-transport handles accept only explicitly catalogued synchronous
+/// methods. Accepted calls enter the same bounded worker and bridge instance
+/// as asynchronous calls; Tokio- or module-transport-backed methods and all
+/// other async-required commands return an error without dispatch.
+///
 /// # Safety
 ///
 /// `handle` must be null or a live pointer returned by
 /// `logos_inspector_core_new`. `method` and `args_json` must be valid
-/// NUL-terminated UTF-8 strings for the duration of the call. The returned
-/// pointer must be released with `logos_inspector_core_string_free`.
+/// NUL-terminated UTF-8 strings for the duration of the call. This call may
+/// race `logos_inspector_core_close` on a host-transport handle while the
+/// allocation remains live; join both calls before free. The returned pointer
+/// must be released with `logos_inspector_core_string_free`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn logos_inspector_core_call(
     handle: *mut LogosInspectorCore,
@@ -786,6 +866,9 @@ pub unsafe extern "C" fn logos_inspector_core_call(
 }
 
 /// Calls any module through the embedded inspector bridge.
+///
+/// Host-transport handles reject this synchronous entry point without host
+/// dispatch. Use `logos_inspector_core_call_module_async` instead.
 ///
 /// # Safety
 ///
@@ -931,7 +1014,9 @@ impl LogosInspectorCore {
                 core.bridge.call_inspector_json(method, args_json)
             }
             CoreMode::Synchronous(_) => InspectorBridge::error_json(HOST_CLOSED_ERROR),
-            CoreMode::Asynchronous(_) => InspectorBridge::error_json(ASYNC_REQUIRED_ERROR),
+            CoreMode::Asynchronous(core) => {
+                core.call_local_inspector(method.to_owned(), args_json.to_owned())
+            }
         }
     }
 
@@ -1462,6 +1547,25 @@ mod tests {
             }
         }
 
+        fn wait_for_queued_local_call(&self) -> TestResult {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                // SAFETY: this guard keeps the core allocation live and only
+                // synchronized test instrumentation is inspected.
+                let core = unsafe { &*self.0 };
+                let CoreMode::Asynchronous(core) = &core.mode else {
+                    return err("expected asynchronous test core");
+                };
+                if core.state.queued_local_calls.load(Ordering::Acquire) > 0 {
+                    return Ok(());
+                }
+                if Instant::now() >= deadline {
+                    return err("timed out waiting for queued local call");
+                }
+                thread::yield_now();
+            }
+        }
+
         fn wait_for_bridge_id_available(&self, bridge_request_id: u64) -> TestResult {
             let deadline = Instant::now() + Duration::from_secs(5);
             let bridge_request_id = BridgeRequestId(bridge_request_id);
@@ -1688,6 +1792,31 @@ mod tests {
                 context,
             )
         })
+    }
+
+    fn call_test_inspector(
+        handle: *mut LogosInspectorCore,
+        method: &str,
+        args_json: &str,
+    ) -> Result<Value, String> {
+        let method = CString::new(method).map_err(|error| error.to_string())?;
+        let args_json = CString::new(args_json).map_err(|error| error.to_string())?;
+        // SAFETY: the owning test keeps the handle allocation live and both
+        // strings remain readable for this call.
+        let response =
+            unsafe { logos_inspector_core_call(handle, method.as_ptr(), args_json.as_ptr()) };
+        if response.is_null() {
+            return Err("FFI returned null string".to_owned());
+        }
+        // SAFETY: this library returns a live NUL-terminated string.
+        let text = unsafe { CStr::from_ptr(response) }
+            .to_string_lossy()
+            .into_owned();
+        // SAFETY: the response pointer is released exactly once after copying.
+        unsafe {
+            logos_inspector_core_string_free(response);
+        }
+        serde_json::from_str(&text).map_err(|error| error.to_string())
     }
 
     fn ingest_test_module_event(
@@ -2060,11 +2189,64 @@ mod tests {
     }
 
     #[test]
-    fn host_enabled_handle_rejects_synchronous_calls_and_closes_once() -> TestResult {
+    fn host_enabled_handle_runs_local_inspector_call_without_host_dispatch() -> TestResult {
         let host = TestHost::new();
         let handle = TestCoreHandle::new(&host)?;
-        let module = CString::new("logos_inspector")?;
         let method = CString::new("sourcePolicy")?;
+        let args = CString::new("[]")?;
+
+        // SAFETY: handle and C strings remain live for this call.
+        let response =
+            unsafe { logos_inspector_core_call(handle.as_ptr(), method.as_ptr(), args.as_ptr()) };
+        let value = response_value(response)?;
+        if value.get("ok").and_then(Value::as_bool) != Some(true)
+            || !value.get("value").is_some_and(Value::is_object)
+        {
+            return Err(std::io::Error::other(format!(
+                "host-local inspector call failed: {value}"
+            ))
+            .into());
+        }
+        if !lock(&host.registry).requests.is_empty() {
+            return err("host-local inspector call reached host dispatch");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn host_enabled_handle_rejects_async_required_inspector_calls_before_dispatch() -> TestResult {
+        let host = TestHost::new();
+        let handle = TestCoreHandle::new(&host)?;
+        let args = CString::new("[]")?;
+
+        for method in ["rawRpc", "runtimeOperationStatus", "callModule", "modules"] {
+            let method = CString::new(method)?;
+            // SAFETY: handle and C strings remain live for this call.
+            let response = unsafe {
+                logos_inspector_core_call(handle.as_ptr(), method.as_ptr(), args.as_ptr())
+            };
+            let value = response_value(response)?;
+            if value.get("ok").and_then(Value::as_bool) != Some(false)
+                || value.get("error").and_then(Value::as_str) != Some(ASYNC_REQUIRED_ERROR)
+            {
+                return Err(std::io::Error::other(format!(
+                    "async-required inspector method returned wrong response: {value}"
+                ))
+                .into());
+            }
+        }
+        if !lock(&host.registry).requests.is_empty() {
+            return err("async-required inspector call reached host dispatch");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn host_enabled_handle_rejects_synchronous_module_calls_and_closes_once() -> TestResult {
+        let host = TestHost::new();
+        let handle = TestCoreHandle::new(&host)?;
+        let module = CString::new("storage_module")?;
+        let method = CString::new("space")?;
         let args = CString::new("[]")?;
 
         // SAFETY: handle and C strings remain live for this call.
@@ -2082,6 +2264,9 @@ mod tests {
         }
         if value.get("error").and_then(Value::as_str) != Some(ASYNC_REQUIRED_ERROR) {
             return err("host-enabled synchronous call returned wrong error");
+        }
+        if !lock(&host.registry).requests.is_empty() {
+            return err("synchronous module call reached host dispatch");
         }
 
         handle.close();
@@ -2753,6 +2938,7 @@ mod tests {
         let request = host.wait_for_request()?;
         host.complete(request.id, 1, "12", false)?;
         first_collector.wait_for_replies(1)?;
+        handle.wait_for_bridge_id_available(9)?;
         if first_collector.count() != 1
             || second_collector.count() != 0
             || first_drops.load(Ordering::Acquire) != 1
@@ -3019,6 +3205,93 @@ mod tests {
         drop(handle);
         if host.close_count() != 1 {
             return err("free repeated host close");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn close_racing_queued_local_call_drains_without_ownership_loss() -> TestResult {
+        let host = TestHost::new();
+        let handle = TestCoreHandle::new(&host)?;
+        let collector = Arc::new(ReplyCollector::default());
+        let drops = Arc::new(AtomicUsize::new(0));
+
+        if enqueue_test_call(
+            handle.as_ptr(),
+            24,
+            "storage_module",
+            "fetch",
+            "[\"cid\"]",
+            reply_context(&collector, &drops),
+        )? != 1
+        {
+            return err("inflight host call was rejected");
+        }
+        let _request = host.wait_for_request()?;
+
+        let handle_address = handle.as_ptr().expose_provenance();
+        let (local_sender, local_receiver) = mpsc::channel();
+        let local_call = thread::spawn(move || {
+            let result = call_test_inspector(
+                ptr::with_exposed_provenance_mut(handle_address),
+                "sourcePolicy",
+                "[]",
+            );
+            let _sent = local_sender.send(result).is_ok();
+        });
+        if let Err(error) = handle.wait_for_queued_local_call() {
+            handle.close();
+            let _joined = local_call.join().is_ok();
+            return Err(error);
+        }
+
+        let handle_address = handle.as_ptr().expose_provenance();
+        let (close_sender, close_receiver) = mpsc::channel();
+        let closer = thread::spawn(move || {
+            // SAFETY: the owning test keeps the allocation live. The ABI
+            // permits close to race a host-transport synchronous call.
+            unsafe {
+                logos_inspector_core_close(ptr::with_exposed_provenance_mut(handle_address));
+            }
+            let _sent = close_sender.send(()).is_ok();
+        });
+
+        let local_result = local_receiver.recv_timeout(Duration::from_secs(5));
+        let close_result = close_receiver.recv_timeout(Duration::from_secs(5));
+        let local_join = local_call.join();
+        let close_join = closer.join();
+        let local_value = local_result
+            .map_err(|error| std::io::Error::other(error.to_string()))?
+            .map_err(std::io::Error::other)?;
+        close_result.map_err(|error| std::io::Error::other(error.to_string()))?;
+        if local_join.is_err() || close_join.is_err() {
+            return err("local call or close thread panicked");
+        }
+        if local_value.get("ok").and_then(Value::as_bool) != Some(true)
+            || !local_value.get("value").is_some_and(Value::is_object)
+        {
+            return Err(std::io::Error::other(format!(
+                "queued local call did not complete normally: {local_value}"
+            ))
+            .into());
+        }
+
+        let replies = collector.wait_for_replies(1)?;
+        let closed: Value = serde_json::from_str(&replies[0].1)?;
+        if closed.get("error").and_then(Value::as_str) != Some(HOST_CLOSED_ERROR) {
+            return err("close did not terminalize pending host-backed ingress");
+        }
+        if host.close_count() != 1
+            || !host.cancelled().is_empty()
+            || collector.count() != 1
+            || drops.load(Ordering::Acquire) != 1
+        {
+            return err("close race violated host or callback ownership");
+        }
+
+        drop(handle);
+        if host.close_count() != 1 {
+            return err("free repeated host close after racing calls joined");
         }
         Ok(())
     }

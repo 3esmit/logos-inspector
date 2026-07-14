@@ -29,12 +29,34 @@ class BuildStep:
 
 def profile_steps(profile: str, root: Path = ROOT) -> list[BuildStep]:
     circuits_dir = Path(os.environ.get("RUNNER_TEMP") or tempfile.gettempdir()) / "logos-blockchain-circuits"
+    native_test_dir = Path(os.environ.get("RUNNER_TEMP") or tempfile.gettempdir()) / "logos-inspector-core-async-tests"
     circuits_version = circuits_release()
     rust_env = {"RISC0_SKIP_BUILD": "1"}
     cargo_workspace = ("cargo", "check", "--workspace")
     clippy_workspace = ("cargo", "clippy", "--workspace", "--all-targets", "--", "-D", "warnings")
     test_workspace = ("cargo", "test", "--workspace")
     source_policy_artifact = (sys.executable, "scripts/source_policy_artifact.py", "check")
+    native_steps = [
+        BuildStep(
+            "configure native async bridge tests",
+            (
+                "cmake",
+                "-S",
+                "core/tests",
+                "-B",
+                str(native_test_dir),
+                "-DCMAKE_BUILD_TYPE=Debug",
+            ),
+        ),
+        BuildStep(
+            "build native async bridge tests",
+            ("cmake", "--build", str(native_test_dir), "--parallel"),
+        ),
+        BuildStep(
+            "run native async bridge tests",
+            ("ctest", "--test-dir", str(native_test_dir), "--output-on-failure"),
+        ),
+    ]
 
     profiles: dict[str, list[BuildStep]] = {
         "ci": [
@@ -53,6 +75,7 @@ def profile_steps(profile: str, root: Path = ROOT) -> list[BuildStep]:
             ),
             BuildStep("cargo check", ("cargo", "check"), rust_env),
             BuildStep("clippy", ("cargo", "clippy", "--all-targets", "--", "-D", "warnings"), rust_env),
+            *native_steps,
         ],
         "local": [
             BuildStep("rustfmt", ("cargo", "fmt", "--all", "--", "--check")),
@@ -62,6 +85,7 @@ def profile_steps(profile: str, root: Path = ROOT) -> list[BuildStep]:
             BuildStep("cargo check workspace", cargo_workspace, rust_env),
             BuildStep("clippy workspace", clippy_workspace, rust_env),
             BuildStep("cargo test workspace", test_workspace, rust_env),
+            *native_steps,
             BuildStep("web UI", ("npm", "--prefix", "ui", "run", "check")),
             BuildStep("QML smoke", ("scripts/gui-visual-action-smoke.sh",)),
         ],
@@ -74,6 +98,7 @@ def profile_steps(profile: str, root: Path = ROOT) -> list[BuildStep]:
         "qml": [
             BuildStep("QML smoke", ("scripts/gui-visual-action-smoke.sh",)),
         ],
+        "native": native_steps,
         "web": [
             BuildStep("web UI", ("npm", "--prefix", "ui", "run", "check")),
         ],
@@ -114,7 +139,7 @@ def run_profile(profile: str, *, dry_run: bool = False, root: Path = ROOT) -> in
 
 
 def list_profiles() -> Iterable[str]:
-    return ("artifacts", "ci", "identity", "local", "qml", "rust", "web")
+    return ("artifacts", "ci", "identity", "local", "native", "qml", "rust", "web")
 
 
 def with_ci_circuit_env(steps: list[BuildStep], circuits_dir: Path) -> list[BuildStep]:

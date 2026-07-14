@@ -76,6 +76,13 @@ impl RuntimeMethodEntry {
             }
         }
     }
+
+    pub(crate) const fn allows_host_synchronous_call(&self) -> bool {
+        matches!(
+            self.handler,
+            RuntimeMethodHandler::Sync(_) | RuntimeMethodHandler::NoArgs(_)
+        )
+    }
 }
 
 impl fmt::Debug for RuntimeMethodEntry {
@@ -167,5 +174,21 @@ mod tests {
     fn remote_settings_backup_upload_uses_catalog_method_only() {
         assert!(lookup("storageBackupSettings").is_none());
         assert!(lookup("storageUploadBackupCatalogEntry").is_some());
+    }
+
+    #[test]
+    fn runtime_catalog_defines_host_synchronous_execution_policy() {
+        assert!(
+            lookup("sourcePolicy").is_some_and(RuntimeMethodEntry::allows_host_synchronous_call)
+        );
+        assert!(
+            lookup("decodeAccount").is_some_and(RuntimeMethodEntry::allows_host_synchronous_call)
+        );
+        assert!(
+            lookup("loadIdlState").is_some_and(RuntimeMethodEntry::allows_host_synchronous_call)
+        );
+        assert!(lookup("rawRpc").is_some_and(|entry| !entry.allows_host_synchronous_call()));
+        assert!(lookup("modules").is_some_and(|entry| !entry.allows_host_synchronous_call()));
+        assert!(lookup("storageExists").is_some_and(|entry| !entry.allows_host_synchronous_call()));
     }
 }

@@ -19,6 +19,7 @@ ColumnLayout {
     property string title: ""
     property string subtitle: ""
     readonly property bool hasResponse: root.model.pageHasOutput(root.moduleKind)
+    readonly property bool requestBusy: root.model.shell.busy || root.model.asyncPresentationBusy
     readonly property var responseValue: root.hasResponse ? root.model.shell.resultValue : null
     readonly property var responseProbeModel: root.responseProbeRows()
 
@@ -264,28 +265,28 @@ ColumnLayout {
                     theme: root.theme
                     text: qsTr("Refresh node")
                     primary: true
-                    enabled: !root.model.shell.busy
+                    enabled: !root.requestBusy
                     Layout.fillWidth: true
                     accessibleName: qsTr("Refresh blockchain node")
-                    onClicked: root.model.callInspector("blockchainNode", root.model.blockchainArgs([]), qsTr("Blockchain node"))
+                    onClicked: root.model.callInspectorAsync("blockchainNode", root.model.blockchainArgs([]), qsTr("Blockchain node"))
                 }
 
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Load blocks")
-                    enabled: !root.model.shell.busy && slotFrom.text.trim().length > 0 && slotTo.text.trim().length > 0
+                    enabled: !root.requestBusy && slotFrom.text.trim().length > 0 && slotTo.text.trim().length > 0
                     Layout.fillWidth: true
                     accessibleName: qsTr("Load blockchain blocks")
-                    onClicked: root.model.callInspector("blockchainBlocks", root.model.blockchainArgs([slotFrom.text, slotTo.text]), qsTr("Blockchain blocks"))
+                    onClicked: root.model.callInspectorAsync("blockchainBlocks", root.model.blockchainArgs([slotFrom.text, slotTo.text]), qsTr("Blockchain blocks"))
                 }
 
                 ActionButton {
                     theme: root.theme
                     text: qsTr("Load block")
-                    enabled: !root.model.shell.busy && blockId.text.trim().length > 0
+                    enabled: !root.requestBusy && blockId.text.trim().length > 0
                     Layout.fillWidth: true
                     accessibleName: qsTr("Load blockchain block")
-                    onClicked: root.model.callInspector("blockchainBlock", root.model.blockchainArgs([blockId.text.trim()]), qsTr("Blockchain block"))
+                    onClicked: root.model.callInspectorAsync("blockchainBlock", root.model.blockchainArgs([blockId.text.trim()]), qsTr("Blockchain block"))
                 }
             }
         }
@@ -314,10 +315,10 @@ ColumnLayout {
                     theme: root.theme
                     text: qsTr("REST report")
                     primary: true
-                    enabled: !root.model.shell.busy
+                    enabled: !root.requestBusy
                     Layout.fillWidth: true
                     accessibleName: qsTr("Run storage source report")
-                    onClicked: root.model.callInspector("storageSourceReport", [
+                    onClicked: root.model.callInspectorAsync("storageSourceReport", [
                         root.model.sourceRouting.effectiveStorageSourceMode(
                             root.model.storageSourceMode),
                         root.model.configuredStorageRestUrl(),
@@ -339,11 +340,11 @@ ColumnLayout {
                 ActionButton {
                     theme: root.theme
                     text: qsTr("CID exists")
-                    enabled: !root.model.shell.busy && cid.text.trim().length > 0
+                    enabled: !root.requestBusy && cid.text.trim().length > 0
                     Layout.fillWidth: true
                     accessibleName: qsTr("Check storage CID existence")
                     onClicked: {
-                        root.model.callInspector("storageExists", [NodeOperationRequest.envelope(
+                        root.model.callInspectorAsync("storageExists", [NodeOperationRequest.envelope(
                             root.model.sourceRouting.storageOperationAdapter(),
                             { cid: cid.text.trim() },
                             false
@@ -370,10 +371,10 @@ ColumnLayout {
                     theme: root.theme
                     text: qsTr("REST report")
                     primary: true
-                    enabled: !root.model.shell.busy
+                    enabled: !root.requestBusy
                     Layout.fillWidth: true
                     accessibleName: qsTr("Run delivery source report")
-                    onClicked: root.model.callInspector("deliverySourceReport",
+                    onClicked: root.model.callInspectorAsync("deliverySourceReport",
                         root.model.sourceRouting.deliverySourceReportArgs(),
                         qsTr("Messaging report"))
                 }
@@ -412,10 +413,10 @@ ColumnLayout {
                 theme: root.theme
                 text: qsTr("Core status")
                 primary: true
-                enabled: !root.model.shell.busy
+                enabled: !root.requestBusy
                 Layout.fillWidth: true
                 accessibleName: qsTr("Fetch LogosCore status")
-                onClicked: root.model.callInspector("logoscoreStatus", [], qsTr("LogosCore status"))
+                onClicked: root.model.callInspectorAsync("logoscoreStatus", [], qsTr("LogosCore status"))
             }
 
             ActionButton {

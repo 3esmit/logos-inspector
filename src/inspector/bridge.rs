@@ -68,6 +68,13 @@ impl InspectorBridge {
         self.call_module_json(INSPECTOR_MODULE, method, args_json)
     }
 
+    /// Reports whether a host-backed bridge may run this inspector method
+    /// synchronously without entering Tokio or its module transport.
+    #[must_use]
+    pub fn allows_host_synchronous_call(method: &str) -> bool {
+        InspectorCommandSurface::allows_host_synchronous_call(method)
+    }
+
     /// Ingests one typed host module event without routing it back through the
     /// host module transport.
     pub fn ingest_module_event(
