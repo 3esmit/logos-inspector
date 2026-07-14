@@ -176,6 +176,7 @@ TestCase {
         model.social.socialIdentityRevision = 0
         model.social.socialCommentState = ({})
         model.social.socialCommentRevision = 0
+        model.social.invalidateSourceRequests()
         model.social.socialSharedIdls = ({})
         model.social.sharedIdlPolicy = "suggestion"
         model.social.sharedIdlAutoShare = false
@@ -1530,6 +1531,57 @@ TestCase {
         compare(gate.missing[0].dependency, "delivery.store.query")
         verify(detail.indexOf("Delivery") >= 0)
         verify(detail.indexOf("delivery.store.query") >= 0)
+    }
+
+    function test_social_comment_read_uses_runtime_operation_conversation() {
+        const topic = "/cryptarchia/account/account-1/comments"
+        fakeHost.responses = {
+            socialTopicValid: {
+                ok: true,
+                value: true,
+                text: "OK",
+                error: ""
+            },
+            runtimeOperationStart: {
+                ok: true,
+                value: {
+                    operationId: "social-store-1",
+                    domain: "delivery",
+                    method: "deliveryStoreQuery",
+                    label: "Comments",
+                    status: "completed",
+                    eventCursor: 1,
+                    result: { messages: [] }
+                },
+                text: "OK",
+                error: ""
+            },
+            socialCommentPageFromStore: {
+                ok: true,
+                value: {
+                    rows: [{ key: "comment-1", body: "hello" }],
+                    cursor: "cursor-1"
+                },
+                text: "OK",
+                error: ""
+            }
+        }
+
+        verify(model.social.loadComments(topic, true, 20, ""))
+        tryVerify(function () {
+            return model.social.commentsView(topic).state.loading === false
+        })
+
+        const starts = fakeHost.calls.filter(function (call) {
+            return call.method === "runtimeOperationStart"
+        })
+        compare(starts.length, 1)
+        compare(starts[0].args[0].method, "deliveryStoreQuery")
+        compare(starts[0].args[0].payload.content_topics, topic)
+        compare(fakeHost.calls.filter(function (call) {
+            return call.method === "deliveryStoreQuery"
+        }).length, 0)
+        compare(model.social.commentsView(topic).rows[0].body, "hello")
     }
 
     function test_social_write_gate_detail_names_missing_local_identity_dependency() {

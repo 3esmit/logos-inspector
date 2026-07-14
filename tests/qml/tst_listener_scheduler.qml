@@ -34,6 +34,18 @@ TestCase {
     }
 
     QtObject {
+        id: socialState
+
+        property bool storeQueriesRunning: false
+        property int polls: 0
+
+        function pollStoreQueries() {
+            polls += 1
+            return polls
+        }
+    }
+
+    QtObject {
         id: zoneState
 
         signal statusRefreshRequested()
@@ -66,6 +78,7 @@ TestCase {
         property bool blocksLiveEnabled: false
         property QtObject storageApp: storageState
         property QtObject deliveryApp: deliveryState
+        property QtObject social: socialState
         property QtObject zoneInspection: zoneState
         property var queriedKinds: []
         property int dashboardCalls: 0
@@ -115,6 +128,8 @@ TestCase {
         storageState.polls = 0
         deliveryState.running = false
         deliveryState.polls = 0
+        socialState.storeQueriesRunning = false
+        socialState.polls = 0
         zoneState.statusPollingEnabled = false
         zoneState.statusPollInterval = 5000
         zoneState.polls = 0
@@ -126,14 +141,17 @@ TestCase {
         scheduler.tick("dashboard")
         storageState.running = true
         deliveryState.running = true
+        socialState.storeQueriesRunning = true
         scheduler.tick("storageOperation")
         scheduler.tick("deliveryOperation")
+        scheduler.tick("socialStoreQuery")
         scheduler.tick("liveBlocks")
 
         compare(fakeModel.queriedKinds[0], "blockchain")
         compare(fakeModel.dashboardCalls, 1)
         compare(storageState.polls, 1)
         compare(deliveryState.polls, 1)
+        compare(socialState.polls, 1)
         compare(fakeModel.liveCalls, 1)
     }
 
@@ -143,6 +161,10 @@ TestCase {
         verify(!scheduler.enabled("storageOperation"))
         storageState.running = true
         verify(scheduler.enabled("storageOperation"))
+        verify(!scheduler.enabled("socialStoreQuery"))
+        socialState.storeQueriesRunning = true
+        verify(scheduler.enabled("socialStoreQuery"))
+        compare(scheduler.intervalFor("socialStoreQuery"), 10)
         verify(scheduler.enabled("dashboard"))
         fakeModel.shell.currentView = "blocks"
         verify(!scheduler.enabled("dashboard"))

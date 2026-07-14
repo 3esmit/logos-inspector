@@ -1,6 +1,7 @@
 import QtQuick
 import QtQml.Models
 import "../social/SocialCollaborationOrchestrator.js" as Orchestrator
+import "../social" as Social
 
 QtObject {
     id: root
@@ -28,6 +29,19 @@ QtObject {
     property var socialAutoSharedIdls: ({})
     property int sharedIdlRevision: 0
     property ListModel socialIdentities: ListModel {}
+    readonly property var deliveryAdapterInitialization: sourceRouting.deliveryOperationAdapter()
+    readonly property var storageAdapterInitialization: sourceRouting.storageOperationAdapter()
+    property Social.DeliveryStoreQueryCoordinator storeQueryCoordinator: Social.DeliveryStoreQueryCoordinator {
+        gateway: root.gateway
+        adapterInitialization: root.deliveryAdapterInitialization
+        mutatingDiagnosticsEnabled: root.messagingMutatingDiagnosticsEnabled
+    }
+    readonly property bool storeQueriesRunning: storeQueryCoordinator.running
+
+    onDeliveryAdapterInitializationChanged: invalidateSourceRequests()
+    onStorageAdapterInitializationChanged: invalidateSourceRequests()
+    onMessagingMutatingDiagnosticsEnabledChanged: invalidateSourceRequests()
+    onStorageMutatingDiagnosticsEnabledChanged: invalidateSourceRequests()
 
     function commentTopic(layer, entity, id) { return Orchestrator.socialCommentTopic(root, layer, entity, id) }
     function zoneCommentTopic(entityRef) { return Orchestrator.socialZoneCommentTopic(root, entityRef) }
@@ -53,4 +67,19 @@ QtObject {
     function sharedIdlEntriesForAccount(accountId, ownerProgramId) { return Orchestrator.sharedIdlEntriesForAccount(root, accountId, ownerProgramId) }
     function publishAccountIdl(entityRef, ownerProgramId, idlEntry) { return Orchestrator.publishAccountIdl(root, entityRef, ownerProgramId, idlEntry) }
     function maybeAutoShareAccountIdl(entityRef, ownerProgramId, idlEntry) { return Orchestrator.maybeAutoShareAccountIdl(root, entityRef, ownerProgramId, idlEntry) }
+
+    function queryDeliveryStore(scope, cursor, pageSize, label, callback) {
+        return storeQueryCoordinator.start(scope, cursor, pageSize, label, callback)
+    }
+
+    function pollStoreQueries() { return storeQueryCoordinator.poll() }
+    function storeQueryCallerPending(callerKey) { return storeQueryCoordinator.callerPending(callerKey) }
+    function isCurrentStoreQuery(ticket) { return storeQueryCoordinator.isCurrent(ticket) }
+    function releaseStoreQuery(ticket) { return storeQueryCoordinator.release(ticket) }
+    function invalidateSharedIdlRequests() { storeQueryCoordinator.invalidateFamily("shared-idl") }
+
+    function invalidateSourceRequests() {
+        storeQueryCoordinator.invalidateSource()
+        Orchestrator.invalidateSocialCommentRequests(root)
+    }
 }

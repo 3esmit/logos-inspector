@@ -1,23 +1,22 @@
 .import "../source_operations/NodeOperationRequest.js" as NodeOperationRequest
 
-function acceptedEntries(root, request) {
+function acceptedEntriesFromStore(root, request, storeValue, callback) {
     const value = request || {}
     if (String(value.policy || "") === "disabled"
             || !String(value.topic || "").length
             || !String(value.dataHex || "").length
-            || value.readEnabled !== true) {
-        return []
+            || value.readEnabled !== true
+            || typeof callback !== "function"
+            || !root.gateway
+            || typeof root.gateway.requestModuleAsync !== "function") {
+        return false
     }
-    const response = queryStore(root, value.topic, "", 20, qsTr("Shared IDLs"))
-    if (!response.ok) {
-        return []
-    }
-    const acceptedResponse = root.gateway.requestModule(
+    return root.gateway.requestModuleAsync(
         root.inspectorModule,
         "acceptedSharedIdlEntriesFromStoreWithStorage",
         [
             value.topic,
-            response.value,
+            storeValue,
             String(value.accountId || ""),
             value.dataHex,
             String(value.ownerProgramId || ""),
@@ -26,10 +25,14 @@ function acceptedEntries(root, request) {
         ],
         qsTr("Shared IDLs"),
         false,
-        false
+        function (response) {
+            callback({
+                ok: response && response.ok === true && Array.isArray(response.value),
+                value: response && Array.isArray(response.value) ? response.value : [],
+                error: String(response && response.error || "")
+            })
+        }
     )
-    return acceptedResponse.ok && Array.isArray(acceptedResponse.value)
-        ? acceptedResponse.value : []
 }
 
 function publish(root, request) {
@@ -89,25 +92,6 @@ function publish(root, request) {
         qsTr("Share IDL")
     )
     return response.ok === true
-}
-
-function queryStore(root, topic, cursor, pageSize, label) {
-    return root.gateway.requestModule(
-        root.inspectorModule,
-        "deliveryStoreQuery",
-        deliveryArgs(root, "deliveryStoreQuery", [
-            "",
-            String(topic || ""),
-            "",
-            String(cursor || ""),
-            pageSize,
-            true,
-            true
-        ]),
-        String(label || qsTr("Delivery Store")),
-        false,
-        false
-    )
 }
 
 function deliveryArgs(root, method, extra) {
