@@ -1,0 +1,74 @@
+{
+  "nodes": {
+    "logos-nix": {
+      "inputs": {
+        "nixpkgs": "nixpkgs"
+      },
+      "locked": {
+        "lastModified": 1774455309,
+        "narHash": "sha256-3AN7aFnArdysrbQQ2UskWzjNSFADb4hDCsnx69Fa0ng=",
+        "owner": "logos-co",
+        "repo": "logos-nix",
+        "rev": "e637a1f5e871244d1c2df1e3c52a067f2eb406f2",
+        "type": "github"
+      },
+      "original": {
+        "owner": "logos-co",
+        "repo": "logos-nix",
+        "type": "github"
+      }
+    },
+    "nixpkgs": {
+      "locked": {
+        "lastModified": 1759036355,
+        "narHash": "sha256-0m27AKv6ka+q270dw48KflE0LwQYrO7Fm4/2//KCVWg=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "e9f00bd893984bc8ce46c895c3bf7cac95331127",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixos-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "root": {
+      "inputs": {
+        "logos-nix": "logos-nix",
+        "nixpkgs": [
+          "logos-nix",
+          "nixpkgs"
+        ],
+        "upstream": "upstream"
+      }
+    },
+    "upstream": {
+      "inputs": {
+        "logos-nix": [
+          "logos-nix"
+        ],
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1782920676,
+        "narHash": "sha256-Vb81kiYbi8yYDZbUSW6v7QhV6uO/pj7F+lCAW1coAsY=",
+        "owner": "logos-co",
+        "repo": "logos-protocol",
+        "rev": "d7ad26d369c4e464a99f2a357f10c5947c7174e1",
+        "type": "github"
+      },
+      "original": {
+        "owner": "logos-co",
+        "repo": "logos-protocol",
+        "rev": "d7ad26d369c4e464a99f2a357f10c5947c7174e1",
+        "type": "github"
+      }
+    }
+  },
+  "root": "root",
+  "version": 7
+}
