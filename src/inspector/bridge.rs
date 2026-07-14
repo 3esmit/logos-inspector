@@ -34,9 +34,8 @@ impl InspectorBridge {
     /// Builds a bridge around one authoritative module transport.
     ///
     /// The transport future must complete without re-entering the thread that
-    /// invokes this synchronous bridge. This includes operation aliases that
-    /// wait through `RuntimeOperations::run_blocking`. Thread-affine host
-    /// transports require asynchronous bridge and operation entry points.
+    /// invokes this synchronous bridge. Host-backed Runtime Operation aliases
+    /// are rejected before dispatch and require `runtimeOperationStart`.
     pub fn with_module_transport(module_transport: impl ModuleTransport + 'static) -> Result<Self> {
         Ok(Self {
             surface: InspectorCommandSurface::with_module_transport(module_transport)?,
@@ -46,9 +45,8 @@ impl InspectorBridge {
     /// Builds a bridge around one shared authoritative module transport.
     ///
     /// The transport future must complete without re-entering the thread that
-    /// invokes this synchronous bridge. This includes operation aliases that
-    /// wait through `RuntimeOperations::run_blocking`. Thread-affine host
-    /// transports require asynchronous bridge and operation entry points.
+    /// invokes this synchronous bridge. Host-backed Runtime Operation aliases
+    /// are rejected before dispatch and require `runtimeOperationStart`.
     pub fn with_shared_module_transport(module_transport: SharedModuleTransport) -> Result<Self> {
         Ok(Self {
             surface: InspectorCommandSurface::with_shared_module_transport(module_transport)?,
@@ -105,11 +103,12 @@ mod tests {
     #[derive(Clone)]
     struct RecordingModuleTransport {
         calls: Arc<Mutex<Vec<crate::modules::logos_core::ModuleCall>>>,
+        kind: crate::modules::logos_core::ModuleTransportKind,
     }
 
     impl crate::modules::logos_core::ModuleTransport for RecordingModuleTransport {
         fn kind(&self) -> crate::modules::logos_core::ModuleTransportKind {
-            crate::modules::logos_core::ModuleTransportKind::Module
+            self.kind
         }
 
         fn call(
@@ -119,14 +118,14 @@ mod tests {
             if let Ok(mut calls) = self.calls.lock() {
                 calls.push(call.clone());
             }
+            let kind = self.kind;
             let value = match call.method() {
                 "exists" => json!(true),
                 _ => json!({ "handled": call.method() }),
             };
             Box::pin(async move {
                 Ok(crate::modules::logos_core::ModuleCallReply::new(
-                    crate::modules::logos_core::ModuleTransportKind::Module,
-                    value,
+                    kind, value,
                 ))
             })
         }
@@ -147,10 +146,11 @@ mod tests {
     }
 
     #[test]
-    fn direct_runtime_method_and_operation_calls_share_module_transport() -> Result<()> {
+    fn direct_runtime_method_calls_share_module_transport() -> Result<()> {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let bridge = InspectorBridge::with_module_transport(RecordingModuleTransport {
             calls: Arc::clone(&calls),
+            kind: crate::modules::logos_core::ModuleTransportKind::Module,
         })?;
 
         let direct = bridge.call_module_value(
@@ -167,24 +167,13 @@ mod tests {
                 "mutating_enabled": false
             }]),
         )?;
-        let fetch = bridge.call_module_value(
-            INSPECTOR_MODULE,
-            "storageFetch",
-            json!([{
-                "adapter": { "source_mode": "module", "inputs": {} },
-                "payload": { "cid": "cid-2" },
-                "mutating_enabled": true
-            }]),
-        )?;
-
         anyhow::ensure!(direct == json!({ "handled": "nodeInfo" }));
         anyhow::ensure!(exists == json!(true));
-        anyhow::ensure!(fetch == json!({ "handled": "fetch" }));
         let calls = calls
             .lock()
             .map_err(|error| anyhow::anyhow!("recorded call lock failed: {error}"))?;
-        let [direct_call, exists_call, fetch_call] = calls.as_slice() else {
-            bail!("expected three calls through shared seam: {calls:?}");
+        let [direct_call, exists_call] = calls.as_slice() else {
+            bail!("expected two calls through shared seam: {calls:?}");
         };
         anyhow::ensure!(
             direct_call.module() == BLOCKCHAIN_MODULE
@@ -196,10 +185,73 @@ mod tests {
                 && exists_call.method() == "exists"
                 && exists_call.args() == [json!("cid-1")]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn host_backed_direct_operation_requires_runtime_operation_start() -> Result<()> {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let bridge = InspectorBridge::with_module_transport(RecordingModuleTransport {
+            calls: Arc::clone(&calls),
+            kind: crate::modules::logos_core::ModuleTransportKind::Module,
+        })?;
+
+        let result = bridge.call_module_value(
+            INSPECTOR_MODULE,
+            "storageFetch",
+            json!([{
+                "adapter": { "source_mode": "module", "inputs": {} },
+                "payload": { "cid": "cid-2" },
+                "mutating_enabled": true
+            }]),
+        );
+
+        let Err(error) = result else {
+            bail!("host-backed direct operation should fail before dispatch");
+        };
         anyhow::ensure!(
-            fetch_call.module() == "storage_module"
-                && fetch_call.method() == "fetch"
-                && fetch_call.args() == [json!("cid-2")]
+            error
+                .to_string()
+                .contains("host-backed operation `storageFetch` requires `runtimeOperationStart`"),
+            "unexpected direct host operation error: {error:#}"
+        );
+        let calls = calls
+            .lock()
+            .map_err(|error| anyhow::anyhow!("recorded call lock failed: {error}"))?;
+        anyhow::ensure!(calls.is_empty(), "direct host operation reached transport");
+        Ok(())
+    }
+
+    #[test]
+    fn logoscore_cli_direct_operation_remains_blocking_compatible() -> Result<()> {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let bridge = InspectorBridge::with_module_transport(RecordingModuleTransport {
+            calls: Arc::clone(&calls),
+            kind: crate::modules::logos_core::ModuleTransportKind::LogoscoreCli,
+        })?;
+
+        let value = bridge.call_module_value(
+            INSPECTOR_MODULE,
+            "storageFetch",
+            json!([{
+                "adapter": { "source_mode": "logoscore_cli", "inputs": {} },
+                "payload": { "cid": "cid-cli" },
+                "mutating_enabled": true
+            }]),
+        )?;
+
+        anyhow::ensure!(value == json!({ "handled": "fetch" }));
+        let calls = calls
+            .lock()
+            .map_err(|error| anyhow::anyhow!("recorded call lock failed: {error}"))?;
+        let [call] = calls.as_slice() else {
+            bail!("expected one CLI call through shared seam: {calls:?}");
+        };
+        anyhow::ensure!(
+            call.transport() == crate::modules::logos_core::ModuleTransportKind::LogoscoreCli
+                && call.module() == "storage_module"
+                && call.method() == "fetch"
+                && call.args() == [json!("cid-cli")]
         );
         Ok(())
     }

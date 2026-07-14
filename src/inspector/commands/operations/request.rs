@@ -2,7 +2,10 @@ use anyhow::{Context as _, Result, bail};
 use serde_json::{Map, Value, json};
 
 use crate::{
-    source_routing::{DeliverySourceMode, NodeOperationRequest, StorageSourceMode},
+    modules::logos_core::ModuleTransportKind,
+    source_routing::{
+        CoreEndpointMode, DeliverySourceMode, NodeOperationRequest, StorageSourceMode,
+    },
     support::args::Args,
 };
 
@@ -85,6 +88,42 @@ impl RuntimeOperationRequest {
         self.node_request
             .as_ref()
             .context("typed node operation request is required")
+    }
+
+    pub(super) fn requested_module_transport(&self) -> Result<Option<ModuleTransportKind>> {
+        let transport = match self.definition.domain() {
+            OperationDomain::Storage => {
+                match StorageSourceMode::from_token(self.node_request()?.source_mode()) {
+                    StorageSourceMode::Module => Some(ModuleTransportKind::Module),
+                    StorageSourceMode::LogoscoreCli => Some(ModuleTransportKind::LogoscoreCli),
+                    StorageSourceMode::Rest
+                    | StorageSourceMode::Metrics
+                    | StorageSourceMode::Unsupported => None,
+                }
+            }
+            OperationDomain::Delivery => {
+                match DeliverySourceMode::from_token(self.node_request()?.source_mode()) {
+                    DeliverySourceMode::Module => Some(ModuleTransportKind::Module),
+                    DeliverySourceMode::LogoscoreCli => Some(ModuleTransportKind::LogoscoreCli),
+                    DeliverySourceMode::Rest
+                    | DeliverySourceMode::Metrics
+                    | DeliverySourceMode::NetworkMonitor
+                    | DeliverySourceMode::Unsupported => None,
+                }
+            }
+            OperationDomain::Blockchain => {
+                let args = Args::new(self.args.clone())?;
+                match args.source_endpoint(0, "node endpoint")?.mode {
+                    CoreEndpointMode::Module => Some(ModuleTransportKind::Module),
+                    CoreEndpointMode::LogoscoreCli => Some(ModuleTransportKind::LogoscoreCli),
+                    CoreEndpointMode::Rpc => None,
+                }
+            }
+            OperationDomain::LocalNodes | OperationDomain::Wallet | OperationDomain::Execution => {
+                None
+            }
+        };
+        Ok(transport)
     }
 
     #[cfg(test)]
@@ -331,6 +370,92 @@ mod tests {
                 && runtime_operation_pending_module(&delivery) == Some("delivery_module"),
             "source aliases did not preserve pending module identity"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn requested_module_transport_preserves_storage_adapter_identity() -> Result<()> {
+        let cases = [
+            ("module", Some(ModuleTransportKind::Module)),
+            ("logoscore_cli", Some(ModuleTransportKind::LogoscoreCli)),
+            ("rest", None),
+        ];
+
+        for (source_mode, expected) in cases {
+            let inputs = if source_mode == "rest" {
+                json!({ "rest_endpoint": "http://storage.local/api" })
+            } else {
+                json!({})
+            };
+            let request = RuntimeOperationRequest::from_call(
+                OperationMethod::StorageManifests,
+                json!([{
+                    "adapter": { "source_mode": source_mode, "inputs": inputs },
+                    "payload": {}
+                }]),
+                "Storage manifests",
+            )?;
+
+            if request.requested_module_transport()? != expected {
+                bail!("storage source `{source_mode}` lost transport identity");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn requested_module_transport_preserves_delivery_adapter_identity() -> Result<()> {
+        let cases = [
+            ("module", Some(ModuleTransportKind::Module)),
+            ("logoscore_cli", Some(ModuleTransportKind::LogoscoreCli)),
+            ("rest", None),
+        ];
+
+        for (source_mode, expected) in cases {
+            let inputs = if source_mode == "rest" {
+                json!({ "rest_endpoint": "http://delivery.local" })
+            } else {
+                json!({})
+            };
+            let request = RuntimeOperationRequest::from_call(
+                OperationMethod::DeliverySubscribe,
+                json!([{
+                    "adapter": { "source_mode": source_mode, "inputs": inputs },
+                    "mutating_enabled": true,
+                    "payload": { "topic": "/topic" }
+                }]),
+                "Delivery subscribe",
+            )?;
+
+            if request.requested_module_transport()? != expected {
+                bail!("delivery source `{source_mode}` lost transport identity");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn requested_module_transport_preserves_blockchain_adapter_identity() -> Result<()> {
+        let cases = [
+            (json!(["module"]), Some(ModuleTransportKind::Module)),
+            (
+                json!(["logoscore_cli"]),
+                Some(ModuleTransportKind::LogoscoreCli),
+            ),
+            (json!(["http://blockchain.local"]), None),
+        ];
+
+        for (args, expected) in cases {
+            let request = RuntimeOperationRequest::from_call(
+                OperationMethod::BlockchainNode,
+                args,
+                "Blockchain node",
+            )?;
+
+            if request.requested_module_transport()? != expected {
+                bail!("blockchain source lost transport identity");
+            }
+        }
         Ok(())
     }
 
