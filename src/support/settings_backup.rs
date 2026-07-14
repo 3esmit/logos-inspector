@@ -15,12 +15,21 @@ use serde_json::{Value, json};
 use sha2::Sha256;
 
 use crate::{
-    source_routing::channel_sources::restore_settings_state_from_backup,
-    support::state_store::{
-        load_idl_state, load_settings_state, load_wallet_state, save_idl_state, save_wallet_state,
+    source_routing::channel_sources::{
+        normalized_settings_state_from_backup, settings_state_from_stored,
+    },
+    support::{
+        local_state::{
+            LocalStateSession, LocalStateTransactionError, LocalStateWriteSet, StateFile,
+            with_local_state_in,
+        },
+        state_store::{config_dir, idl_state_from_stored, wallet_state_from_stored},
     },
     wallet::LOCAL_WALLET_HOME_ENV,
 };
+
+#[cfg(test)]
+use crate::support::local_state::LOCAL_STATE_TRANSACTION_ID_HEX_LENGTH;
 
 const BACKUP_KIND: &str = "logos-inspector-settings-backup";
 const BACKUP_VERSION: u64 = 1;
@@ -68,30 +77,47 @@ pub(crate) fn export_app_settings_backup(
     wallet_profile: Option<&Value>,
     content_options: Option<&Value>,
 ) -> Result<Value> {
+    export_app_settings_backup_in_dir(&config_dir()?, encrypted, wallet_profile, content_options)
+}
+
+fn export_app_settings_backup_in_dir(
+    base_dir: &Path,
+    encrypted: bool,
+    wallet_profile: Option<&Value>,
+    content_options: Option<&Value>,
+) -> Result<Value> {
     let contents = BackupContentsSelection::from_value(content_options)?;
-    let settings = (contents.settings || contents.favorites)
-        .then(load_settings_state)
-        .transpose()
-        .context("failed to load settings state for backup")?;
-    let idl = contents
-        .idl_registry
-        .then(load_idl_state)
-        .transpose()
-        .context("failed to load IDL state for backup")?;
-    let wallet = contents
-        .wallet_profile
-        .then(load_wallet_state)
-        .transpose()
-        .context("failed to load wallet state for backup")?;
-    let state = backup_payload_from_optional_states(
-        settings.as_ref(),
-        idl.as_ref(),
-        wallet.as_ref(),
-        encrypted,
-        wallet_profile,
-        &contents,
-    )?;
-    Ok(state)
+    with_local_state_in(base_dir, |session| {
+        let settings = (contents.settings || contents.favorites)
+            .then(|| {
+                settings_state_from_stored(&session.read(StateFile::Settings)?)
+                    .context("failed to load settings state for backup")
+            })
+            .transpose()?;
+        let idl = contents
+            .idl_registry
+            .then(|| {
+                idl_state_from_stored(&session.read(StateFile::Idl)?)
+                    .context("failed to load IDL state for backup")
+            })
+            .transpose()?;
+        let wallet = contents
+            .wallet_profile
+            .then(|| {
+                wallet_state_from_stored(&session.read(StateFile::Wallet)?)
+                    .context("failed to load wallet state for backup")
+            })
+            .transpose()?;
+        backup_payload_from_optional_states(
+            settings.as_ref(),
+            idl.as_ref(),
+            wallet.as_ref(),
+            encrypted,
+            wallet_profile,
+            &contents,
+        )
+    })
+    .context("failed to load selected local state for backup")
 }
 
 pub(crate) fn preview_app_settings_backup_import(
@@ -100,8 +126,26 @@ pub(crate) fn preview_app_settings_backup_import(
     options: Option<&Value>,
 ) -> Result<Value> {
     let state = restored_state_from_payload(payload, wallet_profile)?;
-    let plan = build_import_plan(&state, options, false)?;
-    Ok(plan.summary)
+    preview_app_settings_backup_import_in_dir(&config_dir()?, &state, options)
+}
+
+fn preview_app_settings_backup_import_in_dir(
+    base_dir: &Path,
+    state: &RestoredState,
+    options: Option<&Value>,
+) -> Result<Value> {
+    with_local_state_in(base_dir, |session| {
+        let (current_settings, current_idl) = current_import_state(session, state, options)?;
+        let plan = build_import_plan_with_current(
+            state,
+            options,
+            false,
+            current_settings.as_ref(),
+            current_idl.as_ref(),
+        )?;
+        Ok(plan.summary)
+    })
+    .context("failed to load selected current local state for backup import preview")
 }
 
 pub(crate) fn restore_app_settings_backup_with_options(
@@ -110,17 +154,102 @@ pub(crate) fn restore_app_settings_backup_with_options(
     options: Option<&Value>,
 ) -> Result<Value> {
     let state = restored_state_from_payload(payload, wallet_profile)?;
-    let plan = build_import_plan(&state, options, true)?;
-    if let Some(settings) = plan.settings.as_ref() {
-        restore_settings_state_from_backup(settings).context("failed to restore settings state")?;
+    restore_app_settings_backup_in_dir(&config_dir()?, &state, options)
+}
+
+fn restore_app_settings_backup_in_dir(
+    base_dir: &Path,
+    state: &RestoredState,
+    options: Option<&Value>,
+) -> Result<Value> {
+    with_local_state_in(base_dir, |session| {
+        let (current_settings, current_idl) = current_import_state(session, state, options)
+            .context("failed to rebuild backup import plan from current local state")?;
+        let plan = build_import_plan_with_current(
+            state,
+            options,
+            true,
+            current_settings.as_ref(),
+            current_idl.as_ref(),
+        )?;
+        let mut writes = LocalStateWriteSet::new();
+        if let Some(settings) = plan.settings.as_ref() {
+            let normalized = normalized_settings_state_from_backup(settings)
+                .context("failed to validate restored settings state")?;
+            writes = writes.settings(
+                serde_json::to_vec_pretty(&normalized)
+                    .context("failed to serialize restored settings state")?,
+            );
+        }
+        if let Some(idl) = plan.idl.as_ref() {
+            writes = writes.idl(
+                serde_json::to_vec_pretty(idl).context("failed to serialize restored IDL state")?,
+            );
+        }
+        if let Some(wallet) = plan.wallet.as_ref() {
+            writes = writes.wallet(
+                serde_json::to_vec_pretty(wallet)
+                    .context("failed to serialize restored wallet state")?,
+            );
+        }
+        if writes.is_empty() {
+            return Ok(plan.summary);
+        }
+        let report = session
+            .commit(writes, || Ok(()))
+            .map_err(local_state_commit_error)?;
+        let mut summary = plan.summary;
+        set_object_field(
+            &mut summary,
+            "transaction",
+            json!({
+                "transaction_id": report.transaction_id,
+                "status": "applied",
+                "directory_durability": report.directory_durability.as_str(),
+            }),
+        )?;
+        Ok(summary)
+    })
+}
+
+fn current_import_state(
+    session: &LocalStateSession,
+    state: &RestoredState,
+    options: Option<&Value>,
+) -> Result<(Option<Value>, Option<Value>)> {
+    let requirements = import_plan::current_state_requirements(state, options)?;
+    let settings = requirements
+        .settings
+        .then(|| {
+            settings_state_from_stored(&session.read(StateFile::Settings)?)
+                .context("failed to load current settings for backup import")
+        })
+        .transpose()?;
+    let idl = requirements
+        .idl
+        .then(|| {
+            idl_state_from_stored(&session.read(StateFile::Idl)?)
+                .context("failed to load current IDL state for backup import")
+        })
+        .transpose()?;
+    Ok((settings, idl))
+}
+
+fn local_state_commit_error(error: anyhow::Error) -> anyhow::Error {
+    let facts = error
+        .downcast_ref::<LocalStateTransactionError>()
+        .map(|transaction| {
+            (
+                transaction.status().as_str(),
+                transaction.transaction_id().unwrap_or("unknown").to_owned(),
+            )
+        });
+    match facts {
+        Some((status, transaction_id)) => error.context(format!(
+            "backup import local transaction `{transaction_id}` ended {status}"
+        )),
+        None => error,
     }
-    if let Some(idl) = plan.idl.as_ref() {
-        save_idl_state(idl).context("failed to restore IDL state")?;
-    }
-    if let Some(wallet) = plan.wallet.as_ref() {
-        save_wallet_state(wallet).context("failed to restore wallet state")?;
-    }
-    Ok(plan.summary)
 }
 
 #[cfg(test)]
@@ -372,7 +501,9 @@ struct RestoredState {
 
 mod import_plan;
 
+#[cfg(test)]
 use import_plan::build_import_plan;
+use import_plan::build_import_plan_with_current;
 #[cfg(test)]
 use import_plan::{ImportMode, ImportSelection, planned_idl_state, planned_settings_state};
 
@@ -674,6 +805,143 @@ mod tests {
         }
         if restored.summary.favorites_count != 1 || restored.summary.idl_count != 1 {
             bail!("unexpected restore counts");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn selected_restore_commits_settings_idl_and_wallet_as_one_local_transaction() -> Result<()> {
+        let directory = tempfile::tempdir().context("failed to create restore test directory")?;
+        fs::write(
+            directory.path().join("settings.json"),
+            br#"{"version":2,"theme":"old","channel_source_configs":[]}"#,
+        )?;
+        fs::write(
+            directory.path().join("idls.json"),
+            br#"{"version":1,"idls":[]}"#,
+        )?;
+        fs::write(
+            directory.path().join("wallet.json"),
+            br#"{"profile":{"label":"Old wallet"}}"#,
+        )?;
+        let payload = backup_payload_from_states(
+            &json!({ "version": 2, "theme": "new", "channel_source_configs": [] }),
+            &json!({ "version": 1, "idls": [{ "key": "idl-new", "json": "{}" }] }),
+            &json!({ "profile": { "label": "New wallet" } }),
+            false,
+            None,
+        )?;
+        let restored = restored_state_from_payload(&payload, None)?;
+        let summary = restore_app_settings_backup_in_dir(
+            directory.path(),
+            &restored,
+            Some(&json!({
+                "settings": "replace",
+                "favorites": "skip",
+                "idl_registry": "replace",
+                "wallet_profile": "replace"
+            })),
+        )?;
+
+        if summary
+            .pointer("/transaction/status")
+            .and_then(Value::as_str)
+            != Some("applied")
+            || summary
+                .pointer("/transaction/transaction_id")
+                .and_then(Value::as_str)
+                .map_or(0, str::len)
+                != LOCAL_STATE_TRANSACTION_ID_HEX_LENGTH
+        {
+            bail!("restore omitted transaction evidence: {summary}");
+        }
+        let settings: Value =
+            serde_json::from_slice(&fs::read(directory.path().join("settings.json"))?)?;
+        let idl: Value = serde_json::from_slice(&fs::read(directory.path().join("idls.json"))?)?;
+        let wallet: Value =
+            serde_json::from_slice(&fs::read(directory.path().join("wallet.json"))?)?;
+        if settings.get("theme").and_then(Value::as_str) != Some("new")
+            || idl.pointer("/idls/0/key").and_then(Value::as_str) != Some("idl-new")
+            || wallet.pointer("/profile/label").and_then(Value::as_str) != Some("New wallet")
+        {
+            bail!("restore did not commit the selected triple");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn selective_backup_flows_do_not_parse_unselected_local_state() -> Result<()> {
+        let directory = tempfile::tempdir().context("failed to create backup test directory")?;
+        let malformed_settings = b"{malformed-settings";
+        let malformed_idl = b"{malformed-idl";
+        let malformed_wallet = b"{malformed-wallet-secret";
+        fs::write(directory.path().join("settings.json"), malformed_settings)?;
+        fs::write(directory.path().join("idls.json"), malformed_idl)?;
+        fs::write(directory.path().join("wallet.json"), malformed_wallet)?;
+
+        let payload = backup_payload_from_states(
+            &json!({
+                "version": 2,
+                "theme": "new",
+                "favorites": [{ "value": "account-new" }],
+                "channel_source_configs": []
+            }),
+            &json!({ "version": 1, "idls": [{ "key": "ignored" }] }),
+            &json!({ "profile": { "label": "Ignored wallet" } }),
+            false,
+            None,
+        )?;
+        let restored = restored_state_from_payload(&payload, None)?;
+        let selected_options = json!({
+            "settings": "replace",
+            "favorites": "replace",
+            "idl_registry": "skip",
+            "wallet_profile": "skip"
+        });
+
+        let preview = preview_app_settings_backup_import_in_dir(
+            directory.path(),
+            &restored,
+            Some(&selected_options),
+        )?;
+        if preview.get("settings").and_then(Value::as_bool) != Some(true) {
+            bail!("selective preview omitted selected settings: {preview}");
+        }
+        restore_app_settings_backup_in_dir(directory.path(), &restored, Some(&selected_options))?;
+        if fs::read(directory.path().join("idls.json"))? != malformed_idl
+            || fs::read(directory.path().join("wallet.json"))? != malformed_wallet
+        {
+            bail!("selective restore modified unselected malformed state");
+        }
+
+        let exported = export_app_settings_backup_in_dir(
+            directory.path(),
+            false,
+            None,
+            Some(&json!({ "settings": true })),
+        )?;
+        let exported_state = exported
+            .get("state")
+            .and_then(Value::as_object)
+            .context("selective export state is missing")?;
+        if exported_state.get("settings").is_none()
+            || exported_state.get("idls").is_some()
+            || exported_state.get("wallet").is_some()
+        {
+            bail!("selective export included unselected state: {exported}");
+        }
+
+        fs::write(directory.path().join("settings.json"), malformed_settings)?;
+        let skip_all = json!({
+            "settings": "skip",
+            "favorites": "skip",
+            "idl_registry": "skip",
+            "wallet_profile": "skip"
+        });
+        preview_app_settings_backup_import_in_dir(directory.path(), &restored, Some(&skip_all))?;
+        restore_app_settings_backup_in_dir(directory.path(), &restored, Some(&skip_all))?;
+        if fs::read(directory.path().join("settings.json"))? != malformed_settings {
+            bail!("all-skip restore parsed or modified current settings");
         }
         Ok(())
     }
