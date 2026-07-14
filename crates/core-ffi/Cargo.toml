@@ -13,6 +13,7 @@ crate-type = ["cdylib"]
 [dependencies]
 logos-inspector = { workspace = true }
 serde_json = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
 
 [lints.rust]
 future_incompatible = { level = "deny", priority = -1 }
