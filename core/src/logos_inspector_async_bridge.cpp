@@ -1,5 +1,7 @@
 #include "logos_inspector_async_bridge.h"
 
+#include "logos_inspector_host_transport.h"
+
 #include <algorithm>
 #include <atomic>
 #include <condition_variable>
@@ -81,11 +83,6 @@ struct CallbackContext
 {
     std::shared_ptr<BridgeState> state;
     uint64_t bridgeId = 0;
-};
-
-struct HostTransportContext
-{
-    std::atomic<bool> closed { false };
 };
 
 std::string jsonEscape(std::string_view value)
@@ -333,29 +330,6 @@ std::vector<uint64_t> collectExpiredLocked(
     return cancelIds;
 }
 
-int32_t rejectingHostDispatch(
-    void*,
-    uint64_t,
-    const char*,
-    const char*,
-    const char*,
-    LogosInspectorHostReplyFn,
-    void*) noexcept
-{
-    return 0;
-}
-
-void rejectingHostCancel(void*, uint64_t) noexcept
-{
-}
-
-void rejectingHostClose(void* context) noexcept
-{
-    if (context != nullptr) {
-        static_cast<HostTransportContext*>(context)->closed.store(true, std::memory_order_release);
-    }
-}
-
 class ActiveAbiCall
 {
 public:
@@ -527,6 +501,7 @@ LogosInspectorCoreApi LogosInspectorCoreApi::production()
     api.stringFree = &logos_inspector_core_string_free;
     api.callModuleAsync = &logos_inspector_core_call_module_async;
     api.cancel = &logos_inspector_core_cancel;
+    api.ingestModuleEvent = &logos_inspector_core_ingest_module_event;
     return api;
 }
 
@@ -537,23 +512,30 @@ public:
         LogosInspectorCoreApi coreApi,
         LogosInspectorAsyncBridgeLimits limits,
         Clock clock,
-        uint64_t tokenNamespace)
+        uint64_t tokenNamespace,
+        std::unique_ptr<LogosInspectorHostTransport> hostTransport)
         : coreApi_(coreApi)
         , state_(std::make_shared<BridgeState>(
               validateLimits(limits),
               validateClock(std::move(clock)),
               tokenNamespace))
+        , hostTransport_(std::move(hostTransport))
     {
         validateApi(coreApi_);
-        transport_.abi_version = LOGOS_INSPECTOR_HOST_TRANSPORT_ABI_VERSION;
-        transport_.struct_size = static_cast<uint32_t>(sizeof(transport_));
-        transport_.context = &hostTransportContext_;
-        transport_.dispatch = &rejectingHostDispatch;
-        transport_.cancel = &rejectingHostCancel;
-        transport_.close = &rejectingHostClose;
+        if (hostTransport_ == nullptr) {
+            throw std::invalid_argument("Logos Inspector host transport is required");
+        }
+        transport_ = hostTransport_->vtable();
         core_ = coreApi_.newWithHostTransport(&transport_);
         if (core_ == nullptr) {
             throw std::runtime_error("could not construct Logos Inspector asynchronous core");
+        }
+        if (!hostTransport_->bindCore(core_, coreApi_.ingestModuleEvent)
+            || !hostTransport_->activate()) {
+            coreApi_.close(core_);
+            coreApi_.free(core_);
+            core_ = nullptr;
+            throw std::runtime_error("could not activate Logos Inspector host transport");
         }
     }
 
@@ -768,6 +750,12 @@ public:
         }
     }
 
+    bool ownsRuntimeModuleEvents() const noexcept
+    {
+        return hostTransport_ != nullptr
+            && hostTransport_->ownsRuntimeModuleEvents();
+    }
+
 private:
     static LogosInspectorAsyncBridgeLimits validateLimits(LogosInspectorAsyncBridgeLimits limits)
     {
@@ -792,7 +780,8 @@ private:
     {
         if (api.newWithHostTransport == nullptr || api.close == nullptr || api.free == nullptr
             || api.call == nullptr || api.stringFree == nullptr
-            || api.callModuleAsync == nullptr || api.cancel == nullptr) {
+            || api.callModuleAsync == nullptr || api.cancel == nullptr
+            || api.ingestModuleEvent == nullptr) {
             throw std::invalid_argument("incomplete Logos Inspector core API");
         }
     }
@@ -971,17 +960,19 @@ private:
 
     LogosInspectorCoreApi coreApi_;
     std::shared_ptr<BridgeState> state_;
-    HostTransportContext hostTransportContext_;
+    std::unique_ptr<LogosInspectorHostTransport> hostTransport_;
     LogosInspectorHostTransportV1 transport_ {};
     LogosInspectorCore* core_ = nullptr;
 };
 
-LogosInspectorAsyncBridge::LogosInspectorAsyncBridge()
+LogosInspectorAsyncBridge::LogosInspectorAsyncBridge(
+    std::unique_ptr<LogosInspectorHostTransport> hostTransport)
     : LogosInspectorAsyncBridge(
           LogosInspectorCoreApi::production(),
           LogosInspectorAsyncBridgeLimits {},
           [] { return std::chrono::steady_clock::now(); },
-          randomTokenNamespace())
+          randomTokenNamespace(),
+          std::move(hostTransport))
 {
 }
 
@@ -989,12 +980,14 @@ LogosInspectorAsyncBridge::LogosInspectorAsyncBridge(
     LogosInspectorCoreApi coreApi,
     LogosInspectorAsyncBridgeLimits limits,
     Clock clock,
-    uint64_t tokenNamespace)
+    uint64_t tokenNamespace,
+    std::unique_ptr<LogosInspectorHostTransport> hostTransport)
     : impl_(std::make_unique<Impl>(
           coreApi,
           limits,
           std::move(clock),
-          tokenNamespace))
+          tokenNamespace,
+          std::move(hostTransport)))
 {
 }
 
@@ -1061,6 +1054,11 @@ std::string LogosInspectorAsyncBridge::releaseAsync(const std::string& token)
     } catch (...) {
         return publicFailure("asynchronous Logos Inspector release");
     }
+}
+
+bool LogosInspectorAsyncBridge::ownsRuntimeModuleEvents() const noexcept
+{
+    return impl_->ownsRuntimeModuleEvents();
 }
 
 void LogosInspectorAsyncBridge::close()

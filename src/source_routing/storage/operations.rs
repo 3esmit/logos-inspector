@@ -1016,7 +1016,7 @@ mod tests {
         }))?;
         let request = StorageBackupUploadRequest::parse_request(&request)?;
         let module_transport: SharedModuleTransport = Arc::new(
-            crate::modules::logos_core::UnavailableModuleTransport::basecamp_protocol_gate(),
+            crate::modules::logos_core::UnavailableModuleTransport::basecamp_host_not_configured(),
         );
 
         let error = request

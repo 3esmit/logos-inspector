@@ -37,13 +37,7 @@ QtObject {
     }
 
     function backendOwnsRuntimeModuleEvents() {
-        try {
-            return root.prefersBasecampModules()
-                && root.host
-                && root.host["logosInspectorOwnsRuntimeModuleEvents"] === true
-        } catch (error) {
-            return false
-        }
+        return BridgeEnvelope.basecampInspectorOwnsRuntimeModuleEvents(root.host)
     }
 
     function callModule(moduleName, method, args) {
@@ -147,11 +141,7 @@ QtObject {
             return requestId
         }
 
-        if (root.prefersBasecampModules()
-                && moduleName === "logos_inspector"
-                && method !== "moduleVersion"
-                && reportedBasecampSchema.length > 0
-                && !basecampPolling) {
+        if (inspectorAsyncRequest && !basecampPolling) {
             Qt.callLater(function () {
                 root.finishAsyncCall(requestId, {
                     ok: false,

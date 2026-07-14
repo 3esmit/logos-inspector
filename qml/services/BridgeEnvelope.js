@@ -57,6 +57,31 @@ function probeBasecampInspectorAsyncBridge(host) {
     }
 }
 
+function basecampInspectorOwnsRuntimeModuleEvents(host) {
+    if (!prefersBasecampModules(host) || !host["callModule"]) {
+        return false
+    }
+    try {
+        const compatibilityValue = host["logosInspectorOwnsRuntimeModuleEvents"]
+        if (typeof compatibilityValue !== "undefined") {
+            return compatibilityValue === true
+        }
+        const raw = host["callModule"](
+            "logos_inspector",
+            "logosInspectorOwnsRuntimeModuleEvents",
+            []
+        )
+        const response = parseBasecampDirectResponseJson(
+            raw,
+            "logos_inspector",
+            "logosInspectorOwnsRuntimeModuleEvents"
+        )
+        return response.ok === true && response.value === true
+    } catch (error) {
+        return false
+    }
+}
+
 function usesBasecampInspectorPolling(host, moduleName, method, expectedSchema, reportedSchema) {
     return !!(prefersBasecampModules(host)
         && host["callModuleAsync"]
@@ -122,6 +147,9 @@ function dispatchAsync(host, requestId, moduleName, method, args, finish) {
             return true
         }
     }
+    if (moduleName === "logos_inspector" && method !== "moduleVersion") {
+        return false
+    }
 
     let completed = false
     const complete = function (response) {
@@ -132,24 +160,13 @@ function dispatchAsync(host, requestId, moduleName, method, args, finish) {
         finish(response)
     }
     try {
-        if (moduleName === "logos_inspector" && method !== "moduleVersion") {
-            host["callModuleAsync"](
+        host["callModuleAsync"](moduleName, method, args || [], function (responseJson) {
+            complete(parseBasecampDirectResponseJson(
+                responseJson,
                 moduleName,
-                "call",
-                [method, JSON.stringify(args || [])],
-                function (responseJson) {
-                    complete(parseBasecampInspectorResponseJson(responseJson))
-                }
-            )
-        } else {
-            host["callModuleAsync"](moduleName, method, args || [], function (responseJson) {
-                complete(parseBasecampDirectResponseJson(
-                    responseJson,
-                    moduleName,
-                    method
-                ))
-            })
-        }
+                method
+            ))
+        })
         return true
     } catch (error) {
         complete(callError(error))

@@ -9,6 +9,8 @@
 
 #include "logos_inspector_core.h"
 
+class LogosInspectorHostTransport;
+
 struct LogosInspectorAsyncBridgeLimits
 {
     std::size_t maxSlots = 128;
@@ -34,6 +36,11 @@ struct LogosInspectorCoreApi
         LogosInspectorCoreReplyFn,
         void*);
     using CancelFn = int32_t (*)(LogosInspectorCore*, uint64_t);
+    using IngestModuleEventFn = int32_t (*)(
+        LogosInspectorCore*,
+        const char*,
+        const char*,
+        const char*);
 
     NewWithHostTransportFn newWithHostTransport = nullptr;
     CloseFn close = nullptr;
@@ -42,6 +49,7 @@ struct LogosInspectorCoreApi
     StringFreeFn stringFree = nullptr;
     CallModuleAsyncFn callModuleAsync = nullptr;
     CancelFn cancel = nullptr;
+    IngestModuleEventFn ingestModuleEvent = nullptr;
 
     static LogosInspectorCoreApi production();
 };
@@ -51,12 +59,14 @@ class LogosInspectorAsyncBridge
 public:
     using Clock = std::function<std::chrono::steady_clock::time_point()>;
 
-    LogosInspectorAsyncBridge();
+    explicit LogosInspectorAsyncBridge(
+        std::unique_ptr<LogosInspectorHostTransport> hostTransport);
     LogosInspectorAsyncBridge(
         LogosInspectorCoreApi coreApi,
         LogosInspectorAsyncBridgeLimits limits,
         Clock clock,
-        uint64_t tokenNamespace);
+        uint64_t tokenNamespace,
+        std::unique_ptr<LogosInspectorHostTransport> hostTransport);
     ~LogosInspectorAsyncBridge();
 
     LogosInspectorAsyncBridge(const LogosInspectorAsyncBridge&) = delete;
@@ -75,6 +85,7 @@ public:
     std::string pollAsync(const std::string& token);
     std::string cancelAsync(const std::string& token);
     std::string releaseAsync(const std::string& token);
+    bool ownsRuntimeModuleEvents() const noexcept;
 
     /// Idempotent shutdown seam used by the owner and lifecycle tests.
     void close();

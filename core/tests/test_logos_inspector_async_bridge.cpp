@@ -1,4 +1,5 @@
 #include "logos_inspector_async_bridge.h"
+#include "logos_inspector_host_transport.h"
 #include "logos_inspector_impl.h"
 
 #include <atomic>
@@ -15,10 +16,6 @@
 #include <thread>
 #include <utility>
 #include <vector>
-
-#ifndef LOGOS_INSPECTOR_ENABLE_ASYNC_BRIDGE
-#define LOGOS_INSPECTOR_ENABLE_ASYNC_BRIDGE 0
-#endif
 
 namespace {
 using namespace std::chrono_literals;
@@ -444,7 +441,93 @@ extern "C" int32_t logos_inspector_core_cancel(
     return 1;
 }
 
+extern "C" int32_t logos_inspector_core_ingest_module_event(
+    LogosInspectorCore* core,
+    const char* module,
+    const char* event,
+    const char* argsJson)
+{
+    if (core == nullptr || core->closed || module == nullptr || *module == '\0'
+        || event == nullptr || *event == '\0' || argsJson == nullptr) {
+        return LOGOS_INSPECTOR_EVENT_REJECTED;
+    }
+    return LOGOS_INSPECTOR_EVENT_ACCEPTED;
+}
+
 namespace {
+class FakeHostTransport final : public LogosInspectorHostTransport
+{
+public:
+    bool bindCore(LogosInspectorCore* core, IngestModuleEventFn ingest) noexcept override
+    {
+        if (core == nullptr || ingest == nullptr || bound_) {
+            return false;
+        }
+        bound_ = true;
+        return true;
+    }
+
+    bool activate() noexcept override
+    {
+        if (!bound_ || active_ || closed_) {
+            return false;
+        }
+        active_ = true;
+        return true;
+    }
+
+    LogosInspectorHostTransportV1 vtable() noexcept override
+    {
+        LogosInspectorHostTransportV1 value {};
+        value.abi_version = LOGOS_INSPECTOR_HOST_TRANSPORT_ABI_VERSION;
+        value.struct_size = static_cast<uint32_t>(sizeof(value));
+        value.context = this;
+        value.dispatch = &dispatch;
+        value.cancel = &cancel;
+        value.close = &closeCallback;
+        return value;
+    }
+
+    bool ownsRuntimeModuleEvents() const noexcept override
+    {
+        return active_ && !closed_;
+    }
+
+    void close() noexcept override
+    {
+        active_ = false;
+        closed_ = true;
+    }
+
+private:
+    static int32_t dispatch(
+        void*,
+        uint64_t,
+        const char*,
+        const char*,
+        const char*,
+        LogosInspectorHostReplyFn,
+        void*) noexcept
+    {
+        return 0;
+    }
+
+    static void cancel(void*, uint64_t) noexcept
+    {
+    }
+
+    static void closeCallback(void* context) noexcept
+    {
+        if (context != nullptr) {
+            static_cast<FakeHostTransport*>(context)->close();
+        }
+    }
+
+    bool bound_ = false;
+    bool active_ = false;
+    bool closed_ = false;
+};
+
 LogosInspectorCoreApi fakeApi()
 {
     LogosInspectorCoreApi api;
@@ -455,6 +538,7 @@ LogosInspectorCoreApi fakeApi()
     api.stringFree = &logos_inspector_core_string_free;
     api.callModuleAsync = &logos_inspector_core_call_module_async;
     api.cancel = &logos_inspector_core_cancel;
+    api.ingestModuleEvent = &logos_inspector_core_ingest_module_event;
     return api;
 }
 
@@ -465,7 +549,12 @@ LogosInspectorAsyncBridge makeBridge(
         return std::chrono::steady_clock::now();
     })
 {
-    return LogosInspectorAsyncBridge(fakeApi(), std::move(limits), std::move(clock), 0x1234);
+    return LogosInspectorAsyncBridge(
+        fakeApi(),
+        std::move(limits),
+        std::move(clock),
+        0x1234,
+        std::make_unique<FakeHostTransport>());
 }
 
 void testWrapperUsesOneCoreForLocalAndAsyncCalls()
@@ -473,9 +562,16 @@ void testWrapperUsesOneCoreForLocalAndAsyncCalls()
     FakeRuntime fake;
     RuntimeScope runtimeScope(fake);
     {
-        LogosInspectorImpl wrapper;
+        LogosInspectorImpl wrapper([] {
+            return std::make_unique<FakeHostTransport>();
+        });
+        REQUIRE(fake.newCalls == 0);
+        REQUIRE(contains(wrapper.call("head", "[]"), "not initialized"));
+        REQUIRE(wrapper.asyncBridgeSchema() == "logos-inspector-async-bridge/unavailable");
+        REQUIRE(!wrapper.logosInspectorOwnsRuntimeModuleEvents());
+
+        wrapper._logosCoreSetContext_("/module", "instance", "/state");
         REQUIRE(fake.newCalls == 1);
-#if LOGOS_INSPECTOR_ENABLE_ASYNC_BRIDGE
         REQUIRE(fake.capturedTransport.abi_version == LOGOS_INSPECTOR_HOST_TRANSPORT_ABI_VERSION);
         REQUIRE(fake.capturedTransport.struct_size == sizeof(LogosInspectorHostTransportV1));
         REQUIRE(fake.capturedTransport.context != nullptr);
@@ -510,25 +606,14 @@ void testWrapperUsesOneCoreForLocalAndAsyncCalls()
         fake.completePending(fake.asynchronousResponse);
         REQUIRE(contains(wrapper.pollAsync(token), "\"status\":\"ready\""));
         REQUIRE(contains(wrapper.releaseAsync(token), "\"released\":true"));
-#else
-        REQUIRE(wrapper.asyncBridgeSchema().empty());
-        REQUIRE(wrapper.call("head", "[]") == fake.synchronousResponse);
-        REQUIRE(fake.localCalls == 1);
-        REQUIRE(wrapper.callModule("wallet", "accounts", "[]") == fake.synchronousResponse);
-        REQUIRE(fake.moduleCalls == 1);
-        REQUIRE(contains(
-            wrapper.callAsync("wrapper-correlation", "head", "[]"),
-            "not initialized"));
-        REQUIRE(fake.asyncCalls == 0);
-#endif
+        REQUIRE(wrapper.logosInspectorOwnsRuntimeModuleEvents());
+
+        wrapper._logosCoreSetContext_("/module", "instance", "/state");
+        REQUIRE(fake.newCalls == 1);
     }
     REQUIRE(fake.closeCalls == 1);
     REQUIRE(fake.freeCalls == 1);
-#if LOGOS_INSPECTOR_ENABLE_ASYNC_BRIDGE
     REQUIRE(fake.hostClosed);
-#else
-    REQUIRE(!fake.hostClosed);
-#endif
 }
 
 void testIdentityIdempotentPollAndExplicitRelease()

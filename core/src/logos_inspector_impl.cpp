@@ -1,6 +1,7 @@
 #include "logos_inspector_impl.h"
 
 #include "logos_inspector_async_bridge.h"
+#include "logos_inspector_host_transport.h"
 
 #include <exception>
 #include <utility>
@@ -9,10 +10,6 @@ namespace {
 #ifndef LOGOS_INSPECTOR_MODULE_VERSION
 #define LOGOS_INSPECTOR_MODULE_VERSION "unknown"
 #endif
-#ifndef LOGOS_INSPECTOR_ENABLE_ASYNC_BRIDGE
-#define LOGOS_INSPECTOR_ENABLE_ASYNC_BRIDGE 0
-#endif
-
 constexpr const char* kModuleVersion = LOGOS_INSPECTOR_MODULE_VERSION;
 
 std::string jsonEscape(const std::string& value)
@@ -63,18 +60,6 @@ std::string jsonError(const std::string& error)
         + jsonEscape(error) + "\"}";
 }
 
-#if !LOGOS_INSPECTOR_ENABLE_ASYNC_BRIDGE
-std::string takeResponse(char* response)
-{
-    if (response == nullptr) {
-        return jsonError("logos inspector core returned no response");
-    }
-    std::string value(response);
-    logos_inspector_core_string_free(response);
-    return value;
-}
-#endif
-
 template<typename Function>
 std::string invokeAsyncBridge(
     LogosInspectorAsyncBridge* bridge,
@@ -94,45 +79,39 @@ std::string invokeAsyncBridge(
 }
 }
 
-LogosInspectorImpl::LogosInspectorImpl()
+LogosInspectorImpl::LogosInspectorImpl(HostTransportFactory hostTransportFactory)
+    : hostTransportFactory_(std::move(hostTransportFactory))
 {
-#if LOGOS_INSPECTOR_ENABLE_ASYNC_BRIDGE
-    try {
-        asyncBridge_ = std::make_unique<LogosInspectorAsyncBridge>();
-    } catch (...) {
-        asyncBridge_.reset();
-    }
-#else
-    legacyCore_ = logos_inspector_core_new();
-#endif
 }
 
 LogosInspectorImpl::~LogosInspectorImpl()
 {
-#if LOGOS_INSPECTOR_ENABLE_ASYNC_BRIDGE
     asyncBridge_.reset();
-#else
-    logos_inspector_core_free(legacyCore_);
-    legacyCore_ = nullptr;
-#endif
+}
+
+void LogosInspectorImpl::onContextReady()
+{
+    if (asyncBridge_ != nullptr || !hostTransportFactory_) {
+        return;
+    }
+    try {
+        std::unique_ptr<LogosInspectorHostTransport> hostTransport =
+            hostTransportFactory_();
+        if (hostTransport != nullptr) {
+            asyncBridge_ = std::make_unique<LogosInspectorAsyncBridge>(
+                std::move(hostTransport));
+        }
+    } catch (...) {
+        asyncBridge_.reset();
+    }
 }
 
 std::string LogosInspectorImpl::call(const std::string& method, const std::string& argsJson)
 {
-#if LOGOS_INSPECTOR_ENABLE_ASYNC_BRIDGE
     return invokeAsyncBridge(
         asyncBridge_.get(),
         "logos inspector bridge is not initialized",
         [&](LogosInspectorAsyncBridge& bridge) { return bridge.call(method, argsJson); });
-#else
-    if (legacyCore_ == nullptr) {
-        return jsonError("logos inspector core is not initialized");
-    }
-    return takeResponse(logos_inspector_core_call(
-        legacyCore_,
-        method.c_str(),
-        argsJson.c_str()));
-#endif
 }
 
 std::string LogosInspectorImpl::callModule(
@@ -140,21 +119,10 @@ std::string LogosInspectorImpl::callModule(
     const std::string& method,
     const std::string& argsJson)
 {
-#if LOGOS_INSPECTOR_ENABLE_ASYNC_BRIDGE
     static_cast<void>(module);
     static_cast<void>(method);
     static_cast<void>(argsJson);
     return jsonError("synchronous module calls are unsupported; use callModuleAsync");
-#else
-    if (legacyCore_ == nullptr) {
-        return jsonError("logos inspector core is not initialized");
-    }
-    return takeResponse(logos_inspector_core_call_module(
-        legacyCore_,
-        module.c_str(),
-        method.c_str(),
-        argsJson.c_str()));
-#endif
 }
 
 std::string LogosInspectorImpl::callAsync(
@@ -210,13 +178,15 @@ std::string LogosInspectorImpl::releaseAsync(const std::string& token)
 
 std::string LogosInspectorImpl::asyncBridgeSchema()
 {
-#if LOGOS_INSPECTOR_ENABLE_ASYNC_BRIDGE
     return asyncBridge_
         ? "logos-inspector-async-bridge/v1"
         : "logos-inspector-async-bridge/unavailable";
-#else
-    return "";
-#endif
+}
+
+bool LogosInspectorImpl::logosInspectorOwnsRuntimeModuleEvents()
+{
+    return asyncBridge_ != nullptr
+        && asyncBridge_->ownsRuntimeModuleEvents();
 }
 
 std::string LogosInspectorImpl::moduleVersion()

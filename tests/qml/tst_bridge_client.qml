@@ -111,6 +111,8 @@ TestCase {
 
         property string asyncBridgeSchemaResponse: "logos-inspector-async-bridge/v1"
         property string schemaProbeMode: "normal"
+        property string nativeEventOwnerProbeMode: "missing"
+        property int nativeEventOwnerProbeCount: 0
         property int syncCallCount: 0
         property int asyncCallCount: 0
         property string lastModule: ""
@@ -128,6 +130,8 @@ TestCase {
         function reset() {
             asyncBridgeSchemaResponse = "logos-inspector-async-bridge/v1"
             schemaProbeMode = "normal"
+            nativeEventOwnerProbeMode = "missing"
+            nativeEventOwnerProbeCount = 0
             syncCallCount = 0
             asyncCallCount = 0
             lastModule = ""
@@ -159,6 +163,23 @@ TestCase {
                     return JSON.stringify({ error: "Module not connected" })
                 }
                 return JSON.stringify(asyncBridgeSchemaResponse)
+            }
+            if (String(moduleName || "") === "logos_inspector"
+                    && String(method || "") === "logosInspectorOwnsRuntimeModuleEvents") {
+                nativeEventOwnerProbeCount += 1
+                if (nativeEventOwnerProbeMode === "throw") {
+                    throw new Error("native event owner probe failed")
+                }
+                if (nativeEventOwnerProbeMode === "malformed") {
+                    return "{"
+                }
+                if (nativeEventOwnerProbeMode === "missing") {
+                    return JSON.stringify({ error: "Invalid response" })
+                }
+                if (nativeEventOwnerProbeMode === "wrapped") {
+                    return JSON.stringify({ ok: true, value: true })
+                }
+                return JSON.stringify(nativeEventOwnerProbeMode === "true")
             }
             syncCallCount += 1
             lastModule = String(moduleName || "")
@@ -261,6 +282,23 @@ TestCase {
     }
 
     QtObject {
+        id: nativeEventOwnerPropertyHost
+
+        property var logosInspectorOwnsRuntimeModuleEvents: true
+        property int probeCallCount: 0
+
+        function reset() {
+            logosInspectorOwnsRuntimeModuleEvents = true
+            probeCallCount = 0
+        }
+
+        function callModule(moduleName, method, args) {
+            probeCallCount += 1
+            return JSON.stringify(false)
+        }
+    }
+
+    QtObject {
         id: eventHost
 
         signal moduleEvent(string moduleName, string eventName, var args)
@@ -322,6 +360,7 @@ TestCase {
         jsonHostWithUnrelatedAsync.reset()
         basecampAsyncHost.reset()
         replacementBasecampAsyncHost.reset()
+        nativeEventOwnerPropertyHost.reset()
         eventHost.reset()
         client.nextRequestId = 1
         client.pendingCalls = ({})
@@ -524,7 +563,7 @@ TestCase {
         compare(asyncResponse.value.available, 12)
     }
 
-    function test_unadvertised_basecamp_host_keeps_legacy_async_inspector_route() {
+    function test_unadvertised_basecamp_host_fails_closed() {
         client.host = basecampAsyncHost
         basecampAsyncHost.asyncBridgeSchemaResponse = ""
 
@@ -532,12 +571,11 @@ TestCase {
             asyncResponse = response
         })
 
-        compare(basecampAsyncHost.lastModule, "logos_inspector")
-        compare(basecampAsyncHost.lastMethod, "call")
-        compare(basecampAsyncHost.lastArgs[0], "sourcePolicy")
-        basecampAsyncHost.complete(inspectorControlResponse({ legacy: true }))
-        verify(asyncResponse.ok)
-        compare(asyncResponse.value.legacy, true)
+        tryVerify(function () { return asyncResponse !== null })
+        compare(basecampAsyncHost.pendingCount("call"), 0)
+        compare(basecampAsyncHost.pendingCount("callAsync"), 0)
+        verify(!asyncResponse.ok)
+        verify(asyncResponse.error.indexOf("async bridge v1 required") >= 0)
     }
 
     function test_basecamp_direct_values_do_not_collide_with_inspector_envelope() {
@@ -947,7 +985,7 @@ TestCase {
         compare(asyncResponse.error, "Logos bridge call failed: async_acceptance_unknown")
     }
 
-    function test_sync_only_basecamp_host_keeps_deferred_legacy_fallback() {
+    function test_sync_only_basecamp_host_fails_closed() {
         client.host = basecampHost
 
         client.callModuleAsync("logos_inspector", "blockchainNode", ["legacy"], function (response) {
@@ -958,10 +996,9 @@ TestCase {
         verify(!client.hasAsyncCalls())
         compare(basecampHost.callCount, 0)
         tryCompare(testRoot, "asyncCallbackCount", 1)
-        compare(basecampHost.callCount, 1)
-        verify(asyncResponse.ok)
-        compare(asyncResponse.value.method, "blockchainNode")
-        compare(asyncResponse.value.args[0], "legacy")
+        compare(basecampHost.callCount, 0)
+        verify(!asyncResponse.ok)
+        verify(asyncResponse.error.indexOf("async bridge v1 required") >= 0)
     }
 
     function test_advertised_schema_without_async_transport_fails_closed() {
@@ -1035,7 +1072,7 @@ TestCase {
         verify(asyncResponse.error.indexOf("async bridge probe failed") >= 0)
     }
 
-    function test_known_missing_schema_method_keeps_legacy_route() {
+    function test_known_missing_schema_method_fails_closed() {
         client.host = basecampAsyncHost
         basecampAsyncHost.schemaProbeMode = "missing"
 
@@ -1043,10 +1080,11 @@ TestCase {
             asyncResponse = response
         })
 
-        compare(basecampAsyncHost.pendingCount("call"), 1)
-        verify(basecampAsyncHost.completeNext("call", finalBridgeResponse({ legacy: true })))
-        verify(asyncResponse.ok)
-        compare(asyncResponse.value.legacy, true)
+        tryVerify(function () { return asyncResponse !== null })
+        compare(basecampAsyncHost.pendingCount("call"), 0)
+        compare(basecampAsyncHost.pendingCount("callAsync"), 0)
+        verify(!asyncResponse.ok)
+        verify(asyncResponse.error.indexOf("async bridge v1 required") >= 0)
     }
 
     function test_json_host_does_not_use_unrelated_callback_async_method() {
@@ -1124,9 +1162,67 @@ TestCase {
         compare(replacementBasecampAsyncHost.syncCallCount, 0)
     }
 
+    function test_runtime_event_owner_compatibility_property_is_exact_boolean() {
+        client.host = nativeEventOwnerPropertyHost
+
+        verify(client.backendOwnsRuntimeModuleEvents())
+        compare(nativeEventOwnerPropertyHost.probeCallCount, 0)
+
+        nativeEventOwnerPropertyHost.logosInspectorOwnsRuntimeModuleEvents = false
+        verify(!client.backendOwnsRuntimeModuleEvents())
+        nativeEventOwnerPropertyHost.logosInspectorOwnsRuntimeModuleEvents = "true"
+        verify(!client.backendOwnsRuntimeModuleEvents())
+        compare(nativeEventOwnerPropertyHost.probeCallCount, 0)
+    }
+
+    function test_runtime_event_owner_direct_probe_requires_exact_true() {
+        client.host = basecampAsyncHost
+        basecampAsyncHost.nativeEventOwnerProbeMode = "true"
+
+        verify(client.backendOwnsRuntimeModuleEvents())
+        compare(basecampAsyncHost.nativeEventOwnerProbeCount, 1)
+
+        basecampAsyncHost.nativeEventOwnerProbeMode = "false"
+        verify(!client.backendOwnsRuntimeModuleEvents())
+        basecampAsyncHost.nativeEventOwnerProbeMode = "wrapped"
+        verify(!client.backendOwnsRuntimeModuleEvents())
+        basecampAsyncHost.nativeEventOwnerProbeMode = "malformed"
+        verify(!client.backendOwnsRuntimeModuleEvents())
+        basecampAsyncHost.nativeEventOwnerProbeMode = "missing"
+        verify(!client.backendOwnsRuntimeModuleEvents())
+        basecampAsyncHost.nativeEventOwnerProbeMode = "throw"
+        verify(!client.backendOwnsRuntimeModuleEvents())
+        compare(basecampAsyncHost.nativeEventOwnerProbeCount, 6)
+    }
+
+    function test_runtime_event_owner_direct_probe_is_not_cached() {
+        client.host = basecampAsyncHost
+        basecampAsyncHost.nativeEventOwnerProbeMode = "true"
+        verify(client.backendOwnsRuntimeModuleEvents())
+
+        basecampAsyncHost.nativeEventOwnerProbeMode = "false"
+        verify(!client.backendOwnsRuntimeModuleEvents())
+        compare(basecampAsyncHost.nativeEventOwnerProbeCount, 2)
+    }
+
+    function test_runtime_event_owner_reprobes_replacement_host() {
+        client.host = basecampAsyncHost
+        basecampAsyncHost.nativeEventOwnerProbeMode = "true"
+        replacementBasecampAsyncHost.nativeEventOwnerProbeMode = "false"
+        verify(client.backendOwnsRuntimeModuleEvents())
+
+        client.host = replacementBasecampAsyncHost
+
+        verify(!client.backendOwnsRuntimeModuleEvents())
+        compare(basecampAsyncHost.nativeEventOwnerProbeCount, 1)
+        compare(replacementBasecampAsyncHost.nativeEventOwnerProbeCount, 1)
+    }
+
     function test_basecamp_module_event_uses_boolean_subscription_and_received_signal() {
         client.host = basecampAsyncHost
+        basecampAsyncHost.nativeEventOwnerProbeMode = "true"
 
+        verify(client.backendOwnsRuntimeModuleEvents())
         verify(client.subscribeModuleEvent("storage_module", "storageUploadDone"))
         verify(client.subscribeModuleEvent("storage_module", "storageUploadDone"))
         compare(basecampAsyncHost.subscriptionCallCount, 1)

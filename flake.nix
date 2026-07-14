@@ -210,8 +210,17 @@ EOF
         flakeInputs = inputs;
         externalLibInputs = {
           logos_inspector_core = {
-            packages = coreFfiPackages;
+            input = {
+              packages = coreFfiPackages;
+            };
+            packages.default = "default";
           };
+        };
+        tests = {
+          dir = ./core/tests;
+          extraCmakeFlags = [
+            "-DLOGOS_INSPECTOR_ENABLE_COMPOSED_HOST_TESTS=ON"
+          ];
         };
       };
 
@@ -322,6 +331,13 @@ EOF
         '';
     in
     qmlModule // {
+      checks = lib.recursiveUpdate
+        qmlModule.checks
+        (builtins.mapAttrs
+          (_system: coreChecks: {
+            core-host-transport-integration = coreChecks.unit-tests;
+          })
+          (lib.getAttrs coreSystems coreModule.checks));
       packages = builtins.mapAttrs
         (system: packages:
           let
