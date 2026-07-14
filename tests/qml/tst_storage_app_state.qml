@@ -113,6 +113,9 @@ TestCase {
         state.resultOwner = ""
         state.sourceReport = null
         state.manifests = []
+        state.manifestRequestGeneration = 0
+        state.diagnosticRequestGeneration = 0
+        state.manifestRefreshContext = null
         state.operationSession.reset()
 
         stateWithoutGate.busy = false
@@ -122,17 +125,28 @@ TestCase {
         stateWithoutGate.supportsMutatingDiagnostics = true
         stateWithoutGate.mutatingDiagnosticsEnabled = true
         stateWithoutGate.manifests = []
+        stateWithoutGate.manifestRequestGeneration = 0
+        stateWithoutGate.diagnosticRequestGeneration = 0
+        stateWithoutGate.manifestRefreshContext = null
         stateWithoutGate.operationSession.reset()
     }
 
     function test_refresh_manifests_updates_local_state() {
-        gateway.callResponses = ({
-            storageManifests: {
+        gateway.requestResponses = ({
+            runtimeOperationStart: {
                 ok: true,
                 value: {
-                    content: [
-                        { cid: "z-cid", manifest: { filename: "file.bin", datasetSize: 12, blockSize: 4 } }
-                    ]
+                    operationId: "storage-manifests-1",
+                    domain: "storage",
+                    method: "storageManifests",
+                    status: "completed",
+                    label: "Storage manifests",
+                    result: {
+                        content: [
+                            { cid: "z-cid", manifest: { filename: "file.bin", datasetSize: 12, blockSize: 4 } }
+                        ]
+                    },
+                    cancellable: false
                 },
                 text: "OK",
                 error: ""
@@ -141,14 +155,17 @@ TestCase {
 
         state.refreshManifests(true)
 
-        compare(gateway.callCount, 1)
-        compare(gateway.lastMethod, "storageManifests")
+        compare(gateway.requestCount, 1)
+        compare(gateway.callCount, 0)
+        compare(gateway.lastMethod, "runtimeOperationStart")
+        compare(gateway.lastArgs[0].method, "storageManifests")
+        compare(gateway.lastArgs[0].domain, "storage")
         compare(gateway.lastArgs[0].adapter.source_mode, "rest")
         compare(gateway.lastArgs[0].adapter.inputs.rest_endpoint, "http://storage")
         compare(state.manifests.length, 1)
         compare(state.manifestRows()[0].cid, "z-cid")
         compare(state.lastOperation, "List")
-        compare(state.operation.rows.length, 1)
+        compare(state.operation.rows.length, 2)
     }
 
     function test_operation_status_text_keeps_reconciled_terminal_state() {
@@ -168,8 +185,65 @@ TestCase {
         verify(!StorageModuleEvents.rawEventInvalidatesStorageObservations("storageUploadDone"))
     }
 
-    function test_run_storage_exists_uses_sync_call_and_log() {
-        gateway.callResponses = ({
+    function test_manifest_refresh_projects_terminal_poll_result() {
+        state.effectiveSourceMode = "module"
+        state.sourceTargetKind = "module"
+        state.usesRestEndpoint = false
+        gateway.requestResponses = ({
+            runtimeOperationStart: {
+                ok: true,
+                value: {
+                    operationId: "storage-manifests-poll-1",
+                    domain: "storage",
+                    backend: "module",
+                    method: "storageManifests",
+                    status: "awaiting_external",
+                    label: "Storage manifests",
+                    cancellable: false
+                },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        state.refreshManifests(false)
+
+        compare(gateway.lastMethod, "runtimeOperationStart")
+        compare(state.operation.active.operationId, "storage-manifests-poll-1")
+        compare(state.operation.active.status, "awaiting_external")
+        compare(state.manifests.length, 0)
+
+        gateway.requestResponses = ({
+            runtimeOperationStatus: {
+                ok: true,
+                value: {
+                    operationId: "storage-manifests-poll-1",
+                    domain: "storage",
+                    backend: "module",
+                    method: "storageManifests",
+                    status: "completed",
+                    label: "Storage manifests",
+                    result: [{ cid: "z-polled", filename: "polled.bin", datasetSize: 9 }],
+                    cancellable: false
+                },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        state.pollStorageOperation(false)
+
+        compare(gateway.lastMethod, "runtimeOperationStatus")
+        compare(state.operation.active.status, "completed")
+        compare(state.manifestRows()[0].cid, "z-polled")
+        compare(state.lastOperation, "List")
+        compare(gateway.history.length, 1)
+        compare(gateway.history[0].detail, "1 manifests")
+        compare(gateway.resultTitle, "")
+    }
+
+    function test_run_storage_exists_uses_async_request_and_log() {
+        gateway.requestResponses = ({
             storageExists: {
                 ok: true,
                 value: { exists: true },
@@ -178,14 +252,41 @@ TestCase {
             }
         })
 
-        const response = state.runStorage("storageExists", ["z-cid"], "Storage exists")
+        state.runStorage("storageExists", ["z-cid"], "Storage exists")
 
-        verify(response.ok)
+        compare(gateway.requestCount, 1)
         compare(gateway.lastMethod, "storageExists")
         compare(gateway.lastArgs[0].adapter.source_mode, "rest")
         compare(gateway.lastArgs[0].payload.cid, "z-cid")
         compare(state.lastOperation, "Storage exists")
         compare(state.operation.rows[0].label, "Storage exists")
+    }
+
+    function test_storage_exists_ignores_reverse_order_response() {
+        gateway.deferRequests = true
+
+        state.runStorage("storageExists", ["z-old"], "Old exists")
+        state.runStorage("storageExists", ["z-new"], "New exists")
+
+        compare(gateway.pendingRequests.length, 2)
+        verify(gateway.completeRequestAt(1, {
+            ok: true,
+            value: { exists: true },
+            text: "OK",
+            error: ""
+        }))
+        compare(state.lastOperation, "New exists")
+        compare(state.operation.rows.length, 1)
+        compare(state.operation.rows[0].label, "New exists")
+
+        verify(gateway.completeRequestAt(0, {
+            ok: false,
+            value: null,
+            text: "",
+            error: "stale failure"
+        }))
+        compare(state.lastOperation, "New exists")
+        compare(state.operation.rows.length, 1)
     }
 
     function test_pending_mutation_starts_node_operation() {
@@ -415,7 +516,7 @@ TestCase {
         const response = state.refreshManifests(true)
 
         verify(!response.ok)
-        compare(gateway.callCount, 0)
+        compare(gateway.requestCount, 0)
         compare(state.lastOperation, "Blocked")
         compare(state.manifestRows()[0].cid, "z-old")
         compare(state.operation.rows[0].status, "error")
@@ -435,11 +536,11 @@ TestCase {
         verify(response.error.indexOf("storage.content.upload") >= 0)
     }
 
-    function test_gate_reports_input_required_before_sync_call() {
+    function test_gate_reports_input_required_before_async_request() {
         const response = state.runStorage("storageExists", [""], "Storage exists")
 
         verify(!response.ok)
-        compare(gateway.callCount, 0)
+        compare(gateway.requestCount, 0)
         compare(response.error.indexOf("CID") >= 0, true)
         compare(state.lastOperation, "Blocked")
     }
@@ -448,7 +549,7 @@ TestCase {
         const response = stateWithoutGate.refreshManifests(true)
 
         verify(!response.ok)
-        compare(gateway.callCount, 0)
+        compare(gateway.requestCount, 0)
         compare(stateWithoutGate.lastOperation, "Blocked")
         verify(response.error.indexOf("storage") >= 0)
     }
@@ -457,12 +558,21 @@ TestCase {
         state.effectiveSourceMode = "module"
         state.sourceTargetKind = "module"
         state.usesRestEndpoint = false
-        gateway.callResponses = ({
-            storageManifests: {
+        gateway.requestResponses = ({
+            runtimeOperationStart: {
                 ok: true,
-                value: [
-                    { cid: "z-module", filename: "module.bin", datasetSize: 7 }
-                ],
+                value: {
+                    operationId: "storage-manifests-module-1",
+                    domain: "storage",
+                    backend: "module",
+                    method: "storageManifests",
+                    status: "completed",
+                    label: "Storage manifests",
+                    result: [
+                        { cid: "z-module", filename: "module.bin", datasetSize: 7 }
+                    ],
+                    cancellable: false
+                },
                 text: "OK",
                 error: ""
             }
@@ -470,11 +580,86 @@ TestCase {
 
         state.refreshManifests(true)
 
-        compare(gateway.lastMethod, "storageManifests")
+        compare(gateway.callCount, 0)
+        compare(gateway.lastMethod, "runtimeOperationStart")
+        compare(gateway.lastArgs[0].method, "storageManifests")
         compare(gateway.lastArgs[0].adapter.source_mode, "module")
         verify(gateway.lastArgs[0].adapter.inputs.rest_endpoint === undefined)
-        compare(gateway.lastArgs.length, 1)
+        compare(Object.keys(gateway.lastArgs[0].payload).length, 0)
         compare(state.manifestRows()[0].cid, "z-module")
+    }
+
+    function test_manifest_refresh_ignores_stale_start_after_adapter_change() {
+        gateway.deferRequests = true
+
+        state.refreshManifests(false)
+        state.effectiveSourceMode = "module"
+        state.sourceTargetKind = "module"
+        state.usesRestEndpoint = false
+        state.refreshManifests(false)
+
+        compare(gateway.pendingRequests.length, 2)
+        verify(gateway.completeRequestAt(1, {
+            ok: true,
+            value: {
+                operationId: "storage-manifests-new",
+                domain: "storage",
+                backend: "module",
+                method: "storageManifests",
+                status: "completed",
+                label: "Storage manifests",
+                result: [{ cid: "z-new", filename: "new.bin", datasetSize: 8 }]
+            },
+            text: "OK",
+            error: ""
+        }))
+        compare(state.manifestRows()[0].cid, "z-new")
+        verify(gateway.completeRequestAt(0, {
+            ok: true,
+            value: {
+                operationId: "storage-manifests-old",
+                domain: "storage",
+                method: "storageManifests",
+                status: "completed",
+                label: "Storage manifests",
+                result: [{ cid: "z-old", filename: "old.bin", datasetSize: 4 }]
+            },
+            text: "OK",
+            error: ""
+        }))
+        compare(state.manifestRows()[0].cid, "z-new")
+    }
+
+    function test_busy_manifest_refresh_preserves_in_flight_context() {
+        gateway.deferRequests = true
+
+        state.refreshManifests(false)
+        const generation = state.manifestRefreshContext.generation
+
+        const blocked = state.refreshManifests(true)
+
+        verify(!blocked.ok)
+        compare(gateway.pendingRequests.length, 1)
+        compare(state.manifestRefreshContext.generation, generation)
+        compare(state.manifestRefreshContext.showLog, false)
+        compare(state.lastOperation, "Busy")
+
+        verify(gateway.completeRequestAt(0, {
+            ok: true,
+            value: {
+                operationId: "storage-manifests-original",
+                domain: "storage",
+                method: "storageManifests",
+                status: "completed",
+                label: "Storage manifests",
+                result: [{ cid: "z-original", filename: "original.bin", datasetSize: 5 }]
+            },
+            text: "OK",
+            error: ""
+        }))
+        compare(state.manifestRows()[0].cid, "z-original")
+        compare(state.lastOperation, "List")
+        verify(state.manifestRefreshContext === null)
     }
 
     function test_legacy_completed_dispatch_envelope_is_never_reopened() {
