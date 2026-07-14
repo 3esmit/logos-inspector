@@ -3,12 +3,15 @@ import QtQuick
 QtObject {
     property int callCount: 0
     property int requestCount: 0
+    property int nextRequestId: 1
+    property bool deferRequests: false
     property string lastMethod: ""
     property var lastArgs: []
     property string lastLabel: ""
     property bool lastShowResult: false
     property var calls: []
     property var requests: []
+    property var pendingRequests: []
     property var responses: ({})
     property var callResponses: ({})
     property var requestResponses: ({})
@@ -31,12 +34,15 @@ QtObject {
     function reset() {
         callCount = 0
         requestCount = 0
+        nextRequestId = 1
+        deferRequests = false
         lastMethod = ""
         lastArgs = []
         lastLabel = ""
         lastShowResult = false
         calls = []
         requests = []
+        pendingRequests = []
         responses = ({})
         callResponses = ({})
         requestResponses = ({})
@@ -75,6 +81,8 @@ QtObject {
     }
 
     function request(method, args, label, showResult, callback) {
+        const requestId = nextRequestId
+        nextRequestId += 1
         requestCount += 1
         lastMethod = String(method || "")
         lastArgs = args || []
@@ -93,10 +101,32 @@ QtObject {
             showResult: lastShowResult
         }])
         const response = responseFor(lastMethod, requestResponses)
+        if (deferRequests) {
+            pendingRequests = pendingRequests.concat([{
+                requestId: requestId,
+                method: lastMethod,
+                response: response,
+                callback: callback
+            }])
+            return requestId
+        }
         if (callback) {
             callback(response)
         }
         return response
+    }
+
+    function completeRequestAt(index, response) {
+        const rows = pendingRequests.slice()
+        if (index < 0 || index >= rows.length) {
+            return false
+        }
+        const request = rows.splice(index, 1)[0]
+        pendingRequests = rows
+        if (request.callback) {
+            request.callback(response === undefined ? request.response : response)
+        }
+        return true
     }
 
     function setBusy(value, label) {

@@ -36,6 +36,9 @@ QtObject {
     property var sourceReport: null
 
     property var manifests: []
+    property int manifestRequestGeneration: 0
+    property int diagnosticRequestGeneration: 0
+    property var manifestRefreshContext: null
     property alias lastOperation: storageOperations.lastOperation
     property string activeCid: cidProbe
     readonly property var pendingOperation: storageOperations.confirmation
@@ -51,7 +54,7 @@ QtObject {
         defaultLabel: qsTr("Storage operation")
         busyError: qsTr("A storage operation is already running.")
         terminalDetailProvider: function (operation) {
-            return root.activeStorageDetailText()
+            return root.storageOperationDetail(operation)
         }
 
         onTerminalOperation: function (operation) {
@@ -63,6 +66,17 @@ QtObject {
         if (activeCid !== cidProbe) {
             activeCid = cidProbe
         }
+    }
+
+    onAdapterInitializationChanged: {
+        invalidateSourceRequests()
+    }
+
+    function invalidateSourceRequests() {
+        manifestRequestGeneration += 1
+        diagnosticRequestGeneration += 1
+        manifestRefreshContext = null
+        storageOperations.clearActive()
     }
 
     function resultVisible() {
@@ -134,21 +148,52 @@ QtObject {
         if (!gate.enabled) {
             return blockedStorageResponse(qsTr("List files"), gate, showLog === true)
         }
-        const response = gateway.call("storageManifests", storageArgs("storageManifests", []), qsTr("Storage manifests"))
-        if (showLog) {
-            storageOperations.appendResult(qsTr("List files"), response)
+        if (storageOperations.view.busy) {
+            const blocked = storageOperations.start("storageManifests", [], qsTr("Storage manifests"))
+            lastOperation = qsTr("Busy")
+            return blocked
         }
-        if (response.ok) {
-            manifests = manifestArray(response.value)
-            lastOperation = qsTr("List")
-        } else if (showLog) {
-            lastOperation = qsTr("Error")
+        manifestRequestGeneration += 1
+        const requestGeneration = manifestRequestGeneration
+        manifestRefreshContext = {
+            generation: requestGeneration,
+            showLog: showLog === true,
+            operationId: ""
         }
-        return response
+        const started = storageOperations.start("storageManifests", [], qsTr("Storage manifests"), function (response, operation) {
+            const context = manifestRefreshContext
+            if (!context || context.generation !== requestGeneration) {
+                return
+            }
+            if (!response || !response.ok) {
+                manifestRefreshContext = null
+                lastOperation = qsTr("Error")
+                return
+            }
+            if (storageOperations.isTerminal(operation)) {
+                return
+            }
+            manifestRefreshContext = {
+                generation: requestGeneration,
+                showLog: context.showLog,
+                operationId: String(operation && operation.operationId || "")
+            }
+            lastOperation = operationStatusText(operation)
+        })
+        if (started && started.ok === false) {
+            manifestRefreshContext = null
+            lastOperation = String(started.error || "") === storageOperations.busyError ? qsTr("Busy") : qsTr("Error")
+            return started
+        }
+        return null
     }
 
     function runStorage(method, args, label) {
         const command = SourceOperationCommandCatalog.storageCommand(method, args)
+        if (!command.runtime) {
+            diagnosticRequestGeneration += 1
+        }
+        const requestGeneration = diagnosticRequestGeneration
         const gate = storageActionGate(command.action, command.requiredInputs)
         if (!gate.enabled) {
             return blockedStorageResponse(label, gate, true)
@@ -156,10 +201,13 @@ QtObject {
         if (command.runtime) {
             return startStorageOperation(method, args, label)
         }
-        const response = gateway.call(method, storageArgs(method, args), label)
-        storageOperations.appendResult(label, response)
-        lastOperation = response.ok ? label : qsTr("Error")
-        return response
+        return gateway.request(method, storageArgs(method, args), label, false, function (response) {
+            if (requestGeneration !== diagnosticRequestGeneration) {
+                return
+            }
+            storageOperations.appendResult(label, response)
+            lastOperation = response && response.ok ? label : qsTr("Error")
+        })
     }
 
     function confirmStorage(method, args, label) {
@@ -212,6 +260,10 @@ QtObject {
     }
 
     function completeTerminalStorageOperation(operation) {
+        if (String(operation && operation.method || "") === "storageManifests") {
+            completeManifestRefresh(operation)
+            return
+        }
         const ok = isSuccessfulTerminal(operation)
         setStorageOperationResult(operation)
         if (terminalRefreshesStorageObservations(operation)
@@ -221,6 +273,25 @@ QtObject {
         lastOperation = String(operation && operation.status || "") === "dispatched"
             ? qsTr("Dispatched")
             : (ok ? qsTr("Complete") : qsTr("Stopped"))
+    }
+
+    function completeManifestRefresh(operation) {
+        const context = manifestRefreshContext
+        const operationId = String(operation && operation.operationId || "")
+        if (!context || (String(context.operationId || "").length > 0
+                && String(context.operationId) !== operationId)) {
+            return
+        }
+        manifestRefreshContext = null
+        if (isSuccessfulTerminal(operation)) {
+            const value = operation && operation.result !== undefined && operation.result !== null
+                ? operation.result
+                : operation
+            manifests = manifestArray(value)
+            lastOperation = qsTr("List")
+        } else {
+            lastOperation = qsTr("Error")
+        }
     }
 
     function setStorageOperationResult(operation) {
@@ -274,6 +345,16 @@ QtObject {
             detail.push(String(operation.error))
         }
         return detail.join(" / ")
+    }
+
+    function storageOperationDetail(operation) {
+        if (String(operation && operation.method || "") === "storageManifests") {
+            if (operation && operation.error) {
+                return String(operation.error)
+            }
+            return qsTr("%1 manifests").arg(manifestArray(operation && operation.result).length)
+        }
+        return activeStorageDetailText()
     }
 
     function applyStorageModuleEvent(eventName, args, onResponse, forwardRuntimeEvent) {
