@@ -21,7 +21,18 @@ QtObject {
     }
 
     function ingest(moduleName, eventName, args) {
-        return ModuleEventProjection.project(model, moduleName, eventName, args)
+        return ModuleEventProjection.project(
+            model,
+            moduleName,
+            eventName,
+            args,
+            root.forwardsRuntimeOperationEvents()
+        )
+    }
+
+    function forwardsRuntimeOperationEvents() {
+        return !bridge || typeof bridge.backendOwnsRuntimeModuleEvents !== "function"
+            || bridge.backendOwnsRuntimeModuleEvents() !== true
     }
 
     function subscriptionCatalog() {

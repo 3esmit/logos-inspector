@@ -29,6 +29,16 @@ QtObject {
         return BridgeEnvelope.prefersBasecampModules(root.host)
     }
 
+    function backendOwnsRuntimeModuleEvents() {
+        try {
+            return root.prefersBasecampModules()
+                && root.host
+                && root.host["logosInspectorOwnsRuntimeModuleEvents"] === true
+        } catch (error) {
+            return false
+        }
+    }
+
     function callModule(moduleName, method, args) {
         return BridgeEnvelope.callModule(root.host, moduleName, method, args || [])
     }

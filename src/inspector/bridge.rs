@@ -60,7 +60,7 @@ impl InspectorBridge {
     }
 
     pub fn call_module_json(&self, module: &str, method: &str, args_json: &str) -> String {
-        let result = serde_json::from_str(args_json)
+        let result = serde_json::from_str::<Value>(args_json)
             .context("failed to parse bridge args")
             .and_then(|args| self.call_module_value(module, method, args));
         bridge_response_json(result)
@@ -68,6 +68,17 @@ impl InspectorBridge {
 
     pub fn call_inspector_json(&self, method: &str, args_json: &str) -> String {
         self.call_module_json(INSPECTOR_MODULE, method, args_json)
+    }
+
+    /// Ingests one typed host module event without routing it back through the
+    /// host module transport.
+    pub fn ingest_module_event(
+        &self,
+        module: &str,
+        event: &str,
+        args: Vec<Value>,
+    ) -> Result<Value> {
+        self.surface.ingest_module_event(module, event, args)
     }
 
     pub fn error_json(error: impl Into<String>) -> String {

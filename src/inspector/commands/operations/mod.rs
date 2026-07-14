@@ -256,6 +256,16 @@ impl RuntimeOperations {
         self.registry.ingest_module_event(event)
     }
 
+    pub(crate) fn ingest_module_event_parts(
+        &self,
+        module: &str,
+        event: &str,
+        args: Vec<Value>,
+    ) -> Result<Value> {
+        self.registry
+            .ingest_module_event(ModuleEventEnvelope::new(module, event, args)?)
+    }
+
     #[cfg(test)]
     fn with_backup_import_store(store: Arc<dyn backup_import::BackupImportStore>) -> Self {
         Self {
@@ -385,6 +395,16 @@ impl RuntimeOperationInterface {
             operations: &self.operations,
         };
         handle_operation_command(&runner, command, args)
+    }
+
+    pub(crate) fn ingest_module_event(
+        &self,
+        module: &str,
+        event: &str,
+        args: Vec<Value>,
+    ) -> Result<Value> {
+        self.operations
+            .ingest_module_event_parts(module, event, args)
     }
 
     #[cfg(test)]

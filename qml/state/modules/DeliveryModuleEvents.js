@@ -1,5 +1,9 @@
-function handle(root, event) {
-    const effect = root.deliveryApp.applyModuleEvent(event.eventName, event)
+function handle(root, event, forwardRuntimeEvent) {
+    const effect = root.deliveryApp.applyModuleEvent(
+        event.eventName,
+        event,
+        forwardRuntimeEvent
+    )
     if (!effect || effect.changed !== true) {
         return false
     }

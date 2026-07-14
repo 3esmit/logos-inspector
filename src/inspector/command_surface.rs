@@ -96,6 +96,15 @@ impl InspectorCommandSurface {
         }
     }
 
+    pub(crate) fn ingest_module_event(
+        &self,
+        module: &str,
+        event: &str,
+        args: Vec<Value>,
+    ) -> Result<Value> {
+        self.operations.ingest_module_event(module, event, args)
+    }
+
     fn dispatch_inspector(&self, method: &str, args: Value) -> Result<Option<Value>> {
         let Some(command) = inspector_command(method) else {
             return Ok(None);

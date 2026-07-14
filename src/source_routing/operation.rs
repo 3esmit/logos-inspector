@@ -328,6 +328,24 @@ pub(crate) struct ModuleEventEnvelope {
 }
 
 impl ModuleEventEnvelope {
+    pub(crate) fn new(
+        module_name: &str,
+        event_name: &str,
+        args: Vec<Value>,
+    ) -> anyhow::Result<Self> {
+        let module_name = nonempty_text(module_name)
+            .ok_or_else(|| anyhow::anyhow!("runtime module event module name is required"))?;
+        let event_name = nonempty_text(event_name)
+            .ok_or_else(|| anyhow::anyhow!("runtime module event event name is required"))?;
+        let first_payload = args.first().map_or(Value::Null, parsed_value);
+        Ok(Self {
+            module_name,
+            event_name,
+            args,
+            first_payload,
+        })
+    }
+
     pub(crate) fn from_value(value: &Value) -> anyhow::Result<Self> {
         let object = value
             .as_object()
@@ -339,13 +357,7 @@ impl ModuleEventEnvelope {
             Some(Value::Null) | None => Vec::new(),
             Some(value) => vec![value.clone()],
         };
-        let first_payload = args.first().map_or(Value::Null, parsed_value);
-        Ok(Self {
-            module_name,
-            event_name,
-            args,
-            first_payload,
-        })
+        Self::new(&module_name, &event_name, args)
     }
 
     #[must_use]

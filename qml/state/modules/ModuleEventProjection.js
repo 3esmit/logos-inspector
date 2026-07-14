@@ -34,21 +34,25 @@ function subscriptionCatalog(model) {
     ]
 }
 
-function project(model, moduleName, eventName, args) {
-    return projectEnvelope(model, ModuleEventEnvelope.fromRaw(moduleName, eventName, args))
+function project(model, moduleName, eventName, args, forwardRuntimeEvent) {
+    return projectEnvelope(
+        model,
+        ModuleEventEnvelope.fromRaw(moduleName, eventName, args),
+        forwardRuntimeEvent
+    )
 }
 
-function projectEnvelope(model, event) {
+function projectEnvelope(model, event, forwardRuntimeEvent) {
     if (!model) {
         return false
     }
     const moduleText = String(event && event.moduleName ? event.moduleName : "")
     const eventText = String(event && event.eventName ? event.eventName : "")
     if (moduleText === model.deliveryModule) {
-        return DeliveryModuleEvents.handle(model, event)
+        return DeliveryModuleEvents.handle(model, event, forwardRuntimeEvent)
     }
     if (moduleText === model.storageModule) {
-        return StorageModuleEvents.handle(model, event)
+        return StorageModuleEvents.handle(model, event, forwardRuntimeEvent)
     }
     if (moduleText === model.blockchainModule && eventText === "newBlock") {
         return BlockchainModuleEvents.handleNewBlock(model, event)

@@ -13,6 +13,7 @@ TestCase {
         id: fakeHost
 
         property var subscriptions: []
+        property var calls: []
 
         function onModuleEvent(moduleName, eventName, callback) {
             subscriptions = subscriptions.concat([{
@@ -23,6 +24,11 @@ TestCase {
         }
 
         function callModuleJson(moduleName, method, argsJson) {
+            calls = calls.concat([{
+                moduleName: String(moduleName || ""),
+                method: String(method || ""),
+                args: JSON.parse(String(argsJson || "[]"))
+            }])
             const args = JSON.parse(String(argsJson || "[]"))
             if (String(method || "") !== "socialCommentRowFromEvent") {
                 return JSON.stringify({ ok: true, value: {}, text: "OK", error: "" })
@@ -43,6 +49,40 @@ TestCase {
                 text: "OK",
                 error: ""
             })
+        }
+    }
+
+    QtObject {
+        id: basecampHost
+
+        property var subscriptions: []
+        property var calls: []
+        property bool logosInspectorOwnsRuntimeModuleEvents: true
+
+        function onModuleEvent(moduleName, eventName) {
+            subscriptions = subscriptions.concat([{
+                moduleName: String(moduleName || ""),
+                eventName: String(eventName || "")
+            }])
+            return true
+        }
+
+        function callModule(moduleName, method, args) {
+            calls = calls.concat([{
+                moduleName: String(moduleName || ""),
+                method: String(method || ""),
+                args: args || []
+            }])
+            return JSON.stringify({ ok: true, value: {}, text: "OK", error: "" })
+        }
+
+        function callModuleAsync(moduleName, method, args, callback) {
+            calls = calls.concat([{
+                moduleName: String(moduleName || ""),
+                method: String(method || ""),
+                args: args || []
+            }])
+            callback(JSON.stringify({ ok: true, value: {}, text: "OK", error: "" }))
         }
     }
 
@@ -82,6 +122,10 @@ TestCase {
     function init() {
         bridge.host = fakeHost
         fakeHost.subscriptions = []
+        fakeHost.calls = []
+        basecampHost.subscriptions = []
+        basecampHost.calls = []
+        basecampHost.logosInspectorOwnsRuntimeModuleEvents = true
         replacementHost.subscriptions = []
         bridge.moduleEventSubscriptions = ({})
         bridge.moduleEventRegistrations = []
@@ -98,6 +142,21 @@ TestCase {
         model.blocksLiveUnknownEvents = 0
         model.blocksLiveCheckedAt = ""
         model.blocksLiveError = ""
+    }
+
+    function runtimeModuleEventCalls(calls) {
+        const rows = Array.isArray(calls) ? calls : []
+        let count = 0
+        for (let i = 0; i < rows.length; ++i) {
+            const row = rows[i] || {}
+            if (row.method === "runtimeOperationModuleEvent"
+                    || (row.method === "call"
+                        && row.args
+                        && row.args[0] === "runtimeOperationModuleEvent")) {
+                count += 1
+            }
+        }
+        return count
     }
 
     function test_install_subscribes_module_event_catalog() {
@@ -157,6 +216,38 @@ TestCase {
         compare(model.deliveryModuleEventRows()[0].label, "messageReceived")
         compare(model.social.commentsView(topic).rows.length, 1)
         compare(model.social.commentsView(topic).rows[0].body, "hello")
+    }
+
+    function test_standalone_event_forwards_to_runtime_reducer() {
+        verify(intake.forwardsRuntimeOperationEvents())
+        verify(intake.ingest(model.deliveryModule, "messageSent", ["request-1", "hash-1"]))
+
+        tryVerify(function () {
+            return runtimeModuleEventCalls(fakeHost.calls) === 1
+        })
+    }
+
+    function test_basecamp_event_projects_without_second_runtime_ingress() {
+        bridge.host = basecampHost
+        verify(!intake.forwardsRuntimeOperationEvents())
+        basecampHost.calls = []
+
+        verify(intake.ingest(model.deliveryModule, "messageSent", ["request-2", "hash-2"]))
+
+        compare(model.deliveryModuleEventRows()[0].label, "messageSent")
+        compare(runtimeModuleEventCalls(basecampHost.calls), 0)
+    }
+
+    function test_basecamp_without_native_event_owner_keeps_legacy_ingress() {
+        bridge.host = basecampHost
+        basecampHost.logosInspectorOwnsRuntimeModuleEvents = false
+        verify(intake.forwardsRuntimeOperationEvents())
+        basecampHost.calls = []
+
+        verify(intake.ingest(model.deliveryModule, "messageSent", ["request-3", "hash-3"]))
+
+        compare(model.deliveryModuleEventRows()[0].label, "messageSent")
+        compare(runtimeModuleEventCalls(basecampHost.calls), 1)
     }
 
     function test_ingest_blockchain_event_updates_live_rows() {

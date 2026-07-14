@@ -140,14 +140,16 @@ QtObject {
         }
     }
 
-    function applyModuleEvent(eventName, args) {
+    function applyModuleEvent(eventName, args, forwardRuntimeEvent) {
         const name = String(eventName || "")
         const event = args && args.__moduleEventEnvelope === true ? args : {
             moduleName: moduleName,
             eventName: name,
             args: Array.isArray(args) ? args : (args === undefined || args === null ? [] : [args])
         }
-        deliveryOperations.ingestModuleEvent(event)
+        if (forwardRuntimeEvent !== false) {
+            deliveryOperations.ingestModuleEvent(event)
+        }
         const record = deliveryEventRecord(name, args)
         appendModuleEvent(record)
         const effect = {
