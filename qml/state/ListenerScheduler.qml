@@ -50,6 +50,12 @@ QtObject {
             onTriggered: root.tick("socialOperation")
         },
         Timer {
+            interval: root.intervalFor("chainOperation")
+            repeat: true
+            running: root.enabled("chainOperation")
+            onTriggered: root.tick("chainOperation")
+        },
+        Timer {
             interval: root.intervalFor("liveBlocks")
             repeat: true
             running: root.enabled("liveBlocks")
@@ -94,6 +100,7 @@ QtObject {
         case "storageOperation":
         case "deliveryOperation":
         case "socialOperation":
+        case "chainOperation":
             return Math.max(1, Number(operationPollInterval || 500))
         case "liveBlocks":
             return Math.max(1, Number(model.refreshInterval ? model.refreshInterval(model.blockchainRefreshRate) : 0))
@@ -123,6 +130,8 @@ QtObject {
             return root.deliveryApp() && root.deliveryApp().operation.running
         case "socialOperation":
             return root.socialState() && root.socialState().operationsRunning === true
+        case "chainOperation":
+            return root.chainState() && root.chainState().operationsRunning === true
         case "liveBlocks":
             return model.blocksLiveEnabled === true && model.shell.currentView === "blocks"
         case "zonesStatus":
@@ -149,6 +158,8 @@ QtObject {
             return root.deliveryApp() ? root.deliveryApp().pollDeliveryOperation(false) : null
         case "socialOperation":
             return root.socialState() ? root.socialState().pollOperations() : null
+        case "chainOperation":
+            return root.chainState() ? root.chainState().pollOperations() : null
         case "liveBlocks":
             return model.chainPages ? model.chainPages.refreshBlocksLivePage() : model.refreshBlocksLivePage()
         case "zonesStatus":
@@ -200,6 +211,10 @@ QtObject {
 
     function socialState() {
         return model && model.social ? model.social : null
+    }
+
+    function chainState() {
+        return model && model.chainPages ? model.chainPages : null
     }
 
     function zoneState() {

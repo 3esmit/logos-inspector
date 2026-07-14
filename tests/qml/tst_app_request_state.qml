@@ -18,8 +18,10 @@ TestCase {
         property bool resultIsError: false
         property var resultValue: null
         property string resultOwner: ""
+        property int resultGeneration: 0
 
         function setResult(title, text, isError, value, owner) {
+            resultGeneration += 1
             resultTitle = String(title || "")
             resultText = String(text || "")
             resultIsError = isError === true
@@ -112,6 +114,7 @@ TestCase {
         shell.resultIsError = false
         shell.resultValue = null
         shell.resultOwner = ""
+        shell.resultGeneration = 0
         bridge.reset()
         requests.nextAsyncGeneration = 1
         requests.latestAsyncGenerationByMethod = ({})
@@ -319,5 +322,54 @@ TestCase {
         compare(shell.currentView, "settings")
         compare(shell.resultOwner, "modules")
         compare(shell.resultTitle, "Modules")
+    }
+
+    function test_external_presentation_cannot_overwrite_later_async_presentation() {
+        bridge.deferAsync = true
+        const external = requests.beginPresentation("Blockchain", "blockchain")
+        verify(requests.presentationCurrent(external))
+
+        shell.currentView = "storage"
+        requests.callInspectorAsync("storageSourceReport", [], "Storage")
+        verify(!requests.presentationCurrent(external))
+        bridge.completeAsync(0, {
+            ok: true,
+            value: { source: "storage" },
+            text: "storage",
+            error: ""
+        })
+
+        compare(shell.resultTitle, "Storage")
+        compare(shell.resultOwner, "storage")
+        compare(shell.resultValue.source, "storage")
+        verify(!requests.completePresentation(
+            external,
+            "Blockchain",
+            "blockchain",
+            false,
+            { source: "blockchain" }
+        ))
+        compare(shell.resultTitle, "Storage")
+        compare(shell.resultOwner, "storage")
+        compare(shell.resultValue.source, "storage")
+    }
+
+    function test_direct_result_invalidates_pending_external_presentation() {
+        const external = requests.beginPresentation("Remote block", "blockDetail")
+        verify(requests.presentationCurrent(external))
+
+        shell.setResult("Cached block", "cached", false, { id: "block-b" }, "blockDetail")
+
+        verify(!requests.presentationCurrent(external))
+        verify(!requests.completePresentation(
+            external,
+            "Remote block",
+            "remote",
+            false,
+            { id: "block-a" }
+        ))
+        verify(!requests.presentationBusy)
+        compare(shell.resultTitle, "Cached block")
+        compare(shell.resultValue.id, "block-b")
     }
 }

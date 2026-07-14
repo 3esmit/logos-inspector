@@ -68,24 +68,16 @@ QtObject {
             String(method || "")
         ])
         const generation = nextAsyncGeneration
-        const presentationOwner = showResult === true ? String(shell.currentView || "") : ""
         nextAsyncGeneration += 1
         const generations = copyAsyncGenerations()
         generations[methodKey] = generation
         latestAsyncGenerationByMethod = generations
-
-        if (showResult) {
-            activePresentationGeneration = generation
-            shell.statusText = String(label || "")
-        }
+        const presentation = showResult === true
+            ? beginPresentationWithGeneration(generation, label, shell.currentView) : null
 
         return bridge.callModuleAsync(target.moduleName, target.method, target.args, function (response) {
-            const ownsPresentation = showResult === true
-                && activePresentationGeneration === generation
+            const ownsPresentation = finishPresentation(presentation)
             const ownsMethod = latestAsyncGenerationByMethod[methodKey] === generation
-            if (ownsPresentation) {
-                activePresentationGeneration = 0
-            }
             if (acceptResponse && !acceptResponse(response)) {
                 return
             }
@@ -96,13 +88,63 @@ QtObject {
                     response,
                     ownsPresentation,
                     ownsMethod,
-                    presentationOwner
+                    presentation ? presentation.owner : ""
                 )
             }
             if (callback) {
                 callback(response)
             }
         })
+    }
+
+    function beginPresentation(label, owner) {
+        const generation = nextAsyncGeneration
+        nextAsyncGeneration += 1
+        return beginPresentationWithGeneration(generation, label, owner)
+    }
+
+    function beginPresentationWithGeneration(generation, label, owner) {
+        const lease = {
+            generation: Number(generation),
+            owner: owner === undefined ? String(shell.currentView || "") : String(owner || ""),
+            resultGeneration: Number(shell.resultGeneration || 0)
+        }
+        activePresentationGeneration = lease.generation
+        shell.statusText = String(label || "")
+        return lease
+    }
+
+    function presentationCurrent(lease) {
+        return lease !== null && lease !== undefined
+            && Number(lease.generation || 0) !== 0
+            && activePresentationGeneration === Number(lease.generation)
+            && Number(shell.resultGeneration || 0) === Number(lease.resultGeneration || 0)
+    }
+
+    function finishPresentation(lease) {
+        if (!lease || activePresentationGeneration !== Number(lease.generation || 0)) {
+            return false
+        }
+        const canPresent = Number(shell.resultGeneration || 0)
+            === Number(lease.resultGeneration || 0)
+        activePresentationGeneration = 0
+        return canPresent
+    }
+
+    function completePresentation(lease, title, text, isError, value) {
+        if (!finishPresentation(lease)) {
+            return false
+        }
+        shell.setResult(title, text, isError === true, value, String(lease.owner || ""))
+        return true
+    }
+
+    function abandonPresentation(lease) {
+        if (!finishPresentation(lease)) {
+            return false
+        }
+        shell.statusText = qsTr("Ready")
+        return true
     }
 
     function copyAsyncGenerations() {

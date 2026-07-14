@@ -19,7 +19,12 @@ ColumnLayout {
     property string title: ""
     property string subtitle: ""
     readonly property bool hasResponse: root.model.pageHasOutput(root.moduleKind)
+    readonly property bool chainControlBusy: root.moduleKind === "blockchain"
+        && (root.model.chainPages.operationPending("module-control.node")
+            || root.model.chainPages.operationPending("module-control.blocks")
+            || root.model.chainPages.operationPending("module-control.block"))
     readonly property bool requestBusy: root.model.shell.busy || root.model.asyncPresentationBusy
+        || root.chainControlBusy
     readonly property var responseValue: root.hasResponse ? root.model.shell.resultValue : null
     readonly property var responseProbeModel: root.responseProbeRows()
 
@@ -268,7 +273,8 @@ ColumnLayout {
                     enabled: !root.requestBusy
                     Layout.fillWidth: true
                     accessibleName: qsTr("Refresh blockchain node")
-                    onClicked: root.model.callInspectorAsync("blockchainNode", root.model.blockchainArgs([]), qsTr("Blockchain node"))
+                    onClicked: root.model.presentBlockchainOperation("module-control.node",
+                        "blockchainNode", [], qsTr("Blockchain node"), root.moduleKind)
                 }
 
                 ActionButton {
@@ -277,7 +283,9 @@ ColumnLayout {
                     enabled: !root.requestBusy && slotFrom.text.trim().length > 0 && slotTo.text.trim().length > 0
                     Layout.fillWidth: true
                     accessibleName: qsTr("Load blockchain blocks")
-                    onClicked: root.model.callInspectorAsync("blockchainBlocks", root.model.blockchainArgs([slotFrom.text, slotTo.text]), qsTr("Blockchain blocks"))
+                    onClicked: root.model.presentBlockchainOperation("module-control.blocks",
+                        "blockchainBlocks", [slotFrom.text, slotTo.text],
+                        qsTr("Blockchain blocks"), root.moduleKind)
                 }
 
                 ActionButton {
@@ -286,7 +294,9 @@ ColumnLayout {
                     enabled: !root.requestBusy && blockId.text.trim().length > 0
                     Layout.fillWidth: true
                     accessibleName: qsTr("Load blockchain block")
-                    onClicked: root.model.callInspectorAsync("blockchainBlock", root.model.blockchainArgs([blockId.text.trim()]), qsTr("Blockchain block"))
+                    onClicked: root.model.presentBlockchainOperation("module-control.block",
+                        "blockchainBlock", [blockId.text.trim()],
+                        qsTr("Blockchain block"), root.moduleKind)
                 }
             }
         }

@@ -78,6 +78,9 @@ TestCase {
     }
 
     function init() {
+        model.chainPages.invalidateOperations("test reset")
+        basecampModel.chainPages.invalidateOperations("test reset")
+        wait(0)
         fakeHost.reset()
         basecampHost.callCount = 0
         basecampHost.lastModule = ""
@@ -145,6 +148,10 @@ TestCase {
         model.blocksLiveSource = ""
         model.blocksLiveUnknownEvents = 0
         model.blocksLiveCheckedAt = ""
+        model.transactionsPageRows = []
+        model.transactionsPageBeforeBlock = 0
+        model.transactionsPageNextBeforeBlock = 0
+        model.transactionsPageError = ""
         model.blockDetailValue = null
         model.blockDetailError = ""
         model.transactionDetailValue = null
@@ -293,6 +300,77 @@ TestCase {
         }
     }
 
+    function chainOperationContext(request) {
+        const args = request && Array.isArray(request.args) ? request.args : []
+        const first = String(args[0] || "")
+        let source = "rpc"
+        let endpoint = first
+        let offset = 1
+        if (first === "module" || first === "logoscore_cli") {
+            source = first
+            endpoint = ""
+        } else if (first === "rpc") {
+            endpoint = String(args[1] || "")
+            offset = 2
+        }
+        const context = { source: source }
+        if (endpoint.length) {
+            context.endpoint = endpoint
+        }
+        switch (String(request && request.method || "")) {
+        case "blockchainBlocks":
+            context.slotFrom = Number(args[offset])
+            context.slotTo = Number(args[offset + 1])
+            context.slotRange = String(context.slotFrom) + ":" + String(context.slotTo)
+            if (typeof args[offset + 2] === "number") {
+                context.limit = Number(args[offset + 2])
+            }
+            break
+        case "blockchainLiveBlocks":
+            context.slotFrom = Number(args[offset])
+            context.slotTo = Number(args[offset + 1])
+            context.slotRange = String(context.slotFrom) + ":" + String(context.slotTo)
+            context.limit = typeof args[offset + 2] === "number"
+                ? Number(args[offset + 2]) : 50
+            break
+        case "blockchainBlock":
+            context.blockId = String(args[offset] || "")
+            break
+        case "blockchainTransaction":
+            context.transactionId = String(args[offset] || "")
+            break
+        }
+        return context
+    }
+
+    function chainRuntimeStart(results) {
+        return function (args) {
+            const request = args && args[0] ? args[0] : ({})
+            const configured = results && results[request.method]
+            const result = typeof configured === "function"
+                ? configured(request) : configured
+            const context = chainOperationContext(request)
+            return {
+                ok: true,
+                value: {
+                    operationId: "chain-op-" + String(request.clientRequestId || "unknown"),
+                    clientRequestId: request.clientRequestId,
+                    domain: "blockchain",
+                    backend: context.source,
+                    method: request.method,
+                    label: request.label,
+                    status: "completed",
+                    eventCursor: 1,
+                    context: context,
+                    result: result,
+                    error: ""
+                },
+                text: "OK",
+                error: ""
+            }
+        }
+    }
+
     function setActiveZone(channelId) {
         const zoneId = String(channelId || "22".repeat(32))
         const scope = { kind: "genesis_id", genesis_id: "11".repeat(32) }
@@ -418,6 +496,14 @@ TestCase {
             }
         }
         return -1
+    }
+
+    function runtimeOperationCallCount(method) {
+        return fakeHost.calls.filter(function (call) {
+            const request = call.method === "runtimeOperationStart" && call.args
+                ? call.args[0] || null : null
+            return request && String(request.method || "") === String(method || "")
+        }).length
     }
 
     function test_basecamp_bridge_routes_inspector_calls_through_generic_call() {
@@ -731,24 +817,20 @@ TestCase {
     }
 
     function test_settings_query_caches_blockchain_node_for_footer_metrics() {
-        fakeHost.responses = {
-            blockchainNode: {
+        const nodeResult = {
+            cryptarchia_info: {
                 ok: true,
-                value: {
-                    cryptarchia_info: {
-                        ok: true,
-                        value: { cryptarchia_info: { slot: 77, lib_slot: 70 } },
-                        error: null
-                    },
-                    network_info: {
-                        ok: true,
-                        value: { n_peers: 4 },
-                        error: null
-                    }
-                },
-                text: "OK",
-                error: ""
+                value: { cryptarchia_info: { slot: 77, lib_slot: 70 } },
+                error: null
+            },
+            network_info: {
+                ok: true,
+                value: { n_peers: 4 },
+                error: null
             }
+        }
+        fakeHost.responses = {
+            runtimeOperationStart: chainRuntimeStart({ blockchainNode: nodeResult })
         }
 
         model.queryNetworkConnection("blockchain", false)
@@ -756,6 +838,8 @@ TestCase {
         tryVerify(function () { return model.networkConnectionIsPending("blockchain") === false })
         compare(model.cryptarchiaValue("slot"), 77)
         compare(model.networkValue("n_peers"), 4)
+        compare(runtimeOperationCallCount("blockchainNode"), 1)
+        compare(callCountFor("blockchainNode"), 0)
     }
 
     function test_default_footer_storage_failure_field_is_registered_recent_key() {
@@ -2938,43 +3022,272 @@ TestCase {
     }
 
     function test_blocks_page_uses_tip_range_and_blocks_backend() {
-        fakeHost.responses = {
-            blockchainNode: {
-                ok: true,
+        const nodeResult = {
+            cryptarchia_info: {
                 value: {
                     cryptarchia_info: {
-                        value: {
-                            cryptarchia_info: {
-                                slot: 30,
-                                lib_slot: 20
-                            }
-                        }
+                        slot: 30,
+                        lib_slot: 20
                     }
-                },
-                text: "OK",
-                error: ""
-            },
-            blockchainBlocks: {
-                ok: true,
-                value: [
-                    { header: { slot: 30, id: "tip" }, transactions: [], _chain: { status: "pending" } },
-                    { header: { slot: 20, id: "lib" }, transactions: [], _chain: { status: "finalized" } }
-                ],
-                text: "OK",
-                error: ""
+                }
             }
+        }
+        const blocksResult = [
+            { header: { slot: 30, id: "tip" }, transactions: [], _chain: { status: "pending" } },
+            { header: { slot: 20, id: "lib" }, transactions: [], _chain: { status: "finalized" } }
+        ]
+        fakeHost.responses = {
+            runtimeOperationStart: chainRuntimeStart({
+                blockchainNode: nodeResult,
+                blockchainBlocks: blocksResult
+            })
         }
 
         model.chainPages.refreshBlocksPage()
 
-        compare(fakeHost.lastMethod, "blockchainBlocks")
-        compare(fakeHost.lastArgs[1], 0)
-        compare(fakeHost.lastArgs[2], 30)
-        compare(fakeHost.lastArgs[3], 20)
+        tryCompare(model, "blocksPageRows", blocksResult)
+        compare(fakeHost.lastMethod, "runtimeOperationStart")
+        compare(fakeHost.lastArgs[0].method, "blockchainBlocks")
+        compare(fakeHost.lastArgs[0].args[1], 0)
+        compare(fakeHost.lastArgs[0].args[2], 30)
+        compare(fakeHost.lastArgs[0].args[3], 20)
+        compare(callCountFor("blockchainNode"), 0)
+        compare(callCountFor("blockchainBlocks"), 0)
+        compare(runtimeOperationCallCount("blockchainNode"), 1)
+        compare(runtimeOperationCallCount("blockchainBlocks"), 1)
         compare(model.blocksPageRows.length, 2)
         compare(model.blocksPageRows[0].header.slot, 30)
         compare(model.chainPages.blockStatus(model.blocksPageRows[0]), "pending")
         compare(model.chainPages.blockStatus(model.blocksPageRows[1]), "finalized")
+    }
+
+    function test_chain_workflow_flags_cover_delayed_page_operations() {
+        fakeHost.responses = {
+            runtimeOperationStart: function (args) {
+                const request = args[0]
+                const context = chainOperationContext(request)
+                return {
+                    ok: true,
+                    value: {
+                        operationId: "delayed-" + request.clientRequestId,
+                        clientRequestId: request.clientRequestId,
+                        domain: "blockchain",
+                        backend: context.source,
+                        method: request.method,
+                        label: request.label,
+                        status: "awaiting_external",
+                        eventCursor: 1,
+                        context: context,
+                        result: null,
+                        error: ""
+                    },
+                    text: "OK",
+                    error: ""
+                }
+            }
+        }
+
+        model.chainPages.refreshBlocksPage()
+        tryVerify(function () { return model.chainPages.blocksWorkflowRunning })
+        verify(model.chainPages.operationsRunning)
+        verify(!model.chainPages.transactionsWorkflowRunning)
+
+        model.chainPages.invalidateOperations("switch workflow")
+        tryVerify(function () { return !model.chainPages.blocksWorkflowRunning })
+        model.chainPages.refreshTransactionsPage()
+        tryVerify(function () { return model.chainPages.transactionsWorkflowRunning })
+        verify(model.chainPages.operationsRunning)
+        verify(!model.chainPages.blocksWorkflowRunning)
+
+        model.chainPages.invalidateOperations("test cleanup")
+        tryVerify(function () { return !model.chainPages.operationsRunning })
+    }
+
+    function test_chain_operations_ignore_unrelated_source_configuration_changes() {
+        fakeHost.responses = {
+            runtimeOperationStart: function (args) {
+                const request = args[0]
+                const context = chainOperationContext(request)
+                return {
+                    ok: true,
+                    value: {
+                        operationId: "delayed-" + request.clientRequestId,
+                        clientRequestId: request.clientRequestId,
+                        domain: "blockchain",
+                        backend: context.source,
+                        method: request.method,
+                        label: request.label,
+                        status: "awaiting_external",
+                        eventCursor: 1,
+                        context: context,
+                        result: null,
+                        error: ""
+                    },
+                    text: "OK",
+                    error: ""
+                }
+            }
+        }
+
+        model.chainPages.refreshBlocksPage()
+        tryVerify(function () { return model.chainPages.blocksWorkflowRunning })
+        model.queryNetworkConnection("blockchain", false)
+        tryVerify(function () {
+            return model.networkConnectionPending.blockchain === true
+        })
+        model.blocksLiveEnabled = true
+        const chainRevision = model.blockchainConfigurationRevision
+
+        model.storageRestUrl = "http://127.0.0.1:18080/api/storage/v1"
+
+        compare(model.blockchainConfigurationRevision, chainRevision)
+        verify(model.chainPages.blocksWorkflowRunning)
+        verify(model.networkConnectionPending.blockchain === true)
+        verify(model.blocksLiveEnabled)
+        compare(fakeHost.calls.filter(function (call) {
+            return call.method === "runtimeOperationCancel"
+        }).length, 0)
+
+        model.nodeUrl = "http://127.0.0.1:18081/"
+        tryVerify(function () { return !model.chainPages.operationsRunning })
+        verify(model.blockchainConfigurationRevision > chainRevision)
+        verify(model.networkConnectionPending.blockchain !== true)
+        verify(!model.blocksLiveEnabled)
+        tryVerify(function () {
+            return fakeHost.calls.filter(function (call) {
+                return call.method === "runtimeOperationCancel"
+            }).length === 2
+        })
+        model.storageRestUrl = "http://127.0.0.1:8080/api/storage/v1"
+        model.nodeUrl = "http://127.0.0.1:8080/"
+    }
+
+    function test_cached_chain_detail_supersedes_pending_remote_intent() {
+        fakeHost.responses = {
+            runtimeOperationStart: function (args) {
+                const request = args[0]
+                const context = chainOperationContext(request)
+                return {
+                    ok: true,
+                    value: {
+                        operationId: "pending-" + request.clientRequestId,
+                        clientRequestId: request.clientRequestId,
+                        domain: "blockchain",
+                        backend: context.source,
+                        method: request.method,
+                        label: request.label,
+                        status: "awaiting_external",
+                        eventCursor: 1,
+                        context: context,
+                        result: null,
+                        error: ""
+                    },
+                    text: "OK",
+                    error: ""
+                }
+            }
+        }
+
+        model.entityNavigation.openMantleTransaction("remote-transaction")
+        tryVerify(function () {
+            return model.chainPages.operationPending("detail.transaction")
+        })
+        model.transactionsPageRows = [{
+            hash: "cached-transaction",
+            block: "cached-block",
+            slot: 7,
+            index: 0,
+            operations: [],
+            raw: { hash: "cached-transaction" }
+        }]
+
+        model.entityNavigation.openMantleTransaction("cached-transaction")
+
+        verify(!model.chainPages.operationPending("detail.transaction"))
+        compare(model.transactionDetailValue.hash, "cached-transaction")
+        compare(model.shell.resultValue.hash, "cached-transaction")
+
+        model.loadBlockchainBlockById("remote-block")
+        tryVerify(function () {
+            return model.chainPages.operationPending("detail.block")
+        })
+        model.entityNavigation.openBlockchainBlock({
+            header: { id: "cached-block", slot: 8 },
+            transactions: []
+        })
+
+        verify(!model.chainPages.operationPending("detail.block"))
+        compare(model.blockDetailValue.hash, "cached-block")
+        compare(model.shell.resultValue.hash, "cached-block")
+        tryVerify(function () {
+            return fakeHost.calls.filter(function (call) {
+                return call.method === "runtimeOperationCancel"
+            }).length === 2
+        })
+    }
+
+    function test_delayed_block_failure_does_not_restore_stale_navigation() {
+        let pendingRequest = null
+        fakeHost.responses = {
+            runtimeOperationStart: function (args) {
+                pendingRequest = args[0]
+                const context = chainOperationContext(pendingRequest)
+                return {
+                    ok: true,
+                    value: {
+                        operationId: "pending-block",
+                        clientRequestId: pendingRequest.clientRequestId,
+                        domain: "blockchain",
+                        backend: context.source,
+                        method: pendingRequest.method,
+                        label: pendingRequest.label,
+                        status: "awaiting_external",
+                        eventCursor: 1,
+                        context: context,
+                        result: null,
+                        error: ""
+                    },
+                    text: "OK",
+                    error: ""
+                }
+            },
+            runtimeOperationStatus: function () {
+                const context = chainOperationContext(pendingRequest)
+                return {
+                    ok: true,
+                    value: {
+                        operationId: "pending-block",
+                        clientRequestId: pendingRequest.clientRequestId,
+                        domain: "blockchain",
+                        backend: context.source,
+                        method: pendingRequest.method,
+                        label: pendingRequest.label,
+                        status: "failed",
+                        eventCursor: 2,
+                        context: context,
+                        result: null,
+                        error: "not found"
+                    },
+                    text: "OK",
+                    error: ""
+                }
+            }
+        }
+
+        model.loadBlockchainBlockById("missing-block")
+        tryVerify(function () {
+            const entry = model.chainPages.operationCoordinator.pendingOperations["detail.block"]
+            return entry && String(entry.operationId || "").length > 0
+        })
+        model.shell.selectView("settings")
+
+        model.chainPages.pollOperations()
+
+        tryVerify(function () {
+            return !model.chainPages.operationPending("detail.block")
+        })
+        compare(model.shell.currentView, "settings")
+        verify(model.blockDetailError.length > 0)
     }
 
     function test_blocks_live_mode_merges_and_dedupes_snapshot() {
@@ -2984,10 +3297,19 @@ TestCase {
         ]
         model.blocksPageSlotFrom = 30
         model.blocksPageSlotTo = 30
+        const liveResult = {
+            source: "blocks_range",
+            blocks: [
+                { header: { slot: 31, id: "slot-31" }, transactions: [] },
+                { header: { slot: 30, id: "slot-30-live" }, transactions: [] }
+            ],
+            unknown_events: [
+                { kind: "heartbeat" }
+            ]
+        }
         fakeHost.responses = {
-            blockchainNode: {
-                ok: true,
-                value: {
+            runtimeOperationStart: chainRuntimeStart({
+                blockchainNode: {
                     cryptarchia_info: {
                         value: {
                             cryptarchia_info: {
@@ -2997,33 +3319,21 @@ TestCase {
                         }
                     }
                 },
-                text: "OK",
-                error: ""
-            },
-            blockchainLiveBlocks: {
-                ok: true,
-                value: {
-                    source: "blocks_range",
-                    blocks: [
-                        { header: { slot: 31, id: "slot-31" }, transactions: [] },
-                        { header: { slot: 30, id: "slot-30-live" }, transactions: [] }
-                    ],
-                    unknown_events: [
-                        { kind: "heartbeat" }
-                    ]
-                },
-                text: "live",
-                error: ""
-            }
+                blockchainLiveBlocks: liveResult
+            })
         }
 
-        compare(model.chainPages.mergeLiveBlocks(fakeHost.responses.blockchainLiveBlocks.value.blocks, model.blocksPageRows, 20).length, 2)
+        compare(model.chainPages.mergeLiveBlocks(liveResult.blocks, model.blocksPageRows, 20).length, 2)
         model.chainPages.startBlocksLiveMode()
 
         compare(model.blocksLiveEnabled, true)
-        compare(fakeHost.lastMethod, "blockchainLiveBlocks")
-        compare(fakeHost.lastArgs[1], 30)
-        compare(fakeHost.lastArgs[2], 31)
+        tryCompare(model, "blocksLiveSource", "blocks_range")
+        compare(fakeHost.lastMethod, "runtimeOperationStart")
+        compare(fakeHost.lastArgs[0].method, "blockchainLiveBlocks")
+        compare(fakeHost.lastArgs[0].args[1], 30)
+        compare(fakeHost.lastArgs[0].args[2], 31)
+        compare(callCountFor("blockchainNode"), 0)
+        compare(callCountFor("blockchainLiveBlocks"), 0)
         compare(model.blocksPageRows.length, 2)
         compare(model.blocksPageRows[0].header.id, "slot-31")
         compare(model.blocksPageRows[1].header.id, "slot-30-live")
@@ -3031,6 +3341,236 @@ TestCase {
         compare(model.blocksLiveUnknownEvents, 1)
         compare(model.shell.resultOwner, "blocks")
         compare(model.shell.resultValue.unknown_events.length, 1)
+    }
+
+    function test_blocks_live_mode_waits_for_initial_page_workflow() {
+        model.shell.currentView = "blocks"
+        const nodeResult = {
+            cryptarchia_info: {
+                value: {
+                    cryptarchia_info: { slot: 31, lib_slot: 20 }
+                }
+            }
+        }
+        fakeHost.responses = {
+            runtimeOperationStart: chainRuntimeStart({
+                blockchainNode: nodeResult,
+                blockchainBlocks: [
+                    { header: { slot: 30, id: "slot-30" }, transactions: [] }
+                ],
+                blockchainLiveBlocks: {
+                    source: "blocks_range",
+                    blocks: [
+                        { header: { slot: 31, id: "slot-31" }, transactions: [] }
+                    ],
+                    unknown_events: []
+                }
+            })
+        }
+
+        model.chainPages.startBlocksLiveMode()
+        tryVerify(function () {
+            return model.blocksPageRows.length === 2
+                && model.blocksPageRows[0].header.id === "slot-31"
+        })
+        const methods = fakeHost.calls.filter(function (call) {
+            return call.method === "runtimeOperationStart"
+        }).map(function (call) {
+            return String(call.args[0].method || "")
+        })
+        compare(methods.join(","),
+            "blockchainNode,blockchainBlocks,blockchainNode,blockchainLiveBlocks")
+    }
+
+    function test_blocks_live_continuation_cannot_supersede_newer_output() {
+        let pendingNodeRequest = null
+        const nodeResult = {
+            cryptarchia_info: {
+                value: {
+                    cryptarchia_info: { slot: 31, lib_slot: 20 }
+                }
+            }
+        }
+        fakeHost.responses = {
+            runtimeOperationStart: function (args) {
+                const request = args[0]
+                if (request.method === "blockchainNode" && pendingNodeRequest === null) {
+                    pendingNodeRequest = request
+                    const context = chainOperationContext(request)
+                    return {
+                        ok: true,
+                        value: {
+                            operationId: "pending-live-node",
+                            clientRequestId: request.clientRequestId,
+                            domain: "blockchain",
+                            backend: context.source,
+                            method: request.method,
+                            label: request.label,
+                            status: "awaiting_external",
+                            eventCursor: 1,
+                            context: context,
+                            result: null,
+                            error: ""
+                        },
+                        text: "OK",
+                        error: ""
+                    }
+                }
+                return chainRuntimeStart({
+                    blockchainBlocks: [
+                        { header: { slot: 30, id: "slot-30" }, transactions: [] }
+                    ],
+                    blockchainLiveBlocks: {
+                        source: "blocks_range",
+                        blocks: [{ header: { slot: 31, id: "slot-31" }, transactions: [] }],
+                        unknown_events: []
+                    }
+                })(args)
+            },
+            runtimeOperationStatus: function () {
+                const context = chainOperationContext(pendingNodeRequest)
+                return {
+                    ok: true,
+                    value: {
+                        operationId: "pending-live-node",
+                        clientRequestId: pendingNodeRequest.clientRequestId,
+                        domain: "blockchain",
+                        backend: context.source,
+                        method: pendingNodeRequest.method,
+                        label: pendingNodeRequest.label,
+                        status: "completed",
+                        eventCursor: 2,
+                        context: context,
+                        result: nodeResult,
+                        error: ""
+                    },
+                    text: "OK",
+                    error: ""
+                }
+            }
+        }
+
+        model.chainPages.startBlocksLiveMode()
+        tryVerify(function () {
+            const entry = model.chainPages.operationCoordinator.pendingOperations["blocks.page.node"]
+            return entry && String(entry.operationId || "").length > 0
+        })
+        model.shell.setResult("Newer output", "newer", false, { owner: "newer" }, "settings")
+
+        model.chainPages.pollOperations()
+
+        tryCompare(model, "blocksPageRows", [{
+            header: { slot: 30, id: "slot-30" },
+            transactions: []
+        }])
+        verify(!model.blocksLiveEnabled)
+        compare(model.shell.resultTitle, "Newer output")
+        compare(model.shell.resultValue.owner, "newer")
+        const methods = fakeHost.calls.filter(function (call) {
+            return call.method === "runtimeOperationStart"
+        }).map(function (call) {
+            return String(call.args[0].method || "")
+        })
+        compare(methods.join(","), "blockchainNode,blockchainBlocks")
+    }
+
+    function test_transactions_and_detail_lookups_use_runtime_operations() {
+        const blocksResult = [{
+            header: { slot: 40, id: "block-40" },
+            transactions: [{ mantle_tx: { hash: "tx-page", ops: [] } }]
+        }]
+        fakeHost.responses = {
+            runtimeOperationStart: chainRuntimeStart({
+                blockchainNode: {
+                    cryptarchia_info: {
+                        value: {
+                            cryptarchia_info: { slot: 50, lib_slot: 40 }
+                        }
+                    }
+                },
+                blockchainBlocks: blocksResult,
+                blockchainBlock: {
+                    header: { slot: 41, id: "block-lookup" },
+                    transactions: []
+                },
+                blockchainTransaction: {
+                    mantle_tx: { hash: "tx-lookup", ops: [] },
+                    block_hash: "block-lookup",
+                    slot: 41,
+                    index: 0
+                }
+            })
+        }
+
+        model.chainPages.refreshTransactionsPage()
+        tryVerify(function () { return model.transactionsPageRows.length === 1 })
+        compare(model.transactionsPageRows[0].hash, "tx-page")
+
+        model.loadBlockchainBlockById("block-lookup")
+        tryVerify(function () {
+            return model.blockDetailValue && model.blockDetailValue.hash === "block-lookup"
+        })
+
+        model.entityNavigation.openMantleTransaction("tx-lookup")
+        tryVerify(function () {
+            return model.transactionDetailValue
+                && model.transactionDetailValue.hash === "tx-lookup"
+        })
+
+        compare(runtimeOperationCallCount("blockchainNode"), 1)
+        compare(runtimeOperationCallCount("blockchainBlocks"), 1)
+        compare(runtimeOperationCallCount("blockchainBlock"), 1)
+        compare(runtimeOperationCallCount("blockchainTransaction"), 1)
+        compare(callCountFor("blockchainNode"), 0)
+        compare(callCountFor("blockchainBlocks"), 0)
+        compare(callCountFor("blockchainBlock"), 0)
+        compare(callCountFor("blockchainTransaction"), 0)
+    }
+
+    function test_block_lookup_retries_failed_prefixed_id_with_normalized_id() {
+        const rawId = "0x" + "AB".repeat(32)
+        const normalizedId = "ab".repeat(32)
+        const attemptedIds = []
+        fakeHost.responses = {
+            runtimeOperationStart: function (args) {
+                const request = args[0]
+                const context = chainOperationContext(request)
+                const failed = attemptedIds.length === 0
+                attemptedIds.push(context.blockId)
+                return {
+                    ok: true,
+                    value: {
+                        operationId: "chain-op-" + String(request.clientRequestId || "unknown"),
+                        clientRequestId: request.clientRequestId,
+                        domain: "blockchain",
+                        backend: context.source,
+                        method: request.method,
+                        label: request.label,
+                        status: failed ? "failed" : "completed",
+                        eventCursor: 1,
+                        context: context,
+                        result: failed ? null : {
+                            header: { slot: 41, id: normalizedId },
+                            transactions: []
+                        },
+                        error: failed ? "not found" : ""
+                    },
+                    text: failed ? "" : "OK",
+                    error: ""
+                }
+            }
+        }
+
+        model.loadBlockchainBlockById(rawId)
+
+        tryVerify(function () {
+            return model.blockDetailValue
+                && model.blockDetailValue.hash === normalizedId
+        })
+        compare(attemptedIds.join(","), rawId + "," + normalizedId)
+        compare(runtimeOperationCallCount("blockchainBlock"), 2)
+        compare(callCountFor("blockchainBlock"), 0)
+        compare(model.blockDetailError, "")
     }
 
     function test_blockchain_module_new_block_event_updates_live_rows() {
@@ -3343,29 +3883,23 @@ TestCase {
             }
         })
         fakeHost.strictUnexpectedCalls = true
+        const nodeResult = {
+            cryptarchia_info: {
+                value: {
+                    cryptarchia_info: { slot: 30, lib_slot: 20 }
+                }
+            }
+        }
+        const liveResult = {
+            blocks: [
+                { header: { slot: 30, id: "l1-tip" }, transactions: [] }
+            ]
+        }
         fakeHost.responses = {
-            blockchainNode: {
-                ok: true,
-                value: {
-                    cryptarchia_info: {
-                        value: {
-                            cryptarchia_info: { slot: 30, lib_slot: 20 }
-                        }
-                    }
-                },
-                text: "OK",
-                error: ""
-            },
-            blockchainLiveBlocks: {
-                ok: true,
-                value: {
-                    blocks: [
-                        { header: { slot: 30, id: "l1-tip" }, transactions: [] }
-                    ]
-                },
-                text: "OK",
-                error: ""
-            },
+            runtimeOperationStart: chainRuntimeStart({
+                blockchainNode: nodeResult,
+                blockchainLiveBlocks: liveResult
+            }),
             storageSourceReport: { ok: true, value: {}, text: "OK", error: "" },
             deliverySourceReport: { ok: true, value: {}, text: "OK", error: "" }
         }
@@ -3379,8 +3913,10 @@ TestCase {
         compare(model.dashboardBlocks[0].block_id, 101)
         compare(model.dashboardLezBlockRows.length, 2)
         compare(model.dashboardL1Blocks.length, 1)
-        compare(callCountFor("blockchainNode"), 1)
-        compare(callCountFor("blockchainLiveBlocks"), 1)
+        compare(callCountFor("blockchainNode"), 0)
+        compare(callCountFor("blockchainLiveBlocks"), 0)
+        compare(runtimeOperationCallCount("blockchainNode"), 1)
+        compare(runtimeOperationCallCount("blockchainLiveBlocks"), 1)
         compare(callCountFor("sequencerBlocks"), 0)
         compare(callCountFor("indexerBlocks"), 0)
         compare(callCountFor("lezBlockListReport"), 0)

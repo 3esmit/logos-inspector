@@ -15,7 +15,9 @@ function slotTip(nodeValue, preferLibSlot) {
 
 function slotWindow(anchorSlot, fallbackSlot, windowSize) {
     const fallback = Math.max(0, Number(fallbackSlot || 0))
-    const requested = Math.max(0, Number(anchorSlot === undefined || anchorSlot === null ? fallback : anchorSlot))
+    const anchor = Number(anchorSlot)
+    const requested = Math.max(0, Number(anchorSlot === undefined || anchorSlot === null
+        || !Number.isFinite(anchor) ? fallback : anchor))
     const slotTo = fallback > 0 ? Math.min(requested, fallback) : requested
     return {
         slotFrom: Math.max(0, slotTo - Math.max(0, Number(windowSize || 0))),

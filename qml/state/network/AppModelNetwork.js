@@ -104,7 +104,8 @@ function setNetworkConnectionRate(root, kind, seconds) {
 function queryNetworkConnection(root, kind, showResult, includeSensitiveProbe) {
     with (root) {
         const target = String(kind || "")
-        const configRevision = networkConfigurationRevision
+        const configRevision = target === "blockchain"
+            ? blockchainConfigurationRevision : networkConfigurationRevision
         const request = root.networkConnectionRequest(target, includeSensitiveProbe === true)
         if (!request) {
             return {
@@ -123,6 +124,23 @@ function queryNetworkConnection(root, kind, showResult, includeSensitiveProbe) {
         }
 
         root.setNetworkConnectionPending(target, true)
+        if (target === "blockchain") {
+            const callback = function (response) {
+                if (configRevision !== blockchainConfigurationRevision) {
+                    return false
+                }
+                root.setNetworkConnectionPending(target, false)
+                root.updateNetworkConnectionStatus(target, response)
+                root.cacheNetworkConnectionResult(target, response)
+                root.recordDashboardSnapshot()
+                return false
+            }
+            return showResult === true
+                ? root.chainPages.presentOperation("network.blockchain", request.method,
+                    request.args, request.label, shell.currentView, callback)
+                : root.chainPages.startOperation("network.blockchain", request.method,
+                    request.args, request.label, callback)
+        }
         return requestModuleAsync(request.module, request.method, request.args, request.label, showResult, function (response) {
             root.setNetworkConnectionPending(target, false)
             root.updateNetworkConnectionStatus(target, response)
@@ -138,7 +156,7 @@ function networkConnectionRequest(root, kind, includeSensitiveProbe) {
     with (root) {
         switch (kind) {
         case "blockchain":
-            return { module: inspectorModule, method: "blockchainNode", args: root.blockchainArgs([]), label: qsTr("Blockchain node") }
+            return { module: inspectorModule, method: "blockchainNode", args: [], label: qsTr("Blockchain node") }
         case "messaging":
             return { module: inspectorModule, method: "deliverySourceReport", args: root.sourceRouting.deliverySourceReportArgs(), label: qsTr("Delivery source") }
         case "storage":

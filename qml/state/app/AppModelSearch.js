@@ -12,8 +12,8 @@ function refreshDashboard(root) {
         dashboardError = ""
         projectZoneDashboard(root)
         const requests = [
-            { module: inspectorModule, method: "blockchainNode", args: root.blockchainArgs([]), label: qsTr("Blockchain node") },
-            { module: inspectorModule, method: "blockchainLiveBlocks", args: root.blockchainArgs([0, 9007199254740991, 5]), label: qsTr("Latest L1 blocks") },
+            { callerKey: "dashboard.node", method: "blockchainNode", args: [], label: qsTr("Blockchain node") },
+            { callerKey: "dashboard.live", method: "blockchainLiveBlocks", args: [0, 9007199254740991, 5], label: qsTr("Latest L1 blocks") },
             { module: inspectorModule, method: "storageSourceReport", args: root.sourceRouting.storageSourceReportArgs(false), label: qsTr("Storage source") },
             { module: inspectorModule, method: "deliverySourceReport", args: root.sourceRouting.deliverySourceReportArgs(), label: qsTr("Delivery source") }
         ]
@@ -23,12 +23,15 @@ function refreshDashboard(root) {
 
         for (let i = 0; i < requests.length; ++i) {
             const request = requests[i]
-            requestModuleAsync(request.module, request.method, request.args, request.label, false, function (response) {
+            const callback = function (response) {
                 if (refreshId !== dashboardRefreshSerial || configRevision !== networkConfigurationRevision) {
-                    return
+                    return false
                 }
                 if (response.ok) {
                     okCount += 1
+                    if (request.callerKey) {
+                        root.updateDashboardCache(request.method, response.value)
+                    }
                 } else {
                     errors.push(response.error)
                 }
@@ -58,9 +61,17 @@ function refreshDashboard(root) {
                         shell.setResult(qsTr("Dashboard"), dashboardError, true)
                     }
                 }
-            }, function () {
+                return false
+            }
+            if (request.callerKey) {
+                root.chainPages.startOperation(request.callerKey, request.method,
+                    request.args, request.label, callback)
+            } else {
+                requestModuleAsync(request.module, request.method, request.args,
+                    request.label, false, callback, function () {
                 return refreshId === dashboardRefreshSerial && configRevision === networkConfigurationRevision
-            })
+                })
+            }
         }
     }
 }
