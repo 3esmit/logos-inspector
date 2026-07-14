@@ -742,8 +742,8 @@ mod tests {
                 "Backup download",
                 OperationDomain::Storage,
                 OperationClass::Mutating,
-                false,
-                None,
+                true,
+                Some(OperationExclusiveGroup::StorageDownload),
             ),
             (
                 OperationMethod::StorageDownloadToUrl,

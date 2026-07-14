@@ -64,6 +64,11 @@ impl Default for RuntimeOperations {
 }
 
 impl RuntimeOperations {
+    #[cfg(test)]
+    pub(crate) fn with_test_module_transport(module_transport: SharedModuleTransport) -> Self {
+        Self::new(Arc::new(LocalBackupImportStore), module_transport)
+    }
+
     pub(crate) fn start_from_value(&self, runtime: &Runtime, value: Value) -> Result<Value> {
         let request = runtime_operation_request_from_value(value)?;
         self.start(runtime, request)
@@ -259,7 +264,12 @@ impl RuntimeOperations {
                             .unwrap_or_else(|| "runtime operation timed out".to_owned())
                     )
                 }
-                RuntimeOperationStatus::Running | RuntimeOperationStatus::Canceling => {}
+                RuntimeOperationStatus::Canceling => {
+                    if let Some(error) = operation.error {
+                        return Err(supervisor::OperationCleanupUnconfirmed::new(error).into());
+                    }
+                }
+                RuntimeOperationStatus::Running => {}
             }
             thread::sleep(Duration::from_millis(25));
         }
@@ -637,6 +647,85 @@ mod tests {
         anyhow::ensure!(value.get("status") == Some(&json!("completed")));
         anyhow::ensure!(value.get("result") == Some(&Value::Null));
         anyhow::ensure!(value.get("resultPurged") == Some(&json!(true)));
+        Ok(())
+    }
+
+    #[test]
+    fn blocking_wait_returns_cleanup_uncertainty_without_releasing_operation() -> Result<()> {
+        let operations = RuntimeOperations::default();
+        let request = runtime_operation_request_from_value(json!({
+            "domain": "storage",
+            "method": "storageDownloadBackupCatalogEntry",
+            "adapter": {
+                "source_mode": "logoscore_cli",
+                "inputs": {}
+            },
+            "mutating_enabled": false,
+            "payload": { "cid": "cid-cleanup-uncertain" }
+        }))?;
+        operations.insert_test_running_operation("cleanup-uncertain-operation", request)?;
+        let operation_id = RuntimeOperationId::parse("cleanup-uncertain-operation")?;
+        let evidence = "storage download cleanup was not confirmed: cancel=failed, watch=ok";
+        operations.registry.transition(
+            &operation_id,
+            RuntimeOperationTransition::CleanupUnconfirmed {
+                error: evidence.to_owned(),
+            },
+        )?;
+
+        let error = operations
+            .wait_for_result(operation_id.as_str())
+            .err()
+            .context("blocking wait should return cleanup uncertainty")?;
+        anyhow::ensure!(
+            error
+                .downcast_ref::<supervisor::OperationCleanupUnconfirmed>()
+                .is_some()
+        );
+        anyhow::ensure!(error.to_string() == evidence);
+        let value = operations.value(operation_id.as_str())?;
+        anyhow::ensure!(value.get("status") == Some(&json!("canceling")));
+        anyhow::ensure!(value.get("terminalReason") == Some(&Value::Null));
+        anyhow::ensure!(value.get("error") == Some(&json!(evidence)));
+        anyhow::ensure!(operations.len()? == 1);
+        Ok(())
+    }
+
+    #[test]
+    fn blocking_wait_bounds_retained_cleanup_uncertainty() -> Result<()> {
+        let operations = RuntimeOperations::default();
+        let request = runtime_operation_request_from_value(json!({
+            "domain": "storage",
+            "method": "storageDownloadBackupCatalogEntry",
+            "adapter": {
+                "source_mode": "logoscore_cli",
+                "inputs": {}
+            },
+            "mutating_enabled": false,
+            "payload": { "cid": "cid-oversized-cleanup-evidence" }
+        }))?;
+        operations.insert_test_running_operation("oversized-cleanup-evidence", request)?;
+        let operation_id = RuntimeOperationId::parse("oversized-cleanup-evidence")?;
+        let evidence = "x".repeat(16 * 1024 + 1);
+        operations.registry.transition(
+            &operation_id,
+            RuntimeOperationTransition::CleanupUnconfirmed { error: evidence },
+        )?;
+
+        let error = operations
+            .wait_for_result(operation_id.as_str())
+            .err()
+            .context("oversized cleanup uncertainty should remain a blocking failure")?;
+        anyhow::ensure!(
+            error
+                .to_string()
+                .contains("runtime operation error redacted")
+        );
+        let value = operations.value(operation_id.as_str())?;
+        anyhow::ensure!(value.get("status") == Some(&json!("canceling")));
+        anyhow::ensure!(value.get("errorRedacted") == Some(&json!(true)));
+        anyhow::ensure!(value.get("redactedErrorBytes") == Some(&json!(16 * 1024 + 1)));
+        anyhow::ensure!(operations.len()? == 1);
         Ok(())
     }
 }

@@ -1,6 +1,7 @@
 use std::{
-    fs,
-    io::Read as _,
+    collections::BTreeSet,
+    fs::{self, File, OpenOptions},
+    io::{Read as _, Write as _},
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -30,6 +31,11 @@ use super::{
 
 const CATALOG_VERSION: u64 = 1;
 const BACKUP_PAYLOAD_DIR: &str = "backup-payloads";
+const CATALOG_LOCK_FILE: &str = ".backup-catalog.lock";
+const CATALOG_STAGE_PREFIX: &str = ".backup-catalog.stage.";
+const PAYLOAD_STAGE_PREFIX: &str = ".backup-payload.stage.";
+const BACKUP_CATALOG_ID_MAX_BYTES: usize = 128;
+const BACKUP_CID_MAX_BYTES: usize = 256;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct BackupCatalogId(String);
@@ -39,6 +45,9 @@ impl BackupCatalogId {
         let value = value.trim();
         if value.is_empty() {
             bail!("backup catalog id is required");
+        }
+        if value.len() > BACKUP_CATALOG_ID_MAX_BYTES {
+            bail!("backup catalog id exceeds {BACKUP_CATALOG_ID_MAX_BYTES} byte limit");
         }
         if value == "."
             || value == ".."
@@ -87,6 +96,73 @@ pub(crate) struct RemoteBackupMetadata {
     pub(crate) cid: String,
     pub(crate) provider: String,
     pub(crate) uploaded_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BackupCatalogIoPoint {
+    LockAttempt,
+    LockAcquired,
+    PayloadPersisted,
+    CatalogPersisted,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum BackupCatalogCommitReceipt {
+    Durable,
+    VisibleDurabilityUnconfirmed { error: String },
+}
+
+impl BackupCatalogCommitReceipt {
+    fn with_value<T>(self, value: T) -> CommittedBackupCatalog<T> {
+        match self {
+            Self::Durable => CommittedBackupCatalog::Durable(value),
+            Self::VisibleDurabilityUnconfirmed { error } => {
+                CommittedBackupCatalog::VisibleDurabilityUnconfirmed { value, error }
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+#[must_use = "catalog commit visibility must be acknowledged"]
+enum CommittedBackupCatalog<T> {
+    Durable(T),
+    VisibleDurabilityUnconfirmed { value: T, error: String },
+}
+
+impl<T> CommittedBackupCatalog<T> {
+    fn into_value(self) -> T {
+        match self {
+            Self::Durable(value) => value,
+            Self::VisibleDurabilityUnconfirmed { value, error } => {
+                drop(error);
+                value
+            }
+        }
+    }
+}
+
+trait BackupCatalogIoHook {
+    fn at(&mut self, _point: BackupCatalogIoPoint) -> Result<()> {
+        Ok(())
+    }
+}
+
+struct NoopBackupCatalogIoHook;
+
+impl BackupCatalogIoHook for NoopBackupCatalogIoHook {}
+
+struct PreparedPayload {
+    path: PathBuf,
+    bytes: Vec<u8>,
+}
+
+struct BackupCatalogTransaction {
+    base_dir: PathBuf,
+    catalog_path: PathBuf,
+    original_catalog: BackupCatalog,
+    catalog: BackupCatalog,
+    _lock_file: File,
 }
 
 pub(crate) fn load_backup_catalog() -> Result<BackupCatalog> {
@@ -223,14 +299,29 @@ fn record_payload_in_dir(
     label: Option<&str>,
     payload: &Value,
 ) -> Result<BackupCatalogEntry> {
-    let mut catalog = load_catalog_from_path(&catalog_path_for_dir(base_dir))?;
+    let payload_text =
+        serde_json::to_vec_pretty(payload).context("failed to serialize backup payload")?;
+    ensure_settings_backup_size(payload_text.len())?;
+    let payload_id = payload_identity(&payload_text);
     let encrypted = payload
         .get("encrypted")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let entry = create_entry_from_payload(base_dir, &mut catalog, label, payload, encrypted)?;
-    save_catalog_to_path(&catalog_path_for_dir(base_dir), &catalog)?;
-    Ok(entry)
+    let mut hook = NoopBackupCatalogIoHook;
+    let mut transaction = BackupCatalogTransaction::begin(base_dir, &mut hook)?;
+    let (entry, prepared_payload) = create_entry_from_payload(
+        base_dir,
+        &mut transaction.catalog,
+        label,
+        payload,
+        encrypted,
+        payload_text,
+        payload_id,
+    )?;
+    Ok(transaction
+        .commit(Some(prepared_payload), &mut hook)?
+        .with_value(entry)
+        .into_value())
 }
 
 fn record_remote_payload_in_dir(
@@ -240,16 +331,30 @@ fn record_remote_payload_in_dir(
     cid: &str,
     provider: Option<&str>,
 ) -> Result<BackupCatalogEntry> {
+    let mut hook = NoopBackupCatalogIoHook;
+    Ok(
+        record_remote_payload_in_dir_with_hook(base_dir, label, payload, cid, provider, &mut hook)?
+            .into_value(),
+    )
+}
+
+fn record_remote_payload_in_dir_with_hook(
+    base_dir: &Path,
+    label: Option<&str>,
+    payload: &Value,
+    cid: &str,
+    provider: Option<&str>,
+    hook: &mut impl BackupCatalogIoHook,
+) -> Result<CommittedBackupCatalog<BackupCatalogEntry>> {
     let cid = cid.trim();
-    if cid.is_empty() {
-        bail!("remote backup CID is required");
-    }
-    let mut catalog = load_catalog_from_path(&catalog_path_for_dir(base_dir))?;
+    validate_remote_cid(cid)?;
     let payload_text =
         serde_json::to_vec_pretty(payload).context("failed to serialize backup payload")?;
     ensure_settings_backup_size(payload_text.len())?;
     let payload_id = payload_identity(&payload_text);
-    if let Some(existing) = catalog
+    let mut transaction = BackupCatalogTransaction::begin(base_dir, hook)?;
+    if let Some(existing) = transaction
+        .catalog
         .entries
         .iter()
         .find(|entry| {
@@ -266,21 +371,24 @@ fn record_remote_payload_in_dir(
         let expected_payload_path = payload_path(base_dir, &existing.backup_catalog_id);
         let stored_payload_is_current = read_backup_payload_file(&expected_payload_path)
             .is_ok_and(|stored| payload_identity(&stored) == payload_id);
-        if !stored_payload_is_current {
-            write_payload_file(&expected_payload_path, &payload_text)?;
-        }
+        let prepared_payload = (!stored_payload_is_current).then_some(PreparedPayload {
+            path: expected_payload_path.clone(),
+            bytes: payload_text,
+        });
+        let mut result = existing.clone();
         if Path::new(&existing.local_payload_path) != expected_payload_path {
-            let stored = catalog
+            let stored = transaction
+                .catalog
                 .entries
                 .iter_mut()
                 .find(|entry| entry.backup_catalog_id == existing.backup_catalog_id)
                 .context("accepted remote backup entry disappeared during repair")?;
             stored.local_payload_path = expected_payload_path.display().to_string();
-            let repaired = stored.clone();
-            save_catalog_to_path(&catalog_path_for_dir(base_dir), &catalog)?;
-            return Ok(repaired);
+            result = stored.clone();
         }
-        return Ok(existing);
+        return Ok(transaction
+            .commit(prepared_payload, hook)?
+            .with_value(result));
     }
     let encrypted = payload
         .get("encrypted")
@@ -288,14 +396,14 @@ fn record_remote_payload_in_dir(
         .unwrap_or(false);
     let remote = remote_backup_metadata(cid, provider);
 
-    let entry = if let Some(entry) = catalog
+    let (entry, prepared_payload) = if let Some(entry) = transaction
+        .catalog
         .entries
         .iter_mut()
         .find(|entry| entry.payload_id == payload_id && entry.remote.is_none())
     {
         let local_payload_path = payload_path(base_dir, &entry.backup_catalog_id);
-        write_payload_file(&local_payload_path, &payload_text)?;
-        entry.payload_id = payload_id;
+        entry.payload_id.clone_from(&payload_id);
         entry.contents = backup_contents(payload);
         entry.encrypted = encrypted;
         entry.local_payload_path = local_payload_path.display().to_string();
@@ -303,23 +411,36 @@ fn record_remote_payload_in_dir(
             entry.backup_version_label = label.to_owned();
         }
         entry.remote = Some(remote);
-        entry.clone()
+        (
+            entry.clone(),
+            PreparedPayload {
+                path: local_payload_path,
+                bytes: payload_text,
+            },
+        )
     } else {
-        let mut entry =
-            create_entry_from_payload(base_dir, &mut catalog, label, payload, encrypted)?;
-        entry.remote = Some(remote);
-        if let Some(stored) = catalog
+        let (entry, prepared_payload) = create_entry_from_payload(
+            base_dir,
+            &mut transaction.catalog,
+            label,
+            payload,
+            encrypted,
+            payload_text,
+            payload_id,
+        )?;
+        let stored = transaction
+            .catalog
             .entries
             .iter_mut()
             .find(|stored| stored.backup_catalog_id == entry.backup_catalog_id)
-        {
-            stored.remote.clone_from(&entry.remote);
-        }
-        entry
+            .context("new remote backup entry disappeared before commit")?;
+        stored.remote = Some(remote);
+        (stored.clone(), prepared_payload)
     };
 
-    save_catalog_to_path(&catalog_path_for_dir(base_dir), &catalog)?;
-    Ok(entry)
+    Ok(transaction
+        .commit(Some(prepared_payload), hook)?
+        .with_value(entry))
 }
 
 pub(crate) fn attach_remote_backup_metadata(
@@ -327,28 +448,107 @@ pub(crate) fn attach_remote_backup_metadata(
     cid: &str,
     provider: Option<&str>,
 ) -> Result<BackupCatalogEntry> {
+    let base_dir = config_dir()?;
+    attach_remote_backup_metadata_in_dir(&base_dir, backup_catalog_id, cid, provider)
+}
+
+fn attach_remote_backup_metadata_in_dir(
+    base_dir: &Path,
+    backup_catalog_id: &str,
+    cid: &str,
+    provider: Option<&str>,
+) -> Result<BackupCatalogEntry> {
+    let mut hook = NoopBackupCatalogIoHook;
+    Ok(attach_remote_backup_metadata_in_dir_with_hook(
+        base_dir,
+        backup_catalog_id,
+        cid,
+        provider,
+        &mut hook,
+    )?
+    .into_value())
+}
+
+fn attach_remote_backup_metadata_in_dir_with_hook(
+    base_dir: &Path,
+    backup_catalog_id: &str,
+    cid: &str,
+    provider: Option<&str>,
+    hook: &mut impl BackupCatalogIoHook,
+) -> Result<CommittedBackupCatalog<BackupCatalogEntry>> {
     let catalog_id = BackupCatalogId::parse(backup_catalog_id)?;
     let cid = cid.trim();
-    if cid.is_empty() {
-        bail!("remote backup CID is required");
+    validate_remote_cid(cid)?;
+    let provider = remote_backup_provider(provider);
+
+    let mut transaction = BackupCatalogTransaction::begin(base_dir, hook)?;
+    let target_index = transaction
+        .catalog
+        .entries
+        .iter()
+        .position(|entry| entry.backup_catalog_id == catalog_id.as_str())
+        .with_context(|| {
+            format!(
+                "backup catalog entry `{}` was not found",
+                catalog_id.as_str()
+            )
+        })?;
+    let target_payload_id = transaction
+        .catalog
+        .entries
+        .get(target_index)
+        .context("backup catalog target disappeared before metadata validation")?
+        .payload_id
+        .clone();
+    if let Some(existing) = transaction
+        .catalog
+        .entries
+        .iter()
+        .enumerate()
+        .find(|(index, entry)| {
+            *index != target_index
+                && entry
+                    .remote
+                    .as_ref()
+                    .is_some_and(|remote| remote.cid == cid)
+        })
+        .map(|(_, entry)| entry)
+    {
+        if existing.payload_id != target_payload_id {
+            bail!("remote backup CID `{cid}` conflicts with existing payload identity");
+        }
+        bail!(
+            "remote backup CID `{cid}` is already attached to backup catalog entry `{}`",
+            existing.backup_catalog_id
+        );
     }
 
-    let path = backup_catalog_path()?;
-    let mut catalog = load_catalog_from_path(&path)?;
-    let Some(entry) = catalog
+    let entry = transaction
+        .catalog
         .entries
-        .iter_mut()
-        .find(|entry| entry.backup_catalog_id == catalog_id.as_str())
-    else {
-        bail!(
-            "backup catalog entry `{}` was not found",
-            catalog_id.as_str()
-        );
-    };
-    entry.remote = Some(remote_backup_metadata(cid, provider));
+        .get_mut(target_index)
+        .context("backup catalog target disappeared before metadata attachment")?;
+    match entry.remote.as_ref() {
+        Some(remote) if remote.cid == cid && remote.provider == provider => {
+            return Ok(CommittedBackupCatalog::Durable(entry.clone()));
+        }
+        Some(remote) => {
+            bail!(
+                "backup catalog entry `{}` already has remote metadata for CID `{}` from provider `{}`",
+                catalog_id.as_str(),
+                remote.cid,
+                remote.provider
+            );
+        }
+        None => {}
+    }
+    entry.remote = Some(RemoteBackupMetadata {
+        cid: cid.to_owned(),
+        provider,
+        uploaded_at: unix_time_text(),
+    });
     let result = entry.clone();
-    save_catalog_to_path(&path, &catalog)?;
-    Ok(result)
+    Ok(transaction.commit(None, hook)?.with_value(result))
 }
 
 fn backup_payload_value(backup_catalog_id: &str) -> Result<(String, Value)> {
@@ -431,23 +631,210 @@ fn load_catalog_from_path(path: &Path) -> Result<BackupCatalog> {
     if catalog.version != CATALOG_VERSION {
         bail!("backup catalog version is not supported");
     }
+    validate_loaded_catalog(path, &catalog)?;
     Ok(catalog)
 }
 
-fn save_catalog_to_path(path: &Path, catalog: &BackupCatalog) -> Result<()> {
-    let parent = path
+fn validate_loaded_catalog(path: &Path, catalog: &BackupCatalog) -> Result<()> {
+    let base_dir = path
         .parent()
         .context("backup catalog path has no parent directory")?;
-    fs::create_dir_all(parent).with_context(|| {
-        format!(
-            "failed to create backup catalog directory {}",
-            parent.display()
-        )
-    })?;
-    let text =
-        serde_json::to_string_pretty(catalog).context("failed to serialize backup catalog")?;
-    fs::write(path, text)
-        .with_context(|| format!("failed to write backup catalog to {}", path.display()))
+    let mut catalog_ids = BTreeSet::new();
+    let mut remote_cids = BTreeSet::new();
+    for (index, entry) in catalog.entries.iter().enumerate() {
+        let catalog_id = BackupCatalogId::parse(&entry.backup_catalog_id)
+            .with_context(|| format!("backup catalog entry {index} has an invalid id"))?;
+        if catalog_id.as_str() != entry.backup_catalog_id {
+            bail!("backup catalog entry {index} has a noncanonical id");
+        }
+        if !catalog_ids.insert(entry.backup_catalog_id.as_str()) {
+            bail!(
+                "backup catalog contains duplicate id `{}`",
+                entry.backup_catalog_id
+            );
+        }
+        validate_payload_identity(&entry.payload_id)
+            .with_context(|| format!("backup catalog entry {index} has an invalid payload id"))?;
+        let expected_payload_path = payload_path(base_dir, catalog_id.as_str());
+        if Path::new(&entry.local_payload_path) != expected_payload_path {
+            bail!("backup catalog entry {index} has a noncanonical local payload path");
+        }
+        if let Some(remote) = &entry.remote {
+            validate_remote_cid(&remote.cid).with_context(|| {
+                format!("backup catalog entry {index} has an invalid remote CID")
+            })?;
+            if !remote_cids.insert(remote.cid.as_str()) {
+                bail!(
+                    "backup catalog contains duplicate remote CID `{}`",
+                    remote.cid
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_payload_identity(value: &str) -> Result<()> {
+    let Some(digest) = value.strip_prefix("sha256:") else {
+        bail!("backup payload identity must use sha256");
+    };
+    if digest.len() != 64
+        || !digest
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        bail!("backup payload identity has an invalid sha256 digest");
+    }
+    Ok(())
+}
+
+fn validate_remote_cid(value: &str) -> Result<()> {
+    if value.is_empty() {
+        bail!("remote backup CID is required");
+    }
+    if value.len() > BACKUP_CID_MAX_BYTES {
+        bail!("remote backup CID exceeds {BACKUP_CID_MAX_BYTES} byte limit");
+    }
+    if !value
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        bail!("remote backup CID contains unsupported characters");
+    }
+    Ok(())
+}
+
+impl BackupCatalogTransaction {
+    fn begin(base_dir: &Path, hook: &mut impl BackupCatalogIoHook) -> Result<Self> {
+        fs::create_dir_all(base_dir).with_context(|| {
+            format!(
+                "failed to create backup catalog directory {}",
+                base_dir.display()
+            )
+        })?;
+        let lock_path = base_dir.join(CATALOG_LOCK_FILE);
+        let lock_file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .with_context(|| {
+                format!("failed to open backup catalog lock {}", lock_path.display())
+            })?;
+        hook.at(BackupCatalogIoPoint::LockAttempt)?;
+        lock_file
+            .lock()
+            .with_context(|| format!("failed to lock backup catalog at {}", lock_path.display()))?;
+        hook.at(BackupCatalogIoPoint::LockAcquired)?;
+
+        cleanup_staged_files(base_dir, CATALOG_STAGE_PREFIX)?;
+        let payload_dir = base_dir.join(BACKUP_PAYLOAD_DIR);
+        cleanup_staged_files(&payload_dir, PAYLOAD_STAGE_PREFIX)?;
+        let catalog_path = catalog_path_for_dir(base_dir);
+        let catalog = load_catalog_from_path(&catalog_path)?;
+        cleanup_orphan_payloads(base_dir, &catalog)?;
+
+        Ok(Self {
+            base_dir: base_dir.to_owned(),
+            catalog_path,
+            original_catalog: catalog.clone(),
+            catalog,
+            _lock_file: lock_file,
+        })
+    }
+
+    fn commit(
+        self,
+        prepared_payload: Option<PreparedPayload>,
+        hook: &mut impl BackupCatalogIoHook,
+    ) -> Result<BackupCatalogCommitReceipt> {
+        let catalog_changed = self.catalog != self.original_catalog;
+        if prepared_payload.is_none() && !catalog_changed {
+            return Ok(BackupCatalogCommitReceipt::Durable);
+        }
+
+        let payload_referenced_before = prepared_payload.as_ref().is_some_and(|prepared| {
+            self.original_catalog.entries.iter().any(|entry| {
+                payload_path(&self.base_dir, &entry.backup_catalog_id) == prepared.path
+            })
+        });
+        let payload_existed_before = prepared_payload
+            .as_ref()
+            .map(|prepared| path_exists(&prepared.path))
+            .transpose()?
+            .unwrap_or(false);
+        let payload_target = prepared_payload
+            .as_ref()
+            .map(|prepared| prepared.path.clone());
+        let mut staged_payload = prepared_payload
+            .as_ref()
+            .map(|prepared| {
+                stage_replacement(
+                    &prepared.path,
+                    &prepared.bytes,
+                    PAYLOAD_STAGE_PREFIX,
+                    "backup payload",
+                )
+            })
+            .transpose()?;
+        let mut staged_catalog = if catalog_changed {
+            let catalog_bytes = serde_json::to_vec_pretty(&self.catalog)
+                .context("failed to serialize backup catalog")?;
+            Some(stage_replacement(
+                &self.catalog_path,
+                &catalog_bytes,
+                CATALOG_STAGE_PREFIX,
+                "backup catalog",
+            )?)
+        } else {
+            None
+        };
+
+        let mut payload_installed = false;
+        let mut catalog_installed = false;
+        let commit_result = (|| -> Result<()> {
+            if let (Some(staged), Some(target)) = (staged_payload.take(), payload_target.as_ref()) {
+                persist_replacement(staged, target, "backup payload")?;
+                payload_installed = true;
+                hook.at(BackupCatalogIoPoint::PayloadPersisted)?;
+                let parent = target
+                    .parent()
+                    .context("backup payload path has no parent directory")?;
+                sync_directory(parent, "backup payload")?;
+                sync_directory(&self.base_dir, "backup catalog")?;
+            }
+            if let Some(staged) = staged_catalog.take() {
+                persist_replacement(staged, &self.catalog_path, "backup catalog")?;
+                catalog_installed = true;
+                hook.at(BackupCatalogIoPoint::CatalogPersisted)?;
+                sync_directory(&self.base_dir, "backup catalog")?;
+            }
+            Ok(())
+        })();
+
+        if let Err(error) = commit_result {
+            if catalog_installed
+                || (payload_installed && payload_referenced_before && !catalog_changed)
+            {
+                return Ok(BackupCatalogCommitReceipt::VisibleDurabilityUnconfirmed {
+                    error: format!("{error:#}"),
+                });
+            }
+            let new_uncommitted_payload = payload_installed
+                && !catalog_installed
+                && !payload_referenced_before
+                && !payload_existed_before;
+            if new_uncommitted_payload
+                && let Some(target) = payload_target.as_ref()
+                && let Err(rollback_error) = remove_uncommitted_payload(&self.base_dir, target)
+            {
+                bail!("{error:#}; failed to remove uncommitted backup payload: {rollback_error:#}");
+            }
+            return Err(error);
+        }
+        Ok(BackupCatalogCommitReceipt::Durable)
+    }
 }
 
 fn create_entry_from_payload(
@@ -456,24 +843,13 @@ fn create_entry_from_payload(
     label: Option<&str>,
     payload: &Value,
     encrypted: bool,
-) -> Result<BackupCatalogEntry> {
-    let payload_text =
-        serde_json::to_vec_pretty(payload).context("failed to serialize backup payload")?;
+    payload_text: Vec<u8>,
+    payload_id: String,
+) -> Result<(BackupCatalogEntry, PreparedPayload)> {
     ensure_settings_backup_size(payload_text.len())?;
-    let payload_id = payload_identity(&payload_text);
     let created_at = unix_time_text();
     let backup_catalog_id = unique_catalog_id(catalog, &created_at, &payload_id)?;
     let local_payload_path = payload_path(base_dir, &backup_catalog_id);
-    let parent = local_payload_path
-        .parent()
-        .context("backup payload path has no parent directory")?;
-    fs::create_dir_all(parent).with_context(|| {
-        format!(
-            "failed to create backup payload directory {}",
-            parent.display()
-        )
-    })?;
-    write_payload_file(&local_payload_path, &payload_text)?;
 
     let entry = BackupCatalogEntry {
         backup_catalog_id,
@@ -490,33 +866,205 @@ fn create_entry_from_payload(
         remote: None,
     };
     catalog.entries.push(entry.clone());
-    Ok(entry)
+    Ok((
+        entry,
+        PreparedPayload {
+            path: local_payload_path,
+            bytes: payload_text,
+        },
+    ))
 }
 
 fn remote_backup_metadata(cid: &str, provider: Option<&str>) -> RemoteBackupMetadata {
     RemoteBackupMetadata {
         cid: cid.to_owned(),
-        provider: provider
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("logos_storage")
-            .to_owned(),
+        provider: remote_backup_provider(provider),
         uploaded_at: unix_time_text(),
     }
 }
 
-fn write_payload_file(path: &Path, payload_text: &[u8]) -> Result<()> {
-    let parent = path
+fn remote_backup_provider(provider: Option<&str>) -> String {
+    provider
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("logos_storage")
+        .to_owned()
+}
+
+fn stage_replacement(
+    target: &Path,
+    bytes: &[u8],
+    prefix: &str,
+    label: &str,
+) -> Result<tempfile::NamedTempFile> {
+    let parent = target
+        .parent()
+        .with_context(|| format!("{label} path has no parent directory"))?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("failed to create {label} directory {}", parent.display()))?;
+    let mut staged = tempfile::Builder::new()
+        .prefix(prefix)
+        .suffix(".tmp")
+        .tempfile_in(parent)
+        .with_context(|| format!("failed to stage {label} in {}", parent.display()))?;
+    staged
+        .write_all(bytes)
+        .with_context(|| format!("failed to write staged {label}"))?;
+    staged
+        .as_file()
+        .sync_all()
+        .with_context(|| format!("failed to sync staged {label}"))?;
+    Ok(staged)
+}
+
+fn persist_replacement(staged: tempfile::NamedTempFile, target: &Path, label: &str) -> Result<()> {
+    staged
+        .persist(target)
+        .map_err(|error| error.error)
+        .with_context(|| {
+            format!(
+                "failed to atomically replace {label} at {}",
+                target.display()
+            )
+        })?;
+    Ok(())
+}
+
+fn cleanup_staged_files(directory: &Path, prefix: &str) -> Result<()> {
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to inspect backup transaction directory {}",
+                    directory.display()
+                )
+            });
+        }
+    };
+    let mut removed = false;
+    for entry in entries {
+        let entry = entry.with_context(|| {
+            format!(
+                "failed to inspect backup transaction entry in {}",
+                directory.display()
+            )
+        })?;
+        if !entry
+            .file_type()
+            .context("failed to inspect backup transaction entry type")?
+            .is_file()
+            || !entry.file_name().to_string_lossy().starts_with(prefix)
+        {
+            continue;
+        }
+        fs::remove_file(entry.path()).with_context(|| {
+            format!(
+                "failed to remove stale backup transaction file {}",
+                entry.path().display()
+            )
+        })?;
+        removed = true;
+    }
+    if removed {
+        sync_directory(directory, "backup transaction")?;
+    }
+    Ok(())
+}
+
+fn cleanup_orphan_payloads(base_dir: &Path, catalog: &BackupCatalog) -> Result<()> {
+    let payload_dir = base_dir.join(BACKUP_PAYLOAD_DIR);
+    let entries = match fs::read_dir(&payload_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to inspect backup payload directory {}",
+                    payload_dir.display()
+                )
+            });
+        }
+    };
+    let mut removed = false;
+    for entry in entries {
+        let entry = entry.with_context(|| {
+            format!(
+                "failed to inspect backup payload entry in {}",
+                payload_dir.display()
+            )
+        })?;
+        let file_name = entry.file_name();
+        let file_name = file_name.to_string_lossy();
+        let is_payload_file = entry
+            .file_type()
+            .context("failed to inspect backup payload entry type")?
+            .is_file()
+            && file_name.starts_with("backup_")
+            && file_name.ends_with(".json");
+        let is_referenced = catalog.entries.iter().any(|catalog_entry| {
+            payload_path(base_dir, &catalog_entry.backup_catalog_id) == entry.path()
+        });
+        if !is_payload_file || is_referenced {
+            continue;
+        }
+        fs::remove_file(entry.path()).with_context(|| {
+            format!(
+                "failed to remove orphaned backup payload {}",
+                entry.path().display()
+            )
+        })?;
+        removed = true;
+    }
+    if removed {
+        sync_directory(&payload_dir, "backup payload")?;
+        sync_directory(base_dir, "backup catalog")?;
+    }
+    Ok(())
+}
+
+fn remove_uncommitted_payload(base_dir: &Path, target: &Path) -> Result<()> {
+    match fs::remove_file(target) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "failed to remove uncommitted backup payload {}",
+                    target.display()
+                )
+            });
+        }
+    }
+    let parent = target
         .parent()
         .context("backup payload path has no parent directory")?;
-    fs::create_dir_all(parent).with_context(|| {
-        format!(
-            "failed to create backup payload directory {}",
-            parent.display()
-        )
-    })?;
-    fs::write(path, payload_text)
-        .with_context(|| format!("failed to write backup payload to {}", path.display()))
+    sync_directory(parent, "backup payload")?;
+    sync_directory(base_dir, "backup catalog")
+}
+
+fn path_exists(path: &Path) -> Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => {
+            Err(error).with_context(|| format!("failed to inspect backup path {}", path.display()))
+        }
+    }
+}
+
+#[cfg(unix)]
+fn sync_directory(directory: &Path, label: &str) -> Result<()> {
+    File::open(directory)
+        .with_context(|| format!("failed to open {label} directory {}", directory.display()))?
+        .sync_all()
+        .with_context(|| format!("failed to sync {label} directory {}", directory.display()))
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_directory: &Path, _label: &str) -> Result<()> {
+    Ok(())
 }
 
 fn read_backup_payload_file(path: &Path) -> Result<Vec<u8>> {
@@ -630,17 +1178,129 @@ fn unix_time_text() -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::env;
+    use std::{
+        env,
+        process::{Child, Command, Output, Stdio},
+        thread,
+        time::{Duration, Instant},
+    };
 
     use anyhow::Result;
     use serde_json::json;
 
     use super::*;
 
+    const CHILD_BASE_DIR_ENV: &str = "BACKUP_CATALOG_TEST_BASE_DIR";
+    const CHILD_CID_ENV: &str = "BACKUP_CATALOG_TEST_CID";
+    const CHILD_THEME_ENV: &str = "BACKUP_CATALOG_TEST_THEME";
+    const CHILD_CATALOG_ID_ENV: &str = "BACKUP_CATALOG_TEST_ID";
+    const CHILD_LOCK_ATTEMPT_ENV: &str = "BACKUP_CATALOG_TEST_LOCK_ATTEMPT";
+    const CHILD_LOCK_ACQUIRED_ENV: &str = "BACKUP_CATALOG_TEST_LOCK_ACQUIRED";
+    const CHILD_LOCK_RELEASE_ENV: &str = "BACKUP_CATALOG_TEST_LOCK_RELEASE";
+
+    struct FailAfterPayloadPersist {
+        fired: bool,
+    }
+
+    impl BackupCatalogIoHook for FailAfterPayloadPersist {
+        fn at(&mut self, point: BackupCatalogIoPoint) -> Result<()> {
+            if point == BackupCatalogIoPoint::PayloadPersisted && !self.fired {
+                self.fired = true;
+                bail!("injected backup catalog failure after payload persistence");
+            }
+            Ok(())
+        }
+    }
+
+    struct FailAfterCatalogPersist {
+        fired: bool,
+    }
+
+    impl BackupCatalogIoHook for FailAfterCatalogPersist {
+        fn at(&mut self, point: BackupCatalogIoPoint) -> Result<()> {
+            if point == BackupCatalogIoPoint::CatalogPersisted && !self.fired {
+                self.fired = true;
+                bail!("injected backup catalog durability uncertainty after catalog install");
+            }
+            Ok(())
+        }
+    }
+
+    struct SubprocessLockHook {
+        attempt_marker: Option<PathBuf>,
+        acquired_marker: Option<PathBuf>,
+        release_marker: Option<PathBuf>,
+    }
+
+    impl SubprocessLockHook {
+        fn from_environment() -> Self {
+            Self {
+                attempt_marker: env::var_os(CHILD_LOCK_ATTEMPT_ENV).map(PathBuf::from),
+                acquired_marker: env::var_os(CHILD_LOCK_ACQUIRED_ENV).map(PathBuf::from),
+                release_marker: env::var_os(CHILD_LOCK_RELEASE_ENV).map(PathBuf::from),
+            }
+        }
+    }
+
+    impl BackupCatalogIoHook for SubprocessLockHook {
+        fn at(&mut self, point: BackupCatalogIoPoint) -> Result<()> {
+            if point == BackupCatalogIoPoint::LockAttempt
+                && let Some(marker) = self.attempt_marker.as_ref()
+            {
+                fs::write(marker, b"attempted")?;
+            }
+            if point != BackupCatalogIoPoint::LockAcquired {
+                return Ok(());
+            }
+            if let Some(marker) = self.acquired_marker.as_ref() {
+                fs::write(marker, b"acquired")?;
+            }
+            let Some(release_marker) = self.release_marker.as_ref() else {
+                return Ok(());
+            };
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !release_marker.is_file() {
+                if Instant::now() >= deadline {
+                    bail!("timed out waiting to release backup catalog test lock");
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+            Ok(())
+        }
+    }
+
+    struct TestChild(Option<Child>);
+
+    impl TestChild {
+        fn try_wait(&mut self) -> Result<Option<std::process::ExitStatus>> {
+            self.0
+                .as_mut()
+                .context("backup catalog test child was already consumed")?
+                .try_wait()
+                .context("failed to poll backup catalog test child")
+        }
+
+        fn finish(mut self) -> Result<Output> {
+            self.0
+                .take()
+                .context("backup catalog test child was already consumed")?
+                .wait_with_output()
+                .context("failed to wait for backup catalog test child")
+        }
+    }
+
+    impl Drop for TestChild {
+        fn drop(&mut self) {
+            if let Some(child) = self.0.as_mut() {
+                drop(child.kill());
+                drop(child.wait());
+            }
+        }
+    }
+
     #[test]
     fn local_backup_entry_splits_catalog_and_payload_identity() -> Result<()> {
         let base = unique_test_dir("catalog-identity")?;
-        let mut catalog = BackupCatalog::default();
         let payload = json!({
             "kind": "logos-inspector-settings-backup",
             "version": 1,
@@ -652,13 +1312,7 @@ mod tests {
             }
         });
 
-        let entry = create_entry_from_payload(
-            &base,
-            &mut catalog,
-            Some("Release candidate"),
-            &payload,
-            false,
-        )?;
+        let entry = record_payload_in_dir(&base, Some("Release candidate"), &payload)?;
 
         if entry.backup_catalog_id == entry.payload_id {
             bail!("catalog id and payload id must be separate");
@@ -677,7 +1331,6 @@ mod tests {
     #[test]
     fn local_backup_entry_records_plain_contents() -> Result<()> {
         let base = unique_test_dir("catalog-contents")?;
-        let mut catalog = BackupCatalog::default();
         let payload = json!({
             "encrypted": false,
             "state": {
@@ -687,7 +1340,7 @@ mod tests {
             }
         });
 
-        let entry = create_entry_from_payload(&base, &mut catalog, None, &payload, false)?;
+        let entry = record_payload_in_dir(&base, None, &payload)?;
 
         for content in ["settings", "favorites", "idl_registry", "wallet_profile"] {
             if !entry.contents.iter().any(|value| value == content) {
@@ -702,7 +1355,6 @@ mod tests {
     #[test]
     fn local_backup_entry_defaults_blank_label_to_created_at_timestamp() -> Result<()> {
         let base = unique_test_dir("catalog-default-label")?;
-        let mut catalog = BackupCatalog::default();
         let payload = json!({
             "encrypted": false,
             "state": {
@@ -710,7 +1362,7 @@ mod tests {
             }
         });
 
-        let entry = create_entry_from_payload(&base, &mut catalog, Some("   "), &payload, false)?;
+        let entry = record_payload_in_dir(&base, Some("   "), &payload)?;
 
         if entry.backup_version_label.is_empty() {
             bail!("backup label default must not be empty");
@@ -734,41 +1386,122 @@ mod tests {
     }
 
     #[test]
-    fn remote_upload_metadata_attaches_to_existing_identity() -> Result<()> {
-        let mut catalog = BackupCatalog {
-            version: CATALOG_VERSION,
-            entries: vec![BackupCatalogEntry {
-                backup_catalog_id: "backup-1".to_owned(),
-                payload_id: "sha256:abc".to_owned(),
-                backup_version_label: "Manual".to_owned(),
-                created_at: "1".to_owned(),
-                contents: vec!["settings".to_owned()],
-                encrypted: false,
-                local_payload_path: "/tmp/backup-1.json".to_owned(),
-                remote: None,
-            }],
-        };
-
-        let entry = catalog
-            .entries
-            .iter_mut()
-            .find(|entry| entry.backup_catalog_id == "backup-1")
-            .context("test entry missing")?;
-        entry.remote = Some(RemoteBackupMetadata {
-            cid: "z-cid".to_owned(),
-            provider: "logos_storage".to_owned(),
-            uploaded_at: "2".to_owned(),
+    fn remote_upload_metadata_attaches_once_and_retries_idempotently() -> Result<()> {
+        let base = unique_test_dir("remote-upload-attach-once")?;
+        let payload = json!({
+            "kind": "logos-inspector-settings-backup",
+            "version": 1,
+            "encrypted": false,
+            "state": { "settings": { "favorites": [] } }
         });
+        let local = record_payload_in_dir(&base, Some("Local"), &payload)?;
 
-        if catalog.entries.len() != 1 {
-            bail!("remote metadata must not create a second catalog entry");
+        let first = attach_remote_backup_metadata_in_dir(
+            &base,
+            &local.backup_catalog_id,
+            " z-cid ",
+            Some(" logos_storage "),
+        )?;
+        let catalog_path = catalog_path_for_dir(&base);
+        let catalog_before = fs::read(&catalog_path)?;
+        let second = attach_remote_backup_metadata_in_dir(
+            &base,
+            &local.backup_catalog_id,
+            "z-cid",
+            Some("logos_storage"),
+        )?;
+
+        anyhow::ensure!(
+            first == second
+                && first.remote.as_ref().map(|remote| remote.cid.as_str()) == Some("z-cid")
+                && fs::read(&catalog_path)? == catalog_before,
+            "idempotent remote metadata retry changed accepted identity"
+        );
+        fs::remove_dir_all(&base)
+            .with_context(|| format!("failed to remove test directory {}", base.display()))?;
+        Ok(())
+    }
+
+    #[test]
+    fn remote_upload_metadata_rejects_replacement_without_mutation() -> Result<()> {
+        let base = unique_test_dir("remote-upload-replacement")?;
+        let payload = json!({
+            "kind": "logos-inspector-settings-backup",
+            "version": 1,
+            "encrypted": false,
+            "state": { "settings": { "favorites": [] } }
+        });
+        let local = record_payload_in_dir(&base, None, &payload)?;
+        attach_remote_backup_metadata_in_dir(
+            &base,
+            &local.backup_catalog_id,
+            "z-first",
+            Some("logos_storage"),
+        )?;
+        let catalog_path = catalog_path_for_dir(&base);
+        let catalog_before = fs::read(&catalog_path)?;
+
+        for (cid, provider) in [("z-first", "other_storage"), ("z-second", "logos_storage")] {
+            let error = attach_remote_backup_metadata_in_dir(
+                &base,
+                &local.backup_catalog_id,
+                cid,
+                Some(provider),
+            )
+            .err()
+            .context("different remote identity should be rejected")?;
+
+            anyhow::ensure!(
+                error
+                    .to_string()
+                    .contains("already has remote metadata for CID `z-first`")
+                    && fs::read(&catalog_path)? == catalog_before,
+                "remote metadata replacement changed durable catalog state: {error:#}"
+            );
         }
-        let entry = catalog.entries.first().context("catalog entry missing")?;
-        if entry.payload_id != "sha256:abc"
-            || entry.remote.as_ref().map(|remote| remote.cid.as_str()) != Some("z-cid")
-        {
-            bail!("remote metadata did not attach to existing entry: {catalog:?}");
-        }
+        fs::remove_dir_all(&base)
+            .with_context(|| format!("failed to remove test directory {}", base.display()))?;
+        Ok(())
+    }
+
+    #[test]
+    fn remote_upload_cid_cannot_bind_to_different_payload_identity() -> Result<()> {
+        let base = unique_test_dir("remote-upload-cid-payload-conflict")?;
+        let first_payload = json!({
+            "kind": "logos-inspector-settings-backup",
+            "version": 1,
+            "encrypted": false,
+            "state": { "settings": { "theme": "light", "favorites": [] } }
+        });
+        let second_payload = json!({
+            "kind": "logos-inspector-settings-backup",
+            "version": 1,
+            "encrypted": false,
+            "state": { "settings": { "theme": "dark", "favorites": [] } }
+        });
+        let first = record_payload_in_dir(&base, None, &first_payload)?;
+        let second = record_payload_in_dir(&base, None, &second_payload)?;
+        attach_remote_backup_metadata_in_dir(&base, &first.backup_catalog_id, "z-shared", None)?;
+        let catalog_path = catalog_path_for_dir(&base);
+        let catalog_before = fs::read(&catalog_path)?;
+
+        let error = attach_remote_backup_metadata_in_dir(
+            &base,
+            &second.backup_catalog_id,
+            "z-shared",
+            None,
+        )
+        .err()
+        .context("one CID should not bind different payload identities")?;
+
+        anyhow::ensure!(
+            error.to_string()
+                == "remote backup CID `z-shared` conflicts with existing payload identity"
+                && fs::read(&catalog_path)? == catalog_before,
+            "CID payload conflict changed durable catalog state: {error:#}"
+        );
+        fs::remove_dir_all(&base)
+            .with_context(|| format!("failed to remove test directory {}", base.display()))?;
         Ok(())
     }
 
@@ -1016,6 +1749,144 @@ mod tests {
     }
 
     #[test]
+    fn catalog_load_rejects_traversal_id_before_existing_cid_repair() -> Result<()> {
+        let sandbox = tempfile::tempdir()?;
+        let base = sandbox.path().join("catalog").join("base");
+        fs::create_dir_all(&base)?;
+        let payload = json!({
+            "kind": "logos-inspector-settings-backup",
+            "version": 1,
+            "encrypted": false,
+            "state": { "settings": { "favorites": [] } }
+        });
+        let payload_bytes = serde_json::to_vec_pretty(&payload)?;
+        let victim = sandbox.path().join("victim.json");
+        fs::write(&victim, b"sentinel")?;
+        let catalog = BackupCatalog {
+            version: CATALOG_VERSION,
+            entries: vec![BackupCatalogEntry {
+                backup_catalog_id: "../../../victim".to_owned(),
+                payload_id: payload_identity(&payload_bytes),
+                backup_version_label: "crafted".to_owned(),
+                created_at: "1".to_owned(),
+                contents: vec!["settings".to_owned()],
+                encrypted: false,
+                local_payload_path: victim.display().to_string(),
+                remote: Some(RemoteBackupMetadata {
+                    cid: "z-crafted-cid".to_owned(),
+                    provider: "logos_storage".to_owned(),
+                    uploaded_at: "1".to_owned(),
+                }),
+            }],
+        };
+        let catalog_path = catalog_path_for_dir(&base);
+        let catalog_before = serde_json::to_vec_pretty(&catalog)?;
+        fs::write(&catalog_path, &catalog_before)?;
+
+        let error = record_remote_payload_in_dir(
+            &base,
+            None,
+            &payload,
+            "z-crafted-cid",
+            Some("logos_storage"),
+        )
+        .err()
+        .context("crafted catalog id should fail before repair")?;
+
+        if !error.to_string().contains("invalid id")
+            || fs::read(&victim)? != b"sentinel"
+            || fs::read(&catalog_path)? != catalog_before
+        {
+            bail!("crafted catalog repair escaped fail-closed validation: {error:#}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn catalog_load_rejects_noncanonical_and_duplicate_identity_fields() -> Result<()> {
+        let base = unique_test_dir("catalog-load-integrity")?;
+        let payload = json!({
+            "kind": "logos-inspector-settings-backup",
+            "version": 1,
+            "encrypted": false,
+            "state": { "settings": { "favorites": [] } }
+        });
+        let first = record_remote_payload_in_dir(
+            &base,
+            None,
+            &payload,
+            "z-integrity-first",
+            Some("logos_storage"),
+        )?;
+        let catalog_path = catalog_path_for_dir(&base);
+        let valid = load_catalog_from_path(&catalog_path)?;
+
+        let mut invalid_payload = valid.clone();
+        invalid_payload
+            .entries
+            .first_mut()
+            .context("valid catalog has no entry")?
+            .payload_id = "sha256:not-a-digest".to_owned();
+        fs::write(&catalog_path, serde_json::to_vec_pretty(&invalid_payload)?)?;
+        if load_catalog_from_path(&catalog_path).is_ok() {
+            bail!("invalid persisted payload identity was accepted");
+        }
+
+        let mut invalid_path = valid.clone();
+        invalid_path
+            .entries
+            .first_mut()
+            .context("valid catalog has no entry")?
+            .local_payload_path = base.join("elsewhere.json").display().to_string();
+        fs::write(&catalog_path, serde_json::to_vec_pretty(&invalid_path)?)?;
+        if load_catalog_from_path(&catalog_path).is_ok() {
+            bail!("noncanonical persisted payload path was accepted");
+        }
+
+        let mut duplicate = valid.clone();
+        let mut second = duplicate
+            .entries
+            .first()
+            .cloned()
+            .context("valid catalog has no entry")?;
+        second.backup_version_label = "duplicate".to_owned();
+        duplicate.entries.push(second);
+        fs::write(&catalog_path, serde_json::to_vec_pretty(&duplicate)?)?;
+        if load_catalog_from_path(&catalog_path).is_ok() {
+            bail!("duplicate persisted catalog and remote identities were accepted");
+        }
+
+        let mut duplicate_cid = valid.clone();
+        let mut second = duplicate_cid
+            .entries
+            .first()
+            .cloned()
+            .context("valid catalog has no entry")?;
+        second.backup_catalog_id = "backup_duplicate_remote_cid".to_owned();
+        second.local_payload_path = payload_path(&base, &second.backup_catalog_id)
+            .display()
+            .to_string();
+        duplicate_cid.entries.push(second);
+        fs::write(&catalog_path, serde_json::to_vec_pretty(&duplicate_cid)?)?;
+        if load_catalog_from_path(&catalog_path).is_ok() {
+            bail!("duplicate persisted remote CID was accepted");
+        }
+
+        fs::write(&catalog_path, serde_json::to_vec_pretty(&valid)?)?;
+        let restored = load_catalog_from_path(&catalog_path)?;
+        let restored_id = restored
+            .entries
+            .first()
+            .map(|entry| &entry.backup_catalog_id);
+        if restored.entries.len() != 1 || restored_id != Some(&first.backup_catalog_id) {
+            bail!("valid catalog did not reload after integrity checks");
+        }
+        fs::remove_dir_all(&base)
+            .with_context(|| format!("failed to remove test directory {}", base.display()))?;
+        Ok(())
+    }
+
+    #[test]
     fn remote_download_rejects_changed_payload_for_existing_cid_without_mutation() -> Result<()> {
         let base = unique_test_dir("remote-download-cid-conflict")?;
         let first_payload = json!({
@@ -1139,6 +2010,459 @@ mod tests {
         fs::remove_dir_all(&base)
             .with_context(|| format!("failed to remove test directory {}", base.display()))?;
         Ok(())
+    }
+
+    #[test]
+    fn failed_catalog_commit_rolls_back_payload_and_next_writer_cleans_crash_orphans() -> Result<()>
+    {
+        let directory = tempfile::tempdir()?;
+        let base = directory.path();
+        let first_payload = json!({
+            "kind": "logos-inspector-settings-backup",
+            "version": 1,
+            "encrypted": false,
+            "state": { "settings": { "theme": "light", "favorites": [] } }
+        });
+        let second_payload = json!({
+            "kind": "logos-inspector-settings-backup",
+            "version": 1,
+            "encrypted": false,
+            "state": { "settings": { "theme": "dark", "favorites": [] } }
+        });
+        let first = record_remote_payload_in_dir(
+            base,
+            None,
+            &first_payload,
+            "z-first-durable",
+            Some("logos_storage"),
+        )?;
+        let catalog_path = catalog_path_for_dir(base);
+        let catalog_before = fs::read(&catalog_path)?;
+        let first_payload_before = fs::read(payload_path(base, &first.backup_catalog_id))?;
+        let mut hook = FailAfterPayloadPersist { fired: false };
+
+        let error = record_remote_payload_in_dir_with_hook(
+            base,
+            None,
+            &second_payload,
+            "z-interrupted",
+            Some("logos_storage"),
+            &mut hook,
+        )
+        .err()
+        .context("injected backup catalog commit failure should fail")?;
+
+        if !error
+            .to_string()
+            .contains("injected backup catalog failure after payload persistence")
+            || fs::read(&catalog_path)? != catalog_before
+            || fs::read(payload_path(base, &first.backup_catalog_id))? != first_payload_before
+            || load_catalog_from_path(&catalog_path)?.entries.len() != 1
+        {
+            bail!("failed catalog commit changed durable state: {error:#}");
+        }
+        let payload_dir = base.join(BACKUP_PAYLOAD_DIR);
+        let payload_files = fs::read_dir(&payload_dir)?
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        if payload_files.len() != 1
+            || payload_files
+                .iter()
+                .any(|name| name.to_string_lossy().starts_with(PAYLOAD_STAGE_PREFIX))
+        {
+            bail!("failed catalog commit left payload artifacts: {payload_files:?}");
+        }
+
+        let orphan = payload_dir.join("backup_crash_orphan.json");
+        let payload_stage = payload_dir.join(format!("{PAYLOAD_STAGE_PREFIX}crash.tmp"));
+        let catalog_stage = base.join(format!("{CATALOG_STAGE_PREFIX}crash.tmp"));
+        fs::write(&orphan, b"orphan")?;
+        fs::write(&payload_stage, b"staged")?;
+        fs::write(&catalog_stage, b"staged")?;
+
+        let repeated = record_remote_payload_in_dir(
+            base,
+            None,
+            &first_payload,
+            "z-first-durable",
+            Some("logos_storage"),
+        )?;
+
+        if repeated != first
+            || orphan.exists()
+            || payload_stage.exists()
+            || catalog_stage.exists()
+            || fs::read(&catalog_path)? != catalog_before
+        {
+            bail!("next catalog writer did not clean crash artifacts idempotently");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn payload_install_failure_does_not_claim_uninstalled_remote_metadata() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let base = directory.path();
+        let payload = json!({
+            "kind": "logos-inspector-settings-backup",
+            "version": 1,
+            "encrypted": false,
+            "state": { "settings": { "theme": "dark", "favorites": [] } }
+        });
+        let local = record_payload_in_dir(base, Some("Local"), &payload)?;
+        let mut hook = FailAfterPayloadPersist { fired: false };
+
+        let error = record_remote_payload_in_dir_with_hook(
+            base,
+            Some("Remote"),
+            &payload,
+            "z-promotion-retry",
+            Some("logos_storage"),
+            &mut hook,
+        )
+        .err()
+        .context("uninstalled remote metadata should not be reported as committed")?;
+        let after_failure = load_catalog_from_path(&catalog_path_for_dir(base))?;
+
+        anyhow::ensure!(
+            error
+                .to_string()
+                .contains("injected backup catalog failure after payload persistence"),
+            "local-to-remote promotion returned the wrong failure: {error:#}"
+        );
+        anyhow::ensure!(
+            after_failure.entries.as_slice() == [local.clone()]
+                && after_failure
+                    .entries
+                    .first()
+                    .is_some_and(|entry| entry.remote.is_none())
+                && !backup_payload_bytes_in_dir(base, &local.backup_catalog_id)?.is_empty(),
+            "failed local-to-remote promotion exposed uninstalled metadata: {after_failure:?}"
+        );
+
+        let retry = record_remote_payload_in_dir(
+            base,
+            Some("Remote"),
+            &payload,
+            "z-promotion-retry",
+            Some("logos_storage"),
+        )?;
+        let after_retry = load_catalog_from_path(&catalog_path_for_dir(base))?;
+        anyhow::ensure!(
+            retry.backup_catalog_id == local.backup_catalog_id
+                && retry
+                    .remote
+                    .as_ref()
+                    .is_some_and(|remote| remote.cid == "z-promotion-retry")
+                && after_retry.entries.as_slice() == [retry],
+            "local-to-remote retry did not commit exactly once: {after_retry:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn catalog_install_uncertainty_returns_committed_receipt_without_surprise_entry() -> Result<()>
+    {
+        let directory = tempfile::tempdir()?;
+        let base = directory.path();
+        let payload = json!({
+            "kind": "logos-inspector-settings-backup",
+            "version": 1,
+            "encrypted": false,
+            "state": { "settings": { "theme": "dark", "favorites": [] } }
+        });
+        let mut hook = FailAfterCatalogPersist { fired: false };
+
+        let committed = record_remote_payload_in_dir_with_hook(
+            base,
+            None,
+            &payload,
+            "z-installed-uncertain",
+            Some("logos_storage"),
+            &mut hook,
+        )?;
+        let entry = match committed {
+            CommittedBackupCatalog::VisibleDurabilityUnconfirmed { value, error } => {
+                anyhow::ensure!(
+                    error.contains(
+                        "injected backup catalog durability uncertainty after catalog install"
+                    ),
+                    "catalog install lost uncertainty evidence: {error}"
+                );
+                value
+            }
+            CommittedBackupCatalog::Durable(_) => {
+                bail!("injected post-install uncertainty was reported as durable")
+            }
+        };
+
+        let immediately_visible = load_catalog_from_path(&catalog_path_for_dir(base))?;
+        anyhow::ensure!(
+            immediately_visible.entries.as_slice() == [entry.clone()],
+            "post-install uncertainty hid a catalog entry until later recovery"
+        );
+        let retry = spawn_catalog_writer(base, "z-installed-uncertain", "dark", None, None, None)?;
+        assert_child_success(
+            retry.finish()?,
+            "cross-process retry after uncertain durability",
+        )?;
+        let after_retry = load_catalog_from_path(&catalog_path_for_dir(base))?;
+        anyhow::ensure!(
+            after_retry.entries.as_slice() == [entry],
+            "cross-process retry duplicated or revealed a surprise catalog entry: {after_retry:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cross_process_writers_reload_catalog_under_exclusive_lock() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let base = directory.path();
+        let acquired_marker = base.join("first-lock-acquired");
+        let release_marker = base.join("release-first-lock");
+        let second_attempt_marker = base.join("second-lock-attempted");
+        let first = spawn_catalog_writer(
+            base,
+            "z-concurrent-first",
+            "light",
+            None,
+            Some(&acquired_marker),
+            Some(&release_marker),
+        )?;
+        wait_for_file(&acquired_marker)?;
+        let mut second = spawn_catalog_writer(
+            base,
+            "z-concurrent-second",
+            "dark",
+            Some(&second_attempt_marker),
+            None,
+            None,
+        )?;
+        wait_for_file(&second_attempt_marker)?;
+        if let Some(status) = second.try_wait()? {
+            bail!("second catalog writer bypassed exclusive lock: {status}");
+        }
+
+        fs::write(&release_marker, b"release")?;
+        assert_child_success(first.finish()?, "first catalog writer")?;
+        assert_child_success(second.finish()?, "second catalog writer")?;
+
+        let catalog_bytes = fs::read(catalog_path_for_dir(base))?;
+        let catalog: BackupCatalog = serde_json::from_slice(&catalog_bytes)
+            .context("concurrent backup catalog is not valid JSON")?;
+        let remote_cids = catalog
+            .entries
+            .iter()
+            .filter_map(|entry| entry.remote.as_ref().map(|remote| remote.cid.as_str()))
+            .collect::<Vec<_>>();
+        if catalog.entries.len() != 2
+            || !remote_cids.contains(&"z-concurrent-first")
+            || !remote_cids.contains(&"z-concurrent-second")
+        {
+            bail!("concurrent catalog writers lost an entry: {catalog:?}");
+        }
+        for entry in &catalog.entries {
+            backup_payload_bytes_in_dir(base, &entry.backup_catalog_id)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn cross_process_remote_metadata_attach_is_first_writer_wins() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let base = directory.path();
+        let payload = json!({
+            "kind": "logos-inspector-settings-backup",
+            "version": 1,
+            "encrypted": false,
+            "state": { "settings": { "favorites": [] } }
+        });
+        let local = record_payload_in_dir(base, None, &payload)?;
+        let acquired_marker = base.join("first-attach-lock-acquired");
+        let release_marker = base.join("release-first-attach-lock");
+        let second_attempt_marker = base.join("second-attach-lock-attempted");
+        let first = spawn_catalog_attacher(
+            base,
+            &local.backup_catalog_id,
+            "z-attach-first",
+            None,
+            Some(&acquired_marker),
+            Some(&release_marker),
+        )?;
+        wait_for_file(&acquired_marker)?;
+        let mut second = spawn_catalog_attacher(
+            base,
+            &local.backup_catalog_id,
+            "z-attach-second",
+            Some(&second_attempt_marker),
+            None,
+            None,
+        )?;
+        wait_for_file(&second_attempt_marker)?;
+        if let Some(status) = second.try_wait()? {
+            bail!("second metadata attacher bypassed exclusive lock: {status}");
+        }
+
+        fs::write(&release_marker, b"release")?;
+        assert_child_success(first.finish()?, "first metadata attacher")?;
+        let second_output = second.finish()?;
+        anyhow::ensure!(
+            !second_output.status.success()
+                && String::from_utf8_lossy(&second_output.stderr)
+                    .contains("already has remote metadata for CID `z-attach-first`"),
+            "second metadata attacher did not reject replacement: status={}, stderr={}",
+            second_output.status,
+            String::from_utf8_lossy(&second_output.stderr)
+        );
+
+        let catalog = load_catalog_from_path(&catalog_path_for_dir(base))?;
+        let stored = ensure_catalog_entry(&catalog, &local.backup_catalog_id)?;
+        anyhow::ensure!(
+            stored.remote.as_ref().map(|remote| remote.cid.as_str()) == Some("z-attach-first"),
+            "cross-process metadata race replaced the first identity: {stored:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn backup_catalog_subprocess_writer() -> Result<()> {
+        let Some(base_dir) = env::var_os(CHILD_BASE_DIR_ENV) else {
+            return Ok(());
+        };
+        let cid = env::var(CHILD_CID_ENV).context("backup catalog child CID is missing")?;
+        let theme = env::var(CHILD_THEME_ENV).context("backup catalog child theme is missing")?;
+        let payload = json!({
+            "kind": "logos-inspector-settings-backup",
+            "version": 1,
+            "encrypted": false,
+            "state": { "settings": { "theme": theme, "favorites": [] } }
+        });
+        let mut hook = SubprocessLockHook::from_environment();
+        record_remote_payload_in_dir_with_hook(
+            Path::new(&base_dir),
+            None,
+            &payload,
+            &cid,
+            Some("logos_storage"),
+            &mut hook,
+        )?
+        .into_value();
+        Ok(())
+    }
+
+    #[test]
+    fn backup_catalog_subprocess_attacher() -> Result<()> {
+        let Some(base_dir) = env::var_os(CHILD_BASE_DIR_ENV) else {
+            return Ok(());
+        };
+        let catalog_id =
+            env::var(CHILD_CATALOG_ID_ENV).context("backup catalog child ID is missing")?;
+        let cid = env::var(CHILD_CID_ENV).context("backup catalog child CID is missing")?;
+        let mut hook = SubprocessLockHook::from_environment();
+        attach_remote_backup_metadata_in_dir_with_hook(
+            Path::new(&base_dir),
+            &catalog_id,
+            &cid,
+            Some("logos_storage"),
+            &mut hook,
+        )?
+        .into_value();
+        Ok(())
+    }
+
+    fn spawn_catalog_writer(
+        base_dir: &Path,
+        cid: &str,
+        theme: &str,
+        attempt_marker: Option<&Path>,
+        acquired_marker: Option<&Path>,
+        release_marker: Option<&Path>,
+    ) -> Result<TestChild> {
+        let mut command = Command::new(env::current_exe()?);
+        command
+            .arg("--exact")
+            .arg("support::backup_catalog::tests::backup_catalog_subprocess_writer")
+            .arg("--nocapture")
+            .env(CHILD_BASE_DIR_ENV, base_dir)
+            .env(CHILD_CID_ENV, cid)
+            .env(CHILD_THEME_ENV, theme)
+            .env_remove(CHILD_LOCK_ATTEMPT_ENV)
+            .env_remove(CHILD_LOCK_ACQUIRED_ENV)
+            .env_remove(CHILD_LOCK_RELEASE_ENV)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(marker) = attempt_marker {
+            command.env(CHILD_LOCK_ATTEMPT_ENV, marker);
+        }
+        if let Some(marker) = acquired_marker {
+            command.env(CHILD_LOCK_ACQUIRED_ENV, marker);
+        }
+        if let Some(marker) = release_marker {
+            command.env(CHILD_LOCK_RELEASE_ENV, marker);
+        }
+        Ok(TestChild(Some(
+            command
+                .spawn()
+                .context("failed to spawn backup catalog test writer")?,
+        )))
+    }
+
+    fn spawn_catalog_attacher(
+        base_dir: &Path,
+        catalog_id: &str,
+        cid: &str,
+        attempt_marker: Option<&Path>,
+        acquired_marker: Option<&Path>,
+        release_marker: Option<&Path>,
+    ) -> Result<TestChild> {
+        let mut command = Command::new(env::current_exe()?);
+        command
+            .arg("--exact")
+            .arg("support::backup_catalog::tests::backup_catalog_subprocess_attacher")
+            .arg("--nocapture")
+            .env(CHILD_BASE_DIR_ENV, base_dir)
+            .env(CHILD_CATALOG_ID_ENV, catalog_id)
+            .env(CHILD_CID_ENV, cid)
+            .env_remove(CHILD_LOCK_ATTEMPT_ENV)
+            .env_remove(CHILD_LOCK_ACQUIRED_ENV)
+            .env_remove(CHILD_LOCK_RELEASE_ENV)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(marker) = attempt_marker {
+            command.env(CHILD_LOCK_ATTEMPT_ENV, marker);
+        }
+        if let Some(marker) = acquired_marker {
+            command.env(CHILD_LOCK_ACQUIRED_ENV, marker);
+        }
+        if let Some(marker) = release_marker {
+            command.env(CHILD_LOCK_RELEASE_ENV, marker);
+        }
+        Ok(TestChild(Some(command.spawn().context(
+            "failed to spawn backup catalog metadata attacher",
+        )?)))
+    }
+
+    fn wait_for_file(path: &Path) -> Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !path.is_file() {
+            if Instant::now() >= deadline {
+                bail!("timed out waiting for test marker {}", path.display());
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        Ok(())
+    }
+
+    fn assert_child_success(output: Output, label: &str) -> Result<()> {
+        if output.status.success() {
+            return Ok(());
+        }
+        bail!(
+            "{label} failed with {}\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
     }
 
     fn unique_test_dir(label: &str) -> Result<PathBuf> {

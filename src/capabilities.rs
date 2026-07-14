@@ -184,8 +184,8 @@ fn string_list(value: Option<&Value>) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use anyhow::{Result, bail};
-    use serde_json::Value;
+    use anyhow::{Context as _, Result, bail};
+    use serde_json::{Value, json};
 
     use super::*;
 
@@ -518,6 +518,229 @@ mod tests {
             if !unavailable_contains(storage, key) {
                 bail!("storage module should not satisfy `{key}`: {storage}");
             }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn logoscore_storage_backup_read_requires_exact_runtime_contract() -> Result<()> {
+        let source_report = |events: Value| {
+            json!({
+                "health": {
+                    "ready": true,
+                    "reachable": true,
+                    "status": "ready",
+                    "detail": "storage module reachable"
+                },
+                "module_info": {
+                    "ok": true,
+                    "value": {
+                        "value": {
+                            "name": "storage_module",
+                            "methods": [
+                                {
+                                    "isInvokable": true,
+                                    "name": "downloadProtocol",
+                                    "signature": "downloadProtocol()"
+                                },
+                                {
+                                    "isInvokable": true,
+                                    "name": "downloadToUrlV2",
+                                    "signature": "downloadToUrlV2(QString,QString,bool,int,QString,int)"
+                                },
+                                {
+                                    "isInvokable": true,
+                                    "name": "downloadCancelV2",
+                                    "signature": "downloadCancelV2(QString)"
+                                }
+                            ],
+                            "events": events
+                        }
+                    }
+                },
+                "probes": [{
+                    "probe_key": "backupDownloadReadiness",
+                    "label": "storage backup download readiness",
+                    "source": "logoscore watch storage_module --event storageDownloadDoneV2 --json --watch-protocol v1",
+                    "ok": true,
+                    "value": {
+                        "shared_staging": true,
+                        "contract": {
+                            "protocol": "logos.storage.download",
+                            "version": 2,
+                            "moduleOperationIdOwner": "caller",
+                            "cancelTimeoutMs": 15_000,
+                            "maxDownloadBytes": 1_073_741_824_u64
+                        },
+                        "watch_protocol": {
+                            "protocol": "logoscore.watch",
+                            "version": 1,
+                            "ready": true
+                        }
+                    }
+                }]
+            })
+        };
+        let report = |storage: Value| {
+            test_registry_report_with_value(
+                CapabilityBuildMode::Standalone,
+                Some(&json!({
+                    "network_connector_config": {
+                        "scopes": {
+                            "storage": {
+                                "connector_id": "logoscore_cli_storage_module",
+                                "provenance": "build_default"
+                            }
+                        }
+                    },
+                    "source_reports": { "storage": storage }
+                })),
+            )
+        };
+        let replace = |value: &mut Value, pointer: &str, replacement: Value| -> Result<()> {
+            *value
+                .pointer_mut(pointer)
+                .with_context(|| format!("missing test report field `{pointer}`"))? = replacement;
+            Ok(())
+        };
+
+        let supported = serde_json::to_value(report(source_report(json!([
+            { "name": "storageDownloadDoneV2", "signature": "storageDownloadDoneV2(QString)" }
+        ]))))?;
+        let unsupported = serde_json::to_value(report(source_report(json!([]))))?;
+        let wrong_signature = serde_json::to_value(report(source_report(json!([
+            { "name": "storageDownloadDoneV2", "signature": "storageDownloadDoneV2()" }
+        ]))))?;
+        let mut failed_readiness = source_report(json!([
+            { "name": "storageDownloadDoneV2", "signature": "storageDownloadDoneV2(QString)" }
+        ]));
+        replace(&mut failed_readiness, "/probes/0/ok", json!(false))?;
+        let failed_readiness = serde_json::to_value(report(failed_readiness))?;
+        let mut failed_probe = source_report(json!([
+            { "name": "storageDownloadDoneV2", "signature": "storageDownloadDoneV2(QString)" }
+        ]));
+        replace(&mut failed_probe, "/module_info/ok", json!(false))?;
+        let failed_probe = serde_json::to_value(report(failed_probe))?;
+        let mut not_invokable = source_report(json!([
+            { "name": "storageDownloadDoneV2", "signature": "storageDownloadDoneV2(QString)" }
+        ]));
+        replace(
+            &mut not_invokable,
+            "/module_info/value/value/methods/0/isInvokable",
+            json!(false),
+        )?;
+        let not_invokable = serde_json::to_value(report(not_invokable))?;
+        let mut wrong_method_signature = source_report(json!([
+            { "name": "storageDownloadDoneV2", "signature": "storageDownloadDoneV2(QString)" }
+        ]));
+        replace(
+            &mut wrong_method_signature,
+            "/module_info/value/value/methods/1/signature",
+            json!("downloadToUrlV2(QString,QString,bool,int)"),
+        )?;
+        let wrong_method_signature = serde_json::to_value(report(wrong_method_signature))?;
+        let mut wrong_protocol = source_report(json!([
+            { "name": "storageDownloadDoneV2", "signature": "storageDownloadDoneV2(QString)" }
+        ]));
+        replace(
+            &mut wrong_protocol,
+            "/probes/0/value/contract/version",
+            json!(1),
+        )?;
+        let wrong_protocol = serde_json::to_value(report(wrong_protocol))?;
+        let mut wrong_cancel_timeout = source_report(json!([
+            { "name": "storageDownloadDoneV2", "signature": "storageDownloadDoneV2(QString)" }
+        ]));
+        replace(
+            &mut wrong_cancel_timeout,
+            "/probes/0/value/contract/cancelTimeoutMs",
+            json!(12_000),
+        )?;
+        let wrong_cancel_timeout = serde_json::to_value(report(wrong_cancel_timeout))?;
+        let mut insufficient_download_limit = source_report(json!([
+            { "name": "storageDownloadDoneV2", "signature": "storageDownloadDoneV2(QString)" }
+        ]));
+        replace(
+            &mut insufficient_download_limit,
+            "/probes/0/value/contract/maxDownloadBytes",
+            json!(16 * 1024 * 1024 - 1),
+        )?;
+        let insufficient_download_limit =
+            serde_json::to_value(report(insufficient_download_limit))?;
+        let mut wrong_watch_protocol = source_report(json!([
+            { "name": "storageDownloadDoneV2", "signature": "storageDownloadDoneV2(QString)" }
+        ]));
+        replace(
+            &mut wrong_watch_protocol,
+            "/probes/0/value/watch_protocol/ready",
+            json!(false),
+        )?;
+        let wrong_watch_protocol = serde_json::to_value(report(wrong_watch_protocol))?;
+        let supported = capability_for(&supported, "storage")
+            .context("supported Storage capability missing")?;
+        let unsupported = capability_for(&unsupported, "storage")
+            .context("unsupported Storage capability missing")?;
+        let wrong_signature = capability_for(&wrong_signature, "storage")
+            .context("wrong-signature Storage capability missing")?;
+        let failed_probe = capability_for(&failed_probe, "storage")
+            .context("failed-probe Storage capability missing")?;
+        let not_invokable = capability_for(&not_invokable, "storage")
+            .context("not-invokable Storage capability missing")?;
+        let failed_readiness = capability_for(&failed_readiness, "storage")
+            .context("failed-readiness Storage capability missing")?;
+        let wrong_method_signature = capability_for(&wrong_method_signature, "storage")
+            .context("wrong-method-signature Storage capability missing")?;
+        let wrong_protocol = capability_for(&wrong_protocol, "storage")
+            .context("wrong-protocol Storage capability missing")?;
+        let wrong_cancel_timeout = capability_for(&wrong_cancel_timeout, "storage")
+            .context("wrong-cancel-timeout Storage capability missing")?;
+        let insufficient_download_limit =
+            capability_for(&insufficient_download_limit, "storage")
+                .context("insufficient-download-limit Storage capability missing")?;
+        let wrong_watch_protocol = capability_for(&wrong_watch_protocol, "storage")
+            .context("wrong-watch-protocol Storage capability missing")?;
+
+        if unavailable_contains(supported, "storage.backup.sync_read_by_cid") {
+            bail!("exact runtime contract was not credited: {supported}");
+        }
+        if !unavailable_contains(unsupported, "storage.backup.sync_read_by_cid") {
+            bail!("missing runtime event overclaimed backup read: {unsupported}");
+        }
+        if !unavailable_contains(wrong_signature, "storage.backup.sync_read_by_cid") {
+            bail!("wrong runtime event signature overclaimed backup read: {wrong_signature}");
+        }
+        if !unavailable_contains(failed_probe, "storage.backup.sync_read_by_cid") {
+            bail!("failed module-info probe overclaimed backup read: {failed_probe}");
+        }
+        if !unavailable_contains(not_invokable, "storage.backup.sync_read_by_cid") {
+            bail!("non-invokable download method overclaimed backup read: {not_invokable}");
+        }
+        if !unavailable_contains(failed_readiness, "storage.backup.sync_read_by_cid") {
+            bail!("failed readiness probe overclaimed backup read: {failed_readiness}");
+        }
+        if !unavailable_contains(wrong_method_signature, "storage.backup.sync_read_by_cid") {
+            bail!(
+                "wrong download method signature overclaimed backup read: {wrong_method_signature}"
+            );
+        }
+        if !unavailable_contains(wrong_protocol, "storage.backup.sync_read_by_cid") {
+            bail!("wrong Storage download protocol overclaimed backup read: {wrong_protocol}");
+        }
+        if !unavailable_contains(wrong_cancel_timeout, "storage.backup.sync_read_by_cid") {
+            bail!(
+                "wrong Storage cancellation timeout overclaimed backup read: {wrong_cancel_timeout}"
+            );
+        }
+        if !unavailable_contains(
+            insufficient_download_limit,
+            "storage.backup.sync_read_by_cid",
+        ) {
+            bail!(
+                "insufficient producer byte limit overclaimed backup read: {insufficient_download_limit}"
+            );
+        }
+        if !unavailable_contains(wrong_watch_protocol, "storage.backup.sync_read_by_cid") {
+            bail!("unready watch protocol overclaimed backup read: {wrong_watch_protocol}");
         }
         Ok(())
     }

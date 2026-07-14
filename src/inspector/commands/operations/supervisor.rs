@@ -39,8 +39,8 @@ use super::{
 
 const MAX_ACTIVE_OPERATIONS: usize = 64;
 const SUPERVISOR_COMMAND_CAPACITY: usize = MAX_ACTIVE_OPERATIONS;
-// Longer than the CLI adapter's bounded terminate-and-reap retry window.
-const TERMINATION_HANDSHAKE_GRACE: Duration = Duration::from_secs(1);
+// Longer than ordinary adapters' bounded terminate-and-reap retry window.
+const DEFAULT_TERMINATION_HANDSHAKE_GRACE: Duration = Duration::from_secs(1);
 const EXECUTION_QUEUED: u8 = 0;
 const EXECUTION_STARTED: u8 = 1;
 const EXECUTION_STOPPED_BEFORE_START: u8 = 2;
@@ -99,6 +99,27 @@ impl std::fmt::Display for OperationInterrupted {
 impl std::error::Error for OperationInterrupted {}
 
 #[derive(Debug)]
+pub(super) struct OperationCleanupUnconfirmed {
+    message: String,
+}
+
+impl OperationCleanupUnconfirmed {
+    pub(super) fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for OperationCleanupUnconfirmed {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for OperationCleanupUnconfirmed {}
+
+#[derive(Debug)]
 pub(super) struct OperationAdapterClosed {
     message: String,
 }
@@ -129,6 +150,7 @@ pub(super) struct OperationControl {
     blocking_work: BlockingWorkTracker,
     commit_active: Arc<AtomicBool>,
     execution_state: Arc<AtomicU8>,
+    termination_handshake_grace: Duration,
 }
 
 pub(super) struct OperationCommitGuard {
@@ -156,7 +178,13 @@ impl OperationControl {
             blocking_work: BlockingWorkTracker::new(),
             commit_active: Arc::new(AtomicBool::new(false)),
             execution_state: Arc::new(AtomicU8::new(EXECUTION_QUEUED)),
+            termination_handshake_grace: DEFAULT_TERMINATION_HANDSHAKE_GRACE,
         }
+    }
+
+    fn with_termination_handshake_grace(mut self, grace: Duration) -> Self {
+        self.termination_handshake_grace = grace;
+        self
     }
 
     pub(super) fn cancellation(&self) -> &CancellationToken {
@@ -473,13 +501,16 @@ impl RuntimeOperationSupervisor {
                 path,
                 created: Arc::new(AtomicBool::new(false)),
             });
+        let termination_handshake_grace = super::storage::termination_handshake_grace(request)?
+            .unwrap_or(DEFAULT_TERMINATION_HANDSHAKE_GRACE);
         Ok(OperationAdmission {
             operation_id,
             control: OperationControl::new(
                 &self.inner.shared.root,
                 deadline,
                 disposable_file.clone(),
-            ),
+            )
+            .with_termination_handshake_grace(termination_handshake_grace),
             cleanup: OperationCleanup {
                 disposable_files: disposable_file.into_iter().collect(),
             },
@@ -981,6 +1012,7 @@ enum OperationTaskResult {
     Resolved(RuntimeOperationOutcome),
     ExecutionFailed(String),
     Interrupted(OperationInterrupted),
+    CleanupUnconfirmed(String),
     AdapterClosed(String),
 }
 
@@ -988,6 +1020,7 @@ enum OperationTaskResult {
 enum ExternalWaitResult {
     Settled,
     Deadline,
+    CleanupSettlementGraceElapsed,
     Shutdown,
 }
 
@@ -997,12 +1030,21 @@ enum TaskKind {
     External,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExternalWaitPolicy {
+    OperationDeadline,
+    CleanupSettlement { deadline: Instant },
+    CleanupEvidence,
+}
+
 struct TaskDescriptor {
     operation_id: RuntimeOperationId,
     control: OperationControl,
     cleanup: OperationCleanup,
     _permit: OwnedSemaphorePermit,
     kind: TaskKind,
+    external_wait_policy: ExternalWaitPolicy,
+    cleanup_uncertainty: Option<String>,
 }
 
 fn spawn_operation_task<F>(
@@ -1227,11 +1269,14 @@ fn launch_command(
         .await;
         let result = match result {
             Ok(outcome) => OperationTaskResult::Resolved(outcome),
-            Err(error) => match error.downcast::<OperationInterrupted>() {
-                Ok(interrupted) => OperationTaskResult::Interrupted(interrupted),
-                Err(error) => match error.downcast::<OperationAdapterClosed>() {
-                    Ok(closed) => OperationTaskResult::AdapterClosed(closed.to_string()),
-                    Err(error) => OperationTaskResult::ExecutionFailed(error.to_string()),
+            Err(error) => match error.downcast::<OperationCleanupUnconfirmed>() {
+                Ok(unconfirmed) => OperationTaskResult::CleanupUnconfirmed(unconfirmed.to_string()),
+                Err(error) => match error.downcast::<OperationInterrupted>() {
+                    Ok(interrupted) => OperationTaskResult::Interrupted(interrupted),
+                    Err(error) => match error.downcast::<OperationAdapterClosed>() {
+                        Ok(closed) => OperationTaskResult::AdapterClosed(closed.to_string()),
+                        Err(error) => OperationTaskResult::ExecutionFailed(error.to_string()),
+                    },
                 },
             },
         };
@@ -1248,6 +1293,8 @@ fn launch_command(
             cleanup: admission.cleanup,
             _permit: admission.permit,
             kind: TaskKind::Execution,
+            external_wait_policy: ExternalWaitPolicy::OperationDeadline,
+            cleanup_uncertainty: None,
         },
     );
     Ok(())
@@ -1313,7 +1360,7 @@ where
     tokio::select! {
         biased;
         result = &mut execution => result,
-        () = tokio::time::sleep(TERMINATION_HANDSHAKE_GRACE) => {
+        () = tokio::time::sleep(control.termination_handshake_grace) => {
             if control.commit_is_active() {
                 execution.await
             } else {
@@ -1424,6 +1471,25 @@ async fn handle_task_exit(
             result,
         } => {
             ensure_task_identity(&descriptor, &operation_id, TaskKind::Execution)?;
+            match &result {
+                OperationTaskResult::CleanupUnconfirmed(error) => {
+                    let deadline = Instant::now()
+                        .checked_add(descriptor.control.termination_handshake_grace)
+                        .context("runtime operation cleanup settlement deadline overflow")?;
+                    descriptor.external_wait_policy =
+                        ExternalWaitPolicy::CleanupSettlement { deadline };
+                    descriptor.cleanup_uncertainty = Some(error.clone());
+                }
+                OperationTaskResult::Interrupted(interrupted)
+                    if interrupted.evidence == TerminationEvidence::LocalOnly =>
+                {
+                    descriptor.cleanup_uncertainty = Some(interrupted.message.clone());
+                }
+                OperationTaskResult::Resolved(_)
+                | OperationTaskResult::ExecutionFailed(_)
+                | OperationTaskResult::Interrupted(_)
+                | OperationTaskResult::AdapterClosed(_) => {}
+            }
             let transition = transition_for_execution_result(result);
             (operation_id, transition, true)
         }
@@ -1437,11 +1503,28 @@ async fn handle_task_exit(
                 ExternalWaitResult::Deadline => Some(RuntimeOperationTransition::TimedOut {
                     error: "runtime operation deadline elapsed".to_owned(),
                 }),
+                ExternalWaitResult::CleanupSettlementGraceElapsed => {
+                    descriptor.external_wait_policy = ExternalWaitPolicy::CleanupEvidence;
+                    Some(RuntimeOperationTransition::CleanupUnconfirmed {
+                        error:
+                            "cleanup settlement grace elapsed without external termination evidence"
+                                .to_owned(),
+                    })
+                }
                 ExternalWaitResult::Shutdown => Some(RuntimeOperationTransition::Shutdown {
-                    error: "runtime operation stopped during shutdown".to_owned(),
+                    error: descriptor.cleanup_uncertainty.as_ref().map_or_else(
+                        || "runtime operation stopped during shutdown".to_owned(),
+                        |uncertainty| {
+                            format!(
+                                "runtime operation stopped during shutdown; cleanup remains unconfirmed: {uncertainty}"
+                            )
+                        },
+                    ),
                 }),
             };
-            (operation_id, transition, false)
+            let retain_external =
+                matches!(result, ExternalWaitResult::CleanupSettlementGraceElapsed);
+            (operation_id, transition, retain_external)
         }
     };
 
@@ -1458,10 +1541,11 @@ async fn handle_task_exit(
         descriptor.kind = TaskKind::External;
         descriptor.cleanup = OperationCleanup::default();
         let task_control = descriptor.control.clone();
+        let wait_policy = descriptor.external_wait_policy;
         let task_operation_id = operation_id.clone();
         let root = shared.root.clone();
         let task = spawn_operation_task(tasks, shared, &operation_id, async move {
-            let result = wait_for_external_completion(&task_control, &root).await;
+            let result = wait_for_external_completion(&task_control, &root, wait_policy).await;
             OperationTaskExit::External {
                 operation_id: task_operation_id,
                 result,
@@ -1483,6 +1567,9 @@ fn transition_for_execution_result(
         }
         OperationTaskResult::ExecutionFailed(error) => {
             Some(RuntimeOperationTransition::ExecutionFailed { error })
+        }
+        OperationTaskResult::CleanupUnconfirmed(error) => {
+            Some(RuntimeOperationTransition::CleanupUnconfirmed { error })
         }
         OperationTaskResult::Interrupted(interrupted) => match interrupted.evidence {
             TerminationEvidence::Confirmed => Some(match interrupted.reason {
@@ -1521,12 +1608,26 @@ fn transition_for_execution_result(
 async fn wait_for_external_completion(
     control: &OperationControl,
     root: &CancellationToken,
+    policy: ExternalWaitPolicy,
 ) -> ExternalWaitResult {
-    tokio::select! {
-        biased;
-        () = control.settled.cancelled() => ExternalWaitResult::Settled,
-        () = sleep_until(control.deadline) => ExternalWaitResult::Deadline,
-        () = root.cancelled() => ExternalWaitResult::Shutdown,
+    match policy {
+        ExternalWaitPolicy::OperationDeadline => tokio::select! {
+            biased;
+            () = control.settled.cancelled() => ExternalWaitResult::Settled,
+            () = sleep_until(control.deadline) => ExternalWaitResult::Deadline,
+            () = root.cancelled() => ExternalWaitResult::Shutdown,
+        },
+        ExternalWaitPolicy::CleanupSettlement { deadline } => tokio::select! {
+            biased;
+            () = control.settled.cancelled() => ExternalWaitResult::Settled,
+            () = root.cancelled() => ExternalWaitResult::Shutdown,
+            () = sleep_until(deadline) => ExternalWaitResult::CleanupSettlementGraceElapsed,
+        },
+        ExternalWaitPolicy::CleanupEvidence => tokio::select! {
+            biased;
+            () = control.settled.cancelled() => ExternalWaitResult::Settled,
+            () = root.cancelled() => ExternalWaitResult::Shutdown,
+        },
     }
 }
 
@@ -1573,10 +1674,11 @@ fn next_deadline(descriptors: &HashMap<Id, TaskDescriptor>) -> Option<Instant> {
     descriptors
         .values()
         .filter(|descriptor| {
-            matches!(
-                descriptor.control.stop_reason(),
-                None | Some(OperationStopReason::CancelRequested)
-            )
+            descriptor.external_wait_policy == ExternalWaitPolicy::OperationDeadline
+                && matches!(
+                    descriptor.control.stop_reason(),
+                    None | Some(OperationStopReason::CancelRequested)
+                )
         })
         .map(|descriptor| descriptor.control.deadline)
         .min()
@@ -1592,7 +1694,9 @@ async fn sleep_to(deadline: Option<Instant>) {
 fn request_expired_deadlines(descriptors: &HashMap<Id, TaskDescriptor>) {
     let now = Instant::now();
     for descriptor in descriptors.values() {
-        if descriptor.control.deadline <= now {
+        if descriptor.external_wait_policy == ExternalWaitPolicy::OperationDeadline
+            && descriptor.control.deadline <= now
+        {
             descriptor.control.request_deadline();
         }
     }
@@ -1736,6 +1840,8 @@ mod tests {
                 cleanup,
                 _permit: permit,
                 kind,
+                external_wait_policy: ExternalWaitPolicy::OperationDeadline,
+                cleanup_uncertainty: None,
             })
         }
 
@@ -1817,6 +1923,41 @@ mod tests {
         {
             bail!(
                 "unexpected terminal evidence, expected {expected_status}/{expected_reason}: {value}"
+            );
+        }
+        Ok(())
+    }
+
+    fn assert_shutdown_preserves_cleanup_uncertainty(
+        operation: &TestOperation,
+        expected: &str,
+    ) -> Result<()> {
+        let value = operation.value()?;
+        let terminal_error = value
+            .get("error")
+            .and_then(Value::as_str)
+            .context("cleanup-uncertain shutdown omitted terminal error")?;
+        let events = operation
+            .registry
+            .events(&operation.operation_id, EventCursor::new(0))?;
+        let shutdown_event = events
+            .get("events")
+            .and_then(Value::as_array)
+            .context("cleanup-uncertain shutdown omitted event history")?
+            .iter()
+            .find(|event| event.get("phase").and_then(Value::as_str) == Some("failed"))
+            .context("cleanup-uncertain shutdown omitted shutdown event")?;
+        if !terminal_error.contains("cleanup remains unconfirmed")
+            || !terminal_error.contains(expected)
+            || shutdown_event.get("message").and_then(Value::as_str)
+                != Some("operation stopped during shutdown")
+            || shutdown_event
+                .get("payloadLocation")
+                .and_then(Value::as_str)
+                != Some("operation.error")
+        {
+            bail!(
+                "shutdown lost cleanup uncertainty: terminal={terminal_error}, event={shutdown_event}"
             );
         }
         Ok(())
@@ -3046,7 +3187,140 @@ mod tests {
         request_shutdown_for_all(&operation.shared)?;
         operation.shared.root.cancel();
         join_and_handle(&mut tasks, &mut descriptors, &operation.shared).await?;
-        assert_terminal(&operation, "failed", "shutdown")
+        assert_terminal(&operation, "failed", "shutdown")?;
+        assert_shutdown_preserves_cleanup_uncertainty(&operation, "remote termination is unknown")
+    }
+
+    #[tokio::test]
+    async fn system_cleanup_unknown_retains_canceling_operation_lease() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let request = storage_download_request(&directory.path().join("download.bin"))?;
+        let operation = TestOperation::new(
+            "system-cleanup-unknown",
+            &request,
+            Instant::now() + Duration::from_secs(30),
+            None,
+        )?;
+        let mut tasks = JoinSet::new();
+        let mut descriptors = HashMap::new();
+
+        handle_task_exit(
+            OperationTaskExit::Execution {
+                operation_id: operation.operation_id.clone(),
+                result: OperationTaskResult::CleanupUnconfirmed(
+                    "download cleanup could not prove remote termination".to_owned(),
+                ),
+            },
+            operation.descriptor(OperationCleanup::default(), TaskKind::Execution)?,
+            &mut tasks,
+            &mut descriptors,
+            &operation.shared,
+        )
+        .await?;
+
+        let value = operation.value()?;
+        let events = operation
+            .registry
+            .events(&operation.operation_id, EventCursor::new(0))?;
+        let event_phases = events
+            .get("events")
+            .and_then(Value::as_array)
+            .context("cleanup-unknown operation has no event history")?
+            .iter()
+            .filter_map(|event| event.get("phase").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        if value.get("status").and_then(Value::as_str) != Some("canceling")
+            || value.get("terminalReason") != Some(&Value::Null)
+            || !operation.is_retained()?
+            || !event_phases.contains(&"cleanup_unconfirmed")
+            || event_phases.contains(&"canceling")
+        {
+            bail!("cleanup-unknown operation released its lease: {value}");
+        }
+
+        request_shutdown_for_all(&operation.shared)?;
+        operation.shared.root.cancel();
+        join_and_handle(&mut tasks, &mut descriptors, &operation.shared).await?;
+        assert_terminal(&operation, "failed", "shutdown")?;
+        assert_shutdown_preserves_cleanup_uncertainty(
+            &operation,
+            "download cleanup could not prove remote termination",
+        )
+    }
+
+    #[tokio::test]
+    async fn cleanup_unknown_after_deadline_retains_exclusive_lease_until_shutdown() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let request = storage_download_request(&directory.path().join("download.bin"))?;
+        let mut operation =
+            TestOperation::new("expired-cleanup-unknown", &request, Instant::now(), None)?;
+        operation.control.termination_handshake_grace = Duration::from_millis(1);
+        let mut tasks = JoinSet::new();
+        let mut descriptors = HashMap::new();
+
+        handle_task_exit(
+            OperationTaskExit::Execution {
+                operation_id: operation.operation_id.clone(),
+                result: OperationTaskResult::CleanupUnconfirmed(
+                    "download cleanup could not prove remote termination after deadline".to_owned(),
+                ),
+            },
+            operation.descriptor(OperationCleanup::default(), TaskKind::Execution)?,
+            &mut tasks,
+            &mut descriptors,
+            &operation.shared,
+        )
+        .await?;
+        join_and_handle(&mut tasks, &mut descriptors, &operation.shared).await?;
+
+        let competing_id = RuntimeOperationId::parse("competing-storage-download")?;
+        let competing = running_runtime_operation_record(competing_id.clone(), &request, 2)?;
+        let admission_error = operation
+            .registry
+            .insert(competing.clone())
+            .err()
+            .context("cleanup uncertainty released the storage download exclusive group")?;
+        let events = operation
+            .registry
+            .events(&operation.operation_id, EventCursor::new(0))?;
+        let cleanup_evidence_count = events
+            .get("events")
+            .and_then(Value::as_array)
+            .context("cleanup-uncertain operation has no event history")?
+            .iter()
+            .filter(|event| {
+                event.get("phase").and_then(Value::as_str) == Some("cleanup_unconfirmed")
+            })
+            .count();
+        if !admission_error
+            .to_string()
+            .contains("storage download operation is already running")
+            || operation.value()?.get("status").and_then(Value::as_str) != Some("canceling")
+            || !operation.is_retained()?
+            || cleanup_evidence_count != 2
+        {
+            bail!("expired cleanup uncertainty lost its exclusive lease: {admission_error:#}");
+        }
+
+        request_shutdown_for_all(&operation.shared)?;
+        operation.shared.root.cancel();
+        join_and_handle(&mut tasks, &mut descriptors, &operation.shared).await?;
+        assert_terminal(&operation, "failed", "shutdown")?;
+        assert_shutdown_preserves_cleanup_uncertainty(
+            &operation,
+            "download cleanup could not prove remote termination after deadline",
+        )?;
+        operation.registry.insert(competing)?;
+        if operation
+            .registry
+            .value(&competing_id)?
+            .get("status")
+            .and_then(Value::as_str)
+            != Some("running")
+        {
+            bail!("shutdown did not release the cleanup-uncertain exclusive lease");
+        }
+        Ok(())
     }
 
     #[tokio::test]

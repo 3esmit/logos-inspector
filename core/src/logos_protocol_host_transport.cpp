@@ -42,7 +42,7 @@ struct EventSpec
     std::string_view event;
 };
 
-constexpr std::array<EventSpec, 17> kEvents = { {
+constexpr std::array<EventSpec, 19> kEvents = { {
     { "delivery_module", "messageSent" },
     { "delivery_module", "messageError" },
     { "delivery_module", "messagePropagated" },
@@ -57,6 +57,8 @@ constexpr std::array<EventSpec, 17> kEvents = { {
     { "storage_module", "storageUploadDone" },
     { "storage_module", "storageDownloadProgress" },
     { "storage_module", "storageDownloadDone" },
+    { "storage_module", "storageDownloadProgressV2" },
+    { "storage_module", "storageDownloadDoneV2" },
     { "storage_module", "storageDownloadManifestDone" },
     { "storage_module", "storageRemoveDone" },
     { "blockchain_module", "newBlock" },

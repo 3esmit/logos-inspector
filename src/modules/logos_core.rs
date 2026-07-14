@@ -1,32 +1,47 @@
 use std::{
+    collections::VecDeque,
     env, fs,
     future::Future,
+    io::{ErrorKind, Read as _},
     path::{Path, PathBuf},
     pin::Pin,
-    process::Command,
+    process::{Child, Command, Stdio},
     sync::{
-        Arc,
-        atomic::{AtomicU8, Ordering},
+        Arc, LazyLock, Mutex,
+        atomic::{AtomicBool, AtomicU8, Ordering},
+        mpsc,
     },
-    time::Duration,
+    thread,
+    time::{Duration, Instant as StdInstant},
 };
 
 use anyhow::{Context as _, Result, bail};
 use serde::{Serialize, Serializer};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::support::command_runner::{
     CommandControl, CommandRunPolicy, CommandStopReason, CommandTerminated,
-    CommandTerminationScope, output_text, run_command, run_command_controlled,
+    CommandTerminationScope, StreamingCommandPermit, acquire_streaming_command_permit, output_text,
+    run_command, run_command_controlled,
 };
+use crate::support::settings_backup::SETTINGS_BACKUP_MAX_BYTES;
 use crate::support::work_tracker::{BlockingWorkGuard, BlockingWorkTracker};
 
 const LOGOSCORE_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const LOGOSCORE_OUTPUT_LIMIT: usize = 4096;
 const LOGOSCORE_JSON_OUTPUT_LIMIT: usize = 16 * 1024 * 1024;
+const LOGOSCORE_EVENT_LINE_LIMIT: usize = 1024 * 1024;
+const LOGOSCORE_EVENT_FIELD_LIMIT: usize = 64;
+const LOGOSCORE_EVENT_QUEUE_CAPACITY: usize = 64;
+const LOGOSCORE_WATCH_STOP_GRACE: Duration = Duration::from_millis(250);
+const LOGOSCORE_WATCH_PROTOCOL: &str = "logoscore.watch";
+const LOGOSCORE_WATCH_PROTOCOL_VERSION: u64 = 1;
+static LOGOSCORE_WATCH_RECOVERY: LazyLock<
+    std::result::Result<mpsc::Sender<LogoscoreWatchRecovery>, String>,
+> = LazyLock::new(start_watch_recovery_worker);
 
 #[derive(Debug, Clone, Serialize)]
 pub struct LogosCoreOutput {
@@ -46,6 +61,7 @@ pub(crate) struct LogoscoreModuleMethod {
 pub(crate) struct LogoscoreModuleDiscovery {
     module: String,
     methods: Vec<LogoscoreModuleMethod>,
+    events: Vec<LogoscoreModuleMethod>,
 }
 
 impl LogoscoreModuleDiscovery {
@@ -68,6 +84,20 @@ impl LogoscoreModuleDiscovery {
             );
         }
         Ok(())
+    }
+
+    pub(crate) fn require_event(&self, event: &str, signature: &str) -> Result<()> {
+        if self
+            .events
+            .iter()
+            .any(|candidate| candidate.name == event && candidate.signature == signature)
+        {
+            return Ok(());
+        }
+        bail!(
+            "logoscore module `{}` does not expose event `{signature}`",
+            self.module,
+        )
     }
 }
 
@@ -328,6 +358,10 @@ impl std::error::Error for ModuleTransportClosed {}
 pub trait ModuleTransport: Send + Sync {
     fn kind(&self) -> ModuleTransportKind;
 
+    fn logoscore_cli_transport(&self) -> Option<&LogoscoreCliTransport> {
+        None
+    }
+
     fn call(&self, call: ModuleCall) -> ModuleCallFuture<'_>;
 
     fn call_controlled(
@@ -443,9 +477,26 @@ impl Default for LogoscoreCliTransport {
     }
 }
 
+impl LogoscoreCliTransport {
+    #[cfg(test)]
+    pub(crate) fn managed(binary_path: String, config_dir: String) -> Self {
+        Self {
+            runtime: LogoscoreCliRuntime::managed(binary_path, config_dir),
+        }
+    }
+
+    pub(crate) fn runtime(&self) -> LogoscoreCliRuntime {
+        self.runtime.clone()
+    }
+}
+
 impl ModuleTransport for LogoscoreCliTransport {
     fn kind(&self) -> ModuleTransportKind {
         ModuleTransportKind::LogoscoreCli
+    }
+
+    fn logoscore_cli_transport(&self) -> Option<&LogoscoreCliTransport> {
+        Some(self)
     }
 
     fn call(&self, call: ModuleCall) -> ModuleCallFuture<'_> {
@@ -594,6 +645,327 @@ impl LogoscoreSharedFile {
     }
 }
 
+pub(crate) struct LogoscoreSharedDownload {
+    directory: TempDir,
+    path: PathBuf,
+}
+
+impl LogoscoreSharedDownload {
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub(crate) fn read_bounded(&self, max_bytes: usize) -> Result<Vec<u8>> {
+        let metadata = fs::symlink_metadata(&self.path).with_context(|| {
+            format!(
+                "failed to inspect logoscore download staging file `{}`",
+                self.path.display()
+            )
+        })?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            bail!("logoscore download staging path is not a regular file");
+        }
+        if metadata.len() > max_bytes as u64 {
+            bail!("logoscore download exceeded {max_bytes} byte limit");
+        }
+        let capacity = usize::try_from(metadata.len())
+            .context("logoscore download length does not fit in memory")?;
+        let mut bytes = Vec::with_capacity(capacity);
+        fs::File::open(&self.path)
+            .with_context(|| {
+                format!(
+                    "failed to open logoscore download staging file `{}`",
+                    self.path.display()
+                )
+            })?
+            .take(max_bytes.saturating_add(1) as u64)
+            .read_to_end(&mut bytes)
+            .with_context(|| {
+                format!(
+                    "failed to read logoscore download staging file `{}`",
+                    self.path.display()
+                )
+            })?;
+        if bytes.len() > max_bytes {
+            bail!("logoscore download exceeded {max_bytes} byte limit");
+        }
+        Ok(bytes)
+    }
+
+    pub(crate) fn close(self) -> Result<()> {
+        let path = self.directory.path().to_path_buf();
+        self.directory.close().with_context(|| {
+            format!(
+                "failed to remove logoscore download workspace `{}`",
+                path.display()
+            )
+        })
+    }
+}
+
+enum LogoscoreWatchOutput {
+    Value(Value),
+    Error(String),
+    Eof,
+}
+
+enum LogoscoreWatchReadiness {
+    Ready,
+    Error(String),
+    Eof,
+}
+
+#[derive(Debug)]
+pub(crate) struct LogoscoreWatchCleanupUnconfirmed {
+    message: String,
+}
+
+impl LogoscoreWatchCleanupUnconfirmed {
+    fn new(message: String) -> Self {
+        Self { message }
+    }
+}
+
+impl std::fmt::Display for LogoscoreWatchCleanupUnconfirmed {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for LogoscoreWatchCleanupUnconfirmed {}
+
+pub(crate) struct LogoscoreEventWatch {
+    child: Option<Child>,
+    output: mpsc::Receiver<LogoscoreWatchOutput>,
+    output_failure: Arc<Mutex<Option<String>>>,
+    readiness: mpsc::Receiver<LogoscoreWatchReadiness>,
+    reader: Option<thread::JoinHandle<()>>,
+    stderr_reader: Option<thread::JoinHandle<()>>,
+    reader_stop: Arc<AtomicBool>,
+    process_permit: Option<StreamingCommandPermit>,
+    recovery: Option<mpsc::Sender<LogoscoreWatchRecovery>>,
+    label: String,
+}
+
+impl LogoscoreEventWatch {
+    pub(crate) fn wait_ready(&mut self, control: &CommandControl) -> Result<()> {
+        loop {
+            control.check_active()?;
+            if let Some(error) = take_watch_output_failure(&self.output_failure) {
+                bail!("{error}");
+            }
+            let wait = LOGOSCORE_POLL_INTERVAL.min(
+                control
+                    .deadline()
+                    .saturating_duration_since(StdInstant::now()),
+            );
+            match self.readiness.recv_timeout(wait) {
+                Ok(LogoscoreWatchReadiness::Ready) => return Ok(()),
+                Ok(LogoscoreWatchReadiness::Error(error)) => bail!("{error}"),
+                Ok(LogoscoreWatchReadiness::Eof) => {
+                    bail!("{} ended before its subscription became ready", self.label)
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    bail!(
+                        "{} readiness channel closed before subscription",
+                        self.label
+                    )
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn next_value(&mut self, control: &CommandControl) -> Result<Value> {
+        loop {
+            if let Some(value) = self.next_value_within(control, LOGOSCORE_POLL_INTERVAL)? {
+                return Ok(value);
+            }
+        }
+    }
+
+    pub(crate) fn next_value_within(
+        &mut self,
+        control: &CommandControl,
+        timeout: Duration,
+    ) -> Result<Option<Value>> {
+        if let Some(error) = take_watch_output_failure(&self.output_failure) {
+            bail!("{error}");
+        }
+        match self.output.try_recv() {
+            Ok(LogoscoreWatchOutput::Value(value)) => return Ok(Some(value)),
+            Ok(LogoscoreWatchOutput::Error(error)) => bail!("{error}"),
+            Ok(LogoscoreWatchOutput::Eof) => {
+                bail!("{} ended before a terminal event", self.label)
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+                if let Some(error) = take_watch_output_failure(&self.output_failure) {
+                    bail!("{error}");
+                }
+                bail!("{} output closed before a terminal event", self.label)
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+        }
+        control.check_active()?;
+        let wait = timeout.min(
+            control
+                .deadline()
+                .saturating_duration_since(StdInstant::now()),
+        );
+        match self.output.recv_timeout(wait) {
+            Ok(LogoscoreWatchOutput::Value(value)) => Ok(Some(value)),
+            Ok(LogoscoreWatchOutput::Error(error)) => bail!("{error}"),
+            Ok(LogoscoreWatchOutput::Eof) => {
+                bail!("{} ended before a terminal event", self.label)
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                if let Some(error) = take_watch_output_failure(&self.output_failure) {
+                    bail!("{error}");
+                }
+                bail!("{} output closed before a terminal event", self.label)
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                control.check_active()?;
+                Ok(None)
+            }
+        }
+    }
+
+    pub(crate) fn stop(&mut self) -> Result<()> {
+        self.reader_stop.store(true, Ordering::Release);
+        let child_result = match self.child.as_mut() {
+            Some(child) => stop_watch_child_with_retry(child, &self.label),
+            None => Ok(()),
+        };
+        child_result?;
+        self.child = None;
+        let reader_result = match self.reader.take() {
+            Some(reader) => reader
+                .join()
+                .map_err(|_| anyhow::anyhow!("{} output reader panicked", self.label)),
+            None => Ok(()),
+        };
+        let stderr_result = match self.stderr_reader.take() {
+            Some(reader) => reader
+                .join()
+                .map_err(|_| anyhow::anyhow!("{} stderr reader panicked", self.label)),
+            None => Ok(()),
+        };
+        self.process_permit = None;
+        reader_result.and(stderr_result)
+    }
+}
+
+impl Drop for LogoscoreEventWatch {
+    fn drop(&mut self) {
+        if self.stop().is_err() {
+            self.handoff_failed_cleanup();
+        }
+    }
+}
+
+impl LogoscoreEventWatch {
+    fn handoff_failed_cleanup(&mut self) {
+        let Some(child) = self.child.take() else {
+            return;
+        };
+        let recovery = LogoscoreWatchRecovery {
+            child,
+            reader: self.reader.take(),
+            stderr_reader: self.stderr_reader.take(),
+            reader_stop: Arc::clone(&self.reader_stop),
+            process_permit: self.process_permit.take(),
+            label: self.label.clone(),
+        };
+        handoff_watch_recovery(self.recovery.take(), recovery);
+    }
+}
+
+struct LogoscoreWatchRecovery {
+    child: Child,
+    reader: Option<thread::JoinHandle<()>>,
+    stderr_reader: Option<thread::JoinHandle<()>>,
+    reader_stop: Arc<AtomicBool>,
+    process_permit: Option<StreamingCommandPermit>,
+    label: String,
+}
+
+fn start_watch_recovery_worker() -> std::result::Result<mpsc::Sender<LogoscoreWatchRecovery>, String>
+{
+    let (sender, receiver) = mpsc::channel();
+    thread::Builder::new()
+        .name("logoscore-watch-recovery".to_owned())
+        .spawn(move || run_watch_recovery_queue(&receiver))
+        .map_err(|error| format!("failed to start logoscore watch recovery worker: {error}"))?;
+    Ok(sender)
+}
+
+fn watch_recovery_sender() -> Result<mpsc::Sender<LogoscoreWatchRecovery>> {
+    match &*LOGOSCORE_WATCH_RECOVERY {
+        Ok(sender) => Ok(sender.clone()),
+        Err(error) => bail!(error.clone()),
+    }
+}
+
+fn run_watch_recovery_queue(receiver: &mpsc::Receiver<LogoscoreWatchRecovery>) {
+    run_watch_recovery_queue_with(receiver, LOGOSCORE_WATCH_STOP_GRACE, |recovery| {
+        stop_watch_child_with_retry(&mut recovery.child, &recovery.label).is_ok()
+    });
+}
+
+fn run_watch_recovery_queue_with<F>(
+    receiver: &mpsc::Receiver<LogoscoreWatchRecovery>,
+    retry_interval: Duration,
+    mut cleanup: F,
+) where
+    F: FnMut(&mut LogoscoreWatchRecovery) -> bool,
+{
+    let mut pending = VecDeque::new();
+    loop {
+        if pending.is_empty() {
+            match receiver.recv() {
+                Ok(recovery) => pending.push_back(recovery),
+                Err(_) => return,
+            }
+        }
+        pending.extend(receiver.try_iter());
+        let pass_count = pending.len();
+        for _ in 0..pass_count {
+            let Some(mut recovery) = pending.pop_front() else {
+                break;
+            };
+            recovery.reader_stop.store(true, Ordering::Release);
+            if cleanup(&mut recovery) {
+                finish_watch_recovery(recovery);
+            } else {
+                pending.push_back(recovery);
+            }
+        }
+        if !pending.is_empty() {
+            thread::sleep(retry_interval);
+        }
+    }
+}
+
+fn run_watch_recovery(mut recovery: LogoscoreWatchRecovery) {
+    recovery.reader_stop.store(true, Ordering::Release);
+    while stop_watch_child_with_retry(&mut recovery.child, &recovery.label).is_err() {
+        thread::sleep(LOGOSCORE_WATCH_STOP_GRACE);
+    }
+    finish_watch_recovery(recovery);
+}
+
+fn finish_watch_recovery(mut recovery: LogoscoreWatchRecovery) {
+    if let Some(reader) = recovery.reader.take() {
+        let _join_result = reader.join();
+    }
+    if let Some(reader) = recovery.stderr_reader.take() {
+        let _join_result = reader.join();
+    }
+    recovery.process_permit = None;
+}
+
 impl LogoscoreCliRuntime {
     #[must_use]
     pub(crate) fn managed(binary_path: String, config_dir: String) -> Self {
@@ -680,6 +1052,29 @@ impl LogoscoreCliRuntime {
             .with_context(|| format!("failed to inspect logoscore module `{module}`"))?;
         module_discovery(module, &modules.value, &module_info.value)?
             .require_method(method, signature)
+    }
+
+    pub(crate) fn require_module_contract_controlled(
+        &self,
+        module: &str,
+        methods: &[(&str, &str)],
+        events: &[(&str, &str)],
+        control: CommandControl,
+    ) -> Result<()> {
+        let modules = self
+            .list_modules_controlled(control.clone())
+            .context("failed to list logoscore modules")?;
+        let module_info = self
+            .module_info_controlled(module, control)
+            .with_context(|| format!("failed to inspect logoscore module `{module}`"))?;
+        let discovery = module_discovery(module, &modules.value, &module_info.value)?;
+        for (method, signature) in methods {
+            discovery.require_method(method, signature)?;
+        }
+        for (event, signature) in events {
+            discovery.require_event(event, signature)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn ensure_module_loaded(&self, module: &str) -> Result<()> {
@@ -792,7 +1187,152 @@ impl LogoscoreCliRuntime {
 
     #[must_use]
     pub(crate) fn watch_command(&self, module: &str, event: &str) -> Command {
-        command_for_runner(&self.runner, ["watch", module, "--event", event, "--json"])
+        command_for_runner(
+            &self.runner,
+            [
+                "watch",
+                module,
+                "--event",
+                event,
+                "--json",
+                "--watch-protocol",
+                "v1",
+            ],
+        )
+    }
+
+    pub(crate) fn start_event_watch(
+        &self,
+        module: &str,
+        event: &str,
+        control: &CommandControl,
+    ) -> Result<LogoscoreEventWatch> {
+        ensure_logoscore_event_watch_supported()?;
+        if module.trim().is_empty() {
+            bail!("module name is required");
+        }
+        if event.trim().is_empty() {
+            bail!("module event name is required");
+        }
+        control.check_active()?;
+        let recovery = watch_recovery_sender()?;
+        let label = format!("logoscore watch {module}.{event}");
+        let process_permit = acquire_streaming_command_permit(&label, control)?;
+        let mut command = self.watch_command(module, event);
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt as _;
+
+            command.process_group(0);
+        }
+        let mut child = command
+            .spawn()
+            .with_context(|| format!("failed to start {label}"))?;
+        let Some(stdout) = child.stdout.take() else {
+            let error = anyhow::anyhow!("{label} did not expose stdout");
+            return Err(cleanup_failed_watch_start(
+                error,
+                FailedWatchStart::new(child, None, None, process_permit, recovery, &label),
+            ));
+        };
+        let Some(stderr) = child.stderr.take() else {
+            let error = anyhow::anyhow!("{label} did not expose stderr");
+            return Err(cleanup_failed_watch_start(
+                error,
+                FailedWatchStart::new(child, None, None, process_permit, recovery, &label),
+            ));
+        };
+        #[cfg(unix)]
+        if let Err(error) = configure_watch_pipe_nonblocking(&stdout)
+            .and_then(|()| configure_watch_pipe_nonblocking(&stderr))
+        {
+            let error = anyhow::Error::new(error)
+                .context(format!("failed to configure {label} output capture"));
+            return Err(cleanup_failed_watch_start(
+                error,
+                FailedWatchStart::new(child, None, None, process_permit, recovery, &label),
+            ));
+        }
+        let (sender, output) = mpsc::sync_channel(LOGOSCORE_EVENT_QUEUE_CAPACITY);
+        let output_failure = Arc::new(Mutex::new(None));
+        let (readiness_sender, readiness) = mpsc::channel();
+        let reader_stop = Arc::new(AtomicBool::new(false));
+        let reader_label = label.clone();
+        let expected_module = module.to_owned();
+        let expected_event = event.to_owned();
+        let reader_failure = Arc::clone(&output_failure);
+        let stdout_stop = Arc::clone(&reader_stop);
+        let reader = match thread::Builder::new()
+            .name("logoscore-event-watch-reader".to_owned())
+            .spawn(move || {
+                read_json_watch_output(
+                    stdout,
+                    &reader_label,
+                    (&expected_module, &expected_event),
+                    &readiness_sender,
+                    &sender,
+                    &reader_failure,
+                    &stdout_stop,
+                );
+            }) {
+            Ok(reader) => reader,
+            Err(error) => {
+                let error = anyhow::Error::new(error)
+                    .context(format!("failed to start {label} output reader"));
+                return Err(cleanup_failed_watch_start(
+                    error,
+                    FailedWatchStart::new(
+                        child,
+                        None,
+                        Some(reader_stop),
+                        process_permit,
+                        recovery,
+                        &label,
+                    ),
+                ));
+            }
+        };
+        let stderr_label = label.clone();
+        let stderr_failure = Arc::clone(&output_failure);
+        let stderr_stop = Arc::clone(&reader_stop);
+        let stderr_reader = match thread::Builder::new()
+            .name("logoscore-event-watch-stderr".to_owned())
+            .spawn(move || {
+                read_watch_stderr(stderr, &stderr_label, &stderr_failure, &stderr_stop);
+            }) {
+            Ok(stderr_reader) => stderr_reader,
+            Err(error) => {
+                let error = anyhow::Error::new(error)
+                    .context(format!("failed to start {label} stderr reader"));
+                return Err(cleanup_failed_watch_start(
+                    error,
+                    FailedWatchStart::new(
+                        child,
+                        Some(reader),
+                        Some(reader_stop),
+                        process_permit,
+                        recovery,
+                        &label,
+                    ),
+                ));
+            }
+        };
+        Ok(LogoscoreEventWatch {
+            child: Some(child),
+            output,
+            output_failure,
+            readiness,
+            reader: Some(reader),
+            stderr_reader: Some(stderr_reader),
+            reader_stop,
+            process_permit: Some(process_permit),
+            recovery: Some(recovery),
+            label,
+        })
     }
 
     pub(crate) fn stop(&self) -> Result<LogosCoreOutput> {
@@ -808,20 +1348,114 @@ impl LogoscoreCliRuntime {
         filename: &str,
         bytes: &[u8],
     ) -> Result<LogoscoreSharedFile> {
+        let shared_transport = SharedFilesystemTransport::from_runner(&self.runner, "uploadUrl")?;
         let directory = tempfile::Builder::new()
             .prefix("logos-inspector-upload-")
             .tempdir()
             .context("failed to create logoscore upload workspace")?;
-        #[cfg(unix)]
-        share_with_local_daemon(&self.runner, directory.path())?;
+        shared_transport.share_directory(directory.path())?;
         let path = directory.path().join(filename);
         fs::write(&path, bytes).context("failed to write logoscore upload payload")?;
-        #[cfg(unix)]
-        share_file_with_local_daemon(&self.runner, &path)?;
+        shared_transport.share_file(&path, 0o640)?;
         Ok(LogoscoreSharedFile {
             _directory: directory,
             path,
         })
+    }
+
+    pub(crate) fn stage_shared_download(&self, filename: &str) -> Result<LogoscoreSharedDownload> {
+        let safe_filename = Path::new(filename)
+            .file_name()
+            .and_then(|value| value.to_str())
+            .filter(|value| !value.is_empty() && *value == filename)
+            .context("logoscore download filename is invalid")?;
+        let shared_transport =
+            SharedFilesystemTransport::from_runner(&self.runner, "downloadToUrl")?;
+        let directory = tempfile::Builder::new()
+            .prefix("logos-inspector-download-")
+            .tempdir()
+            .context("failed to create logoscore download workspace")?;
+        shared_transport.share_directory(directory.path())?;
+        let path = directory.path().join(safe_filename);
+        fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .context("failed to create logoscore download staging file")?;
+        shared_transport.share_file(&path, 0o660)?;
+        Ok(LogoscoreSharedDownload { directory, path })
+    }
+
+    pub(crate) fn storage_backup_download_readiness(&self) -> Result<Value> {
+        ensure_logoscore_event_watch_supported()?;
+        let deadline = StdInstant::now()
+            .checked_add(command_timeout())
+            .context("storage backup readiness deadline overflow")?;
+        let control = CommandControl::new(CancellationToken::new(), deadline);
+        self.require_module_contract_controlled(
+            "storage_module",
+            &[
+                ("downloadProtocol", "downloadProtocol()"),
+                (
+                    "downloadToUrlV2",
+                    "downloadToUrlV2(QString,QString,bool,int,QString,int)",
+                ),
+                ("downloadCancelV2", "downloadCancelV2(QString)"),
+            ],
+            &[("storageDownloadDoneV2", "storageDownloadDoneV2(QString)")],
+            control.clone(),
+        )?;
+        let protocol =
+            self.call_controlled("storage_module", "downloadProtocol", &[], control.clone())?;
+        let protocol =
+            normalize_module_call_value("storage_module", "downloadProtocol", protocol.value)?;
+        anyhow::ensure!(
+            protocol.get("protocol").and_then(Value::as_str) == Some("logos.storage.download")
+                && protocol.get("version").and_then(Value::as_u64) == Some(2)
+                && protocol
+                    .get("moduleOperationIdOwner")
+                    .and_then(Value::as_str)
+                    == Some("caller")
+                && protocol.get("cancelTimeoutMs").and_then(Value::as_u64) == Some(15_000)
+                && protocol
+                    .get("maxDownloadBytes")
+                    .and_then(Value::as_u64)
+                    .is_some_and(|max_bytes| max_bytes >= SETTINGS_BACKUP_MAX_BYTES as u64),
+            "storage_module returned an incompatible download protocol"
+        );
+        let staged = self.stage_shared_download("backup-readiness.json")?;
+        let watch_result = self
+            .start_event_watch("storage_module", "storageDownloadDoneV2", &control)
+            .and_then(|mut watch| {
+                let ready = watch.wait_ready(&control);
+                let cleanup = watch.stop();
+                match (ready, cleanup) {
+                    (Ok(()), Ok(())) => Ok(()),
+                    (Err(error), Ok(())) => Err(error),
+                    (Ok(()), Err(cleanup)) => Err(cleanup),
+                    (Err(error), Err(cleanup)) => Err(anyhow::anyhow!(
+                        "{error}; readiness watch cleanup failed: {cleanup:#}"
+                    )),
+                }
+            });
+        let staging_cleanup = staged.close();
+        match (watch_result, staging_cleanup) {
+            (Ok(()), Ok(())) => Ok(json!({
+                "contract": protocol,
+                "shared_staging": true,
+                "watch_protocol": {
+                    "protocol": LOGOSCORE_WATCH_PROTOCOL,
+                    "version": LOGOSCORE_WATCH_PROTOCOL_VERSION,
+                    "ready": true,
+                },
+            })),
+            (Err(error), Ok(())) => Err(error),
+            (Ok(()), Err(cleanup)) => Err(cleanup),
+            (Err(error), Err(cleanup)) => Err(anyhow::anyhow!(
+                "{error}; readiness staging cleanup failed: {cleanup:#}"
+            )),
+        }
     }
 
     fn run_json<I, S>(&self, args: I, timeout: Duration) -> Result<LogosCoreOutput>
@@ -861,66 +1495,77 @@ pub fn module_info(module: &str) -> Result<LogosCoreOutput> {
     configured_runtime().module_info(module)
 }
 
-pub(crate) fn require_module_method_controlled(
-    module: &str,
-    method: &str,
-    signature: &str,
-    control: CommandControl,
-) -> Result<()> {
-    configured_runtime().require_module_method_controlled(module, method, signature, control)
+struct SharedFilesystemTransport {
+    #[cfg(unix)]
+    group: u32,
 }
 
-pub(crate) fn stage_shared_file(filename: &str, bytes: &[u8]) -> Result<LogoscoreSharedFile> {
-    configured_runtime().stage_shared_file(filename, bytes)
-}
-
-#[cfg(unix)]
-fn share_with_local_daemon(runner: &LogosCoreRunner, path: &Path) -> Result<()> {
-    use std::os::unix::fs::{PermissionsExt as _, chown};
-
-    let group = local_daemon_group(runner)?;
-    chown(path, None, Some(group)).context("failed to assign logoscore upload directory group")?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o750))
-        .context("failed to secure logoscore upload directory")
-}
-
-#[cfg(unix)]
-fn share_file_with_local_daemon(runner: &LogosCoreRunner, path: &Path) -> Result<()> {
-    use std::os::unix::fs::{PermissionsExt as _, chown};
-
-    let group = local_daemon_group(runner)?;
-    chown(path, None, Some(group)).context("failed to assign logoscore upload file group")?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o640))
-        .context("failed to secure logoscore upload file")
-}
-
-#[cfg(unix)]
-fn local_daemon_group(runner: &LogosCoreRunner) -> Result<u32> {
-    use std::os::unix::fs::MetadataExt as _;
-
-    let config_dir = runner_config_dir(runner)?;
-    let config_path = config_dir.join("client").join("config.json");
-    let config_bytes = fs::read(&config_path).with_context(|| {
-        format!(
-            "failed to read logoscore client config `{}`",
-            config_path.display()
-        )
-    })?;
-    let config: Value = serde_json::from_slice(&config_bytes)
-        .context("logoscore client config contains invalid JSON")?;
-    let instance_id = local_transport_instance_id(&config)?;
-    let socket = env::temp_dir().join(format!("logos_core_service_{instance_id}"));
-    fs::metadata(&socket)
-        .with_context(|| {
+impl SharedFilesystemTransport {
+    fn from_runner(runner: &LogosCoreRunner, method: &str) -> Result<Self> {
+        let config_dir = runner_config_dir(runner)?;
+        let config_path = config_dir.join("client").join("config.json");
+        let config_bytes = fs::read(&config_path).with_context(|| {
             format!(
-                "logoscore local transport socket is unavailable at `{}`",
-                socket.display()
+                "failed to read logoscore client config `{}`",
+                config_path.display()
             )
-        })
-        .map(|metadata| metadata.gid())
+        })?;
+        let config: Value = serde_json::from_slice(&config_bytes)
+            .context("logoscore client config contains invalid JSON")?;
+        let instance_id = local_transport_instance_id(&config, method)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt as _;
+
+            let socket = env::temp_dir().join(format!("logos_core_service_{instance_id}"));
+            let group = fs::metadata(&socket)
+                .with_context(|| {
+                    format!(
+                        "logoscore local transport socket is unavailable at `{}`",
+                        socket.display()
+                    )
+                })?
+                .gid();
+            Ok(Self { group })
+        }
+        #[cfg(not(unix))]
+        {
+            let _validated_instance_id = instance_id;
+            Ok(Self {})
+        }
+    }
+
+    fn share_directory(&self, path: &Path) -> Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{PermissionsExt as _, chown};
+
+            chown(path, None, Some(self.group))
+                .context("failed to assign logoscore shared directory group")?;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o750))
+                .context("failed to secure logoscore shared directory")?;
+        }
+        #[cfg(not(unix))]
+        let _path = path;
+        Ok(())
+    }
+
+    fn share_file(&self, path: &Path, mode: u32) -> Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{PermissionsExt as _, chown};
+
+            chown(path, None, Some(self.group))
+                .context("failed to assign logoscore shared file group")?;
+            fs::set_permissions(path, fs::Permissions::from_mode(mode))
+                .context("failed to secure logoscore shared file")?;
+        }
+        #[cfg(not(unix))]
+        let (_path, _mode) = (path, mode);
+        Ok(())
+    }
 }
 
-#[cfg(unix)]
 fn runner_config_dir(runner: &LogosCoreRunner) -> Result<PathBuf> {
     if let Some(config_dir) = runner.config_dir.as_deref() {
         return Ok(PathBuf::from(config_dir));
@@ -934,15 +1579,14 @@ fn runner_config_dir(runner: &LogosCoreRunner) -> Result<PathBuf> {
     Ok(PathBuf::from(home).join(".logoscore"))
 }
 
-#[cfg(unix)]
-fn local_transport_instance_id(config: &Value) -> Result<&str> {
+fn local_transport_instance_id<'a>(config: &'a Value, method: &str) -> Result<&'a str> {
     let transport = config
         .pointer("/daemon/core_service/transport")
         .and_then(Value::as_str)
         .unwrap_or_default();
     if transport != "local" {
         bail!(
-            "storage_module uploadUrl requires local logoscore transport with a shared filesystem"
+            "storage_module {method} requires local logoscore transport with a shared filesystem"
         );
     }
     config
@@ -991,9 +1635,22 @@ fn module_discovery(
             })
         })
         .collect();
+    let events = module_info_value
+        .get("events")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|event| {
+            Some(LogoscoreModuleMethod {
+                name: event.get("name")?.as_str()?.to_owned(),
+                signature: event.get("signature")?.as_str()?.to_owned(),
+            })
+        })
+        .collect();
     Ok(LogoscoreModuleDiscovery {
         module: module.to_owned(),
         methods,
+        events,
     })
 }
 
@@ -1006,15 +1663,6 @@ fn module_rows(modules_value: &Value) -> Result<&Vec<Value>> {
 
 pub fn call(module: &str, method: &str, args: &[String]) -> Result<LogosCoreOutput> {
     configured_runtime().call(module, method, args)
-}
-
-pub(crate) fn call_controlled(
-    module: &str,
-    method: &str,
-    args: &[String],
-    control: CommandControl,
-) -> Result<LogosCoreOutput> {
-    configured_runtime().call_controlled(module, method, args, control)
 }
 
 fn call_arguments(module: &str, method: &str, args: &[String]) -> Result<Vec<String>> {
@@ -1167,6 +1815,540 @@ where
     }
 }
 
+fn read_json_watch_output(
+    stdout: std::process::ChildStdout,
+    label: &str,
+    expected: (&str, &str),
+    readiness: &mpsc::Sender<LogoscoreWatchReadiness>,
+    sender: &mpsc::SyncSender<LogoscoreWatchOutput>,
+    failure: &Arc<Mutex<Option<String>>>,
+    stop: &AtomicBool,
+) {
+    let mut reader = WatchLineReader::new(stdout);
+    let mut ready = false;
+    loop {
+        let line = match reader.next_line(label, stop) {
+            Ok(Some(line)) if line.trim().is_empty() => continue,
+            Ok(Some(line)) => line,
+            Ok(None) => {
+                if ready {
+                    send_watch_output(sender, failure, label, LogoscoreWatchOutput::Eof);
+                } else {
+                    let _result = readiness.send(LogoscoreWatchReadiness::Eof);
+                }
+                return;
+            }
+            Err(error) => {
+                send_watch_protocol_error(ready, readiness, sender, failure, label, error);
+                return;
+            }
+        };
+        let value = match serde_json::from_str::<Value>(line.trim()) {
+            Ok(value) => value,
+            Err(error) => {
+                send_watch_protocol_error(
+                    ready,
+                    readiness,
+                    sender,
+                    failure,
+                    label,
+                    format!("{label} returned malformed JSON watch frame: {error}"),
+                );
+                return;
+            }
+        };
+        if !ready {
+            if let Err(error) = validate_watch_ready_frame(&value, expected.0, expected.1) {
+                let _result = readiness.send(LogoscoreWatchReadiness::Error(format!(
+                    "{label} returned invalid subscription-ready frame: {error:#}"
+                )));
+                return;
+            }
+            if readiness.send(LogoscoreWatchReadiness::Ready).is_err() {
+                return;
+            }
+            ready = true;
+            continue;
+        }
+        if let Err(error) = validate_watch_event_frame(&value, expected.0, expected.1) {
+            send_watch_output(
+                sender,
+                failure,
+                label,
+                LogoscoreWatchOutput::Error(format!(
+                    "{label} returned invalid event frame: {error:#}"
+                )),
+            );
+            return;
+        }
+        if !send_watch_output(sender, failure, label, LogoscoreWatchOutput::Value(value)) {
+            return;
+        }
+    }
+}
+
+fn validate_watch_ready_frame(value: &Value, module: &str, event: &str) -> Result<()> {
+    let object = value
+        .as_object()
+        .context("subscription-ready frame must be an object")?;
+    anyhow::ensure!(
+        object.len() == 5
+            && value.get("type").and_then(Value::as_str) == Some("subscription_ready")
+            && value.get("protocol").and_then(Value::as_str) == Some(LOGOSCORE_WATCH_PROTOCOL)
+            && value.get("version").and_then(Value::as_u64)
+                == Some(LOGOSCORE_WATCH_PROTOCOL_VERSION)
+            && value.get("module").and_then(Value::as_str) == Some(module)
+            && value.get("event").and_then(Value::as_str) == Some(event),
+        "expected exact {LOGOSCORE_WATCH_PROTOCOL} v{LOGOSCORE_WATCH_PROTOCOL_VERSION} readiness for {module}.{event}"
+    );
+    Ok(())
+}
+
+fn validate_watch_event_frame(value: &Value, module: &str, event: &str) -> Result<()> {
+    let object = value.as_object().context("event frame must be an object")?;
+    anyhow::ensure!(
+        object.len() == 7
+            && value.get("type").and_then(Value::as_str) == Some("event")
+            && value.get("protocol").and_then(Value::as_str) == Some(LOGOSCORE_WATCH_PROTOCOL)
+            && value.get("version").and_then(Value::as_u64)
+                == Some(LOGOSCORE_WATCH_PROTOCOL_VERSION)
+            && value.get("timestamp").and_then(Value::as_str).is_some(),
+        "event frame must exactly declare typed {LOGOSCORE_WATCH_PROTOCOL} v{LOGOSCORE_WATCH_PROTOCOL_VERSION} fields"
+    );
+    anyhow::ensure!(
+        value.get("module").and_then(Value::as_str) == Some(module),
+        "event module does not match `{module}`"
+    );
+    anyhow::ensure!(
+        value.get("event").and_then(Value::as_str) == Some(event),
+        "event name does not match `{event}`"
+    );
+    let data = value
+        .get("data")
+        .and_then(Value::as_object)
+        .context("event data must be an object")?;
+    anyhow::ensure!(
+        data.len() <= LOGOSCORE_EVENT_FIELD_LIMIT,
+        "event exceeded {LOGOSCORE_EVENT_FIELD_LIMIT} field limit"
+    );
+    Ok(())
+}
+
+fn send_watch_protocol_error(
+    ready: bool,
+    readiness: &mpsc::Sender<LogoscoreWatchReadiness>,
+    sender: &mpsc::SyncSender<LogoscoreWatchOutput>,
+    failure: &Arc<Mutex<Option<String>>>,
+    label: &str,
+    error: String,
+) {
+    if ready {
+        send_watch_output(sender, failure, label, LogoscoreWatchOutput::Error(error));
+    } else {
+        let _result = readiness.send(LogoscoreWatchReadiness::Error(error));
+    }
+}
+
+fn send_watch_output(
+    sender: &mpsc::SyncSender<LogoscoreWatchOutput>,
+    failure: &Arc<Mutex<Option<String>>>,
+    label: &str,
+    output: LogoscoreWatchOutput,
+) -> bool {
+    match sender.try_send(output) {
+        Ok(()) => true,
+        Err(mpsc::TrySendError::Full(_)) => {
+            record_watch_output_failure(
+                failure,
+                format!(
+                    "{label} exceeded bounded event queue capacity {LOGOSCORE_EVENT_QUEUE_CAPACITY}"
+                ),
+            );
+            false
+        }
+        Err(mpsc::TrySendError::Disconnected(_)) => false,
+    }
+}
+
+fn record_watch_output_failure(failure: &Arc<Mutex<Option<String>>>, error: String) {
+    if let Ok(mut failure) = failure.lock()
+        && failure.is_none()
+    {
+        *failure = Some(error);
+    }
+}
+
+fn take_watch_output_failure(failure: &Arc<Mutex<Option<String>>>) -> Option<String> {
+    failure.lock().ok().and_then(|mut failure| failure.take())
+}
+
+fn read_watch_stderr(
+    stderr: std::process::ChildStderr,
+    label: &str,
+    failure: &Arc<Mutex<Option<String>>>,
+    stop: &AtomicBool,
+) {
+    let mut reader = WatchLineReader::new(stderr);
+    loop {
+        match reader.next_line(label, stop) {
+            Ok(Some(line)) if line.trim().is_empty() => {}
+            Ok(Some(line)) => {
+                record_watch_output_failure(
+                    failure,
+                    format!("{label} wrote to stderr: {}", line.trim()),
+                );
+                return;
+            }
+            Ok(None) => return,
+            Err(error) => {
+                record_watch_output_failure(failure, error);
+                return;
+            }
+        }
+    }
+}
+
+struct WatchLineReader<R> {
+    reader: R,
+    pending: Vec<u8>,
+    eof: bool,
+}
+
+impl<R> WatchLineReader<R>
+where
+    R: std::io::Read,
+{
+    const fn new(reader: R) -> Self {
+        Self {
+            reader,
+            pending: Vec::new(),
+            eof: false,
+        }
+    }
+
+    fn next_line(
+        &mut self,
+        label: &str,
+        stop: &AtomicBool,
+    ) -> std::result::Result<Option<String>, String> {
+        loop {
+            if let Some(newline) = self.pending.iter().position(|byte| *byte == b'\n') {
+                let line_end = newline.saturating_add(1);
+                if line_end > LOGOSCORE_EVENT_LINE_LIMIT {
+                    return Err(watch_line_limit_error(label));
+                }
+                let remaining = self.pending.split_off(line_end);
+                let line = std::mem::replace(&mut self.pending, remaining);
+                return decode_watch_line(line, label).map(Some);
+            }
+            if self.pending.len() > LOGOSCORE_EVENT_LINE_LIMIT {
+                return Err(watch_line_limit_error(label));
+            }
+            if self.eof {
+                if self.pending.is_empty() {
+                    return Ok(None);
+                }
+                let line = std::mem::take(&mut self.pending);
+                return decode_watch_line(line, label).map(Some);
+            }
+            if stop.load(Ordering::Acquire) {
+                return Ok(None);
+            }
+
+            let mut buffer = [0_u8; 8192];
+            match self.reader.read(&mut buffer) {
+                Ok(0) => self.eof = true,
+                Ok(read) => self.pending.extend_from_slice(
+                    buffer
+                        .get(..read)
+                        .ok_or_else(|| format!("{label} watch read exceeded its buffer"))?,
+                ),
+                Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                    thread::sleep(LOGOSCORE_POLL_INTERVAL);
+                }
+                Err(error) if error.kind() == ErrorKind::Interrupted => {}
+                Err(error) => return Err(format!("failed to read {label} output: {error}")),
+            }
+        }
+    }
+}
+
+fn decode_watch_line(bytes: Vec<u8>, label: &str) -> std::result::Result<String, String> {
+    String::from_utf8(bytes).map_err(|error| format!("{label} output is not UTF-8: {error}"))
+}
+
+fn watch_line_limit_error(label: &str) -> String {
+    format!("{label} event exceeded {LOGOSCORE_EVENT_LINE_LIMIT} byte line limit")
+}
+
+#[cfg(unix)]
+fn configure_watch_pipe_nonblocking<F>(descriptor: &F) -> std::io::Result<()>
+where
+    F: std::os::fd::AsFd,
+{
+    use nix::fcntl::{FcntlArg, OFlag, fcntl};
+
+    let current = fcntl(descriptor, FcntlArg::F_GETFL).map_err(std::io::Error::from)?;
+    let flags = OFlag::from_bits_truncate(current) | OFlag::O_NONBLOCK;
+    fcntl(descriptor, FcntlArg::F_SETFL(flags))
+        .map(drop)
+        .map_err(std::io::Error::from)
+}
+
+struct FailedWatchStart {
+    child: Child,
+    reader: Option<thread::JoinHandle<()>>,
+    reader_stop: Option<Arc<AtomicBool>>,
+    process_permit: StreamingCommandPermit,
+    recovery: mpsc::Sender<LogoscoreWatchRecovery>,
+    label: String,
+}
+
+impl FailedWatchStart {
+    fn new(
+        child: Child,
+        reader: Option<thread::JoinHandle<()>>,
+        reader_stop: Option<Arc<AtomicBool>>,
+        process_permit: StreamingCommandPermit,
+        recovery: mpsc::Sender<LogoscoreWatchRecovery>,
+        label: &str,
+    ) -> Self {
+        Self {
+            child,
+            reader,
+            reader_stop,
+            process_permit,
+            recovery,
+            label: label.to_owned(),
+        }
+    }
+}
+
+fn cleanup_failed_watch_start(primary: anyhow::Error, state: FailedWatchStart) -> anyhow::Error {
+    cleanup_failed_watch_start_with(primary, state, stop_watch_child_with_retry)
+}
+
+fn cleanup_failed_watch_start_with<F>(
+    primary: anyhow::Error,
+    state: FailedWatchStart,
+    cleanup: F,
+) -> anyhow::Error
+where
+    F: FnOnce(&mut Child, &str) -> Result<()>,
+{
+    let FailedWatchStart {
+        mut child,
+        reader,
+        reader_stop,
+        process_permit,
+        recovery,
+        label,
+    } = state;
+    let reader_stop = reader_stop.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
+    reader_stop.store(true, Ordering::Release);
+    let stop = cleanup(&mut child, &label);
+    if let Err(stop) = stop {
+        handoff_watch_recovery(
+            Some(recovery),
+            LogoscoreWatchRecovery {
+                child,
+                reader,
+                stderr_reader: None,
+                reader_stop,
+                process_permit: Some(process_permit),
+                label: label.clone(),
+            },
+        );
+        return LogoscoreWatchCleanupUnconfirmed::new(format!(
+            "{primary}; failed watch-start process cleanup: {stop:#}"
+        ))
+        .into();
+    }
+    drop(process_permit);
+    let join = reader.map_or(Ok(()), |reader| {
+        reader
+            .join()
+            .map_err(|_| anyhow::anyhow!("{label} output reader panicked during cleanup"))
+    });
+    match join {
+        Ok(()) => primary,
+        Err(join) => LogoscoreWatchCleanupUnconfirmed::new(format!(
+            "{primary}; failed watch-start reader cleanup: {join:#}"
+        ))
+        .into(),
+    }
+}
+
+fn handoff_watch_recovery(
+    sender: Option<mpsc::Sender<LogoscoreWatchRecovery>>,
+    recovery: LogoscoreWatchRecovery,
+) {
+    let Some(sender) = sender else {
+        run_watch_recovery(recovery);
+        return;
+    };
+    if let Err(error) = sender.send(recovery) {
+        run_watch_recovery(error.0);
+    }
+}
+
+fn ensure_logoscore_event_watch_supported() -> Result<()> {
+    #[cfg(unix)]
+    {
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        bail!(
+            "logoscore event watch is unsupported on this platform because bounded process-group cleanup is unavailable"
+        )
+    }
+}
+
+fn stop_watch_child_with_retry(child: &mut Child, label: &str) -> Result<()> {
+    match stop_watch_child(child, label) {
+        Ok(()) => Ok(()),
+        Err(first) => stop_watch_child(child, label).map_err(|second| {
+            LogoscoreWatchCleanupUnconfirmed::new(format!(
+                "{label} cleanup remained unconfirmed after retry: first={first:#}; second={second:#}"
+            ))
+            .into()
+        }),
+    }
+}
+
+fn stop_watch_child(child: &mut Child, label: &str) -> Result<()> {
+    match child.try_wait() {
+        Ok(Some(_)) => return kill_remaining_watch_group(child, label),
+        Ok(None) => {}
+        Err(error) => {
+            return force_stop_watch_child(
+                child,
+                label,
+                anyhow::Error::new(error).context(format!("failed to poll {label} during cleanup")),
+            );
+        }
+    }
+    if let Err(error) = terminate_watch_child(child) {
+        return force_stop_watch_child(child, label, error);
+    }
+    let deadline = StdInstant::now()
+        .checked_add(LOGOSCORE_WATCH_STOP_GRACE)
+        .context("logoscore event watch cleanup deadline overflow")?;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return kill_remaining_watch_group(child, label),
+            Ok(None) => {}
+            Err(error) => {
+                return force_stop_watch_child(
+                    child,
+                    label,
+                    anyhow::Error::new(error)
+                        .context(format!("failed to poll {label} during cleanup")),
+                );
+            }
+        }
+        if StdInstant::now() >= deadline {
+            break;
+        }
+        thread::sleep(LOGOSCORE_POLL_INTERVAL);
+    }
+    force_stop_watch_child(
+        child,
+        label,
+        anyhow::anyhow!("{label} did not stop after graceful termination"),
+    )
+}
+
+fn force_stop_watch_child(child: &mut Child, label: &str, primary: anyhow::Error) -> Result<()> {
+    let group_kill = kill_watch_child(child);
+    let direct_kill = child
+        .kill()
+        .with_context(|| format!("failed to kill direct {label} process"));
+    let deadline = StdInstant::now()
+        .checked_add(LOGOSCORE_WATCH_STOP_GRACE)
+        .context("logoscore event watch forced-cleanup deadline overflow")?;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                if let Err(group_error) = &group_kill {
+                    return Err(anyhow::anyhow!(
+                        "{primary}; direct process reaped but process-group cleanup failed: {group_error:#}"
+                    ));
+                }
+                return Ok(());
+            }
+            Ok(None) => {}
+            Err(error) => {
+                return Err(anyhow::anyhow!(
+                    "{primary}; forced cleanup failed: group={}, direct={}, reap={error}",
+                    watch_cleanup_status(group_kill),
+                    watch_cleanup_status(direct_kill),
+                ));
+            }
+        }
+        if StdInstant::now() >= deadline {
+            return Err(anyhow::anyhow!(
+                "{primary}; forced cleanup timed out: group={}, direct={}",
+                watch_cleanup_status(group_kill),
+                watch_cleanup_status(direct_kill),
+            ));
+        }
+        thread::sleep(LOGOSCORE_POLL_INTERVAL);
+    }
+}
+
+#[cfg(unix)]
+fn kill_remaining_watch_group(child: &mut Child, label: &str) -> Result<()> {
+    kill_watch_child(child)
+        .with_context(|| format!("failed to kill remaining {label} process-group members"))
+}
+
+#[cfg(not(unix))]
+fn kill_remaining_watch_group(_child: &mut Child, _label: &str) -> Result<()> {
+    Ok(())
+}
+
+fn watch_cleanup_status(result: Result<()>) -> String {
+    match result {
+        Ok(()) => "ok".to_owned(),
+        Err(error) => format!("{error:#}"),
+    }
+}
+
+#[cfg(unix)]
+fn terminate_watch_child(child: &mut Child) -> Result<()> {
+    signal_watch_process_group(child, nix::sys::signal::Signal::SIGTERM)
+}
+
+#[cfg(not(unix))]
+fn terminate_watch_child(child: &mut Child) -> Result<()> {
+    child
+        .kill()
+        .context("failed to terminate logoscore event watch")
+}
+
+#[cfg(unix)]
+fn kill_watch_child(child: &mut Child) -> Result<()> {
+    signal_watch_process_group(child, nix::sys::signal::Signal::SIGKILL)
+}
+
+#[cfg(not(unix))]
+fn kill_watch_child(child: &mut Child) -> Result<()> {
+    child.kill().context("failed to kill logoscore event watch")
+}
+
+#[cfg(unix)]
+fn signal_watch_process_group(child: &Child, signal: nix::sys::signal::Signal) -> Result<()> {
+    use nix::{errno::Errno, sys::signal::killpg, unistd::Pid};
+
+    let process_group = i32::try_from(child.id()).context("logoscore watch PID is too large")?;
+    match killpg(Pid::from_raw(process_group), signal) {
+        Ok(()) | Err(Errno::ESRCH) => Ok(()),
+        Err(error) => Err(error).context("failed to signal logoscore event watch process group"),
+    }
+}
+
 fn configured_runtime() -> LogoscoreCliRuntime {
     let env_program = env::var("LOGOSCORE_BIN")
         .ok()
@@ -1308,6 +2490,555 @@ mod tests {
                 last_call: Mutex::new(None),
             }
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_event_watch_contract_requires_process_group_cleanup() -> Result<()> {
+        ensure_logoscore_event_watch_supported()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn watch_recovery_queue_retries_without_head_of_line_blocking() -> Result<()> {
+        fn recovery(label: &str) -> Result<LogoscoreWatchRecovery> {
+            let child = Command::new("sh")
+                .arg("-c")
+                .arg("while :; do sleep 1; done")
+                .spawn()
+                .with_context(|| format!("failed to start {label} recovery fixture"))?;
+            Ok(LogoscoreWatchRecovery {
+                child,
+                reader: None,
+                stderr_reader: None,
+                reader_stop: Arc::new(AtomicBool::new(false)),
+                process_permit: None,
+                label: label.to_owned(),
+            })
+        }
+
+        let (sender, receiver) = mpsc::channel();
+        sender.send(recovery("first")?)?;
+        sender.send(recovery("second")?)?;
+        drop(sender);
+        let mut attempts = Vec::new();
+        let mut first_attempts = 0_u8;
+        run_watch_recovery_queue_with(&receiver, Duration::ZERO, |recovery| {
+            attempts.push(recovery.label.clone());
+            if recovery.label == "first" {
+                first_attempts = first_attempts.saturating_add(1);
+                if first_attempts == 1 {
+                    return false;
+                }
+            }
+            recovery.child.kill().is_ok() && recovery.child.wait().is_ok()
+        });
+
+        anyhow::ensure!(
+            attempts == ["first", "second", "first"],
+            "watch recovery queue blocked later cleanup behind a retry: {attempts:?}"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_watch_start_hands_process_handle_to_recovery() -> Result<()> {
+        use std::os::unix::process::CommandExt as _;
+
+        use nix::{errno::Errno, sys::signal::kill, unistd::Pid};
+
+        let control = CommandControl::new(
+            CancellationToken::new(),
+            StdInstant::now() + Duration::from_secs(2),
+        );
+        let permit = acquire_streaming_command_permit("failed watch start fixture", &control)?;
+        let mut command = Command::new("sh");
+        command
+            .arg("-c")
+            .arg("while :; do sleep 1; done")
+            .process_group(0);
+        let child = command.spawn()?;
+        let pid = i32::try_from(child.id()).context("watch fixture PID is too large")?;
+        let error = cleanup_failed_watch_start_with(
+            anyhow::anyhow!("injected watch-start failure"),
+            FailedWatchStart::new(
+                child,
+                None,
+                None,
+                permit,
+                watch_recovery_sender()?,
+                "injected failed watch",
+            ),
+            |_child, _label| bail!("injected cleanup uncertainty"),
+        );
+        anyhow::ensure!(
+            error
+                .downcast_ref::<LogoscoreWatchCleanupUnconfirmed>()
+                .is_some(),
+            "failed watch start lost cleanup-uncertain classification: {error:#}"
+        );
+
+        let deadline = StdInstant::now() + Duration::from_secs(2);
+        loop {
+            match kill(Pid::from_raw(pid), None) {
+                Err(Errno::ESRCH) => break,
+                Ok(()) => {}
+                Err(error) => return Err(error).context("failed to inspect recovered watch"),
+            }
+            if StdInstant::now() >= deadline {
+                bail!("failed watch-start recovery left PID {pid} running");
+            }
+            thread::sleep(LOGOSCORE_POLL_INTERVAL);
+        }
+        Ok(())
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn non_unix_backup_readiness_fails_before_spawning_logoscore() -> Result<()> {
+        let runtime = LogoscoreCliRuntime::managed(
+            "program-that-must-not-be-spawned".to_owned(),
+            "config-that-must-not-be-read".to_owned(),
+        );
+        let error = runtime
+            .storage_backup_download_readiness()
+            .err()
+            .context("non-Unix backup readiness unexpectedly claimed event-watch support")?;
+        anyhow::ensure!(
+            error
+                .to_string()
+                .contains("bounded process-group cleanup is unavailable"),
+            "non-Unix readiness did not fail closed: {error:#}"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn json_event_reader_bounds_queue_and_event_fields() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let burst_path = directory.path().join("burst.ndjson");
+        let ready = json!({
+            "type": "subscription_ready",
+            "protocol": "logoscore.watch",
+            "version": 1,
+            "module": "storage_module",
+            "event": "storageDownloadDone",
+        });
+        let event = json!({
+            "type": "event",
+            "protocol": "logoscore.watch",
+            "version": 1,
+            "timestamp": "2026-07-14T12:00:00Z",
+            "module": "storage_module",
+            "event": "storageDownloadDone",
+            "data": { "arg0": "{}" },
+        });
+        let mut burst_frames = format!("{}\n", serde_json::to_string(&ready)?);
+        for _ in 0..70 {
+            burst_frames.push_str(&serde_json::to_string(&event)?);
+            burst_frames.push('\n');
+        }
+        fs::write(&burst_path, burst_frames)?;
+        let mut burst = Command::new("cat")
+            .arg(&burst_path)
+            .stdout(Stdio::piped())
+            .spawn()?;
+        let stdout = burst.stdout.take().context("burst fixture has no stdout")?;
+        let (sender, receiver) = mpsc::sync_channel(LOGOSCORE_EVENT_QUEUE_CAPACITY);
+        let (readiness_sender, readiness) = mpsc::channel();
+        let failure = Arc::new(Mutex::new(None));
+        let stop = AtomicBool::new(false);
+        read_json_watch_output(
+            stdout,
+            "burst watch",
+            ("storage_module", "storageDownloadDone"),
+            &readiness_sender,
+            &sender,
+            &failure,
+            &stop,
+        );
+        burst.wait()?;
+        anyhow::ensure!(
+            matches!(readiness.recv()?, LogoscoreWatchReadiness::Ready),
+            "JSON readiness frame was not accepted"
+        );
+        let queued = receiver.try_iter().count();
+        anyhow::ensure!(
+            queued == LOGOSCORE_EVENT_QUEUE_CAPACITY,
+            "event queue exceeded or underfilled its bound: {queued}"
+        );
+        anyhow::ensure!(
+            take_watch_output_failure(&failure)
+                .is_some_and(|error| error.contains("bounded event queue capacity")),
+            "event queue overflow was not explicit"
+        );
+
+        let fields_path = directory.path().join("fields.ndjson");
+        let mut data = serde_json::Map::new();
+        for index in 0..=LOGOSCORE_EVENT_FIELD_LIMIT {
+            data.insert(format!("arg{index}"), Value::String("value".to_owned()));
+        }
+        fs::write(
+            &fields_path,
+            format!(
+                "{}\n{}\n",
+                serde_json::to_string(&ready)?,
+                serde_json::to_string(&json!({
+                    "type": "event",
+                    "protocol": "logoscore.watch",
+                    "version": 1,
+                    "timestamp": "2026-07-14T12:00:00Z",
+                    "module": "storage_module",
+                    "event": "storageDownloadDone",
+                    "data": data,
+                }))?,
+            ),
+        )?;
+        let mut fields = Command::new("cat")
+            .arg(&fields_path)
+            .stdout(Stdio::piped())
+            .spawn()?;
+        let stdout = fields
+            .stdout
+            .take()
+            .context("field fixture has no stdout")?;
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let (readiness_sender, readiness) = mpsc::channel();
+        let failure = Arc::new(Mutex::new(None));
+        let stop = AtomicBool::new(false);
+        read_json_watch_output(
+            stdout,
+            "field watch",
+            ("storage_module", "storageDownloadDone"),
+            &readiness_sender,
+            &sender,
+            &failure,
+            &stop,
+        );
+        fields.wait()?;
+        anyhow::ensure!(
+            matches!(readiness.recv()?, LogoscoreWatchReadiness::Ready),
+            "JSON readiness frame was not accepted"
+        );
+        match receiver.recv()? {
+            LogoscoreWatchOutput::Error(error) => anyhow::ensure!(
+                error.contains("field limit"),
+                "unexpected field-bound error: {error}"
+            ),
+            _ => bail!("over-field event did not return a parser error"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn watch_protocol_rejects_legacy_or_inexact_frames() -> Result<()> {
+        for frame in [
+            json!({
+                "module": "storage_module",
+                "event": "storageDownloadDoneV2",
+                "data": {}
+            }),
+            json!({
+                "type": "subscription_ready",
+                "protocol": "logoscore.watch",
+                "version": 0,
+                "module": "storage_module",
+                "event": "storageDownloadDoneV2"
+            }),
+            json!({
+                "type": "subscription_ready",
+                "protocol": "logoscore.watch",
+                "version": 1,
+                "module": "storage_module",
+                "event": "storageDownloadDoneV2",
+                "legacy": true
+            }),
+        ] {
+            anyhow::ensure!(
+                validate_watch_ready_frame(&frame, "storage_module", "storageDownloadDoneV2")
+                    .is_err(),
+                "inexact watch readiness was accepted: {frame}"
+            );
+        }
+        let untyped_event = json!({
+            "module": "storage_module",
+            "event": "storageDownloadDoneV2",
+            "data": { "arg0": "{}" }
+        });
+        anyhow::ensure!(
+            validate_watch_event_frame(&untyped_event, "storage_module", "storageDownloadDoneV2")
+                .is_err(),
+            "legacy watch event was accepted"
+        );
+        for inexact_event in [
+            json!({
+                "type": "event",
+                "protocol": "logoscore.watch",
+                "version": 1,
+                "module": "storage_module",
+                "event": "storageDownloadDoneV2",
+                "data": { "arg0": "{}" }
+            }),
+            json!({
+                "type": "event",
+                "protocol": "logoscore.watch",
+                "version": 1,
+                "timestamp": 1,
+                "module": "storage_module",
+                "event": "storageDownloadDoneV2",
+                "data": { "arg0": "{}" }
+            }),
+            json!({
+                "type": "event",
+                "protocol": "logoscore.watch",
+                "version": 1,
+                "timestamp": "2026-07-14T12:00:00Z",
+                "module": "storage_module",
+                "event": "storageDownloadDoneV2",
+                "data": { "arg0": "{}" },
+                "legacy": true
+            }),
+        ] {
+            anyhow::ensure!(
+                validate_watch_event_frame(
+                    &inexact_event,
+                    "storage_module",
+                    "storageDownloadDoneV2",
+                )
+                .is_err(),
+                "inexact typed watch event was accepted: {inexact_event}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn shared_staging_requires_local_transport_on_every_platform() -> Result<()> {
+        let local = json!({
+            "instance_id": "instance-local",
+            "daemon": { "core_service": { "transport": "local" } }
+        });
+        anyhow::ensure!(
+            local_transport_instance_id(&local, "downloadToUrl")? == "instance-local",
+            "local shared-filesystem transport identity drifted"
+        );
+
+        for incompatible in [
+            json!({
+                "instance_id": "instance-remote",
+                "daemon": { "core_service": { "transport": "tcp" } }
+            }),
+            json!({
+                "daemon": { "core_service": { "transport": "local" } }
+            }),
+        ] {
+            anyhow::ensure!(
+                local_transport_instance_id(&incompatible, "downloadToUrl").is_err(),
+                "shared staging accepted incompatible client config: {incompatible}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn queued_watch_terminal_wins_over_concurrent_cancellation() -> Result<()> {
+        let terminal = json!({
+            "type": "event",
+            "protocol": "logoscore.watch",
+            "version": 1,
+            "timestamp": "2026-07-14T12:00:00Z",
+            "module": "storage_module",
+            "event": "storageDownloadDoneV2",
+            "data": { "arg0": "{}" },
+        });
+        let (sender, output) = mpsc::sync_channel(1);
+        sender.send(LogoscoreWatchOutput::Value(terminal.clone()))?;
+        drop(sender);
+        let (_readiness_sender, readiness) = mpsc::channel();
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let control = CommandControl::new(cancellation, StdInstant::now() + Duration::from_secs(1));
+        let mut watch = LogoscoreEventWatch {
+            child: None,
+            output,
+            output_failure: Arc::new(Mutex::new(None)),
+            readiness,
+            reader: None,
+            stderr_reader: None,
+            reader_stop: Arc::new(AtomicBool::new(false)),
+            process_permit: None,
+            recovery: None,
+            label: "queued terminal watch".to_owned(),
+        };
+
+        anyhow::ensure!(
+            watch.next_value(&control)? == terminal,
+            "queued terminal lost to concurrent cancellation"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn event_watch_drains_terminal_emitted_immediately_before_exit() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir()?;
+        let program = directory.path().join("logoscore-watch-exit");
+        fs::write(
+            &program,
+            "#!/bin/sh\n\
+             if [ \"$1\" = \"--config-dir\" ]; then shift 2; fi\n\
+             printf '%s\\n' '{\"type\":\"subscription_ready\",\"protocol\":\"logoscore.watch\",\"version\":1,\"module\":\"storage_module\",\"event\":\"storageDownloadDone\"}'\n\
+             printf '%s\\n' '{\"type\":\"event\",\"protocol\":\"logoscore.watch\",\"version\":1,\"timestamp\":\"2026-07-14T12:00:00Z\",\"module\":\"storage_module\",\"event\":\"storageDownloadDone\",\"data\":{\"arg0\":\"{\\\"success\\\":true,\\\"sessionId\\\":\\\"session-exit\\\"}\"}}'\n",
+        )?;
+        let mut permissions = fs::metadata(&program)?.permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&program, permissions)?;
+        let runtime = LogoscoreCliRuntime::managed(
+            program.display().to_string(),
+            directory.path().display().to_string(),
+        );
+
+        for _ in 0..20 {
+            let control = CommandControl::new(
+                CancellationToken::new(),
+                StdInstant::now() + Duration::from_secs(2),
+            );
+            let mut watch =
+                runtime.start_event_watch("storage_module", "storageDownloadDone", &control)?;
+            watch.wait_ready(&control)?;
+            let value = watch.next_value(&control)?;
+            anyhow::ensure!(
+                value.pointer("/data/arg0").and_then(Value::as_str)
+                    == Some(r#"{"success":true,"sessionId":"session-exit"}"#),
+                "terminal emitted before watcher exit was lost: {value}"
+            );
+            watch.stop()?;
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn event_watch_stop_kills_pipe_holding_process_group_descendant() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        use nix::{sys::signal::Signal, unistd::Pid};
+
+        let directory = tempfile::tempdir()?;
+        let program = directory.path().join("logoscore-watch-descendant");
+        let descendant_path = directory.path().join("descendant.pid");
+        fs::write(
+            &program,
+            "#!/bin/sh\n\
+             state_dir=$2\n\
+             (trap '' TERM; while :; do sleep 0.05; done) &\n\
+             printf '%s' \"$!\" > \"$state_dir/descendant.pid\"\n\
+             trap 'exit 0' TERM\n\
+             printf '%s\\n' '{\"type\":\"subscription_ready\",\"protocol\":\"logoscore.watch\",\"version\":1,\"module\":\"storage_module\",\"event\":\"storageDownloadDone\"}'\n\
+             while :; do sleep 0.05; done\n",
+        )?;
+        let mut permissions = fs::metadata(&program)?.permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&program, permissions)?;
+        let runtime = LogoscoreCliRuntime::managed(
+            program.display().to_string(),
+            directory.path().display().to_string(),
+        );
+        let control = CommandControl::new(
+            CancellationToken::new(),
+            StdInstant::now() + Duration::from_secs(2),
+        );
+        let mut watch =
+            runtime.start_event_watch("storage_module", "storageDownloadDone", &control)?;
+        watch.wait_ready(&control)?;
+        let process_group = i32::try_from(
+            watch
+                .child
+                .as_ref()
+                .context("watch fixture has no child")?
+                .id(),
+        )?;
+        let descendant = fs::read_to_string(&descendant_path)?
+            .trim()
+            .parse::<i32>()
+            .context("descendant fixture wrote an invalid PID")?;
+
+        let (stop_sender, stop_receiver) = mpsc::channel();
+        let started = StdInstant::now();
+        let stopper = thread::spawn(move || {
+            let _result = stop_sender.send(watch.stop());
+        });
+        let stop_result = match stop_receiver.recv_timeout(Duration::from_secs(1)) {
+            Ok(result) => result,
+            Err(error) => {
+                let _result =
+                    nix::sys::signal::killpg(Pid::from_raw(process_group), Signal::SIGKILL);
+                let _result = stopper.join();
+                bail!("watch stop blocked on inherited output pipes: {error}");
+            }
+        };
+        stopper
+            .join()
+            .map_err(|_| anyhow::anyhow!("watch stopper panicked"))?;
+        stop_result?;
+        anyhow::ensure!(
+            started.elapsed() < Duration::from_secs(1),
+            "watch stop exceeded its bounded cleanup window"
+        );
+
+        let status_path = PathBuf::from(format!("/proc/{descendant}/stat"));
+        let deadline = StdInstant::now() + Duration::from_secs(1);
+        loop {
+            let live = match fs::read_to_string(&status_path) {
+                Ok(status) => status
+                    .rsplit_once(')')
+                    .and_then(|(_, fields)| fields.split_whitespace().next())
+                    .is_none_or(|state| state != "Z"),
+                Err(error) if error.kind() == ErrorKind::NotFound => false,
+                Err(error) => return Err(error).context("failed to inspect watch descendant"),
+            };
+            if !live {
+                break;
+            }
+            if StdInstant::now() >= deadline {
+                let _result =
+                    nix::sys::signal::killpg(Pid::from_raw(process_group), Signal::SIGKILL);
+                bail!("watch cleanup left descendant PID {descendant} running");
+            }
+            thread::sleep(LOGOSCORE_POLL_INTERVAL);
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shared_download_close_surfaces_workspace_removal_failure() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir()?;
+        let root = directory.path().to_path_buf();
+        let path = root.join("backup.json");
+        fs::write(&path, b"payload")?;
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o500))?;
+        let staged = LogoscoreSharedDownload { directory, path };
+
+        let error = staged
+            .close()
+            .err()
+            .context("non-writable download workspace should not report clean removal")?;
+        anyhow::ensure!(
+            error
+                .to_string()
+                .contains("failed to remove logoscore download workspace"),
+            "workspace cleanup lost its error: {error:#}"
+        );
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
+        fs::remove_dir_all(root)?;
+        Ok(())
     }
 
     impl ModuleTransport for RecordingTransport {

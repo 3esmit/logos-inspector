@@ -103,7 +103,7 @@ constexpr std::array<std::string_view, 6> kExpectedModules = {
     "lez_core",
 };
 
-constexpr std::array<std::pair<std::string_view, std::string_view>, 17> kExpectedEvents = { {
+constexpr std::array<std::pair<std::string_view, std::string_view>, 19> kExpectedEvents = { {
     { "delivery_module", "messageSent" },
     { "delivery_module", "messageError" },
     { "delivery_module", "messagePropagated" },
@@ -118,6 +118,8 @@ constexpr std::array<std::pair<std::string_view, std::string_view>, 17> kExpecte
     { "storage_module", "storageUploadDone" },
     { "storage_module", "storageDownloadProgress" },
     { "storage_module", "storageDownloadDone" },
+    { "storage_module", "storageDownloadProgressV2" },
+    { "storage_module", "storageDownloadDoneV2" },
     { "storage_module", "storageDownloadManifestDone" },
     { "storage_module", "storageRemoveDone" },
     { "blockchain_module", "newBlock" },

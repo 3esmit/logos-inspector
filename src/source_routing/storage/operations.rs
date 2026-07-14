@@ -2,6 +2,7 @@ use anyhow::{Context as _, Result, bail};
 use reqwest::Response;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
+use std::time::Duration;
 
 use crate::modules::logos_core::{ModuleTransportKind, SharedModuleTransport};
 use crate::source_routing::{
@@ -13,7 +14,9 @@ use crate::support::{
     args::Args, command_runner::CommandControl, settings_backup::SETTINGS_BACKUP_MAX_BYTES,
 };
 
-use super::{layer::STORAGE_SOURCE_MODES, transport};
+#[cfg(test)]
+use super::BACKUP_CID_MAX_BYTES;
+use super::{layer::STORAGE_SOURCE_MODES, parse_backup_cid, transport};
 
 const DEFAULT_BLOCK_SIZE: u64 = 65_536;
 
@@ -116,6 +119,7 @@ impl StorageClient {
         Ok(Self { adapter })
     }
 
+    #[cfg(test)]
     pub(crate) fn endpoint(&self) -> Option<&str> {
         match &self.adapter {
             StorageOperationAdapter::Module(_) => None,
@@ -130,6 +134,24 @@ impl StorageClient {
                 "logoscore call storage_module"
             }
             StorageOperationAdapter::Rest { endpoint } => endpoint,
+        }
+    }
+
+    pub(crate) const fn confirms_backup_download_stop(&self) -> bool {
+        matches!(
+            self.adapter,
+            StorageOperationAdapter::Module(ModuleTransportKind::LogoscoreCli)
+        )
+    }
+
+    pub(crate) const fn backup_download_termination_handshake_grace(&self) -> Option<Duration> {
+        if matches!(
+            self.adapter,
+            StorageOperationAdapter::Module(ModuleTransportKind::LogoscoreCli)
+        ) {
+            Some(transport::BACKUP_DOWNLOAD_TERMINATION_HANDSHAKE_GRACE)
+        } else {
+            None
         }
     }
 
@@ -166,8 +188,14 @@ impl StorageClient {
                 bail!("Basecamp module source does not support Inspector-managed byte staging")
             }
             StorageOperationAdapter::Module(ModuleTransportKind::LogoscoreCli) => {
-                transport::module_upload_bytes_controlled(filename, bytes, block_size, control)
-                    .await
+                let runtime = module_transport
+                    .logoscore_cli_transport()
+                    .context("active LogosCore CLI transport does not expose its runtime")?
+                    .runtime();
+                transport::module_upload_bytes_controlled(
+                    runtime, filename, bytes, block_size, control,
+                )
+                .await
             }
             StorageOperationAdapter::Rest { endpoint } => {
                 transport::upload_bytes_controlled(endpoint, filename, bytes, block_size, control)
@@ -197,6 +225,23 @@ impl StorageClient {
         }
     }
 
+    pub(crate) fn ensure_managed_backup_download_supported(
+        &self,
+        module_transport: &SharedModuleTransport,
+    ) -> Result<()> {
+        if matches!(
+            self.adapter,
+            StorageOperationAdapter::Module(ModuleTransportKind::LogoscoreCli)
+        ) && module_transport.kind() != ModuleTransportKind::LogoscoreCli
+        {
+            bail!(
+                "resolved module transport `logoscore_cli` is unavailable; active transport is `{}`",
+                module_transport.kind().as_str()
+            );
+        }
+        Ok(())
+    }
+
     pub(crate) async fn download_bytes_bounded(
         &self,
         cid: &str,
@@ -214,6 +259,7 @@ impl StorageClient {
 
     pub(crate) async fn download_backup_bytes_controlled(
         &self,
+        module_transport: &SharedModuleTransport,
         cid: &str,
         local_only: bool,
         control: CommandControl,
@@ -223,7 +269,18 @@ impl StorageClient {
                 bail!("Basecamp Storage module does not expose backup read-by-CID bytes")
             }
             StorageOperationAdapter::Module(ModuleTransportKind::LogoscoreCli) => {
-                bail!("LogosCore CLI Storage adapter does not support backup read-by-CID bytes")
+                let runtime = module_transport
+                    .logoscore_cli_transport()
+                    .context("active LogosCore CLI transport does not expose its runtime")?
+                    .runtime();
+                transport::module_download_backup_bytes_controlled(
+                    runtime,
+                    cid,
+                    local_only,
+                    SETTINGS_BACKUP_MAX_BYTES,
+                    control,
+                )
+                .await
             }
             StorageOperationAdapter::Rest { endpoint } => {
                 transport::download_bytes_controlled(
@@ -706,9 +763,10 @@ pub(crate) struct StorageBackupDownloadRequest {
 impl StorageBackupDownloadRequest {
     pub(crate) fn parse_request(request: &NodeOperationRequest) -> Result<Self> {
         let payload: RestorePayload = request.payload("settings backup download")?;
+        let cid = parse_backup_cid(payload.cid)?;
         Ok(Self {
             client: StorageClient::from_initialization(request.adapter())?,
-            cid: required_text(payload.cid, "backup CID")?,
+            cid,
             local_only: payload.local_only,
         })
     }
@@ -938,41 +996,86 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn backup_download_module_errors_preserve_adapter_identity() -> Result<()> {
-        let cases = [
-            (
-                "module",
-                "Basecamp Storage module does not expose backup read-by-CID bytes",
-            ),
-            (
-                "logoscore_cli",
-                "LogosCore CLI Storage adapter does not support backup read-by-CID bytes",
-            ),
+    #[test]
+    fn backup_download_request_rejects_route_breaking_and_oversized_cids() -> Result<()> {
+        let invalid_cids = [
+            ".",
+            "..",
+            "cid/child",
+            "cid\\child",
+            "cid?query",
+            "cid#fragment",
+            "cid%2fchild",
+            "cid%5Cchild",
+            "cid%00tail",
+            "cid\ncontrol",
+            "cid with space",
         ];
-        for (source_mode, expected) in cases {
+        for cid in invalid_cids {
             let request = request(json!({
-                "adapter": { "source_mode": source_mode, "inputs": {} },
+                "adapter": {
+                    "source_mode": "rest",
+                    "inputs": { "rest_endpoint": "http://storage" }
+                },
                 "mutating_enabled": false,
-                "payload": { "cid": "cid-1" }
+                "payload": { "cid": cid }
             }))?;
-            let request = StorageBackupDownloadRequest::parse_request(&request)?;
-            let error = request
-                .client()
-                .download_backup_bytes_controlled(
-                    request.cid(),
-                    request.local_only(),
-                    command_control()?,
-                )
-                .await
+            let error = StorageBackupDownloadRequest::parse_request(&request)
                 .err()
-                .context("module backup download should fail")?;
-
+                .with_context(|| format!("route-breaking backup CID `{cid:?}` was accepted"))?;
             anyhow::ensure!(
-                error.to_string() == expected,
-                "adapter identity collapsed: {error:#}"
+                error.to_string().contains("backup CID"),
+                "route-breaking backup CID returned unrelated error: {error:#}"
             );
         }
+
+        let request = request(json!({
+            "adapter": {
+                "source_mode": "rest",
+                "inputs": { "rest_endpoint": "http://storage" }
+            },
+            "mutating_enabled": false,
+            "payload": { "cid": "a".repeat(BACKUP_CID_MAX_BYTES + 1) }
+        }))?;
+        let error = StorageBackupDownloadRequest::parse_request(&request)
+            .err()
+            .context("oversized backup CID was accepted")?;
+        anyhow::ensure!(
+            error
+                .to_string()
+                .contains("backup CID exceeds 256 byte limit"),
+            "oversized backup CID returned unexpected error: {error:#}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn basecamp_backup_download_fails_without_inspector_byte_staging() -> Result<()> {
+        let request = request(json!({
+            "adapter": { "source_mode": "module", "inputs": {} },
+            "mutating_enabled": false,
+            "payload": { "cid": "cid-1" }
+        }))?;
+        let request = StorageBackupDownloadRequest::parse_request(&request)?;
+        let module_transport: crate::modules::logos_core::SharedModuleTransport = Arc::new(
+            crate::modules::logos_core::UnavailableModuleTransport::basecamp_host_not_configured(),
+        );
+        let error = request
+            .client()
+            .download_backup_bytes_controlled(
+                &module_transport,
+                request.cid(),
+                request.local_only(),
+                command_control()?,
+            )
+            .await
+            .err()
+            .context("Basecamp backup download should fail")?;
+
+        anyhow::ensure!(
+            error.to_string() == "Basecamp Storage module does not expose backup read-by-CID bytes",
+            "adapter identity collapsed: {error:#}"
+        );
         Ok(())
     }
 

@@ -117,6 +117,35 @@ pub(super) enum CliCommand {
         #[command(subcommand)]
         command: WalletCommand,
     },
+    Backup {
+        #[command(subcommand)]
+        command: BackupCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(super) enum BackupCommand {
+    List,
+    Download {
+        cid: String,
+        #[arg(long, default_value = "logoscore_cli")]
+        source_mode: String,
+        #[arg(long)]
+        rest_url: Option<String>,
+        #[arg(long)]
+        local_only: bool,
+    },
+    Preview(BackupImportArgs),
+    Apply(BackupImportArgs),
+}
+
+#[derive(Debug, Clone, ClapArgs)]
+pub(super) struct BackupImportArgs {
+    pub(super) backup_catalog_id: String,
+    #[arg(long)]
+    pub(super) options: String,
+    #[arg(long)]
+    pub(super) wallet_profile: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -195,5 +224,93 @@ impl WalletProfileArgs {
             "wallet_home": self.wallet_home.as_deref().unwrap_or_default(),
             "network_profile": self.network_profile.as_deref().unwrap_or_default(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use anyhow::{Result, bail};
+
+    use super::*;
+
+    #[test]
+    fn backup_subcommands_parse_scriptable_workflow() -> Result<()> {
+        let parsed = Args::try_parse_from([
+            "logos-inspector",
+            "cli",
+            "backup",
+            "download",
+            "cid-1",
+            "--source-mode",
+            "rest",
+            "--rest-url",
+            "http://storage",
+            "--local-only",
+        ])?;
+        let Some(Mode::Cli(cli)) = parsed.mode else {
+            bail!("CLI backup mode was not parsed");
+        };
+        let CliCommand::Backup {
+            command:
+                BackupCommand::Download {
+                    cid,
+                    source_mode,
+                    rest_url,
+                    local_only,
+                },
+        } = cli.into_command()
+        else {
+            bail!("CLI backup download command was not parsed");
+        };
+        if cid != "cid-1"
+            || source_mode != "rest"
+            || rest_url.as_deref() != Some("http://storage")
+            || !local_only
+        {
+            bail!("CLI backup download arguments drifted");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn backup_apply_requires_explicit_options() {
+        let parsed =
+            Args::try_parse_from(["logos-inspector", "cli", "backup", "apply", "backup-1"]);
+        assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn backup_preview_and_apply_parse_explicit_catalog_selection() -> Result<()> {
+        for action in ["preview", "apply"] {
+            let parsed = Args::try_parse_from([
+                "logos-inspector",
+                "cli",
+                "backup",
+                action,
+                "backup-1",
+                "--options",
+                r#"{"settings":"replace"}"#,
+                "--wallet-profile",
+                r#"{"wallet_home":"/tmp/wallet"}"#,
+            ])?;
+            let Some(Mode::Cli(cli)) = parsed.mode else {
+                bail!("CLI backup {action} mode was not parsed");
+            };
+            let CliCommand::Backup { command } = cli.into_command() else {
+                bail!("CLI backup {action} command was not parsed");
+            };
+            let import = match command {
+                BackupCommand::Preview(import) if action == "preview" => import,
+                BackupCommand::Apply(import) if action == "apply" => import,
+                _ => bail!("CLI backup {action} selected the wrong subcommand"),
+            };
+            if import.backup_catalog_id != "backup-1"
+                || import.options != r#"{"settings":"replace"}"#
+                || import.wallet_profile.as_deref() != Some(r#"{"wallet_home":"/tmp/wallet"}"#)
+            {
+                bail!("CLI backup {action} arguments drifted");
+            }
+        }
+        Ok(())
     }
 }

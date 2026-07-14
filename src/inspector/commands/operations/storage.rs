@@ -17,7 +17,7 @@ use crate::{
         attach_remote_backup_metadata, backup_payload_bytes,
         record_remote_settings_backup_payload_in_dir,
     },
-    support::command_runner::CommandControl,
+    support::command_runner::{CommandControl, CommandStopReason},
     support::settings_backup::ensure_settings_backup_size,
     support::state_store::config_dir,
     support::work_tracker::BlockingWorkGuard,
@@ -33,8 +33,8 @@ use super::{
     identity::RuntimeOperationId,
     outcome::RuntimeOperationOutcome,
     supervisor::{
-        OperationCommitGuard, OperationControl, OperationInterrupted, OperationStopReason,
-        TerminationEvidence,
+        OperationCleanupUnconfirmed, OperationCommitGuard, OperationControl, OperationInterrupted,
+        OperationStopReason, TerminationEvidence,
     },
     transition::RuntimeOperationTransition,
 };
@@ -159,7 +159,8 @@ pub(super) const OPERATION_DEFINITIONS: &[OperationDefinition] = &[
         AffectedContextField::optional(AffectedContextKey::Endpoint),
         AffectedContextField::required(AffectedContextKey::Cid),
         AffectedContextField::required(AffectedContextKey::DownloadScope),
-    ]),
+    ])
+    .cancellable(OperationExclusiveGroup::StorageDownload),
     OperationDefinition::new(
         OperationCommand::Storage(StorageCommand::DownloadToUrl),
         "storageDownloadToUrl",
@@ -202,7 +203,7 @@ pub(super) async fn execute(
             return execute_backup_catalog_upload(request, control, module_transport).await;
         }
         StorageCommand::DownloadBackupCatalogEntry => {
-            return execute_backup_catalog_download(request, control).await;
+            return execute_backup_catalog_download(request, control, module_transport).await;
         }
         _ => {}
     }
@@ -290,6 +291,22 @@ pub(super) fn validate(command: StorageCommand, request: &RuntimeOperationReques
         .operation()
         .context("storage command has no standard operation")?;
     storage_layer::StorageOperationRequest::parse(request.node_request()?, operation).map(|_| ())
+}
+
+pub(super) fn termination_handshake_grace(
+    request: &RuntimeOperationRequest,
+) -> Result<Option<std::time::Duration>> {
+    if !matches!(
+        request.command(),
+        OperationCommand::Storage(StorageCommand::DownloadBackupCatalogEntry)
+    ) {
+        return Ok(None);
+    }
+    Ok(
+        storage_layer::StorageBackupDownloadRequest::parse_request(request.node_request()?)?
+            .client()
+            .backup_download_termination_handshake_grace(),
+    )
 }
 
 async fn execute_payload_upload(
@@ -415,10 +432,17 @@ async fn execute_backup_catalog_upload(
 async fn execute_backup_catalog_download(
     request: &RuntimeOperationRequest,
     control: &OperationControl,
+    module_transport: SharedModuleTransport,
 ) -> Result<RuntimeOperationOutcome> {
-    execute_backup_catalog_download_in_dir(request, control, None).await
+    let request =
+        storage_layer::StorageBackupDownloadRequest::parse_request(request.node_request()?)?;
+    request
+        .client()
+        .ensure_managed_backup_download_supported(&module_transport)?;
+    execute_backup_catalog_download_request_in_dir(request, control, &module_transport, None).await
 }
 
+#[cfg(test)]
 async fn execute_backup_catalog_download_in_dir(
     request: &RuntimeOperationRequest,
     control: &OperationControl,
@@ -426,25 +450,65 @@ async fn execute_backup_catalog_download_in_dir(
 ) -> Result<RuntimeOperationOutcome> {
     let request =
         storage_layer::StorageBackupDownloadRequest::parse_request(request.node_request()?)?;
+    let module_transport: SharedModuleTransport = std::sync::Arc::new(
+        crate::modules::logos_core::UnavailableModuleTransport::basecamp_host_not_configured(),
+    );
+    execute_backup_catalog_download_request_in_dir(
+        request,
+        control,
+        &module_transport,
+        catalog_base_dir,
+    )
+    .await
+}
+
+async fn execute_backup_catalog_download_request_in_dir(
+    request: storage_layer::StorageBackupDownloadRequest,
+    control: &OperationControl,
+    module_transport: &SharedModuleTransport,
+    catalog_base_dir: Option<PathBuf>,
+) -> Result<RuntimeOperationOutcome> {
     let cid = request.cid().to_owned();
     let local_only = request.local_only();
+    let no_process_evidence = if request.client().confirms_backup_download_stop() {
+        TerminationEvidence::Confirmed
+    } else {
+        TerminationEvidence::LocalOnly
+    };
     let result = request
         .client()
-        .download_backup_bytes_controlled(&cid, local_only, command_control(control))
+        .download_backup_bytes_controlled(
+            module_transport,
+            &cid,
+            local_only,
+            command_control(control),
+        )
         .await;
+    let result = result.map_err(|error| {
+        let Some(unconfirmed) =
+            error.downcast_ref::<storage_layer::BackupDownloadCleanupUnconfirmed>()
+        else {
+            return error;
+        };
+        let stop_context = match unconfirmed.stop_reason() {
+            Some(CommandStopReason::CancelRequested) => {
+                "; cleanup uncertainty followed a cancellation request"
+            }
+            Some(CommandStopReason::DeadlineExceeded) => {
+                "; cleanup uncertainty followed a command deadline"
+            }
+            None => "",
+        };
+        OperationCleanupUnconfirmed::new(format!("{error}{stop_context}")).into()
+    });
     let bytes = normalize_command_execution(
         result,
         control,
         TerminationEvidence::Confirmed,
-        TerminationEvidence::LocalOnly,
+        no_process_evidence,
     )
     .with_context(|| format!("failed to download settings backup CID {cid}"))?;
-    let endpoint = request
-        .client()
-        .endpoint()
-        .context("settings backup download requires storage REST source")?
-        .to_owned();
-    ensure_not_interrupted(control)?;
+    let endpoint = request.client().source().to_owned();
     let result =
         non_cancellable_file_commit(control, "backup download catalog commit", move || {
             let base_dir = match catalog_base_dir {
@@ -742,10 +806,184 @@ mod tests {
         modules::logos_core::UnavailableModuleTransport,
     };
 
-    const SUPERVISOR_TEST_TIMEOUT: Duration = Duration::from_secs(5);
+    // Full-workspace tests share the bounded external-command budget. Leave
+    // enough time for earlier process-backed fixtures to release their slots.
+    const SUPERVISOR_TEST_TIMEOUT: Duration = Duration::from_secs(15);
 
     fn operation_control() -> OperationControl {
         test_operation_control(Duration::from_secs(30))
+    }
+
+    #[cfg(unix)]
+    struct CliBackupCancelFixture {
+        _directory: tempfile::TempDir,
+        socket: PathBuf,
+        transport: SharedModuleTransport,
+        trigger: PathBuf,
+        cancel_ack: PathBuf,
+        cancel_attempts: PathBuf,
+        watch_stopped: PathBuf,
+        staging_path: PathBuf,
+    }
+
+    #[cfg(unix)]
+    impl CliBackupCancelFixture {
+        fn new() -> Result<Self> {
+            Self::with_behavior(false, false, false)
+        }
+
+        fn cleanup_unknown() -> Result<Self> {
+            Self::with_behavior(true, true, false)
+        }
+
+        fn cancellation_cleanup_unknown() -> Result<Self> {
+            Self::with_behavior(false, true, false)
+        }
+
+        fn unsupported_protocol() -> Result<Self> {
+            Self::with_behavior(false, false, true)
+        }
+
+        fn with_behavior(
+            malformed_dispatch_reply: bool,
+            fail_cancel: bool,
+            unsupported_protocol_version: bool,
+        ) -> Result<Self> {
+            use std::os::unix::fs::PermissionsExt as _;
+
+            let directory = tempfile::tempdir()?;
+            let root = directory.path();
+            let program = root.join("logoscore-test");
+            let trigger = root.join("download-started");
+            let cancel_ack = root.join("download-cancel-acknowledged");
+            let cancel_attempts = root.join("download-cancel-attempts");
+            let watch_stopped = root.join("watch-stopped");
+            let staging_path = root.join("staging-path");
+            let cid_path = root.join("cid");
+            let malformed_dispatch = root.join("malformed-dispatch");
+            let cancel_failure = root.join("cancel-failure");
+            let unsupported_protocol = root.join("unsupported-protocol");
+            if malformed_dispatch_reply {
+                fs::write(&malformed_dispatch, b"malformed")?;
+            }
+            if fail_cancel {
+                fs::write(&cancel_failure, b"fail")?;
+            }
+            if unsupported_protocol_version {
+                fs::write(&unsupported_protocol, b"unsupported")?;
+            }
+            let script = format!(
+                "#!/bin/sh\n\
+                 if [ \"$1\" = \"--config-dir\" ]; then shift 2; fi\n\
+                 case \"$1\" in\n\
+                   list-modules) printf '%s\\n' '[{{\"name\":\"storage_module\",\"status\":\"loaded\"}}]' ;;\n\
+                   module-info) printf '%s\\n' '{{\"name\":\"storage_module\",\"methods\":[{{\"isInvokable\":true,\"name\":\"downloadProtocol\",\"signature\":\"downloadProtocol()\"}},{{\"isInvokable\":true,\"name\":\"downloadToUrlV2\",\"signature\":\"downloadToUrlV2(QString,QString,bool,int,QString,int)\"}},{{\"isInvokable\":true,\"name\":\"downloadCancelV2\",\"signature\":\"downloadCancelV2(QString)\"}}],\"events\":[{{\"name\":\"storageDownloadDoneV2\",\"signature\":\"storageDownloadDoneV2(QString)\"}}]}}' ;;\n\
+                   watch)\n\
+                     trap 'touch {watch_stopped}; exit 0' TERM INT\n\
+                     printf '%s\\n' '{{\"type\":\"subscription_ready\",\"protocol\":\"logoscore.watch\",\"version\":1,\"module\":\"storage_module\",\"event\":\"storageDownloadDoneV2\"}}'\n\
+                     while :; do sleep 0.01; done ;;\n\
+                   call)\n\
+                     case \"$3\" in\n\
+                       downloadProtocol)\n\
+                         if [ -f {unsupported_protocol} ]; then\n\
+                           printf '%s\\n' '{{\"status\":\"ok\",\"result\":{{\"success\":true,\"value\":{{\"protocol\":\"logos.storage.download\",\"version\":1,\"moduleOperationIdOwner\":\"caller\",\"cancelTimeoutMs\":15000,\"maxDownloadBytes\":1073741824}},\"error\":null}}}}'\n\
+                         else\n\
+                           printf '%s\\n' '{{\"status\":\"ok\",\"result\":{{\"success\":true,\"value\":{{\"protocol\":\"logos.storage.download\",\"version\":2,\"moduleOperationIdOwner\":\"caller\",\"cancelTimeoutMs\":15000,\"maxDownloadBytes\":1073741824}},\"error\":null}}}}'\n\
+                         fi ;;\n\
+                       downloadToUrlV2)\n\
+                         printf '%s' \"$5\" > {staging_path}\n\
+                         printf '%s' \"$4\" > {cid_path}\n\
+                         touch {trigger}\n\
+                         if [ -f {malformed_dispatch} ]; then\n\
+                           printf '%s\\n' '{{\"status\":\"ok\",\"result\":{{\"success\":true,\"value\":null,\"error\":null}}}}'\n\
+                         else\n\
+                           printf '{{\"status\":\"ok\",\"result\":{{\"success\":true,\"value\":{{\"protocol\":\"logos.storage.download\",\"version\":2,\"accepted\":true,\"moduleOperationId\":\"%s\",\"cid\":\"%s\"}},\"error\":null}}}}\\n' \"$8\" \"$4\"\n\
+                         fi ;;\n\
+                       downloadCancelV2)\n\
+                         printf x >> {cancel_attempts}\n\
+                         if [ -f {cancel_failure} ]; then exit 10; fi\n\
+                         sleep 1.2\n\
+                         touch {cancel_ack}\n\
+                         cid=$(cat {cid_path})\n\
+                         printf '{{\"status\":\"ok\",\"result\":{{\"success\":true,\"value\":{{\"protocol\":\"logos.storage.download\",\"version\":2,\"moduleOperationId\":\"%s\",\"cid\":\"%s\",\"cancelStatus\":\"canceled\"}},\"error\":null}}}}\\n' \"$4\" \"$cid\" ;;\n\
+                       *) exit 9 ;;\n\
+                     esac ;;\n\
+                   *) exit 8 ;;\n\
+                 esac\n",
+                watch_stopped = shell_path(&watch_stopped),
+                staging_path = shell_path(&staging_path),
+                cid_path = shell_path(&cid_path),
+                trigger = shell_path(&trigger),
+                cancel_ack = shell_path(&cancel_ack),
+                cancel_attempts = shell_path(&cancel_attempts),
+                malformed_dispatch = shell_path(&malformed_dispatch),
+                cancel_failure = shell_path(&cancel_failure),
+                unsupported_protocol = shell_path(&unsupported_protocol),
+            );
+            fs::write(&program, script)?;
+            let mut permissions = fs::metadata(&program)?.permissions();
+            permissions.set_mode(0o700);
+            fs::set_permissions(&program, permissions)?;
+
+            let instance_id = format!(
+                "backup-cancel-test-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            );
+            let config_dir = root.join("logoscore-config");
+            fs::create_dir_all(config_dir.join("client"))?;
+            fs::write(
+                config_dir.join("client/config.json"),
+                serde_json::to_vec(&json!({
+                    "instance_id": instance_id,
+                    "daemon": { "core_service": { "transport": "local" } }
+                }))?,
+            )?;
+            let socket = std::env::temp_dir().join(format!("logos_core_service_{instance_id}"));
+            fs::write(&socket, b"test socket identity")?;
+            let transport: SharedModuleTransport =
+                Arc::new(crate::modules::logos_core::LogoscoreCliTransport::managed(
+                    program.display().to_string(),
+                    config_dir.display().to_string(),
+                ));
+            Ok(Self {
+                _directory: directory,
+                socket,
+                transport,
+                trigger,
+                cancel_ack,
+                cancel_attempts,
+                watch_stopped,
+                staging_path,
+            })
+        }
+
+        fn staged_path(&self) -> Result<PathBuf> {
+            Ok(PathBuf::from(fs::read_to_string(&self.staging_path)?))
+        }
+
+        fn cancel_attempt_count(&self) -> Result<usize> {
+            match fs::read(&self.cancel_attempts) {
+                Ok(attempts) => Ok(attempts.len()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
+                Err(error) => Err(error.into()),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for CliBackupCancelFixture {
+        fn drop(&mut self) {
+            let _result = fs::remove_file(&self.socket);
+        }
+    }
+
+    #[cfg(unix)]
+    fn shell_path(path: &Path) -> String {
+        format!("'{}'", path.display().to_string().replace('\'', "'\"'\"'"))
     }
 
     #[test]
@@ -817,6 +1055,299 @@ mod tests {
                 .starts_with("GET /data/cid-cancel-cleanup/network/stream HTTP/1.1\r\n"),
             "storage download used unexpected request route"
         );
+        operations.shutdown(&runtime)?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_backup_cancel_terminalizes_after_remote_and_local_cleanup() -> Result<()> {
+        let fixture = CliBackupCancelFixture::new()?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let operations =
+            RuntimeOperations::with_test_module_transport(Arc::clone(&fixture.transport));
+        let request = runtime_operation_request_from_value(json!({
+            "domain": "storage",
+            "method": "storageDownloadBackupCatalogEntry",
+            "adapter": { "source_mode": "logoscore_cli", "inputs": {} },
+            "mutating_enabled": false,
+            "payload": { "cid": "cid-cli-cancel", "local_only": false }
+        }))?;
+
+        let started = operations.start(&runtime, request)?;
+        let operation_id = started
+            .get("operationId")
+            .and_then(Value::as_str)
+            .context("started CLI backup download has no operation id")?
+            .to_owned();
+        runtime.block_on(wait_for_path_state(
+            &fixture.trigger,
+            true,
+            SUPERVISOR_TEST_TIMEOUT,
+        ))?;
+        let staged = fixture.staged_path()?;
+        let canceling = operations.cancel(&operation_id)?;
+        anyhow::ensure!(
+            canceling.get("status").and_then(Value::as_str) == Some("canceling"),
+            "CLI backup cancellation skipped canceling state: {canceling}"
+        );
+        runtime.block_on(async {
+            tokio::time::sleep(Duration::from_millis(1_050)).await;
+        });
+        let pending = operations.status(&operation_id)?;
+        anyhow::ensure!(
+            pending.get("status").and_then(Value::as_str) == Some("canceling")
+                && !fixture.cancel_ack.exists(),
+            "CLI backup cancellation terminalized before delayed remote acknowledgement: {pending}"
+        );
+
+        let canceled = runtime.block_on(wait_for_cli_canceled_after_cleanup(
+            &operations,
+            &operation_id,
+            &staged,
+            &fixture.cancel_ack,
+            &fixture.watch_stopped,
+            SUPERVISOR_TEST_TIMEOUT,
+        ))?;
+        anyhow::ensure!(
+            canceled.get("status").and_then(Value::as_str) == Some("canceled"),
+            "CLI backup cancellation reached wrong terminal: {canceled}"
+        );
+        operations.shutdown(&runtime)?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_backup_system_cleanup_unknown_retains_lease_without_cancel_request() -> Result<()> {
+        let fixture = CliBackupCancelFixture::cleanup_unknown()?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let operations =
+            RuntimeOperations::with_test_module_transport(Arc::clone(&fixture.transport));
+        let request = runtime_operation_request_from_value(json!({
+            "domain": "storage",
+            "method": "storageDownloadBackupCatalogEntry",
+            "adapter": { "source_mode": "logoscore_cli", "inputs": {} },
+            "mutating_enabled": false,
+            "payload": { "cid": "cid-cli-cleanup-unknown", "local_only": false }
+        }))?;
+
+        let started = operations.start(&runtime, request.clone())?;
+        let operation_id = started
+            .get("operationId")
+            .and_then(Value::as_str)
+            .context("started cleanup-unknown download has no operation id")?
+            .to_owned();
+        runtime.block_on(wait_for_path_state(
+            &fixture.trigger,
+            true,
+            SUPERVISOR_TEST_TIMEOUT,
+        ))?;
+        let staged = fixture.staged_path()?;
+        let canceling = runtime.block_on(wait_for_terminal_status(
+            &operations,
+            &operation_id,
+            "canceling",
+            SUPERVISOR_TEST_TIMEOUT,
+        ))?;
+        let event_page = operations.events(&operation_id, 0)?;
+        let phases = event_page
+            .get("events")
+            .and_then(Value::as_array)
+            .context("cleanup-unknown operation has no events")?
+            .iter()
+            .filter_map(|event| event.get("phase").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+
+        anyhow::ensure!(
+            canceling.get("terminalReason") == Some(&Value::Null)
+                && phases.contains(&"cleanup_unconfirmed")
+                && !phases.contains(&"canceling"),
+            "system cleanup uncertainty fabricated cancellation evidence: {event_page}"
+        );
+        anyhow::ensure!(
+            fixture.cancel_attempt_count()? == 1
+                && !fixture.cancel_ack.exists()
+                && fixture.watch_stopped.exists()
+                && !staged.exists(),
+            "cleanup-unknown operation did not exhaust known local cleanup"
+        );
+        anyhow::ensure!(
+            operations.start(&runtime, request).is_err(),
+            "cleanup-unknown operation released its exclusive lease"
+        );
+
+        operations.shutdown(&runtime)?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_backup_cancel_cleanup_unknown_retains_lease_with_cancel_evidence() -> Result<()> {
+        let fixture = CliBackupCancelFixture::cancellation_cleanup_unknown()?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let operations =
+            RuntimeOperations::with_test_module_transport(Arc::clone(&fixture.transport));
+        let request = runtime_operation_request_from_value(json!({
+            "domain": "storage",
+            "method": "storageDownloadBackupCatalogEntry",
+            "adapter": { "source_mode": "logoscore_cli", "inputs": {} },
+            "mutating_enabled": false,
+            "payload": { "cid": "cid-cli-cancel-cleanup-unknown", "local_only": false }
+        }))?;
+
+        let started = operations.start(&runtime, request.clone())?;
+        let operation_id = started
+            .get("operationId")
+            .and_then(Value::as_str)
+            .context("started cancel-cleanup-unknown download has no operation id")?
+            .to_owned();
+        runtime.block_on(wait_for_path_state(
+            &fixture.trigger,
+            true,
+            SUPERVISOR_TEST_TIMEOUT,
+        ))?;
+        let staged = fixture.staged_path()?;
+        operations.cancel(&operation_id)?;
+        let operation = runtime.block_on(wait_for_operation_phase(
+            &operations,
+            &operation_id,
+            "cleanup_unconfirmed",
+            SUPERVISOR_TEST_TIMEOUT,
+        ))?;
+        let events = operations.events(&operation_id, 0)?;
+        let cleanup_error = events
+            .get("events")
+            .and_then(Value::as_array)
+            .and_then(|events| {
+                events.iter().find(|event| {
+                    event.get("phase").and_then(Value::as_str) == Some("cleanup_unconfirmed")
+                })
+            })
+            .and_then(|event| event.get("error"))
+            .and_then(Value::as_str)
+            .context("cancel cleanup uncertainty has no exact evidence")?;
+
+        anyhow::ensure!(
+            operation.get("status").and_then(Value::as_str) == Some("canceling")
+                && operation.get("terminalReason") == Some(&Value::Null)
+                && cleanup_error.contains("cleanup uncertainty followed a cancellation request"),
+            "cancel cleanup uncertainty reached a terminal state: {operation}"
+        );
+        anyhow::ensure!(
+            fixture.cancel_attempt_count()? == 1
+                && !fixture.cancel_ack.exists()
+                && fixture.watch_stopped.exists()
+                && !staged.exists(),
+            "cancel cleanup uncertainty did not exhaust known local cleanup"
+        );
+        anyhow::ensure!(
+            operations.start(&runtime, request).is_err(),
+            "cancel cleanup uncertainty released its exclusive lease"
+        );
+
+        operations.shutdown(&runtime)?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_backup_deadline_cleanup_unknown_preserves_nonterminal_error_type() -> Result<()> {
+        let fixture = CliBackupCancelFixture::cancellation_cleanup_unknown()?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let request = runtime_operation_request_from_value(json!({
+            "domain": "storage",
+            "method": "storageDownloadBackupCatalogEntry",
+            "adapter": { "source_mode": "logoscore_cli", "inputs": {} },
+            "mutating_enabled": false,
+            "payload": { "cid": "cid-cli-deadline-cleanup-unknown", "local_only": false }
+        }))?;
+        let request =
+            storage_layer::StorageBackupDownloadRequest::parse_request(request.node_request()?)?;
+        let control = test_operation_control(Duration::from_secs(3));
+
+        let error = runtime
+            .block_on(execute_backup_catalog_download_request_in_dir(
+                request,
+                &control,
+                &fixture.transport,
+                None,
+            ))
+            .err()
+            .context("deadline cleanup uncertainty should not complete")?;
+        let cleanup = error
+            .downcast_ref::<OperationCleanupUnconfirmed>()
+            .context("deadline cleanup uncertainty lost its nonterminal error type")?;
+        let staged = fixture.staged_path()?;
+
+        anyhow::ensure!(
+            cleanup
+                .to_string()
+                .contains("cleanup uncertainty followed a command deadline"),
+            "deadline cleanup uncertainty lost stop evidence: {error:#}"
+        );
+        anyhow::ensure!(
+            fixture.cancel_attempt_count()? == 1
+                && !fixture.cancel_ack.exists()
+                && fixture.watch_stopped.exists()
+                && !staged.exists(),
+            "deadline cleanup uncertainty did not exhaust known local cleanup"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cli_backup_unsupported_protocol_fails_before_dispatch_or_catalog_projection() -> Result<()> {
+        let fixture = CliBackupCancelFixture::unsupported_protocol()?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let operations =
+            RuntimeOperations::with_test_module_transport(Arc::clone(&fixture.transport));
+        let request = runtime_operation_request_from_value(json!({
+            "domain": "storage",
+            "method": "storageDownloadBackupCatalogEntry",
+            "adapter": { "source_mode": "logoscore_cli", "inputs": {} },
+            "mutating_enabled": false,
+            "payload": { "cid": "cid-cli-protocol-v1", "local_only": false }
+        }))?;
+
+        let started = operations.start(&runtime, request)?;
+        let operation_id = started
+            .get("operationId")
+            .and_then(Value::as_str)
+            .context("started unsupported-protocol download has no operation id")?;
+        let failed = runtime.block_on(wait_for_terminal_status(
+            &operations,
+            operation_id,
+            "failed",
+            SUPERVISOR_TEST_TIMEOUT,
+        ))?;
+
+        anyhow::ensure!(
+            failed.get("terminalReason").and_then(Value::as_str) == Some("execution_failed")
+                && failed
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .is_some_and(|error| error.contains("failed to download settings backup CID")),
+            "unsupported protocol exposed wrong terminal error: {failed}"
+        );
+        anyhow::ensure!(
+            !fixture.trigger.exists()
+                && !fixture.staging_path.exists()
+                && fixture.cancel_attempt_count()? == 0,
+            "unsupported protocol reached dispatch, staging, or cancellation"
+        );
+
         operations.shutdown(&runtime)?;
         Ok(())
     }
@@ -920,6 +1451,49 @@ mod tests {
         }
     }
 
+    async fn wait_for_cli_canceled_after_cleanup(
+        operations: &RuntimeOperations,
+        operation_id: &str,
+        staging: &Path,
+        cancel_ack: &Path,
+        watch_stopped: &Path,
+        timeout: Duration,
+    ) -> Result<Value> {
+        let deadline = tokio::time::Instant::now()
+            .checked_add(timeout)
+            .context("CLI canceled-operation wait deadline overflow")?;
+        loop {
+            let remote_settled_before_status = cancel_ack.exists();
+            let watch_stopped_before_status = watch_stopped.exists();
+            let staging_removed_before_status = !staging.exists();
+            let operation = operations.status(operation_id)?;
+            let status = operation
+                .get("status")
+                .and_then(Value::as_str)
+                .context("runtime operation status is missing")?;
+            if status == "canceled" {
+                anyhow::ensure!(
+                    remote_settled_before_status
+                        && watch_stopped_before_status
+                        && staging_removed_before_status,
+                    "CLI canceled status preceded cleanup: operation={operation}, remote={remote_settled_before_status}, watch={watch_stopped_before_status}, staging={staging_removed_before_status}"
+                );
+                return Ok(operation);
+            }
+            if matches!(status, "completed" | "dispatched" | "failed" | "timed_out") {
+                bail!(
+                    "CLI runtime operation reached `{status}` instead of `canceled`: {operation}"
+                );
+            }
+            if tokio::time::Instant::now() >= deadline {
+                bail!(
+                    "timed out waiting for CLI runtime operation `{operation_id}` to cancel: {operation}"
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+
     fn storage_download_runtime_request(
         endpoint: &str,
         target: &Path,
@@ -954,6 +1528,47 @@ mod tests {
                     "timed out waiting for {} to {}",
                     path.display(),
                     if expected { "exist" } else { "be removed" }
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    }
+
+    async fn wait_for_operation_phase(
+        operations: &RuntimeOperations,
+        operation_id: &str,
+        expected_phase: &str,
+        timeout: Duration,
+    ) -> Result<Value> {
+        let deadline = tokio::time::Instant::now()
+            .checked_add(timeout)
+            .context("operation phase wait deadline overflow")?;
+        loop {
+            let operation = operations.status(operation_id)?;
+            let events = operations.events(operation_id, 0)?;
+            let found = events
+                .get("events")
+                .and_then(Value::as_array)
+                .is_some_and(|events| {
+                    events.iter().any(|event| {
+                        event.get("phase").and_then(Value::as_str) == Some(expected_phase)
+                    })
+                });
+            if found {
+                return Ok(operation);
+            }
+            let status = operation
+                .get("status")
+                .and_then(Value::as_str)
+                .context("runtime operation status is missing")?;
+            if matches!(status, "completed" | "canceled" | "failed" | "timed_out") {
+                bail!(
+                    "runtime operation reached `{status}` before `{expected_phase}`: {operation}"
+                );
+            }
+            if tokio::time::Instant::now() >= deadline {
+                bail!(
+                    "timed out waiting for runtime operation `{operation_id}` phase `{expected_phase}`: {operation}"
                 );
             }
             tokio::time::sleep(Duration::from_millis(1)).await;
@@ -1095,6 +1710,44 @@ mod tests {
             "downloaded payload was not recorded exactly once: {catalog:?}"
         );
         fs::remove_dir_all(&base_dir)?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn backup_download_terminal_commit_wins_concurrent_cancellation() -> Result<()> {
+        let base_dir = unique_backup_dir("download-terminal-cancel-race")?;
+        let bytes = serde_json::to_vec(&json!({
+            "kind": "logos-inspector-settings-backup",
+            "version": 1,
+            "encrypted": false,
+            "state": { "settings": { "favorites": [] } }
+        }))?;
+        let control = operation_control();
+        control.cancellation().cancel();
+        let commit_dir = base_dir.clone();
+
+        let result = non_cancellable_file_commit(
+            &control,
+            "backup terminal cancellation-race commit",
+            move || {
+                downloaded_backup_result(
+                    &commit_dir,
+                    &bytes,
+                    "cid-terminal",
+                    "http://storage",
+                    false,
+                )
+            },
+        )
+        .await?;
+
+        anyhow::ensure!(
+            result.get("downloaded") == Some(&json!(true))
+                && result.get("restored") == Some(&json!(false))
+                && base_dir.join("backup_catalog.json").is_file(),
+            "terminal download lost its durable catalog commit: {result}"
+        );
+        fs::remove_dir_all(base_dir)?;
         Ok(())
     }
 
@@ -1351,43 +2004,58 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn module_backup_download_fails_closed_without_cli_fallback() -> Result<()> {
-        for (source_mode, expected_error) in [
-            (
-                "module",
-                "Basecamp Storage module does not expose backup read-by-CID bytes",
-            ),
-            (
-                "logoscore_cli",
-                "LogosCore CLI Storage adapter does not support backup read-by-CID bytes",
-            ),
-        ] {
-            let base_dir = unique_backup_dir(source_mode)?;
-            let request = runtime_operation_request_from_value(json!({
-                "domain": "storage",
-                "method": "storageDownloadBackupCatalogEntry",
-                "adapter": { "source_mode": source_mode, "inputs": {} },
-                "mutating_enabled": false,
-                "payload": { "cid": "cid-module", "local_only": false }
-            }))?;
+    async fn basecamp_backup_download_fails_closed_without_byte_transport() -> Result<()> {
+        let base_dir = unique_backup_dir("module")?;
+        let request = runtime_operation_request_from_value(json!({
+            "domain": "storage",
+            "method": "storageDownloadBackupCatalogEntry",
+            "adapter": { "source_mode": "module", "inputs": {} },
+            "mutating_enabled": false,
+            "payload": { "cid": "cid-module", "local_only": false }
+        }))?;
 
-            let error = execute_backup_catalog_download_in_dir(
-                &request,
-                &operation_control(),
-                Some(base_dir.clone()),
-            )
-            .await
-            .err()
-            .context("module backup download should fail")?;
-            anyhow::ensure!(
-                format!("{error:#}").contains(expected_error),
-                "unexpected module backup download error: {error:#}"
-            );
-            anyhow::ensure!(
-                !base_dir.join("backup_catalog.json").exists(),
-                "failed module download wrote local catalog state"
-            );
-        }
+        let error = execute_backup_catalog_download_in_dir(
+            &request,
+            &operation_control(),
+            Some(base_dir.clone()),
+        )
+        .await
+        .err()
+        .context("Basecamp backup download should fail")?;
+        anyhow::ensure!(
+            format!("{error:#}")
+                .contains("Basecamp Storage module does not expose backup read-by-CID bytes"),
+            "unexpected Basecamp backup download error: {error:#}"
+        );
+        anyhow::ensure!(
+            !base_dir.join("backup_catalog.json").exists(),
+            "failed Basecamp download wrote local catalog state"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cli_backup_download_rejects_mismatched_active_transport() -> Result<()> {
+        let request = runtime_operation_request_from_value(json!({
+            "domain": "storage",
+            "method": "storageDownloadBackupCatalogEntry",
+            "adapter": { "source_mode": "logoscore_cli", "inputs": {} },
+            "mutating_enabled": false,
+            "payload": { "cid": "cid-cli-mismatch", "local_only": false }
+        }))?;
+        let module_transport: SharedModuleTransport =
+            Arc::new(UnavailableModuleTransport::basecamp_host_not_configured());
+
+        let error =
+            execute_backup_catalog_download(&request, &operation_control(), module_transport)
+                .await
+                .err()
+                .context("mismatched CLI backup transport should fail")?;
+        anyhow::ensure!(
+            error.to_string()
+                == "resolved module transport `logoscore_cli` is unavailable; active transport is `module`",
+            "unexpected CLI transport mismatch: {error:#}"
+        );
         Ok(())
     }
 
