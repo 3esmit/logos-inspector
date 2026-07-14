@@ -1,15 +1,23 @@
 use std::{
     collections::BTreeSet,
-    fs::{self, File, OpenOptions},
-    io::Write as _,
     path::{Path, PathBuf},
-    sync::{Mutex, MutexGuard},
 };
+
+#[cfg(test)]
+use std::fs;
 
 use anyhow::{Context as _, Result, bail};
 use serde_json::{Map, Value, json};
 
-use crate::{inspection::NetworkScope, support::config_path::settings_state_path};
+use crate::{
+    inspection::NetworkScope,
+    support::{
+        config_path::settings_state_path,
+        local_state::{
+            DirectoryDurability, LocalStateSession, StateFile, StoredBytes, lock_local_state_in,
+        },
+    },
+};
 
 use super::config::{
     ChannelSourceConfig, ChannelSourceConfigApplyRequest, ChannelSourceConfigMutation,
@@ -23,12 +31,10 @@ const SETTINGS_VERSION: u64 = 2;
 const CHANNEL_SOURCE_CONFIGS_KEY: &str = "channel_source_configs";
 const SOURCE_ID_GENERATION_ATTEMPTS: usize = 8;
 
-static SETTINGS_WRITE_LOCK: Mutex<()> = Mutex::new(());
-
 pub fn load_channel_source_configs() -> Result<Vec<ChannelSourceConfig>> {
     let store = SettingsStore::new(settings_state_path()?);
-    let _guard = settings_guard(&store.path)?;
-    Ok(store.load_document_unlocked()?.channel_source_configs)
+    let guard = settings_guard(&store.path)?;
+    Ok(store.load_document_locked(&guard)?.channel_source_configs)
 }
 
 pub fn apply_channel_source_config(
@@ -75,8 +81,19 @@ pub(crate) fn save_user_settings_state(state: &Value) -> Result<Value> {
     SettingsStore::new(settings_state_path()?).save_user_settings(state)
 }
 
-pub(crate) fn restore_settings_state_from_backup(state: &Value) -> Result<Value> {
-    SettingsStore::new(settings_state_path()?).replace_from_backup(state)
+pub(crate) fn settings_state_from_stored(stored: &StoredBytes) -> Result<Value> {
+    let document = match stored {
+        StoredBytes::Missing => SettingsDocument::default(),
+        StoredBytes::Present(bytes) => {
+            let value = serde_json::from_slice(bytes).context("failed to parse settings state")?;
+            SettingsDocument::from_value(value)?
+        }
+    };
+    document.into_value()
+}
+
+pub(crate) fn normalized_settings_state_from_backup(state: &Value) -> Result<Value> {
+    SettingsDocument::from_value(state.clone())?.into_value()
 }
 
 #[derive(Debug, Clone)]
@@ -90,27 +107,28 @@ impl SettingsStore {
     }
 
     fn load(&self) -> Result<Value> {
-        let _guard = settings_guard(&self.path)?;
-        self.load_document_unlocked()?.into_value()
+        let guard = settings_guard(&self.path)?;
+        self.load_document_locked(&guard)?.into_value()
     }
 
     fn save_user_settings(&self, state: &Value) -> Result<Value> {
-        let _guard = settings_guard(&self.path)?;
-        let current = self.load_document_unlocked()?;
+        let mut guard = settings_guard(&self.path)?;
+        let current = self.load_document_locked(&guard)?;
         let incoming = SettingsDocument::from_user_value(state.clone())?;
         let document = SettingsDocument {
             fields: incoming.fields,
             channel_source_configs: current.channel_source_configs,
         };
-        self.write_document_unlocked(&document)?;
-        Ok(saved_report(&self.path))
+        let durability = self.write_document_locked(&mut guard, &document)?;
+        Ok(saved_report(&self.path, durability))
     }
 
+    #[cfg(test)]
     fn replace_from_backup(&self, state: &Value) -> Result<Value> {
-        let _guard = settings_guard(&self.path)?;
+        let mut guard = settings_guard(&self.path)?;
         let document = SettingsDocument::from_value(state.clone())?;
-        self.write_document_unlocked(&document)?;
-        Ok(saved_report(&self.path))
+        let durability = self.write_document_locked(&mut guard, &document)?;
+        Ok(saved_report(&self.path, durability))
     }
 
     fn apply(&self, request: ChannelSourceConfigApplyRequest) -> Result<ChannelSourceConfig> {
@@ -122,8 +140,8 @@ impl SettingsStore {
         request: ChannelSourceConfigApplyRequest,
         attestation: Option<SequencerAttestationReceipt>,
     ) -> Result<ChannelSourceConfig> {
-        let _guard = settings_guard(&self.path)?;
-        let mut document = self.load_document_unlocked()?;
+        let mut guard = settings_guard(&self.path)?;
+        let mut document = self.load_document_locked(&guard)?;
         let network_scope = normalize_network_scope(request.network_scope)?;
         let channel_id = normalize_channel_id(&request.channel_id)?;
         let existing = document
@@ -161,7 +179,7 @@ impl SettingsStore {
         } else {
             document.channel_source_configs.push(config.clone());
         }
-        self.write_document_unlocked(&document)?;
+        self.write_document_locked(&mut guard, &document)?;
         Ok(config)
     }
 
@@ -173,8 +191,8 @@ impl SettingsStore {
         source_id: &str,
         receipt: SequencerAttestationReceipt,
     ) -> Result<ChannelSourceConfig> {
-        let _guard = settings_guard(&self.path)?;
-        let mut document = self.load_document_unlocked()?;
+        let mut guard = settings_guard(&self.path)?;
+        let mut document = self.load_document_locked(&guard)?;
         let network_scope = normalize_network_scope(network_scope)?;
         let channel_id = normalize_channel_id(channel_id)?;
         let source_id = validate_source_id(source_id)?;
@@ -215,18 +233,18 @@ impl SettingsStore {
             .context("Channel source configuration revision overflow")?;
         let updated = config.clone().normalized()?;
         *config = updated.clone();
-        self.write_document_unlocked(&document)?;
+        self.write_document_locked(&mut guard, &document)?;
         Ok(updated)
     }
 
     fn rebind_network_scope(&self, old_scope: NetworkScope, new_scope: NetworkScope) -> Result<()> {
-        let _guard = settings_guard(&self.path)?;
+        let mut guard = settings_guard(&self.path)?;
         let old_scope = normalize_network_scope(old_scope)?;
         let new_scope = normalize_network_scope(new_scope)?;
         if old_scope == new_scope {
             return Ok(());
         }
-        let mut document = self.load_document_unlocked()?;
+        let mut document = self.load_document_locked(&guard)?;
         let current = std::mem::take(&mut document.channel_source_configs);
         let mut retained = Vec::with_capacity(current.len());
         let mut moved = Vec::new();
@@ -257,29 +275,49 @@ impl SettingsStore {
             }
         }
         document.channel_source_configs = retained;
-        self.write_document_unlocked(&document)
+        self.write_document_locked(&mut guard, &document)
+            .map(|_| ())
     }
 
-    fn load_document_unlocked(&self) -> Result<SettingsDocument> {
-        if !self.path.is_file() {
-            return Ok(SettingsDocument::default());
+    fn load_document_locked(&self, guard: &LocalStateSession) -> Result<SettingsDocument> {
+        match guard.read(StateFile::Settings)? {
+            StoredBytes::Missing => Ok(SettingsDocument::default()),
+            StoredBytes::Present(bytes) => {
+                let value = serde_json::from_slice(&bytes).with_context(|| {
+                    format!(
+                        "failed to parse settings state from {}",
+                        self.path.display()
+                    )
+                })?;
+                SettingsDocument::from_value(value)
+            }
         }
-        let text = fs::read_to_string(&self.path).with_context(|| {
-            format!("failed to read settings state from {}", self.path.display())
-        })?;
-        let value = serde_json::from_str(&text).with_context(|| {
-            format!(
-                "failed to parse settings state from {}",
-                self.path.display()
-            )
-        })?;
-        SettingsDocument::from_value(value)
     }
 
+    fn write_document_locked(
+        &self,
+        guard: &mut LocalStateSession,
+        document: &SettingsDocument,
+    ) -> Result<DirectoryDurability> {
+        let value = document.clone().into_value()?;
+        let bytes =
+            serde_json::to_vec_pretty(&value).context("failed to serialize settings state")?;
+        guard.atomic_replace(StateFile::Settings, &bytes)
+    }
+
+    #[cfg(test)]
+    fn load_document_unlocked(&self) -> Result<SettingsDocument> {
+        let guard = settings_guard(&self.path)?;
+        self.load_document_locked(&guard)
+    }
+
+    #[cfg(test)]
     fn write_document_unlocked(&self, document: &SettingsDocument) -> Result<()> {
-        self.write_document_with_hook(document, |_| Ok(()))
+        let mut guard = settings_guard(&self.path)?;
+        self.write_document_locked(&mut guard, document).map(|_| ())
     }
 
+    #[cfg(test)]
     fn write_document_with_hook<F>(
         &self,
         document: &SettingsDocument,
@@ -288,8 +326,14 @@ impl SettingsStore {
     where
         F: FnOnce(&Path) -> Result<()>,
     {
+        let mut guard = settings_guard(&self.path)?;
         let value = document.clone().into_value()?;
-        atomic_write_json(&self.path, &value, before_replace)
+        let bytes =
+            serde_json::to_vec_pretty(&value).context("failed to serialize settings state")?;
+        before_replace(&self.path)?;
+        guard
+            .atomic_replace(StateFile::Settings, &bytes)
+            .map(|_| ())
     }
 }
 
@@ -561,101 +605,23 @@ fn settings_version(value: Option<&Value>) -> Result<u64> {
     Ok(version)
 }
 
-struct SettingsGuard {
-    _process_guard: MutexGuard<'static, ()>,
-    _file_guard: File,
-}
-
-fn settings_guard(settings_path: &Path) -> Result<SettingsGuard> {
-    let process_guard = SETTINGS_WRITE_LOCK
-        .lock()
-        .map_err(|_| anyhow::anyhow!("settings state lock is poisoned"))?;
+fn settings_guard(settings_path: &Path) -> Result<LocalStateSession> {
     let parent = settings_path
         .parent()
         .context("settings state path has no parent directory")?;
-    fs::create_dir_all(parent)
-        .with_context(|| format!("failed to create config directory {}", parent.display()))?;
-    let lock_path = parent.join(".settings.lock");
-    let lock_file = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(&lock_path)
-        .with_context(|| format!("failed to open settings lock {}", lock_path.display()))?;
-    lock_file
-        .lock()
-        .with_context(|| format!("failed to lock settings state at {}", lock_path.display()))?;
-    Ok(SettingsGuard {
-        _process_guard: process_guard,
-        _file_guard: lock_file,
-    })
+    if settings_path.file_name().and_then(|value| value.to_str()) != Some("settings.json") {
+        bail!("settings state path must use the authoritative filename");
+    }
+    lock_local_state_in(parent)
 }
 
-fn saved_report(path: &Path) -> Value {
+fn saved_report(path: &Path, durability: DirectoryDurability) -> Value {
     json!({
         "saved": true,
         "path": path.display().to_string(),
         "version": SETTINGS_VERSION,
+        "directory_durability": durability.as_str(),
     })
-}
-
-fn atomic_write_json<F>(path: &Path, value: &Value, before_replace: F) -> Result<()>
-where
-    F: FnOnce(&Path) -> Result<()>,
-{
-    let parent = path
-        .parent()
-        .context("settings state path has no parent directory")?;
-    fs::create_dir_all(parent)
-        .with_context(|| format!("failed to create config directory {}", parent.display()))?;
-    let file_name = path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .context("settings state filename is invalid")?;
-    let mut temporary = tempfile::Builder::new()
-        .prefix(&format!(".{file_name}."))
-        .suffix(".tmp")
-        .tempfile_in(parent)
-        .with_context(|| {
-            format!(
-                "failed to create settings temporary file in {}",
-                parent.display()
-            )
-        })?;
-    let text = serde_json::to_vec_pretty(value).context("failed to serialize settings state")?;
-    temporary.write_all(&text).with_context(|| {
-        format!(
-            "failed to write settings temporary file {}",
-            temporary.path().display()
-        )
-    })?;
-    temporary.as_file().sync_all().with_context(|| {
-        format!(
-            "failed to sync settings temporary file {}",
-            temporary.path().display()
-        )
-    })?;
-    before_replace(temporary.path())?;
-    temporary
-        .persist(path)
-        .map_err(|error| error.error)
-        .with_context(|| format!("failed to replace settings state at {}", path.display()))?;
-    sync_parent_directory(parent)?;
-    Ok(())
-}
-
-#[cfg(unix)]
-fn sync_parent_directory(parent: &Path) -> Result<()> {
-    File::open(parent)
-        .with_context(|| format!("failed to open config directory {}", parent.display()))?
-        .sync_all()
-        .with_context(|| format!("failed to sync config directory {}", parent.display()))
-}
-
-#[cfg(not(unix))]
-fn sync_parent_directory(_parent: &Path) -> Result<()> {
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1063,12 +1029,9 @@ mod tests {
             "theme": "new",
             "channel_source_configs": []
         }))?;
-        let result = {
-            let _guard = settings_guard(&store.path)?;
-            store.write_document_with_hook(&replacement, |_| {
-                bail!("injected interruption before replacement")
-            })
-        };
+        let result = store.write_document_with_hook(&replacement, |_| {
+            bail!("injected interruption before replacement")
+        });
         if result.is_ok() {
             bail!("injected atomic replacement interruption succeeded");
         }

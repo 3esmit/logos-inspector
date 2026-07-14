@@ -1,8 +1,11 @@
 use std::path::Path;
 
-use anyhow::{Context as _, Result, bail};
+#[cfg(test)]
+use anyhow::Context as _;
+use anyhow::{Result, bail};
 use serde_json::{Value, json};
 
+#[cfg(test)]
 use crate::support::state_store::{load_idl_state, load_settings_state};
 
 use super::{RestoredState, set_object_field};
@@ -19,6 +22,11 @@ pub(super) struct ImportPlan {
     pub(super) idl: Option<Value>,
     pub(super) wallet: Option<Value>,
     pub(super) summary: Value,
+}
+
+pub(super) struct ImportCurrentRequirements {
+    pub(super) settings: bool,
+    pub(super) idl: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,6 +89,7 @@ impl ImportSelection {
     }
 }
 
+#[cfg(test)]
 pub(super) fn build_import_plan(
     state: &RestoredState,
     options: Option<&Value>,
@@ -96,16 +105,34 @@ pub(super) fn build_import_plan(
         .transpose()
         .context("failed to load current IDL state for backup import")?;
 
+    build_import_plan_with_current(
+        state,
+        options,
+        require_conflict_decisions,
+        current_settings.as_ref(),
+        current_idl.as_ref(),
+    )
+}
+
+pub(super) fn build_import_plan_with_current(
+    state: &RestoredState,
+    options: Option<&Value>,
+    require_conflict_decisions: bool,
+    current_settings: Option<&Value>,
+    current_idl: Option<&Value>,
+) -> Result<ImportPlan> {
+    let selection = ImportSelection::from_value(options)?;
+
     let planned_settings = planned_settings_state(
         state.settings.as_ref(),
-        current_settings.as_ref(),
+        current_settings,
         &selection,
         options,
         require_conflict_decisions,
     )?;
     let planned_idl = planned_idl_state(
         state.idl.as_ref(),
-        current_idl.as_ref(),
+        current_idl,
         selection.idl_registry,
         options,
         require_conflict_decisions,
@@ -170,6 +197,17 @@ pub(super) fn build_import_plan(
                 "manual_restart_classes": ["mutating", "signing", "submission", "lifecycle", "destructive", "backup"]
             }
         }),
+    })
+}
+
+pub(super) fn current_state_requirements(
+    state: &RestoredState,
+    options: Option<&Value>,
+) -> Result<ImportCurrentRequirements> {
+    let selection = ImportSelection::from_value(options)?;
+    Ok(ImportCurrentRequirements {
+        settings: needs_current_settings(&selection, state),
+        idl: selection.idl_registry == ImportMode::Merge,
     })
 }
 
@@ -422,8 +460,10 @@ fn needs_current_settings(selection: &ImportSelection, state: &RestoredState) ->
     state.settings.is_some()
         && (selection.settings == ImportMode::Merge
             || selection.favorites == ImportMode::Merge
-            || selection.favorites == ImportMode::Skip
-            || selection.settings == ImportMode::Skip)
+            || (selection.settings == ImportMode::Replace
+                && selection.favorites == ImportMode::Skip)
+            || (selection.settings == ImportMode::Skip
+                && selection.favorites == ImportMode::Replace))
 }
 
 fn planned_favorites_count(

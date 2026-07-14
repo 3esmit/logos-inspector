@@ -20,7 +20,7 @@ use crate::{
         LogoscoreCliTransport, ModuleCall, ModuleTransport, SharedModuleTransport,
         dispatch_module_call,
     },
-    support::args::Args,
+    support::{args::Args, local_state::recover_local_state},
 };
 
 pub(crate) const INSPECTOR_MODULE: &str = "logos_inspector";
@@ -131,6 +131,7 @@ impl InspectorCommandSurface {
     pub(crate) fn with_shared_module_transport(
         module_transport: SharedModuleTransport,
     ) -> Result<Self> {
+        recover_local_state().context("failed to recover local configuration state")?;
         let runtime = Runtime::new().context("failed to create tokio runtime")?;
         let module_transport_kind = module_transport.kind();
         let catalog_worker = Arc::new(DirectZoneCatalogWorker::for_config_dir()?);
@@ -346,18 +347,24 @@ fn inspector_command(method: &str) -> Option<InspectorCommand> {
 mod tests {
     use std::{
         collections::HashSet,
+        env, fs,
+        process::Command,
         sync::{Arc, Barrier},
         thread,
     };
 
     use anyhow::{Context as _, Result, bail};
+    use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
     use serde_json::json;
+    use sha2::{Digest as _, Sha256};
 
     use super::*;
     use crate::inspector::commands::{operations, runtime_methods, zone_catalog, zone_l2};
 
     #[derive(Debug, Default)]
     struct FakeModuleTransport;
+
+    const SURFACE_RECOVERY_CHILD_ENV: &str = "LOGOS_INSPECTOR_SURFACE_RECOVERY_TEST_CHILD";
 
     impl ModuleTransport for FakeModuleTransport {
         fn kind(&self) -> crate::modules::logos_core::ModuleTransportKind {
@@ -379,6 +386,106 @@ mod tests {
                 ))
             })
         }
+    }
+
+    #[test]
+    fn surface_recovers_or_gates_hot_local_state_before_bridge_exposure() -> Result<()> {
+        if let Some(mode) = env::var_os(SURFACE_RECOVERY_CHILD_ENV) {
+            let mode = mode.to_string_lossy();
+            if mode == "recover" {
+                let surface = InspectorCommandSurface::with_module_transport(FakeModuleTransport)
+                    .context("surface should recover valid hot journal")?;
+                let config_dir = crate::support::config_path::config_dir()?;
+                if fs::read(config_dir.join("settings.json"))? != b"old-settings"
+                    || config_dir.join(".local-state.rollback.json").exists()
+                {
+                    bail!("surface exposed state before recovering hot journal");
+                }
+                surface.shutdown()?;
+                return Ok(());
+            }
+            if mode == "gate" {
+                let error = InspectorCommandSurface::with_module_transport(FakeModuleTransport)
+                    .err()
+                    .context("surface should reject malformed hot journal")?;
+                let rendered = format!("{error:#}");
+                if !rendered.contains("failed to recover local configuration state")
+                    || !rendered.contains("recovery_required")
+                {
+                    bail!("surface returned unexpected recovery gate: {error:#}");
+                }
+                return Ok(());
+            }
+            bail!("unknown surface recovery child mode `{mode}`");
+        }
+
+        let current_exe = env::current_exe().context("failed to locate test executable")?;
+        let recover_dir = tempfile::tempdir().context("failed to create recovery config dir")?;
+        fs::write(recover_dir.path().join("settings.json"), b"new-settings")?;
+        let journal = json!({
+            "schema_version": 1,
+            "transaction_id": "00000000000000000000000000000000",
+            "entries": [{
+                "file": "settings",
+                "original": {
+                    "kind": "present",
+                    "bytes_base64": BASE64_STANDARD.encode(b"old-settings"),
+                },
+                "old_sha256": hex::encode(Sha256::digest(b"old-settings")),
+                "new_sha256": hex::encode(Sha256::digest(b"new-settings")),
+            }],
+        });
+        fs::write(
+            recover_dir.path().join(".local-state.rollback.json"),
+            serde_json::to_vec_pretty(&journal)?,
+        )?;
+        run_surface_recovery_child(&current_exe, "recover", recover_dir.path())?;
+        if fs::read(recover_dir.path().join("settings.json"))? != b"old-settings"
+            || recover_dir
+                .path()
+                .join(".local-state.rollback.json")
+                .exists()
+        {
+            bail!("surface child did not complete startup recovery");
+        }
+
+        let gate_dir = tempfile::tempdir().context("failed to create gated config dir")?;
+        let malformed = b"{malformed-hot-journal";
+        fs::write(
+            gate_dir.path().join(".local-state.rollback.json"),
+            malformed,
+        )?;
+        run_surface_recovery_child(&current_exe, "gate", gate_dir.path())?;
+        if fs::read(gate_dir.path().join(".local-state.rollback.json"))? != malformed {
+            bail!("surface startup changed malformed recovery evidence");
+        }
+        Ok(())
+    }
+
+    fn run_surface_recovery_child(
+        current_exe: &std::path::Path,
+        mode: &str,
+        config_dir: &std::path::Path,
+    ) -> Result<()> {
+        let output = Command::new(current_exe)
+            .arg("--exact")
+            .arg(
+                "inspector::command_surface::tests::surface_recovers_or_gates_hot_local_state_before_bridge_exposure",
+            )
+            .arg("--nocapture")
+            .env(SURFACE_RECOVERY_CHILD_ENV, mode)
+            .env("LOGOS_INSPECTOR_CONFIG_DIR", config_dir)
+            .output()
+            .context("failed to launch surface recovery child")?;
+        if !output.status.success() {
+            bail!(
+                "surface recovery child `{mode}` failed: status={}, stdout={}, stderr={}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Ok(())
     }
 
     #[test]

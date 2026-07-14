@@ -27,5 +27,6 @@ pub(crate) use config::normalize_channel_id;
 pub(crate) use probe::attest_sequencer_target;
 pub(crate) use store::{
     apply_channel_source_config_with_attestation, load_settings_state,
-    rebind_channel_source_configs, restore_settings_state_from_backup, save_user_settings_state,
+    normalized_settings_state_from_backup, rebind_channel_source_configs, save_user_settings_state,
+    settings_state_from_stored,
 };

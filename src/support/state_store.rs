@@ -1,8 +1,3 @@
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
-
 use anyhow::{Context as _, Result};
 use serde_json::{Value, json};
 
@@ -12,6 +7,7 @@ use crate::{
 };
 
 pub(crate) use super::config_path::config_dir;
+use super::local_state::{LocalStateSession, StateFile, StoredBytes, with_local_state};
 
 #[derive(Debug, Clone)]
 pub(crate) struct RegisteredIdlEntry {
@@ -20,20 +16,11 @@ pub(crate) struct RegisteredIdlEntry {
 }
 
 pub(crate) fn load_idl_state() -> Result<Value> {
-    let path = idl_state_path()?;
-    if !path.is_file() {
-        return Ok(default_idl_state());
-    }
-
-    let text = fs::read_to_string(&path)
-        .with_context(|| format!("failed to read IDL state from {}", path.display()))?;
-    serde_json::from_str(&text)
-        .with_context(|| format!("failed to parse IDL state from {}", path.display()))
+    with_local_state(|session| load_idl_state_locked(session))
 }
 
 pub(crate) fn save_idl_state(state: &Value) -> Result<Value> {
-    let path = idl_state_path()?;
-    write_state("IDL", &path, state)
+    with_local_state(|session| write_state(session, StateFile::Idl, "IDL", state))
 }
 
 pub(crate) fn registered_idl_entries() -> Result<Vec<RegisteredIdlEntry>> {
@@ -61,20 +48,11 @@ pub(crate) fn registered_idl_entries() -> Result<Vec<RegisteredIdlEntry>> {
 }
 
 pub(crate) fn load_wallet_state() -> Result<Value> {
-    let path = wallet_state_path()?;
-    if !path.is_file() {
-        return Ok(default_wallet_state());
-    }
-
-    let text = fs::read_to_string(&path)
-        .with_context(|| format!("failed to read wallet state from {}", path.display()))?;
-    serde_json::from_str(&text)
-        .with_context(|| format!("failed to parse wallet state from {}", path.display()))
+    with_local_state(|session| load_wallet_state_locked(session))
 }
 
 pub(crate) fn save_wallet_state(state: &Value) -> Result<Value> {
-    let path = wallet_state_path()?;
-    write_state("wallet", &path, state)
+    with_local_state(|session| write_state(session, StateFile::Wallet, "wallet", state))
 }
 
 pub(crate) use crate::source_routing::channel_sources::load_settings_state;
@@ -83,19 +61,48 @@ pub(crate) fn save_settings_state(state: &Value) -> Result<Value> {
     save_user_settings_state(state)
 }
 
-fn write_state(label: &str, path: &Path, state: &Value) -> Result<Value> {
-    let parent = path
-        .parent()
-        .with_context(|| format!("{label} state path has no parent directory"))?;
-    fs::create_dir_all(parent)
-        .with_context(|| format!("failed to create config directory {}", parent.display()))?;
-    let text = serde_json::to_string_pretty(state)
+pub(crate) fn load_idl_state_locked(session: &LocalStateSession) -> Result<Value> {
+    idl_state_from_stored(&session.read(StateFile::Idl)?)
+}
+
+pub(crate) fn load_wallet_state_locked(session: &LocalStateSession) -> Result<Value> {
+    wallet_state_from_stored(&session.read(StateFile::Wallet)?)
+}
+
+pub(crate) fn idl_state_from_stored(stored: &StoredBytes) -> Result<Value> {
+    json_state_from_stored(stored, default_idl_state, "IDL")
+}
+
+pub(crate) fn wallet_state_from_stored(stored: &StoredBytes) -> Result<Value> {
+    json_state_from_stored(stored, default_wallet_state, "wallet")
+}
+
+fn json_state_from_stored(
+    stored: &StoredBytes,
+    default_value: fn() -> Value,
+    label: &str,
+) -> Result<Value> {
+    match stored {
+        StoredBytes::Missing => Ok(default_value()),
+        StoredBytes::Present(bytes) => {
+            serde_json::from_slice(bytes).with_context(|| format!("failed to parse {label} state"))
+        }
+    }
+}
+
+fn write_state(
+    session: &mut LocalStateSession,
+    file: StateFile,
+    label: &str,
+    state: &Value,
+) -> Result<Value> {
+    let bytes = serde_json::to_vec_pretty(state)
         .with_context(|| format!("failed to serialize {label} state"))?;
-    fs::write(path, text)
-        .with_context(|| format!("failed to write {label} state to {}", path.display()))?;
+    let durability = session.atomic_replace(file, &bytes)?;
     Ok(json!({
         "saved": true,
-        "path": path.display().to_string(),
+        "path": session.path_text(file),
+        "directory_durability": durability.as_str(),
     }))
 }
 
@@ -127,12 +134,4 @@ fn normalized_program_id_hex_text(value: &str) -> Option<String> {
     normalize_program_id_hex(value)
         .ok()
         .filter(|text| !text.is_empty())
-}
-
-fn idl_state_path() -> Result<PathBuf> {
-    Ok(config_dir()?.join("idls.json"))
-}
-
-fn wallet_state_path() -> Result<PathBuf> {
-    Ok(config_dir()?.join("wallet.json"))
 }
