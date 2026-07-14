@@ -207,9 +207,9 @@ pub struct UnavailableModuleTransport {
 
 impl UnavailableModuleTransport {
     #[must_use]
-    pub fn basecamp_protocol_gate() -> Self {
+    pub fn basecamp_host_not_configured() -> Self {
         Self {
-            reason: "Basecamp host module transport is unavailable: the pinned protocol does not provide safe async error and close semantics".to_owned(),
+            reason: "Basecamp host module transport is unavailable: no host transport was configured for this core handle".to_owned(),
         }
     }
 }

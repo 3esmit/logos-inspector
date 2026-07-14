@@ -54,7 +54,7 @@ impl InspectorBridge {
     }
 
     pub fn basecamp_unavailable() -> Result<Self> {
-        Self::with_module_transport(UnavailableModuleTransport::basecamp_protocol_gate())
+        Self::with_module_transport(UnavailableModuleTransport::basecamp_host_not_configured())
     }
 
     pub fn call_module_json(&self, module: &str, method: &str, args_json: &str) -> String {

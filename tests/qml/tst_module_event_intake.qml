@@ -162,6 +162,37 @@ TestCase {
         }
     }
 
+    QtObject {
+        id: directEventOwnerHost
+
+        signal moduleEventReceived(string moduleName, string eventName, var args)
+
+        property var subscriptions: []
+        property var calls: []
+        property bool ownerResponse: true
+
+        function onModuleEvent(moduleName, eventName) {
+            subscriptions = subscriptions.concat([{
+                moduleName: String(moduleName || ""),
+                eventName: String(eventName || "")
+            }])
+            return true
+        }
+
+        function callModule(moduleName, method, args) {
+            calls = calls.concat([{
+                moduleName: String(moduleName || ""),
+                method: String(method || ""),
+                args: args || []
+            }])
+            if (String(moduleName || "") === "logos_inspector"
+                    && String(method || "") === "logosInspectorOwnsRuntimeModuleEvents") {
+                return JSON.stringify(ownerResponse)
+            }
+            return JSON.stringify({ error: "Invalid response" })
+        }
+    }
+
     BridgeClient {
         id: bridge
 
@@ -192,6 +223,9 @@ TestCase {
         basecampHost.asyncBridgeSchemaResponse = "logos-inspector-async-bridge/v1"
         basecampHost.logosInspectorOwnsRuntimeModuleEvents = true
         replacementHost.subscriptions = []
+        directEventOwnerHost.subscriptions = []
+        directEventOwnerHost.calls = []
+        directEventOwnerHost.ownerResponse = true
         bridge.moduleEventSubscriptions = ({})
         bridge.moduleEventRegistrations = []
         model.deliveryModuleEvents = []
@@ -313,6 +347,24 @@ TestCase {
 
         compare(model.deliveryModuleEventRows()[0].label, "messageSent")
         compare(runtimeModuleEventCalls(basecampHost.calls), 1)
+    }
+
+    function test_direct_native_event_owner_keeps_projection_subscription() {
+        bridge.host = directEventOwnerHost
+
+        compare(intake.install(), 17)
+        compare(directEventOwnerHost.subscriptions.length, 17)
+        verify(!intake.forwardsRuntimeOperationEvents())
+        directEventOwnerHost.calls = []
+
+        directEventOwnerHost.moduleEventReceived(
+            model.deliveryModule,
+            "messageSent",
+            ["request-4", "hash-4"]
+        )
+
+        compare(model.deliveryModuleEventRows()[0].label, "messageSent")
+        compare(runtimeModuleEventCalls(directEventOwnerHost.calls), 0)
     }
 
     function test_ingest_blockchain_event_updates_live_rows() {

@@ -551,7 +551,7 @@ mod tests {
             }
         }))?;
         let transport: SharedModuleTransport =
-            Arc::new(UnavailableModuleTransport::basecamp_protocol_gate());
+            Arc::new(UnavailableModuleTransport::basecamp_host_not_configured());
 
         let error = execute_backup_catalog_upload(&request, transport)
             .await
@@ -928,7 +928,7 @@ mod tests {
             }
         }))?;
         let transport: SharedModuleTransport =
-            Arc::new(UnavailableModuleTransport::basecamp_protocol_gate());
+            Arc::new(UnavailableModuleTransport::basecamp_host_not_configured());
 
         let error = execute_payload_upload(&request, transport)
             .await
@@ -976,7 +976,7 @@ mod tests {
             }
         }))?;
         let transport: SharedModuleTransport =
-            Arc::new(UnavailableModuleTransport::basecamp_protocol_gate());
+            Arc::new(UnavailableModuleTransport::basecamp_host_not_configured());
 
         let outcome = execute_payload_upload(&request, transport).await?;
         let RuntimeOperationOutcome::Completed(result) = outcome else {

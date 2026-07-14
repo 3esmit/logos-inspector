@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -7,11 +8,16 @@
 #include "logos_module_context.h"
 
 class LogosInspectorAsyncBridge;
+class LogosInspectorHostTransport;
 
 class LogosInspectorImpl : public LogosModuleContext
 {
 public:
+    using HostTransportFactory =
+        std::function<std::unique_ptr<LogosInspectorHostTransport>()>;
+
     LogosInspectorImpl();
+    LogosInspectorImpl(HostTransportFactory hostTransportFactory);
     ~LogosInspectorImpl();
 
     LogosInspectorImpl(const LogosInspectorImpl&) = delete;
@@ -45,13 +51,19 @@ public:
     /// Releases one asynchronous call and its retained response.
     std::string releaseAsync(const std::string& token);
 
-    /// Reports the enabled asynchronous bridge wire schema, or an empty string.
+    /// Reports the enabled asynchronous bridge wire schema or unavailable state.
     std::string asyncBridgeSchema();
+
+    /// True only while native event subscription and retry ownership is healthy.
+    bool logosInspectorOwnsRuntimeModuleEvents();
 
     /// Returns this module package version.
     std::string moduleVersion();
 
+protected:
+    void onContextReady() override;
+
 private:
-    LogosInspectorCore* legacyCore_ = nullptr;
+    HostTransportFactory hostTransportFactory_;
     std::unique_ptr<LogosInspectorAsyncBridge> asyncBridge_;
 };

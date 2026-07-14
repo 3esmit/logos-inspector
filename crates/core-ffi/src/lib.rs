@@ -2061,7 +2061,7 @@ mod tests {
         expect_error_envelope_shape(&value)?;
         if value.get("error").and_then(Value::as_str)
             != Some(
-                "Basecamp host module transport is unavailable: the pinned protocol does not provide safe async error and close semantics",
+                "Basecamp host module transport is unavailable: no host transport was configured for this core handle",
             )
         {
             return Err(std::io::Error::other(format!(
