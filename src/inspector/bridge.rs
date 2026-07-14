@@ -3,7 +3,9 @@ use serde_json::Value;
 #[cfg(test)]
 use serde_json::json;
 
-use super::command_surface::{INSPECTOR_MODULE, InspectorCommandSurface};
+use super::command_surface::{
+    INSPECTOR_MODULE, InspectorCommandSurface, InspectorCommandSurfaceCloseHandle,
+};
 use crate::modules::logos_core::{
     ModuleTransport, SharedModuleTransport, UnavailableModuleTransport,
 };
@@ -18,6 +20,17 @@ const BLOCKCHAIN_MODULE: &str = source_routing::BLOCKCHAIN_MODULE;
 
 pub struct InspectorBridge {
     surface: InspectorCommandSurface,
+}
+
+#[derive(Clone)]
+pub struct InspectorBridgeCloseHandle {
+    surface: InspectorCommandSurfaceCloseHandle,
+}
+
+impl InspectorBridgeCloseHandle {
+    pub fn begin_close(&self) -> Result<()> {
+        self.surface.begin_close()
+    }
 }
 
 impl InspectorBridge {
@@ -84,6 +97,21 @@ impl InspectorBridge {
         args: Vec<Value>,
     ) -> Result<Value> {
         self.surface.ingest_module_event(module, event, args)
+    }
+
+    #[must_use]
+    pub fn close_handle(&self) -> InspectorBridgeCloseHandle {
+        InspectorBridgeCloseHandle {
+            surface: self.surface.close_handle(),
+        }
+    }
+
+    pub fn begin_close(&self) -> Result<()> {
+        self.surface.begin_close()
+    }
+
+    pub fn shutdown(&self) -> Result<()> {
+        self.surface.shutdown()
     }
 
     pub fn error_json(error: impl Into<String>) -> String {
@@ -931,7 +959,7 @@ mod tests {
     #[test]
     fn runtime_operation_cancel_marks_cancelable_operation() -> Result<()> {
         let bridge = InspectorBridge::new()?;
-        let cancel_requested = bridge
+        bridge
             .surface
             .operations_for_test()
             .insert_test_running_operation(
@@ -947,9 +975,6 @@ mod tests {
 
         if value.get("status").and_then(Value::as_str) != Some("canceling") {
             bail!("expected canceling status: {value}");
-        }
-        if !cancel_requested.load(std::sync::atomic::Ordering::Relaxed) {
-            bail!("expected cancel flag to be set");
         }
         Ok(())
     }
@@ -1104,7 +1129,7 @@ mod tests {
     }
 
     #[test]
-    fn wallet_operation_record_is_removed_after_wait() -> Result<()> {
+    fn wallet_operation_record_is_retained_for_bounded_history() -> Result<()> {
         let bridge = InspectorBridge::new()?;
         let result =
             bridge.call_module_value(INSPECTOR_MODULE, "localWalletCreateAccount", json!([]));
@@ -1119,8 +1144,8 @@ mod tests {
             bail!("unexpected error: {error:#}");
         }
         let operations_len = bridge.surface.operations_for_test().len()?;
-        if operations_len != 0 {
-            bail!("expected operation registry cleanup, found {operations_len}",);
+        if operations_len != 1 {
+            bail!("expected terminal operation retention, found {operations_len}",);
         }
         Ok(())
     }

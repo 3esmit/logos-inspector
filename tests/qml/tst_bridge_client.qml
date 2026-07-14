@@ -281,6 +281,12 @@ TestCase {
         id: replacementBasecampAsyncHost
     }
 
+    Component {
+        id: disposableBasecampHostComponent
+
+        BasecampAsyncHost {}
+    }
+
     QtObject {
         id: nativeEventOwnerPropertyHost
 
@@ -326,6 +332,7 @@ TestCase {
         host: standaloneHost
 
         onModuleEventReceived: function (moduleName, eventName, args) {
+            testRoot.moduleEventReceiptCount += 1
             testRoot.receivedModule = moduleName
             testRoot.receivedEvent = eventName
             testRoot.receivedArgs = args
@@ -337,6 +344,21 @@ TestCase {
         }
     }
 
+    Component {
+        id: disposableClientComponent
+
+        BridgeClient {
+            property int observedModuleEvents: 0
+
+            basecampAsyncPollIntervalMs: 100000
+
+            onModuleEventReceived: {
+                observedModuleEvents += 1
+                testRoot.disposableModuleEventCount += 1
+            }
+        }
+    }
+
     property string receivedModule: ""
     property string receivedEvent: ""
     property var receivedArgs: null
@@ -345,6 +367,9 @@ TestCase {
     property bool legacyQueueDrained: false
     property int callbackFailureCount: 0
     property string callbackFailure: ""
+    property var disposableClient: null
+    property int disposableModuleEventCount: 0
+    property int moduleEventReceiptCount: 0
 
     function init() {
         client.host = standaloneHost
@@ -380,6 +405,23 @@ TestCase {
         legacyQueueDrained = false
         callbackFailureCount = 0
         callbackFailure = ""
+        disposableModuleEventCount = 0
+        moduleEventReceiptCount = 0
+    }
+
+    function cleanup() {
+        if (disposableClient) {
+            disposableClient.destroy()
+            disposableClient = null
+        }
+    }
+
+    function createDisposableClient(host) {
+        disposableClient = disposableClientComponent.createObject(testRoot, {
+            host: host
+        })
+        verify(disposableClient !== null)
+        return disposableClient
     }
 
     function inspectorControlResponse(value) {
@@ -1248,18 +1290,43 @@ TestCase {
         compare(basecampAsyncHost.subscriptionCallCount, 2)
     }
 
-    function test_module_event_registration_is_not_duplicated_after_host_return() {
-        client.host = basecampAsyncHost
+    function test_module_event_registration_stays_bounded_across_host_churn() {
+        client.host = eventHost
         verify(client.subscribeModuleEvent("storage_module", "storageUploadDone"))
-        compare(basecampAsyncHost.subscriptionCallCount, 1)
+        const staleCallback = eventHost.subscribedCallback
+        const hosts = []
 
-        client.host = replacementBasecampAsyncHost
-        verify(client.subscribeModuleEvent("storage_module", "storageUploadDone"))
-        compare(replacementBasecampAsyncHost.subscriptionCallCount, 1)
+        for (let i = 0; i < 24; ++i) {
+            const host = disposableBasecampHostComponent.createObject(testRoot)
+            verify(host !== null)
+            hosts.push(host)
+            client.host = host
+            verify(client.subscribeModuleEvent("storage_module", "storageUploadDone"))
+            compare(client.moduleEventRegistrations.length, 1)
+            compare(host.subscriptionCallCount, 1)
+        }
 
-        client.host = basecampAsyncHost
+        staleCallback({ cid: "stale" })
+        compare(moduleEventReceiptCount, 0)
+
+        client.host = hosts[0]
         verify(client.subscribeModuleEvent("storage_module", "storageUploadDone"))
-        compare(basecampAsyncHost.subscriptionCallCount, 1)
+        verify(client.subscribeModuleEvent("storage_module", "storageUploadDone"))
+        compare(client.moduleEventRegistrations.length, 1)
+        compare(hosts[0].subscriptionCallCount, 2)
+        hosts[0].moduleEventReceived(
+            "storage_module",
+            "storageUploadDone",
+            [{ cid: "returned" }]
+        )
+        compare(moduleEventReceiptCount, 1)
+        compare(receivedArgs[0].cid, "returned")
+
+        client.host = standaloneHost
+        compare(client.moduleEventRegistrations.length, 0)
+        for (let j = 0; j < hosts.length; ++j) {
+            hosts[j].destroy()
+        }
     }
 
     function test_compatibility_module_event_ignores_old_host_callback() {
@@ -1295,5 +1362,284 @@ TestCase {
         compare(receivedModule, "storage_module")
         compare(receivedEvent, "storageUploadDone")
         compare(receivedArgs.cid, "cid-1")
+    }
+
+    function test_shutdown_closes_routes_and_settles_known_mailbox_token_once() {
+        const shutdownClient = createDisposableClient(basecampAsyncHost)
+        const token = "lai_30303030303030303030303030303030"
+        let callbackCount = 0
+        let response = null
+        const requestId = shutdownClient.callModuleAsync(
+            "logos_inspector",
+            "sourcePolicy",
+            [],
+            function (result) {
+                callbackCount += 1
+                response = result
+            }
+        )
+        verify(completeBasecampStart(basecampAsyncHost, token))
+        verify(shutdownClient.subscribeModuleEvent("storage_module", "storageUploadDone"))
+        compare(Object.keys(shutdownClient.pendingCalls).length, 1)
+        compare(Object.keys(shutdownClient.moduleEventSubscriptions).length, 1)
+        compare(shutdownClient.moduleEventRegistrations.length, 1)
+        verify(shutdownClient.basecampPollTimer.running)
+        const openEpoch = shutdownClient.hostEpoch
+
+        verify(shutdownClient.shutdown())
+
+        verify(shutdownClient.closed)
+        compare(shutdownClient.hostEpoch, openEpoch + 1)
+        verify(!shutdownClient.basecampPollTimer.running)
+        compare(Object.keys(shutdownClient.pendingCalls).length, 0)
+        compare(Object.keys(shutdownClient.moduleEventSubscriptions).length, 0)
+        compare(shutdownClient.moduleEventRegistrations.length, 0)
+        compare(callbackCount, 1)
+        verify(!response.ok)
+        compare(response.error, "Logos bridge call failed: client_shutdown")
+        compare(basecampAsyncHost.pendingCount("cancelAsync"), 1)
+        compare(basecampAsyncHost.pendingCount("releaseAsync"), 1)
+
+        verify(!shutdownClient.shutdown())
+        compare(callbackCount, 1)
+        compare(basecampAsyncHost.pendingCount("cancelAsync"), 1)
+        compare(basecampAsyncHost.pendingCount("releaseAsync"), 1)
+
+        verify(basecampAsyncHost.completeForToken(
+            "pollAsync",
+            token,
+            inspectorControlResponse({
+                schema: shutdownClient.basecampAsyncBridgeSchema,
+                token: token,
+                status: "ready",
+                responseJson: finalBridgeResponse({ late: true })
+            })
+        ))
+        compare(callbackCount, 1)
+        compare(basecampAsyncHost.pendingCount("cancelAsync"), 1)
+        compare(basecampAsyncHost.pendingCount("releaseAsync"), 1)
+
+        let rejectedCount = 0
+        const rejectedRequestId = shutdownClient.callModuleAsync(
+            "logos_inspector",
+            "sourcePolicy",
+            [],
+            function (result) {
+                rejectedCount += 1
+                response = result
+            }
+        )
+        compare(rejectedRequestId, requestId + 1)
+        compare(rejectedCount, 1)
+        compare(response.error, "Logos bridge call failed: client_shutdown")
+        compare(basecampAsyncHost.pendingCount("callAsync"), 0)
+        verify(!shutdownClient.callModule("logos_inspector", "sourcePolicy", []).ok)
+        verify(!shutdownClient.subscribeModuleEvent("storage_module", "storageUploadDone"))
+
+        basecampAsyncHost.moduleEventReceived(
+            "storage_module",
+            "storageUploadDone",
+            [{ cid: "late" }]
+        )
+        compare(shutdownClient.observedModuleEvents, 0)
+    }
+
+    function test_shutdown_settles_token_from_late_start_callback_once() {
+        const shutdownClient = createDisposableClient(basecampAsyncHost)
+        const token = "lai_40404040404040404040404040404040"
+        let callbackCount = 0
+        shutdownClient.callModuleAsync(
+            "logos_inspector",
+            "sourcePolicy",
+            [],
+            function (response) {
+                callbackCount += 1
+                verify(!response.ok)
+            }
+        )
+        const correlationId = pendingControlArgument(basecampAsyncHost, "callAsync", 0)
+
+        verify(shutdownClient.shutdown())
+        compare(callbackCount, 1)
+        verify(completeBasecampStart(basecampAsyncHost, token))
+        compare(callbackCount, 1)
+        compare(basecampAsyncHost.pendingCount("cancelAsync"), 1)
+        compare(basecampAsyncHost.pendingCount("releaseAsync"), 1)
+
+        verify(basecampAsyncHost.replayLast(inspectorControlResponse({
+            schema: shutdownClient.basecampAsyncBridgeSchema,
+            correlationId: correlationId,
+            token: token
+        })))
+        compare(callbackCount, 1)
+        compare(basecampAsyncHost.pendingCount("cancelAsync"), 1)
+        compare(basecampAsyncHost.pendingCount("releaseAsync"), 1)
+    }
+
+    function test_capacity_rejection_finishes_before_component_destruction() {
+        const doomedClient = createDisposableClient(basecampAsyncHost)
+        doomedClient.basecampAsyncMaxPendingCalls = 0
+        let callbackCount = 0
+        let response = null
+
+        doomedClient.callModuleAsync(
+            "logos_inspector",
+            "sourcePolicy",
+            [],
+            function (result) {
+                callbackCount += 1
+                response = result
+            }
+        )
+
+        compare(callbackCount, 1)
+        verify(!response.ok)
+        compare(response.error, "Logos bridge call failed: async_client_capacity")
+        disposableClient = null
+        doomedClient.destroy()
+        wait(1)
+        compare(callbackCount, 1)
+        compare(basecampAsyncHost.pendingCount("callAsync"), 0)
+    }
+
+    function test_invalid_arguments_rejection_finishes_before_component_destruction() {
+        const doomedClient = createDisposableClient(basecampAsyncHost)
+        const cyclicArgument = {}
+        cyclicArgument.self = cyclicArgument
+        let callbackCount = 0
+        let response = null
+
+        doomedClient.callModuleAsync(
+            "logos_inspector",
+            "sourcePolicy",
+            [cyclicArgument],
+            function (result) {
+                callbackCount += 1
+                response = result
+            }
+        )
+
+        compare(callbackCount, 1)
+        verify(!response.ok)
+        compare(response.error, "Logos bridge call failed: async_arguments_invalid")
+        disposableClient = null
+        doomedClient.destroy()
+        wait(1)
+        compare(callbackCount, 1)
+        compare(basecampAsyncHost.pendingCount("callAsync"), 0)
+    }
+
+    function test_component_destruction_settles_token_from_late_start_reply_once() {
+        const doomedClient = createDisposableClient(basecampAsyncHost)
+        const token = "lai_60606060606060606060606060606060"
+        doomedClient.callModuleAsync(
+            "logos_inspector",
+            "sourcePolicy",
+            [],
+            function (response) {
+                asyncCallbackCount += 1
+                asyncResponse = response
+            }
+        )
+        const correlationId = pendingControlArgument(basecampAsyncHost, "callAsync", 0)
+        const schema = doomedClient.basecampAsyncBridgeSchema
+
+        disposableClient = null
+        doomedClient.destroy()
+
+        tryCompare(testRoot, "asyncCallbackCount", 1)
+        verify(!asyncResponse.ok)
+        compare(asyncResponse.error, "Logos bridge call failed: client_shutdown")
+        verify(basecampAsyncHost.completeNext("callAsync", inspectorControlResponse({
+            schema: schema,
+            correlationId: correlationId,
+            token: token
+        })))
+        compare(basecampAsyncHost.pendingCount("cancelAsync"), 1)
+        compare(basecampAsyncHost.pendingCount("releaseAsync"), 1)
+
+        verify(basecampAsyncHost.replayLast(inspectorControlResponse({
+            schema: schema,
+            correlationId: correlationId,
+            token: token
+        })))
+        compare(basecampAsyncHost.pendingCount("cancelAsync"), 1)
+        compare(basecampAsyncHost.pendingCount("releaseAsync"), 1)
+        compare(asyncCallbackCount, 1)
+    }
+
+    function test_component_destruction_ignores_late_direct_host_reply() {
+        const doomedClient = createDisposableClient(basecampAsyncHost)
+        doomedClient.callModuleAsync(
+            "storage_module",
+            "space",
+            [],
+            function (response) {
+                asyncCallbackCount += 1
+                asyncResponse = response
+            }
+        )
+        compare(basecampAsyncHost.pendingCount("space"), 1)
+
+        disposableClient = null
+        doomedClient.destroy()
+
+        tryCompare(testRoot, "asyncCallbackCount", 1)
+        verify(!asyncResponse.ok)
+        compare(asyncResponse.error, "Logos bridge call failed: client_shutdown")
+        verify(basecampAsyncHost.completeNext("space", JSON.stringify({ late: true })))
+        compare(asyncCallbackCount, 1)
+    }
+
+    function test_component_destruction_deactivates_retained_module_event_callback() {
+        const doomedClient = createDisposableClient(eventHost)
+        verify(doomedClient.subscribeModuleEvent("storage_module", "storageUploadDone"))
+        const retainedCallback = eventHost.subscribedCallback
+        verify(typeof retainedCallback === "function")
+
+        disposableClient = null
+        doomedClient.destroy()
+        wait(1)
+        retainedCallback({ cid: "late" })
+
+        compare(disposableModuleEventCount, 0)
+    }
+
+    function test_component_destruction_shuts_down_pending_call() {
+        const doomedClient = createDisposableClient(basecampAsyncHost)
+        const token = "lai_50505050505050505050505050505050"
+        const schema = doomedClient.basecampAsyncBridgeSchema
+        doomedClient.callModuleAsync(
+            "logos_inspector",
+            "sourcePolicy",
+            [],
+            function (response) {
+                asyncCallbackCount += 1
+                asyncResponse = response
+            }
+        )
+        verify(completeBasecampStart(basecampAsyncHost, token))
+
+        disposableClient = null
+        doomedClient.destroy()
+
+        tryCompare(testRoot, "asyncCallbackCount", 1)
+        verify(!asyncResponse.ok)
+        compare(asyncResponse.error, "Logos bridge call failed: client_shutdown")
+        compare(basecampAsyncHost.pendingCount("cancelAsync"), 1)
+        compare(basecampAsyncHost.pendingCount("releaseAsync"), 1)
+        verify(basecampAsyncHost.completeForToken(
+            "pollAsync",
+            token,
+            inspectorControlResponse({
+                schema: schema,
+                token: token,
+                status: "ready",
+                responseJson: finalBridgeResponse({ late: true })
+            })
+        ))
+        compare(asyncCallbackCount, 1)
+        compare(basecampAsyncHost.pendingCount("cancelAsync"), 1)
+        compare(basecampAsyncHost.pendingCount("releaseAsync"), 1)
     }
 }

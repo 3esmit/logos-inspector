@@ -13,7 +13,9 @@ use super::{
     LOCAL_WALLET_LIST_TIMEOUT, LOCAL_WALLET_MUTATION_TIMEOUT, LOCAL_WALLET_OUTPUT_LIMIT,
     LOCAL_WALLET_POLL_INTERVAL, LOCAL_WALLET_SYNC_TIMEOUT, LOCAL_WALLET_VERSION_TIMEOUT,
 };
-use crate::support::command_runner::{CommandRunPolicy, output_text, run_command};
+use crate::support::command_runner::{
+    CommandControl, CommandRunPolicy, output_text, run_command, run_command_controlled,
+};
 
 pub(super) enum LocalWalletInvocation<'a> {
     Version,
@@ -87,6 +89,38 @@ impl LocalWalletRunner for CliLocalWalletRunner {
     }
 }
 
+#[derive(Clone)]
+pub(super) struct ControlledCliLocalWalletRunner {
+    control: CommandControl,
+}
+
+impl ControlledCliLocalWalletRunner {
+    pub(super) fn new(control: CommandControl) -> Self {
+        Self { control }
+    }
+}
+
+impl LocalWalletRunner for ControlledCliLocalWalletRunner {
+    fn run(
+        &self,
+        binary: &str,
+        wallet_home: &str,
+        invocation: LocalWalletInvocation<'_>,
+        redactions: &[&str],
+    ) -> Result<LocalWalletOutput> {
+        let mut command = Command::new(binary);
+        configure_local_wallet_command(&mut command, wallet_home);
+        let (label, timeout) = configure_invocation(&mut command, invocation);
+        run_local_wallet_command_controlled(
+            command,
+            label,
+            timeout,
+            redactions,
+            self.control.clone(),
+        )
+    }
+}
+
 pub(super) fn local_wallet_output_text(output: &[u8], redactions: &[&str]) -> String {
     output_text(output, redactions, LOCAL_WALLET_OUTPUT_LIMIT)
 }
@@ -146,6 +180,27 @@ fn run_local_wallet_command(
             redactions,
             output_limit: LOCAL_WALLET_OUTPUT_LIMIT,
         },
+    )?;
+    Ok(normalize_output(output))
+}
+
+fn run_local_wallet_command_controlled(
+    command: Command,
+    label: &str,
+    timeout: Duration,
+    redactions: &[&str],
+    control: CommandControl,
+) -> Result<LocalWalletOutput> {
+    let output = run_command_controlled(
+        command,
+        CommandRunPolicy {
+            label,
+            timeout,
+            poll_interval: LOCAL_WALLET_POLL_INTERVAL,
+            redactions,
+            output_limit: LOCAL_WALLET_OUTPUT_LIMIT,
+        },
+        control,
     )?;
     Ok(normalize_output(output))
 }

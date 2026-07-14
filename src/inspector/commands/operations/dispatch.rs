@@ -1,30 +1,70 @@
-use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
+use crate::modules::logos_core::{
+    ModuleCall, ModuleCallFuture, ModuleCallStopReason, ModuleCallTerminated,
+    ModuleCallTerminationEvidence, ModuleDiagnosticFuture, ModuleTransport, ModuleTransportClosed,
+    ModuleTransportKind, SharedModuleTransport,
+};
+use crate::support::command_runner::{
+    CommandStopReason, CommandTerminated, CommandTerminationScope,
+};
 use anyhow::Result;
-
-use crate::modules::logos_core::SharedModuleTransport;
 
 use super::spec::OperationCommand;
 use super::{
     RuntimeOperationRegistry, RuntimeOperationRequest, blockchain, delivery, lez, local_nodes,
-    outcome::RuntimeOperationOutcome, storage, wallet,
+    outcome::RuntimeOperationOutcome,
+    storage,
+    supervisor::{
+        OperationAdapterClosed, OperationControl, OperationInterrupted, OperationStopReason,
+        TerminationEvidence,
+    },
+    wallet,
 };
+
+struct ControlledModuleTransport {
+    transport: SharedModuleTransport,
+    control: OperationControl,
+}
+
+impl ModuleTransport for ControlledModuleTransport {
+    fn kind(&self) -> ModuleTransportKind {
+        self.transport.kind()
+    }
+
+    fn call(&self, call: ModuleCall) -> ModuleCallFuture<'_> {
+        self.transport
+            .call_controlled(call, self.control.module_call_control())
+    }
+
+    fn status(&self) -> ModuleDiagnosticFuture<'_> {
+        self.transport.status()
+    }
+
+    fn module_info(&self, module: String) -> ModuleDiagnosticFuture<'_> {
+        self.transport.module_info(module)
+    }
+}
 
 pub(super) async fn execute_runtime_operation(
     request: RuntimeOperationRequest,
     registry: &RuntimeOperationRegistry,
     operation_id: &super::identity::RuntimeOperationId,
-    cancel_requested: &AtomicBool,
+    control: &OperationControl,
     module_transport: SharedModuleTransport,
 ) -> Result<RuntimeOperationOutcome> {
-    match request.command() {
+    let module_transport: SharedModuleTransport = Arc::new(ControlledModuleTransport {
+        transport: module_transport,
+        control: control.clone(),
+    });
+    let result = match request.command() {
         OperationCommand::Storage(command) => {
             storage::execute(
                 command,
                 &request,
                 registry,
                 operation_id,
-                cancel_requested,
+                control,
                 module_transport,
             )
             .await
@@ -34,10 +74,10 @@ pub(super) async fn execute_runtime_operation(
                 .await
                 .map(Into::into)
         }
-        OperationCommand::LocalNodes(command) => local_nodes::execute(command, &request)
+        OperationCommand::LocalNodes(command) => local_nodes::execute(command, &request, control)
             .await
             .map(RuntimeOperationOutcome::Completed),
-        OperationCommand::Wallet(command) => wallet::execute(command, &request)
+        OperationCommand::Wallet(command) => wallet::execute(command, &request, control)
             .await
             .map(RuntimeOperationOutcome::Completed),
         OperationCommand::Blockchain(command) => {
@@ -45,8 +85,94 @@ pub(super) async fn execute_runtime_operation(
                 .await
                 .map(RuntimeOperationOutcome::Completed)
         }
-        OperationCommand::Execution(command) => lez::execute(command, &request)
+        OperationCommand::Execution(command) => lez::execute(command, &request, control)
             .await
             .map(RuntimeOperationOutcome::Completed),
+    };
+    normalize_execution_result(result)
+}
+
+pub(super) fn normalize_command_execution<T>(
+    result: Result<T>,
+    control: &OperationControl,
+    process_evidence: TerminationEvidence,
+    no_process_evidence: TerminationEvidence,
+) -> Result<T> {
+    result.map_err(|error| {
+        let Some(terminated) = error.downcast_ref::<CommandTerminated>() else {
+            return error;
+        };
+        let reason = match terminated.reason() {
+            CommandStopReason::CancelRequested => control
+                .stop_reason()
+                .unwrap_or(OperationStopReason::CancelRequested),
+            CommandStopReason::DeadlineExceeded => OperationStopReason::DeadlineExceeded,
+        };
+        let message = error.to_string();
+        let evidence = if terminated.scope() == CommandTerminationScope::NoProcess {
+            no_process_evidence
+        } else {
+            process_evidence
+        };
+        match evidence {
+            TerminationEvidence::Confirmed => {
+                OperationInterrupted::confirmed(reason, message).into()
+            }
+            TerminationEvidence::LocalOnly => {
+                OperationInterrupted::local_only(reason, message).into()
+            }
+        }
+    })
+}
+
+pub(super) async fn interruptible_remote<F, T>(
+    control: &OperationControl,
+    message: &'static str,
+    future: F,
+) -> Result<T>
+where
+    F: std::future::Future<Output = T>,
+{
+    tokio::select! {
+        biased;
+        value = future => Ok(value),
+        () = control.cancellation().cancelled() => {
+            let reason = control
+                .stop_reason()
+                .unwrap_or(OperationStopReason::CancelRequested);
+            Err(OperationInterrupted::local_only(reason, message).into())
+        },
+        () = tokio::time::sleep_until(control.deadline()) => {
+            Err(OperationInterrupted::local_only(
+                OperationStopReason::DeadlineExceeded,
+                message,
+            ).into())
+        },
     }
+}
+
+fn normalize_execution_result<T>(result: Result<T>) -> Result<T> {
+    result.map_err(|error| {
+        if let Some(terminated) = error.downcast_ref::<ModuleCallTerminated>() {
+            let reason = match terminated.reason() {
+                ModuleCallStopReason::CancelRequested => OperationStopReason::CancelRequested,
+                ModuleCallStopReason::DeadlineExceeded => OperationStopReason::DeadlineExceeded,
+                ModuleCallStopReason::Shutdown => OperationStopReason::Shutdown,
+            };
+            let message = error.to_string();
+            return match terminated.evidence() {
+                ModuleCallTerminationEvidence::NotStarted
+                | ModuleCallTerminationEvidence::ProcessTerminated => {
+                    OperationInterrupted::confirmed(reason, message).into()
+                }
+                ModuleCallTerminationEvidence::LocallyAbandoned => {
+                    OperationInterrupted::local_only(reason, message).into()
+                }
+            };
+        }
+        if error.downcast_ref::<ModuleTransportClosed>().is_some() {
+            return OperationAdapterClosed::new(error.to_string()).into();
+        }
+        error
+    })
 }

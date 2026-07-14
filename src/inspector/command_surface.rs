@@ -1,6 +1,9 @@
-use std::sync::Arc;
+use std::sync::{
+    Arc, Condvar, Mutex,
+    atomic::{AtomicU8, Ordering},
+};
 
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use serde_json::{Value, json};
 use tokio::runtime::Runtime;
 
@@ -21,6 +24,88 @@ use crate::{
 };
 
 pub(crate) const INSPECTOR_MODULE: &str = "logos_inspector";
+const SURFACE_OPEN: u8 = 0;
+const SURFACE_CLOSING: u8 = 1;
+const SURFACE_CLOSED: u8 = 2;
+
+#[derive(Clone)]
+pub(crate) struct InspectorCommandSurfaceCloseHandle {
+    lifecycle: Arc<SurfaceLifecycle>,
+    operations: super::commands::operations::RuntimeOperationCloseHandle,
+}
+
+impl InspectorCommandSurfaceCloseHandle {
+    pub(crate) fn begin_close(&self) -> Result<()> {
+        self.lifecycle.begin_close();
+        self.operations.begin_close()
+    }
+}
+
+struct SurfaceLifecycle {
+    phase: AtomicU8,
+    shutdown: Mutex<SurfaceShutdownState>,
+    shutdown_complete: Condvar,
+}
+
+#[derive(Default)]
+struct SurfaceShutdownState {
+    running: bool,
+    result: Option<std::result::Result<(), String>>,
+}
+
+impl SurfaceLifecycle {
+    fn new() -> Self {
+        Self {
+            phase: AtomicU8::new(SURFACE_OPEN),
+            shutdown: Mutex::new(SurfaceShutdownState::default()),
+            shutdown_complete: Condvar::new(),
+        }
+    }
+
+    fn begin_close(&self) {
+        let _previous = self.phase.compare_exchange(
+            SURFACE_OPEN,
+            SURFACE_CLOSING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+
+    fn claim_shutdown(&self) -> Result<bool> {
+        let mut state = self
+            .shutdown
+            .lock()
+            .map_err(|_| anyhow::anyhow!("inspector shutdown state is unavailable"))?;
+        loop {
+            if let Some(result) = &state.result {
+                return result.clone().map(|()| false).map_err(anyhow::Error::msg);
+            }
+            if !state.running {
+                state.running = true;
+                return Ok(true);
+            }
+            state = self
+                .shutdown_complete
+                .wait(state)
+                .map_err(|_| anyhow::anyhow!("inspector shutdown state is unavailable"))?;
+        }
+    }
+
+    fn finish_shutdown(&self, result: &Result<()>) -> Result<()> {
+        self.phase.store(SURFACE_CLOSED, Ordering::Release);
+        let mut state = self
+            .shutdown
+            .lock()
+            .map_err(|_| anyhow::anyhow!("inspector shutdown state is unavailable"))?;
+        state.running = false;
+        state.result = Some(match result {
+            Ok(()) => Ok(()),
+            Err(error) => Err(format!("{error:#}")),
+        });
+        self.shutdown_complete.notify_all();
+        Ok(())
+    }
+}
 
 pub(crate) struct InspectorCommandSurface {
     operations: RuntimeOperationInterface,
@@ -28,6 +113,7 @@ pub(crate) struct InspectorCommandSurface {
     zone_catalog: Arc<ZoneCatalogCommandInterface>,
     zone_l2: ZoneL2CommandInterface,
     capability_registry: CapabilityRegistry,
+    lifecycle: Arc<SurfaceLifecycle>,
     runtime: Runtime,
 }
 
@@ -67,11 +153,13 @@ impl InspectorCommandSurface {
             zone_catalog,
             zone_l2,
             capability_registry: CapabilityRegistry::default(),
+            lifecycle: Arc::new(SurfaceLifecycle::new()),
             runtime,
         })
     }
 
     pub(crate) fn call_module(&self, module: &str, method: &str, args: Value) -> Result<Value> {
+        self.ensure_open()?;
         if module == INSPECTOR_MODULE {
             self.call_inspector(method, args)
         } else {
@@ -80,6 +168,7 @@ impl InspectorCommandSurface {
     }
 
     pub(crate) fn call_inspector(&self, method: &str, args: Value) -> Result<Value> {
+        self.ensure_open()?;
         let result = self.dispatch_inspector(method, args).and_then(|value| {
             value.with_context(|| format!("unknown inspector method `{method}`"))
         });
@@ -102,7 +191,33 @@ impl InspectorCommandSurface {
         event: &str,
         args: Vec<Value>,
     ) -> Result<Value> {
+        if self.lifecycle.phase.load(Ordering::Acquire) == SURFACE_CLOSED {
+            bail!("inspector command surface is closed");
+        }
         self.operations.ingest_module_event(module, event, args)
+    }
+
+    pub(crate) fn close_handle(&self) -> InspectorCommandSurfaceCloseHandle {
+        InspectorCommandSurfaceCloseHandle {
+            lifecycle: Arc::clone(&self.lifecycle),
+            operations: self.operations.close_handle(),
+        }
+    }
+
+    pub(crate) fn begin_close(&self) -> Result<()> {
+        self.close_handle().begin_close()
+    }
+
+    pub(crate) fn shutdown(&self) -> Result<()> {
+        if !self.lifecycle.claim_shutdown()? {
+            return Ok(());
+        }
+        let begin_result = self.begin_close();
+        let operations_result = self.operations.shutdown(&self.runtime);
+        let zone_catalog_result = self.runtime.block_on(self.zone_catalog.shutdown());
+        let result = begin_result.and(operations_result).and(zone_catalog_result);
+        self.lifecycle.finish_shutdown(&result)?;
+        result
     }
 
     pub(crate) fn allows_host_synchronous_call(method: &str) -> bool {
@@ -175,9 +290,23 @@ impl InspectorCommandSurface {
             .map(|reply| reply.into_value())
     }
 
+    fn ensure_open(&self) -> Result<()> {
+        match self.lifecycle.phase.load(Ordering::Acquire) {
+            SURFACE_OPEN => Ok(()),
+            SURFACE_CLOSING => bail!("inspector command surface is shutting down"),
+            _ => bail!("inspector command surface is closed"),
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn operations_for_test(&self) -> &RuntimeOperationInterface {
         &self.operations
+    }
+}
+
+impl Drop for InspectorCommandSurface {
+    fn drop(&mut self) {
+        let _result = self.shutdown();
     }
 }
 
@@ -215,7 +344,11 @@ fn inspector_command(method: &str) -> Option<InspectorCommand> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::{
+        collections::HashSet,
+        sync::{Arc, Barrier},
+        thread,
+    };
 
     use anyhow::{Context as _, Result, bail};
     use serde_json::json;
@@ -364,6 +497,73 @@ mod tests {
             .contains("unknown inspector method `missingMethod`")
         {
             bail!("unexpected error: {error:#}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn closing_rejects_calls_but_drains_queued_module_events() -> Result<()> {
+        let surface = InspectorCommandSurface::with_module_transport(FakeModuleTransport)
+            .context("surface")?;
+        let close_handle = surface.close_handle();
+
+        close_handle.begin_close()?;
+
+        let Err(call_error) = surface.call_inspector("sourcePolicy", json!([])) else {
+            bail!("closing surface accepted a new call");
+        };
+        if !call_error.to_string().contains("shutting down") {
+            bail!("unexpected closing error: {call_error:#}");
+        }
+        let ingress = surface.ingest_module_event(
+            "storage_module",
+            "storageUploadDone",
+            vec![json!({"sessionId": "unmatched"})],
+        )?;
+        if ingress.get("disposition").and_then(Value::as_str) != Some("unknown") {
+            bail!("closing surface did not drain module event: {ingress}");
+        }
+
+        surface.shutdown()?;
+        let Err(ingress_error) =
+            surface.ingest_module_event("storage_module", "storageUploadDone", vec![])
+        else {
+            bail!("closed surface accepted a module event");
+        };
+        if !ingress_error.to_string().contains("is closed") {
+            bail!("unexpected closed ingress error: {ingress_error:#}");
+        }
+        surface.shutdown()?;
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_shutdown_callers_wait_for_one_surface_drain() -> Result<()> {
+        let surface = Arc::new(
+            InspectorCommandSurface::with_module_transport(FakeModuleTransport)
+                .context("surface")?,
+        );
+        let barrier = Arc::new(Barrier::new(3));
+        let mut callers = Vec::new();
+        for _ in 0..2 {
+            let surface = Arc::clone(&surface);
+            let barrier = Arc::clone(&barrier);
+            callers.push(thread::spawn(move || {
+                barrier.wait();
+                surface.shutdown()
+            }));
+        }
+        barrier.wait();
+        for caller in callers {
+            caller
+                .join()
+                .map_err(|_| anyhow::anyhow!("shutdown caller panicked"))??;
+        }
+        let Err(error) = surface.call_inspector("sourcePolicy", json!([])) else {
+            bail!("drained surface accepted a call");
+        };
+        if !error.to_string().contains("is closed") {
+            bail!("unexpected post-shutdown error: {error:#}");
         }
         Ok(())
     }

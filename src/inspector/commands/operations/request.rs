@@ -84,6 +84,10 @@ impl RuntimeOperationRequest {
         self.definition.exclusive_group()
     }
 
+    pub(super) const fn deadline(&self) -> std::time::Duration {
+        self.definition.deadline()
+    }
+
     pub(super) fn node_request(&self) -> Result<&NodeOperationRequest> {
         self.node_request
             .as_ref()

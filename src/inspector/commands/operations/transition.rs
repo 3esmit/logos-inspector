@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::atomic::Ordering};
+use std::collections::HashMap;
 
 use anyhow::Result;
 use serde_json::{Value, json};
@@ -23,36 +23,33 @@ pub(super) enum RuntimeOperationTransition {
         bytes_written: u64,
         content_length: Option<u64>,
     },
-    Resolved(std::result::Result<RuntimeOperationOutcome, String>),
+    Resolved(RuntimeOperationOutcome),
+    ExecutionFailed {
+        error: String,
+    },
     CancelRequested,
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "constructed by the retained-task supervisor in the next ordered ticket"
-        )
-    )]
     CancellationConfirmed {
         error: Option<String>,
     },
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "constructed by the retained-task supervisor in the next ordered ticket"
-        )
-    )]
+    CancellationUnconfirmed {
+        error: String,
+    },
     TimedOut {
         error: String,
     },
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "constructed by the retained-task supervisor in the next ordered ticket"
-        )
-    )]
     Shutdown {
+        error: String,
+    },
+    CleanupFailed {
+        error: String,
+    },
+    TaskPanicked {
+        error: String,
+    },
+    TaskAborted {
+        error: String,
+    },
+    AdapterClosed {
         error: String,
     },
 }
@@ -124,7 +121,7 @@ impl ModuleEventIngressResult {
         }
     }
 
-    fn operation_id(&self) -> Option<&RuntimeOperationId> {
+    pub(super) fn operation_id(&self) -> Option<&RuntimeOperationId> {
         match self {
             Self::Applied { operation_id } | Self::Stale { operation_id } => Some(operation_id),
             Self::Deferred { operation_ids } if operation_ids.len() == 1 => operation_ids.first(),
@@ -158,7 +155,7 @@ pub(super) fn apply_runtime_operation_transition(
     }
 
     let acceptance_problem = match &transition {
-        RuntimeOperationTransition::Resolved(Ok(RuntimeOperationOutcome::Accepted(acceptance))) => {
+        RuntimeOperationTransition::Resolved(RuntimeOperationOutcome::Accepted(acceptance)) => {
             accepted_correlation_problem(
                 records,
                 operation_id,
@@ -175,9 +172,9 @@ pub(super) fn apply_runtime_operation_transition(
     if let Some(problem) = acceptance_problem {
         return apply_record_mutation(record, |record| {
             let acknowledgement = match transition {
-                RuntimeOperationTransition::Resolved(Ok(RuntimeOperationOutcome::Accepted(
+                RuntimeOperationTransition::Resolved(RuntimeOperationOutcome::Accepted(
                     acceptance,
-                ))) => (*acceptance).into_parts().0,
+                )) => (*acceptance).into_parts().0,
                 _ => Value::Null,
             };
             record.operation.acknowledgement = Some(acknowledgement);
@@ -241,34 +238,19 @@ pub(super) fn apply_runtime_operation_transition(
             )?;
             Ok(TransitionDisposition::Applied)
         }
-        RuntimeOperationTransition::Resolved(Ok(outcome)) => apply_outcome(record, outcome),
-        RuntimeOperationTransition::Resolved(Err(error)) => {
+        RuntimeOperationTransition::Resolved(outcome) => apply_outcome(record, outcome),
+        RuntimeOperationTransition::ExecutionFailed { error } => {
             record.pending_module_name = None;
-            if record.cancel_requested.load(Ordering::Relaxed)
-                || record.operation.status == RuntimeOperationStatus::Canceling
-            {
-                terminalize(
-                    record,
-                    RuntimeOperationStatus::Canceled,
-                    None,
-                    Some(error),
-                    "canceled",
-                    "canceled",
-                    "operation canceled",
-                    TerminalProgress::Preserve,
-                )?;
-            } else {
-                terminalize(
-                    record,
-                    RuntimeOperationStatus::Failed,
-                    None,
-                    Some(error),
-                    "execution_failed",
-                    "failed",
-                    "operation failed",
-                    TerminalProgress::Preserve,
-                )?;
-            }
+            terminalize(
+                record,
+                RuntimeOperationStatus::Failed,
+                None,
+                Some(error),
+                "execution_failed",
+                "failed",
+                "operation failed",
+                TerminalProgress::Preserve,
+            )?;
             Ok(TransitionDisposition::Applied)
         }
         RuntimeOperationTransition::CancelRequested => apply_cancel_requested(record),
@@ -285,6 +267,17 @@ pub(super) fn apply_runtime_operation_transition(
                 TerminalProgress::Preserve,
             )?;
             Ok(TransitionDisposition::Applied)
+        }
+        RuntimeOperationTransition::CancellationUnconfirmed { error } => {
+            push_runtime_operation_event_locked(
+                record,
+                "cancellation_unconfirmed",
+                "adapter stopped locally without remote termination evidence",
+                record.operation.progress,
+                None,
+                Some(error),
+            )?;
+            Ok(TransitionDisposition::EvidenceOnly)
         }
         RuntimeOperationTransition::TimedOut { error } => {
             terminalize(
@@ -308,6 +301,58 @@ pub(super) fn apply_runtime_operation_transition(
                 "shutdown",
                 "failed",
                 "operation stopped during shutdown",
+                TerminalProgress::Preserve,
+            )?;
+            Ok(TransitionDisposition::Applied)
+        }
+        RuntimeOperationTransition::CleanupFailed { error } => {
+            terminalize(
+                record,
+                RuntimeOperationStatus::Failed,
+                None,
+                Some(error),
+                "cleanup_failed",
+                "failed",
+                "operation cleanup failed",
+                TerminalProgress::Preserve,
+            )?;
+            Ok(TransitionDisposition::Applied)
+        }
+        RuntimeOperationTransition::TaskPanicked { error } => {
+            terminalize(
+                record,
+                RuntimeOperationStatus::Failed,
+                None,
+                Some(error),
+                "task_panicked",
+                "failed",
+                "operation task panicked",
+                TerminalProgress::Preserve,
+            )?;
+            Ok(TransitionDisposition::Applied)
+        }
+        RuntimeOperationTransition::TaskAborted { error } => {
+            terminalize(
+                record,
+                RuntimeOperationStatus::Failed,
+                None,
+                Some(error),
+                "task_aborted",
+                "failed",
+                "operation task was aborted",
+                TerminalProgress::Preserve,
+            )?;
+            Ok(TransitionDisposition::Applied)
+        }
+        RuntimeOperationTransition::AdapterClosed { error } => {
+            terminalize(
+                record,
+                RuntimeOperationStatus::Failed,
+                None,
+                Some(error),
+                "adapter_closed",
+                "failed",
+                "operation adapter closed",
                 TerminalProgress::Preserve,
             )?;
             Ok(TransitionDisposition::Applied)
@@ -385,7 +430,6 @@ fn apply_record_mutation<T>(
     let previous_events = record.events.clone();
     let previous_next_event_cursor = record.next_event_cursor;
     let previous_pending_module_name = record.pending_module_name;
-    let previous_cancel_requested = record.cancel_requested.load(Ordering::Relaxed);
     match apply(record) {
         Ok(value) => Ok(value),
         Err(error) => {
@@ -393,9 +437,6 @@ fn apply_record_mutation<T>(
             record.events = previous_events;
             record.next_event_cursor = previous_next_event_cursor;
             record.pending_module_name = previous_pending_module_name;
-            record
-                .cancel_requested
-                .store(previous_cancel_requested, Ordering::Relaxed);
             Err(error)
         }
     }
@@ -529,7 +570,6 @@ fn apply_cancel_requested(record: &mut RuntimeOperationRecord) -> Result<Transit
     }
     record.operation.status = RuntimeOperationStatus::Canceling;
     push_runtime_operation_event_locked(record, "canceling", "cancel requested", None, None, None)?;
-    record.cancel_requested.store(true, Ordering::Relaxed);
     Ok(TransitionDisposition::Applied)
 }
 
@@ -691,14 +731,30 @@ fn stale_transition_message(transition: &RuntimeOperationTransition) -> &'static
         RuntimeOperationTransition::Started => "start arrived after terminal state",
         RuntimeOperationTransition::Progress { .. } => "progress arrived after terminal state",
         RuntimeOperationTransition::Resolved(_) => "execution result arrived after terminal state",
+        RuntimeOperationTransition::ExecutionFailed { .. } => {
+            "execution failure arrived after terminal state"
+        }
         RuntimeOperationTransition::CancelRequested => {
             "cancel request arrived after terminal state"
         }
         RuntimeOperationTransition::CancellationConfirmed { .. } => {
             "cancellation confirmation arrived after terminal state"
         }
+        RuntimeOperationTransition::CancellationUnconfirmed { .. } => {
+            "unconfirmed cancellation arrived after terminal state"
+        }
         RuntimeOperationTransition::TimedOut { .. } => "timeout arrived after terminal state",
         RuntimeOperationTransition::Shutdown { .. } => "shutdown arrived after terminal state",
+        RuntimeOperationTransition::CleanupFailed { .. } => {
+            "cleanup failure arrived after terminal state"
+        }
+        RuntimeOperationTransition::TaskPanicked { .. } => {
+            "task panic arrived after terminal state"
+        }
+        RuntimeOperationTransition::TaskAborted { .. } => "task abort arrived after terminal state",
+        RuntimeOperationTransition::AdapterClosed { .. } => {
+            "adapter close arrived after terminal state"
+        }
     }
 }
 
@@ -708,8 +764,6 @@ fn sort_operation_ids(operation_ids: &mut [RuntimeOperationId]) {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, atomic::AtomicBool};
-
     use anyhow::{Context as _, Result};
     use serde_json::json;
 
@@ -738,12 +792,7 @@ mod tests {
             "mutating_enabled": true,
             "payload": { "path": "/tmp/runtime-operation-transition-test" }
         }))?;
-        running_runtime_operation_record(
-            operation_id(id)?,
-            &request,
-            Arc::new(AtomicBool::new(false)),
-            1,
-        )
+        running_runtime_operation_record(operation_id(id)?, &request, 1)
     }
 
     fn records(ids: &[&str]) -> Result<HashMap<RuntimeOperationId, RuntimeOperationRecord>> {
@@ -847,22 +896,20 @@ mod tests {
         apply_runtime_operation_transition(
             &mut records,
             &completed,
-            RuntimeOperationTransition::Resolved(Ok(fake_adapter(
-                NodeOperationOutcome::Completed(json!({ "value": 1 })),
+            RuntimeOperationTransition::Resolved(fake_adapter(NodeOperationOutcome::Completed(
+                json!({ "value": 1 }),
             ))),
         )?;
         apply_runtime_operation_transition(
             &mut records,
             &accepted,
-            RuntimeOperationTransition::Resolved(Ok(fake_adapter(accepted_node_outcome(
-                "session-1",
-            )?))),
+            RuntimeOperationTransition::Resolved(fake_adapter(accepted_node_outcome("session-1")?)),
         )?;
         apply_runtime_operation_transition(
             &mut records,
             &dispatched,
-            RuntimeOperationTransition::Resolved(Ok(fake_adapter(
-                NodeOperationOutcome::Dispatched(json!({ "dispatched": true })),
+            RuntimeOperationTransition::Resolved(fake_adapter(NodeOperationOutcome::Dispatched(
+                json!({ "dispatched": true }),
             ))),
         )?;
 
@@ -910,7 +957,7 @@ mod tests {
         apply_runtime_operation_transition(
             &mut records,
             &operation_id,
-            RuntimeOperationTransition::Resolved(Ok(accepted_outcome("session-1")?)),
+            RuntimeOperationTransition::Resolved(accepted_outcome("session-1")?),
         )?;
 
         let wrong = apply_module_event_ingress(
@@ -1000,7 +1047,7 @@ mod tests {
         apply_runtime_operation_transition(
             &mut records,
             &first,
-            RuntimeOperationTransition::Resolved(Ok(accepted_outcome("shared-session")?)),
+            RuntimeOperationTransition::Resolved(accepted_outcome("shared-session")?),
         )?;
         apply_module_event_ingress(
             &mut records,
@@ -1014,7 +1061,7 @@ mod tests {
         let disposition = apply_runtime_operation_transition(
             &mut records,
             &second,
-            RuntimeOperationTransition::Resolved(Ok(accepted_outcome("shared-session")?)),
+            RuntimeOperationTransition::Resolved(accepted_outcome("shared-session")?),
         )?;
 
         anyhow::ensure!(disposition == TransitionDisposition::DuplicateCorrelation);
@@ -1031,12 +1078,12 @@ mod tests {
         apply_runtime_operation_transition(
             &mut records,
             &request_success,
-            RuntimeOperationTransition::Resolved(Ok(request_outcome("request-1")?)),
+            RuntimeOperationTransition::Resolved(request_outcome("request-1")?),
         )?;
         apply_runtime_operation_transition(
             &mut records,
             &request_failure,
-            RuntimeOperationTransition::Resolved(Ok(request_outcome("request-2")?)),
+            RuntimeOperationTransition::Resolved(request_outcome("request-2")?),
         )?;
         let request_result = apply_module_event_ingress(
             &mut records,
@@ -1125,7 +1172,7 @@ mod tests {
         apply_runtime_operation_transition(
             &mut records,
             &event_first,
-            RuntimeOperationTransition::Resolved(Ok(accepted_outcome("session-1")?)),
+            RuntimeOperationTransition::Resolved(accepted_outcome("session-1")?),
         )?;
         apply_module_event_ingress(
             &mut records,
@@ -1139,9 +1186,9 @@ mod tests {
             RuntimeOperationTransition::Shutdown {
                 error: "late shutdown".to_owned(),
             },
-            RuntimeOperationTransition::Resolved(Ok(RuntimeOperationOutcome::Completed(
+            RuntimeOperationTransition::Resolved(RuntimeOperationOutcome::Completed(
                 json!({ "cid": "late" }),
-            ))),
+            )),
         ] {
             anyhow::ensure!(
                 apply_runtime_operation_transition(&mut records, &event_first, transition)?
@@ -1159,9 +1206,9 @@ mod tests {
             apply_runtime_operation_transition(
                 &mut records,
                 &cancel_first,
-                RuntimeOperationTransition::Resolved(Ok(RuntimeOperationOutcome::Completed(
+                RuntimeOperationTransition::Resolved(RuntimeOperationOutcome::Completed(
                     json!({ "late": true }),
-                ))),
+                )),
             )? == TransitionDisposition::Stale
         );
         anyhow::ensure!(status(&records, &cancel_first)? == RuntimeOperationStatus::Canceled);
@@ -1195,9 +1242,9 @@ mod tests {
             apply_runtime_operation_transition(
                 &mut records,
                 &shutdown_first,
-                RuntimeOperationTransition::Resolved(Ok(RuntimeOperationOutcome::Completed(
+                RuntimeOperationTransition::Resolved(RuntimeOperationOutcome::Completed(
                     json!({ "late": true }),
-                ))),
+                )),
             )? == TransitionDisposition::Stale
         );
         let shutdown_record = records.get(&shutdown_first).context("shutdown operation")?;

@@ -9,7 +9,10 @@ use crate::{
     modules::logos_core::{ModuleTransportKind, SharedModuleTransport},
     source_routing::shared::{http, module_bridge},
     source_routing::{ModuleDispatchIdentityRole, ModuleDispatchReceipt},
-    support::raw_source_transport::{request_bytes_bounded, request_success},
+    support::{
+        command_runner::CommandControl,
+        raw_source_transport::{request_bytes_bounded, request_success},
+    },
 };
 
 pub(super) async fn module_call(
@@ -157,26 +160,45 @@ pub(super) async fn upload_bytes(
     }))
 }
 
-pub(super) async fn module_upload_bytes(
+pub(super) async fn upload_bytes_controlled(
+    endpoint: &str,
     filename: &str,
     bytes: &[u8],
     block_size: u64,
+    control: CommandControl,
+) -> Result<Value> {
+    controlled_remote(control, upload_bytes(endpoint, filename, bytes, block_size)).await
+}
+
+pub(super) async fn module_upload_bytes_controlled(
+    filename: &str,
+    bytes: &[u8],
+    block_size: u64,
+    control: CommandControl,
 ) -> Result<Value> {
     let filename = filename.to_owned();
     let bytes = bytes.to_vec();
+    let worker_guard = control.blocking_worker_guard()?;
     blocking_module_call("Storage module payload upload", move || {
-        module_upload_bytes_blocking(&filename, &bytes, block_size)
+        let _worker_guard = worker_guard;
+        module_upload_bytes_blocking_controlled(&filename, &bytes, block_size, control)
     })
     .await
 }
 
-fn module_upload_bytes_blocking(filename: &str, bytes: &[u8], block_size: u64) -> Result<Value> {
+fn module_upload_bytes_blocking_controlled(
+    filename: &str,
+    bytes: &[u8],
+    block_size: u64,
+    control: CommandControl,
+) -> Result<Value> {
     let block_size = i64::try_from(block_size).context("storage upload block size is too large")?;
     let safe_filename = Path::new(filename)
         .file_name()
         .and_then(|value| value.to_str())
         .filter(|value| !value.is_empty())
         .context("storage upload filename is invalid")?;
+    control.check_active()?;
     let staged = crate::modules::logos_core::stage_shared_file(safe_filename, bytes)?;
     let path = staged
         .path()
@@ -184,22 +206,30 @@ fn module_upload_bytes_blocking(filename: &str, bytes: &[u8], block_size: u64) -
         .context("temporary storage upload path is not UTF-8")?
         .to_owned();
 
-    crate::modules::logos_core::require_module_method(
+    crate::modules::logos_core::require_module_method_controlled(
         super::layer::module_id(),
         "uploadUrl",
         "uploadUrl(QString,int)",
+        control.clone(),
     )?;
-    crate::modules::logos_core::require_module_method(
+    crate::modules::logos_core::require_module_method_controlled(
         super::layer::module_id(),
         "manifests",
         "manifests()",
+        control.clone(),
     )?;
-    let manifests_before = logoscore_cli_call_value(super::layer::module_id(), "manifests", &[])?;
+    let manifests_before = logoscore_cli_call_value_controlled(
+        super::layer::module_id(),
+        "manifests",
+        &[],
+        control.clone(),
+    )?;
     let baseline_cids = manifest_cids(&manifests_before);
-    let session = logoscore_cli_call_value(
+    let session = logoscore_cli_call_value_controlled(
         super::layer::module_id(),
         "uploadUrl",
         &[path, block_size.to_string()],
+        control.clone(),
     )?;
     let session_id = session
         .as_str()
@@ -207,17 +237,19 @@ fn module_upload_bytes_blocking(filename: &str, bytes: &[u8], block_size: u64) -
         .filter(|value| !value.is_empty())
         .context("storage_module.uploadUrl returned no session ID")?
         .to_owned();
-    let deadline = std::time::Instant::now() + Duration::from_secs(60);
     let cid = loop {
-        let manifests = logoscore_cli_call_value(super::layer::module_id(), "manifests", &[])?;
+        control.check_active()?;
+        let manifests = logoscore_cli_call_value_controlled(
+            super::layer::module_id(),
+            "manifests",
+            &[],
+            control.clone(),
+        )?;
         if let Some(cid) = new_manifest_cid(&manifests, safe_filename, bytes.len(), &baseline_cids)
         {
             break cid;
         }
-        if std::time::Instant::now() >= deadline {
-            bail!("timed out waiting for storage_module upload session {session_id}");
-        }
-        std::thread::sleep(Duration::from_millis(100));
+        controlled_thread_sleep(&control, Duration::from_millis(100))?;
     };
     Ok(json!({
         "cid": cid,
@@ -229,8 +261,13 @@ fn module_upload_bytes_blocking(filename: &str, bytes: &[u8], block_size: u64) -
     }))
 }
 
-fn logoscore_cli_call_value(module: &str, method: &str, args: &[String]) -> Result<Value> {
-    let output = crate::modules::logos_core::call(module, method, args)?;
+fn logoscore_cli_call_value_controlled(
+    module: &str,
+    method: &str,
+    args: &[String],
+    control: CommandControl,
+) -> Result<Value> {
+    let output = crate::modules::logos_core::call_controlled(module, method, args, control)?;
     crate::modules::logos_core::normalize_module_call_value(module, method, output.value)
 }
 
@@ -283,6 +320,20 @@ pub(super) async fn download_bytes(
     .await
 }
 
+pub(super) async fn download_bytes_controlled(
+    endpoint: &str,
+    cid: &str,
+    local_only: bool,
+    max_bytes: usize,
+    control: CommandControl,
+) -> Result<Vec<u8>> {
+    controlled_remote(
+        control,
+        download_bytes(endpoint, cid, local_only, max_bytes),
+    )
+    .await
+}
+
 pub(super) async fn download_response(
     endpoint: &str,
     cid: &str,
@@ -323,6 +374,36 @@ where
     tokio::task::spawn_blocking(call)
         .await
         .with_context(|| format!("{label} worker failed"))?
+}
+
+async fn controlled_remote<T, F>(control: CommandControl, future: F) -> Result<T>
+where
+    F: std::future::Future<Output = Result<T>>,
+{
+    tokio::select! {
+        biased;
+        result = future => result,
+        () = control.cancellation().cancelled() => command_interruption(&control),
+        () = tokio::time::sleep_until(tokio::time::Instant::from_std(control.deadline())) => {
+            command_interruption(&control)
+        },
+    }
+}
+
+fn controlled_thread_sleep(control: &CommandControl, duration: Duration) -> Result<()> {
+    control.check_active()?;
+    let remaining = control
+        .deadline()
+        .saturating_duration_since(std::time::Instant::now());
+    std::thread::sleep(duration.min(remaining));
+    control.check_active().map_err(Into::into)
+}
+
+fn command_interruption<T>(control: &CommandControl) -> Result<T> {
+    match control.check_active() {
+        Err(error) => Err(error.into()),
+        Ok(()) => bail!("controlled storage transfer stopped without cancellation evidence"),
+    }
 }
 
 fn parse_probe_text(text: &str) -> Value {

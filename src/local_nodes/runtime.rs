@@ -10,6 +10,7 @@ use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::modules::logos_core::LogoscoreCliRuntime;
+use crate::support::command_runner::{CommandControl, CommandStopReason, CommandTerminated};
 
 use super::process::{find_command, process_is_alive};
 
@@ -138,6 +139,33 @@ impl LogoscoreRuntimeProfile {
         bail!("managed logoscore runtime did not become ready: {detail}")
     }
 
+    pub(super) fn wait_until_ready_controlled(&self, control: &CommandControl) -> Result<()> {
+        let cli = self.cli_runtime()?;
+        let lifecycle_deadline = Instant::now() + LIFECYCLE_TIMEOUT;
+        let mut last_error = None;
+        while Instant::now() < lifecycle_deadline {
+            control.check_active()?;
+            let probe_deadline = match Instant::now().checked_add(PROBE_TIMEOUT) {
+                Some(deadline) => deadline,
+                None => control.deadline(),
+            };
+            let probe_control = control.with_deadline(probe_deadline);
+            let probe_deadline = probe_control.deadline();
+            match cli.status_controlled(probe_control) {
+                Ok(_) => return Ok(()),
+                Err(error) if probe_deadline < control.deadline() && is_probe_deadline(&error) => {
+                    last_error = Some(error);
+                }
+                Err(error) => return Err(error),
+            }
+            controlled_sleep(control, Duration::from_millis(100))?;
+        }
+        let detail = last_error
+            .map(|error| error.to_string())
+            .unwrap_or_else(|| "no probe response".to_owned());
+        bail!("managed logoscore runtime did not become ready: {detail}")
+    }
+
     pub(super) fn wait_until_stopped(&self) -> bool {
         let deadline = Instant::now() + LIFECYCLE_TIMEOUT;
         while Instant::now() < deadline {
@@ -147,6 +175,18 @@ impl LogoscoreRuntimeProfile {
             thread::sleep(Duration::from_millis(100));
         }
         false
+    }
+
+    pub(super) fn wait_until_stopped_controlled(&self, control: &CommandControl) -> Result<bool> {
+        let lifecycle_deadline = Instant::now() + LIFECYCLE_TIMEOUT;
+        while Instant::now() < lifecycle_deadline {
+            control.check_active()?;
+            if !self.daemon_process_id.is_some_and(process_is_alive) {
+                return Ok(true);
+            }
+            controlled_sleep(control, Duration::from_millis(100))?;
+        }
+        Ok(false)
     }
 
     fn validate_for_config_root(&self, config_root: &Path) -> Result<()> {
@@ -176,6 +216,19 @@ impl LogoscoreRuntimeProfile {
         }
         Ok(())
     }
+}
+
+fn is_probe_deadline(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<CommandTerminated>()
+        .is_some_and(|terminated| terminated.reason() == CommandStopReason::DeadlineExceeded)
+}
+
+fn controlled_sleep(control: &CommandControl, duration: Duration) -> Result<()> {
+    control.check_active()?;
+    let remaining = control.deadline().saturating_duration_since(Instant::now());
+    thread::sleep(duration.min(remaining));
+    control.check_active().map_err(Into::into)
 }
 
 #[derive(Debug, Clone, Serialize)]

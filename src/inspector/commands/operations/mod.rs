@@ -1,8 +1,5 @@
 use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicU64},
-    },
+    sync::{Arc, atomic::AtomicU64},
     thread,
     time::Duration,
 };
@@ -31,12 +28,12 @@ mod record;
 mod request;
 mod spec;
 mod storage;
+mod supervisor;
 mod transition;
 mod wallet;
 mod wallet_args;
 
 use backup_import::{BackupImportCoordinator, LocalBackupImportStore};
-use dispatch::execute_runtime_operation;
 #[cfg(test)]
 pub(crate) use entrypoint::operation_bridge_command_names;
 pub(crate) use entrypoint::{OperationBridgeCommand, operation_bridge_command};
@@ -46,6 +43,7 @@ use record::{RuntimeOperationRegistry, RuntimeOperationStatus, running_runtime_o
 pub(crate) use request::{RuntimeOperationRequest, runtime_operation_request_from_value};
 pub(crate) use spec::OperationMethod;
 use spec::normalized_operation_method;
+use supervisor::RuntimeOperationSupervisor;
 use transition::RuntimeOperationTransition;
 
 pub(crate) struct RuntimeOperations {
@@ -53,16 +51,15 @@ pub(crate) struct RuntimeOperations {
     next_operation_id: AtomicU64,
     backup_import: BackupImportCoordinator,
     module_transport: SharedModuleTransport,
+    supervisor: RuntimeOperationSupervisor,
 }
 
 impl Default for RuntimeOperations {
     fn default() -> Self {
-        Self {
-            registry: RuntimeOperationRegistry::default(),
-            next_operation_id: AtomicU64::new(1),
-            backup_import: BackupImportCoordinator::new(Arc::new(LocalBackupImportStore)),
-            module_transport: Arc::new(LogoscoreCliTransport::default()),
-        }
+        Self::new(
+            Arc::new(LocalBackupImportStore),
+            Arc::new(LogoscoreCliTransport::default()),
+        )
     }
 }
 
@@ -83,36 +80,27 @@ impl RuntimeOperations {
             &normalized_operation_method(request.method_name()),
             allocate_sequence(&self.next_operation_id)?,
         );
+        let admission = self
+            .supervisor
+            .prepare(runtime, operation_id.clone(), &request)?;
         let now = now_millis();
-        let cancel_requested = Arc::new(AtomicBool::new(false));
-        let record = running_runtime_operation_record(
-            operation_id.clone(),
-            &request,
-            Arc::clone(&cancel_requested),
-            now,
-        )?;
+        let record = running_runtime_operation_record(operation_id.clone(), &request, now)?;
         self.registry.insert(record)?;
+        if let Err(error) = self
+            .registry
+            .transition(&operation_id, RuntimeOperationTransition::Started)
+        {
+            self.registry.remove(&operation_id)?;
+            return Err(error);
+        }
+        if let Err(error) =
+            self.supervisor
+                .admit(admission, request, Arc::clone(&self.module_transport))
+        {
+            self.registry.remove(&operation_id)?;
+            return Err(error);
+        }
         drop(operation_permit);
-        self.registry
-            .transition(&operation_id, RuntimeOperationTransition::Started)?;
-
-        let registry = self.registry.clone();
-        let task_operation_id = operation_id.clone();
-        let module_transport = Arc::clone(&self.module_transport);
-        let _detached_task = runtime.spawn(async move {
-            let result = execute_runtime_operation(
-                request,
-                &registry,
-                &task_operation_id,
-                &cancel_requested,
-                module_transport,
-            )
-            .await;
-            registry.transition(
-                &task_operation_id,
-                RuntimeOperationTransition::Resolved(result.map_err(|error| error.to_string())),
-            )
-        });
 
         self.registry.value(&operation_id)
     }
@@ -151,8 +139,12 @@ impl RuntimeOperations {
 
     pub(crate) fn cancel(&self, operation_id: &str) -> Result<Value> {
         let operation_id = RuntimeOperationId::parse(operation_id)?;
-        self.registry
+        let disposition = self
+            .registry
             .transition(&operation_id, RuntimeOperationTransition::CancelRequested)?;
+        if disposition == transition::TransitionDisposition::Applied {
+            self.supervisor.cancel(&operation_id)?;
+        }
         self.registry.value(&operation_id)
     }
 
@@ -181,19 +173,7 @@ impl RuntimeOperations {
     }
 
     fn finish_blocking_result(&self, operation_id: &str, result: Result<Value>) -> Result<Value> {
-        let operation_id = RuntimeOperationId::parse(operation_id)?;
-        let should_remove = self.registry.inspect(|records| {
-            records.get(&operation_id).is_some_and(|record| {
-                record.operation.status.is_terminal()
-                    && record.operation.bridge_callback_id.is_none()
-                    && record.operation.module_session_id.is_none()
-                    && record.operation.module_request_id.is_none()
-                    && record.operation.terminal_event.is_none()
-            })
-        })?;
-        if should_remove {
-            self.registry.remove(&operation_id)?;
-        }
+        let _operation_id = RuntimeOperationId::parse(operation_id)?;
         result
     }
 
@@ -257,7 +237,7 @@ impl RuntimeOperations {
 
     pub(crate) fn ingest_module_event(&self, value: Value) -> Result<Value> {
         let event = ModuleEventEnvelope::from_value(&value)?;
-        self.registry.ingest_module_event(event)
+        self.ingest_typed_module_event(event)
     }
 
     pub(crate) fn ingest_module_event_parts(
@@ -266,18 +246,21 @@ impl RuntimeOperations {
         event: &str,
         args: Vec<Value>,
     ) -> Result<Value> {
-        self.registry
-            .ingest_module_event(ModuleEventEnvelope::new(module, event, args)?)
+        self.ingest_typed_module_event(ModuleEventEnvelope::new(module, event, args)?)
+    }
+
+    fn ingest_typed_module_event(&self, event: ModuleEventEnvelope) -> Result<Value> {
+        let (value, settled_operation_id) =
+            self.registry.ingest_module_event_with_settlement(event)?;
+        if let Some(operation_id) = settled_operation_id {
+            self.supervisor.settle(&operation_id)?;
+        }
+        Ok(value)
     }
 
     #[cfg(test)]
     fn with_backup_import_store(store: Arc<dyn backup_import::BackupImportStore>) -> Self {
-        Self {
-            registry: RuntimeOperationRegistry::default(),
-            next_operation_id: AtomicU64::new(1),
-            backup_import: BackupImportCoordinator::new(store),
-            module_transport: Arc::new(LogoscoreCliTransport::default()),
-        }
+        Self::new(store, Arc::new(LogoscoreCliTransport::default()))
     }
 
     #[cfg(test)]
@@ -285,26 +268,59 @@ impl RuntimeOperations {
         &self,
         operation_id: &str,
         request: RuntimeOperationRequest,
-    ) -> Result<Arc<AtomicBool>> {
-        let cancel_requested = Arc::new(AtomicBool::new(false));
+    ) -> Result<()> {
         let record = running_runtime_operation_record(
             RuntimeOperationId::parse(operation_id)?,
             &request,
-            Arc::clone(&cancel_requested),
             1,
         )?;
         self.registry.insert(record)?;
-        Ok(cancel_requested)
+        Ok(())
     }
 
     #[cfg(test)]
     pub(crate) fn len(&self) -> Result<usize> {
         self.registry.len()
     }
+
+    fn new(
+        backup_import_store: Arc<dyn backup_import::BackupImportStore>,
+        module_transport: SharedModuleTransport,
+    ) -> Self {
+        let registry = RuntimeOperationRegistry::default();
+        Self {
+            supervisor: RuntimeOperationSupervisor::new(registry.clone()),
+            registry,
+            next_operation_id: AtomicU64::new(1),
+            backup_import: BackupImportCoordinator::new(backup_import_store),
+            module_transport,
+        }
+    }
+
+    pub(crate) fn shutdown(&self, runtime: &Runtime) -> Result<()> {
+        self.supervisor.shutdown(runtime)
+    }
+}
+
+impl Drop for RuntimeOperations {
+    fn drop(&mut self) {
+        let _result = self.supervisor.begin_close();
+    }
 }
 
 pub(crate) struct RuntimeOperationInterface {
     operations: RuntimeOperations,
+}
+
+#[derive(Clone)]
+pub(crate) struct RuntimeOperationCloseHandle {
+    supervisor: RuntimeOperationSupervisor,
+}
+
+impl RuntimeOperationCloseHandle {
+    pub(crate) fn begin_close(&self) -> Result<()> {
+        self.supervisor.begin_close()
+    }
 }
 
 impl Default for RuntimeOperationInterface {
@@ -379,12 +395,7 @@ impl OperationRunner for RuntimeOperationRunner<'_> {
 impl RuntimeOperationInterface {
     pub(crate) fn new(module_transport: SharedModuleTransport) -> Self {
         Self {
-            operations: RuntimeOperations {
-                registry: RuntimeOperationRegistry::default(),
-                next_operation_id: AtomicU64::new(1),
-                backup_import: BackupImportCoordinator::new(Arc::new(LocalBackupImportStore)),
-                module_transport,
-            },
+            operations: RuntimeOperations::new(Arc::new(LocalBackupImportStore), module_transport),
         }
     }
 
@@ -416,7 +427,7 @@ impl RuntimeOperationInterface {
         &self,
         operation_id: &str,
         request: RuntimeOperationRequest,
-    ) -> Result<Arc<AtomicBool>> {
+    ) -> Result<()> {
         self.operations
             .insert_test_running_operation(operation_id, request)
     }
@@ -424,6 +435,16 @@ impl RuntimeOperationInterface {
     #[cfg(test)]
     pub(crate) fn len(&self) -> Result<usize> {
         self.operations.len()
+    }
+
+    pub(crate) fn shutdown(&self, runtime: &Runtime) -> Result<()> {
+        self.operations.shutdown(runtime)
+    }
+
+    pub(crate) fn close_handle(&self) -> RuntimeOperationCloseHandle {
+        RuntimeOperationCloseHandle {
+            supervisor: self.operations.supervisor.clone(),
+        }
     }
 }
 
@@ -453,7 +474,7 @@ mod tests {
         let session_id = ModuleSessionId::parse("session-retained").context("session id")?;
         operations.registry.transition(
             &operation_id,
-            RuntimeOperationTransition::Resolved(Ok(outcome::RuntimeOperationOutcome::Accepted(
+            RuntimeOperationTransition::Resolved(outcome::RuntimeOperationOutcome::Accepted(
                 Box::new(ObservableOperationAcceptance::new(
                     json!({ "dispatched": true, "value": "session-retained" }),
                     ModuleCorrelation::with_session(session_id),
@@ -465,7 +486,7 @@ mod tests {
                         ModuleEventCorrelationKind::Session,
                     ),
                 )),
-            ))),
+            )),
         )?;
 
         let acknowledgement = operations.wait_for_result(operation_id.as_str());
@@ -492,7 +513,7 @@ mod tests {
         let session_id = ModuleSessionId::parse("session-terminal").context("session id")?;
         operations.registry.transition(
             &operation_id,
-            RuntimeOperationTransition::Resolved(Ok(outcome::RuntimeOperationOutcome::Accepted(
+            RuntimeOperationTransition::Resolved(outcome::RuntimeOperationOutcome::Accepted(
                 Box::new(ObservableOperationAcceptance::new(
                     json!({ "dispatched": true }),
                     ModuleCorrelation::with_session(session_id),
@@ -504,7 +525,7 @@ mod tests {
                         ModuleEventCorrelationKind::Session,
                     ),
                 )),
-            ))),
+            )),
         )?;
         operations.ingest_module_event(json!({
             "moduleName": "storage_module",
@@ -516,6 +537,35 @@ mod tests {
         let result = operations.finish_blocking_result(operation_id.as_str(), result)?;
 
         anyhow::ensure!(result.get("cid") == Some(&json!("cid-terminal")));
+        anyhow::ensure!(operations.len()? == 1);
+        Ok(())
+    }
+
+    #[test]
+    fn blocking_terminal_result_waits_for_bounded_history_eviction() -> Result<()> {
+        let operations = RuntimeOperations::default();
+        let request = runtime_operation_request_from_value(json!({
+            "domain": "storage",
+            "method": "storageManifests",
+            "adapter": {
+                "source_mode": "rest",
+                "inputs": { "rest_endpoint": "http://127.0.0.1:8080" }
+            },
+            "payload": {}
+        }))?;
+        operations.insert_test_running_operation("terminal-local-operation", request)?;
+        let operation_id = RuntimeOperationId::parse("terminal-local-operation")?;
+        operations.registry.transition(
+            &operation_id,
+            RuntimeOperationTransition::Resolved(outcome::RuntimeOperationOutcome::Completed(
+                json!({ "manifests": [] }),
+            )),
+        )?;
+
+        let result = operations.wait_for_result(operation_id.as_str());
+        let result = operations.finish_blocking_result(operation_id.as_str(), result)?;
+
+        anyhow::ensure!(result.get("manifests") == Some(&json!([])));
         anyhow::ensure!(operations.len()? == 1);
         Ok(())
     }

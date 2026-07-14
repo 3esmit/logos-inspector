@@ -12,10 +12,10 @@ use std::{
 };
 
 use logos_inspector::{
-    bridge::InspectorBridge,
+    bridge::{InspectorBridge, InspectorBridgeCloseHandle},
     module_transport::{
-        ModuleCall, ModuleCallFuture, ModuleCallReply, ModuleTransport, ModuleTransportKind,
-        SharedModuleTransport,
+        ModuleCall, ModuleCallFuture, ModuleCallReply, ModuleTransport, ModuleTransportClosed,
+        ModuleTransportKind, SharedModuleTransport,
     },
 };
 use serde_json::Value;
@@ -78,6 +78,7 @@ struct AsynchronousCore {
     state: Arc<AsyncState>,
     host: Arc<HostState>,
     sender: mpsc::SyncSender<WorkerCommand>,
+    bridge_close: InspectorBridgeCloseHandle,
     worker_thread_id: thread::ThreadId,
     worker: Mutex<Option<JoinHandle<()>>>,
 }
@@ -154,7 +155,7 @@ enum WorkerCommand {
         event: String,
         args: Vec<Value>,
     },
-    Stop,
+    Shutdown,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -243,7 +244,7 @@ impl HostState {
             let module_request_id = {
                 let mut registry = lock(&state.registry);
                 if registry.phase != LifecyclePhase::Open {
-                    return Err(std::io::Error::other(HOST_CLOSED_ERROR).into());
+                    return Err(ModuleTransportClosed::new(HOST_CLOSED_ERROR).into());
                 }
                 let module_request_id = ModuleRequestId(registry.next_request_id);
                 registry.next_request_id = registry
@@ -290,15 +291,19 @@ impl HostState {
                 state: Arc::clone(&state),
                 module_request_id,
             };
-            let value = receiver
-                .await
-                .map_err(|_| {
-                    std::io::Error::other(format!(
-                        "host dropped module request {} without a reply",
-                        module_request_id.0
-                    ))
-                })?
-                .map_err(std::io::Error::other)?;
+            let result = receiver.await.map_err(|_| {
+                std::io::Error::other(format!(
+                    "host dropped module request {} without a reply",
+                    module_request_id.0
+                ))
+            })?;
+            let value = match result {
+                Ok(value) => value,
+                Err(error) if error == HOST_CLOSED_ERROR => {
+                    return Err(ModuleTransportClosed::new(error).into());
+                }
+                Err(error) => return Err(std::io::Error::other(error).into()),
+            };
             Ok(ModuleCallReply::new(ModuleTransportKind::Module, value))
         })
     }
@@ -528,6 +533,7 @@ impl AsynchronousCore {
         });
         let bridge = InspectorBridge::with_shared_module_transport(transport)
             .map_err(|error| format!("failed to initialize asynchronous bridge: {error}"))?;
+        let bridge_close = bridge.close_handle();
         let state = AsyncState::new();
         let (sender, receiver) = mpsc::sync_channel(ASYNC_WORKER_QUEUE_CAPACITY);
         let worker_state = Arc::clone(&state);
@@ -540,6 +546,7 @@ impl AsynchronousCore {
             state,
             host,
             sender,
+            bridge_close,
             worker_thread_id,
             worker: Mutex::new(Some(worker)),
         })
@@ -661,8 +668,9 @@ impl AsynchronousCore {
         let Some(pending) = self.state.begin_close() else {
             return;
         };
+        let _closing = self.bridge_close.begin_close().is_ok();
         self.host.close();
-        let _sent = self.sender.send(WorkerCommand::Stop).is_ok();
+        let _sent = self.sender.send(WorkerCommand::Shutdown).is_ok();
         if let Some(worker) = lock(&self.worker).take() {
             let _joined = worker.join().is_ok();
         }
@@ -739,7 +747,10 @@ fn run_worker(
                     bridge.ingest_module_event(&module, &event, args)
                 }));
             }
-            WorkerCommand::Stop => break,
+            WorkerCommand::Shutdown => {
+                let _shutdown = bridge.shutdown().is_ok();
+                break;
+            }
         }
     }
 }
@@ -800,7 +811,12 @@ pub unsafe extern "C" fn logos_inspector_core_close(handle: *mut LogosInspectorC
         // SAFETY: guaranteed by this function's handle contract.
         let core = unsafe { &*handle };
         match &core.mode {
-            CoreMode::Synchronous(core) => core.closed.store(true, Ordering::Release),
+            CoreMode::Synchronous(core) => {
+                if !core.closed.swap(true, Ordering::AcqRel) {
+                    let _closing = core.bridge.begin_close().is_ok();
+                    let _shutdown = core.bridge.shutdown().is_ok();
+                }
+            }
             CoreMode::Asynchronous(core) => core.close(),
         }
     }));
@@ -1526,6 +1542,47 @@ mod tests {
             unsafe {
                 logos_inspector_core_close(self.0);
             }
+        }
+
+        fn begin_bridge_close(&self) -> TestResult {
+            // SAFETY: this guard keeps the core allocation live. The close
+            // handle is thread-safe and does not move the bridge worker.
+            let core = unsafe { &*self.0 };
+            let CoreMode::Asynchronous(core) = &core.mode else {
+                return err("expected asynchronous test core");
+            };
+            core.bridge_close
+                .begin_close()
+                .map_err(|error| std::io::Error::other(error.to_string()).into())
+        }
+
+        fn assert_shutdown_drained(&self) -> TestResult {
+            // SAFETY: this guard keeps the explicitly closed allocation live
+            // while synchronized lifecycle state is inspected.
+            let core = unsafe { &*self.0 };
+            let CoreMode::Asynchronous(core) = &core.mode else {
+                return err("expected asynchronous test core");
+            };
+            let state = lock(&core.state.registry);
+            if state.phase != LifecyclePhase::Closed
+                || !state.pending.is_empty()
+                || !state.completing.is_empty()
+            {
+                return err("core request lifecycle did not drain on close");
+            }
+            drop(state);
+            let host = lock(&core.host.registry);
+            if host.phase != LifecyclePhase::Closed
+                || host.active_host_calls != 0
+                || !host.pending.is_empty()
+            {
+                return err("host transport lifecycle did not drain on close");
+            }
+            drop(host);
+            if lock(&core.worker).is_some() {
+                return err("bridge worker remained live after close");
+            }
+            Ok(())
         }
 
         fn wait_for_host_closing(&self) -> TestResult {
@@ -3252,6 +3309,230 @@ mod tests {
     }
 
     #[test]
+    fn out_of_band_close_cancels_pending_runtime_operation_and_drains_bridge() -> TestResult {
+        let host = TestHost::new();
+        let handle = TestCoreHandle::new(&host)?;
+        let collector = Arc::new(ReplyCollector::default());
+        let drops = Arc::new(AtomicUsize::new(0));
+        let args = serde_json::json!([{
+            "domain": "delivery",
+            "method": "deliverySend",
+            "adapter": { "source_mode": "module", "inputs": {} },
+            "mutating_enabled": true,
+            "payload": { "topic": "/close", "payload": "pending" }
+        }])
+        .to_string();
+
+        if enqueue_test_call(
+            handle.as_ptr(),
+            20,
+            "logos_inspector",
+            "runtimeOperationStart",
+            &args,
+            reply_context(&collector, &drops),
+        )? != 1
+        {
+            return err("runtime operation start ingress was rejected");
+        }
+        let replies = collector.wait_for_replies(1)?;
+        let start: Value = serde_json::from_str(&replies[0].1)?;
+        if start.get("ok").and_then(Value::as_bool) != Some(true)
+            || start
+                .pointer("/value/operationId")
+                .and_then(Value::as_str)
+                .is_none()
+        {
+            return Err(std::io::Error::other(format!(
+                "runtime operation did not start before close: {start}"
+            ))
+            .into());
+        }
+        let request = host.wait_for_request()?;
+        if request.module != "delivery_module" || request.method != "send" {
+            return err("pending runtime operation reached wrong host method");
+        }
+
+        handle.begin_bridge_close()?;
+        if host.wait_for_cancellations(1)? != vec![request.id] {
+            return err("out-of-band close did not cancel pending host call exactly once");
+        }
+        handle.close();
+        handle.assert_shutdown_drained()?;
+
+        if host.cancelled() != vec![request.id]
+            || host.close_count() != 1
+            || collector.count() != 1
+            || drops.load(Ordering::Acquire) != 1
+        {
+            return err("runtime operation close violated host or callback ownership");
+        }
+
+        let payload = CString::new("\"late-request\"")?;
+        // SAFETY: explicit close retains the HostState allocation. The saved
+        // host callback must observe its already-drained request as a no-op.
+        unsafe {
+            (request.reply)(
+                ptr::with_exposed_provenance_mut(request.reply_context),
+                request.id,
+                1,
+                payload.as_ptr(),
+            );
+        }
+        if collector.count() != 1 || drops.load(Ordering::Acquire) != 1 {
+            return err("late host completion produced a callback after close");
+        }
+
+        let rejected_collector = Arc::new(ReplyCollector::default());
+        let rejected_drops = Arc::new(AtomicUsize::new(0));
+        let rejected_context = reply_context(&rejected_collector, &rejected_drops);
+        if enqueue_test_call(
+            handle.as_ptr(),
+            21,
+            "logos_inspector",
+            "runtimeOperationStatus",
+            "[\"closed\"]",
+            rejected_context,
+        )? != 0
+        {
+            return err("closed core accepted a new asynchronous call");
+        }
+        // SAFETY: rejected ingress leaves its callback context caller-owned.
+        unsafe {
+            drop(Box::from_raw(rejected_context.cast::<ReplyContext>()));
+        }
+        if rejected_collector.count() != 0 || rejected_drops.load(Ordering::Acquire) != 1 {
+            return err("closed core invoked a rejected callback");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_event_queued_before_close_completes_runtime_operation() -> TestResult {
+        let host = TestHost::new();
+        let handle = TestCoreHandle::new(&host)?;
+        let start_collector = Arc::new(ReplyCollector::default());
+        let start_drops = Arc::new(AtomicUsize::new(0));
+        let args = serde_json::json!([{
+            "domain": "delivery",
+            "method": "deliverySend",
+            "adapter": { "source_mode": "module", "inputs": {} },
+            "mutating_enabled": true,
+            "payload": { "topic": "/close", "payload": "terminal-event" }
+        }])
+        .to_string();
+
+        if enqueue_test_call(
+            handle.as_ptr(),
+            25,
+            "logos_inspector",
+            "runtimeOperationStart",
+            &args,
+            reply_context(&start_collector, &start_drops),
+        )? != 1
+        {
+            return err("runtime operation start ingress was rejected");
+        }
+        let start_replies = start_collector.wait_for_replies(1)?;
+        let start: Value = serde_json::from_str(&start_replies[0].1)?;
+        let Some(operation_id) = start
+            .pointer("/value/operationId")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+        else {
+            return err("runtime operation start did not return operation identity");
+        };
+        let request = host.wait_for_request()?;
+        host.complete(request.id, 1, "\"request-before-close\"", true)?;
+        let awaiting =
+            wait_for_operation_status(handle.as_ptr(), &operation_id, "awaiting_external", 2_500)?;
+        if awaiting.pointer("/value/status").and_then(Value::as_str) != Some("awaiting_external") {
+            return err("runtime operation did not await its terminal module event");
+        }
+
+        if ingest_test_module_event(
+            handle.as_ptr(),
+            "delivery_module",
+            "messageSent",
+            "[\"request-before-close\",\"hash-before-close\"]",
+        )? != EVENT_ACCEPTED
+        {
+            return err("terminal module event was rejected before close");
+        }
+        let status_collector = Arc::new(ReplyCollector::default());
+        let status_drops = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new(ReplyGate::default());
+        let status_context = gated_reply_context(&status_collector, &status_drops, &gate);
+        let status_args = serde_json::json!([operation_id]).to_string();
+        if enqueue_test_call(
+            handle.as_ptr(),
+            2_501,
+            "logos_inspector",
+            "runtimeOperationStatus",
+            &status_args,
+            status_context,
+        )? != 1
+        {
+            // SAFETY: rejected ingress leaves its callback context caller-owned.
+            unsafe {
+                drop(Box::from_raw(status_context.cast::<ReplyContext>()));
+            }
+            return err("terminal status observation was rejected");
+        }
+        if let Err(error) = gate.wait_for_entry() {
+            gate.release();
+            return Err(error);
+        }
+
+        let handle_address = handle.as_ptr().expose_provenance();
+        let (closed_sender, closed_receiver) = mpsc::channel();
+        let closer = thread::spawn(move || {
+            // SAFETY: the owning test keeps the allocation live until this
+            // close call and the selected reply callback have both joined.
+            unsafe {
+                logos_inspector_core_close(ptr::with_exposed_provenance_mut(handle_address));
+            }
+            let _sent = closed_sender.send(()).is_ok();
+        });
+        if let Err(error) = handle.wait_for_host_closing() {
+            gate.release();
+            let _joined = closer.join().is_ok();
+            return Err(error);
+        }
+        gate.release();
+
+        closed_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        if closer.join().is_err() {
+            return err("close thread panicked while draining terminal event");
+        }
+        let status_replies = status_collector.wait_for_replies(1)?;
+        let completed: Value = serde_json::from_str(&status_replies[0].1)?;
+        if completed.pointer("/value/status").and_then(Value::as_str) != Some("completed")
+            || completed.pointer("/value/result/0").and_then(Value::as_str)
+                != Some("request-before-close")
+            || completed.pointer("/value/result/1").and_then(Value::as_str)
+                != Some("hash-before-close")
+        {
+            return Err(std::io::Error::other(format!(
+                "queued terminal event lost completion during close: {completed}"
+            ))
+            .into());
+        }
+        handle.assert_shutdown_drained()?;
+        if host.close_count() != 1
+            || !host.cancelled().is_empty()
+            || start_collector.count() != 1
+            || start_drops.load(Ordering::Acquire) != 1
+            || status_collector.count() != 1
+            || status_drops.load(Ordering::Acquire) != 1
+        {
+            return err("terminal-event close violated lifecycle ownership");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn close_drains_inflight_request_and_is_idempotent() -> TestResult {
         let host = TestHost::new();
         let handle = TestCoreHandle::new(&host)?;
@@ -3288,7 +3569,7 @@ mod tests {
     }
 
     #[test]
-    fn close_racing_queued_local_call_drains_without_ownership_loss() -> TestResult {
+    fn close_racing_queued_local_call_terminalizes_without_ownership_loss() -> TestResult {
         let host = TestHost::new();
         let handle = TestCoreHandle::new(&host)?;
         let collector = Arc::new(ReplyCollector::default());
@@ -3345,11 +3626,12 @@ mod tests {
         if local_join.is_err() || close_join.is_err() {
             return err("local call or close thread panicked");
         }
-        if local_value.get("ok").and_then(Value::as_bool) != Some(true)
-            || !local_value.get("value").is_some_and(Value::is_object)
+        if local_value.get("ok").and_then(Value::as_bool) != Some(false)
+            || local_value.get("error").and_then(Value::as_str)
+                != Some("inspector command surface is shutting down")
         {
             return Err(std::io::Error::other(format!(
-                "queued local call did not complete normally: {local_value}"
+                "queued local call did not terminalize during close: {local_value}"
             ))
             .into());
         }

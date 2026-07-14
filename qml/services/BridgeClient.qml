@@ -5,11 +5,13 @@ QtObject {
     id: root
 
     property var host: null
+    property bool closed: false
     property int hostEpoch: 0
     property int nextRequestId: 1
     property var pendingCalls: ({})
     property var moduleEventSubscriptions: ({})
     property var moduleEventRegistrations: []
+    property var shutdownBasecampTokenSettlements: []
     readonly property string basecampAsyncBridgeSchema: "logos-inspector-async-bridge/v1"
     property int basecampAsyncPollIntervalMs: 50
     property int basecampAsyncTimeoutMs: 30000
@@ -20,7 +22,12 @@ QtObject {
 
     onHostChanged: {
         hostEpoch += 1
+        root.deactivateModuleEventCallbacks()
         moduleEventSubscriptions = ({})
+        moduleEventRegistrations = []
+        if (root.closed) {
+            return
+        }
         failPendingCalls({
             ok: false,
             value: null,
@@ -33,36 +40,41 @@ QtObject {
     signal callbackFailed(string error)
 
     function prefersBasecampModules() {
-        return BridgeEnvelope.prefersBasecampModules(root.host)
+        return !root.closed && BridgeEnvelope.prefersBasecampModules(root.host)
     }
 
     function backendOwnsRuntimeModuleEvents() {
-        return BridgeEnvelope.basecampInspectorOwnsRuntimeModuleEvents(root.host)
+        return !root.closed
+            && BridgeEnvelope.basecampInspectorOwnsRuntimeModuleEvents(root.host)
     }
 
     function callModule(moduleName, method, args) {
+        if (root.closed) {
+            return root.closedResponse()
+        }
         return BridgeEnvelope.callModule(root.host, moduleName, method, args || [])
     }
 
     function hasAsyncCalls() {
-        return BridgeEnvelope.hasAsyncCalls(root.host)
+        return !root.closed && BridgeEnvelope.hasAsyncCalls(root.host)
     }
 
     function callModuleAsync(moduleName, method, args, callback) {
         const requestId = root.nextRequestId
+        if (root.closed) {
+            root.nextRequestId += 1
+            root.notifyCallback(callback, root.closedResponse())
+            return requestId
+        }
         const requestHost = root.host
         const requestHostEpoch = root.hostEpoch
         root.nextRequestId += 1
         if (Object.keys(root.pendingCalls || {}).length >= root.basecampAsyncMaxPendingCalls) {
-            Qt.callLater(function () {
-                if (typeof callback === "function") {
-                    callback({
-                        ok: false,
-                        value: null,
-                        text: "",
-                        error: "Logos bridge call failed: async_client_capacity"
-                    })
-                }
+            root.notifyCallback(callback, {
+                ok: false,
+                value: null,
+                text: "",
+                error: "Logos bridge call failed: async_client_capacity"
             })
             return requestId
         }
@@ -89,18 +101,18 @@ QtObject {
             try {
                 startArgsJson = JSON.stringify(Array.isArray(args) ? args : [])
             } catch (error) {
-                Qt.callLater(function () {
-                    if (typeof callback === "function") {
-                        callback({
-                            ok: false,
-                            value: null,
-                            text: "",
-                            error: "Logos bridge call failed: async_arguments_invalid"
-                        })
-                    }
+                root.notifyCallback(callback, {
+                    ok: false,
+                    value: null,
+                    text: "",
+                    error: "Logos bridge call failed: async_arguments_invalid"
                 })
                 return requestId
             }
+        }
+        const requestLifecycle = {
+            owner: root,
+            settledTokens: []
         }
         const pending = root.copyPendingCalls()
         pending[requestId] = {
@@ -115,6 +127,7 @@ QtObject {
             startInFlight: false,
             startAttempts: 0,
             nextStartAtMs: 0,
+            requestLifecycle: requestLifecycle,
             backendToken: "",
             pollInFlight: false,
             pollAttempts: 0,
@@ -130,7 +143,11 @@ QtObject {
 
         if (inspectorAsyncRequest && basecampSchemaProbe.status === "probe_failed") {
             Qt.callLater(function () {
-                root.finishAsyncCall(requestId, {
+                const owner = requestLifecycle.owner
+                if (!owner) {
+                    return
+                }
+                owner.finishAsyncCall(requestId, {
                     ok: false,
                     value: null,
                     text: "",
@@ -143,7 +160,11 @@ QtObject {
 
         if (inspectorAsyncRequest && !basecampPolling) {
             Qt.callLater(function () {
-                root.finishAsyncCall(requestId, {
+                const owner = requestLifecycle.owner
+                if (!owner) {
+                    return
+                }
+                owner.finishAsyncCall(requestId, {
                     ok: false,
                     value: null,
                     text: "",
@@ -154,16 +175,20 @@ QtObject {
         }
 
         if (BridgeEnvelope.dispatchAsync(requestHost, requestId, moduleName, method, args || [], function (response) {
-                root.finishAsyncCall(requestId, response, requestHostEpoch)
+                const owner = requestLifecycle.owner
+                if (owner) {
+                    owner.finishAsyncCall(requestId, response, requestHostEpoch)
+                }
             })) {
             return requestId
         }
 
         Qt.callLater(function () {
-            if (requestHostEpoch !== root.hostEpoch) {
+            const owner = requestLifecycle.owner
+            if (!owner || requestHostEpoch !== owner.hostEpoch) {
                 return
             }
-            root.finishAsyncCall(
+            owner.finishAsyncCall(
                 requestId,
                 BridgeEnvelope.callModule(requestHost, moduleName, method, args || []),
                 requestHostEpoch
@@ -185,6 +210,9 @@ QtObject {
     }
 
     function beginBasecampCall(requestId) {
+        if (root.closed) {
+            return false
+        }
         const pending = root.copyPendingCalls()
         const entry = pending[requestId]
         if (!entry
@@ -204,6 +232,9 @@ QtObject {
         entry.startAttempts += 1
         const requestHost = entry.host
         const requestHostEpoch = entry.hostEpoch
+        const expectedCorrelationId = entry.correlationId
+        const requestLifecycle = entry.requestLifecycle
+        const settlementTimeoutMs = root.basecampAsyncTimeoutMs
         const attemptTimeoutMs = Math.max(
             1,
             Math.min(root.basecampAsyncStartAttemptTimeoutMs, remainingMs)
@@ -211,17 +242,49 @@ QtObject {
         root.pendingCalls = pending
         const dispatched = BridgeEnvelope.beginBasecampInspectorCall(
             requestHost,
-            entry.correlationId,
+            expectedCorrelationId,
             entry.startMethod,
             entry.startArgsJson,
             attemptTimeoutMs,
             function (response) {
-                root.handleBasecampStart(
-                    requestId,
+                const owner = requestLifecycle ? requestLifecycle.owner : null
+                if (owner) {
+                    owner.handleBasecampStart(
+                        requestId,
+                        requestHost,
+                        requestHostEpoch,
+                        expectedCorrelationId,
+                        requestLifecycle,
+                        response
+                    )
+                    return
+                }
+                const value = response && response.ok === true ? response.value : null
+                const token = value && typeof value.token === "string" ? value.token : ""
+                const responseCorrelationId = value ? String(value.correlationId || "") : ""
+                if (!token.length || responseCorrelationId !== expectedCorrelationId) {
+                    return
+                }
+                const settledTokens = requestLifecycle
+                        && Array.isArray(requestLifecycle.settledTokens)
+                    ? requestLifecycle.settledTokens.slice()
+                    : []
+                if (settledTokens.indexOf(token) >= 0) {
+                    return
+                }
+                settledTokens.push(token)
+                requestLifecycle.settledTokens = settledTokens
+                BridgeEnvelope.cancelBasecampInspectorCall(
                     requestHost,
-                    requestHostEpoch,
-                    entry.correlationId,
-                    response
+                    token,
+                    settlementTimeoutMs,
+                    function () {}
+                )
+                BridgeEnvelope.releaseBasecampInspectorCall(
+                    requestHost,
+                    token,
+                    settlementTimeoutMs,
+                    function () {}
                 )
             }
         )
@@ -241,12 +304,20 @@ QtObject {
             requestHost,
             requestHostEpoch,
             expectedCorrelationId,
+            requestLifecycle,
             response) {
         const value = response && response.ok === true ? response.value : null
         const token = value && typeof value.token === "string" ? value.token : ""
         const schema = value ? String(value.schema || "") : ""
         const responseCorrelationId = value ? String(value.correlationId || "") : ""
         const correlationMatches = responseCorrelationId === expectedCorrelationId
+        if (root.closed) {
+            if (token.length && correlationMatches) {
+                root.markBasecampRequestTokenSettled(requestLifecycle, token)
+                root.abandonBasecampTokenAfterShutdown(requestHost, token)
+            }
+            return
+        }
         const current = root.pendingCalls || {}
         const entry = current[requestId]
         if (!entry
@@ -255,11 +326,18 @@ QtObject {
                 || root.host !== requestHost
                 || root.hostEpoch !== requestHostEpoch) {
             if (token.length && correlationMatches) {
+                root.markBasecampRequestTokenSettled(requestLifecycle, token)
                 root.abandonBasecampToken(requestHost, token)
             }
             return
         }
         if (entry.phase !== "starting") {
+            if (token.length
+                    && correlationMatches
+                    && token !== String(entry.backendToken || "")) {
+                root.markBasecampRequestTokenSettled(requestLifecycle, token)
+                root.abandonBasecampToken(requestHost, token)
+            }
             return
         }
         if (!response || response.ok !== true) {
@@ -291,6 +369,7 @@ QtObject {
                 || !correlationMatches
                 || entry.correlationId !== expectedCorrelationId) {
             if (token.length && correlationMatches) {
+                root.markBasecampRequestTokenSettled(requestLifecycle, token)
                 root.abandonBasecampToken(requestHost, token)
             }
             root.finishAsyncCall(requestId, {
@@ -304,6 +383,7 @@ QtObject {
         const pending = root.copyPendingCalls()
         const pendingEntry = pending[requestId]
         if (!pendingEntry || pendingEntry.hostEpoch !== requestHostEpoch) {
+            root.markBasecampRequestTokenSettled(requestLifecycle, token)
             root.abandonBasecampToken(requestHost, token)
             return
         }
@@ -316,6 +396,9 @@ QtObject {
     }
 
     function pollBasecampCalls() {
+        if (root.closed) {
+            return
+        }
         const pending = root.pendingCalls || {}
         const now = Date.now()
         let inFlight = root.basecampPollsInFlight()
@@ -356,6 +439,9 @@ QtObject {
     }
 
     function pollBasecampCall(requestId) {
+        if (root.closed) {
+            return false
+        }
         const pending = root.copyPendingCalls()
         const entry = pending[requestId]
         if (!entry
@@ -377,25 +463,32 @@ QtObject {
         const token = entry.backendToken
         const requestHost = entry.host
         const requestHostEpoch = entry.hostEpoch
+        const requestLifecycle = entry.requestLifecycle
         root.pendingCalls = pending
         BridgeEnvelope.pollBasecampInspectorCall(
             requestHost,
             token,
             root.basecampAsyncTimeoutMs,
             function (response) {
-                root.handleBasecampPoll(
-                    requestId,
-                    requestHost,
-                    requestHostEpoch,
-                    token,
-                    response
-                )
+                const owner = requestLifecycle ? requestLifecycle.owner : null
+                if (owner) {
+                    owner.handleBasecampPoll(
+                        requestId,
+                        requestHost,
+                        requestHostEpoch,
+                        token,
+                        response
+                    )
+                }
             }
         )
         return true
     }
 
     function handleBasecampPoll(requestId, requestHost, requestHostEpoch, token, response) {
+        if (root.closed) {
+            return
+        }
         const pending = root.copyPendingCalls()
         const entry = pending[requestId]
         if (!entry
@@ -414,6 +507,7 @@ QtObject {
                 root.pendingCalls = pending
                 return
             }
+            root.markBasecampRequestTokenSettled(entry.requestLifecycle, token)
             root.abandonBasecampToken(requestHost, token)
             root.finishAsyncCall(requestId, response || {
                 ok: false,
@@ -428,6 +522,7 @@ QtObject {
         const responseToken = value ? String(value.token || "") : ""
         const status = value ? String(value.status || "") : ""
         if (schema !== root.basecampAsyncBridgeSchema || responseToken !== token) {
+            root.markBasecampRequestTokenSettled(entry.requestLifecycle, token)
             root.abandonBasecampToken(requestHost, token)
             root.finishAsyncCall(requestId, {
                 ok: false,
@@ -444,6 +539,7 @@ QtObject {
             return
         }
         if (status === "ready" && typeof value.responseJson === "string") {
+            root.markBasecampRequestTokenSettled(entry.requestLifecycle, token)
             root.releaseBasecampToken(requestHost, token)
             root.finishAsyncCall(
                 requestId,
@@ -452,6 +548,7 @@ QtObject {
             )
             return
         }
+        root.markBasecampRequestTokenSettled(entry.requestLifecycle, token)
         root.abandonBasecampToken(requestHost, token)
         root.finishAsyncCall(requestId, {
             ok: false,
@@ -479,6 +576,9 @@ QtObject {
     }
 
     function hasBasecampPollingCalls() {
+        if (root.closed) {
+            return false
+        }
         const pending = root.pendingCalls || {}
         for (const requestId in pending) {
             if (pending[requestId] && pending[requestId].route === "basecamp_poll") {
@@ -493,6 +593,10 @@ QtObject {
             return
         }
         if (entry.backendToken && entry.backendToken.length) {
+            root.markBasecampRequestTokenSettled(
+                entry.requestLifecycle,
+                entry.backendToken
+            )
             root.abandonBasecampToken(entry.host, entry.backendToken)
         }
         root.finishAsyncCall(requestId, {
@@ -503,6 +607,27 @@ QtObject {
                 ? "Logos bridge call failed: async_acceptance_unknown"
                 : "Logos bridge call failed: async_response_timeout"
         }, entry.hostEpoch)
+    }
+
+    function markBasecampRequestTokenSettled(lifecycle, token) {
+        const tokenText = String(token || "")
+        if (!lifecycle || !tokenText.length) {
+            return
+        }
+        const settledTokens = Array.isArray(lifecycle.settledTokens)
+            ? lifecycle.settledTokens.slice()
+            : []
+        if (settledTokens.indexOf(tokenText) >= 0) {
+            return
+        }
+        settledTokens.push(tokenText)
+        lifecycle.settledTokens = settledTokens
+    }
+
+    function detachRequestLifecycle(entry) {
+        if (entry && entry.requestLifecycle) {
+            entry.requestLifecycle.owner = null
+        }
     }
 
     function abandonBasecampToken(host, token) {
@@ -518,6 +643,25 @@ QtObject {
         root.releaseBasecampToken(host, token)
     }
 
+    function abandonBasecampTokenAfterShutdown(host, token) {
+        const tokenText = String(token || "")
+        if (!host || !tokenText.length) {
+            return
+        }
+        const settlements = Array.isArray(root.shutdownBasecampTokenSettlements)
+            ? root.shutdownBasecampTokenSettlements.slice()
+            : []
+        for (let i = 0; i < settlements.length; ++i) {
+            const settlement = settlements[i]
+            if (settlement && settlement.host === host && settlement.token === tokenText) {
+                return
+            }
+        }
+        settlements.push({ host: host, token: tokenText })
+        root.shutdownBasecampTokenSettlements = settlements
+        root.abandonBasecampToken(host, tokenText)
+    }
+
     function releaseBasecampToken(host, token) {
         if (!host || !String(token || "").length) {
             return
@@ -531,6 +675,9 @@ QtObject {
     }
 
     function subscribeModuleEvents(moduleName, events) {
+        if (root.closed) {
+            return 0
+        }
         let count = 0
         const rows = Array.isArray(events) ? events : []
         for (let i = 0; i < rows.length; ++i) {
@@ -544,7 +691,7 @@ QtObject {
     function subscribeModuleEvent(moduleName, eventName) {
         const moduleText = String(moduleName || "")
         const eventText = String(eventName || "")
-        if (!root.host || !moduleText.length || !eventText.length) {
+        if (root.closed || !root.host || !moduleText.length || !eventText.length) {
             return false
         }
         const key = moduleText + "::" + eventText
@@ -559,28 +706,70 @@ QtObject {
             ? root.moduleEventRegistration(subscriptionHost, key)
             : null
         if (registered) {
-            root.rememberActiveModuleEventSubscription(key, registered.callback)
+            root.rememberActiveModuleEventSubscription(key, null, null)
             return true
         }
+        if (basecampSubscription) {
+            let globallyRegistered = false
+            try {
+                if (subscriptionHost && subscriptionHost["onModuleEvent"]) {
+                    globallyRegistered = subscriptionHost["onModuleEvent"](
+                        moduleText,
+                        eventText
+                    ) === true
+                }
+            } catch (error) {
+                globallyRegistered = false
+            }
+            if (globallyRegistered) {
+                if (root.host !== subscriptionHost) {
+                    return false
+                }
+                const registrations = Array.isArray(root.moduleEventRegistrations)
+                    ? root.moduleEventRegistrations.slice()
+                    : []
+                registrations.push({
+                    host: subscriptionHost,
+                    key: key
+                })
+                root.moduleEventRegistrations = registrations
+                root.rememberActiveModuleEventSubscription(key, null, null)
+                return true
+            }
+        }
+        const callbackLifecycle = {
+            owner: root,
+            host: subscriptionHost,
+            hostEpoch: subscriptionHostEpoch
+        }
         const callback = function () {
-            if (root.host !== subscriptionHost
-                    || root.hostEpoch !== subscriptionHostEpoch) {
+            const owner = callbackLifecycle.owner
+            if (!owner
+                    || owner.closed
+                    || owner.host !== callbackLifecycle.host
+                    || owner.hostEpoch !== callbackLifecycle.hostEpoch) {
                 return
             }
             const values = []
             for (let i = 0; i < arguments.length; ++i) {
                 values.push(arguments[i])
             }
-            root.moduleEventReceived(moduleText, eventText, values.length === 1 ? values[0] : values)
+            owner.moduleEventReceived(
+                moduleText,
+                eventText,
+                values.length === 1 ? values[0] : values
+            )
         }
         let active = false
         try {
-            if (subscriptionHost && subscriptionHost["onModuleEvent"]) {
-                if (basecampSubscription) {
-                    active = subscriptionHost["onModuleEvent"](moduleText, eventText) === true
-                } else {
-                    active = subscriptionHost["onModuleEvent"](moduleText, eventText, callback) !== false
-                }
+            if (!basecampSubscription
+                    && subscriptionHost
+                    && subscriptionHost["onModuleEvent"]) {
+                active = subscriptionHost["onModuleEvent"](
+                    moduleText,
+                    eventText,
+                    callback
+                ) !== false
             }
         } catch (error) {
             active = false
@@ -597,23 +786,14 @@ QtObject {
             active = false
         }
         if (!active) {
+            callbackLifecycle.owner = null
             return false
-        }
-        if (basecampSubscription) {
-            const registrations = Array.isArray(root.moduleEventRegistrations)
-                ? root.moduleEventRegistrations.slice()
-                : []
-            registrations.push({
-                host: subscriptionHost,
-                key: key,
-                callback: callback
-            })
-            root.moduleEventRegistrations = registrations
         }
         if (root.host !== subscriptionHost) {
+            callbackLifecycle.owner = null
             return false
         }
-        root.rememberActiveModuleEventSubscription(key, callback)
+        root.rememberActiveModuleEventSubscription(key, callback, callbackLifecycle)
         return true
     }
 
@@ -630,7 +810,7 @@ QtObject {
         return null
     }
 
-    function rememberActiveModuleEventSubscription(key, callback) {
+    function rememberActiveModuleEventSubscription(key, callback, lifecycle) {
         const next = {}
         const current = root.moduleEventSubscriptions || {}
         for (const name in current) {
@@ -638,12 +818,26 @@ QtObject {
         }
         next[key] = {
             active: true,
-            callback: callback
+            callback: callback,
+            lifecycle: lifecycle
         }
         root.moduleEventSubscriptions = next
     }
 
+    function deactivateModuleEventCallbacks() {
+        const subscriptions = root.moduleEventSubscriptions || {}
+        for (const key in subscriptions) {
+            const subscription = subscriptions[key]
+            if (subscription && subscription.lifecycle) {
+                subscription.lifecycle.owner = null
+            }
+        }
+    }
+
     function finishAsyncCall(requestId, response, expectedHostEpoch) {
+        if (root.closed) {
+            return
+        }
         const pending = root.copyPendingCalls()
         const entry = pending[requestId]
         if (!entry
@@ -653,6 +847,7 @@ QtObject {
         }
         delete pending[requestId]
         root.pendingCalls = pending
+        root.detachRequestLifecycle(entry)
         if (typeof entry.callback === "function") {
             entry.callback(response)
         }
@@ -668,8 +863,17 @@ QtObject {
                     && entry.route === "basecamp_poll"
                     && entry.backendToken
                     && entry.backendToken.length) {
-                root.abandonBasecampToken(entry.host, entry.backendToken)
+                root.markBasecampRequestTokenSettled(
+                    entry.requestLifecycle,
+                    entry.backendToken
+                )
+                if (root.closed) {
+                    root.abandonBasecampTokenAfterShutdown(entry.host, entry.backendToken)
+                } else {
+                    root.abandonBasecampToken(entry.host, entry.backendToken)
+                }
             }
+            root.detachRequestLifecycle(entry)
             if (entry && typeof entry.callback === "function") {
                 try {
                     entry.callback(response)
@@ -694,27 +898,69 @@ QtObject {
         return copy
     }
 
+    function closedResponse() {
+        return {
+            ok: false,
+            value: null,
+            text: "",
+            error: "Logos bridge call failed: client_shutdown"
+        }
+    }
+
+    function notifyCallback(callback, response) {
+        if (typeof callback !== "function") {
+            return
+        }
+        try {
+            callback(response)
+        } catch (error) {
+            root.callbackFailed(error && error.message ? error.message : String(error))
+        }
+    }
+
+    function shutdown() {
+        if (root.closed) {
+            return false
+        }
+        root.closed = true
+        root.hostEpoch += 1
+        root.basecampPollTimer.stop()
+        root.deactivateModuleEventCallbacks()
+        root.moduleEventSubscriptions = ({})
+        root.moduleEventRegistrations = []
+        root.failPendingCalls(root.closedResponse())
+        return true
+    }
+
     property Connections hostConnections: Connections {
-        target: root.host
+        target: root.closed ? null : root.host
         ignoreUnknownSignals: true
 
         function onModuleCallFinished(requestId, responseJson) {
-            root.finishAsyncCall(requestId, BridgeEnvelope.parseResponseJson(responseJson))
+            if (!root.closed) {
+                root.finishAsyncCall(requestId, BridgeEnvelope.parseResponseJson(responseJson))
+            }
         }
 
         function onModuleEvent(moduleName, eventName, args) {
-            root.moduleEventReceived(String(moduleName || ""), String(eventName || ""), args)
+            if (!root.closed) {
+                root.moduleEventReceived(String(moduleName || ""), String(eventName || ""), args)
+            }
         }
 
         function onModuleEventReceived(moduleName, eventName, args) {
-            root.moduleEventReceived(String(moduleName || ""), String(eventName || ""), args)
+            if (!root.closed) {
+                root.moduleEventReceived(String(moduleName || ""), String(eventName || ""), args)
+            }
         }
     }
 
     property Timer basecampPollTimer: Timer {
         interval: Math.max(1, root.basecampAsyncPollIntervalMs)
         repeat: true
-        running: root.hasBasecampPollingCalls()
+        running: !root.closed && root.hasBasecampPollingCalls()
         onTriggered: root.pollBasecampCalls()
     }
+
+    Component.onDestruction: root.shutdown()
 }

@@ -1,11 +1,12 @@
 pub mod bridge {
-    pub use crate::inspector::bridge::InspectorBridge;
+    pub use crate::inspector::bridge::{InspectorBridge, InspectorBridgeCloseHandle};
 }
 
 pub mod module_transport {
     pub use crate::modules::logos_core::{
-        ModuleCall, ModuleCallFuture, ModuleCallReply, ModuleDiagnosticFuture, ModuleTransport,
-        ModuleTransportKind, SharedModuleTransport,
+        ModuleCall, ModuleCallControl, ModuleCallFuture, ModuleCallReply, ModuleCallStopReason,
+        ModuleCallTerminated, ModuleCallTerminationEvidence, ModuleDiagnosticFuture,
+        ModuleTransport, ModuleTransportClosed, ModuleTransportKind, SharedModuleTransport,
     };
 }
 
