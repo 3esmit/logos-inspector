@@ -1,5 +1,4 @@
 import QtQml
-import "../source_operations/NodeOperationRequest.js" as NodeOperationRequest
 import "../settings/SettingsProfile.js" as SettingsProfile
 
 QtObject {
@@ -141,16 +140,41 @@ QtObject {
         })
     }
 
-    function uploadBackupCatalogEntry(backupCatalogId) {
+    function uploadBackupCatalogEntry(backupCatalogId, onComplete) {
         if (!model.settingsBackupAvailable()) {
             model.settingsBackupStatus = qsTr("Storage upload capability is required.")
-            return null
+            return false
         }
-        return catalog.uploadLocal(backupCatalogId, NodeOperationRequest.envelope(
-            model.sourceRouting.storageOperationAdapter(),
-            {},
-            model.storageMutatingDiagnosticsEnabled === true
-        ))
+        let completed = false
+        const admitted = catalog.uploadLocal(backupCatalogId, function (response) {
+            completed = true
+            if (typeof onComplete === "function") {
+                onComplete(response)
+                return
+            }
+            applyBackupUploadResponse(response)
+        })
+        if (admitted && !completed && typeof onComplete !== "function") {
+            model.settingsBackupStatus = qsTr("Backup upload started.")
+        }
+        return admitted
+    }
+
+    function applyBackupUploadResponse(response) {
+        if (!response || response.ok !== true) {
+            model.settingsBackupStatus = String(response && response.error
+                || backupCatalogError || qsTr("Backup upload failed."))
+            return false
+        }
+        const cid = String(response.value && response.value.cid || "").trim()
+        if (!cid.length) {
+            model.settingsBackupStatus = qsTr("Backup upload returned no CID.")
+            return false
+        }
+        model.settingsBackupCid = cid
+        model.settingsRestoreCid = cid
+        model.settingsBackupStatus = qsTr("Backup uploaded as %1.").arg(cid)
+        return true
     }
 
     function backupCatalogRows() {

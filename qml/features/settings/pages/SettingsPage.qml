@@ -433,6 +433,7 @@ ColumnLayout {
                         theme: settingsRoot.theme
                         text: qsTr("Upload")
                         enabled: !settingsRoot.model.shell.busy
+                            && !settingsRoot.model.backupCatalogUploadRunning
                             && settingsRoot.model.settingsBackupAvailable()
                             && settingsRoot.model.backupContentsSelected(settingsRoot.model.settingsBackupContents)
                             && (!settingsRoot.model.settingsBackupEncrypted || settingsRoot.model.walletHomeConfigured())
@@ -469,7 +470,10 @@ ColumnLayout {
                 StatusMessage {
                     visible: settingsRoot.model.settingsBackupStatus.length > 0
                     theme: settingsRoot.theme
-                    tone: settingsRoot.model.shell.resultIsError && settingsRoot.model.shell.resultOwner === settingsRoot.model.shell.currentView ? "error" : "info"
+                    tone: settingsRoot.model.backupCatalogError.length > 0
+                        || (settingsRoot.model.shell.resultIsError
+                            && settingsRoot.model.shell.resultOwner === settingsRoot.model.shell.currentView)
+                        ? "error" : "info"
                     title: qsTr("Backup status")
                     message: settingsRoot.model.settingsBackupStatus
                     Layout.fillWidth: true
@@ -531,15 +535,12 @@ ColumnLayout {
                             ActionButton {
                                 theme: settingsRoot.theme
                                 text: qsTr("Upload")
-                                enabled: !settingsRoot.model.shell.busy && settingsRoot.model.settingsBackupAvailable()
+                                enabled: !settingsRoot.model.shell.busy
+                                    && !settingsRoot.model.backupCatalogUploadRunning
+                                    && settingsRoot.model.settingsBackupAvailable()
                                 Layout.preferredWidth: 88
-                                onClicked: {
-                                    const result = settingsRoot.model.backupImport.uploadBackupCatalogEntry(
-                                        String(backupCatalogRow.modelData.backup_catalog_id || ""))
-                                    settingsRoot.model.settingsBackupStatus = result && result.cid
-                                        ? qsTr("Backup uploaded as %1.").arg(result.cid)
-                                        : settingsRoot.model.backupImport.backupCatalogError
-                                }
+                                onClicked: settingsRoot.model.backupImport.uploadBackupCatalogEntry(
+                                    String(backupCatalogRow.modelData.backup_catalog_id || ""))
                             }
                         }
                     }

@@ -23,6 +23,11 @@ function storagePayload(method, args) {
             path: String(values[0] || ""),
             block_size: Number(values[1] || 65536)
         }
+    case "storageUploadBackupCatalogEntry":
+        return {
+            backup_catalog_id: String(values[0] || ""),
+            block_size: Number(values[1] || 65536)
+        }
     case "storageDownloadToUrl":
         return {
             cid: String(values[0] || ""),

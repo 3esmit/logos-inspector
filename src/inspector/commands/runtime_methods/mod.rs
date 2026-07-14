@@ -171,9 +171,15 @@ mod tests {
     }
 
     #[test]
-    fn remote_settings_backup_upload_uses_catalog_method_only() {
+    fn remote_settings_backup_upload_is_owned_by_runtime_operations() {
         assert!(lookup("storageBackupSettings").is_none());
-        assert!(lookup("storageUploadBackupCatalogEntry").is_some());
+        assert!(lookup("storageUploadBackupCatalogEntry").is_none());
+        assert!(
+            crate::inspector::commands::operations::operation_bridge_command(
+                "storageUploadBackupCatalogEntry"
+            )
+            .is_some()
+        );
     }
 
     #[test]

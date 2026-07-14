@@ -74,19 +74,38 @@ function backupSettingsToStorage(root, encrypted, contents) {
             settingsBackupStatus = root.backupCatalogError.length ? root.backupCatalogError : qsTr("Local backup failed.")
             return false
         }
-        const upload = root.backupImport.uploadBackupCatalogEntry(entry.backup_catalog_id)
-        if (!upload) {
+        let uploadCompleted = false
+        const admitted = root.backupImport.uploadBackupCatalogEntry(
+            entry.backup_catalog_id,
+            function (response) {
+                uploadCompleted = true
+                if (!response || response.ok !== true) {
+                    root.settingsBackupStatus = root.backupCatalogError.length
+                        ? qsTr("Local backup created. Storage upload failed: %1").arg(root.backupCatalogError)
+                        : String(response && response.error || qsTr("Local backup created. Storage upload failed."))
+                    return
+                }
+                const cid = String(response.value && response.value.cid || "").trim()
+                if (!cid.length) {
+                    root.settingsBackupStatus = qsTr("Local backup created. Storage upload returned no CID.")
+                    return
+                }
+                root.settingsBackupCid = cid
+                root.settingsRestoreCid = cid
+                root.settingsBackupStatus = root.settingsBackupEncrypted
+                    ? qsTr("Encrypted backup stored as %1.").arg(cid)
+                    : qsTr("Backup stored as %1.").arg(cid)
+            }
+        )
+        if (!admitted) {
             settingsBackupStatus = root.backupCatalogError.length
                 ? qsTr("Local backup created. Storage upload failed: %1").arg(root.backupCatalogError)
                 : qsTr("Local backup created. Storage upload failed.")
             return false
         }
-        const cid = String(upload && upload.cid ? upload.cid : "")
-        settingsBackupCid = cid
-        settingsRestoreCid = cid
-        settingsBackupStatus = settingsBackupEncrypted
-            ? qsTr("Encrypted backup stored as %1.").arg(cid)
-            : qsTr("Backup stored as %1.").arg(cid)
+        if (!uploadCompleted) {
+            settingsBackupStatus = qsTr("Local backup created. Storage upload started.")
+        }
         return true
     }
 }

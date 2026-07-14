@@ -34,6 +34,17 @@ TestCase {
     }
 
     QtObject {
+        id: backupCatalogState
+
+        property int polls: 0
+
+        function pollUpload() {
+            polls += 1
+            return polls
+        }
+    }
+
+    QtObject {
         id: socialState
 
         property bool storeQueriesRunning: false
@@ -76,7 +87,9 @@ TestCase {
             property string currentView: "overview"
         }
         property bool blocksLiveEnabled: false
+        property bool backupCatalogUploadRunning: false
         property QtObject storageApp: storageState
+        property QtObject backupCatalog: backupCatalogState
         property QtObject deliveryApp: deliveryState
         property QtObject social: socialState
         property QtObject zoneInspection: zoneState
@@ -121,11 +134,13 @@ TestCase {
         fakeModel.storageRefreshRate = 0
         fakeModel.shell.currentView = "overview"
         fakeModel.blocksLiveEnabled = false
+        fakeModel.backupCatalogUploadRunning = false
         fakeModel.queriedKinds = []
         fakeModel.dashboardCalls = 0
         fakeModel.liveCalls = 0
         storageState.running = false
         storageState.polls = 0
+        backupCatalogState.polls = 0
         deliveryState.running = false
         deliveryState.polls = 0
         socialState.storeQueriesRunning = false
@@ -140,6 +155,7 @@ TestCase {
         scheduler.tick("blockchain")
         scheduler.tick("dashboard")
         storageState.running = true
+        fakeModel.backupCatalogUploadRunning = true
         deliveryState.running = true
         socialState.storeQueriesRunning = true
         scheduler.tick("storageOperation")
@@ -150,6 +166,7 @@ TestCase {
         compare(fakeModel.queriedKinds[0], "blockchain")
         compare(fakeModel.dashboardCalls, 1)
         compare(storageState.polls, 1)
+        compare(backupCatalogState.polls, 1)
         compare(deliveryState.polls, 1)
         compare(socialState.polls, 1)
         compare(fakeModel.liveCalls, 1)
@@ -160,6 +177,9 @@ TestCase {
         verify(!scheduler.enabled("indexer"))
         verify(!scheduler.enabled("storageOperation"))
         storageState.running = true
+        verify(scheduler.enabled("storageOperation"))
+        storageState.running = false
+        fakeModel.backupCatalogUploadRunning = true
         verify(scheduler.enabled("storageOperation"))
         verify(!scheduler.enabled("socialStoreQuery"))
         socialState.storeQueriesRunning = true

@@ -7,6 +7,8 @@ TestCase {
 
     function test_storage_commands_map_methods_to_actions_and_inputs() {
         const upload = SourceOperationCommandCatalog.storageCommand("storageUploadUrl", ["/tmp/file.bin"])
+        const backupUpload = SourceOperationCommandCatalog.storageCommand(
+            "storageUploadBackupCatalogEntry", ["backup-1"])
         const exists = SourceOperationCommandCatalog.storageCommand("storageExists", ["cid"])
 
         compare(upload.action, "upload")
@@ -14,6 +16,12 @@ TestCase {
         compare(upload.requiredInputs[0].key, "path")
         compare(upload.requiredInputs[0].value, "/tmp/file.bin")
         verify(upload.runtime)
+
+        compare(backupUpload.action, "backup_upload")
+        compare(backupUpload.requiredInputs.length, 1)
+        compare(backupUpload.requiredInputs[0].key, "backup_catalog_id")
+        compare(backupUpload.requiredInputs[0].value, "backup-1")
+        verify(backupUpload.runtime)
 
         compare(exists.action, "exists")
         compare(exists.requiredInputs[0].key, "cid")

@@ -245,6 +245,7 @@ mod tests {
             AffectedContextKey::Endpoint,
             AffectedContextKey::Cid,
             AffectedContextKey::Path,
+            AffectedContextKey::BackupCatalogId,
         ] {
             let result =
                 affected_inputs(&request, &json!({}), &[AffectedContextField::required(key)]);

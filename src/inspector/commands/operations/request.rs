@@ -322,6 +322,35 @@ mod tests {
     }
 
     #[test]
+    fn backup_catalog_upload_context_keeps_catalog_identity() -> Result<()> {
+        let request = runtime_operation_request_from_value(json!({
+            "domain": "storage",
+            "method": "storageUploadBackupCatalogEntry",
+            "adapter": {
+                "source_mode": "rest",
+                "inputs": { "rest_endpoint": "http://storage.local/api" }
+            },
+            "mutating_enabled": true,
+            "payload": {
+                "backup_catalog_id": "backup-1",
+                "block_size": 65536
+            }
+        }))?;
+
+        if runtime_operation_context(&request)?
+            != json!({
+                "endpoint": "http://storage.local/api",
+                "source": "rest",
+                "mutatingEnabled": true,
+                "backupCatalogId": "backup-1"
+            })
+        {
+            bail!("unexpected backup catalog upload context");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn runtime_operation_context_keeps_delivery_context_typed() -> Result<()> {
         let request = runtime_operation_request_from_value(json!({
             "domain": "delivery",

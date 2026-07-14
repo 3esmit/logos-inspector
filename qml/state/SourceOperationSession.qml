@@ -14,6 +14,7 @@ QtObject {
     property string defaultLabel: qsTr("Runtime operation")
     property string busyError: qsTr("A runtime operation is already running.")
     property var terminalDetailProvider: null
+    property var operationValidator: null
 
     property string pendingMethod: ""
     property string pendingLabel: ""
@@ -141,7 +142,7 @@ QtObject {
     function poll(showResult, onResponse) {
         const operation = activeOperation || null
         const operationId = String(operation && operation.operationId || "")
-        if (!operationId.length || pollPending) {
+        if (!operationId.length || startPending || !view.running || pollPending) {
             return null
         }
         nextPollToken += 1
@@ -270,6 +271,9 @@ QtObject {
 
     function acceptUpdate(value) {
         const operation = value || null
+        if (!acceptsOperation(operation)) {
+            return false
+        }
         const operationId = String(operation && operation.operationId || "")
         if (!operationId.length) {
             return false
@@ -312,6 +316,9 @@ QtObject {
     }
 
     function rememberPendingStartOperation(operation) {
+        if (!acceptsOperation(operation)) {
+            return false
+        }
         const operationId = String(operation && operation.operationId || "")
         if (!operationId.length) {
             return false
@@ -331,6 +338,11 @@ QtObject {
         next[operationId] = operation
         pendingStartOperations = next
         return true
+    }
+
+    function acceptsOperation(operation) {
+        return typeof operationValidator !== "function"
+            || operationValidator(operation) === true
     }
 
     function reconcileStartOperation(operation) {

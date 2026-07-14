@@ -475,6 +475,39 @@ mod tests {
     }
 
     #[test]
+    fn handle_operation_command_keeps_backup_upload_on_blocking_compatibility_route() -> Result<()>
+    {
+        let runner = FakeRunner::default();
+        let args = json!([{
+            "adapter": { "source_mode": "logoscore_cli", "inputs": {} },
+            "mutating_enabled": true,
+            "payload": {
+                "backup_catalog_id": "backup-1",
+                "block_size": 65536
+            }
+        }]);
+
+        let command = operation_bridge_command("storageUploadBackupCatalogEntry")
+            .context("backup upload operation command")?;
+        let value = handle_operation_command(&runner, command, &args)?;
+
+        if value != json!({ "operation": "storageUploadBackupCatalogEntry" }) {
+            bail!("unexpected response: {value:?}");
+        }
+        if runner.calls()
+            != vec![RunnerCall::RunOperation {
+                domain: "storage".to_owned(),
+                method: "storageUploadBackupCatalogEntry".to_owned(),
+                args,
+                label: "Backup upload".to_owned(),
+            }]
+        {
+            bail!("unexpected runner calls");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn handle_operation_command_routes_storage_cancel_alias() -> Result<()> {
         let runner = FakeRunner::default();
 
