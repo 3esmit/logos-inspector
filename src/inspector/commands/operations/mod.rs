@@ -12,7 +12,7 @@ use serde_json::Value;
 use tokio::runtime::Runtime;
 
 use crate::{
-    modules::logos_core::{LogoscoreCliTransport, SharedModuleTransport},
+    modules::logos_core::{LogoscoreCliTransport, ModuleTransportKind, SharedModuleTransport},
     source_routing::ModuleEventEnvelope,
     support::time::now_millis,
 };
@@ -163,10 +163,14 @@ impl RuntimeOperations {
         args: Value,
         label: &str,
     ) -> Result<Value> {
-        let operation = self.start(
-            runtime,
-            RuntimeOperationRequest::from_call(method, args, label)?,
-        )?;
+        let request = RuntimeOperationRequest::from_call(method, args, label)?;
+        if request.requested_module_transport()? == Some(ModuleTransportKind::Module) {
+            bail!(
+                "host-backed operation `{}` requires `runtimeOperationStart`",
+                request.method_name()
+            );
+        }
+        let operation = self.start(runtime, request)?;
         let operation_id = operation
             .get("operationId")
             .and_then(Value::as_str)
