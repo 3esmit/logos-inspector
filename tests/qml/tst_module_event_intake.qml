@@ -57,6 +57,9 @@ TestCase {
 
         property var subscriptions: []
         property var calls: []
+        property var asyncResponses: ({})
+        property int nextAsyncToken: 1
+        property string asyncBridgeSchemaResponse: "logos-inspector-async-bridge/v1"
         property bool logosInspectorOwnsRuntimeModuleEvents: true
 
         function onModuleEvent(moduleName, eventName) {
@@ -68,6 +71,10 @@ TestCase {
         }
 
         function callModule(moduleName, method, args) {
+            if (String(moduleName || "") === "logos_inspector"
+                    && String(method || "") === "asyncBridgeSchema") {
+                return JSON.stringify(asyncBridgeSchemaResponse)
+            }
             calls = calls.concat([{
                 moduleName: String(moduleName || ""),
                 method: String(method || ""),
@@ -82,7 +89,62 @@ TestCase {
                 method: String(method || ""),
                 args: args || []
             }])
-            callback(JSON.stringify({ ok: true, value: {}, text: "OK", error: "" }))
+            if (method === "callAsync") {
+                const token = "event-token-" + nextAsyncToken
+                nextAsyncToken += 1
+                const inspectorMethod = String(args[1] || "")
+                const inspectorArgs = JSON.parse(String(args[2] || "[]"))
+                calls = calls.concat([{
+                    moduleName: "logos_inspector",
+                    method: inspectorMethod,
+                    args: inspectorArgs
+                }])
+                const responses = Object.assign({}, asyncResponses)
+                responses[token] = JSON.stringify({
+                    ok: true,
+                    value: {},
+                    text: "OK",
+                    error: ""
+                })
+                asyncResponses = responses
+                callback(JSON.stringify(JSON.stringify({
+                    ok: true,
+                    value: {
+                        schema: "logos-inspector-async-bridge/v1",
+                        correlationId: String(args[0] || ""),
+                        token: token
+                    },
+                    text: "",
+                    error: ""
+                })))
+                return
+            }
+            if (method === "pollAsync") {
+                const token = String(args[0] || "")
+                callback(JSON.stringify(JSON.stringify({
+                    ok: true,
+                    value: {
+                        schema: "logos-inspector-async-bridge/v1",
+                        token: token,
+                        status: "ready",
+                        responseJson: asyncResponses[token]
+                    },
+                    text: "",
+                    error: ""
+                })))
+                return
+            }
+            if (method === "releaseAsync") {
+                const responses = Object.assign({}, asyncResponses)
+                delete responses[String(args[0] || "")]
+                asyncResponses = responses
+            }
+            callback(JSON.stringify(JSON.stringify({
+                ok: true,
+                value: {},
+                text: "",
+                error: ""
+            })))
         }
     }
 
@@ -125,6 +187,9 @@ TestCase {
         fakeHost.calls = []
         basecampHost.subscriptions = []
         basecampHost.calls = []
+        basecampHost.asyncResponses = ({})
+        basecampHost.nextAsyncToken = 1
+        basecampHost.asyncBridgeSchemaResponse = "logos-inspector-async-bridge/v1"
         basecampHost.logosInspectorOwnsRuntimeModuleEvents = true
         replacementHost.subscriptions = []
         bridge.moduleEventSubscriptions = ({})

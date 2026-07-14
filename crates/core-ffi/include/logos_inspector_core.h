@@ -80,25 +80,42 @@ LogosInspectorCore* logos_inspector_core_new_with_host_transport(
     const LogosInspectorHostTransportV1* transport);
 
 /*
- * Close is idempotent and may race asynchronous call/cancel entry points.
- * Do not call close or free reentrantly from a core reply or host transport
- * callback. Free must not race any ABI call or callback and invokes close
- * before releasing the handle. A core reply callback already selected by a
- * concurrent cancel may still be running after close returns; join that call
- * before free.
+ * Close is idempotent and may race asynchronous call/cancel entry points and
+ * logos_inspector_core_call on a host-transport handle. The allocation must
+ * remain live until every racing call and close has returned. Do not call
+ * close or free reentrantly from a core reply or host transport callback.
+ * Free must not race any ABI call or callback and invokes close before
+ * releasing the handle. The caller must join every racing call and close
+ * before invoking free. A core reply callback already selected by a concurrent
+ * cancel may still be running after close returns; join that call before free.
  */
 void logos_inspector_core_close(LogosInspectorCore* handle);
 void logos_inspector_core_free(LogosInspectorCore* handle);
 
 /*
- * Handles created with host transport reject these synchronous entry points
- * with an async-required error and never invoke host dispatch.
+ * Handles created with host transport accept this entry point only for
+ * explicitly catalogued synchronous logos_inspector methods. Accepted calls
+ * copy their inputs, enter the same bounded worker and bridge instance as
+ * asynchronous calls, and block until that worker returns the response. They
+ * never invoke host dispatch. Operation commands, Tokio- or
+ * module-transport-backed runtime methods, Zone Catalog/L2 commands,
+ * callModule, and unknown methods return an async-required error before
+ * enqueue. A full worker queue returns a backpressure error. Closing handles
+ * return a closed error. This call may race close while the allocation remains
+ * live; join both calls before free.
+ *
+ * A call made reentrantly on the bridge worker from a core or host callback
+ * returns a reentrant-call error instead of blocking that worker.
  */
 char* logos_inspector_core_call(
     LogosInspectorCore* handle,
     const char* method,
     const char* args_json);
 
+/*
+ * Handles created with host transport reject every synchronous module call
+ * with an async-required error and never invoke host dispatch.
+ */
 char* logos_inspector_core_call_module(
     LogosInspectorCore* handle,
     const char* module,

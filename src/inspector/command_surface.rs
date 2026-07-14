@@ -105,6 +105,20 @@ impl InspectorCommandSurface {
         self.operations.ingest_module_event(module, event, args)
     }
 
+    pub(crate) fn allows_host_synchronous_call(method: &str) -> bool {
+        match inspector_command(method) {
+            Some(InspectorCommand::Runtime(entry)) => entry.allows_host_synchronous_call(),
+            Some(InspectorCommand::CapabilityRegistry) => true,
+            Some(
+                InspectorCommand::Operation(_)
+                | InspectorCommand::ZoneCatalog(_)
+                | InspectorCommand::ZoneL2(_)
+                | InspectorCommand::CallModule,
+            )
+            | None => false,
+        }
+    }
+
     fn dispatch_inspector(&self, method: &str, args: Value) -> Result<Option<Value>> {
         let Some(command) = inspector_command(method) else {
             return Ok(None);
@@ -370,5 +384,42 @@ mod tests {
             bail!("Zone L2 read entered runtime operation history");
         }
         Ok(())
+    }
+
+    #[test]
+    fn host_synchronous_policy_excludes_async_required_commands() {
+        assert!(InspectorCommandSurface::allows_host_synchronous_call(
+            "sourcePolicy"
+        ));
+        assert!(InspectorCommandSurface::allows_host_synchronous_call(
+            "decodeAccount"
+        ));
+        assert!(InspectorCommandSurface::allows_host_synchronous_call(
+            "loadIdlState"
+        ));
+        assert!(InspectorCommandSurface::allows_host_synchronous_call(
+            "capabilityRegistryReport"
+        ));
+        assert!(!InspectorCommandSurface::allows_host_synchronous_call(
+            "rawRpc"
+        ));
+        assert!(!InspectorCommandSurface::allows_host_synchronous_call(
+            "runtimeOperationStatus"
+        ));
+        assert!(!InspectorCommandSurface::allows_host_synchronous_call(
+            "modules"
+        ));
+        assert!(!InspectorCommandSurface::allows_host_synchronous_call(
+            "zoneCatalogStatus"
+        ));
+        assert!(!InspectorCommandSurface::allows_host_synchronous_call(
+            "zoneL2Programs"
+        ));
+        assert!(!InspectorCommandSurface::allows_host_synchronous_call(
+            "callModule"
+        ));
+        assert!(!InspectorCommandSurface::allows_host_synchronous_call(
+            "missingMethod"
+        ));
     }
 }

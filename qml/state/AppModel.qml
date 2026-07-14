@@ -60,10 +60,12 @@ QtObject {
         sourceDescriptor: root.zoneCatalogL1SourceDescriptor()
         gateway: QtObject {
             function request(method, args, callback) {
-                return root.bridge.callModuleAsync(
+                return root.requestModuleAsync(
                     root.inspectorModule,
                     method,
                     Array.isArray(args) ? args : [],
+                    "",
+                    false,
                     callback
                 )
             }
@@ -96,6 +98,7 @@ QtObject {
             return root.updateNetworkConnectionStatusForMethod(method, response)
         }
     }
+    readonly property bool asyncPresentationBusy: appRequestState.presentationBusy
     property Domains.NetworkInspectionState chainPages: Domains.NetworkInspectionState {
         id: chainPageState
 
@@ -863,6 +866,8 @@ QtObject {
     function pageHasOutput(view) { return appShellState.pageHasOutput(view) }
 
     function callInspector(method, args, label) { return appRequestState.callInspector(method, args, label) }
+
+    function callInspectorAsync(method, args, label, callback, acceptResponse) { return appRequestState.callInspectorAsync(method, args, label, callback, acceptResponse) }
 
     function callModule(moduleName, method, args, label) { return appRequestState.callModule(moduleName, method, args, label) }
 
