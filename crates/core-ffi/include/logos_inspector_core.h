@@ -58,11 +58,12 @@ LogosInspectorCore* logos_inspector_core_new(void);
  * and uncorrelated.
  * Dispatch borrows its strings only for the call; queued hosts must copy them.
  *
- * Returning 1 accepts a request and requires exactly one reply carrying the
- * same module_request_id. Returning 0 rejects it and forbids a reply. The
- * reply context is borrowed, must be passed back unchanged, and is valid until
- * host close returns. After optional cancel is invoked, the host may suppress
- * its reply or deliver at most one late reply; either outcome is safe.
+ * Returning 1 accepts a request. Unless cancel is invoked or host close begins,
+ * the host must issue exactly one reply carrying the same module_request_id.
+ * Returning 0 rejects it and forbids a reply. The reply context is borrowed,
+ * must be passed back unchanged, and is valid until host close returns. After
+ * cancel or close begins, the host may suppress its reply or deliver at most
+ * one late reply; either outcome is safe.
  *
  * Reply callbacks may run on any thread and may overlap dispatch, cancel, and
  * host close. Before host close returns, every in-progress reply callback must
@@ -78,7 +79,9 @@ LogosInspectorCore* logos_inspector_core_new_with_host_transport(
  * Close is idempotent and may race asynchronous call/cancel entry points.
  * Do not call close or free reentrantly from a core reply or host transport
  * callback. Free must not race any ABI call or callback and invokes close
- * before releasing the handle.
+ * before releasing the handle. A core reply callback already selected by a
+ * concurrent cancel may still be running after close returns; join that call
+ * before free.
  */
 void logos_inspector_core_close(LogosInspectorCore* handle);
 void logos_inspector_core_free(LogosInspectorCore* handle);
