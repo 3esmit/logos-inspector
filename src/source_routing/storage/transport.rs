@@ -1,7 +1,8 @@
 use std::{
     collections::HashSet,
-    fmt,
-    path::Path,
+    fmt, fs,
+    io::Read as _,
+    path::{Path, PathBuf},
     sync::{Mutex, MutexGuard, OnceLock, TryLockError},
     time::{Duration, Instant},
 };
@@ -14,7 +15,10 @@ use tokio_util::io::ReaderStream;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    modules::logos_core::{ModuleTransportKind, SharedModuleTransport},
+    modules::logos_core::{
+        BoxedModuleEventSubscription, ModuleCallTerminationEvidence, ModuleTransportEvent,
+        ModuleTransportKind, SharedModuleTransport,
+    },
     source_routing::shared::{http, module_bridge},
     source_routing::{ModuleDispatchIdentityRole, ModuleDispatchReceipt},
     support::{
@@ -41,6 +45,8 @@ const MAX_UNRELATED_DOWNLOAD_EVENTS: usize = 64;
 const STORAGE_DOWNLOAD_PROTOCOL: &str = "logos.storage.download";
 const STORAGE_DOWNLOAD_PROTOCOL_VERSION: u64 = 2;
 const STORAGE_DOWNLOAD_PROTOCOL_METHOD: &str = "downloadProtocol";
+const STORAGE_MODULE_METHODS_METHOD: &str = "getPluginMethods";
+const STORAGE_MODULE_EVENTS_METHOD: &str = "getPluginEvents";
 const STORAGE_DOWNLOAD_METHOD: &str = "downloadToUrlV2";
 const STORAGE_DOWNLOAD_METHOD_SIGNATURE: &str =
     "downloadToUrlV2(QString,QString,bool,int,QString,int)";
@@ -179,6 +185,86 @@ struct DownloadProtocolContract {
     cancel_timeout_ms: u64,
     #[serde(rename = "maxDownloadBytes")]
     max_download_bytes: u64,
+}
+
+struct HostSharedDownload {
+    directory: tempfile::TempDir,
+    path: PathBuf,
+}
+
+impl HostSharedDownload {
+    fn new(filename: &str) -> Result<Self> {
+        let safe_filename = Path::new(filename)
+            .file_name()
+            .and_then(|value| value.to_str())
+            .filter(|value| !value.is_empty() && *value == filename)
+            .context("host download filename is invalid")?;
+        let directory = tempfile::Builder::new()
+            .prefix("logos-inspector-host-download-")
+            .tempdir()
+            .context("failed to create host download workspace")?;
+        let path = directory.path().join(safe_filename);
+        fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .context("failed to create host download staging file")?;
+        Ok(Self { directory, path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn read_path_bounded(path: &Path, max_bytes: usize) -> Result<Vec<u8>> {
+        let metadata = fs::symlink_metadata(path).with_context(|| {
+            format!(
+                "failed to inspect host download staging file `{}`",
+                path.display()
+            )
+        })?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            bail!("host download staging path is not a regular file");
+        }
+        let max_bytes_u64 =
+            u64::try_from(max_bytes).context("storage download byte limit is too large")?;
+        if metadata.len() > max_bytes_u64 {
+            bail!("host download exceeded {max_bytes} byte limit");
+        }
+        let capacity = usize::try_from(metadata.len())
+            .context("host download length does not fit in memory")?;
+        let mut bytes = Vec::with_capacity(capacity);
+        fs::File::open(path)
+            .with_context(|| {
+                format!(
+                    "failed to open host download staging file `{}`",
+                    path.display()
+                )
+            })?
+            .take(max_bytes_u64.saturating_add(1))
+            .read_to_end(&mut bytes)
+            .with_context(|| {
+                format!(
+                    "failed to read host download staging file `{}`",
+                    path.display()
+                )
+            })?;
+        if bytes.len() > max_bytes {
+            bail!("host download exceeded {max_bytes} byte limit");
+        }
+        Ok(bytes)
+    }
+
+    fn close(self) -> Result<()> {
+        let path = self.directory.path().to_path_buf();
+        self.directory.close().with_context(|| {
+            format!(
+                "failed to remove host download workspace `{}`",
+                path.display()
+            )
+        })
+    }
 }
 
 pub(super) async fn module_call(
@@ -462,6 +548,371 @@ fn new_manifest_cid(
             && !baseline_cids.contains(cid))
         .then(|| cid.to_owned())
     })
+}
+
+pub(super) async fn host_module_download_backup_bytes_controlled(
+    transport: &SharedModuleTransport,
+    cleanup_transport: &SharedModuleTransport,
+    cid: &str,
+    local_only: bool,
+    max_bytes: usize,
+    control: CommandControl,
+) -> Result<Vec<u8>> {
+    anyhow::ensure!(
+        transport.kind() == ModuleTransportKind::Module
+            && cleanup_transport.kind() == ModuleTransportKind::Module,
+        "Basecamp backup download requires the host module transport"
+    );
+    anyhow::ensure!(
+        max_bytes > 0,
+        "storage download byte limit must be positive"
+    );
+    anyhow::ensure!(
+        transport.supports_shared_file_staging(),
+        "Basecamp host transport does not provide shared file staging"
+    );
+    control.check_active()?;
+
+    let methods = module_call(
+        transport,
+        ModuleTransportKind::Module,
+        STORAGE_MODULE_METHODS_METHOD,
+        Vec::new(),
+    )
+    .await
+    .context("failed to inspect Basecamp Storage module methods")?;
+    let events = module_call(
+        transport,
+        ModuleTransportKind::Module,
+        STORAGE_MODULE_EVENTS_METHOD,
+        Vec::new(),
+    )
+    .await
+    .context("failed to inspect Basecamp Storage module events")?;
+    validate_storage_download_interface(&methods, &events)?;
+
+    let protocol = module_call(
+        transport,
+        ModuleTransportKind::Module,
+        STORAGE_DOWNLOAD_PROTOCOL_METHOD,
+        Vec::new(),
+    )
+    .await
+    .context("failed to read Basecamp Storage download protocol")?;
+    validate_storage_download_protocol(&protocol, max_bytes)?;
+    control.check_active()?;
+
+    let staged = HostSharedDownload::new(BACKUP_DOWNLOAD_FILENAME)?;
+    let result = execute_staged_host_backup_download(
+        transport,
+        cleanup_transport,
+        cid,
+        local_only,
+        max_bytes,
+        control,
+        &staged,
+    )
+    .await;
+    let cleanup = staged.close();
+    combine_host_download_cleanup(result, cleanup)
+}
+
+fn validate_storage_download_interface(methods: &Value, events: &Value) -> Result<()> {
+    let methods = methods
+        .as_array()
+        .context("Storage module method metadata is not an array")?;
+    let events = events
+        .as_array()
+        .context("Storage module event metadata is not an array")?;
+    for (name, signature) in [
+        (STORAGE_DOWNLOAD_PROTOCOL_METHOD, "downloadProtocol()"),
+        (STORAGE_DOWNLOAD_METHOD, STORAGE_DOWNLOAD_METHOD_SIGNATURE),
+        (STORAGE_DOWNLOAD_CANCEL_METHOD, "downloadCancelV2(QString)"),
+    ] {
+        anyhow::ensure!(
+            methods.iter().any(|method| {
+                method.get("name").and_then(Value::as_str) == Some(name)
+                    && method.get("signature").and_then(Value::as_str) == Some(signature)
+                    && method.get("isInvokable").and_then(Value::as_bool) == Some(true)
+                    && method
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .is_none_or(|kind| kind == "method")
+            }),
+            "Storage module does not expose exact method `{signature}`"
+        );
+    }
+    anyhow::ensure!(
+        events.iter().any(|event| {
+            event.get("name").and_then(Value::as_str) == Some(STORAGE_DOWNLOAD_DONE_EVENT)
+                && event.get("signature").and_then(Value::as_str)
+                    == Some("storageDownloadDoneV2(QString)")
+                && event
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .is_none_or(|kind| kind == "event")
+        }),
+        "Storage module does not expose exact event `storageDownloadDoneV2(QString)`"
+    );
+    Ok(())
+}
+
+async fn execute_staged_host_backup_download(
+    transport: &SharedModuleTransport,
+    cleanup_transport: &SharedModuleTransport,
+    cid: &str,
+    local_only: bool,
+    max_bytes: usize,
+    control: CommandControl,
+    staged: &HostSharedDownload,
+) -> Result<Vec<u8>> {
+    let operation_id = new_storage_download_operation_id()?;
+    let subscription = transport
+        .subscribe_module_event(super::layer::module_id(), STORAGE_DOWNLOAD_DONE_EVENT)
+        .context("Basecamp host transport cannot observe Storage download completion")?;
+    let path = staged
+        .path()
+        .to_str()
+        .context("host download staging path is not UTF-8")?
+        .to_owned();
+    let max_bytes_arg =
+        i64::try_from(max_bytes).context("storage download byte limit is too large")?;
+    let acknowledgement = match module_call(
+        transport,
+        ModuleTransportKind::Module,
+        STORAGE_DOWNLOAD_METHOD,
+        vec![
+            json!(cid),
+            json!(path),
+            json!(local_only),
+            json!(BACKUP_DOWNLOAD_CHUNK_SIZE),
+            json!(&operation_id),
+            json!(max_bytes_arg),
+        ],
+    )
+    .await
+    {
+        Ok(acknowledgement) => acknowledgement,
+        Err(error)
+            if error
+                .downcast_ref::<crate::modules::logos_core::ModuleCallTerminated>()
+                .is_some_and(|terminated| {
+                    terminated.evidence() == ModuleCallTerminationEvidence::NotStarted
+                }) =>
+        {
+            return Err(error);
+        }
+        Err(error) => {
+            drop(subscription);
+            return cleanup_active_host_download_error(
+                cleanup_transport,
+                &operation_id,
+                cid,
+                DownloadCancelExpectation::EffectUnknown,
+                error,
+            )
+            .await;
+        }
+    };
+    if let Err(error) =
+        decode_download_dispatch_acknowledgement(&acknowledgement, &operation_id, cid)
+    {
+        drop(subscription);
+        return cleanup_active_host_download_error(
+            cleanup_transport,
+            &operation_id,
+            cid,
+            DownloadCancelExpectation::EffectUnknown,
+            error,
+        )
+        .await;
+    }
+
+    let worker_guard = match control.blocking_worker_guard() {
+        Ok(worker_guard) => worker_guard,
+        Err(error) => {
+            return cleanup_active_host_download_error(
+                cleanup_transport,
+                &operation_id,
+                cid,
+                DownloadCancelExpectation::Accepted,
+                error,
+            )
+            .await;
+        }
+    };
+    let staged_path = staged.path().to_path_buf();
+    let wait_operation_id = operation_id.clone();
+    let wait_cid = cid.to_owned();
+    let wait_control = control.clone();
+    let terminal = blocking_module_call("Basecamp Storage backup terminal wait", move || {
+        let _worker_guard = worker_guard;
+        wait_for_host_download_terminal(
+            subscription,
+            &wait_operation_id,
+            &wait_cid,
+            &staged_path,
+            max_bytes,
+            &wait_control,
+        )
+    })
+    .await;
+    let terminal = match terminal {
+        Ok(terminal) => terminal,
+        Err(error) => {
+            return cleanup_active_host_download_error(
+                cleanup_transport,
+                &operation_id,
+                cid,
+                DownloadCancelExpectation::Accepted,
+                error,
+            )
+            .await;
+        }
+    };
+    match terminal {
+        DownloadTerminalEvent::Succeeded => {
+            let read_worker_guard = control.blocking_worker_guard()?;
+            let staged_path = staged.path().to_path_buf();
+            blocking_module_call("Basecamp Storage backup staged read", move || {
+                let _worker_guard = read_worker_guard;
+                HostSharedDownload::read_path_bounded(&staged_path, max_bytes)
+            })
+            .await
+        }
+        DownloadTerminalEvent::Canceled => {
+            bail!("storage_module download was canceled for CID `{cid}`")
+        }
+        DownloadTerminalEvent::Failed(error) => {
+            bail!("storage_module download failed for CID `{cid}`: {error}")
+        }
+        DownloadTerminalEvent::Unrelated => {
+            bail!("storage download terminal wait returned an unrelated event")
+        }
+    }
+}
+
+fn wait_for_host_download_terminal(
+    mut subscription: BoxedModuleEventSubscription,
+    operation_id: &str,
+    cid: &str,
+    staged_path: &Path,
+    max_bytes: usize,
+    control: &CommandControl,
+) -> Result<DownloadTerminalEvent> {
+    let mut unrelated = 0_usize;
+    loop {
+        control.check_active()?;
+        ensure_staged_download_within_limit(staged_path, max_bytes)?;
+        let Some(event) = subscription.next_within(BACKUP_DOWNLOAD_SIZE_POLL_INTERVAL)? else {
+            continue;
+        };
+        match decode_host_download_terminal_event(&event, operation_id, cid)? {
+            DownloadTerminalEvent::Unrelated => {
+                unrelated = unrelated.saturating_add(1);
+                if unrelated > MAX_UNRELATED_DOWNLOAD_EVENTS {
+                    bail!(
+                        "storage download received more than {MAX_UNRELATED_DOWNLOAD_EVENTS} unrelated terminal events"
+                    );
+                }
+            }
+            terminal => return Ok(terminal),
+        }
+    }
+}
+
+async fn cleanup_active_host_download_error<T>(
+    cleanup_transport: &SharedModuleTransport,
+    operation_id: &str,
+    cid: &str,
+    expectation: DownloadCancelExpectation,
+    primary: anyhow::Error,
+) -> Result<T> {
+    match cancel_host_module_download(cleanup_transport, operation_id, cid, expectation).await {
+        Ok(()) => {
+            if let Some(terminated) =
+                primary.downcast_ref::<crate::modules::logos_core::ModuleCallTerminated>()
+            {
+                return Err(crate::modules::logos_core::ModuleCallTerminated::new(
+                    terminated.reason(),
+                    ModuleCallTerminationEvidence::RemoteEffectTerminationConfirmed,
+                )
+                .into());
+            }
+            Err(primary)
+        }
+        Err(cleanup) => Err(BackupDownloadCleanupUnconfirmed::new(
+            &primary,
+            format!("{primary}; Basecamp storage download cleanup was not confirmed: {cleanup:#}"),
+        )
+        .into()),
+    }
+}
+
+async fn cancel_host_module_download(
+    transport: &SharedModuleTransport,
+    operation_id: &str,
+    cid: &str,
+    expectation: DownloadCancelExpectation,
+) -> Result<()> {
+    let deadline = Instant::now()
+        .checked_add(BACKUP_DOWNLOAD_CANCEL_COMMAND_TIMEOUT)
+        .context("Basecamp storage download cleanup deadline overflow")?;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        anyhow::ensure!(
+            !remaining.is_zero(),
+            "Basecamp storage download cancellation timed out"
+        );
+        let call = module_call(
+            transport,
+            ModuleTransportKind::Module,
+            STORAGE_DOWNLOAD_CANCEL_METHOD,
+            vec![json!(operation_id)],
+        );
+        let acknowledgement = tokio::time::timeout(remaining, call)
+            .await
+            .context("Basecamp storage download cancellation timed out")??;
+        match validate_download_cancel_acknowledgement(
+            acknowledgement,
+            operation_id,
+            cid,
+            expectation,
+        )? {
+            DownloadCancelSettlement::Settled => return Ok(()),
+            DownloadCancelSettlement::RetryNotFound => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                anyhow::ensure!(
+                    !remaining.is_zero(),
+                    "Basecamp storage download cancellation timed out"
+                );
+                tokio::time::sleep(BACKUP_DOWNLOAD_CANCEL_RETRY_INTERVAL.min(remaining)).await;
+            }
+        }
+    }
+}
+
+fn combine_host_download_cleanup(result: Result<Vec<u8>>, cleanup: Result<()>) -> Result<Vec<u8>> {
+    match (result, cleanup) {
+        (Ok(bytes), Ok(())) => Ok(bytes),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(cleanup)) => {
+            let primary = cleanup.context("host download staging cleanup failed");
+            let message = primary.to_string();
+            Err(BackupDownloadCleanupUnconfirmed::new(&primary, message).into())
+        }
+        (Err(error), Err(cleanup)) => {
+            if let Some(unconfirmed) = error.downcast_ref::<BackupDownloadCleanupUnconfirmed>() {
+                return Err(unconfirmed
+                    .append(format_args!(
+                        "host download staging cleanup failed: {cleanup:#}"
+                    ))
+                    .into());
+            }
+            let message = format!("{error}; host download staging cleanup failed: {cleanup:#}");
+            Err(BackupDownloadCleanupUnconfirmed::new(&error, message).into())
+        }
+    }
 }
 
 pub(super) async fn module_download_backup_bytes_controlled(
@@ -831,7 +1282,7 @@ fn ensure_staged_download_within_limit(path: &Path, max_bytes: usize) -> Result<
     };
     anyhow::ensure!(
         bytes <= max_bytes,
-        "logoscore download exceeded {max_bytes} byte limit before terminal completion"
+        "storage download exceeded {max_bytes} byte limit before terminal completion"
     );
     Ok(())
 }
@@ -858,49 +1309,79 @@ fn decode_download_terminal_event(
         .get("arg0")
         .and_then(Value::as_str)
         .context("logoscore download terminal payload must be a JSON string")?;
+    decode_download_terminal_payload(payload_text, expected_operation_id, expected_cid)
+}
+
+fn decode_host_download_terminal_event(
+    event: &ModuleTransportEvent,
+    expected_operation_id: &str,
+    expected_cid: &str,
+) -> Result<DownloadTerminalEvent> {
+    anyhow::ensure!(
+        event.module() == super::layer::module_id(),
+        "host download subscription returned an event for the wrong module"
+    );
+    anyhow::ensure!(
+        event.event() == STORAGE_DOWNLOAD_DONE_EVENT,
+        "host download subscription returned the wrong event type"
+    );
+    let [payload] = event.args() else {
+        bail!("host download terminal event must contain exactly one payload argument");
+    };
+    let payload_text = payload
+        .as_str()
+        .context("host download terminal payload must be a JSON string")?;
+    decode_download_terminal_payload(payload_text, expected_operation_id, expected_cid)
+}
+
+fn decode_download_terminal_payload(
+    payload_text: &str,
+    expected_operation_id: &str,
+    expected_cid: &str,
+) -> Result<DownloadTerminalEvent> {
     let payload: DownloadDonePayload = serde_json::from_str(payload_text)
-        .context("logoscore download terminal payload is invalid JSON")?;
+        .context("storage download terminal payload is invalid JSON")?;
     anyhow::ensure!(
         payload.protocol == STORAGE_DOWNLOAD_PROTOCOL
             && payload.version == STORAGE_DOWNLOAD_PROTOCOL_VERSION,
-        "logoscore download terminal payload has an incompatible protocol"
+        "storage download terminal payload has an incompatible protocol"
     );
     let operation_id = payload.operation_id.trim();
     let cid = payload.cid.trim();
     if operation_id.is_empty() {
-        bail!("logoscore download terminal payload has no operation ID");
+        bail!("storage download terminal payload has no operation ID");
     }
     if cid.is_empty() {
-        bail!("logoscore download terminal payload has no CID");
+        bail!("storage download terminal payload has no CID");
     }
     if operation_id != expected_operation_id {
         return Ok(DownloadTerminalEvent::Unrelated);
     }
     anyhow::ensure!(
         cid == expected_cid,
-        "logoscore download terminal payload returned the wrong CID for its operation ID"
+        "storage download terminal payload returned the wrong CID for its operation ID"
     );
     anyhow::ensure!(
         operation_id != cid,
-        "logoscore download terminal operation ID must differ from its CID"
+        "storage download terminal operation ID must differ from its CID"
     );
     let error = payload.error.as_deref().map(str::trim).unwrap_or_default();
     match payload.outcome {
         DownloadTerminalOutcome::Succeeded => {
             if !error.is_empty() {
-                bail!("successful logoscore download terminal payload contains an error");
+                bail!("successful storage download terminal payload contains an error");
             }
             Ok(DownloadTerminalEvent::Succeeded)
         }
         DownloadTerminalOutcome::Failed => {
             if error.is_empty() {
-                bail!("failed logoscore download terminal payload contains no error");
+                bail!("failed storage download terminal payload contains no error");
             }
             Ok(DownloadTerminalEvent::Failed(error.to_owned()))
         }
         DownloadTerminalOutcome::Canceled => {
             if !error.is_empty() {
-                bail!("canceled logoscore download terminal payload contains an error");
+                bail!("canceled storage download terminal payload contains an error");
             }
             Ok(DownloadTerminalEvent::Canceled)
         }
@@ -1186,11 +1667,644 @@ mod tests {
         io::{Read as _, Write as _},
         net::TcpListener,
         path::PathBuf,
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicU8, AtomicUsize, Ordering},
+            mpsc,
+        },
         thread,
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
     use super::*;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum HostDownloadBehavior {
+        Succeed,
+        WrongOperationThenSucceed,
+        WrongCid,
+        MalformedTerminal,
+        DuplicateSuccess,
+        PendingAcknowledgement,
+        NoTerminal,
+        CloseBeforeTerminal,
+        Oversized,
+        WrongInterface,
+    }
+
+    struct FakeHostSubscription {
+        receiver: mpsc::Receiver<ModuleTransportEvent>,
+    }
+
+    impl crate::modules::logos_core::ModuleEventSubscription for FakeHostSubscription {
+        fn next_within(
+            &mut self,
+            timeout: Duration,
+        ) -> crate::modules::logos_core::ModuleTransportResult<Option<ModuleTransportEvent>>
+        {
+            match self.receiver.recv_timeout(timeout) {
+                Ok(event) => Ok(Some(event)),
+                Err(mpsc::RecvTimeoutError::Timeout) => Ok(None),
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    Err(crate::modules::logos_core::ModuleTransportClosed::new(
+                        "fake Basecamp host transport closed",
+                    )
+                    .into())
+                }
+            }
+        }
+    }
+
+    struct FakeHostDownloadTransport {
+        behavior: HostDownloadBehavior,
+        payload: Vec<u8>,
+        subscriptions: Mutex<Vec<mpsc::SyncSender<ModuleTransportEvent>>>,
+        download_calls: AtomicUsize,
+        cancel_calls: AtomicUsize,
+        staged_paths: Mutex<Vec<PathBuf>>,
+    }
+
+    struct ControlledHostDownloadTransport {
+        transport: Arc<FakeHostDownloadTransport>,
+        control: crate::modules::logos_core::ModuleCallControl,
+    }
+
+    impl crate::modules::logos_core::ModuleTransport for ControlledHostDownloadTransport {
+        fn kind(&self) -> ModuleTransportKind {
+            ModuleTransportKind::Module
+        }
+
+        fn call(
+            &self,
+            call: crate::modules::logos_core::ModuleCall,
+        ) -> crate::modules::logos_core::ModuleCallFuture<'_> {
+            self.transport.call_controlled(call, self.control.clone())
+        }
+
+        fn subscribe_module_event(
+            &self,
+            module: &str,
+            event: &str,
+        ) -> crate::modules::logos_core::ModuleTransportResult<BoxedModuleEventSubscription>
+        {
+            self.transport.subscribe_module_event(module, event)
+        }
+
+        fn supports_shared_file_staging(&self) -> bool {
+            true
+        }
+    }
+
+    impl FakeHostDownloadTransport {
+        fn new(behavior: HostDownloadBehavior, payload: &[u8]) -> Self {
+            Self {
+                behavior,
+                payload: payload.to_vec(),
+                subscriptions: Mutex::new(Vec::new()),
+                download_calls: AtomicUsize::new(0),
+                cancel_calls: AtomicUsize::new(0),
+                staged_paths: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn emit(&self, payload: Value) -> Result<()> {
+            let event = ModuleTransportEvent::new(
+                super::super::layer::module_id(),
+                STORAGE_DOWNLOAD_DONE_EVENT,
+                vec![Value::String(payload.to_string())],
+            )?;
+            let subscriptions = self
+                .subscriptions
+                .lock()
+                .map_err(|error| anyhow::anyhow!("fake subscription lock failed: {error}"))?;
+            for subscription in subscriptions.iter() {
+                subscription
+                    .try_send(event.clone())
+                    .map_err(|error| anyhow::anyhow!("fake event delivery failed: {error}"))?;
+            }
+            Ok(())
+        }
+
+        fn clear_subscriptions(&self) -> Result<()> {
+            self.subscriptions
+                .lock()
+                .map_err(|error| anyhow::anyhow!("fake subscription lock failed: {error}"))?
+                .clear();
+            Ok(())
+        }
+
+        fn exact_methods(&self) -> Value {
+            let download_signature = if self.behavior == HostDownloadBehavior::WrongInterface {
+                "downloadToUrlV2(QString)"
+            } else {
+                STORAGE_DOWNLOAD_METHOD_SIGNATURE
+            };
+            json!([
+                {
+                    "type": "method",
+                    "isInvokable": true,
+                    "name": STORAGE_DOWNLOAD_PROTOCOL_METHOD,
+                    "signature": "downloadProtocol()"
+                },
+                {
+                    "type": "method",
+                    "isInvokable": true,
+                    "name": STORAGE_DOWNLOAD_METHOD,
+                    "signature": download_signature
+                },
+                {
+                    "type": "method",
+                    "isInvokable": true,
+                    "name": STORAGE_DOWNLOAD_CANCEL_METHOD,
+                    "signature": "downloadCancelV2(QString)"
+                }
+            ])
+        }
+
+        fn download_call(&self, call: &crate::modules::logos_core::ModuleCall) -> Result<Value> {
+            self.download_calls.fetch_add(1, Ordering::AcqRel);
+            let cid = call
+                .args()
+                .first()
+                .and_then(Value::as_str)
+                .context("fake host download CID missing")?;
+            let path = call
+                .args()
+                .get(1)
+                .and_then(Value::as_str)
+                .map(PathBuf::from)
+                .context("fake host download path missing")?;
+            let operation_id = call
+                .args()
+                .get(4)
+                .and_then(Value::as_str)
+                .context("fake host download operation ID missing")?;
+            self.staged_paths
+                .lock()
+                .map_err(|error| anyhow::anyhow!("fake staged path lock failed: {error}"))?
+                .push(path.clone());
+            let bytes = if self.behavior == HostDownloadBehavior::Oversized {
+                vec![b'x'; self.payload.len().saturating_add(1)]
+            } else {
+                self.payload.clone()
+            };
+            fs::write(path, bytes)?;
+
+            let terminal = |operation_id: &str, cid: &str| {
+                json!({
+                    "protocol": STORAGE_DOWNLOAD_PROTOCOL,
+                    "version": STORAGE_DOWNLOAD_PROTOCOL_VERSION,
+                    "moduleOperationId": operation_id,
+                    "cid": cid,
+                    "outcome": "succeeded"
+                })
+            };
+            match self.behavior {
+                HostDownloadBehavior::Succeed => self.emit(terminal(operation_id, cid))?,
+                HostDownloadBehavior::WrongOperationThenSucceed => {
+                    self.emit(terminal("foreign-operation", cid))?;
+                    self.emit(terminal(operation_id, cid))?;
+                }
+                HostDownloadBehavior::WrongCid => {
+                    self.emit(terminal(operation_id, "wrong-cid"))?;
+                }
+                HostDownloadBehavior::MalformedTerminal => {
+                    self.emit(json!({ "protocol": STORAGE_DOWNLOAD_PROTOCOL }))?;
+                }
+                HostDownloadBehavior::DuplicateSuccess => {
+                    self.emit(terminal(operation_id, cid))?;
+                    self.emit(terminal(operation_id, cid))?;
+                }
+                HostDownloadBehavior::CloseBeforeTerminal => self.clear_subscriptions()?,
+                HostDownloadBehavior::NoTerminal
+                | HostDownloadBehavior::PendingAcknowledgement
+                | HostDownloadBehavior::Oversized
+                | HostDownloadBehavior::WrongInterface => {}
+            }
+            Ok(json!({
+                "protocol": STORAGE_DOWNLOAD_PROTOCOL,
+                "version": STORAGE_DOWNLOAD_PROTOCOL_VERSION,
+                "accepted": true,
+                "moduleOperationId": operation_id,
+                "cid": cid,
+            }))
+        }
+    }
+
+    impl crate::modules::logos_core::ModuleTransport for FakeHostDownloadTransport {
+        fn kind(&self) -> ModuleTransportKind {
+            ModuleTransportKind::Module
+        }
+
+        fn call(
+            &self,
+            call: crate::modules::logos_core::ModuleCall,
+        ) -> crate::modules::logos_core::ModuleCallFuture<'_> {
+            let acknowledgement_pending = self.behavior
+                == HostDownloadBehavior::PendingAcknowledgement
+                && call.method() == STORAGE_DOWNLOAD_METHOD;
+            let result = match call.method() {
+                STORAGE_MODULE_METHODS_METHOD => Ok(self.exact_methods()),
+                STORAGE_MODULE_EVENTS_METHOD => Ok(json!([{
+                    "type": "event",
+                    "name": STORAGE_DOWNLOAD_DONE_EVENT,
+                    "signature": "storageDownloadDoneV2(QString)"
+                }])),
+                STORAGE_DOWNLOAD_PROTOCOL_METHOD => Ok(json!({
+                    "protocol": STORAGE_DOWNLOAD_PROTOCOL,
+                    "version": STORAGE_DOWNLOAD_PROTOCOL_VERSION,
+                    "moduleOperationIdOwner": "caller",
+                    "cancelTimeoutMs": STORAGE_DOWNLOAD_CANCEL_TIMEOUT_MS,
+                    "maxDownloadBytes": 1_073_741_824_u64,
+                })),
+                STORAGE_DOWNLOAD_METHOD => self.download_call(&call),
+                STORAGE_DOWNLOAD_CANCEL_METHOD => {
+                    self.cancel_calls.fetch_add(1, Ordering::AcqRel);
+                    let operation_id = call
+                        .args()
+                        .first()
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    Ok(json!({
+                        "protocol": STORAGE_DOWNLOAD_PROTOCOL,
+                        "version": STORAGE_DOWNLOAD_PROTOCOL_VERSION,
+                        "moduleOperationId": operation_id,
+                        "cid": "cid-host",
+                        "cancelStatus": "canceled",
+                    }))
+                }
+                method => Err(anyhow::anyhow!("unexpected fake host method `{method}`")),
+            };
+            Box::pin(async move {
+                let value = result?;
+                if acknowledgement_pending {
+                    std::future::pending::<()>().await;
+                }
+                Ok(crate::modules::logos_core::ModuleCallReply::new(
+                    ModuleTransportKind::Module,
+                    value,
+                ))
+            })
+        }
+
+        fn subscribe_module_event(
+            &self,
+            module: &str,
+            event: &str,
+        ) -> crate::modules::logos_core::ModuleTransportResult<BoxedModuleEventSubscription>
+        {
+            anyhow::ensure!(
+                module == super::super::layer::module_id() && event == STORAGE_DOWNLOAD_DONE_EVENT,
+                "unexpected fake host subscription"
+            );
+            let (sender, receiver) = mpsc::sync_channel(8);
+            self.subscriptions
+                .lock()
+                .map_err(|error| anyhow::anyhow!("fake subscription lock failed: {error}"))?
+                .push(sender);
+            Ok(Box::new(FakeHostSubscription { receiver }))
+        }
+
+        fn supports_shared_file_staging(&self) -> bool {
+            true
+        }
+    }
+
+    fn host_download_control(timeout: Duration) -> CommandControl {
+        CommandControl::new(CancellationToken::new(), Instant::now() + timeout)
+    }
+
+    #[tokio::test]
+    async fn host_backup_download_correlates_terminal_and_cleans_staging() -> Result<()> {
+        for behavior in [
+            HostDownloadBehavior::Succeed,
+            HostDownloadBehavior::WrongOperationThenSucceed,
+            HostDownloadBehavior::DuplicateSuccess,
+        ] {
+            let fake = Arc::new(FakeHostDownloadTransport::new(behavior, b"backup"));
+            let transport: SharedModuleTransport = fake.clone();
+            let bytes = host_module_download_backup_bytes_controlled(
+                &transport,
+                &transport,
+                "cid-host",
+                false,
+                64,
+                host_download_control(Duration::from_secs(2)),
+            )
+            .await?;
+
+            anyhow::ensure!(bytes == b"backup", "host backup bytes drifted");
+            anyhow::ensure!(
+                fake.cancel_calls.load(Ordering::Acquire) == 0,
+                "successful host backup was canceled"
+            );
+            let staged_paths = fake
+                .staged_paths
+                .lock()
+                .map_err(|error| anyhow::anyhow!("fake staged path lock failed: {error}"))?;
+            anyhow::ensure!(
+                staged_paths.iter().all(|path| !path.exists()),
+                "successful host backup retained staging state: {staged_paths:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn host_backup_download_cancels_malformed_wrong_cid_and_oversized_effects() -> Result<()>
+    {
+        for (behavior, payload, max_bytes, expected) in [
+            (
+                HostDownloadBehavior::WrongCid,
+                b"backup".as_slice(),
+                64,
+                "wrong CID",
+            ),
+            (
+                HostDownloadBehavior::MalformedTerminal,
+                b"backup".as_slice(),
+                64,
+                "invalid JSON",
+            ),
+            (
+                HostDownloadBehavior::Oversized,
+                b"12345678".as_slice(),
+                8,
+                "exceeded 8 byte limit",
+            ),
+        ] {
+            let fake = Arc::new(FakeHostDownloadTransport::new(behavior, payload));
+            let transport: SharedModuleTransport = fake.clone();
+            let error = host_module_download_backup_bytes_controlled(
+                &transport,
+                &transport,
+                "cid-host",
+                false,
+                max_bytes,
+                host_download_control(Duration::from_secs(2)),
+            )
+            .await
+            .err()
+            .with_context(|| format!("{behavior:?} host download should fail"))?;
+
+            anyhow::ensure!(
+                format!("{error:#}").contains(expected),
+                "{behavior:?} returned unrelated error: {error:#}"
+            );
+            anyhow::ensure!(
+                fake.cancel_calls.load(Ordering::Acquire) == 1,
+                "{behavior:?} did not cancel the accepted effect"
+            );
+            let staged_paths = fake
+                .staged_paths
+                .lock()
+                .map_err(|error| anyhow::anyhow!("fake staged path lock failed: {error}"))?;
+            anyhow::ensure!(
+                staged_paths.iter().all(|path| !path.exists()),
+                "{behavior:?} retained staging state: {staged_paths:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn host_backup_download_timeout_and_close_cancel_the_exact_effect() -> Result<()> {
+        for behavior in [
+            HostDownloadBehavior::NoTerminal,
+            HostDownloadBehavior::CloseBeforeTerminal,
+        ] {
+            let fake = Arc::new(FakeHostDownloadTransport::new(behavior, b"backup"));
+            let transport: SharedModuleTransport = fake.clone();
+            let error = host_module_download_backup_bytes_controlled(
+                &transport,
+                &transport,
+                "cid-host",
+                false,
+                64,
+                host_download_control(Duration::from_millis(75)),
+            )
+            .await
+            .err()
+            .with_context(|| format!("{behavior:?} host download should fail"))?;
+
+            if behavior == HostDownloadBehavior::NoTerminal {
+                anyhow::ensure!(
+                    error
+                        .downcast_ref::<crate::support::command_runner::CommandTerminated>()
+                        .is_some(),
+                    "host timeout lost command termination evidence: {error:#}"
+                );
+            } else {
+                anyhow::ensure!(
+                    format!("{error:#}").contains("fake Basecamp host transport closed"),
+                    "host close returned unrelated error: {error:#}"
+                );
+            }
+            anyhow::ensure!(
+                fake.cancel_calls.load(Ordering::Acquire) == 1,
+                "{behavior:?} did not cancel the exact accepted effect"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn host_backup_download_external_cancellation_uses_fresh_cleanup_control() -> Result<()> {
+        let fake = Arc::new(FakeHostDownloadTransport::new(
+            HostDownloadBehavior::NoTerminal,
+            b"backup",
+        ));
+        let transport: SharedModuleTransport = fake.clone();
+        let task_transport = Arc::clone(&transport);
+        let cancellation = CancellationToken::new();
+        let control = CommandControl::new(
+            cancellation.clone(),
+            Instant::now() + Duration::from_secs(2),
+        );
+        let task = tokio::spawn(async move {
+            host_module_download_backup_bytes_controlled(
+                &task_transport,
+                &task_transport,
+                "cid-host",
+                false,
+                64,
+                control,
+            )
+            .await
+        });
+        let wait_deadline = Instant::now() + Duration::from_secs(1);
+        while fake.download_calls.load(Ordering::Acquire) == 0 {
+            anyhow::ensure!(
+                Instant::now() < wait_deadline,
+                "host download was not dispatched before cancellation"
+            );
+            tokio::task::yield_now().await;
+        }
+        cancellation.cancel();
+        let error = task
+            .await
+            .context("host cancellation test task failed")?
+            .err()
+            .context("canceled host download should fail")?;
+
+        anyhow::ensure!(
+            error
+                .downcast_ref::<crate::support::command_runner::CommandTerminated>()
+                .is_some(),
+            "host cancellation lost command termination evidence: {error:#}"
+        );
+        anyhow::ensure!(
+            fake.cancel_calls.load(Ordering::Acquire) == 1,
+            "host cancellation reused the canceled operation control"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn host_backup_download_confirms_cancellation_during_dispatch_acknowledgement()
+    -> Result<()> {
+        let fake = Arc::new(FakeHostDownloadTransport::new(
+            HostDownloadBehavior::PendingAcknowledgement,
+            b"backup",
+        ));
+        let cancellation = CancellationToken::new();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let controlled: SharedModuleTransport = Arc::new(ControlledHostDownloadTransport {
+            transport: Arc::clone(&fake),
+            control: crate::modules::logos_core::ModuleCallControl::new(
+                cancellation.clone(),
+                tokio::time::Instant::from_std(deadline),
+                Arc::new(AtomicU8::new(1)),
+            ),
+        });
+        let cleanup: SharedModuleTransport = fake.clone();
+        let task_cancellation = cancellation.clone();
+        let task = tokio::spawn(async move {
+            host_module_download_backup_bytes_controlled(
+                &controlled,
+                &cleanup,
+                "cid-host",
+                false,
+                64,
+                CommandControl::new(task_cancellation, deadline),
+            )
+            .await
+        });
+        let wait_deadline = Instant::now() + Duration::from_secs(1);
+        while fake.download_calls.load(Ordering::Acquire) == 0 {
+            anyhow::ensure!(
+                Instant::now() < wait_deadline,
+                "host download did not enter acknowledgement wait"
+            );
+            tokio::task::yield_now().await;
+        }
+        cancellation.cancel();
+        let error = task
+            .await
+            .context("dispatch-cancellation task failed")?
+            .err()
+            .context("dispatch cancellation should not complete")?;
+        let terminated = error
+            .downcast_ref::<crate::modules::logos_core::ModuleCallTerminated>()
+            .context("dispatch cancellation lost typed module termination")?;
+
+        anyhow::ensure!(
+            terminated.reason()
+                == crate::modules::logos_core::ModuleCallStopReason::CancelRequested
+                && terminated.evidence()
+                    == ModuleCallTerminationEvidence::RemoteEffectTerminationConfirmed,
+            "dispatch cancellation lost confirmed remote settlement: {error:#}"
+        );
+        anyhow::ensure!(
+            fake.download_calls.load(Ordering::Acquire) == 1
+                && fake.cancel_calls.load(Ordering::Acquire) == 1,
+            "dispatch cancellation did not settle the exact host effect"
+        );
+        let staged_paths = fake
+            .staged_paths
+            .lock()
+            .map_err(|error| anyhow::anyhow!("fake staged path lock failed: {error}"))?;
+        anyhow::ensure!(
+            staged_paths.iter().all(|path| !path.exists()),
+            "dispatch cancellation retained staging: {staged_paths:?}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn host_backup_download_cancels_when_terminal_wait_cannot_be_supervised() -> Result<()> {
+        let fake = Arc::new(FakeHostDownloadTransport::new(
+            HostDownloadBehavior::Succeed,
+            b"backup",
+        ));
+        let transport: SharedModuleTransport = fake.clone();
+        let blocking_work = crate::support::work_tracker::BlockingWorkTracker::new();
+        blocking_work.stop_accepting();
+        let control = CommandControl::new(
+            CancellationToken::new(),
+            Instant::now() + Duration::from_secs(2),
+        )
+        .with_blocking_work_tracker(blocking_work);
+
+        let error = host_module_download_backup_bytes_controlled(
+            &transport, &transport, "cid-host", false, 64, control,
+        )
+        .await
+        .err()
+        .context("unsupervised terminal wait should fail")?;
+
+        anyhow::ensure!(
+            error.to_string() == "blocking work tracker is closed",
+            "terminal supervision failure drifted: {error:#}"
+        );
+        anyhow::ensure!(
+            fake.download_calls.load(Ordering::Acquire) == 1
+                && fake.cancel_calls.load(Ordering::Acquire) == 1,
+            "accepted host effect escaped exact cancellation"
+        );
+        let staged_paths = fake
+            .staged_paths
+            .lock()
+            .map_err(|error| anyhow::anyhow!("fake staged path lock failed: {error}"))?;
+        anyhow::ensure!(
+            staged_paths.iter().all(|path| !path.exists()),
+            "unsupervised host download retained staging: {staged_paths:?}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn host_backup_download_rejects_interface_mismatch_before_dispatch() -> Result<()> {
+        let fake = Arc::new(FakeHostDownloadTransport::new(
+            HostDownloadBehavior::WrongInterface,
+            b"backup",
+        ));
+        let transport: SharedModuleTransport = fake.clone();
+        let error = host_module_download_backup_bytes_controlled(
+            &transport,
+            &transport,
+            "cid-host",
+            false,
+            64,
+            host_download_control(Duration::from_secs(2)),
+        )
+        .await
+        .err()
+        .context("mismatched host interface should fail")?;
+
+        anyhow::ensure!(
+            error
+                .to_string()
+                .contains("downloadToUrlV2(QString,QString,bool,int,QString,int)"),
+            "host interface mismatch returned unrelated error: {error:#}"
+        );
+        anyhow::ensure!(
+            fake.download_calls.load(Ordering::Acquire) == 0
+                && fake.cancel_calls.load(Ordering::Acquire) == 0,
+            "host interface mismatch reached a transfer effect"
+        );
+        Ok(())
+    }
 
     #[cfg(unix)]
     static TEST_CLI_BACKUP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

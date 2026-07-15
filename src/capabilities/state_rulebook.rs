@@ -112,22 +112,26 @@ fn storage_state(
         connector,
         sub_capabilities,
     );
-    let state = if connector.id == "logoscore_cli_storage_module"
-        && inputs
-            .source_report_for("storage")
-            .is_some_and(|report| !logoscore_backup_download_contract_supported(report))
-    {
-        merge_state_constraints(
-            state,
-            vec!["storage.backup.sync_read_by_cid".to_owned()],
-            vec!["Storage module lacks the bounded CLI backup download contract".to_owned()],
-            vec![
-                "storage.backup.sync_read_by_cid requires Storage download v2 operation identity and LogosCore watch v1 readiness"
-                    .to_owned(),
-            ],
-        )
-    } else {
-        state
+    let state = match storage_backup_download_transport(&connector.id) {
+        Some(transport)
+            if !inputs.source_report_for("storage").is_some_and(|report| {
+                storage_backup_download_contract_supported(report, transport)
+            }) =>
+        {
+            merge_state_constraints(
+                state,
+                vec!["storage.backup.sync_read_by_cid".to_owned()],
+                vec![format!(
+                    "Storage module lacks the bounded {} backup download contract",
+                    transport.label()
+                )],
+                vec![format!(
+                    "storage.backup.sync_read_by_cid requires Storage download v2 operation identity and {} readiness",
+                    transport.readiness_label()
+                )],
+            )
+        }
+        _ => state,
     };
     if connector.id != "direct_storage_rest" || inputs.storage_mutating_diagnostics_enabled {
         return state;
@@ -145,7 +149,40 @@ fn storage_state(
     )
 }
 
-fn logoscore_backup_download_contract_supported(report: &serde_json::Value) -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StorageBackupDownloadTransport {
+    BasecampHost,
+    LogoscoreWatch,
+}
+
+impl StorageBackupDownloadTransport {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::BasecampHost => "Basecamp host-event",
+            Self::LogoscoreWatch => "LogosCore CLI",
+        }
+    }
+
+    const fn readiness_label(self) -> &'static str {
+        match self {
+            Self::BasecampHost => "Basecamp host-events v1",
+            Self::LogoscoreWatch => "LogosCore watch v1",
+        }
+    }
+}
+
+fn storage_backup_download_transport(connector_id: &str) -> Option<StorageBackupDownloadTransport> {
+    match connector_id {
+        "storage_module" => Some(StorageBackupDownloadTransport::BasecampHost),
+        "logoscore_cli_storage_module" => Some(StorageBackupDownloadTransport::LogoscoreWatch),
+        _ => None,
+    }
+}
+
+fn storage_backup_download_contract_supported(
+    report: &serde_json::Value,
+    transport: StorageBackupDownloadTransport,
+) -> bool {
     let Some(module_info) = storage_module_info_value(report) else {
         return false;
     };
@@ -182,10 +219,13 @@ fn logoscore_backup_download_contract_supported(report: &serde_json::Value) -> b
                         == Some("storageDownloadDoneV2(QString)")
             })
         });
-    metadata_supported && logoscore_backup_download_readiness_supported(report)
+    metadata_supported && storage_backup_download_readiness_supported(report, transport)
 }
 
-fn logoscore_backup_download_readiness_supported(report: &serde_json::Value) -> bool {
+fn storage_backup_download_readiness_supported(
+    report: &serde_json::Value,
+    transport: StorageBackupDownloadTransport,
+) -> bool {
     report
         .get("probes")
         .and_then(serde_json::Value::as_array)
@@ -218,20 +258,53 @@ fn logoscore_backup_download_readiness_supported(report: &serde_json::Value) -> 
                         .pointer("/value/contract/maxDownloadBytes")
                         .and_then(serde_json::Value::as_u64)
                         .is_some_and(|max_bytes| max_bytes >= SETTINGS_BACKUP_MAX_BYTES as u64)
-                    && probe
-                        .pointer("/value/watch_protocol/protocol")
-                        .and_then(serde_json::Value::as_str)
-                        == Some("logoscore.watch")
-                    && probe
-                        .pointer("/value/watch_protocol/version")
-                        .and_then(serde_json::Value::as_u64)
-                        == Some(1)
-                    && probe
-                        .pointer("/value/watch_protocol/ready")
-                        .and_then(serde_json::Value::as_bool)
-                        == Some(true)
+                    && storage_backup_event_transport_supported(probe, transport)
             })
         })
+}
+
+fn storage_backup_event_transport_supported(
+    probe: &serde_json::Value,
+    transport: StorageBackupDownloadTransport,
+) -> bool {
+    match transport {
+        StorageBackupDownloadTransport::BasecampHost => {
+            probe
+                .pointer("/value/event_transport/protocol")
+                .and_then(serde_json::Value::as_str)
+                == Some("basecamp.host-events")
+                && probe
+                    .pointer("/value/event_transport/version")
+                    .and_then(serde_json::Value::as_u64)
+                    == Some(1)
+                && probe
+                    .pointer("/value/event_transport/ready")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+                && probe
+                    .pointer("/value/event_transport/module")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("storage_module")
+                && probe
+                    .pointer("/value/event_transport/event")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("storageDownloadDoneV2")
+        }
+        StorageBackupDownloadTransport::LogoscoreWatch => {
+            probe
+                .pointer("/value/watch_protocol/protocol")
+                .and_then(serde_json::Value::as_str)
+                == Some("logoscore.watch")
+                && probe
+                    .pointer("/value/watch_protocol/version")
+                    .and_then(serde_json::Value::as_u64)
+                    == Some(1)
+                && probe
+                    .pointer("/value/watch_protocol/ready")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+        }
+    }
 }
 
 fn storage_module_info_value(report: &serde_json::Value) -> Option<&serde_json::Value> {

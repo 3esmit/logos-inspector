@@ -365,6 +365,11 @@ impl ModuleEventEnvelope {
     }
 
     #[must_use]
+    pub(crate) fn args(&self) -> &[Value] {
+        &self.args
+    }
+
+    #[must_use]
     pub(crate) fn result(&self) -> Value {
         match self.args.as_slice() {
             [] => Value::Null,

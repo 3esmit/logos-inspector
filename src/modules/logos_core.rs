@@ -234,7 +234,57 @@ impl ModuleCallReply {
 
 pub type ModuleCallFuture<'a> = Pin<Box<dyn Future<Output = Result<ModuleCallReply>> + Send + 'a>>;
 pub type ModuleDiagnosticFuture<'a> = Pin<Box<dyn Future<Output = Result<Value>> + Send + 'a>>;
+pub type ModuleTransportResult<T> = Result<T>;
+pub type BoxedModuleEventSubscription = Box<dyn ModuleEventSubscription>;
 pub type SharedModuleTransport = Arc<dyn ModuleTransport>;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModuleTransportEvent {
+    module: String,
+    event: String,
+    args: Vec<Value>,
+}
+
+impl ModuleTransportEvent {
+    pub fn new(
+        module: impl Into<String>,
+        event: impl Into<String>,
+        args: Vec<Value>,
+    ) -> Result<Self> {
+        let module = module.into();
+        let event = event.into();
+        if module.trim().is_empty() {
+            bail!("module event module name is required");
+        }
+        if event.trim().is_empty() {
+            bail!("module event name is required");
+        }
+        Ok(Self {
+            module,
+            event,
+            args,
+        })
+    }
+
+    #[must_use]
+    pub fn module(&self) -> &str {
+        &self.module
+    }
+
+    #[must_use]
+    pub fn event(&self) -> &str {
+        &self.event
+    }
+
+    #[must_use]
+    pub fn args(&self) -> &[Value] {
+        &self.args
+    }
+}
+
+pub trait ModuleEventSubscription: Send {
+    fn next_within(&mut self, timeout: Duration) -> Result<Option<ModuleTransportEvent>>;
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModuleCallStopReason {
@@ -246,6 +296,7 @@ pub enum ModuleCallStopReason {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModuleCallTerminationEvidence {
     ProcessTerminated,
+    RemoteEffectTerminationConfirmed,
     LocallyAbandoned,
     NotStarted,
 }
@@ -353,6 +404,9 @@ impl std::fmt::Display for ModuleCallTerminated {
         };
         let evidence = match self.evidence {
             ModuleCallTerminationEvidence::ProcessTerminated => "process terminated and reaped",
+            ModuleCallTerminationEvidence::RemoteEffectTerminationConfirmed => {
+                "remote effect termination confirmed"
+            }
             ModuleCallTerminationEvidence::LocallyAbandoned => {
                 "local work stopped; remote termination unknown"
             }
@@ -394,6 +448,27 @@ pub trait ModuleTransport: Send + Sync {
     }
 
     fn call(&self, call: ModuleCall) -> ModuleCallFuture<'_>;
+
+    fn subscribe_module_event(
+        &self,
+        _module: &str,
+        _event: &str,
+    ) -> ModuleTransportResult<BoxedModuleEventSubscription> {
+        bail!("module event subscriptions are unavailable through this adapter")
+    }
+
+    fn ingest_module_event(
+        &self,
+        _module: &str,
+        _event: &str,
+        _args: &[Value],
+    ) -> ModuleTransportResult<()> {
+        Ok(())
+    }
+
+    fn supports_shared_file_staging(&self) -> bool {
+        false
+    }
 
     fn call_controlled(
         &self,

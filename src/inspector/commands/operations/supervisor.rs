@@ -88,6 +88,16 @@ impl OperationInterrupted {
             message: message.into(),
         }
     }
+
+    #[cfg(test)]
+    pub(super) const fn reason(&self) -> OperationStopReason {
+        self.reason
+    }
+
+    #[cfg(test)]
+    pub(super) const fn evidence(&self) -> TerminationEvidence {
+        self.evidence
+    }
 }
 
 impl std::fmt::Display for OperationInterrupted {

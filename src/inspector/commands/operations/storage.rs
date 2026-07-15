@@ -194,6 +194,7 @@ pub(super) async fn execute(
     operation_id: &RuntimeOperationId,
     control: &OperationControl,
     module_transport: SharedModuleTransport,
+    cleanup_module_transport: SharedModuleTransport,
 ) -> Result<RuntimeOperationOutcome> {
     match command {
         StorageCommand::UploadPayload => {
@@ -203,7 +204,13 @@ pub(super) async fn execute(
             return execute_backup_catalog_upload(request, control, module_transport).await;
         }
         StorageCommand::DownloadBackupCatalogEntry => {
-            return execute_backup_catalog_download(request, control, module_transport).await;
+            return execute_backup_catalog_download(
+                request,
+                control,
+                module_transport,
+                cleanup_module_transport,
+            )
+            .await;
         }
         _ => {}
     }
@@ -433,13 +440,21 @@ async fn execute_backup_catalog_download(
     request: &RuntimeOperationRequest,
     control: &OperationControl,
     module_transport: SharedModuleTransport,
+    cleanup_module_transport: SharedModuleTransport,
 ) -> Result<RuntimeOperationOutcome> {
     let request =
         storage_layer::StorageBackupDownloadRequest::parse_request(request.node_request()?)?;
     request
         .client()
         .ensure_managed_backup_download_supported(&module_transport)?;
-    execute_backup_catalog_download_request_in_dir(request, control, &module_transport, None).await
+    execute_backup_catalog_download_request_in_dir(
+        request,
+        control,
+        &module_transport,
+        &cleanup_module_transport,
+        None,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -457,6 +472,7 @@ async fn execute_backup_catalog_download_in_dir(
         request,
         control,
         &module_transport,
+        &module_transport,
         catalog_base_dir,
     )
     .await
@@ -466,6 +482,7 @@ async fn execute_backup_catalog_download_request_in_dir(
     request: storage_layer::StorageBackupDownloadRequest,
     control: &OperationControl,
     module_transport: &SharedModuleTransport,
+    cleanup_module_transport: &SharedModuleTransport,
     catalog_base_dir: Option<PathBuf>,
 ) -> Result<RuntimeOperationOutcome> {
     let cid = request.cid().to_owned();
@@ -479,6 +496,7 @@ async fn execute_backup_catalog_download_request_in_dir(
         .client()
         .download_backup_bytes_controlled(
             module_transport,
+            cleanup_module_transport,
             &cid,
             local_only,
             command_control(control),
@@ -789,7 +807,11 @@ mod tests {
         fs,
         io::{Read as _, Write as _},
         net::TcpListener,
-        sync::{Arc, mpsc},
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicUsize, Ordering},
+            mpsc,
+        },
         thread,
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
@@ -803,7 +825,11 @@ mod tests {
             RuntimeOperations, runtime_operation_request_from_value,
             supervisor::test_operation_control,
         },
-        modules::logos_core::UnavailableModuleTransport,
+        modules::logos_core::{
+            BoxedModuleEventSubscription, ModuleCall, ModuleCallFuture, ModuleCallReply,
+            ModuleEventSubscription, ModuleTransport, ModuleTransportClosed, ModuleTransportEvent,
+            ModuleTransportKind, ModuleTransportResult, UnavailableModuleTransport,
+        },
     };
 
     // Full-workspace tests share the bounded external-command budget. Leave
@@ -812,6 +838,191 @@ mod tests {
 
     fn operation_control() -> OperationControl {
         test_operation_control(Duration::from_secs(30))
+    }
+
+    struct CatalogHostSubscription {
+        receiver: mpsc::Receiver<ModuleTransportEvent>,
+    }
+
+    impl ModuleEventSubscription for CatalogHostSubscription {
+        fn next_within(
+            &mut self,
+            timeout: Duration,
+        ) -> ModuleTransportResult<Option<ModuleTransportEvent>> {
+            match self.receiver.recv_timeout(timeout) {
+                Ok(event) => Ok(Some(event)),
+                Err(mpsc::RecvTimeoutError::Timeout) => Ok(None),
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    Err(ModuleTransportClosed::new("catalog host transport closed").into())
+                }
+            }
+        }
+    }
+
+    struct CatalogHostTransport {
+        payload: Vec<u8>,
+        subscriptions: Mutex<Vec<mpsc::SyncSender<ModuleTransportEvent>>>,
+        staged_paths: Mutex<Vec<PathBuf>>,
+        download_calls: AtomicUsize,
+        cancel_calls: AtomicUsize,
+    }
+
+    impl CatalogHostTransport {
+        fn new(payload: Vec<u8>) -> Self {
+            Self {
+                payload,
+                subscriptions: Mutex::new(Vec::new()),
+                staged_paths: Mutex::new(Vec::new()),
+                download_calls: AtomicUsize::new(0),
+                cancel_calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn handle_call(&self, call: &ModuleCall) -> Result<Value> {
+            match call.method() {
+                "getPluginMethods" => Ok(json!([
+                    {
+                        "type": "method",
+                        "isInvokable": true,
+                        "name": "downloadProtocol",
+                        "signature": "downloadProtocol()"
+                    },
+                    {
+                        "type": "method",
+                        "isInvokable": true,
+                        "name": "downloadToUrlV2",
+                        "signature": "downloadToUrlV2(QString,QString,bool,int,QString,int)"
+                    },
+                    {
+                        "type": "method",
+                        "isInvokable": true,
+                        "name": "downloadCancelV2",
+                        "signature": "downloadCancelV2(QString)"
+                    }
+                ])),
+                "getPluginEvents" => Ok(json!([{
+                    "type": "event",
+                    "name": "storageDownloadDoneV2",
+                    "signature": "storageDownloadDoneV2(QString)"
+                }])),
+                "downloadProtocol" => Ok(json!({
+                    "protocol": "logos.storage.download",
+                    "version": 2,
+                    "moduleOperationIdOwner": "caller",
+                    "cancelTimeoutMs": 15_000,
+                    "maxDownloadBytes": 1_073_741_824_u64
+                })),
+                "downloadToUrlV2" => self.handle_download(call),
+                "downloadCancelV2" => {
+                    self.cancel_calls.fetch_add(1, Ordering::AcqRel);
+                    let operation_id = call
+                        .args()
+                        .first()
+                        .and_then(Value::as_str)
+                        .context("catalog host cancel operation ID missing")?;
+                    Ok(json!({
+                        "protocol": "logos.storage.download",
+                        "version": 2,
+                        "moduleOperationId": operation_id,
+                        "cid": "cid-basecamp-catalog",
+                        "cancelStatus": "canceled"
+                    }))
+                }
+                method => bail!("unexpected catalog host method `{method}`"),
+            }
+        }
+
+        fn handle_download(&self, call: &ModuleCall) -> Result<Value> {
+            self.download_calls.fetch_add(1, Ordering::AcqRel);
+            let cid = call
+                .args()
+                .first()
+                .and_then(Value::as_str)
+                .context("catalog host download CID missing")?;
+            let path = call
+                .args()
+                .get(1)
+                .and_then(Value::as_str)
+                .map(PathBuf::from)
+                .context("catalog host download path missing")?;
+            let operation_id = call
+                .args()
+                .get(4)
+                .and_then(Value::as_str)
+                .context("catalog host download operation ID missing")?;
+            fs::write(&path, &self.payload)?;
+            self.staged_paths
+                .lock()
+                .map_err(|error| anyhow::anyhow!("catalog staging lock failed: {error}"))?
+                .push(path);
+
+            let payload = json!({
+                "protocol": "logos.storage.download",
+                "version": 2,
+                "moduleOperationId": operation_id,
+                "cid": cid,
+                "outcome": "succeeded"
+            });
+            let event = ModuleTransportEvent::new(
+                "storage_module",
+                "storageDownloadDoneV2",
+                vec![Value::String(payload.to_string())],
+            )?;
+            let subscriptions = self
+                .subscriptions
+                .lock()
+                .map_err(|error| anyhow::anyhow!("catalog subscription lock failed: {error}"))?;
+            for subscription in subscriptions.iter() {
+                subscription
+                    .try_send(event.clone())
+                    .with_context(|| "catalog host terminal event could not be delivered")?;
+                subscription.try_send(event.clone()).with_context(
+                    || "catalog host duplicate terminal event could not be delivered",
+                )?;
+            }
+
+            Ok(json!({
+                "protocol": "logos.storage.download",
+                "version": 2,
+                "accepted": true,
+                "moduleOperationId": operation_id,
+                "cid": cid
+            }))
+        }
+    }
+
+    impl ModuleTransport for CatalogHostTransport {
+        fn kind(&self) -> ModuleTransportKind {
+            ModuleTransportKind::Module
+        }
+
+        fn call(&self, call: ModuleCall) -> ModuleCallFuture<'_> {
+            let result = self.handle_call(&call);
+            Box::pin(async move {
+                result.map(|value| ModuleCallReply::new(ModuleTransportKind::Module, value))
+            })
+        }
+
+        fn subscribe_module_event(
+            &self,
+            module: &str,
+            event: &str,
+        ) -> ModuleTransportResult<BoxedModuleEventSubscription> {
+            anyhow::ensure!(
+                module == "storage_module" && event == "storageDownloadDoneV2",
+                "unexpected catalog host subscription `{module}.{event}`"
+            );
+            let (sender, receiver) = mpsc::sync_channel(4);
+            self.subscriptions
+                .lock()
+                .map_err(|error| anyhow::anyhow!("catalog subscription lock failed: {error}"))?
+                .push(sender);
+            Ok(Box::new(CatalogHostSubscription { receiver }))
+        }
+
+        fn supports_shared_file_staging(&self) -> bool {
+            true
+        }
     }
 
     #[cfg(unix)]
@@ -1278,6 +1489,7 @@ mod tests {
             .block_on(execute_backup_catalog_download_request_in_dir(
                 request,
                 &control,
+                &fixture.transport,
                 &fixture.transport,
                 None,
             ))
@@ -2004,7 +2216,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn basecamp_backup_download_fails_closed_without_byte_transport() -> Result<()> {
+    async fn basecamp_backup_download_fails_closed_without_host_staging() -> Result<()> {
         let base_dir = unique_backup_dir("module")?;
         let request = runtime_operation_request_from_value(json!({
             "domain": "storage",
@@ -2024,13 +2236,105 @@ mod tests {
         .context("Basecamp backup download should fail")?;
         anyhow::ensure!(
             format!("{error:#}")
-                .contains("Basecamp Storage module does not expose backup read-by-CID bytes"),
+                .contains("Basecamp host transport does not provide shared file staging"),
             "unexpected Basecamp backup download error: {error:#}"
         );
         anyhow::ensure!(
             !base_dir.join("backup_catalog.json").exists(),
             "failed Basecamp download wrote local catalog state"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn basecamp_backup_download_catalogs_once_without_restoring_state() -> Result<()> {
+        let payload = serde_json::to_vec(&json!({
+            "kind": "logos-inspector-settings-backup",
+            "version": 1,
+            "encrypted": false,
+            "state": {
+                "settings": { "favorites": ["basecamp-catalog-only"] },
+                "idl_registry": [{ "programId": "must-not-be-imported" }]
+            }
+        }))?;
+        let base_dir = unique_backup_dir("module-catalog-only")?;
+        let request = runtime_operation_request_from_value(json!({
+            "domain": "storage",
+            "method": "storageDownloadBackupCatalogEntry",
+            "adapter": { "source_mode": "module", "inputs": {} },
+            "mutating_enabled": false,
+            "payload": { "cid": "cid-basecamp-catalog", "local_only": false }
+        }))?;
+        let request =
+            storage_layer::StorageBackupDownloadRequest::parse_request(request.node_request()?)?;
+        let fake = Arc::new(CatalogHostTransport::new(payload.clone()));
+        let transport: SharedModuleTransport = fake.clone();
+        request
+            .client()
+            .ensure_managed_backup_download_supported(&transport)?;
+
+        let outcome = execute_backup_catalog_download_request_in_dir(
+            request,
+            &operation_control(),
+            &transport,
+            &transport,
+            Some(base_dir.clone()),
+        )
+        .await?;
+        let RuntimeOperationOutcome::Completed(result) = outcome else {
+            bail!("Basecamp backup download should complete");
+        };
+        let catalog: Value =
+            serde_json::from_slice(&fs::read(base_dir.join("backup_catalog.json"))?)?;
+        let entries = catalog
+            .get("entries")
+            .and_then(Value::as_array)
+            .context("Basecamp backup catalog has no entries")?;
+
+        anyhow::ensure!(
+            result.get("downloaded") == Some(&json!(true))
+                && result.get("restored") == Some(&json!(false))
+                && result.get("cid") == Some(&json!("cid-basecamp-catalog"))
+                && result.get("endpoint") == Some(&json!("module storage_module"))
+                && result.get("source") == Some(&json!("network"))
+                && result.get("bytes") == Some(&json!(payload.len())),
+            "Basecamp catalog-only result drifted: {result}"
+        );
+        anyhow::ensure!(
+            entries.len() == 1
+                && entries
+                    .first()
+                    .and_then(|entry| entry.pointer("/remote/cid"))
+                    == Some(&json!("cid-basecamp-catalog")),
+            "Basecamp terminal was not cataloged exactly once: {catalog}"
+        );
+        anyhow::ensure!(
+            fake.download_calls.load(Ordering::Acquire) == 1
+                && fake.cancel_calls.load(Ordering::Acquire) == 0,
+            "Basecamp catalog path dispatched or canceled unexpectedly"
+        );
+        let staged_paths = fake
+            .staged_paths
+            .lock()
+            .map_err(|error| anyhow::anyhow!("catalog staging lock failed: {error}"))?;
+        anyhow::ensure!(
+            staged_paths.iter().all(|path| !path.exists()),
+            "Basecamp catalog path retained host staging: {staged_paths:?}"
+        );
+        for entry in fs::read_dir(&base_dir)? {
+            let name = entry?.file_name();
+            anyhow::ensure!(
+                matches!(
+                    name.to_str(),
+                    Some("backup_catalog.json" | "backup-payloads" | ".backup-catalog.lock")
+                ),
+                "Basecamp download restored non-catalog state `{}`",
+                name.to_string_lossy()
+            );
+        }
+
+        drop(staged_paths);
+        fs::remove_dir_all(base_dir)?;
         Ok(())
     }
 
@@ -2046,11 +2350,15 @@ mod tests {
         let module_transport: SharedModuleTransport =
             Arc::new(UnavailableModuleTransport::basecamp_host_not_configured());
 
-        let error =
-            execute_backup_catalog_download(&request, &operation_control(), module_transport)
-                .await
-                .err()
-                .context("mismatched CLI backup transport should fail")?;
+        let error = execute_backup_catalog_download(
+            &request,
+            &operation_control(),
+            Arc::clone(&module_transport),
+            module_transport,
+        )
+        .await
+        .err()
+        .context("mismatched CLI backup transport should fail")?;
         anyhow::ensure!(
             error.to_string()
                 == "resolved module transport `logoscore_cli` is unavailable; active transport is `module`",

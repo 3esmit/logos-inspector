@@ -14,8 +14,10 @@ use std::{
 use logos_inspector::{
     bridge::{InspectorBridge, InspectorBridgeCloseHandle},
     module_transport::{
-        BridgeCallbackId, ModuleCall, ModuleCallFuture, ModuleCallReply, ModuleTransport,
-        ModuleTransportClosed, ModuleTransportKind, SharedModuleTransport,
+        BoxedModuleEventSubscription, BridgeCallbackId, ModuleCall, ModuleCallFuture,
+        ModuleCallReply, ModuleDiagnosticFuture, ModuleEventSubscription, ModuleTransport,
+        ModuleTransportClosed, ModuleTransportEvent, ModuleTransportKind, ModuleTransportResult,
+        SharedModuleTransport,
     },
 };
 use serde_json::Value;
@@ -23,6 +25,8 @@ use tokio::sync::oneshot;
 
 const HOST_TRANSPORT_ABI_VERSION: u32 = 1;
 const ASYNC_WORKER_QUEUE_CAPACITY: usize = 128;
+const HOST_EVENT_SUBSCRIPTION_CAPACITY: usize = 64;
+const HOST_EVENT_SUBSCRIPTION_LIMIT: usize = 64;
 const EVENT_REJECTED: i32 = 0;
 const EVENT_ACCEPTED: i32 = 1;
 const EVENT_BACKPRESSURE: i32 = -1;
@@ -34,6 +38,8 @@ const LOCAL_CALL_BACKPRESSURE_ERROR: &str = "Basecamp bridge worker queue is ful
 const LOCAL_CALL_REENTRANT_ERROR: &str =
     "host-local synchronous calls cannot reenter the Basecamp bridge worker";
 const WORKER_UNAVAILABLE_ERROR: &str = "Basecamp bridge worker is unavailable";
+const HOST_EVENT_SUBSCRIPTION_OVERFLOW_ERROR: &str =
+    "Basecamp module event subscription overflowed its bounded queue";
 
 pub type LogosInspectorCoreReplyFn = unsafe extern "C" fn(*mut c_void, u64, *const c_char);
 pub type LogosInspectorHostReplyFn = unsafe extern "C" fn(*mut c_void, u64, i32, *const c_char);
@@ -104,17 +110,39 @@ struct HostState {
 struct HostRegistry {
     phase: LifecyclePhase,
     next_request_id: u64,
+    next_subscription_id: u64,
     active_host_calls: usize,
     pending: HashMap<ModuleRequestId, PendingHostRequest>,
+    subscriptions: HashMap<HostSubscriptionId, HostEventSubscriptionEntry>,
 }
 
 struct PendingHostRequest {
     sender: Option<oneshot::Sender<Result<Value, String>>>,
+    origin_thread: thread::ThreadId,
 }
 
 struct PendingHostCall {
     state: Arc<HostState>,
     module_request_id: ModuleRequestId,
+}
+
+struct HostEventSubscriptionEntry {
+    module: String,
+    event: String,
+    sender: mpsc::SyncSender<ModuleTransportEvent>,
+    status: Arc<HostEventSubscriptionStatus>,
+}
+
+struct HostEventSubscriptionStatus {
+    overflowed: AtomicBool,
+    closed: AtomicBool,
+}
+
+struct BasecampModuleEventSubscription {
+    state: Arc<HostState>,
+    subscription_id: HostSubscriptionId,
+    receiver: mpsc::Receiver<ModuleTransportEvent>,
+    status: Arc<HostEventSubscriptionStatus>,
 }
 
 struct AsyncState {
@@ -174,6 +202,9 @@ struct IngressRequestToken(u64);
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct ModuleRequestId(u64);
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct HostSubscriptionId(u64);
+
 impl HostVtable {
     unsafe fn copy_from(transport: *const LogosInspectorHostTransportV1) -> Result<Self, String> {
         if transport.is_null() {
@@ -218,8 +249,10 @@ impl HostState {
             registry: Mutex::new(HostRegistry {
                 phase: LifecyclePhase::Open,
                 next_request_id: 1,
+                next_subscription_id: 1,
                 active_host_calls: 0,
                 pending: HashMap::new(),
+                subscriptions: HashMap::new(),
             }),
             quiesced: Condvar::new(),
         })
@@ -255,6 +288,7 @@ impl HostState {
                     module_request_id,
                     PendingHostRequest {
                         sender: Some(sender),
+                        origin_thread: thread::current().id(),
                     },
                 );
                 registry.active_host_calls += 1;
@@ -318,6 +352,122 @@ impl HostState {
         }
     }
 
+    fn subscribe_module_event(
+        self: &Arc<Self>,
+        module: &str,
+        event: &str,
+    ) -> ModuleTransportResult<BoxedModuleEventSubscription> {
+        if module.trim().is_empty() {
+            return Err(std::io::Error::other("module event module name is required").into());
+        }
+        if event.trim().is_empty() {
+            return Err(std::io::Error::other("module event name is required").into());
+        }
+        let (sender, receiver) = mpsc::sync_channel(HOST_EVENT_SUBSCRIPTION_CAPACITY);
+        let status = Arc::new(HostEventSubscriptionStatus {
+            overflowed: AtomicBool::new(false),
+            closed: AtomicBool::new(false),
+        });
+        let subscription_id = {
+            let mut registry = lock(&self.registry);
+            if registry.phase != LifecyclePhase::Open {
+                return Err(ModuleTransportClosed::new(HOST_CLOSED_ERROR).into());
+            }
+            if registry.subscriptions.len() >= HOST_EVENT_SUBSCRIPTION_LIMIT {
+                return Err(std::io::Error::other(format!(
+                    "Basecamp module event subscription limit of {HOST_EVENT_SUBSCRIPTION_LIMIT} reached"
+                ))
+                .into());
+            }
+            let subscription_id = HostSubscriptionId(registry.next_subscription_id);
+            registry.next_subscription_id = registry
+                .next_subscription_id
+                .checked_add(1)
+                .ok_or_else(|| std::io::Error::other("module subscription id space exhausted"))?;
+            registry.subscriptions.insert(
+                subscription_id,
+                HostEventSubscriptionEntry {
+                    module: module.to_owned(),
+                    event: event.to_owned(),
+                    sender,
+                    status: Arc::clone(&status),
+                },
+            );
+            subscription_id
+        };
+        Ok(Box::new(BasecampModuleEventSubscription {
+            state: Arc::clone(self),
+            subscription_id,
+            receiver,
+            status,
+        }))
+    }
+
+    fn publish_module_event(
+        &self,
+        module: &str,
+        event: &str,
+        args: &[Value],
+    ) -> ModuleTransportResult<()> {
+        let transport_event = ModuleTransportEvent::new(module, event, args.to_vec())?;
+        let mut registry = lock(&self.registry);
+        if registry.phase != LifecyclePhase::Open {
+            return Err(ModuleTransportClosed::new(HOST_CLOSED_ERROR).into());
+        }
+        let mut remove = Vec::new();
+        let mut overflowed = false;
+        for (subscription_id, subscription) in &registry.subscriptions {
+            if subscription.module != module || subscription.event != event {
+                continue;
+            }
+            match subscription.sender.try_send(transport_event.clone()) {
+                Ok(()) => {}
+                Err(mpsc::TrySendError::Full(_)) => {
+                    subscription
+                        .status
+                        .overflowed
+                        .store(true, Ordering::Release);
+                    overflowed = true;
+                    remove.push(*subscription_id);
+                }
+                Err(mpsc::TrySendError::Disconnected(_)) => remove.push(*subscription_id),
+            }
+        }
+        for subscription_id in remove {
+            registry.subscriptions.remove(&subscription_id);
+        }
+        drop(registry);
+        if overflowed {
+            return Err(std::io::Error::other(HOST_EVENT_SUBSCRIPTION_OVERFLOW_ERROR).into());
+        }
+        Ok(())
+    }
+
+    fn unsubscribe_module_event(&self, subscription_id: HostSubscriptionId) {
+        lock(&self.registry).subscriptions.remove(&subscription_id);
+    }
+
+    fn interrupt_requests_from_thread(&self, origin_thread: thread::ThreadId) {
+        let interrupted = {
+            let mut registry = lock(&self.registry);
+            let request_ids = registry
+                .pending
+                .iter()
+                .filter_map(|(request_id, pending)| {
+                    (pending.origin_thread == origin_thread).then_some(*request_id)
+                })
+                .collect::<Vec<_>>();
+            request_ids
+                .into_iter()
+                .filter_map(|request_id| registry.pending.remove(&request_id))
+                .filter_map(|mut pending| pending.sender.take())
+                .collect::<Vec<_>>()
+        };
+        for sender in interrupted {
+            let _result = sender.send(Err(HOST_CLOSED_ERROR.to_owned()));
+        }
+    }
+
     fn finish_host_call(&self) {
         let mut registry = lock(&self.registry);
         if registry.active_host_calls > 0 {
@@ -372,17 +522,26 @@ impl HostState {
             (self.vtable.close)(self.vtable.context());
         }
 
-        let pending = {
+        let (pending, subscriptions) = {
             let mut registry = lock(&self.registry);
             let pending = registry
                 .pending
                 .drain()
                 .map(|(_, pending)| pending)
                 .collect::<Vec<_>>();
+            let subscriptions = registry
+                .subscriptions
+                .drain()
+                .map(|(_, subscription)| subscription)
+                .collect::<Vec<_>>();
+            for subscription in &subscriptions {
+                subscription.status.closed.store(true, Ordering::Release);
+            }
             registry.phase = LifecyclePhase::Closed;
             self.quiesced.notify_all();
-            pending
+            (pending, subscriptions)
         };
+        drop(subscriptions);
         for pending in pending {
             if let Some(sender) = pending.sender {
                 let _result = sender.send(Err(HOST_CLOSED_ERROR.to_owned()));
@@ -397,6 +556,58 @@ impl Drop for PendingHostCall {
     }
 }
 
+impl ModuleEventSubscription for BasecampModuleEventSubscription {
+    fn next_within(
+        &mut self,
+        timeout: std::time::Duration,
+    ) -> ModuleTransportResult<Option<ModuleTransportEvent>> {
+        if self.status.overflowed.load(Ordering::Acquire) {
+            return Err(std::io::Error::other(HOST_EVENT_SUBSCRIPTION_OVERFLOW_ERROR).into());
+        }
+        if self.status.closed.load(Ordering::Acquire) {
+            return Err(ModuleTransportClosed::new(HOST_CLOSED_ERROR).into());
+        }
+        match self.receiver.recv_timeout(timeout) {
+            Ok(event) => {
+                if self.status.overflowed.load(Ordering::Acquire) {
+                    return Err(
+                        std::io::Error::other(HOST_EVENT_SUBSCRIPTION_OVERFLOW_ERROR).into(),
+                    );
+                }
+                if self.status.closed.load(Ordering::Acquire) {
+                    return Err(ModuleTransportClosed::new(HOST_CLOSED_ERROR).into());
+                }
+                Ok(Some(event))
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if self.status.overflowed.load(Ordering::Acquire) {
+                    return Err(
+                        std::io::Error::other(HOST_EVENT_SUBSCRIPTION_OVERFLOW_ERROR).into(),
+                    );
+                }
+                if self.status.closed.load(Ordering::Acquire) {
+                    return Err(ModuleTransportClosed::new(HOST_CLOSED_ERROR).into());
+                }
+                Ok(None)
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                if self.status.overflowed.load(Ordering::Acquire) {
+                    return Err(
+                        std::io::Error::other(HOST_EVENT_SUBSCRIPTION_OVERFLOW_ERROR).into(),
+                    );
+                }
+                Err(ModuleTransportClosed::new(HOST_CLOSED_ERROR).into())
+            }
+        }
+    }
+}
+
+impl Drop for BasecampModuleEventSubscription {
+    fn drop(&mut self) {
+        self.state.unsubscribe_module_event(self.subscription_id);
+    }
+}
+
 impl ModuleTransport for BasecampHostTransport {
     fn kind(&self) -> ModuleTransportKind {
         ModuleTransportKind::Module
@@ -404,6 +615,68 @@ impl ModuleTransport for BasecampHostTransport {
 
     fn call(&self, call: ModuleCall) -> ModuleCallFuture<'_> {
         self.state.dispatch(call)
+    }
+
+    fn subscribe_module_event(
+        &self,
+        module: &str,
+        event: &str,
+    ) -> ModuleTransportResult<BoxedModuleEventSubscription> {
+        self.state.subscribe_module_event(module, event)
+    }
+
+    fn ingest_module_event(
+        &self,
+        module: &str,
+        event: &str,
+        args: &[Value],
+    ) -> ModuleTransportResult<()> {
+        self.state.publish_module_event(module, event, args)
+    }
+
+    fn supports_shared_file_staging(&self) -> bool {
+        true
+    }
+
+    fn module_info(&self, module: String) -> ModuleDiagnosticFuture<'_> {
+        let state = Arc::clone(&self.state);
+        Box::pin(async move {
+            let methods = state
+                .dispatch(ModuleCall::new(
+                    ModuleTransportKind::Module,
+                    module.clone(),
+                    "getPluginMethods",
+                    Vec::new(),
+                )?)
+                .await?
+                .into_value();
+            if !methods.is_array() {
+                return Err(std::io::Error::other(format!(
+                    "host module `{module}` method metadata is not an array"
+                ))
+                .into());
+            }
+            let events = state
+                .dispatch(ModuleCall::new(
+                    ModuleTransportKind::Module,
+                    module.clone(),
+                    "getPluginEvents",
+                    Vec::new(),
+                )?)
+                .await?
+                .into_value();
+            if !events.is_array() {
+                return Err(std::io::Error::other(format!(
+                    "host module `{module}` event metadata is not an array"
+                ))
+                .into());
+            }
+            Ok(serde_json::json!({
+                "name": module,
+                "methods": methods,
+                "events": events,
+            }))
+        })
     }
 }
 
@@ -651,7 +924,7 @@ impl AsynchronousCore {
 
     fn enqueue_module_event(&self, module: String, event: String, args: Vec<Value>) -> i32 {
         let registry = lock(&self.state.registry);
-        if registry.phase != LifecyclePhase::Open {
+        if registry.phase == LifecyclePhase::Closed {
             return EVENT_REJECTED;
         }
         match self.sender.try_send(WorkerCommand::ModuleEvent {
@@ -670,11 +943,13 @@ impl AsynchronousCore {
             return;
         };
         let _closing = self.bridge_close.begin_close().is_ok();
-        self.host.close();
+        self.host
+            .interrupt_requests_from_thread(self.worker_thread_id);
         let _sent = self.sender.send(WorkerCommand::Shutdown).is_ok();
         if let Some(worker) = lock(&self.worker).take() {
             let _joined = worker.join().is_ok();
         }
+        self.host.close();
         for (bridge_request_id, pending) in pending {
             let ingress_token = pending.ingress_token;
             invoke_core_reply(
@@ -1586,7 +1861,7 @@ mod tests {
             Ok(())
         }
 
-        fn wait_for_host_closing(&self) -> TestResult {
+        fn wait_for_core_closing(&self) -> TestResult {
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
                 // SAFETY: this guard keeps the core allocation live. Close may
@@ -1595,11 +1870,11 @@ mod tests {
                 let CoreMode::Asynchronous(core) = &core.mode else {
                     return err("expected asynchronous test core");
                 };
-                if lock(&core.host.registry).phase != LifecyclePhase::Open {
+                if lock(&core.state.registry).phase != LifecyclePhase::Open {
                     return Ok(());
                 }
                 if Instant::now() >= deadline {
-                    return err("timed out waiting for host closing phase");
+                    return err("timed out waiting for core closing phase");
                 }
                 thread::yield_now();
             }
@@ -2251,6 +2526,181 @@ mod tests {
         }
         if reply.into_value() != Value::String("request-7".to_owned()) {
             return err("host module reply value drifted");
+        }
+        drop(future);
+        state.close();
+        Ok(())
+    }
+
+    #[test]
+    fn host_event_subscription_filters_and_preserves_typed_args() -> TestResult {
+        let host = TestHost::new();
+        let vtable = host.vtable();
+        // SAFETY: the local vtable provides a complete readable v1 prefix.
+        let copied = unsafe { HostVtable::copy_from(&vtable) }.map_err(std::io::Error::other)?;
+        let state = HostState::new(copied);
+        let transport = BasecampHostTransport {
+            state: Arc::clone(&state),
+        };
+        let mut subscription =
+            transport.subscribe_module_event("storage_module", "storageDownloadDoneV2")?;
+
+        if !transport.supports_shared_file_staging() {
+            return err("Basecamp host transport did not advertise shared file staging");
+        }
+        transport.ingest_module_event(
+            "delivery_module",
+            "storageDownloadDoneV2",
+            &[Value::String("foreign-module".to_owned())],
+        )?;
+        transport.ingest_module_event(
+            "storage_module",
+            "storageUploadDone",
+            &[Value::String("foreign-event".to_owned())],
+        )?;
+        if subscription.next_within(Duration::ZERO)?.is_some() {
+            return err("filtered host subscription received an unrelated event");
+        }
+
+        let args = vec![serde_json::json!({
+            "operationId": "download-7",
+            "status": "completed",
+        })];
+        transport.ingest_module_event("storage_module", "storageDownloadDoneV2", &args)?;
+        let event = subscription
+            .next_within(Duration::from_secs(1))?
+            .ok_or_else(|| std::io::Error::other("matching host event was not delivered"))?;
+        if event.module() != "storage_module"
+            || event.event() != "storageDownloadDoneV2"
+            || event.args() != args
+        {
+            return err("host subscription changed typed event identity or arguments");
+        }
+
+        drop(subscription);
+        state.close();
+        Ok(())
+    }
+
+    #[test]
+    fn host_event_subscription_reports_overflow_and_close() -> TestResult {
+        let host = TestHost::new();
+        let vtable = host.vtable();
+        // SAFETY: the local vtable provides a complete readable v1 prefix.
+        let copied = unsafe { HostVtable::copy_from(&vtable) }.map_err(std::io::Error::other)?;
+        let state = HostState::new(copied);
+        let transport = BasecampHostTransport {
+            state: Arc::clone(&state),
+        };
+        let mut overflowed =
+            transport.subscribe_module_event("storage_module", "storageDownloadDoneV2")?;
+        for index in 0..HOST_EVENT_SUBSCRIPTION_CAPACITY {
+            transport.ingest_module_event(
+                "storage_module",
+                "storageDownloadDoneV2",
+                &[serde_json::json!({ "sequence": index })],
+            )?;
+        }
+        let publish_error = transport
+            .ingest_module_event(
+                "storage_module",
+                "storageDownloadDoneV2",
+                &[serde_json::json!({ "sequence": HOST_EVENT_SUBSCRIPTION_CAPACITY })],
+            )
+            .err()
+            .ok_or_else(|| std::io::Error::other("full host event queue accepted another event"))?;
+        if publish_error.to_string() != HOST_EVENT_SUBSCRIPTION_OVERFLOW_ERROR {
+            return err("host event publisher lost explicit overflow evidence");
+        }
+        let receive_error = overflowed
+            .next_within(Duration::ZERO)
+            .err()
+            .ok_or_else(|| std::io::Error::other("overflowed subscription returned queued data"))?;
+        if receive_error.to_string() != HOST_EVENT_SUBSCRIPTION_OVERFLOW_ERROR {
+            return err("host event subscriber lost explicit overflow evidence");
+        }
+
+        let mut disconnected =
+            transport.subscribe_module_event("delivery_module", "messageSent")?;
+        state.close();
+        let close_error = disconnected
+            .next_within(Duration::ZERO)
+            .err()
+            .ok_or_else(|| std::io::Error::other("closed subscription remained connected"))?;
+        if close_error.to_string() != HOST_CLOSED_ERROR
+            || close_error
+                .downcast_ref::<ModuleTransportClosed>()
+                .is_none()
+        {
+            return err("host subscription close lost typed transport closure");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn host_module_info_merges_methods_and_events() -> TestResult {
+        let host = TestHost::new();
+        let vtable = host.vtable();
+        // SAFETY: the local vtable provides a complete readable v1 prefix.
+        let copied = unsafe { HostVtable::copy_from(&vtable) }.map_err(std::io::Error::other)?;
+        let state = HostState::new(copied);
+        let transport = BasecampHostTransport {
+            state: Arc::clone(&state),
+        };
+        let mut future = transport.module_info("storage_module".to_owned());
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        if std::future::Future::poll(future.as_mut(), &mut context).is_ready() {
+            return err("host module info completed before method metadata reply");
+        }
+        let methods_request = host.wait_for_request()?;
+        if methods_request.module != "storage_module"
+            || methods_request.method != "getPluginMethods"
+            || methods_request.args_json != "[]"
+        {
+            return err("host module info issued the wrong method metadata call");
+        }
+        host.complete(
+            methods_request.id,
+            1,
+            r#"[{"name":"downloadProtocol","signature":"downloadProtocol()"}]"#,
+            false,
+        )?;
+        if std::future::Future::poll(future.as_mut(), &mut context).is_ready() {
+            return err("host module info completed before event metadata reply");
+        }
+        let events_request = host.wait_for_request()?;
+        if events_request.module != "storage_module"
+            || events_request.method != "getPluginEvents"
+            || events_request.args_json != "[]"
+        {
+            return err("host module info issued the wrong event metadata call");
+        }
+        host.complete(
+            events_request.id,
+            1,
+            r#"[{"name":"storageDownloadDoneV2","signature":"storageDownloadDoneV2(QString)"}]"#,
+            false,
+        )?;
+        let info = match std::future::Future::poll(future.as_mut(), &mut context) {
+            std::task::Poll::Ready(Ok(info)) => info,
+            std::task::Poll::Ready(Err(error)) => {
+                return err(&format!("host module info failed: {error:#}"));
+            }
+            std::task::Poll::Pending => {
+                return err("host module info remained pending after both replies");
+            }
+        };
+        if info.get("name").and_then(Value::as_str) != Some("storage_module")
+            || info
+                .get("methods")
+                .and_then(Value::as_array)
+                .is_none_or(|methods| methods.len() != 1)
+            || info
+                .get("events")
+                .and_then(Value::as_array)
+                .is_none_or(|events| events.len() != 1)
+        {
+            return err("host module info did not merge named method and event metadata");
         }
         drop(future);
         state.close();
@@ -3448,6 +3898,231 @@ mod tests {
     }
 
     #[test]
+    fn close_keeps_host_open_until_accepted_backup_download_is_canceled() -> TestResult {
+        let host = TestHost::new();
+        let handle = TestCoreHandle::new(&host)?;
+        let collector = Arc::new(ReplyCollector::default());
+        let drops = Arc::new(AtomicUsize::new(0));
+        let args = serde_json::json!([{
+            "domain": "storage",
+            "method": "storageDownloadBackupCatalogEntry",
+            "adapter": { "source_mode": "module", "inputs": {} },
+            "mutating_enabled": false,
+            "payload": { "cid": "cid-basecamp-close", "local_only": false }
+        }])
+        .to_string();
+
+        if enqueue_test_call(
+            handle.as_ptr(),
+            26,
+            "logos_inspector",
+            "runtimeOperationStart",
+            &args,
+            reply_context(&collector, &drops),
+        )? != 1
+        {
+            return err("backup runtime operation start ingress was rejected");
+        }
+        let replies = collector.wait_for_replies(1)?;
+        let start: Value = serde_json::from_str(&replies[0].1)?;
+        if start.get("ok").and_then(Value::as_bool) != Some(true)
+            || start
+                .pointer("/value/operationId")
+                .and_then(Value::as_str)
+                .is_none()
+        {
+            return Err(std::io::Error::other(format!(
+                "backup runtime operation did not start: {start}"
+            ))
+            .into());
+        }
+
+        let methods = host.wait_for_request()?;
+        if methods.module != "storage_module"
+            || methods.method != "getPluginMethods"
+            || methods.args_json != "[]"
+        {
+            return err("backup close regression requested wrong method metadata");
+        }
+        host.complete(
+            methods.id,
+            1,
+            &serde_json::json!([
+                {
+                    "type": "method",
+                    "isInvokable": true,
+                    "name": "downloadProtocol",
+                    "signature": "downloadProtocol()"
+                },
+                {
+                    "type": "method",
+                    "isInvokable": true,
+                    "name": "downloadToUrlV2",
+                    "signature": "downloadToUrlV2(QString,QString,bool,int,QString,int)"
+                },
+                {
+                    "type": "method",
+                    "isInvokable": true,
+                    "name": "downloadCancelV2",
+                    "signature": "downloadCancelV2(QString)"
+                }
+            ])
+            .to_string(),
+            false,
+        )?;
+
+        let events = host.wait_for_request()?;
+        if events.module != "storage_module"
+            || events.method != "getPluginEvents"
+            || events.args_json != "[]"
+        {
+            return err("backup close regression requested wrong event metadata");
+        }
+        host.complete(
+            events.id,
+            1,
+            &serde_json::json!([{
+                "type": "event",
+                "name": "storageDownloadDoneV2",
+                "signature": "storageDownloadDoneV2(QString)"
+            }])
+            .to_string(),
+            false,
+        )?;
+
+        let protocol = host.wait_for_request()?;
+        if protocol.module != "storage_module"
+            || protocol.method != "downloadProtocol"
+            || protocol.args_json != "[]"
+        {
+            return err("backup close regression requested wrong protocol");
+        }
+        host.complete(
+            protocol.id,
+            1,
+            &serde_json::json!({
+                "protocol": "logos.storage.download",
+                "version": 2,
+                "moduleOperationIdOwner": "caller",
+                "cancelTimeoutMs": 15_000,
+                "maxDownloadBytes": 1_073_741_824_u64
+            })
+            .to_string(),
+            false,
+        )?;
+
+        let download = host.wait_for_request()?;
+        if download.module != "storage_module" || download.method != "downloadToUrlV2" {
+            return err("backup close regression did not dispatch downloadToUrlV2");
+        }
+        let download_args: Vec<Value> = serde_json::from_str(&download.args_json)?;
+        let cid = download_args
+            .first()
+            .and_then(Value::as_str)
+            .ok_or_else(|| std::io::Error::other("backup download CID was missing"))?
+            .to_owned();
+        let staged_path = download_args
+            .get(1)
+            .and_then(Value::as_str)
+            .map(std::path::PathBuf::from)
+            .ok_or_else(|| std::io::Error::other("backup staging path was missing"))?;
+        let operation_id = download_args
+            .get(4)
+            .and_then(Value::as_str)
+            .ok_or_else(|| std::io::Error::other("backup module operation ID was missing"))?
+            .to_owned();
+        if cid != "cid-basecamp-close" || operation_id == cid || !staged_path.exists() {
+            return err("backup download dispatch identity or staging drifted");
+        }
+        host.complete(
+            download.id,
+            1,
+            &serde_json::json!({
+                "protocol": "logos.storage.download",
+                "version": 2,
+                "accepted": true,
+                "moduleOperationId": operation_id,
+                "cid": cid
+            })
+            .to_string(),
+            false,
+        )?;
+
+        let handle_address = handle.as_ptr().expose_provenance();
+        let (closed_sender, closed_receiver) = mpsc::channel();
+        let closer = thread::spawn(move || {
+            // SAFETY: the owning test keeps the allocation live until close joins.
+            unsafe {
+                logos_inspector_core_close(ptr::with_exposed_provenance_mut(handle_address));
+            }
+            let _sent = closed_sender.send(()).is_ok();
+        });
+        let cancel = match host.wait_for_request() {
+            Ok(cancel) => cancel,
+            Err(error) => {
+                let _closed = closed_receiver.recv_timeout(Duration::from_secs(20));
+                let _joined = closer.join().is_ok();
+                return Err(error);
+            }
+        };
+        let expected_cancel_args = serde_json::to_string(&[operation_id.as_str()])?;
+        let cancel_identity_matches = cancel.module == "storage_module"
+            && cancel.method == "downloadCancelV2"
+            && cancel.args_json == expected_cancel_args;
+        if host.close_count() != 0 {
+            host.complete(
+                cancel.id,
+                1,
+                &serde_json::json!({
+                    "protocol": "logos.storage.download",
+                    "version": 2,
+                    "moduleOperationId": operation_id,
+                    "cid": cid,
+                    "cancelStatus": "canceled"
+                })
+                .to_string(),
+                false,
+            )?;
+            let _closed = closed_receiver.recv_timeout(Duration::from_secs(5));
+            let _joined = closer.join().is_ok();
+            return err("host closed before accepted backup cancellation settled");
+        }
+        host.complete(
+            cancel.id,
+            1,
+            &serde_json::json!({
+                "protocol": "logos.storage.download",
+                "version": 2,
+                "moduleOperationId": operation_id,
+                "cid": cid,
+                "cancelStatus": "canceled"
+            })
+            .to_string(),
+            false,
+        )?;
+
+        closed_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        if closer.join().is_err() {
+            return err("backup close thread panicked");
+        }
+        if !cancel_identity_matches {
+            return err("shutdown did not cancel the exact accepted backup operation");
+        }
+        handle.assert_shutdown_drained()?;
+        if host.close_count() != 1
+            || !host.cancelled().is_empty()
+            || staged_path.exists()
+            || collector.count() != 1
+            || drops.load(Ordering::Acquire) != 1
+        {
+            return err("backup shutdown violated cancellation, staging, or ownership invariants");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn terminal_event_queued_before_close_completes_runtime_operation() -> TestResult {
         let host = TestHost::new();
         let handle = TestCoreHandle::new(&host)?;
@@ -3534,7 +4209,7 @@ mod tests {
             }
             let _sent = closed_sender.send(()).is_ok();
         });
-        if let Err(error) = handle.wait_for_host_closing() {
+        if let Err(error) = handle.wait_for_core_closing() {
             gate.release();
             let _joined = closer.join().is_ok();
             return Err(error);
@@ -3780,7 +4455,7 @@ mod tests {
             }
             let _sent = closed_sender.send(()).is_ok();
         });
-        if let Err(error) = handle.wait_for_host_closing() {
+        if let Err(error) = handle.wait_for_core_closing() {
             host.release_dispatch();
             let _joined = closer.join().is_ok();
             return Err(error);
