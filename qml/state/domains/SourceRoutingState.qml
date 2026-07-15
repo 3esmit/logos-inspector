@@ -47,6 +47,11 @@ QtObject {
         return gateway.prefersBasecampModules()
     }
 
+    function normalizedMessagingNetworkPreset(value) {
+        const preset = String(value || "").trim()
+        return !preset.length || preset === "testnet" ? "logos.test" : preset
+    }
+
     function sourcePolicyDefault(key, fallback) {
         return SourcePolicyProjection.sourcePolicyDefault(root, key, fallback)
     }

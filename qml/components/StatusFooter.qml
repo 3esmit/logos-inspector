@@ -138,11 +138,11 @@ Pane {
     }
 
     function overview() {
-        return root.model.dashboardOverview || {}
+        return root.model.metrics.dashboardOverview || {}
     }
 
     function nodeReport() {
-        return root.model.dashboardNode || {}
+        return root.model.metrics.dashboardNode || {}
     }
 
     function probe(section, field) {
@@ -152,7 +152,7 @@ Pane {
 
     function probeValue(section, field) {
         const target = root.probe(section, field)
-        return target && target.value !== undefined && target.value !== null ? root.model.scalarValue(target.value) : null
+        return target && target.value !== undefined && target.value !== null ? root.model.metrics.scalarValue(target.value) : null
     }
 
     function probeRawValue(section, field) {
@@ -209,7 +209,7 @@ Pane {
 
     function cryptarchiaValue(key) {
         const value = root.cryptarchiaInfo()[key]
-        return value === undefined || value === null ? null : root.model.scalarValue(value)
+        return value === undefined || value === null ? null : root.model.metrics.scalarValue(value)
     }
 
     function reportValue(name) {
@@ -219,7 +219,7 @@ Pane {
 
     function networkValue(key) {
         const value = root.reportValue("network_info")[key]
-        return value === undefined || value === null ? null : root.model.scalarValue(value)
+        return value === undefined || value === null ? null : root.model.metrics.scalarValue(value)
     }
 
     function bedrockSyncState() {
@@ -258,7 +258,7 @@ Pane {
     }
 
     function lezBlockHeight() {
-        const blocks = root.model.dashboardProvisionalBlocks || []
+        const blocks = root.model.metrics.dashboardProvisionalBlocks || []
         if (blocks.length > 0) {
             const block = blocks[0] || {}
             if (block.block_id !== undefined && block.block_id !== null) {
@@ -321,7 +321,7 @@ Pane {
     }
 
     function valueOrNa(value) {
-        const scalar = root.model.scalarValue(value)
+        const scalar = root.model.metrics.scalarValue(value)
         if (scalar === undefined || scalar === null || scalar === "") {
             return qsTr("n/a")
         }
@@ -425,7 +425,7 @@ Pane {
     }
 
     function latestSequencerBlockValue(key) {
-        const blocks = root.model.dashboardProvisionalBlocks || []
+        const blocks = root.model.metrics.dashboardProvisionalBlocks || []
         if (!blocks.length) {
             return null
         }
@@ -435,7 +435,7 @@ Pane {
     }
 
     function latestIndexerBlockValue(key) {
-        const blocks = root.model.dashboardBlocks || []
+        const blocks = root.model.metrics.dashboardBlocks || []
         if (!blocks.length) {
             return null
         }
@@ -445,7 +445,7 @@ Pane {
     }
 
     function timeText(value) {
-        const scalar = root.model.scalarValue(value)
+        const scalar = root.model.metrics.scalarValue(value)
         if (scalar === null) {
             return qsTr("n/a")
         }
@@ -458,7 +458,7 @@ Pane {
     }
 
     function yesNo(value) {
-        const scalar = root.model.scalarValue(value)
+        const scalar = root.model.metrics.scalarValue(value)
         if (scalar === null) {
             return qsTr("n/a")
         }
@@ -488,7 +488,7 @@ Pane {
     }
 
     function numberText(value) {
-        const scalar = root.model.scalarValue(value)
+        const scalar = root.model.metrics.scalarValue(value)
         if (scalar === undefined || scalar === null || scalar === "") {
             return "-"
         }
@@ -508,7 +508,7 @@ Pane {
     }
 
     function countProblemTone(value) {
-        const number = Number(root.model.scalarValue(value))
+        const number = Number(root.model.metrics.scalarValue(value))
         if (!Number.isFinite(number) || number <= 0) {
             return "neutral"
         }

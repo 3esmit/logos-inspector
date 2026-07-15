@@ -9,13 +9,11 @@ function build(model, theme, family) {
     const report = observation.sourceReport
     const status = observation.status || ({ known: false, ok: false })
     const pending = observation.pending === true
-    const sourceName = storage ? model.sourceRouting.storageSourceLabel()
-        : model.sourceRouting.deliverySourceLabel()
-    const sourceTarget = storage ? model.sourceRouting.storageSourceTarget()
-        : model.sourceRouting.deliverySourceTarget()
-    const sourceMode = storage
-        ? model.sourceRouting.effectiveStorageSourceMode(model.storageSourceMode)
-        : model.sourceRouting.effectiveMessagingSourceMode(model.messagingSourceMode)
+    const sourceRoute = storage ? model.sourceRouting.storageSourceView()
+        : model.sourceRouting.deliverySourceView()
+    const sourceName = String(sourceRoute.label || "")
+    const sourceTarget = String(sourceRoute.target || "")
+    const sourceMode = String(sourceRoute.effectiveMode || sourceRoute.mode || "")
 
     const page = {
         model: model,
@@ -29,6 +27,24 @@ function build(model, theme, family) {
     page.sourceLabel = function () { return sourceName }
     page.sourceName = function () { return sourceName }
     page.sourceTarget = function () { return sourceTarget }
+    page.sourceRoute = function () { return sourceRoute }
+    page.sourceNetworkPreset = function () {
+        return storage ? String(sourceRoute.networkPreset || "")
+            : model.sourceRouting.normalizedMessagingNetworkPreset(
+                sourceRoute.networkPreset)
+    }
+    page.sourceRestEndpoint = function () { return String(sourceRoute.restEndpoint || "") }
+    page.sourceMetricsEndpoint = function () { return String(sourceRoute.metricsEndpoint || "") }
+    page.sourceMutatingDiagnosticsEnabled = function () {
+        return sourceRoute.mutatingDiagnosticsEnabled === true
+    }
+    page.rollingWindow = function () {
+        return storage ? Number(model.metrics.storageRollingWindow || 0)
+            : Number(model.metrics.messagingRollingWindow || 0)
+    }
+    page.storageCidProbe = function () {
+        return storage ? String(model.sourceRouting.storageCidProbe || "") : ""
+    }
     page.probe = function (method) {
         return SourceDiagnostics.probe(model, moduleFamily, report, method)
     }
@@ -88,9 +104,8 @@ function build(model, theme, family) {
 
 function commonView(page, theme, storage, sourceMode, sourceTarget) {
     const status = page.status()
-    const preset = storage ? page.model.storageNetworkPreset
-        : page.model.normalizedMessagingNetworkPreset(page.model.messagingNetworkPreset)
-    const windowSeconds = storage ? page.model.storageRollingWindow : page.model.messagingRollingWindow
+    const preset = page.sourceNetworkPreset()
+    const windowSeconds = page.rollingWindow()
     let sourceShortLabel = qsTr("Module")
     if (sourceMode === "rest") {
         sourceShortLabel = qsTr("REST")
@@ -173,10 +188,10 @@ function storageView(page, common) {
         return SourceObservation.storagePathDetailRow(page, label, value)
     }
     page.storageSourceMode = function () {
-        return page.model.sourceRouting.effectiveStorageSourceMode(page.model.storageSourceMode)
+        return String(page.sourceRoute().effectiveMode || "")
     }
     page.metricsEndpointConfigured = function () {
-        return String(page.model.storageMetricsUrl || "").trim().length > 0
+        return page.sourceMetricsEndpoint().trim().length > 0
     }
     page.restMetricsState = function () {
         return SourceObservation.storageRestMetricsState(page)
@@ -256,7 +271,7 @@ function deliveryView(page, common) {
         return SourceObservation.deliveryProtocolRow(page, label, protocolId, signalKey)
     }
     page.deliverySourceMode = function () {
-        return page.model.sourceRouting.effectiveMessagingSourceMode(page.model.messagingSourceMode)
+        return String(page.sourceRoute().effectiveMode || "")
     }
     page.moduleMetricsText = function () {
         return SourceObservation.deliveryModuleMetricsText(page)

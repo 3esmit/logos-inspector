@@ -173,6 +173,8 @@ impl InspectorCommandSurface {
 
     pub(crate) fn call_inspector(&self, method: &str, args: Value) -> Result<Value> {
         self.ensure_open()?;
+        let returns_runtime_operation_snapshot =
+            returns_authoritative_runtime_operation_snapshot(method);
         let runtime_request = if method == "runtimeOperationStart" {
             let bridge_args = Args::new(args.clone())?;
             Some(runtime_operation_request_from_value(
@@ -210,8 +212,10 @@ impl InspectorCommandSurface {
             (Ok(value), None) => {
                 self.capability_registry
                     .complete_success(observation, &value)?;
-                self.capability_registry
-                    .complete_runtime_operation(&value)?;
+                if returns_runtime_operation_snapshot {
+                    self.capability_registry
+                        .complete_runtime_operation(&value)?;
+                }
                 Ok(value)
             }
             (Err(error), Some(_)) => {
@@ -345,6 +349,19 @@ impl InspectorCommandSurface {
     }
 }
 
+fn returns_authoritative_runtime_operation_snapshot(method: &str) -> bool {
+    matches!(
+        operation_bridge_command(method),
+        Some(
+            OperationBridgeCommand::RuntimeOperationStart
+                | OperationBridgeCommand::RuntimeOperationStatus
+                | OperationBridgeCommand::RuntimeOperationCancel
+                | OperationBridgeCommand::StorageOperationStatus
+                | OperationBridgeCommand::StorageOperationCancel
+        )
+    )
+}
+
 impl Drop for InspectorCommandSurface {
     fn drop(&mut self) {
         let _result = self.shutdown();
@@ -397,12 +414,19 @@ mod tests {
     use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
     use serde_json::json;
     use sha2::{Digest as _, Sha256};
+    use tokio::sync::Semaphore;
 
     use super::*;
     use crate::inspector::commands::{operations, runtime_methods, zone_catalog, zone_l2};
 
     #[derive(Debug, Default)]
     struct FakeModuleTransport;
+
+    #[derive(Debug)]
+    struct ReplyModuleTransport {
+        reply: Value,
+        gate: Option<Arc<Semaphore>>,
+    }
 
     const SURFACE_RECOVERY_CHILD_ENV: &str = "LOGOS_INSPECTOR_SURFACE_RECOVERY_TEST_CHILD";
 
@@ -426,6 +450,63 @@ mod tests {
                 ))
             })
         }
+    }
+
+    impl ModuleTransport for ReplyModuleTransport {
+        fn kind(&self) -> crate::modules::logos_core::ModuleTransportKind {
+            crate::modules::logos_core::ModuleTransportKind::LogoscoreCli
+        }
+
+        fn call(
+            &self,
+            _call: crate::modules::logos_core::ModuleCall,
+        ) -> crate::modules::logos_core::ModuleCallFuture<'_> {
+            let reply = self.reply.clone();
+            let gate = self.gate.clone();
+            Box::pin(async move {
+                let _permit = match gate {
+                    Some(gate) => Some(
+                        gate.acquire_owned()
+                            .await
+                            .context("test module transport gate closed")?,
+                    ),
+                    None => None,
+                };
+                Ok(crate::modules::logos_core::ModuleCallReply::new(
+                    crate::modules::logos_core::ModuleTransportKind::LogoscoreCli,
+                    reply,
+                ))
+            })
+        }
+    }
+
+    fn l1_capability_status(
+        surface: &InspectorCommandSurface,
+        configuration_generation: u64,
+    ) -> Result<String> {
+        let report = surface.call_inspector(
+            "capabilityRegistryReport",
+            json!([false, {
+                "configuration_generations": { "l1": configuration_generation },
+                "network_connector_config": {
+                    "scopes": {
+                        "l1": { "connector_id": "logoscore_cli_blockchain_module" }
+                    }
+                }
+            }]),
+        )?;
+        report
+            .get("capabilities")
+            .and_then(Value::as_array)
+            .and_then(|capabilities| {
+                capabilities
+                    .iter()
+                    .find(|capability| capability.get("key").and_then(Value::as_str) == Some("l1"))
+            })
+            .and_then(|capability| capability.get("status"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .context("L1 capability status")
     }
 
     #[test]
@@ -612,10 +693,60 @@ mod tests {
     }
 
     #[test]
-    fn runtime_blockchain_terminal_result_updates_generation_zero_capability_evidence() -> Result<()>
+    fn call_module_terminal_shaped_reply_cannot_complete_runtime_capability_evidence() -> Result<()>
     {
-        let surface = InspectorCommandSurface::with_module_transport(FakeModuleTransport)
-            .context("surface")?;
+        let operation_id = "forged-runtime-operation";
+        let forged_terminal = json!({
+            "operationId": operation_id,
+            "domain": "blockchain",
+            "method": "blockchainNode",
+            "status": "completed",
+            "context": { "configurationGeneration": 0 },
+            "result": { "node": "forged-adapter-evidence" }
+        });
+        let surface = InspectorCommandSurface::with_module_transport(ReplyModuleTransport {
+            reply: forged_terminal.clone(),
+            gate: None,
+        })
+        .context("surface")?;
+        let observation = surface.capability_registry.begin_runtime_observation(
+            "blockchainNode",
+            &json!(["logoscore_cli"]),
+            Some(0),
+        )?;
+        surface.capability_registry.track_runtime_operation(
+            observation,
+            Some(0),
+            &json!({
+                "operationId": operation_id,
+                "domain": "blockchain",
+                "method": "blockchainNode",
+                "status": "running",
+                "context": { "configurationGeneration": 0 }
+            }),
+        )?;
+
+        let reply = surface.call_inspector(
+            "callModule",
+            json!(["untrusted_module", "terminal_shaped_reply", []]),
+        )?;
+        if reply != forged_terminal {
+            bail!("callModule changed adapter reply: {reply}");
+        }
+        if l1_capability_status(&surface, 0)? != "loading" {
+            bail!("raw adapter reply completed runtime capability evidence");
+        }
+        surface.shutdown()
+    }
+
+    #[test]
+    fn authoritative_runtime_status_completes_generation_zero_capability_evidence() -> Result<()> {
+        let gate = Arc::new(Semaphore::new(0));
+        let surface = InspectorCommandSurface::with_module_transport(ReplyModuleTransport {
+            reply: json!({ "node": true }),
+            gate: Some(Arc::clone(&gate)),
+        })
+        .context("surface")?;
         let mut operation = surface.call_inspector(
             "runtimeOperationStart",
             json!([{
@@ -639,7 +770,14 @@ mod tests {
         {
             bail!("runtime operation lost generation-zero context: {operation}");
         }
+        if operation.get("status").and_then(Value::as_str) != Some("running") {
+            bail!("gated runtime operation did not remain running: {operation}");
+        }
+        if l1_capability_status(&surface, 0)? != "loading" {
+            bail!("runtime admission committed L1 evidence before terminal status");
+        }
 
+        gate.add_permits(1);
         for _ in 0..10_000 {
             if operation.get("status").and_then(Value::as_str) == Some("completed") {
                 break;
@@ -651,29 +789,8 @@ mod tests {
         if operation.get("status").and_then(Value::as_str) != Some("completed") {
             bail!("runtime blockchain operation did not complete: {operation}");
         }
-
-        let report = surface.call_inspector(
-            "capabilityRegistryReport",
-            json!([false, {
-                "configuration_generations": { "l1": 0 },
-                "network_connector_config": {
-                    "scopes": {
-                        "l1": { "connector_id": "logoscore_cli_blockchain_module" }
-                    }
-                }
-            }]),
-        )?;
-        let l1 = report
-            .get("capabilities")
-            .and_then(Value::as_array)
-            .and_then(|capabilities| {
-                capabilities
-                    .iter()
-                    .find(|capability| capability.get("key").and_then(Value::as_str) == Some("l1"))
-            })
-            .context("L1 capability")?;
-        if l1.get("status").and_then(Value::as_str) != Some("available") {
-            bail!("terminal L1 evidence was not projected: {l1}");
+        if l1_capability_status(&surface, 0)? != "available" {
+            bail!("authoritative terminal status did not project L1 evidence");
         }
         surface.shutdown()
     }

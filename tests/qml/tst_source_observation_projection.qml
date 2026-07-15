@@ -21,6 +21,8 @@ TestCase {
             return storageModel.metricValues[String(key || "")]
         }
         function sourceCapabilityAvailable(report, key) { return false }
+        function valueText(value) { return String(value) }
+        function scalarValue(value) { return value }
     }
 
     QtObject {
@@ -72,6 +74,13 @@ TestCase {
         function status() { return { known: true, ok: true, detail: "ok" } }
         function statusTone() { return "success" }
         function storageSourceMode() { return "rest" }
+        function rollingWindow() { return 30 }
+        function storageCidProbe() { return "" }
+        function sourceMutatingDiagnosticsEnabled() { return false }
+        function sourceTarget() { return "http://storage" }
+        function sourceNetworkPreset() { return "logos.test" }
+        function sourceRestEndpoint() { return "http://storage" }
+        function sourceMetricsEndpoint() { return "http://storage/metrics" }
         function metricsEndpointConfigured() { return testRoot.storageMetricsConfigured }
         function report() { return null }
         function valueSummary(value) { return value === null || value === undefined ? "n/a" : JSON.stringify(value) }
@@ -105,6 +114,8 @@ TestCase {
             return String(value || "") === "ready"
         }
         function sourceCapabilityAvailable(report, key) { return false }
+        function valueText(value) { return String(value) }
+        function scalarValue(value) { return value }
     }
 
     QtObject {
@@ -152,6 +163,11 @@ TestCase {
         function healthValueTone(value) { return SourceObservation.deliveryHealthValueTone(deliveryPage, value) }
         function protocolHealthRows() { return SourceObservation.deliveryProtocolHealthRows(deliveryPage) }
         function deliverySourceMode() { return "metrics" }
+        function rollingWindow() { return 45 }
+        function sourceNetworkPreset() { return "logos.test" }
+        function sourceRestEndpoint() { return "http://delivery" }
+        function sourceMetricsEndpoint() { return "http://delivery/metrics" }
+        function sourceTarget() { return "http://delivery" }
         function report() { return null }
         function statusTone() { return "success" }
     }

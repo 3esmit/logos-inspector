@@ -237,9 +237,7 @@ TestCase {
 	            ]
 	        })
 	        gates.compatibilityAvailability = ({
-	            "social.identity.local": true,
-	            "storage.shared_idl.sync_read": true,
-	            "storage.shared_idl.sync_upload": true
+	            "social.identity.local": true
 	        })
 
         const comments = gates.socialGate("comments.write")
@@ -253,39 +251,79 @@ TestCase {
 	        compare(sharedWrite.missing[0].dependency, "storage.content.upload")
 	    }
 
-    function test_shared_idl_blocks_unsupported_sync_storage_path() {
+    function test_missing_registry_capability_ignores_qml_compatibility_fallback() {
+        gates.registryLoaded = true
+        gates.registryReport = ({ schema_version: 1, capabilities: [] })
+        gates.compatibilityAvailability = ({
+            "storage.shared_idl.sync_read": {
+                status: "available",
+                provenance: "source_routing"
+            }
+        })
+
+        const gate = gates.gateFor("storage.shared_idl.sync_read")
+
+        verify(!gate.enabled)
+        compare(gate.status, "disabled")
+        compare(gate.missing[0].dependency, "storage.shared_idl.sync_read")
+        compare(gate.missing[0].provenance, "capability_registry")
+    }
+
+    function test_local_identity_remains_an_app_owned_compatibility_dependency() {
+        gates.registryLoaded = true
+        gates.registryReport = ({ schema_version: 1, capabilities: [] })
+        gates.compatibilityAvailability = ({
+            "social.identity.local": {
+                status: "available",
+                provenance: "local_identity"
+            }
+        })
+
+        const gate = gates.gateFor("social.identity.local")
+
+        verify(gate.enabled)
+        compare(gate.provenance[0], "local_identity")
+    }
+
+    function test_shared_idl_blocks_when_registry_reports_sync_unavailable() {
         gates.registryLoaded = true
         gates.registryReport = ({
             schema_version: 1,
-	            capabilities: [
-	                {
-	                    key: "delivery",
-	                    label: "Delivery",
-	                    status: "available",
-	                    sub_capabilities: ["delivery.store.query", "delivery.send"]
-	                },
-	                {
-	                    key: "storage",
-	                    label: "Storage",
-	                    status: "available",
-	                    sub_capabilities: ["storage.content.read_by_cid", "storage.content.upload"]
-	                }
-	            ]
-	        })
-	        gates.compatibilityAvailability = ({
-	            "social.identity.local": true,
-	            "storage.shared_idl.sync_read": { status: "unavailable", provenance: "source_routing" },
-	            "storage.shared_idl.sync_upload": { status: "unavailable", provenance: "source_routing" }
-	        })
+            capabilities: [
+                {
+                    key: "delivery",
+                    label: "Delivery",
+                    status: "available",
+                    sub_capabilities: ["delivery.store.query", "delivery.send"]
+                },
+                {
+                    key: "storage",
+                    label: "Storage",
+                    status: "degraded",
+                    sub_capabilities: [
+                        "storage.content.read_by_cid",
+                        "storage.content.upload",
+                        "storage.shared_idl.sync_read",
+                        "storage.shared_idl.sync_upload"
+                    ],
+                    unavailable_sub_capabilities: [
+                        "storage.shared_idl.sync_read",
+                        "storage.shared_idl.sync_upload"
+                    ]
+                }
+            ]
+        })
+        gates.compatibilityAvailability = ({ "social.identity.local": true })
 
-	        const sharedRead = gates.socialGate("shared_idl.read")
-	        const sharedWrite = gates.socialGate("shared_idl.write")
+        const sharedRead = gates.socialGate("shared_idl.read")
+        const sharedWrite = gates.socialGate("shared_idl.write")
 
-	        verify(!sharedRead.enabled)
-	        compare(sharedRead.missing[0].dependency, "storage.shared_idl.sync_read")
-	        compare(sharedRead.missing[0].provenance, "source_routing")
+        verify(!sharedRead.enabled)
+        compare(sharedRead.missing[0].dependency, "storage.shared_idl.sync_read")
+        compare(sharedRead.missing[0].provenance, "capability_registry")
         verify(!sharedWrite.enabled)
         compare(sharedWrite.missing[0].dependency, "storage.shared_idl.sync_upload")
+        compare(sharedWrite.missing[0].provenance, "capability_registry")
     }
 
     function test_backup_storage_gate_requires_sync_transport_subcapability() {
