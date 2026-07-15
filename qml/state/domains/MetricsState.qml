@@ -16,6 +16,7 @@ QtObject {
     required property var dashboardNode
     required property var dashboardL1Blocks
     required property var dashboardBlocks
+    required property var dashboardProvisionalBlocks
 
     property int blockchainRefreshRate: 30
     property int messagingRefreshRate: 30

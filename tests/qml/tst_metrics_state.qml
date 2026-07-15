@@ -11,6 +11,7 @@ TestCase {
     property var dashboardNode: null
     property var dashboardL1Blocks: []
     property var dashboardBlocks: []
+    property var dashboardProvisionalBlocks: []
     property int joinedCompletionCount: 0
 
     QtObject {
@@ -223,6 +224,7 @@ TestCase {
         dashboardNode: testRoot.dashboardNode
         dashboardL1Blocks: testRoot.dashboardL1Blocks
         dashboardBlocks: testRoot.dashboardBlocks
+        dashboardProvisionalBlocks: testRoot.dashboardProvisionalBlocks
     }
 
     function sourceReport(ready, marker) {
@@ -308,6 +310,7 @@ TestCase {
         testRoot.dashboardNode = null
         testRoot.dashboardL1Blocks = []
         testRoot.dashboardBlocks = []
+        testRoot.dashboardProvisionalBlocks = []
         joinedCompletionCount = 0
         resetMetrics()
     }

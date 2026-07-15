@@ -91,6 +91,7 @@ QtObject {
         dashboardNode: chainPageState.dashboardNode
         dashboardL1Blocks: chainPageState.dashboardL1Blocks
         dashboardBlocks: chainPageState.dashboardBlocks
+        dashboardProvisionalBlocks: chainPageState.dashboardProvisionalBlocks
         gateway: QtObject {
             function requestModuleAsyncUnobserved(moduleName, method, args, label,
                     showResult, callback, acceptResponse) {
@@ -1425,28 +1426,17 @@ QtObject {
         }
     }
 
-	    function capabilityLocalAvailability() {
-	        const identity = socialState.identitiesView()
-	        const localIdentityReady = identity.rows.length > 0
-	            || identity.selectedKey.length > 0 || identity.defaultMode !== "manual"
-	        const storageMode = sourceRouting.resolvedSourceModeKey(
-	            "storage", sourceRouting.connectorSourceMode("storage", storageSourceMode))
-	        const storageSyncRead = storageMode === "rest"
-	        const storageSyncUpload = storageMode === "rest" || storageMode === "logoscore_cli"
-	        return {
-	            "social.identity.local": { status: localIdentityReady ? "available" : "input_required", provenance: "local_identity" },
-	            "storage.shared_idl.sync_read": {
-	                status: storageSyncRead ? "available" : "unavailable",
-	                label: qsTr("Storage synchronous CID read"),
-	                provenance: "source_routing"
-	            },
-	            "storage.shared_idl.sync_upload": {
-	                status: storageSyncUpload ? "available" : "unavailable",
-	                label: qsTr("Storage synchronous payload upload"),
-	                provenance: "source_routing"
-	            }
-	        }
-	    }
+    function capabilityLocalAvailability() {
+        const identity = socialState.identitiesView()
+        const localIdentityReady = identity.rows.length > 0
+            || identity.selectedKey.length > 0 || identity.defaultMode !== "manual"
+        return {
+            "social.identity.local": {
+                status: localIdentityReady ? "available" : "input_required",
+                provenance: "local_identity"
+            }
+        }
+    }
 
     function defaultNetworkConnectorConfig() {
         return {

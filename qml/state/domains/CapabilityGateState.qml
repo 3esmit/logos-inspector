@@ -169,9 +169,11 @@ QtObject {
 
         const capability = reportCapabilityForDependency(key)
         if (!capability) {
-            const compatibility = compatibilityGate(key)
-            if (compatibility !== null) {
-                return compatibility
+            if (isLocalCompatibilityDependency(key)) {
+                const compatibility = compatibilityGate(key)
+                if (compatibility !== null) {
+                    return compatibility
+                }
             }
             if (!registryLoaded) {
                 return disabledGate("loading", [missingRecord(key, key, "loading", key, "capability_registry")], [], ["capability_registry"])
@@ -219,6 +221,10 @@ QtObject {
             return disabledGate("input_required", [missingRecord(dependency, label, "input_required", dependency, provenance[0])], [], provenance)
         }
         return disabledGate("disabled", [missingRecord(dependency, label, "unavailable", dependency, provenance[0])], [], provenance)
+    }
+
+    function isLocalCompatibilityDependency(dependency) {
+        return String(dependency || "") === "social.identity.local"
     }
 
     function normalizedCompatibilityStatus(entry) {

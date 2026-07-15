@@ -77,7 +77,7 @@ function storageHealthRows(page) {
         page.statusRow(qsTr("DHT / discovery"), debugKnown ? qsTr("observed") : qsTr("unknown"), debugKnown ? page.sourceFactEvidence("debug", page.valueSummary(page.probeValue("debug"))) : qsTr("Debug source unavailable."), debugKnown ? "success" : "neutral"),
         page.statusRow(qsTr("Connected peers"), page.metricKnown("storage.peer_count") ? qsTr("observed") : qsTr("unknown"), page.metricDisplay("storage.peer_count"), page.metricKnown("storage.peer_count") ? "success" : "neutral"),
         page.statusRow(qsTr("Repository and host disk"), spaceKnown ? qsTr("observed") : qsTr("unknown"), storageCapacitySummary(page), spaceKnown ? "success" : "neutral"),
-        page.statusRow(qsTr("Recent transfer failures"), page.metricKnown("storage.failed_transfers_recent") ? page.metricDisplay("storage.failed_transfers_recent") : qsTr("unknown"), page.metricKnown("storage.failed_transfers_recent") ? qsTr("%1 s window").arg(page.model.storageRollingWindow) : qsTr("Metric not exposed by current source."), page.metricKnown("storage.failed_transfers_recent") ? (Number(page.model.metrics.dashboardMetricValue("storage.failed_transfers_recent")) > 0 ? "error" : "success") : "neutral"),
+        page.statusRow(qsTr("Recent transfer failures"), page.metricKnown("storage.failed_transfers_recent") ? page.metricDisplay("storage.failed_transfers_recent") : qsTr("unknown"), page.metricKnown("storage.failed_transfers_recent") ? qsTr("%1 s window").arg(page.rollingWindow()) : qsTr("Metric not exposed by current source."), page.metricKnown("storage.failed_transfers_recent") ? (Number(page.model.metrics.dashboardMetricValue("storage.failed_transfers_recent")) > 0 ? "error" : "success") : "neutral"),
         page.statusRow(qsTr("Mix / private queries"), qsTr("not queried"), qsTr("No passive metric selected."), "neutral")
     ]
 }
@@ -96,8 +96,8 @@ function storageActiveOperationRows(page) {
 function storageTopologyRows(page) {
     return [
         page.statusRow(qsTr("DHT routing table"), page.probeKnown("debug") ? qsTr("observed") : qsTr("unknown"), page.probeKnown("debug") ? page.valueSummary(page.probeValue("debug")) : qsTr("Current source has no DHT table."), page.probeKnown("debug") ? "success" : "neutral"),
-        page.statusRow(qsTr("Connected peers"), page.metricKnown("storage.peer_count") ? page.metricDisplay("storage.peer_count") : qsTr("unknown"), page.metricKnown("storage.peer_count") ? qsTr("%1 s window").arg(page.model.storageRollingWindow) : qsTr("Metric not exposed by current source."), page.metricKnown("storage.peer_count") ? "success" : "neutral"),
-        page.statusRow(qsTr("Providers for CID"), page.model.storageCidProbe.length > 0 ? qsTr("not queried") : qsTr("no CID"), page.model.storageCidProbe.length > 0 ? qsTr("Provider lookup is explicit.") : qsTr("Select a CID first."), "neutral"),
+        page.statusRow(qsTr("Connected peers"), page.metricKnown("storage.peer_count") ? page.metricDisplay("storage.peer_count") : qsTr("unknown"), page.metricKnown("storage.peer_count") ? qsTr("%1 s window").arg(page.rollingWindow()) : qsTr("Metric not exposed by current source."), page.metricKnown("storage.peer_count") ? "success" : "neutral"),
+        page.statusRow(qsTr("Providers for CID"), page.storageCidProbe().length > 0 ? qsTr("not queried") : qsTr("no CID"), page.storageCidProbe().length > 0 ? qsTr("Provider lookup is explicit.") : qsTr("Select a CID first."), "neutral"),
         page.statusRow(qsTr("Block exchange peers"), qsTr("unknown"), qsTr("Passive source does not expose transfer edges."), "neutral"),
         page.statusRow(qsTr("Mix proxies"), qsTr("unknown"), qsTr("Private-query topology is not exposed passively."), "neutral")
     ]
@@ -128,7 +128,7 @@ function storageTransferRows(page) {
         page.metricRow(qsTr("Download requests"), "storage.active_downloads"),
         page.metricRow(qsTr("Recent transfer failures"), "storage.failed_transfers_recent"),
         page.metricRow(qsTr("Historical transfer failures"), "storage.failed_transfers_total"),
-        page.statusRow(qsTr("Upload diagnostics"), qsTr("disabled"), qsTr("Mutating diagnostics require explicit backend support."), page.model.storageMutatingDiagnosticsEnabled ? "warning" : "neutral"),
+        page.statusRow(qsTr("Upload diagnostics"), qsTr("disabled"), qsTr("Mutating diagnostics require explicit backend support."), page.sourceMutatingDiagnosticsEnabled() ? "warning" : "neutral"),
         page.activeDownloadRow()
     ]
 }
@@ -157,16 +157,16 @@ function storageActiveStorageOperationDetail(page, operation) {
     if (Number.isFinite(total) && total > 0) {
         const percent = Math.min(100, Math.max(0, Math.floor((written / total) * 100)))
         return qsTr("%1 / %2 bytes (%3%) to %4")
-            .arg(page.model.valueText(written))
-            .arg(page.model.valueText(total))
+            .arg(page.model.metrics.valueText(written))
+            .arg(page.model.metrics.valueText(total))
             .arg(percent)
             .arg(path)
     }
-    return qsTr("%1 bytes to %2").arg(page.model.valueText(written)).arg(path)
+    return qsTr("%1 bytes to %2").arg(page.model.metrics.valueText(written)).arg(path)
 }
 
 function storageCidRows(page) {
-    const cid = String(page.model.storageCidProbe || "").trim()
+    const cid = page.storageCidProbe().trim()
     if (!cid.length) {
         return [
             page.detailRow(qsTr("Selected CID"), qsTr("n/a")),
@@ -190,7 +190,7 @@ function storageProtocolRows(page) {
         page.protocolRow(qsTr("Merkle verification"), "storage-root", false, qsTr("No passive verification source.")),
         page.protocolRow(qsTr("DHT discovery"), "libp2p/kad-dht", page.probeKnown("debug"), page.probeKnown("debug") ? page.valueSummary(page.probeValue("debug")) : qsTr("No DHT table.")),
         page.protocolRow(qsTr("Block exchange"), "storage/blockexchange", page.metricKnown("storage.active_downloads") || page.metricKnown("storage.active_uploads"), page.transferSummary()),
-        page.protocolRow(qsTr("REST / C API"), "/api/storage/v1", page.storageSourceMode() === "rest", page.model.sourceRouting.storageSourceTarget()),
+        page.protocolRow(qsTr("REST / C API"), "/api/storage/v1", page.storageSourceMode() === "rest", page.sourceTarget()),
         page.protocolRow(qsTr("Mix / private queries"), "private queries", false, qsTr("No passive signal."))
     ]
 }
@@ -201,8 +201,8 @@ function storageIdentityRows(page) {
         page.detailRow(qsTr("SPR"), page.probeValue("spr")),
         page.pathDetailRow(qsTr("Data directory"), page.probeValue("dataDir") || page.model.storageDataDir),
         page.detailRow(qsTr("Version"), page.probeValue("version") || page.probeValue("moduleVersion")),
-        page.detailRow(qsTr("Network preset"), page.model.storageNetworkPreset),
-        page.detailRow(qsTr("Source target"), page.model.sourceRouting.storageSourceTarget())
+        page.detailRow(qsTr("Network preset"), page.sourceNetworkPreset()),
+        page.detailRow(qsTr("Source target"), page.sourceTarget())
     ]
 }
 
@@ -219,7 +219,7 @@ function storageMetricEvidence(page, key) {
     case "storage.failed_transfers_total":
         return qsTr("Counter total")
     default:
-        return qsTr("%1 s window").arg(page.model.storageRollingWindow)
+        return qsTr("%1 s window").arg(page.rollingWindow())
     }
 }
 
@@ -234,7 +234,7 @@ function storageManifestCountRow(page) {
 function storageSpaceRow(page, label, keys) {
     const value = objectField(page.probeValue("space"), keys)
     if (value !== null) {
-        return page.statusRow(label, page.model.valueText(value), qsTr("space"), "success")
+        return page.statusRow(label, page.model.metrics.valueText(value), qsTr("space"), "success")
     }
     return page.statusRow(label, qsTr("n/a"), page.probeKnown("space") ? qsTr("Field not exposed by current space shape.") : qsTr("Space source unavailable."), "neutral")
 }
@@ -289,21 +289,21 @@ function storageRestMetricsEvidence(page) {
         return metricsEvidence.length > 0 && metricsEvidence !== "not observed" ? metricsEvidence : qsTr("Module API")
     }
     if (sourceMode === "metrics") {
-        return metricsEvidence.length > 0 && metricsEvidence !== "not observed" ? metricsEvidence : page.shortText(page.model.storageMetricsUrl, 48)
+        return metricsEvidence.length > 0 && metricsEvidence !== "not observed" ? metricsEvidence : page.shortText(page.sourceMetricsEndpoint(), 48)
     }
     if (sourceMode === "rest" && page.metricsEndpointConfigured()) {
         const metricsProbe = page.probe("collectMetrics")
         if (metricsProbe && metricsProbe.ok === false && metricsProbe.error) {
             return qsTr("REST %1; metrics %2: %3")
-                .arg(page.shortText(page.model.storageRestUrl, 24))
-                .arg(page.shortText(page.model.storageMetricsUrl, 24))
+                .arg(page.shortText(page.sourceRestEndpoint(), 24))
+                .arg(page.shortText(page.sourceMetricsEndpoint(), 24))
                 .arg(page.shortText(metricsProbe.error, 36))
         }
         return qsTr("REST %1; metrics %2")
-            .arg(page.shortText(page.model.storageRestUrl, 28))
-            .arg(page.shortText(page.model.storageMetricsUrl, 28))
+            .arg(page.shortText(page.sourceRestEndpoint(), 28))
+            .arg(page.shortText(page.sourceMetricsEndpoint(), 28))
     }
-    return page.shortText(page.model.storageRestUrl, 48)
+    return page.shortText(page.sourceRestEndpoint(), 48)
 }
 
 function storageRestMetricsTone(page) {
@@ -390,7 +390,7 @@ function deliveryHealthRows(page) {
         page.statusRow(qsTr("Source and lifecycle"), status.known ? (status.ok ? qsTr("reachable") : qsTr("problem")) : qsTr("unknown"), status.detail || qsTr("Not queried"), page.statusTone()),
         page.statusRow(qsTr("Identity"), page.sourceFactAvailable("identity") || identity !== null ? qsTr("present") : qsTr("unknown"), page.identityEvidence(), page.sourceFactAvailable("identity") || identity !== null ? "success" : "neutral"),
         page.statusRow(qsTr("Node health"), nodeHealth !== null ? page.valueSummary(nodeHealth) : qsTr("unknown"), page.valueSummary(connectionStatus), nodeTone),
-        page.statusRow(qsTr("Preset, cluster, shards"), page.model.messagingNetworkPreset.length ? qsTr("configured") : qsTr("unknown"), page.model.normalizedMessagingNetworkPreset(page.model.messagingNetworkPreset) || qsTr("No preset"), page.model.messagingNetworkPreset.length ? "success" : "neutral"),
+        page.statusRow(qsTr("Preset, cluster, shards"), page.sourceNetworkPreset().length ? qsTr("configured") : qsTr("unknown"), page.sourceNetworkPreset() || qsTr("No preset"), page.sourceNetworkPreset().length ? "success" : "neutral"),
         page.statusRow(qsTr("REST and metrics access"), page.restMetricsState(), page.restMetricsEvidence(), page.restMetricsTone()),
         page.statusRow(qsTr("Relay"), page.sourceFactObservedState("relay", relayKnown), relayKnown ? page.metricDisplay("messaging.pubsub_peers") : page.sourceFactEvidence("relay", qsTr("No relay fact.")), page.sourceFactObservedTone("relay", relayKnown)),
         page.statusRow(qsTr("Store"), page.sourceFactObservedState("store", storeKnown), storeKnown ? page.metricDisplay("messaging.store_peers") : page.sourceFactEvidence("store", qsTr("No Store fact.")), page.sourceFactObservedTone("store", storeKnown)),
@@ -613,7 +613,7 @@ function deliveryMetricRow(page, label, key) {
 
 function deliveryMetricEvidence(page, key) {
     return page.model.metrics.dashboardMetricUsesWindow(key)
-        ? qsTr("%1 s window").arg(page.model.messagingRollingWindow)
+        ? qsTr("%1 s window").arg(page.rollingWindow())
         : qsTr("OpenMetrics value")
 }
 
@@ -669,14 +669,14 @@ function deliveryRestMetricsEvidence(page) {
         return metricsEvidence.length > 0 && metricsEvidence !== "not observed" ? metricsEvidence : qsTr("Module API")
     }
     if (sourceMode === "metrics") {
-        return metricsEvidence.length > 0 && metricsEvidence !== "not observed" ? metricsEvidence : page.shortText(page.model.messagingMetricsUrl, 48)
+        return metricsEvidence.length > 0 && metricsEvidence !== "not observed" ? metricsEvidence : page.shortText(page.sourceMetricsEndpoint(), 48)
     }
     if (sourceMode === "network-monitor") {
         return qsTr("%1; metrics %2")
-            .arg(page.shortText(page.model.sourceRouting.deliverySourceTarget(), 24))
-            .arg(page.shortText(page.model.messagingMetricsUrl, 24))
+            .arg(page.shortText(page.sourceTarget(), 24))
+            .arg(page.shortText(page.sourceMetricsEndpoint(), 24))
     }
-    return page.shortText(page.model.messagingRestUrl, 48)
+    return page.shortText(page.sourceRestEndpoint(), 48)
 }
 
 function deliveryModuleMetricsText(page) {
@@ -726,7 +726,7 @@ function deliveryServicePeerCount(page) {
 
 function deliveryCountValue(page, value) {
     return UiFormat.countValue(value, {
-        scalarValue: page.model.scalarValue,
+        scalarValue: page.model.metrics.scalarValue,
         nestedKeys: ["peers", "allPeers", "all_peers", "contentTopics", "content_topics", "topics", "items", "value", "result"]
     })
 }

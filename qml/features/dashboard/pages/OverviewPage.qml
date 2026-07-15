@@ -284,20 +284,20 @@ ColumnLayout {
     }
 
     StatusMessage {
-        visible: root.model.dashboardError.length > 0
+        visible: root.model.metrics.dashboardError.length > 0
         theme: root.theme
         tone: "warning"
         title: qsTr("Dashboard refresh failed")
-        message: root.model.dashboardError
+        message: root.model.metrics.dashboardError
         Layout.fillWidth: true
     }
 
     function overview() {
-        return model.dashboardOverview || {};
+        return model.metrics.dashboardOverview || {};
     }
 
     function nodeReport() {
-        return model.dashboardNode || {};
+        return model.metrics.dashboardNode || {};
     }
 
     function chainLabel() {
@@ -345,7 +345,7 @@ ColumnLayout {
 
     function cryptarchiaValue(key) {
         const value = cryptarchiaInfo()[key];
-        return value === undefined || value === null ? null : root.model.scalarValue(value);
+        return value === undefined || value === null ? null : root.model.metrics.scalarValue(value);
     }
 
     function networkInfo() {
@@ -363,12 +363,12 @@ ColumnLayout {
 
     function networkValue(key) {
         const value = networkInfo()[key];
-        return value === undefined || value === null ? null : root.model.scalarValue(value);
+        return value === undefined || value === null ? null : root.model.metrics.scalarValue(value);
     }
 
     function mantleValue(key) {
         const value = mantleInfo()[key];
-        return value === undefined || value === null ? null : root.model.scalarValue(value);
+        return value === undefined || value === null ? null : root.model.metrics.scalarValue(value);
     }
 
     function modeText() {
@@ -443,11 +443,11 @@ ColumnLayout {
 
     function probeValue(section, field) {
         const target = root.probe(section, field)
-        return target && target.value !== undefined && target.value !== null ? root.model.scalarValue(target.value) : null
+        return target && target.value !== undefined && target.value !== null ? root.model.metrics.scalarValue(target.value) : null
     }
 
     function numberText(value) {
-        const scalar = root.model.scalarValue(value)
+        const scalar = root.model.metrics.scalarValue(value)
         if (scalar === undefined || scalar === null || scalar === "") {
             return "-";
         }
@@ -466,7 +466,7 @@ ColumnLayout {
     }
 
     function l1BlockRows() {
-        const dashboardL1Blocks = root.model.dashboardL1Blocks || []
+        const dashboardL1Blocks = root.model.metrics.dashboardL1Blocks || []
         if (dashboardL1Blocks.length > 0) {
             return dashboardL1Blocks.slice(0, 5).map(function (block) {
                 const header = block.header || {}
@@ -482,7 +482,7 @@ ColumnLayout {
                 }
             })
         }
-        const blocks = root.model.blocksPageRows || []
+        const blocks = root.model.chainPages.blocksPageRows || []
         if (blocks.length > 0 && root.blocksPageRowsAreCurrent()) {
             return blocks.slice(0, 5).map(function (block) {
                 const header = block.header || {}
@@ -520,7 +520,7 @@ ColumnLayout {
 
     function blocksPageRowsAreCurrent() {
         const libSlot = Number(root.cryptarchiaValue("slot"))
-        const slotTo = Number(root.model.blocksPageSlotTo)
+        const slotTo = Number(root.model.chainPages.blocksPageSlotTo)
         return Number.isFinite(libSlot) && libSlot > 0 && Number.isFinite(slotTo) && slotTo >= libSlot
     }
 
@@ -553,11 +553,12 @@ ColumnLayout {
     }
 
     function l2BlocksForDashboard() {
-        return root.model.dashboardLezBlockRows || []
+        return root.model.chainPages.dashboardLezBlockRows || []
     }
 
     function l1TransactionRows() {
-        const transactions = root.model.chainPages.transactionRowsFromBlocks(root.model.blocksPageRows || []).slice(0, 5)
+        const transactions = root.model.chainPages.transactionRowsFromBlocks(
+            root.model.chainPages.blocksPageRows || []).slice(0, 5)
         if (transactions.length > 0) {
             return transactions.map(function (tx) {
                 const txHash = String(tx.hash || "")

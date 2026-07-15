@@ -531,6 +531,8 @@ TestCase {
                         "storage.content.upload",
                         "storage.backup.sync_read_by_cid",
                         "storage.backup.sync_upload",
+                        "storage.shared_idl.sync_read",
+                        "storage.shared_idl.sync_upload",
                         "storage.rest.upload",
                         "storage.rest.read_by_cid",
                         "storage.content.download_to_file",
@@ -1890,6 +1892,39 @@ TestCase {
         const basecamp = basecampModel.capabilityRegistryRuntimeInputs().wallet_connector_config
         compare(basecamp.scopes["wallet.l1"].connector_id, "blockchain_module")
         compare(basecamp.scopes["wallet.l2"].connector_id, "lez_core")
+    }
+
+    function test_source_routing_does_not_fabricate_shared_idl_capabilities() {
+        model.storageSourceMode = "rest"
+        model.capabilityRegistryLoaded = true
+        model.capabilityRegistryReport = ({
+            schema_version: 1,
+            capabilities: [
+                {
+                    key: "delivery",
+                    label: "Delivery",
+                    status: "available",
+                    sub_capabilities: ["delivery.store.query"]
+                },
+                {
+                    key: "storage",
+                    label: "Storage",
+                    status: "available",
+                    sub_capabilities: ["storage.content.read_by_cid"]
+                }
+            ]
+        })
+
+        const localAvailability = model.capabilityLocalAvailability()
+        const gate = model.socialGate("shared_idl.read")
+
+        verify(localAvailability["social.identity.local"] !== undefined)
+        verify(localAvailability["storage.shared_idl.sync_read"] === undefined)
+        verify(localAvailability["storage.shared_idl.sync_upload"] === undefined)
+        verify(!gate.enabled)
+        compare(gate.missing.length, 1)
+        compare(gate.missing[0].dependency, "storage.shared_idl.sync_read")
+        compare(gate.missing[0].provenance, "capability_registry")
     }
 
     function test_zone_scopes_isolate_programs_decode_choices_and_dashboard() {

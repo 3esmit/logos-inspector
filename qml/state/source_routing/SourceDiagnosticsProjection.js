@@ -25,7 +25,7 @@ function probeSkipped(item) {
 
 function metricDisplay(model, key) {
     const value = model.metrics.dashboardMetricValue(key)
-    return value === null || value === undefined ? qsTr("n/a") : model.valueText(value)
+    return value === null || value === undefined ? qsTr("n/a") : model.metrics.valueText(value)
 }
 
 function metricKnown(model, key) {
