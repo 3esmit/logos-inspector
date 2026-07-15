@@ -41,6 +41,9 @@ struct LogosInspectorCoreApi
         const char*,
         const char*,
         const char*);
+    using SetRuntimeModuleEventHealthFn = int32_t (*)(
+        LogosInspectorCore*,
+        int32_t);
 
     NewWithHostTransportFn newWithHostTransport = nullptr;
     CloseFn close = nullptr;
@@ -50,6 +53,7 @@ struct LogosInspectorCoreApi
     CallModuleAsyncFn callModuleAsync = nullptr;
     CancelFn cancel = nullptr;
     IngestModuleEventFn ingestModuleEvent = nullptr;
+    SetRuntimeModuleEventHealthFn setRuntimeModuleEventHealth = nullptr;
 
     static LogosInspectorCoreApi production();
 };

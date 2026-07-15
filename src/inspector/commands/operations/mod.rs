@@ -49,7 +49,7 @@ use transition::RuntimeOperationTransition;
 pub(crate) struct RuntimeOperations {
     registry: RuntimeOperationRegistry,
     next_operation_id: AtomicU64,
-    backup_import: BackupImportCoordinator,
+    backup_import: Arc<BackupImportCoordinator>,
     module_transport: SharedModuleTransport,
     supervisor: RuntimeOperationSupervisor,
 }
@@ -342,8 +342,15 @@ impl RuntimeOperations {
             supervisor: RuntimeOperationSupervisor::new(registry.clone()),
             registry,
             next_operation_id: AtomicU64::new(1),
-            backup_import: BackupImportCoordinator::new(backup_import_store),
+            backup_import: Arc::new(BackupImportCoordinator::new(backup_import_store)),
             module_transport,
+        }
+    }
+
+    pub(crate) fn close_handle(&self) -> RuntimeOperationCloseHandle {
+        RuntimeOperationCloseHandle {
+            supervisor: self.supervisor.clone(),
+            backup_import: Arc::clone(&self.backup_import),
         }
     }
 
@@ -354,6 +361,7 @@ impl RuntimeOperations {
 
 impl Drop for RuntimeOperations {
     fn drop(&mut self) {
+        let _result = self.backup_import.begin_close();
         let _result = self.supervisor.begin_close();
     }
 }
@@ -365,11 +373,14 @@ pub(crate) struct RuntimeOperationInterface {
 #[derive(Clone)]
 pub(crate) struct RuntimeOperationCloseHandle {
     supervisor: RuntimeOperationSupervisor,
+    backup_import: Arc<BackupImportCoordinator>,
 }
 
 impl RuntimeOperationCloseHandle {
     pub(crate) fn begin_close(&self) -> Result<()> {
-        self.supervisor.begin_close()
+        let backup_import_result = self.backup_import.begin_close();
+        let supervisor_result = self.supervisor.begin_close();
+        backup_import_result.and(supervisor_result)
     }
 }
 
@@ -492,9 +503,7 @@ impl RuntimeOperationInterface {
     }
 
     pub(crate) fn close_handle(&self) -> RuntimeOperationCloseHandle {
-        RuntimeOperationCloseHandle {
-            supervisor: self.operations.supervisor.clone(),
-        }
+        self.operations.close_handle()
     }
 }
 

@@ -11,15 +11,15 @@ use chacha20poly1305::{
     aead::{Aead as _, KeyInit as _, Payload},
 };
 use hkdf::Hkdf;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use sha2::Sha256;
 
 use crate::{
     source_routing::channel_sources::settings_state_from_stored,
     support::{
         local_state::{
-            LocalStateCommitReport, LocalStateSession, LocalStateTransactionError,
-            LocalStateWriteSet, StateFile, with_local_state_in,
+            LocalStateCommitCancellation, LocalStateCommitReport, LocalStateSession,
+            LocalStateTransactionError, LocalStateWriteSet, StateFile, with_local_state_in,
         },
         state_store::{config_dir, idl_state_from_stored, wallet_state_from_stored},
     },
@@ -27,7 +27,9 @@ use crate::{
 };
 
 #[cfg(test)]
-use crate::support::local_state::{LOCAL_STATE_TRANSACTION_ID_HEX_LENGTH, LocalStateTestFault};
+use crate::support::local_state::{
+    LOCAL_STATE_TRANSACTION_ID_HEX_LENGTH, LocalStateTestBoundary, LocalStateTestFault,
+};
 
 const BACKUP_KIND: &str = "logos-inspector-settings-backup";
 const BACKUP_VERSION: u64 = 1;
@@ -52,6 +54,39 @@ pub(crate) struct RestoreSummary {
     pub favorites_count: usize,
     pub idl_count: usize,
     pub encrypted: bool,
+}
+
+#[derive(Debug)]
+pub(crate) enum SettingsBackupCommitResult {
+    NoOp,
+    Applied(LocalStateCommitReport),
+}
+
+#[derive(Debug)]
+pub(crate) struct SettingsBackupRestoreReceipt {
+    summary: Map<String, Value>,
+    applied_areas: Vec<BackupImportArea>,
+    commit: SettingsBackupCommitResult,
+}
+
+impl SettingsBackupRestoreReceipt {
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        Map<String, Value>,
+        Vec<BackupImportArea>,
+        SettingsBackupCommitResult,
+    ) {
+        (self.summary, self.applied_areas, self.commit)
+    }
+
+    #[cfg(test)]
+    fn commit_report(&self) -> Option<&LocalStateCommitReport> {
+        match &self.commit {
+            SettingsBackupCommitResult::NoOp => None,
+            SettingsBackupCommitResult::Applied(report) => Some(report),
+        }
+    }
 }
 
 pub(crate) fn ensure_settings_backup_size(byte_len: usize) -> Result<()> {
@@ -169,18 +204,39 @@ pub(crate) fn restore_app_settings_backup_with_options(
     payload: &Value,
     wallet_profile: Option<&Value>,
     options: &BackupImportOptions,
-) -> Result<Value> {
+    cancellation: &LocalStateCommitCancellation,
+) -> Result<SettingsBackupRestoreReceipt> {
     let state = restored_state_from_payload(payload, wallet_profile)?;
-    restore_app_settings_backup_in_dir(&config_dir()?, &state, options)
+    restore_app_settings_backup_in_dir_with_cancellation(
+        &config_dir()?,
+        &state,
+        options,
+        cancellation,
+    )
 }
 
+#[cfg(test)]
 fn restore_app_settings_backup_in_dir(
     base_dir: &Path,
     state: &RestoredState,
     options: &BackupImportOptions,
-) -> Result<Value> {
+) -> Result<SettingsBackupRestoreReceipt> {
+    restore_app_settings_backup_in_dir_with_cancellation(
+        base_dir,
+        state,
+        options,
+        &LocalStateCommitCancellation::default(),
+    )
+}
+
+fn restore_app_settings_backup_in_dir_with_cancellation(
+    base_dir: &Path,
+    state: &RestoredState,
+    options: &BackupImportOptions,
+    cancellation: &LocalStateCommitCancellation,
+) -> Result<SettingsBackupRestoreReceipt> {
     restore_app_settings_backup_in_dir_with_commit(base_dir, state, options, |session, writes| {
-        session.commit(writes, || Ok(()))
+        session.commit(writes, cancellation)
     })
 }
 
@@ -189,7 +245,7 @@ fn restore_app_settings_backup_in_dir_with_commit(
     state: &RestoredState,
     options: &BackupImportOptions,
     commit: impl FnOnce(&mut LocalStateSession, LocalStateWriteSet) -> Result<LocalStateCommitReport>,
-) -> Result<Value> {
+) -> Result<SettingsBackupRestoreReceipt> {
     validate_selected_import_state(state, options)?;
     with_local_state_in(base_dir, |session| {
         let (current_settings, current_idl) = current_import_state(session, state, options)
@@ -219,21 +275,29 @@ fn restore_app_settings_backup_in_dir_with_commit(
                     .context("failed to serialize restored wallet state")?,
             );
         }
-        if writes.is_empty() {
-            return Ok(plan.summary);
-        }
-        let report = commit(session, writes).map_err(local_state_commit_error)?;
-        let mut summary = plan.summary;
-        set_object_field(
-            &mut summary,
-            "transaction",
-            json!({
-                "transaction_id": report.transaction_id,
-                "status": "applied",
-                "directory_durability": report.directory_durability.as_str(),
-            }),
-        )?;
-        Ok(summary)
+        let summary = plan
+            .summary
+            .as_object()
+            .cloned()
+            .context("backup import summary must be a JSON object")?;
+        let commit = if writes.is_empty() {
+            if !plan.applied_areas.is_empty() {
+                bail!("backup import plan applied areas without a local write set");
+            }
+            SettingsBackupCommitResult::NoOp
+        } else {
+            if plan.applied_areas.is_empty() {
+                bail!("backup import plan produced a local write set without applied areas");
+            }
+            SettingsBackupCommitResult::Applied(
+                commit(session, writes).map_err(local_state_commit_error)?,
+            )
+        };
+        Ok(SettingsBackupRestoreReceipt {
+            summary,
+            applied_areas: plan.applied_areas,
+            commit,
+        })
     })
 }
 
@@ -243,9 +307,10 @@ pub(crate) fn restore_app_settings_backup_in_dir_for_test(
     payload: &Value,
     wallet_profile: Option<&Value>,
     options: &BackupImportOptions,
-) -> Result<Value> {
+    cancellation: &LocalStateCommitCancellation,
+) -> Result<SettingsBackupRestoreReceipt> {
     let state = restored_state_from_payload(payload, wallet_profile)?;
-    restore_app_settings_backup_in_dir(base_dir, &state, options)
+    restore_app_settings_backup_in_dir_with_cancellation(base_dir, &state, options, cancellation)
 }
 
 #[cfg(test)]
@@ -254,14 +319,36 @@ pub(crate) fn restore_app_settings_backup_with_fault_in_dir_for_test(
     payload: &Value,
     wallet_profile: Option<&Value>,
     options: &BackupImportOptions,
+    cancellation: &LocalStateCommitCancellation,
     fault: LocalStateTestFault,
-) -> Result<Value> {
+) -> Result<SettingsBackupRestoreReceipt> {
     let state = restored_state_from_payload(payload, wallet_profile)?;
     restore_app_settings_backup_in_dir_with_commit(
         base_dir,
         &state,
         options,
-        move |session, writes| session.commit_with_test_fault(writes, fault),
+        move |session, writes| session.commit_with_test_fault(writes, cancellation, fault),
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn restore_app_settings_backup_at_boundary_in_dir_for_test(
+    base_dir: &Path,
+    payload: &Value,
+    wallet_profile: Option<&Value>,
+    options: &BackupImportOptions,
+    cancellation: &LocalStateCommitCancellation,
+    boundary: LocalStateTestBoundary,
+    mut at_boundary: impl FnMut() -> Result<()>,
+) -> Result<SettingsBackupRestoreReceipt> {
+    let state = restored_state_from_payload(payload, wallet_profile)?;
+    restore_app_settings_backup_in_dir_with_commit(
+        base_dir,
+        &state,
+        options,
+        move |session, writes| {
+            session.commit_with_test_boundary(writes, cancellation, boundary, &mut at_boundary)
+        },
     )
 }
 
@@ -999,19 +1086,12 @@ mod tests {
             "idl_registry": "replace",
             "wallet_profile": "replace"
         })))?;
-        let summary = restore_app_settings_backup_in_dir(directory.path(), &restored, &options)?;
-
-        if summary
-            .pointer("/transaction/status")
-            .and_then(Value::as_str)
-            != Some("applied")
-            || summary
-                .pointer("/transaction/transaction_id")
-                .and_then(Value::as_str)
-                .map_or(0, str::len)
-                != LOCAL_STATE_TRANSACTION_ID_HEX_LENGTH
-        {
-            bail!("restore omitted transaction evidence: {summary}");
+        let receipt = restore_app_settings_backup_in_dir(directory.path(), &restored, &options)?;
+        let report = receipt
+            .commit_report()
+            .context("restore omitted local transaction evidence")?;
+        if report.transaction_id().len() != LOCAL_STATE_TRANSACTION_ID_HEX_LENGTH {
+            bail!("restore returned an invalid transaction identity");
         }
         let settings: Value =
             serde_json::from_slice(&fs::read(directory.path().join("settings.json"))?)?;

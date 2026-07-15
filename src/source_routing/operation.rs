@@ -1,3 +1,5 @@
+use std::io;
+
 use serde_json::{Map, Value};
 
 use crate::modules::logos_core::BridgeCallbackId;
@@ -369,6 +371,21 @@ impl ModuleEventEnvelope {
         &self.args
     }
 
+    pub(crate) fn retained_serialized_bytes(&self) -> anyhow::Result<usize> {
+        let mut counter = SerializedByteCounter::default();
+        serde_json::to_writer(
+            &mut counter,
+            &(
+                &self.module_name,
+                &self.event_name,
+                &self.args,
+                &self.first_payload,
+            ),
+        )
+        .map_err(|error| anyhow::anyhow!("failed to measure runtime module event: {error}"))?;
+        Ok(counter.bytes)
+    }
+
     #[must_use]
     pub(crate) fn result(&self) -> Value {
         match self.args.as_slice() {
@@ -437,6 +454,25 @@ impl ModuleEventEnvelope {
 
     fn object_payload(&self) -> Option<&Map<String, Value>> {
         self.first_payload.as_object()
+    }
+}
+
+#[derive(Default)]
+struct SerializedByteCounter {
+    bytes: usize,
+}
+
+impl io::Write for SerializedByteCounter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.bytes = self
+            .bytes
+            .checked_add(buffer.len())
+            .ok_or_else(|| io::Error::other("serialized module event byte count overflow"))?;
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
     }
 }
 

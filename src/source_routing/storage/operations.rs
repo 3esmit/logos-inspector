@@ -245,6 +245,10 @@ impl StorageClient {
                     module_transport.supports_shared_file_staging(),
                     "Basecamp host transport does not provide shared file staging"
                 );
+                anyhow::ensure!(
+                    module_transport.native_runtime_module_events_ready(),
+                    "Basecamp host transport does not own healthy native runtime module-event ingress"
+                );
             }
         }
         Ok(())

@@ -577,6 +577,7 @@ mod tests {
                             "protocol": "basecamp.host-events",
                             "version": 1,
                             "ready": true,
+                            "native_runtime_event_owner": true,
                             "module": "storage_module",
                             "event": "storageDownloadDoneV2"
                         }
@@ -673,6 +674,11 @@ mod tests {
                 "/probes/0/value/event_transport/ready",
                 json!(false),
                 "unready host event subscription",
+            ),
+            (
+                "/probes/0/value/event_transport/native_runtime_event_owner",
+                json!(false),
+                "unhealthy native event ownership",
             ),
             (
                 "/probes/0/value/event_transport/module",

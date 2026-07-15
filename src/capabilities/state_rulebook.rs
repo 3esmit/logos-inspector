@@ -282,6 +282,10 @@ fn storage_backup_event_transport_supported(
                     .and_then(serde_json::Value::as_bool)
                     == Some(true)
                 && probe
+                    .pointer("/value/event_transport/native_runtime_event_owner")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+                && probe
                     .pointer("/value/event_transport/module")
                     .and_then(serde_json::Value::as_str)
                     == Some("storage_module")

@@ -198,18 +198,23 @@ public:
         close();
     }
 
-    bool bindCore(LogosInspectorCore* core, IngestModuleEventFn ingest) noexcept
+    bool bindCore(
+        LogosInspectorCore* core,
+        IngestModuleEventFn ingest,
+        SetRuntimeModuleEventHealthFn setEventHealth) noexcept
     {
-        if (core == nullptr || ingest == nullptr) {
+        if (core == nullptr || ingest == nullptr || setEventHealth == nullptr) {
             return false;
         }
         try {
             std::lock_guard<std::mutex> lock(mutex_);
-            if (lifecycle_ != Lifecycle::dormant || core_ != nullptr || ingest_ != nullptr) {
+            if (lifecycle_ != Lifecycle::dormant || core_ != nullptr || ingest_ != nullptr
+                || setEventHealth_ != nullptr) {
                 return false;
             }
             core_ = core;
             ingest_ = ingest;
+            setEventHealth_ = setEventHealth;
             return true;
         } catch (...) {
             return false;
@@ -223,7 +228,7 @@ public:
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 if (lifecycle_ != Lifecycle::dormant || core_ == nullptr || ingest_ == nullptr
-                    || !validApi() || !validLimits()) {
+                    || setEventHealth_ == nullptr || !validApi() || !validLimits()) {
                     return false;
                 }
                 lifecycle_ = Lifecycle::activating;
@@ -266,6 +271,7 @@ public:
             }
 
             const bool eventCatalogComplete = createSubscriptions();
+            bool opened = false;
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 if (lifecycle_ != Lifecycle::activating) {
@@ -296,8 +302,16 @@ public:
                     activationInProgress_ = false;
                     ownsEvents_ = eventCatalogComplete;
                     changed_.notify_all();
-                    return true;
+                    opened = true;
                 }
+            }
+            if (opened) {
+                if (!publishActivatedEventHealth(eventCatalogComplete)) {
+                    requestFaultFromCallback();
+                    close();
+                    return false;
+                }
+                return true;
             }
             finishFailedActivation();
             return false;
@@ -341,6 +355,7 @@ public:
                     && workerThread_ == std::this_thread::get_id();
                 switch (lifecycle_) {
                 case Lifecycle::dormant:
+                    static_cast<void>(publishEventHealth(false));
                     lifecycle_ = Lifecycle::closed;
                     setupComplete_ = true;
                     ownsEvents_ = false;
@@ -348,12 +363,14 @@ public:
                     return;
                 case Lifecycle::activating:
                 case Lifecycle::open:
+                    static_cast<void>(publishEventHealth(false));
                     lifecycle_ = Lifecycle::closing;
                     ownsEvents_ = false;
                     suppressPendingLocked();
                     changed_.notify_all();
                     break;
                 case Lifecycle::faulting:
+                    static_cast<void>(publishEventHealth(false));
                     ownsEvents_ = false;
                     changed_.notify_all();
                     break;
@@ -1007,8 +1024,38 @@ private:
         if (lifecycle_ == Lifecycle::activating || lifecycle_ == Lifecycle::open) {
             lifecycle_ = Lifecycle::faulting;
             ownsEvents_ = false;
+            static_cast<void>(publishEventHealth(false));
             changed_.notify_all();
         }
+    }
+
+    bool publishEventHealth(bool ready) noexcept
+    {
+        if (core_ == nullptr || setEventHealth_ == nullptr) {
+            return false;
+        }
+        try {
+            return setEventHealth_(core_, ready ? 1 : 0) == 1;
+        } catch (...) {
+            return false;
+        }
+    }
+
+    bool publishActivatedEventHealth(bool ready) noexcept
+    {
+        const bool published = publishEventHealth(ready);
+        bool stillOpen = false;
+        try {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stillOpen = lifecycle_ == Lifecycle::open && ownsEvents_ == ready && workerLive_;
+        } catch (...) {
+            stillOpen = false;
+        }
+        if (!published || !stillOpen) {
+            static_cast<void>(publishEventHealth(false));
+            return false;
+        }
+        return true;
     }
 
     void suppressPendingLocked() noexcept
@@ -1268,6 +1315,7 @@ private:
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 ownsEvents_ = false;
+                static_cast<void>(publishEventHealth(false));
                 if (lifecycle_ == Lifecycle::activating
                     || lifecycle_ == Lifecycle::open) {
                     lifecycle_ = Lifecycle::faulting;
@@ -1308,6 +1356,7 @@ private:
     Lifecycle lifecycle_ = Lifecycle::dormant;
     LogosInspectorCore* core_ = nullptr;
     IngestModuleEventFn ingest_ = nullptr;
+    SetRuntimeModuleEventHealthFn setEventHealth_ = nullptr;
     bool setupComplete_ = true;
     bool activationInProgress_ = false;
     bool workerLive_ = false;
@@ -1345,9 +1394,10 @@ LogosProtocolHostTransport::~LogosProtocolHostTransport() = default;
 
 bool LogosProtocolHostTransport::bindCore(
     LogosInspectorCore* core,
-    IngestModuleEventFn ingest) noexcept
+    IngestModuleEventFn ingest,
+    SetRuntimeModuleEventHealthFn setEventHealth) noexcept
 {
-    return impl_->bindCore(core, ingest);
+    return impl_->bindCore(core, ingest, setEventHealth);
 }
 
 bool LogosProtocolHostTransport::activate() noexcept

@@ -48,6 +48,11 @@ typedef struct LogosInspectorHostTransportV1 {
     LogosInspectorHostCloseFn close;
 } LogosInspectorHostTransportV1;
 
+/*
+ * Runtime event-health signaling is an additive function, not a field in
+ * LogosInspectorHostTransportV1. Version 1 size and layout remain unchanged.
+ */
+
 LogosInspectorCore* logos_inspector_core_new(void);
 
 /*
@@ -78,6 +83,22 @@ LogosInspectorCore* logos_inspector_core_new(void);
  */
 LogosInspectorCore* logos_inspector_core_new_with_host_transport(
     const LogosInspectorHostTransportV1* transport);
+
+/*
+ * Publishes native runtime module-event ownership to the Rust transport.
+ * Health starts false. Set ready to 1 only while the native adapter owns the
+ * complete subscription catalog, bounded retry policy, and quiescent shutdown
+ * contract. Set 0 as soon as that ownership faults. Local Rust subscription
+ * registration is not upstream event-delivery evidence.
+ *
+ * Returns 1 when an open asynchronous host-backed core accepts the update.
+ * Returns 0 for invalid values, null/synchronous handles, or once close begins.
+ * This function may race ordinary calls and event ingress while the allocation
+ * remains live. Join any race with close before free.
+ */
+int32_t logos_inspector_core_set_runtime_module_event_health(
+    LogosInspectorCore* handle,
+    int32_t ready);
 
 /*
  * Close is idempotent and may race asynchronous call/cancel entry points and

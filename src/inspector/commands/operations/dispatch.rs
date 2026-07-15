@@ -64,6 +64,10 @@ impl ModuleTransport for ControlledModuleTransport {
         self.transport.supports_shared_file_staging()
     }
 
+    fn native_runtime_module_events_ready(&self) -> bool {
+        self.transport.native_runtime_module_events_ready()
+    }
+
     fn status(&self) -> ModuleDiagnosticFuture<'_> {
         self.transport.status()
     }

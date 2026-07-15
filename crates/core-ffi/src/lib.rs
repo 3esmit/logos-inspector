@@ -105,6 +105,7 @@ struct HostState {
     vtable: HostVtable,
     registry: Mutex<HostRegistry>,
     quiesced: Condvar,
+    native_runtime_module_events_ready: AtomicBool,
 }
 
 struct HostRegistry {
@@ -150,6 +151,8 @@ struct AsyncState {
     closed: Condvar,
     #[cfg(test)]
     queued_local_calls: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    shutdown_queued: AtomicBool,
 }
 
 struct AsyncRegistry {
@@ -255,7 +258,18 @@ impl HostState {
                 subscriptions: HashMap::new(),
             }),
             quiesced: Condvar::new(),
+            native_runtime_module_events_ready: AtomicBool::new(false),
         })
+    }
+
+    fn set_native_runtime_module_events_ready(&self, ready: bool) -> bool {
+        let registry = lock(&self.registry);
+        if registry.phase != LifecyclePhase::Open {
+            return false;
+        }
+        self.native_runtime_module_events_ready
+            .store(ready, Ordering::Release);
+        true
     }
 
     fn dispatch(self: &Arc<Self>, call: ModuleCall) -> ModuleCallFuture<'static> {
@@ -502,7 +516,11 @@ impl HostState {
         {
             let mut registry = lock(&self.registry);
             match registry.phase {
-                LifecyclePhase::Open => registry.phase = LifecyclePhase::Closing,
+                LifecyclePhase::Open => {
+                    registry.phase = LifecyclePhase::Closing;
+                    self.native_runtime_module_events_ready
+                        .store(false, Ordering::Release);
+                }
                 LifecyclePhase::Closing => {
                     while registry.phase != LifecyclePhase::Closed {
                         registry = wait(&self.quiesced, registry);
@@ -638,6 +656,12 @@ impl ModuleTransport for BasecampHostTransport {
         true
     }
 
+    fn native_runtime_module_events_ready(&self) -> bool {
+        self.state
+            .native_runtime_module_events_ready
+            .load(Ordering::Acquire)
+    }
+
     fn module_info(&self, module: String) -> ModuleDiagnosticFuture<'_> {
         let state = Arc::clone(&self.state);
         Box::pin(async move {
@@ -692,6 +716,8 @@ impl AsyncState {
             closed: Condvar::new(),
             #[cfg(test)]
             queued_local_calls: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            shutdown_queued: AtomicBool::new(false),
         })
     }
 
@@ -865,6 +891,14 @@ impl AsynchronousCore {
             .unwrap_or_else(|_| InspectorBridge::error_json(WORKER_UNAVAILABLE_ERROR))
     }
 
+    fn set_native_runtime_module_events_ready(&self, ready: bool) -> bool {
+        let registry = lock(&self.state.registry);
+        if registry.phase != LifecyclePhase::Open {
+            return false;
+        }
+        self.host.set_native_runtime_module_events_ready(ready)
+    }
+
     fn enqueue(
         &self,
         bridge_request_id: BridgeRequestId,
@@ -924,7 +958,7 @@ impl AsynchronousCore {
 
     fn enqueue_module_event(&self, module: String, event: String, args: Vec<Value>) -> i32 {
         let registry = lock(&self.state.registry);
-        if registry.phase == LifecyclePhase::Closed {
+        if registry.phase != LifecyclePhase::Open {
             return EVENT_REJECTED;
         }
         match self.sender.try_send(WorkerCommand::ModuleEvent {
@@ -942,10 +976,15 @@ impl AsynchronousCore {
         let Some(pending) = self.state.begin_close() else {
             return;
         };
+        self.host
+            .native_runtime_module_events_ready
+            .store(false, Ordering::Release);
         let _closing = self.bridge_close.begin_close().is_ok();
         self.host
             .interrupt_requests_from_thread(self.worker_thread_id);
         let _sent = self.sender.send(WorkerCommand::Shutdown).is_ok();
+        #[cfg(test)]
+        self.state.shutdown_queued.store(_sent, Ordering::Release);
         if let Some(worker) = lock(&self.worker).take() {
             let _joined = worker.join().is_ok();
         }
@@ -1223,6 +1262,38 @@ pub unsafe extern "C" fn logos_inspector_core_call_module_async(
                 reply,
                 reply_context,
             ),
+        }
+    }))
+    .unwrap_or(false);
+    i32::from(accepted)
+}
+
+/// Publishes whether the native Basecamp adapter owns a complete, healthy
+/// runtime module-event ingress path.
+///
+/// This additive function deliberately does not extend the version-1 host
+/// transport vtable. Health starts false and can be changed only while an
+/// asynchronous host-backed core remains open.
+///
+/// # Safety
+///
+/// `handle` must be null or live. The allocation must remain live for this
+/// call and the caller must join any race with close before freeing it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn logos_inspector_core_set_runtime_module_event_health(
+    handle: *mut LogosInspectorCore,
+    ready: i32,
+) -> i32 {
+    let accepted = catch_unwind(AssertUnwindSafe(|| {
+        if !matches!(ready, 0 | 1) {
+            return false;
+        }
+        let Ok(core) = core_ref(handle) else {
+            return false;
+        };
+        match &core.mode {
+            CoreMode::Synchronous(_) => false,
+            CoreMode::Asynchronous(core) => core.set_native_runtime_module_events_ready(ready == 1),
         }
     }))
     .unwrap_or(false);
@@ -1806,6 +1877,15 @@ mod tests {
             if handle.is_null() {
                 return err("failed to create asynchronous core handle");
             }
+            // SAFETY: this helper owns a live asynchronous handle and models a
+            // native adapter with its complete event catalog armed.
+            if unsafe { logos_inspector_core_set_runtime_module_event_health(handle, 1) } != 1 {
+                // SAFETY: constructor ownership has not escaped this helper.
+                unsafe {
+                    logos_inspector_core_free(handle);
+                }
+                return err("failed to publish healthy native event ownership");
+            }
             Ok(Self(handle))
         }
 
@@ -1875,6 +1955,25 @@ mod tests {
                 }
                 if Instant::now() >= deadline {
                     return err("timed out waiting for core closing phase");
+                }
+                thread::yield_now();
+            }
+        }
+
+        fn wait_for_shutdown_queued(&self) -> TestResult {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                // SAFETY: this guard keeps the allocation live while only
+                // atomic test instrumentation is inspected.
+                let core = unsafe { &*self.0 };
+                let CoreMode::Asynchronous(core) = &core.mode else {
+                    return err("expected asynchronous test core");
+                };
+                if core.state.shutdown_queued.load(Ordering::Acquire) {
+                    return Ok(());
+                }
+                if Instant::now() >= deadline {
+                    return err("timed out waiting for bridge shutdown command");
                 }
                 thread::yield_now();
             }
@@ -2460,6 +2559,92 @@ mod tests {
         }
         if host.close_count() != 0 {
             return err("rejected vtable transferred host ownership");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_runtime_event_health_is_explicit_and_closes_fail_closed() -> TestResult {
+        let host = TestHost::new();
+        let vtable = host.vtable();
+        // SAFETY: vtable and host context satisfy the constructor contract.
+        let handle = unsafe { logos_inspector_core_new_with_host_transport(&vtable) };
+        if handle.is_null() {
+            return err("failed to create asynchronous health-test handle");
+        }
+
+        // SAFETY: this test owns the live handle through all calls below.
+        let initial_ready = unsafe {
+            let core = &*handle;
+            let CoreMode::Asynchronous(core) = &core.mode else {
+                logos_inspector_core_free(handle);
+                return err("health-test handle was not asynchronous");
+            };
+            core.host
+                .native_runtime_module_events_ready
+                .load(Ordering::Acquire)
+        };
+        if initial_ready
+            // SAFETY: live asynchronous handle; invalid values must fail closed.
+            || unsafe { logos_inspector_core_set_runtime_module_event_health(handle, 2) } != 0
+            // SAFETY: live asynchronous handle; native activation publishes health.
+            || unsafe { logos_inspector_core_set_runtime_module_event_health(handle, 1) } != 1
+        {
+            // SAFETY: this test still owns the allocation.
+            unsafe {
+                logos_inspector_core_free(handle);
+            }
+            return err("native event health admission did not start explicit and fail closed");
+        }
+
+        // SAFETY: the allocation is live and only synchronized state is read.
+        let ready = unsafe {
+            let core = &*handle;
+            let CoreMode::Asynchronous(core) = &core.mode else {
+                logos_inspector_core_free(handle);
+                return err("health-test handle changed mode");
+            };
+            core.host
+                .native_runtime_module_events_ready
+                .load(Ordering::Acquire)
+        };
+        if !ready {
+            // SAFETY: this test still owns the allocation.
+            unsafe {
+                logos_inspector_core_free(handle);
+            }
+            return err("accepted native event health was not visible to Rust transport");
+        }
+
+        // SAFETY: this test owns the live handle.
+        unsafe {
+            logos_inspector_core_close(handle);
+        }
+        // SAFETY: closed allocation remains live until free.
+        if unsafe { logos_inspector_core_set_runtime_module_event_health(handle, 1) } != 0 {
+            // SAFETY: this test still owns the closed allocation.
+            unsafe {
+                logos_inspector_core_free(handle);
+            }
+            return err("closing core accepted healthy native event ownership");
+        }
+        // SAFETY: closed allocation remains live and synchronized state is read.
+        let closed_ready = unsafe {
+            let core = &*handle;
+            let CoreMode::Asynchronous(core) = &core.mode else {
+                logos_inspector_core_free(handle);
+                return err("closed health-test handle changed mode");
+            };
+            core.host
+                .native_runtime_module_events_ready
+                .load(Ordering::Acquire)
+        };
+        // SAFETY: final matching release; no calls race this free.
+        unsafe {
+            logos_inspector_core_free(handle);
+        }
+        if closed_ready || host.close_count() != 1 {
+            return err("close retained native event health or repeated host close");
         }
         Ok(())
     }
@@ -4244,6 +4429,79 @@ mod tests {
             || status_drops.load(Ordering::Acquire) != 1
         {
             return err("terminal-event close violated lifecycle ownership");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn closing_event_ingress_rejects_after_shutdown_is_queued() -> TestResult {
+        let host = TestHost::new();
+        let handle = TestCoreHandle::new(&host)?;
+        let collector = Arc::new(ReplyCollector::default());
+        let drops = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new(ReplyGate::default());
+
+        if enqueue_test_call(
+            handle.as_ptr(),
+            2_502,
+            "storage_module",
+            "space",
+            "[]",
+            gated_reply_context(&collector, &drops, &gate),
+        )? != 1
+        {
+            return err("close-race fixture call was rejected");
+        }
+        let request = host.wait_for_request()?;
+        host.complete(request.id, 1, "12", false)?;
+        if let Err(error) = gate.wait_for_entry() {
+            gate.release();
+            return Err(error);
+        }
+
+        let handle_address = handle.as_ptr().expose_provenance();
+        let (closed_sender, closed_receiver) = mpsc::channel();
+        let closer = thread::spawn(move || {
+            // SAFETY: the owning test keeps the allocation live until close joins.
+            unsafe {
+                logos_inspector_core_close(ptr::with_exposed_provenance_mut(handle_address));
+            }
+            let _sent = closed_sender.send(()).is_ok();
+        });
+
+        let closing = handle
+            .wait_for_core_closing()
+            .and_then(|()| handle.wait_for_shutdown_queued());
+        if let Err(error) = closing {
+            gate.release();
+            let _closed = closed_receiver.recv_timeout(Duration::from_secs(5));
+            let _joined = closer.join().is_ok();
+            return Err(error);
+        }
+        let ingress = ingest_test_module_event(
+            handle.as_ptr(),
+            "delivery_module",
+            "messageSent",
+            "[\"after-shutdown\"]",
+        )?;
+        gate.release();
+
+        closed_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        if closer.join().is_err() {
+            return err("close-race closer thread panicked");
+        }
+        collector.wait_for_replies(1)?;
+        handle.assert_shutdown_drained()?;
+        if ingress != EVENT_REJECTED
+            || collector.count() != 1
+            || drops.load(Ordering::Acquire) != 1
+            || host.close_count() != 1
+        {
+            return err(
+                "closing ingress was accepted behind shutdown or lifecycle ownership drifted",
+            );
         }
         Ok(())
     }

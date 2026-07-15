@@ -13,17 +13,20 @@ use sha2::{Digest as _, Sha256};
 
 use crate::support::state_store::config_dir;
 
+use super::local_state::LocalStateCommitCancellation;
 use super::settings_backup::{
-    BackupImportOptions, SETTINGS_BACKUP_MAX_BYTES, ensure_settings_backup_size,
-    export_app_settings_backup, preview_app_settings_backup_import,
-    restore_app_settings_backup_with_options, validate_app_settings_backup_envelope,
+    BackupImportOptions, BackupImportSelection, SETTINGS_BACKUP_MAX_BYTES,
+    SettingsBackupRestoreReceipt, ensure_settings_backup_size, export_app_settings_backup,
+    preview_app_settings_backup_import, restore_app_settings_backup_with_options,
+    validate_app_settings_backup_envelope,
 };
 
 #[cfg(test)]
 use super::{
-    local_state::LocalStateTestFault,
+    local_state::{LocalStateTestBoundary, LocalStateTestFault},
     settings_backup::{
         preview_app_settings_backup_import_in_dir_for_test,
+        restore_app_settings_backup_at_boundary_in_dir_for_test,
         restore_app_settings_backup_in_dir_for_test,
         restore_app_settings_backup_with_fault_in_dir_for_test,
     },
@@ -61,6 +64,25 @@ impl BackupCatalogId {
 
     pub(crate) fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct LocalBackupImportReceipt {
+    backup_catalog_id: BackupCatalogId,
+    selection: BackupImportSelection,
+    restore: SettingsBackupRestoreReceipt,
+}
+
+impl LocalBackupImportReceipt {
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        BackupCatalogId,
+        BackupImportSelection,
+        SettingsBackupRestoreReceipt,
+    ) {
+        (self.backup_catalog_id, self.selection, self.restore)
     }
 }
 
@@ -223,7 +245,7 @@ pub(crate) fn preview_local_settings_restore_with_options(
 ) -> Result<Value> {
     let (catalog_id, payload) = backup_payload_value(backup_catalog_id)?;
     let mut summary = preview_app_settings_backup_import(&payload, wallet_profile, options)?;
-    set_summary_catalog_id(&mut summary, &catalog_id)?;
+    set_summary_catalog_id(&mut summary, catalog_id.as_str())?;
     set_summary_import_areas(&mut summary, options)?;
     Ok(summary)
 }
@@ -232,15 +254,19 @@ pub(crate) fn restore_local_settings_backup_with_options(
     backup_catalog_id: &str,
     wallet_profile: Option<&Value>,
     options: &BackupImportOptions,
-) -> Result<Value> {
+    cancellation: &LocalStateCommitCancellation,
+) -> Result<LocalBackupImportReceipt> {
     if options.is_empty() {
         bail!("select at least one backup section to import");
     }
     let (catalog_id, payload) = backup_payload_value(backup_catalog_id)?;
-    let mut summary = restore_app_settings_backup_with_options(&payload, wallet_profile, options)?;
-    set_summary_catalog_id(&mut summary, &catalog_id)?;
-    set_summary_import_areas(&mut summary, options)?;
-    Ok(summary)
+    let restore =
+        restore_app_settings_backup_with_options(&payload, wallet_profile, options, cancellation)?;
+    Ok(LocalBackupImportReceipt {
+        backup_catalog_id: catalog_id,
+        selection: options.selection().clone(),
+        restore,
+    })
 }
 
 #[cfg(test)]
@@ -257,7 +283,7 @@ pub(crate) fn preview_local_settings_restore_with_options_in_dir_for_test(
         wallet_profile,
         options,
     )?;
-    set_summary_catalog_id(&mut summary, &catalog_id)?;
+    set_summary_catalog_id(&mut summary, catalog_id.as_str())?;
     set_summary_import_areas(&mut summary, options)?;
     Ok(summary)
 }
@@ -268,18 +294,20 @@ pub(crate) fn restore_local_settings_backup_with_options_in_dir_for_test(
     backup_catalog_id: &str,
     wallet_profile: Option<&Value>,
     options: &BackupImportOptions,
+    cancellation: &LocalStateCommitCancellation,
     fault: Option<LocalStateTestFault>,
-) -> Result<Value> {
+) -> Result<LocalBackupImportReceipt> {
     if options.is_empty() {
         bail!("select at least one backup section to import");
     }
     let (catalog_id, payload) = backup_payload_value_in_dir(base_dir, backup_catalog_id)?;
-    let mut summary = match fault {
+    let restore = match fault {
         Some(fault) => restore_app_settings_backup_with_fault_in_dir_for_test(
             base_dir,
             &payload,
             wallet_profile,
             options,
+            cancellation,
             fault,
         )?,
         None => restore_app_settings_backup_in_dir_for_test(
@@ -287,11 +315,44 @@ pub(crate) fn restore_local_settings_backup_with_options_in_dir_for_test(
             &payload,
             wallet_profile,
             options,
+            cancellation,
         )?,
     };
-    set_summary_catalog_id(&mut summary, &catalog_id)?;
-    set_summary_import_areas(&mut summary, options)?;
-    Ok(summary)
+    Ok(LocalBackupImportReceipt {
+        backup_catalog_id: catalog_id,
+        selection: options.selection().clone(),
+        restore,
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn restore_local_settings_backup_at_boundary_in_dir_for_test(
+    base_dir: &Path,
+    backup_catalog_id: &str,
+    wallet_profile: Option<&Value>,
+    options: &BackupImportOptions,
+    cancellation: &LocalStateCommitCancellation,
+    boundary: LocalStateTestBoundary,
+    at_boundary: impl FnMut() -> Result<()>,
+) -> Result<LocalBackupImportReceipt> {
+    if options.is_empty() {
+        bail!("select at least one backup section to import");
+    }
+    let (catalog_id, payload) = backup_payload_value_in_dir(base_dir, backup_catalog_id)?;
+    let restore = restore_app_settings_backup_at_boundary_in_dir_for_test(
+        base_dir,
+        &payload,
+        wallet_profile,
+        options,
+        cancellation,
+        boundary,
+        at_boundary,
+    )?;
+    Ok(LocalBackupImportReceipt {
+        backup_catalog_id: catalog_id,
+        selection: options.selection().clone(),
+        restore,
+    })
 }
 
 fn record_payload_in_dir(
@@ -551,7 +612,7 @@ fn attach_remote_backup_metadata_in_dir_with_hook(
     Ok(transaction.commit(None, hook)?.with_value(result))
 }
 
-fn backup_payload_value(backup_catalog_id: &str) -> Result<(String, Value)> {
+fn backup_payload_value(backup_catalog_id: &str) -> Result<(BackupCatalogId, Value)> {
     let base_dir = config_dir()?;
     backup_payload_value_in_dir(&base_dir, backup_catalog_id)
 }
@@ -559,7 +620,7 @@ fn backup_payload_value(backup_catalog_id: &str) -> Result<(String, Value)> {
 fn backup_payload_value_in_dir(
     base_dir: &Path,
     backup_catalog_id: &str,
-) -> Result<(String, Value)> {
+) -> Result<(BackupCatalogId, Value)> {
     let catalog_id = BackupCatalogId::parse(backup_catalog_id)?;
     let bytes = backup_payload_bytes_in_dir(base_dir, catalog_id.as_str())?;
     let payload = serde_json::from_slice(&bytes).with_context(|| {
@@ -568,7 +629,7 @@ fn backup_payload_value_in_dir(
             catalog_id.as_str()
         )
     })?;
-    Ok((catalog_id.0, payload))
+    Ok((catalog_id, payload))
 }
 
 fn ensure_catalog_entry<'a>(
@@ -1735,7 +1796,7 @@ mod tests {
 
         let (catalog_id, resolved) =
             backup_payload_value_in_dir(&base, &format!("  {}  ", entry.backup_catalog_id))?;
-        if catalog_id != entry.backup_catalog_id || resolved != payload {
+        if catalog_id.as_str() != entry.backup_catalog_id || resolved != payload {
             bail!("backup catalog id did not resolve to canonical identity");
         }
         for unsafe_id in ["../backup", "folder/backup", "folder\\backup", ".", ".."] {

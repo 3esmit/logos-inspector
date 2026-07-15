@@ -115,6 +115,10 @@ async fn basecamp_backup_download_readiness(
         module_transport.supports_shared_file_staging(),
         "Basecamp host transport does not expose shared file staging"
     );
+    anyhow::ensure!(
+        module_transport.native_runtime_module_events_ready(),
+        "Basecamp host transport does not own healthy native runtime module-event ingress"
+    );
     let _subscription = module_transport
         .subscribe_module_event(STORAGE_MODULE, STORAGE_DOWNLOAD_DONE_EVENT)
         .context("Basecamp host transport cannot subscribe to Storage download completion")?;
@@ -126,6 +130,7 @@ async fn basecamp_backup_download_readiness(
             "protocol": BASECAMP_EVENT_TRANSPORT_PROTOCOL,
             "version": BASECAMP_EVENT_TRANSPORT_VERSION,
             "ready": true,
+            "native_runtime_event_owner": true,
             "module": STORAGE_MODULE,
             "event": STORAGE_DOWNLOAD_DONE_EVENT,
         },
@@ -257,6 +262,7 @@ mod tests {
         protocol: Value,
         shared_staging: bool,
         subscribable: bool,
+        native_events_ready: bool,
     }
 
     impl ModuleTransport for FakeBasecampTransport {
@@ -294,6 +300,10 @@ mod tests {
 
         fn supports_shared_file_staging(&self) -> bool {
             self.shared_staging
+        }
+
+        fn native_runtime_module_events_ready(&self) -> bool {
+            self.native_events_ready
         }
     }
 
@@ -340,6 +350,7 @@ mod tests {
             protocol: exact_protocol(),
             shared_staging: true,
             subscribable: true,
+            native_events_ready: true,
         }
     }
 
@@ -411,6 +422,13 @@ mod tests {
                     ..fake_transport()
                 },
                 "event subscription",
+            ),
+            (
+                FakeBasecampTransport {
+                    native_events_ready: false,
+                    ..fake_transport()
+                },
+                "native event ownership",
             ),
         ];
 

@@ -35,6 +35,7 @@ struct LogosInspectorCore
     FakeRuntime* runtime = nullptr;
     LogosInspectorHostTransportV1 transport {};
     bool closed = false;
+    bool runtimeEventHealth = false;
 };
 
 namespace {
@@ -64,6 +65,7 @@ struct FakeRuntime
     int stringFreeCalls = 0;
     int asyncCalls = 0;
     int cancelCalls = 0;
+    int eventHealthCalls = 0;
     bool hostClosed = false;
     bool rejectNext = false;
     bool inlineReply = false;
@@ -454,15 +456,35 @@ extern "C" int32_t logos_inspector_core_ingest_module_event(
     return LOGOS_INSPECTOR_EVENT_ACCEPTED;
 }
 
+extern "C" int32_t logos_inspector_core_set_runtime_module_event_health(
+    LogosInspectorCore* core,
+    int32_t ready)
+{
+    if (core == nullptr || core->closed || (ready != 0 && ready != 1)) {
+        return 0;
+    }
+    FakeRuntime& fake = *core->runtime;
+    std::lock_guard<std::mutex> lock(fake.mutex);
+    core->runtimeEventHealth = ready == 1;
+    ++fake.eventHealthCalls;
+    fake.condition.notify_all();
+    return 1;
+}
+
 namespace {
 class FakeHostTransport final : public LogosInspectorHostTransport
 {
 public:
-    bool bindCore(LogosInspectorCore* core, IngestModuleEventFn ingest) noexcept override
+    bool bindCore(
+        LogosInspectorCore* core,
+        IngestModuleEventFn ingest,
+        SetRuntimeModuleEventHealthFn setEventHealth) noexcept override
     {
-        if (core == nullptr || ingest == nullptr || bound_) {
+        if (core == nullptr || ingest == nullptr || setEventHealth == nullptr || bound_) {
             return false;
         }
+        core_ = core;
+        setEventHealth_ = setEventHealth;
         bound_ = true;
         return true;
     }
@@ -470,6 +492,9 @@ public:
     bool activate() noexcept override
     {
         if (!bound_ || active_ || closed_) {
+            return false;
+        }
+        if (setEventHealth_(core_, 1) != 1) {
             return false;
         }
         active_ = true;
@@ -526,6 +551,8 @@ private:
     bool bound_ = false;
     bool active_ = false;
     bool closed_ = false;
+    LogosInspectorCore* core_ = nullptr;
+    SetRuntimeModuleEventHealthFn setEventHealth_ = nullptr;
 };
 
 LogosInspectorCoreApi fakeApi()
@@ -539,6 +566,8 @@ LogosInspectorCoreApi fakeApi()
     api.callModuleAsync = &logos_inspector_core_call_module_async;
     api.cancel = &logos_inspector_core_cancel;
     api.ingestModuleEvent = &logos_inspector_core_ingest_module_event;
+    api.setRuntimeModuleEventHealth =
+        &logos_inspector_core_set_runtime_module_event_health;
     return api;
 }
 
@@ -572,6 +601,8 @@ void testWrapperUsesOneCoreForLocalAndAsyncCalls()
 
         wrapper._logosCoreSetContext_("/module", "instance", "/state");
         REQUIRE(fake.newCalls == 1);
+        REQUIRE(fake.eventHealthCalls == 1);
+        REQUIRE(fake.core != nullptr && fake.core->runtimeEventHealth);
         REQUIRE(fake.capturedTransport.abi_version == LOGOS_INSPECTOR_HOST_TRANSPORT_ABI_VERSION);
         REQUIRE(fake.capturedTransport.struct_size == sizeof(LogosInspectorHostTransportV1));
         REQUIRE(fake.capturedTransport.context != nullptr);

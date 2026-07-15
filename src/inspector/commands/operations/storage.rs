@@ -1023,6 +1023,10 @@ mod tests {
         fn supports_shared_file_staging(&self) -> bool {
             true
         }
+
+        fn native_runtime_module_events_ready(&self) -> bool {
+            true
+        }
     }
 
     #[cfg(unix)]
