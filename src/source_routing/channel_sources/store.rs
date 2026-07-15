@@ -189,30 +189,6 @@ pub fn load_channel_source_configs() -> Result<Vec<ChannelSourceConfig>> {
     Ok(store.load_document_locked(&guard)?.channel_source_configs)
 }
 
-#[deprecated(note = "use the channelSourceConfigApply command transaction")]
-pub fn apply_channel_source_config(
-    request: ChannelSourceConfigApplyRequest,
-) -> Result<ChannelSourceConfig> {
-    SettingsStore::new(settings_state_path()?).apply(request)
-}
-
-#[deprecated(note = "use the channelSourceConfigApply retry_attestation command transaction")]
-pub fn record_sequencer_attestation(
-    network_scope: NetworkScope,
-    channel_id: &str,
-    expected_config_revision: u64,
-    source_id: &str,
-    receipt: SequencerAttestationReceipt,
-) -> Result<ChannelSourceConfig> {
-    SettingsStore::new(settings_state_path()?).record_attestation(
-        network_scope,
-        channel_id,
-        expected_config_revision,
-        source_id,
-        receipt,
-    )
-}
-
 pub(crate) fn rebind_channel_source_configs(
     old_scope: NetworkScope,
     new_scope: NetworkScope,
@@ -287,6 +263,7 @@ impl SettingsStore {
         Ok(saved_report(&self.path, durability))
     }
 
+    #[cfg(test)]
     fn apply(&self, request: ChannelSourceConfigApplyRequest) -> Result<ChannelSourceConfig> {
         self.apply_with_attestation(request, None)
     }
@@ -376,6 +353,7 @@ impl SettingsStore {
         Ok(config)
     }
 
+    #[cfg(test)]
     fn apply_with_attestation(
         &self,
         request: ChannelSourceConfigApplyRequest,
@@ -385,6 +363,7 @@ impl SettingsStore {
         self.commit_prepared_mutation(prepared, attestation)
     }
 
+    #[cfg(test)]
     fn record_attestation(
         &self,
         network_scope: NetworkScope,
