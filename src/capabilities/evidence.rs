@@ -1431,7 +1431,9 @@ mod tests {
             )?;
         }
 
-        assert_eq!(state.latest.len(), MAX_ACTIVE_OBSERVATIONS);
+        if state.latest.len() != MAX_ACTIVE_OBSERVATIONS {
+            bail!("active observations exceeded bound: {}", state.latest.len());
+        }
         Ok(())
     }
 
@@ -1457,8 +1459,15 @@ mod tests {
             );
         }
 
-        assert_eq!(state.runtime_observations.len(), MAX_ACTIVE_OBSERVATIONS);
-        assert_eq!(state.latest.len(), MAX_ACTIVE_OBSERVATIONS);
+        if state.runtime_observations.len() != MAX_ACTIVE_OBSERVATIONS
+            || state.latest.len() != MAX_ACTIVE_OBSERVATIONS
+        {
+            bail!(
+                "runtime correlations exceeded bounds: runtime={}, active={}",
+                state.runtime_observations.len(),
+                state.latest.len()
+            );
+        }
         Ok(())
     }
 
