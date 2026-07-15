@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use crate::modules::logos_core::{
-    ModuleCall, ModuleCallFuture, ModuleCallStopReason, ModuleCallTerminated,
-    ModuleCallTerminationEvidence, ModuleDiagnosticFuture, ModuleTransport, ModuleTransportClosed,
-    ModuleTransportKind, SharedModuleTransport,
+    BoxedModuleEventSubscription, ModuleCall, ModuleCallFuture, ModuleCallStopReason,
+    ModuleCallTerminated, ModuleCallTerminationEvidence, ModuleDiagnosticFuture, ModuleTransport,
+    ModuleTransportClosed, ModuleTransportKind, ModuleTransportResult, SharedModuleTransport,
 };
 use crate::support::command_runner::{
     CommandCleanupUnconfirmed, CommandStopReason, CommandTerminated, CommandTerminationScope,
@@ -43,6 +43,27 @@ impl ModuleTransport for ControlledModuleTransport {
             .call_controlled(call, self.control.module_call_control())
     }
 
+    fn subscribe_module_event(
+        &self,
+        module: &str,
+        event: &str,
+    ) -> ModuleTransportResult<BoxedModuleEventSubscription> {
+        self.transport.subscribe_module_event(module, event)
+    }
+
+    fn ingest_module_event(
+        &self,
+        module: &str,
+        event: &str,
+        args: &[serde_json::Value],
+    ) -> ModuleTransportResult<()> {
+        self.transport.ingest_module_event(module, event, args)
+    }
+
+    fn supports_shared_file_staging(&self) -> bool {
+        self.transport.supports_shared_file_staging()
+    }
+
     fn status(&self) -> ModuleDiagnosticFuture<'_> {
         self.transport.status()
     }
@@ -59,6 +80,7 @@ pub(super) async fn execute_runtime_operation(
     control: &OperationControl,
     module_transport: SharedModuleTransport,
 ) -> Result<RuntimeOperationOutcome> {
+    let cleanup_module_transport = Arc::clone(&module_transport);
     let module_transport: SharedModuleTransport = Arc::new(ControlledModuleTransport {
         transport: module_transport,
         control: control.clone(),
@@ -72,6 +94,7 @@ pub(super) async fn execute_runtime_operation(
                 operation_id,
                 control,
                 module_transport,
+                cleanup_module_transport,
             )
             .await
         }
@@ -174,7 +197,8 @@ fn normalize_execution_result<T>(result: Result<T>) -> Result<T> {
             let message = error.to_string();
             return match terminated.evidence() {
                 ModuleCallTerminationEvidence::NotStarted
-                | ModuleCallTerminationEvidence::ProcessTerminated => {
+                | ModuleCallTerminationEvidence::ProcessTerminated
+                | ModuleCallTerminationEvidence::RemoteEffectTerminationConfirmed => {
                     OperationInterrupted::confirmed(reason, message).into()
                 }
                 ModuleCallTerminationEvidence::LocallyAbandoned => {
@@ -187,4 +211,32 @@ fn normalize_execution_result<T>(result: Result<T>) -> Result<T> {
         }
         error
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use anyhow::{Context as _, Result};
+
+    use super::*;
+
+    #[test]
+    fn confirmed_remote_module_effect_normalizes_as_confirmed_interruption() -> Result<()> {
+        let error = normalize_execution_result::<()>(Err(ModuleCallTerminated::new(
+            ModuleCallStopReason::CancelRequested,
+            ModuleCallTerminationEvidence::RemoteEffectTerminationConfirmed,
+        )
+        .into()))
+        .err()
+        .context("confirmed remote termination should interrupt the operation")?;
+        let interrupted = error
+            .downcast_ref::<OperationInterrupted>()
+            .context("confirmed remote termination lost operation interruption type")?;
+
+        anyhow::ensure!(
+            interrupted.reason() == OperationStopReason::CancelRequested
+                && interrupted.evidence() == TerminationEvidence::Confirmed,
+            "confirmed remote termination became local-only: {interrupted:?}"
+        );
+        Ok(())
+    }
 }

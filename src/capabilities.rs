@@ -479,7 +479,7 @@ mod tests {
     }
 
     #[test]
-    fn storage_module_does_not_satisfy_backup_sync_sub_capabilities() -> Result<()> {
+    fn storage_module_fails_backup_sync_read_closed_without_runtime_contract() -> Result<()> {
         let inputs = serde_json::json!({
             "network_connector_config": {
                 "scopes": {
@@ -517,6 +517,181 @@ mod tests {
         ] {
             if !unavailable_contains(storage, key) {
                 bail!("storage module should not satisfy `{key}`: {storage}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn basecamp_storage_backup_read_requires_exact_host_runtime_contract() -> Result<()> {
+        let source_report = || {
+            json!({
+                "health": {
+                    "ready": true,
+                    "reachable": true,
+                    "status": "ready",
+                    "detail": "storage module reachable"
+                },
+                "module_info": {
+                    "ok": true,
+                    "value": {
+                        "name": "storage_module",
+                        "methods": [
+                            {
+                                "isInvokable": true,
+                                "name": "downloadProtocol",
+                                "signature": "downloadProtocol()"
+                            },
+                            {
+                                "isInvokable": true,
+                                "name": "downloadToUrlV2",
+                                "signature": "downloadToUrlV2(QString,QString,bool,int,QString,int)"
+                            },
+                            {
+                                "isInvokable": true,
+                                "name": "downloadCancelV2",
+                                "signature": "downloadCancelV2(QString)"
+                            }
+                        ],
+                        "events": [{
+                            "name": "storageDownloadDoneV2",
+                            "signature": "storageDownloadDoneV2(QString)"
+                        }]
+                    }
+                },
+                "probes": [{
+                    "probe_key": "backupDownloadReadiness",
+                    "label": "storage backup download readiness",
+                    "source": "basecamp host-events storage_module storageDownloadDoneV2",
+                    "ok": true,
+                    "value": {
+                        "shared_staging": true,
+                        "contract": {
+                            "protocol": "logos.storage.download",
+                            "version": 2,
+                            "moduleOperationIdOwner": "caller",
+                            "cancelTimeoutMs": 15_000,
+                            "maxDownloadBytes": 1_073_741_824_u64
+                        },
+                        "event_transport": {
+                            "protocol": "basecamp.host-events",
+                            "version": 1,
+                            "ready": true,
+                            "module": "storage_module",
+                            "event": "storageDownloadDoneV2"
+                        }
+                    }
+                }]
+            })
+        };
+        let storage_capability = |storage: Value| -> Result<Value> {
+            let value = serde_json::to_value(test_registry_report_with_value(
+                CapabilityBuildMode::Basecamp,
+                Some(&json!({
+                    "network_connector_config": {
+                        "scopes": {
+                            "storage": {
+                                "connector_id": "storage_module",
+                                "provenance": "build_default"
+                            }
+                        }
+                    },
+                    "source_reports": { "storage": storage }
+                })),
+            ))?;
+            capability_for(&value, "storage")
+                .cloned()
+                .context("Basecamp Storage capability missing")
+        };
+
+        let supported = storage_capability(source_report())?;
+        if unavailable_contains(&supported, "storage.backup.sync_read_by_cid") {
+            bail!("exact Basecamp runtime contract was not credited: {supported}");
+        }
+        if !unavailable_contains(&supported, "storage.backup.sync_upload") {
+            bail!("Basecamp backup upload was overclaimed: {supported}");
+        }
+
+        for (pointer, replacement, mismatch) in [
+            (
+                "/module_info/value/methods/0/isInvokable",
+                json!(false),
+                "non-invokable protocol method",
+            ),
+            (
+                "/module_info/value/methods/1/signature",
+                json!("downloadToUrlV2(QString)"),
+                "wrong download method signature",
+            ),
+            (
+                "/module_info/value/events/0/signature",
+                json!("storageDownloadDoneV2()"),
+                "wrong terminal event signature",
+            ),
+            ("/probes/0/ok", json!(false), "failed readiness probe"),
+            (
+                "/probes/0/value/shared_staging",
+                json!(false),
+                "missing shared staging",
+            ),
+            (
+                "/probes/0/value/contract/protocol",
+                json!("logos.storage.download.other"),
+                "wrong download protocol",
+            ),
+            (
+                "/probes/0/value/contract/version",
+                json!(1),
+                "wrong download protocol version",
+            ),
+            (
+                "/probes/0/value/contract/moduleOperationIdOwner",
+                json!("module"),
+                "wrong operation identity owner",
+            ),
+            (
+                "/probes/0/value/contract/cancelTimeoutMs",
+                json!(14_999),
+                "wrong cancellation timeout",
+            ),
+            (
+                "/probes/0/value/contract/maxDownloadBytes",
+                json!(crate::support::settings_backup::SETTINGS_BACKUP_MAX_BYTES as u64 - 1),
+                "insufficient byte limit",
+            ),
+            (
+                "/probes/0/value/event_transport/protocol",
+                json!("logoscore.watch"),
+                "wrong host-event protocol",
+            ),
+            (
+                "/probes/0/value/event_transport/version",
+                json!(2),
+                "wrong host-event protocol version",
+            ),
+            (
+                "/probes/0/value/event_transport/ready",
+                json!(false),
+                "unready host event subscription",
+            ),
+            (
+                "/probes/0/value/event_transport/module",
+                json!("blockchain_module"),
+                "wrong subscribed module",
+            ),
+            (
+                "/probes/0/value/event_transport/event",
+                json!("storageDownloadProgressV2"),
+                "wrong subscribed event",
+            ),
+        ] {
+            let mut report = source_report();
+            *report
+                .pointer_mut(pointer)
+                .with_context(|| format!("missing test report field `{pointer}`"))? = replacement;
+            let capability = storage_capability(report)?;
+            if !unavailable_contains(&capability, "storage.backup.sync_read_by_cid") {
+                bail!("{mismatch} overclaimed Basecamp backup read: {capability}");
             }
         }
         Ok(())

@@ -295,12 +295,17 @@ impl RuntimeOperations {
     }
 
     fn ingest_typed_module_event(&self, event: ModuleEventEnvelope) -> Result<Value> {
+        let transport_ingress = self.module_transport.ingest_module_event(
+            event.module_name(),
+            event.event_name(),
+            event.args(),
+        );
         let (value, settled_operation_id) =
             self.registry.ingest_module_event_with_settlement(event)?;
         if let Some(operation_id) = settled_operation_id {
             self.supervisor.settle(&operation_id)?;
         }
-        Ok(value)
+        transport_ingress.map(|()| value)
     }
 
     #[cfg(test)]
@@ -495,14 +500,69 @@ impl RuntimeOperationInterface {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use anyhow::{Context as _, Result};
     use serde_json::json;
 
     use super::*;
+    use crate::modules::logos_core::{
+        ModuleCall, ModuleCallFuture, ModuleTransport, ModuleTransportEvent,
+    };
     use crate::source_routing::{
         ModuleCorrelation, ModuleEventCorrelationKind, ModuleSessionId,
         ModuleTerminalEventContract, ObservableOperationAcceptance,
     };
+
+    #[derive(Default)]
+    struct RecordingEventTransport {
+        events: Mutex<Vec<ModuleTransportEvent>>,
+    }
+
+    impl ModuleTransport for RecordingEventTransport {
+        fn kind(&self) -> ModuleTransportKind {
+            ModuleTransportKind::Module
+        }
+
+        fn call(&self, _call: ModuleCall) -> ModuleCallFuture<'_> {
+            Box::pin(async { bail!("recording event transport does not support calls") })
+        }
+
+        fn ingest_module_event(&self, module: &str, event: &str, args: &[Value]) -> Result<()> {
+            self.events
+                .lock()
+                .map_err(|_| anyhow::anyhow!("recorded event state is unavailable"))?
+                .push(ModuleTransportEvent::new(module, event, args.to_vec())?);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn typed_module_event_is_published_to_transport_before_reduction() -> Result<()> {
+        let transport = Arc::new(RecordingEventTransport::default());
+        let operations = RuntimeOperations::with_test_module_transport(transport.clone());
+
+        operations.ingest_module_event_parts(
+            "storage_module",
+            "storageDownloadDoneV2",
+            vec![json!({ "operationId": "download-7", "status": "completed" })],
+        )?;
+
+        let events = transport
+            .events
+            .lock()
+            .map_err(|_| anyhow::anyhow!("recorded event state is unavailable"))?;
+        let event = events
+            .first()
+            .context("typed module event was not published to the transport")?;
+        anyhow::ensure!(events.len() == 1);
+        anyhow::ensure!(event.module() == "storage_module");
+        anyhow::ensure!(event.event() == "storageDownloadDoneV2");
+        anyhow::ensure!(
+            event.args() == [json!({ "operationId": "download-7", "status": "completed" })]
+        );
+        Ok(())
+    }
 
     #[test]
     fn blocking_acknowledgement_retains_observable_conversation() -> Result<()> {

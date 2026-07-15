@@ -140,14 +140,18 @@ impl StorageClient {
     pub(crate) const fn confirms_backup_download_stop(&self) -> bool {
         matches!(
             self.adapter,
-            StorageOperationAdapter::Module(ModuleTransportKind::LogoscoreCli)
+            StorageOperationAdapter::Module(
+                ModuleTransportKind::Module | ModuleTransportKind::LogoscoreCli
+            )
         )
     }
 
     pub(crate) const fn backup_download_termination_handshake_grace(&self) -> Option<Duration> {
         if matches!(
             self.adapter,
-            StorageOperationAdapter::Module(ModuleTransportKind::LogoscoreCli)
+            StorageOperationAdapter::Module(
+                ModuleTransportKind::Module | ModuleTransportKind::LogoscoreCli
+            )
         ) {
             Some(transport::BACKUP_DOWNLOAD_TERMINATION_HANDSHAKE_GRACE)
         } else {
@@ -229,15 +233,19 @@ impl StorageClient {
         &self,
         module_transport: &SharedModuleTransport,
     ) -> Result<()> {
-        if matches!(
-            self.adapter,
-            StorageOperationAdapter::Module(ModuleTransportKind::LogoscoreCli)
-        ) && module_transport.kind() != ModuleTransportKind::LogoscoreCli
-        {
-            bail!(
-                "resolved module transport `logoscore_cli` is unavailable; active transport is `{}`",
+        if let StorageOperationAdapter::Module(expected) = &self.adapter {
+            anyhow::ensure!(
+                module_transport.kind() == *expected,
+                "resolved module transport `{}` is unavailable; active transport is `{}`",
+                expected.as_str(),
                 module_transport.kind().as_str()
             );
+            if *expected == ModuleTransportKind::Module {
+                anyhow::ensure!(
+                    module_transport.supports_shared_file_staging(),
+                    "Basecamp host transport does not provide shared file staging"
+                );
+            }
         }
         Ok(())
     }
@@ -260,13 +268,22 @@ impl StorageClient {
     pub(crate) async fn download_backup_bytes_controlled(
         &self,
         module_transport: &SharedModuleTransport,
+        cleanup_module_transport: &SharedModuleTransport,
         cid: &str,
         local_only: bool,
         control: CommandControl,
     ) -> Result<Vec<u8>> {
         match &self.adapter {
             StorageOperationAdapter::Module(ModuleTransportKind::Module) => {
-                bail!("Basecamp Storage module does not expose backup read-by-CID bytes")
+                transport::host_module_download_backup_bytes_controlled(
+                    module_transport,
+                    cleanup_module_transport,
+                    cid,
+                    local_only,
+                    SETTINGS_BACKUP_MAX_BYTES,
+                    control,
+                )
+                .await
             }
             StorageOperationAdapter::Module(ModuleTransportKind::LogoscoreCli) => {
                 let runtime = module_transport
@@ -1050,7 +1067,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn basecamp_backup_download_fails_without_inspector_byte_staging() -> Result<()> {
+    async fn basecamp_backup_download_fails_without_host_file_staging() -> Result<()> {
         let request = request(json!({
             "adapter": { "source_mode": "module", "inputs": {} },
             "mutating_enabled": false,
@@ -1064,6 +1081,7 @@ mod tests {
             .client()
             .download_backup_bytes_controlled(
                 &module_transport,
+                &module_transport,
                 request.cid(),
                 request.local_only(),
                 command_control()?,
@@ -1073,7 +1091,7 @@ mod tests {
             .context("Basecamp backup download should fail")?;
 
         anyhow::ensure!(
-            error.to_string() == "Basecamp Storage module does not expose backup read-by-CID bytes",
+            error.to_string() == "Basecamp host transport does not provide shared file staging",
             "adapter identity collapsed: {error:#}"
         );
         Ok(())
