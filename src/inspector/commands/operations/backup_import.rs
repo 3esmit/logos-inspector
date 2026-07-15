@@ -9,7 +9,7 @@ use std::{
 };
 
 use anyhow::{Context as _, Result, bail};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use tokio::runtime::Runtime;
 
 use super::{
@@ -19,12 +19,20 @@ use super::{
 };
 use crate::support::{
     backup_catalog::{
-        BackupCatalogId, preview_local_settings_restore_with_options,
+        BackupCatalogId, LocalBackupImportReceipt, preview_local_settings_restore_with_options,
         restore_local_settings_backup_with_options,
     },
-    local_state::{LocalStateFailureStatus, LocalStateTransactionError},
-    settings_backup::{BackupImportArea, BackupImportOptions, BackupImportSelection},
+    local_state::{
+        DirectoryDurability, LocalStateCommitCancellation, LocalStateFailureStatus,
+        LocalStateTransactionError,
+    },
+    settings_backup::{
+        BackupImportArea, BackupImportOptions, BackupImportSelection, SettingsBackupCommitResult,
+    },
 };
+
+#[cfg(test)]
+use crate::support::local_state::LOCAL_STATE_TRANSACTION_ID_HEX_LENGTH;
 
 #[cfg(not(test))]
 const STOP_TIMEOUT: Duration = Duration::from_secs(2);
@@ -49,7 +57,159 @@ pub(super) trait BackupImportStore: Send + Sync {
         backup_catalog_id: &str,
         wallet_profile: Option<&Value>,
         options: &BackupImportOptions,
-    ) -> Result<Value>;
+        cancellation: &LocalStateCommitCancellation,
+    ) -> Result<BackupImportCommitReceipt>;
+}
+
+#[derive(Debug)]
+pub(super) struct BackupImportCommitReceipt {
+    backup_catalog_id: BackupCatalogId,
+    selection: BackupImportSelection,
+    applied_areas: Vec<BackupImportArea>,
+    commit: BackupImportCommitResult,
+    summary: Map<String, Value>,
+}
+
+#[derive(Debug)]
+enum BackupImportCommitResult {
+    NoOp,
+    Applied {
+        transaction_id: String,
+        directory_durability: DirectoryDurability,
+    },
+}
+
+impl BackupImportCommitReceipt {
+    fn from_local(receipt: LocalBackupImportReceipt) -> Self {
+        let (backup_catalog_id, selection, restore) = receipt.into_parts();
+        let (summary, applied_areas, commit) = restore.into_parts();
+        let commit = match commit {
+            SettingsBackupCommitResult::NoOp => BackupImportCommitResult::NoOp,
+            SettingsBackupCommitResult::Applied(report) => BackupImportCommitResult::Applied {
+                transaction_id: report.transaction_id().to_owned(),
+                directory_durability: report.directory_durability(),
+            },
+        };
+        Self {
+            backup_catalog_id,
+            selection,
+            applied_areas,
+            commit,
+            summary,
+        }
+    }
+
+    fn validate_for(
+        &self,
+        backup_catalog_id: &BackupCatalogId,
+        selection: &BackupImportSelection,
+    ) -> Result<()> {
+        if &self.backup_catalog_id != backup_catalog_id {
+            bail!("backup import receipt has a different backup catalog identity");
+        }
+        if &self.selection != selection {
+            bail!("backup import receipt has a different area selection");
+        }
+        Ok(())
+    }
+
+    fn into_summary(mut self) -> Value {
+        let selected = area_value(self.selection.selected_areas());
+        let applied = area_value(self.applied_areas);
+        self.summary.insert(
+            "backup_catalog_id".to_owned(),
+            Value::String(self.backup_catalog_id.as_str().to_owned()),
+        );
+        self.summary
+            .insert("selected_areas".to_owned(), selected.clone());
+        self.summary.insert("affected_areas".to_owned(), selected);
+        self.summary.insert("applied_areas".to_owned(), applied);
+        match self.commit {
+            BackupImportCommitResult::NoOp => {
+                self.summary
+                    .insert("restored".to_owned(), Value::Bool(false));
+                self.summary.remove("transaction");
+            }
+            BackupImportCommitResult::Applied {
+                transaction_id,
+                directory_durability,
+            } => {
+                self.summary
+                    .insert("restored".to_owned(), Value::Bool(true));
+                self.summary.insert(
+                    "transaction".to_owned(),
+                    json!({
+                        "transaction_id": transaction_id,
+                        "status": "applied",
+                        "directory_durability": directory_durability.as_str(),
+                    }),
+                );
+            }
+        }
+        Value::Object(self.summary)
+    }
+
+    #[cfg(test)]
+    fn try_from_adapter_parts(
+        backup_catalog_id: &str,
+        selection: BackupImportSelection,
+        applied_areas: Vec<BackupImportArea>,
+        summary: Value,
+        transaction_id: Option<&str>,
+        directory_durability: Option<DirectoryDurability>,
+    ) -> Result<Self> {
+        let parsed_catalog_id = BackupCatalogId::parse(backup_catalog_id)?;
+        if parsed_catalog_id.as_str() != backup_catalog_id {
+            bail!("backup import receipt catalog identity is not canonical");
+        }
+        let summary = summary
+            .as_object()
+            .cloned()
+            .context("backup import receipt summary must be a JSON object")?;
+        let mut unique = Vec::with_capacity(applied_areas.len());
+        for area in &applied_areas {
+            if !selection.mode(*area).is_selected() {
+                bail!("backup import receipt applied an unselected area");
+            }
+            if unique.contains(area) {
+                bail!("backup import receipt repeats an applied area");
+            }
+            unique.push(*area);
+        }
+        let commit = match (transaction_id, directory_durability) {
+            (None, None) if applied_areas.is_empty() => BackupImportCommitResult::NoOp,
+            (Some(transaction_id), Some(directory_durability)) if !applied_areas.is_empty() => {
+                if transaction_id.len() != LOCAL_STATE_TRANSACTION_ID_HEX_LENGTH
+                    || !transaction_id.bytes().all(|byte| byte.is_ascii_hexdigit())
+                {
+                    bail!("backup import receipt transaction identity is invalid");
+                }
+                BackupImportCommitResult::Applied {
+                    transaction_id: transaction_id.to_owned(),
+                    directory_durability,
+                }
+            }
+            (Some(_), None) => bail!("backup import receipt directory durability is missing"),
+            (None, Some(_)) => bail!("backup import receipt transaction identity is missing"),
+            _ => bail!("backup import receipt transaction evidence conflicts with applied areas"),
+        };
+        Ok(Self {
+            backup_catalog_id: parsed_catalog_id,
+            selection,
+            applied_areas,
+            commit,
+            summary,
+        })
+    }
+}
+
+fn area_value(areas: Vec<BackupImportArea>) -> Value {
+    Value::Array(
+        areas
+            .into_iter()
+            .map(|area| Value::String(area.as_str().to_owned()))
+            .collect(),
+    )
 }
 
 #[derive(Debug)]
@@ -70,8 +230,15 @@ impl BackupImportStore for LocalBackupImportStore {
         backup_catalog_id: &str,
         wallet_profile: Option<&Value>,
         options: &BackupImportOptions,
-    ) -> Result<Value> {
-        restore_local_settings_backup_with_options(backup_catalog_id, wallet_profile, options)
+        cancellation: &LocalStateCommitCancellation,
+    ) -> Result<BackupImportCommitReceipt> {
+        restore_local_settings_backup_with_options(
+            backup_catalog_id,
+            wallet_profile,
+            options,
+            cancellation,
+        )
+        .map(BackupImportCommitReceipt::from_local)
     }
 }
 
@@ -106,6 +273,9 @@ impl BackupImportCoordinator {
             .gate
             .lock()
             .map_err(|_| anyhow::anyhow!("backup import state is unavailable"))?;
+        if matches!(&*active, ImportGate::Closing) {
+            bail!("backup import coordinator is closing");
+        }
         if active
             .selection()
             .is_some_and(|selection| selection_affects(selection, request.method()))
@@ -156,6 +326,7 @@ impl BackupImportCoordinator {
         }
 
         let mut lease = ImportLease::acquire(&self.gate, selection.clone())?;
+        let cancellation = lease.cancellation().clone();
         let import_id = self.allocate_import_id(backup_catalog_id.as_str())?;
         let preview = match self
             .store
@@ -334,14 +505,14 @@ impl BackupImportCoordinator {
         plan.transition(BackupImportPhase::Committing)?;
         lease.begin_committing(&plan.import_id);
         stopped.enter_committing();
-        match self
-            .store
-            .restore(backup_catalog_id.as_str(), wallet_profile, &options)
-        {
-            Ok(summary) => {
-                if let Err(error) =
-                    validate_restore_receipt(&summary, backup_catalog_id.as_str(), &selection)
-                {
+        match self.store.restore(
+            backup_catalog_id.as_str(),
+            wallet_profile,
+            &options,
+            &cancellation,
+        ) {
+            Ok(receipt) => {
+                if let Err(error) = receipt.validate_for(&backup_catalog_id, &selection) {
                     plan.transition(BackupImportPhase::RecoveryRequired)?;
                     stopped.retain_for_recovery();
                     lease.retain_recovery_required(Some(format!(
@@ -354,6 +525,7 @@ impl BackupImportCoordinator {
                         Some(error.to_string()),
                     );
                 }
+                let summary = receipt.into_summary();
                 plan.transition(BackupImportPhase::Applied)?;
                 plan.events.extend(stopped.compensate());
                 let result = plan.into_value(BackupImportOutcome::Applied, Some(summary), None);
@@ -415,6 +587,27 @@ impl BackupImportCoordinator {
             .map_err(|_| anyhow::anyhow!("backup import identity sequence is exhausted"))?;
         Ok(format!("backup_import:{sequence}:{backup_catalog_id}"))
     }
+
+    pub(super) fn begin_close(&self) -> Result<()> {
+        let mut gate = self
+            .gate
+            .lock()
+            .map_err(|_| anyhow::anyhow!("backup import state is unavailable"))?;
+        match &mut *gate {
+            ImportGate::Idle => *gate = ImportGate::Closing,
+            ImportGate::Active {
+                cancellation,
+                closing,
+                ..
+            } => {
+                cancellation.request();
+                *closing = true;
+            }
+            ImportGate::RecoveryRequired { closing, .. } => *closing = true,
+            ImportGate::Closing => {}
+        }
+        Ok(())
+    }
 }
 
 pub(super) struct BackupOperationPermit<'a> {
@@ -423,6 +616,7 @@ pub(super) struct BackupOperationPermit<'a> {
 
 struct ImportLease<'a> {
     gate: &'a Mutex<ImportGate>,
+    cancellation: LocalStateCommitCancellation,
     release_on_drop: bool,
     fail_closed_transaction_id: Option<String>,
 }
@@ -434,18 +628,29 @@ impl<'a> ImportLease<'a> {
             .map_err(|_| anyhow::anyhow!("backup import state is unavailable"))?;
         match &*active {
             ImportGate::Idle => {}
-            ImportGate::Active(_) => bail!("another backup import is already active"),
+            ImportGate::Active { .. } => bail!("another backup import is already active"),
+            ImportGate::Closing => bail!("backup import coordinator is closing"),
             ImportGate::RecoveryRequired { transaction_id, .. } => bail!(
                 "backup import mutation is blocked while local transaction `{}` requires recovery",
                 transaction_id.as_deref().unwrap_or("unknown")
             ),
         }
-        *active = ImportGate::Active(selection);
+        let cancellation = LocalStateCommitCancellation::default();
+        *active = ImportGate::Active {
+            selection,
+            cancellation: cancellation.clone(),
+            closing: false,
+        };
         Ok(Self {
             gate,
+            cancellation,
             release_on_drop: true,
             fail_closed_transaction_id: None,
         })
+    }
+
+    fn cancellation(&self) -> &LocalStateCommitCancellation {
+        &self.cancellation
     }
 
     fn begin_committing(&mut self, import_id: &str) {
@@ -462,12 +667,16 @@ impl<'a> ImportLease<'a> {
             .gate
             .lock()
             .map_err(|_| anyhow::anyhow!("backup import state is unavailable"))?;
-        let ImportGate::Active(selection) = &*gate else {
+        let ImportGate::Active {
+            selection, closing, ..
+        } = &*gate
+        else {
             bail!("backup import recovery gate lost its active selection");
         };
         *gate = ImportGate::RecoveryRequired {
             selection: selection.clone(),
             transaction_id,
+            closing: *closing,
         };
         Ok(())
     }
@@ -477,14 +686,18 @@ impl Drop for ImportLease<'_> {
     fn drop(&mut self) {
         if self.release_on_drop
             && let Ok(mut active) = self.gate.lock()
+            && let ImportGate::Active {
+                selection, closing, ..
+            } = &*active
         {
-            if let (Some(transaction_id), ImportGate::Active(selection)) =
-                (&self.fail_closed_transaction_id, &*active)
-            {
+            if let Some(transaction_id) = &self.fail_closed_transaction_id {
                 *active = ImportGate::RecoveryRequired {
                     selection: selection.clone(),
                     transaction_id: Some(transaction_id.clone()),
+                    closing: *closing,
                 };
+            } else if *closing {
+                *active = ImportGate::Closing;
             } else {
                 *active = ImportGate::Idle;
             }
@@ -495,18 +708,26 @@ impl Drop for ImportLease<'_> {
 #[derive(Debug)]
 enum ImportGate {
     Idle,
-    Active(BackupImportSelection),
+    Closing,
+    Active {
+        selection: BackupImportSelection,
+        cancellation: LocalStateCommitCancellation,
+        closing: bool,
+    },
     RecoveryRequired {
         selection: BackupImportSelection,
         transaction_id: Option<String>,
+        closing: bool,
     },
 }
 
 impl ImportGate {
     fn selection(&self) -> Option<&BackupImportSelection> {
         match self {
-            Self::Idle => None,
-            Self::Active(selection) | Self::RecoveryRequired { selection, .. } => Some(selection),
+            Self::Idle | Self::Closing => None,
+            Self::Active { selection, .. } | Self::RecoveryRequired { selection, .. } => {
+                Some(selection)
+            }
         }
     }
 }
@@ -1129,71 +1350,6 @@ fn coordinator_owns_cancellation(requested_by_coordinator: bool, operation: &Val
             .is_some_and(|status| status == "canceled")
 }
 
-fn validate_restore_receipt(
-    summary: &Value,
-    backup_catalog_id: &str,
-    selection: &BackupImportSelection,
-) -> Result<()> {
-    let object = summary
-        .as_object()
-        .context("backup import durable receipt must be a JSON object")?;
-    if object.get("backup_catalog_id").and_then(Value::as_str) != Some(backup_catalog_id) {
-        bail!("backup import durable receipt has a different backup catalog identity");
-    }
-    let expected_areas = selection_value(selection);
-    if object.get("selected_areas") != Some(&expected_areas)
-        || object.get("affected_areas") != Some(&expected_areas)
-    {
-        bail!("backup import durable receipt has a different area selection");
-    }
-    let restored = object
-        .get("restored")
-        .and_then(Value::as_bool)
-        .context("backup import durable receipt requires a boolean `restored`")?;
-    let applied_areas = object
-        .get("applied_areas")
-        .and_then(Value::as_array)
-        .context("backup import durable receipt requires an `applied_areas` array")?;
-    let selected_names = selection
-        .selected_areas()
-        .into_iter()
-        .map(BackupImportArea::as_str)
-        .collect::<Vec<_>>();
-    let mut accepted = Vec::new();
-    for area in applied_areas {
-        let area = area
-            .as_str()
-            .context("backup import durable receipt area must be a string")?;
-        if !selected_names.contains(&area) {
-            bail!("backup import durable receipt applied unselected area `{area}`");
-        }
-        if accepted.contains(&area) {
-            bail!("backup import durable receipt repeats applied area `{area}`");
-        }
-        accepted.push(area);
-    }
-    if restored {
-        if applied_areas.is_empty() {
-            bail!("backup import durable receipt restored no applied areas");
-        }
-        let transaction = object
-            .get("transaction")
-            .and_then(Value::as_object)
-            .context("backup import durable receipt requires transaction evidence")?;
-        if transaction.get("status").and_then(Value::as_str) != Some("applied")
-            || transaction
-                .get("transaction_id")
-                .and_then(Value::as_str)
-                .is_none_or(|value| value.trim().is_empty())
-        {
-            bail!("backup import durable receipt has invalid transaction evidence");
-        }
-    } else if !applied_areas.is_empty() || object.contains_key("transaction") {
-        bail!("backup import no-op receipt contains durable apply evidence");
-    }
-    Ok(())
-}
-
 fn decision_value(import_id: &str, backup_catalog_id: &str, decision: &OperationDecision) -> Value {
     json!({
         "operation": decision.operation,
@@ -1343,8 +1499,9 @@ mod tests {
         fs,
         path::{Path, PathBuf},
         sync::{
-            Arc,
+            Arc, Mutex,
             atomic::{AtomicUsize, Ordering},
+            mpsc,
         },
         thread,
         time::{Duration, Instant},
@@ -1362,9 +1519,12 @@ mod tests {
         backup_catalog::{
             preview_local_settings_restore_with_options_in_dir_for_test,
             record_remote_settings_backup_payload_in_dir,
+            restore_local_settings_backup_at_boundary_in_dir_for_test,
             restore_local_settings_backup_with_options_in_dir_for_test,
         },
-        local_state::{LocalStateTestFault, local_state_hot_journal_exists_in},
+        local_state::{
+            LocalStateTestBoundary, LocalStateTestFault, local_state_hot_journal_exists_in,
+        },
     };
 
     const OLD_SETTINGS: &[u8] =
@@ -1398,14 +1558,71 @@ mod tests {
             backup_catalog_id: &str,
             wallet_profile: Option<&Value>,
             options: &BackupImportOptions,
-        ) -> Result<Value> {
+            cancellation: &LocalStateCommitCancellation,
+        ) -> Result<BackupImportCommitReceipt> {
             restore_local_settings_backup_with_options_in_dir_for_test(
                 &self.base_dir,
                 backup_catalog_id,
                 wallet_profile,
                 options,
+                cancellation,
                 self.fault,
             )
+            .map(BackupImportCommitReceipt::from_local)
+        }
+    }
+
+    struct BoundaryPausedBackupImportStore {
+        base_dir: PathBuf,
+        boundary: LocalStateTestBoundary,
+        pause: Mutex<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>>,
+    }
+
+    impl BackupImportStore for BoundaryPausedBackupImportStore {
+        fn preview(
+            &self,
+            backup_catalog_id: &str,
+            wallet_profile: Option<&Value>,
+            options: &BackupImportOptions,
+        ) -> Result<Value> {
+            preview_local_settings_restore_with_options_in_dir_for_test(
+                &self.base_dir,
+                backup_catalog_id,
+                wallet_profile,
+                options,
+            )
+        }
+
+        fn restore(
+            &self,
+            backup_catalog_id: &str,
+            wallet_profile: Option<&Value>,
+            options: &BackupImportOptions,
+            cancellation: &LocalStateCommitCancellation,
+        ) -> Result<BackupImportCommitReceipt> {
+            let (entered, release) = self
+                .pause
+                .lock()
+                .map_err(|_| anyhow::anyhow!("backup import boundary pause is unavailable"))?
+                .take()
+                .context("backup import boundary pause was already consumed")?;
+            restore_local_settings_backup_at_boundary_in_dir_for_test(
+                &self.base_dir,
+                backup_catalog_id,
+                wallet_profile,
+                options,
+                cancellation,
+                self.boundary,
+                move || {
+                    entered
+                        .send(())
+                        .context("failed to signal backup import test boundary")?;
+                    release
+                        .recv()
+                        .context("failed to release backup import test boundary")
+                },
+            )
+            .map(BackupImportCommitReceipt::from_local)
         }
     }
 
@@ -1470,6 +1687,63 @@ mod tests {
             }
         }
         Ok(())
+    }
+
+    fn assert_exact_imported_state(base_dir: &Path) -> Result<()> {
+        let settings: Value = serde_json::from_slice(&fs::read(base_dir.join("settings.json"))?)?;
+        let idl: Value = serde_json::from_slice(&fs::read(base_dir.join("idls.json"))?)?;
+        let wallet: Value = serde_json::from_slice(&fs::read(base_dir.join("wallet.json"))?)?;
+        if settings.get("theme").and_then(Value::as_str) != Some("new")
+            || settings
+                .pointer("/favorites/0/value")
+                .and_then(Value::as_str)
+                != Some("new-favorite")
+            || idl.pointer("/idls/0/key").and_then(Value::as_str) != Some("idl-new")
+            || wallet.pointer("/profile/label").and_then(Value::as_str) != Some("New wallet")
+        {
+            bail!("backup import did not persist one coherent selected state");
+        }
+        Ok(())
+    }
+
+    fn apply_with_close_at_local_state_boundary(
+        boundary: LocalStateTestBoundary,
+    ) -> Result<(tempfile::TempDir, Value)> {
+        let (directory, _regular_store, backup_catalog_id) = seeded_real_import(None)?;
+        let (entered_sender, entered_receiver) = mpsc::channel();
+        let (release_sender, release_receiver) = mpsc::channel();
+        let store = Arc::new(BoundaryPausedBackupImportStore {
+            base_dir: directory.path().to_path_buf(),
+            boundary,
+            pause: Mutex::new(Some((entered_sender, release_receiver))),
+        });
+        let operations = Arc::new(RuntimeOperations::with_backup_import_store(store));
+        let close_handle = operations.close_handle();
+        let apply_operations = Arc::clone(&operations);
+        let apply = thread::spawn(move || -> Result<Value> {
+            let runtime = Runtime::new()?;
+            let result = apply_operations.backup_import.apply(
+                &runtime,
+                &apply_operations,
+                &backup_catalog_id,
+                None,
+                Some(&real_import_options()),
+            )?;
+            apply_operations.shutdown(&runtime)?;
+            Ok(result)
+        });
+        entered_receiver
+            .recv_timeout(Duration::from_secs(3))
+            .context("timed out waiting for local state commit boundary")?;
+        let close_result = close_handle.begin_close();
+        release_sender
+            .send(())
+            .context("failed to release local state commit boundary")?;
+        close_result?;
+        let result = apply
+            .join()
+            .map_err(|_| anyhow::anyhow!("boundary backup import thread panicked"))??;
+        Ok((directory, result))
     }
 
     fn insert_restartable_running_operation(
@@ -1640,7 +1914,8 @@ mod tests {
             backup_catalog_id: &str,
             _wallet_profile: Option<&Value>,
             options: &BackupImportOptions,
-        ) -> Result<Value> {
+            _cancellation: &LocalStateCommitCancellation,
+        ) -> Result<BackupImportCommitReceipt> {
             self.restore_calls.fetch_add(1, Ordering::Relaxed);
             if let Some(status) = self.restore_failure {
                 let error = match status {
@@ -1653,21 +1928,7 @@ mod tests {
                 };
                 return Err(error.into());
             }
-            Ok(json!({
-                "restored": true,
-                "settings": true,
-                "favorites": 0,
-                "idl_count": 0,
-                "encrypted": false,
-                "backup_catalog_id": backup_catalog_id,
-                "selected_areas": selection_value(options.selection()),
-                "affected_areas": selection_value(options.selection()),
-                "applied_areas": ["settings"],
-                "transaction": {
-                    "transaction_id": "tx-fake-applied",
-                    "status": "applied"
-                }
-            }))
+            valid_test_receipt(backup_catalog_id, options.selection())
         }
     }
 
@@ -1675,8 +1936,7 @@ mod tests {
     enum BoundaryStoreBehavior {
         PreviewFailure,
         RestoreFailure,
-        MalformedDurableSummary,
-        PreviewShapedDurableSummary,
+        ForeignReceipt,
     }
 
     struct BoundaryFailureStore {
@@ -1703,20 +1963,40 @@ mod tests {
             &self,
             _backup_catalog_id: &str,
             _wallet_profile: Option<&Value>,
-            _options: &BackupImportOptions,
-        ) -> Result<Value> {
+            options: &BackupImportOptions,
+            _cancellation: &LocalStateCommitCancellation,
+        ) -> Result<BackupImportCommitReceipt> {
             match self.behavior {
                 BoundaryStoreBehavior::RestoreFailure => bail!("injected restore failure"),
-                BoundaryStoreBehavior::MalformedDurableSummary => Ok(json!({})),
-                BoundaryStoreBehavior::PreviewShapedDurableSummary => Ok(json!({
-                    "restored": true,
-                    "applied_areas": ["settings"]
-                })),
+                BoundaryStoreBehavior::ForeignReceipt => {
+                    valid_test_receipt("backup-foreign", options.selection())
+                }
                 BoundaryStoreBehavior::PreviewFailure => {
                     bail!("restore must not run after preview failure")
                 }
             }
         }
+    }
+
+    fn valid_test_receipt(
+        backup_catalog_id: &str,
+        selection: &BackupImportSelection,
+    ) -> Result<BackupImportCommitReceipt> {
+        let applied_areas = selection.selected_areas();
+        BackupImportCommitReceipt::try_from_adapter_parts(
+            backup_catalog_id,
+            selection.clone(),
+            applied_areas,
+            json!({
+                "restored": true,
+                "settings": true,
+                "favorites": 0,
+                "idl_count": 0,
+                "encrypted": false,
+            }),
+            Some("00000000000000000000000000000000"),
+            Some(DirectoryDurability::Verified),
+        )
     }
 
     #[test]
@@ -1830,7 +2110,7 @@ mod tests {
     }
 
     #[test]
-    fn unexpected_committing_exit_and_malformed_durable_result_fail_closed() -> Result<()> {
+    fn unexpected_committing_exit_and_foreign_typed_receipt_fail_closed() -> Result<()> {
         let selection = BackupImportOptions::parse(Some(&json!({ "settings": "replace" })))?
             .selection()
             .clone();
@@ -1853,33 +2133,85 @@ mod tests {
         }
         drop(active);
 
-        for behavior in [
-            BoundaryStoreBehavior::MalformedDurableSummary,
-            BoundaryStoreBehavior::PreviewShapedDurableSummary,
-        ] {
-            let store = Arc::new(BoundaryFailureStore { behavior });
-            let operations = RuntimeOperations::with_backup_import_store(store);
-            let runtime = Runtime::new()?;
-            let result = operations.backup_import.apply(
-                &runtime,
-                &operations,
-                "backup-malformed",
+        let store = Arc::new(BoundaryFailureStore {
+            behavior: BoundaryStoreBehavior::ForeignReceipt,
+        });
+        let operations = RuntimeOperations::with_backup_import_store(store);
+        let runtime = Runtime::new()?;
+        let result = operations.backup_import.apply(
+            &runtime,
+            &operations,
+            "backup-expected",
+            None,
+            Some(&json!({ "settings": "replace" })),
+        )?;
+        if result.get("phase").and_then(Value::as_str) != Some("RecoveryRequired")
+            || result.get("outcome").and_then(Value::as_str) != Some("recovery_required")
+        {
+            bail!("foreign typed receipt did not fail closed: {result}");
+        }
+        if operations
+            .backup_import
+            .operation_permit(&storage_module_request()?)
+            .is_ok()
+        {
+            bail!("foreign typed receipt released affected mutation gate");
+        }
+        operations.shutdown(&runtime)?;
+        Ok(())
+    }
+
+    #[test]
+    fn typed_commit_receipt_rejects_invalid_adapter_evidence() -> Result<()> {
+        let selection = BackupImportOptions::parse(Some(&json!({ "settings": "replace" })))?
+            .selection()
+            .clone();
+        let summary = json!({ "restored": true, "settings": true });
+        let valid_transaction_id = "00000000000000000000000000000000";
+        let cases = [
+            BackupImportCommitReceipt::try_from_adapter_parts(
+                "../backup",
+                selection.clone(),
+                vec![BackupImportArea::Settings],
+                summary.clone(),
+                Some(valid_transaction_id),
+                Some(DirectoryDurability::Verified),
+            ),
+            BackupImportCommitReceipt::try_from_adapter_parts(
+                "backup-valid",
+                selection.clone(),
+                vec![BackupImportArea::Settings],
+                summary.clone(),
+                Some("invalid-transaction"),
+                Some(DirectoryDurability::Verified),
+            ),
+            BackupImportCommitReceipt::try_from_adapter_parts(
+                "backup-valid",
+                selection.clone(),
+                vec![BackupImportArea::Settings],
+                summary.clone(),
+                Some(valid_transaction_id),
                 None,
-                Some(&json!({ "settings": "replace" })),
-            )?;
-            if result.get("phase").and_then(Value::as_str) != Some("RecoveryRequired")
-                || result.get("outcome").and_then(Value::as_str) != Some("recovery_required")
-            {
-                bail!("malformed durable result did not fail closed: {result}");
-            }
-            if operations
-                .backup_import
-                .operation_permit(&storage_module_request()?)
-                .is_ok()
-            {
-                bail!("malformed durable result released affected mutation gate");
-            }
-            operations.shutdown(&runtime)?;
+            ),
+            BackupImportCommitReceipt::try_from_adapter_parts(
+                "backup-valid",
+                selection.clone(),
+                vec![BackupImportArea::Settings],
+                summary.clone(),
+                None,
+                Some(DirectoryDurability::Verified),
+            ),
+            BackupImportCommitReceipt::try_from_adapter_parts(
+                "backup-valid",
+                selection,
+                vec![BackupImportArea::Settings, BackupImportArea::Settings],
+                summary,
+                Some(valid_transaction_id),
+                Some(DirectoryDurability::Verified),
+            ),
+        ];
+        if cases.into_iter().any(|result| result.is_ok()) {
+            bail!("typed backup import receipt admitted invalid adapter evidence");
         }
         Ok(())
     }
@@ -2344,6 +2676,110 @@ mod tests {
         };
         if !error.to_string().contains("requires recovery") {
             bail!("second import returned wrong recovery gate error: {error:#}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn close_race_preserves_terminal_gate_and_rejects_post_close_import_admission() -> Result<()> {
+        let store = Arc::new(FakeBackupImportStore::new());
+        let operations = RuntimeOperations::with_backup_import_store(store.clone());
+        let selection = BackupImportOptions::parse(Some(&json!({ "settings": "replace" })))?
+            .selection()
+            .clone();
+        let lease = ImportLease::acquire(&operations.backup_import.gate, selection)?;
+        let cancellation = lease.cancellation().clone();
+
+        operations.close_handle().begin_close()?;
+        if !cancellation.is_requested() {
+            bail!("close did not signal the admitted backup import");
+        }
+        drop(lease);
+        if !matches!(
+            &*operations
+                .backup_import
+                .gate
+                .lock()
+                .map_err(|_| anyhow::anyhow!("test import gate is unavailable"))?,
+            ImportGate::Closing
+        ) {
+            bail!("active import lease drop reopened a closing coordinator");
+        }
+
+        let runtime = Runtime::new()?;
+        let admission = operations.backup_import.apply(
+            &runtime,
+            &operations,
+            "backup-after-close",
+            None,
+            Some(&json!({ "settings": "replace" })),
+        );
+        let Err(error) = admission else {
+            bail!("post-close import admission succeeded");
+        };
+        if !error.to_string().contains("coordinator is closing")
+            || store.restore_calls.load(Ordering::Relaxed) != 0
+        {
+            bail!("post-close import reached durable store boundary: {error:#}");
+        }
+        operations.shutdown(&runtime)?;
+        Ok(())
+    }
+
+    #[test]
+    fn close_cancellation_before_journal_rolls_back_whole_import() -> Result<()> {
+        let (directory, result) =
+            apply_with_close_at_local_state_boundary(LocalStateTestBoundary::WalletStaged)?;
+        if result.get("phase").and_then(Value::as_str) != Some("RolledBack")
+            || result.get("outcome").and_then(Value::as_str) != Some("rolled_back")
+            || result.get("appliedAreas") != Some(&json!([]))
+        {
+            bail!("pre-journal close did not produce one rolled-back terminal: {result}");
+        }
+        assert_exact_original_state(directory.path())?;
+        if local_state_hot_journal_exists_in(directory.path())? {
+            bail!("pre-journal cancellation retained a hot journal");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn close_between_final_check_and_journal_persist_rolls_back_whole_import() -> Result<()> {
+        let (directory, result) =
+            apply_with_close_at_local_state_boundary(LocalStateTestBoundary::JournalPersistReady)?;
+        if result.get("phase").and_then(Value::as_str) != Some("RolledBack")
+            || result.get("outcome").and_then(Value::as_str) != Some("rolled_back")
+            || result.get("appliedAreas") != Some(&json!([]))
+        {
+            bail!("pre-durability close did not produce one rolled-back terminal: {result}");
+        }
+        assert_exact_original_state(directory.path())?;
+        if local_state_hot_journal_exists_in(directory.path())? {
+            bail!("pre-durability cancellation retained a hot journal");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn close_cancellation_after_journal_durability_defers_until_applied() -> Result<()> {
+        let (directory, result) =
+            apply_with_close_at_local_state_boundary(LocalStateTestBoundary::JournalDurable)?;
+        if result.get("phase").and_then(Value::as_str) != Some("Applied")
+            || result.get("outcome").and_then(Value::as_str) != Some("applied")
+            || result
+                .pointer("/summary/transaction/status")
+                .and_then(Value::as_str)
+                != Some("applied")
+            || result
+                .pointer("/summary/transaction/directory_durability")
+                .and_then(Value::as_str)
+                .is_none()
+        {
+            bail!("post-journal close interrupted durable completion: {result}");
+        }
+        assert_exact_imported_state(directory.path())?;
+        if local_state_hot_journal_exists_in(directory.path())? {
+            bail!("post-journal completed import retained a hot journal");
         }
         Ok(())
     }

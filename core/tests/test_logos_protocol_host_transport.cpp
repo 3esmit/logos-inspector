@@ -54,6 +54,13 @@ struct lp_subscription
 struct LogosInspectorCore
 {
     FakeIngress* ingress = nullptr;
+    std::atomic<int32_t> runtimeEventHealth { 0 };
+    std::atomic<std::size_t> runtimeEventHealthUpdates { 0 };
+    std::mutex runtimeEventHealthMutex;
+    std::condition_variable runtimeEventHealthChanged;
+    bool blockReadyEventHealth = false;
+    bool readyEventHealthEntered = false;
+    bool releaseReadyEventHealth = false;
 };
 
 extern "C" lp_client* lp_client_create(
@@ -718,6 +725,26 @@ int32_t ingestModuleEvent(
     return core->ingress->ingest(module, event, argsJson);
 }
 
+int32_t setRuntimeModuleEventHealth(LogosInspectorCore* core, int32_t ready)
+{
+    if (core == nullptr || (ready != 0 && ready != 1)) {
+        return 0;
+    }
+    if (ready == 1) {
+        std::unique_lock<std::mutex> lock(core->runtimeEventHealthMutex);
+        if (core->blockReadyEventHealth) {
+            core->readyEventHealthEntered = true;
+            core->runtimeEventHealthChanged.notify_all();
+            core->runtimeEventHealthChanged.wait(lock, [core] {
+                return core->releaseReadyEventHealth;
+            });
+        }
+    }
+    core->runtimeEventHealth.store(ready, std::memory_order_release);
+    core->runtimeEventHealthUpdates.fetch_add(1, std::memory_order_acq_rel);
+    return 1;
+}
+
 struct CapturedReply
 {
     uint64_t requestId = 0;
@@ -816,7 +843,11 @@ struct Fixture
 
     bool activate()
     {
-        return transport.bindCore(&core, &ingestModuleEvent) && transport.activate();
+        return transport.bindCore(
+                   &core,
+                   &ingestModuleEvent,
+                   &setRuntimeModuleEventHealth)
+            && transport.activate();
     }
 
     FakeProtocol protocol;
@@ -831,6 +862,7 @@ bool activationCreatesExactCatalogOnOwnerThread()
     const std::thread::id ownerThread = std::this_thread::get_id();
     REQUIRE(fixture.activate());
     REQUIRE(fixture.transport.ownsRuntimeModuleEvents());
+    REQUIRE(fixture.core.runtimeEventHealth.load(std::memory_order_acquire) == 1);
 
     const auto clients = fixture.protocol.createdClients();
     REQUIRE(clients.size() == kExpectedModules.size());
@@ -850,6 +882,7 @@ bool activationCreatesExactCatalogOnOwnerThread()
 
     fixture.transport.close();
     REQUIRE(!fixture.transport.ownsRuntimeModuleEvents());
+    REQUIRE(fixture.core.runtimeEventHealth.load(std::memory_order_acquire) == 0);
     REQUIRE(fixture.protocol.lifecycleThreadViolations() == 0);
     return true;
 }
@@ -858,7 +891,10 @@ bool activationRollbackFailsClosed()
 {
     Fixture fixture;
     fixture.protocol.failClientAt(2);
-    REQUIRE(fixture.transport.bindCore(&fixture.core, &ingestModuleEvent));
+    REQUIRE(fixture.transport.bindCore(
+        &fixture.core,
+        &ingestModuleEvent,
+        &setRuntimeModuleEventHealth));
     REQUIRE(!fixture.transport.activate());
     REQUIRE(!fixture.transport.ownsRuntimeModuleEvents());
     REQUIRE(fixture.protocol.destroyedClients() == 2);
@@ -874,6 +910,8 @@ bool missingOptionalSubscriptionKeepsDispatchOpen()
     fixture.protocol.failSubscriptionAt(5);
     REQUIRE(fixture.activate());
     REQUIRE(!fixture.transport.ownsRuntimeModuleEvents());
+    REQUIRE(fixture.core.runtimeEventHealth.load(std::memory_order_acquire) == 0);
+    REQUIRE(fixture.core.runtimeEventHealthUpdates.load(std::memory_order_acquire) >= 1);
     REQUIRE(fixture.protocol.destroyedClients() == 0);
     REQUIRE(!waitUntil([&fixture] { return !fixture.ingress.calls().empty(); }, 50ms));
 
@@ -917,7 +955,10 @@ bool closeWaitsForAdmittedActivationStartup()
 {
     Fixture fixture;
     fixture.protocol.blockNextClientCreate();
-    REQUIRE(fixture.transport.bindCore(&fixture.core, &ingestModuleEvent));
+    REQUIRE(fixture.transport.bindCore(
+        &fixture.core,
+        &ingestModuleEvent,
+        &setRuntimeModuleEventHealth));
 
     std::atomic<bool> activationResult { true };
     std::atomic<bool> closeReturned { false };
@@ -951,6 +992,62 @@ bool closeWaitsForAdmittedActivationStartup()
     const std::size_t createdAfterClose = fixture.protocol.createdClients().size();
     std::this_thread::sleep_for(10ms);
     REQUIRE(fixture.protocol.createdClients().size() == createdAfterClose);
+    return true;
+}
+
+bool faultDuringReadyHealthPublicationCannotRestoreStaleHealth()
+{
+    Fixture fixture;
+    {
+        std::lock_guard<std::mutex> lock(fixture.core.runtimeEventHealthMutex);
+        fixture.core.blockReadyEventHealth = true;
+    }
+    REQUIRE(fixture.transport.bindCore(
+        &fixture.core,
+        &ingestModuleEvent,
+        &setRuntimeModuleEventHealth));
+
+    std::atomic<bool> activationResult { true };
+    std::thread activation([&fixture, &activationResult] {
+        activationResult.store(fixture.transport.activate(), std::memory_order_release);
+    });
+    bool readyPublicationEntered = false;
+    {
+        std::unique_lock<std::mutex> lock(fixture.core.runtimeEventHealthMutex);
+        readyPublicationEntered = fixture.core.runtimeEventHealthChanged.wait_for(
+            lock,
+            3s,
+            [&fixture] { return fixture.core.readyEventHealthEntered; });
+    }
+    if (!readyPublicationEntered) {
+        {
+            std::lock_guard<std::mutex> lock(fixture.core.runtimeEventHealthMutex);
+            fixture.core.releaseReadyEventHealth = true;
+            fixture.core.runtimeEventHealthChanged.notify_all();
+        }
+        activation.join();
+        REQUIRE(readyPublicationEntered);
+    }
+
+    fixture.ingress.setMode(FakeIngress::Mode::reject);
+    const bool faultEventEmitted = fixture.protocol.emitEvent(
+        "delivery_module",
+        "messageSent",
+        R"(["activation-fault"])");
+    {
+        std::lock_guard<std::mutex> lock(fixture.core.runtimeEventHealthMutex);
+        fixture.core.releaseReadyEventHealth = true;
+        fixture.core.runtimeEventHealthChanged.notify_all();
+    }
+    activation.join();
+
+    REQUIRE(faultEventEmitted);
+    REQUIRE(!activationResult.load(std::memory_order_acquire));
+    REQUIRE(!fixture.transport.ownsRuntimeModuleEvents());
+    REQUIRE(fixture.core.runtimeEventHealth.load(std::memory_order_acquire) == 0);
+    REQUIRE(fixture.core.runtimeEventHealthUpdates.load(std::memory_order_acquire) >= 3);
+    REQUIRE(fixture.protocol.destroyedClients() == kExpectedModules.size());
+    REQUIRE(fixture.protocol.lifecycleThreadViolations() == 0);
     return true;
 }
 
@@ -1327,12 +1424,16 @@ bool ownerClosePumpsForeignTeardownAndDestructorStaysIdempotent()
 {
     FakeProtocol protocol;
     FakeIngress ingress;
-    LogosInspectorCore core { &ingress };
+    LogosInspectorCore core;
+    core.ingress = &ingress;
     protocol.installForActivation();
     auto transport = std::make_unique<LogosProtocolHostTransport>(
         FakeProtocol::api(),
         LogosProtocolHostTransportLimits {});
-    REQUIRE(transport->bindCore(&core, &ingestModuleEvent));
+    REQUIRE(transport->bindCore(
+        &core,
+        &ingestModuleEvent,
+        &setRuntimeModuleEventHealth));
     REQUIRE(transport->activate());
     protocol.blockOnOwnerMarshalForTeardown(true);
 
@@ -1423,6 +1524,7 @@ bool queueOverflowAndRejectedIngressFaultTransport()
         REQUIRE(waitUntil([&fixture] {
             return !fixture.transport.ownsRuntimeModuleEvents();
         }));
+        REQUIRE(fixture.core.runtimeEventHealth.load(std::memory_order_acquire) == 0);
         REQUIRE(fixture.protocol.destroyedClients() == 0);
         fixture.transport.close();
         REQUIRE(fixture.protocol.destroyedClients() == kExpectedModules.size());
@@ -1451,6 +1553,7 @@ bool queueOverflowAndRejectedIngressFaultTransport()
             "[\"fault\"]"));
         fixture.ingress.setMode(FakeIngress::Mode::reject);
         REQUIRE(waitUntil([&replies] { return replies.replies().size() == 1; }));
+        REQUIRE(fixture.core.runtimeEventHealth.load(std::memory_order_acquire) == 0);
         const auto captured = replies.replies();
         REQUIRE(captured[0].requestId == 41);
         REQUIRE(captured[0].ok == 0);
@@ -1512,11 +1615,12 @@ int main(int argc, char* argv[])
 {
     QCoreApplication application(argc, argv);
     static_cast<void>(application);
-    const std::array<std::pair<const char*, std::function<bool()>>, 16> tests = { {
+    const std::array<std::pair<const char*, std::function<bool()>>, 17> tests = { {
         { "activationCreatesExactCatalogOnOwnerThread", activationCreatesExactCatalogOnOwnerThread },
         { "activationRollbackFailsClosed", activationRollbackFailsClosed },
         { "missingOptionalSubscriptionKeepsDispatchOpen", missingOptionalSubscriptionKeepsDispatchOpen },
         { "closeWaitsForAdmittedActivationStartup", closeWaitsForAdmittedActivationStartup },
+        { "faultDuringReadyHealthPublicationCannotRestoreStaleHealth", faultDuringReadyHealthPublicationCannotRestoreStaleHealth },
         { "dispatchEnforcesAllowlistAndBounds", dispatchEnforcesAllowlistAndBounds },
         { "pendingAdmissionIsBoundedAndIdsStayReserved", pendingAdmissionIsBoundedAndIdsStayReserved },
         { "foreignResultsPreserveSuccessNullAndCanonicalFailure", foreignResultsPreserveSuccessNullAndCanonicalFailure },

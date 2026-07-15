@@ -24,6 +24,7 @@ pub(super) struct ImportPlan {
     pub(super) settings: Option<Value>,
     pub(super) idl: Option<Value>,
     pub(super) wallet: Option<Value>,
+    pub(super) applied_areas: Vec<BackupImportArea>,
     pub(super) summary: Value,
 }
 
@@ -144,6 +145,7 @@ pub(super) fn build_import_plan_with_current(
         settings,
         idl,
         wallet,
+        applied_areas: applied_areas.clone(),
         summary: json!({
             "restored": settings_applied || idl_applied || wallet_applied,
             "encrypted": state.summary.encrypted,

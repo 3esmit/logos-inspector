@@ -571,6 +571,10 @@ pub(super) async fn host_module_download_backup_bytes_controlled(
         transport.supports_shared_file_staging(),
         "Basecamp host transport does not provide shared file staging"
     );
+    anyhow::ensure!(
+        transport.native_runtime_module_events_ready(),
+        "Basecamp host transport does not own healthy native runtime module-event ingress"
+    );
     control.check_active()?;
 
     let methods = module_call(
@@ -1753,6 +1757,10 @@ mod tests {
         fn supports_shared_file_staging(&self) -> bool {
             true
         }
+
+        fn native_runtime_module_events_ready(&self) -> bool {
+            true
+        }
     }
 
     impl FakeHostDownloadTransport {
@@ -1968,10 +1976,47 @@ mod tests {
         fn supports_shared_file_staging(&self) -> bool {
             true
         }
+
+        fn native_runtime_module_events_ready(&self) -> bool {
+            true
+        }
     }
 
     fn host_download_control(timeout: Duration) -> CommandControl {
         CommandControl::new(CancellationToken::new(), Instant::now() + timeout)
+    }
+
+    #[test]
+    fn download_terminal_payload_requires_every_identity_and_outcome_field() -> Result<()> {
+        let complete = json!({
+            "protocol": STORAGE_DOWNLOAD_PROTOCOL,
+            "version": STORAGE_DOWNLOAD_PROTOCOL_VERSION,
+            "moduleOperationId": "operation-required-fields",
+            "cid": "cid-required-fields",
+            "outcome": "succeeded",
+        });
+        for field in ["protocol", "version", "moduleOperationId", "cid", "outcome"] {
+            let mut incomplete = complete.clone();
+            incomplete
+                .as_object_mut()
+                .context("terminal fixture is not an object")?
+                .remove(field);
+            let error = decode_download_terminal_payload(
+                &incomplete.to_string(),
+                "operation-required-fields",
+                "cid-required-fields",
+            )
+            .err()
+            .with_context(|| format!("terminal without `{field}` should fail"))?;
+            anyhow::ensure!(
+                error
+                    .to_string()
+                    .contains("terminal payload is invalid JSON")
+                    && format!("{error:#}").contains("missing field"),
+                "terminal without `{field}` returned unrelated error: {error:#}"
+            );
+        }
+        Ok(())
     }
 
     #[tokio::test]

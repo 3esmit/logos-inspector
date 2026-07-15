@@ -5,7 +5,10 @@ use std::{
     fs::{self, File, OpenOptions},
     io::Write as _,
     path::{Path, PathBuf},
-    sync::{Mutex, MutexGuard},
+    sync::{
+        Arc, Mutex, MutexGuard,
+        atomic::{AtomicU8, Ordering},
+    },
 };
 
 use anyhow::{Context as _, Result, bail};
@@ -172,10 +175,81 @@ impl DirectoryDurability {
     }
 }
 
+#[derive(Clone, Default)]
+pub(crate) struct LocalStateCommitCancellation {
+    state: Arc<AtomicU8>,
+}
+
+const LOCAL_STATE_CANCELLATION_OPEN: u8 = 0;
+const LOCAL_STATE_CANCELLATION_REQUESTED: u8 = 1;
+const LOCAL_STATE_CANCELLATION_DURABLE: u8 = 2;
+const LOCAL_STATE_CANCELLATION_DEFERRED: u8 = 3;
+
+impl fmt::Debug for LocalStateCommitCancellation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LocalStateCommitCancellation")
+            .field("requested", &self.is_requested())
+            .finish()
+    }
+}
+
+impl LocalStateCommitCancellation {
+    pub(crate) fn request(&self) {
+        let _previous = self
+            .state
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |state| match state {
+                LOCAL_STATE_CANCELLATION_OPEN => Some(LOCAL_STATE_CANCELLATION_REQUESTED),
+                LOCAL_STATE_CANCELLATION_DURABLE => Some(LOCAL_STATE_CANCELLATION_DEFERRED),
+                LOCAL_STATE_CANCELLATION_REQUESTED | LOCAL_STATE_CANCELLATION_DEFERRED => None,
+                _ => None,
+            });
+    }
+
+    pub(crate) fn is_requested(&self) -> bool {
+        matches!(
+            self.state.load(Ordering::Acquire),
+            LOCAL_STATE_CANCELLATION_REQUESTED | LOCAL_STATE_CANCELLATION_DEFERRED
+        )
+    }
+
+    fn check_pre_journal(&self) -> Result<()> {
+        if self.is_requested() {
+            bail!("local state transaction canceled before journal durability");
+        }
+        Ok(())
+    }
+
+    fn seal_journal_durable(&self) -> Result<()> {
+        match self.state.compare_exchange(
+            LOCAL_STATE_CANCELLATION_OPEN,
+            LOCAL_STATE_CANCELLATION_DURABLE,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => Ok(()),
+            Err(LOCAL_STATE_CANCELLATION_REQUESTED) => {
+                bail!("local state transaction canceled before journal durability")
+            }
+            Err(_) => bail!("local state transaction cancellation boundary is invalid"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LocalStateCommitReport {
-    pub(crate) transaction_id: String,
-    pub(crate) directory_durability: DirectoryDurability,
+    transaction_id: String,
+    directory_durability: DirectoryDurability,
+}
+
+impl LocalStateCommitReport {
+    pub(crate) fn transaction_id(&self) -> &str {
+        &self.transaction_id
+    }
+
+    pub(crate) const fn directory_durability(&self) -> DirectoryDurability {
+        self.directory_durability
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,6 +263,15 @@ pub(crate) enum LocalStateFailureStatus {
 pub(crate) enum LocalStateTestFault {
     Rollback,
     RecoveryRequired,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LocalStateTestBoundary {
+    WalletStaged,
+    JournalPrepared,
+    JournalPersistReady,
+    JournalDurable,
 }
 
 impl LocalStateFailureStatus {
@@ -374,20 +457,21 @@ impl LocalStateSession {
     pub(crate) fn commit(
         &mut self,
         writes: LocalStateWriteSet,
-        cancellation_probe: impl FnMut() -> Result<()>,
+        cancellation: &LocalStateCommitCancellation,
     ) -> Result<LocalStateCommitReport> {
-        self.commit_with_hook(writes, cancellation_probe, &mut NoopHook)
+        self.commit_with_hook(writes, cancellation, &mut NoopHook)
     }
 
     #[cfg(test)]
     pub(crate) fn commit_with_test_fault(
         &mut self,
         writes: LocalStateWriteSet,
+        cancellation: &LocalStateCommitCancellation,
         fault: LocalStateTestFault,
     ) -> Result<LocalStateCommitReport> {
         self.commit_with_hook(
             writes,
-            || Ok(()),
+            cancellation,
             &mut LocalStateTestFaultHook {
                 fault,
                 forward_failure_injected: false,
@@ -395,10 +479,29 @@ impl LocalStateSession {
         )
     }
 
+    #[cfg(test)]
+    pub(crate) fn commit_with_test_boundary(
+        &mut self,
+        writes: LocalStateWriteSet,
+        cancellation: &LocalStateCommitCancellation,
+        boundary: LocalStateTestBoundary,
+        at_boundary: impl FnMut() -> Result<()>,
+    ) -> Result<LocalStateCommitReport> {
+        self.commit_with_hook(
+            writes,
+            cancellation,
+            &mut LocalStateTestBoundaryHook {
+                boundary,
+                at_boundary,
+                fired: false,
+            },
+        )
+    }
+
     fn commit_with_hook(
         &mut self,
         writes: LocalStateWriteSet,
-        mut cancellation_probe: impl FnMut() -> Result<()>,
+        cancellation: &LocalStateCommitCancellation,
         hook: &mut impl IoHook,
     ) -> Result<LocalStateCommitReport> {
         let entries = writes.into_entries();
@@ -422,7 +525,7 @@ impl LocalStateSession {
             staged.push(temporary);
         }
 
-        cancellation_probe().context("local state transaction canceled before commit")?;
+        cancellation.check_pre_journal()?;
 
         let journal = RollbackJournal {
             schema_version: JOURNAL_SCHEMA_VERSION,
@@ -436,8 +539,7 @@ impl LocalStateSession {
         let mut durability = DirectoryDurability::Verified;
 
         let result = (|| -> Result<()> {
-            let journal_durability =
-                self.install_journal(&journal_bytes, hook, &mut cancellation_probe)?;
+            let journal_durability = self.install_journal(&journal_bytes, hook, cancellation)?;
             journal_installed = true;
             durability = durability.combine(journal_durability);
             for target in &mut staged {
@@ -563,7 +665,7 @@ impl LocalStateSession {
         &self,
         journal_bytes: &[u8],
         hook: &mut impl IoHook,
-        cancellation_probe: &mut impl FnMut() -> Result<()>,
+        cancellation: &LocalStateCommitCancellation,
     ) -> Result<DirectoryDurability> {
         let journal_path = self.journal_path();
         if path_present(&journal_path)? {
@@ -588,14 +690,19 @@ impl LocalStateSession {
             .sync_all()
             .context("failed to sync local state rollback journal")?;
         hook.after(IoPoint::JournalFileSync)?;
-        cancellation_probe().context("local state transaction canceled before commit")?;
+        cancellation.check_pre_journal()?;
         hook.before(IoPoint::JournalPersist)?;
         temporary
             .persist(&journal_path)
             .map_err(|error| error.error)
             .context("failed to persist local state rollback journal")?;
         hook.after(IoPoint::JournalPersist)?;
-        self.sync_directory(IoPoint::JournalDirectorySync, hook)
+        hook.before(IoPoint::JournalDirectorySync)?;
+        let durability = sync_parent_directory(&self.base_dir)?;
+        let cancellation_result = cancellation.seal_journal_durable();
+        hook.after(IoPoint::JournalDirectorySync)?;
+        cancellation_result?;
+        Ok(durability)
     }
 
     fn reinstall_journal(&self, journal_bytes: &[u8]) -> Result<()> {
@@ -603,9 +710,12 @@ impl LocalStateSession {
             return Ok(());
         }
         let mut hook = NoopHook;
-        let mut cancellation_probe = || Ok(());
-        self.install_journal(journal_bytes, &mut hook, &mut cancellation_probe)
-            .map(|_| ())
+        self.install_journal(
+            journal_bytes,
+            &mut hook,
+            &LocalStateCommitCancellation::default(),
+        )
+        .map(|_| ())
     }
 
     fn restore_hot_journal_after_removal(
@@ -1074,6 +1184,55 @@ impl IoHook for LocalStateTestFaultHook {
     }
 }
 
+#[cfg(test)]
+struct LocalStateTestBoundaryHook<F> {
+    boundary: LocalStateTestBoundary,
+    at_boundary: F,
+    fired: bool,
+}
+
+#[cfg(test)]
+impl<F> IoHook for LocalStateTestBoundaryHook<F>
+where
+    F: FnMut() -> Result<()>,
+{
+    fn before(&mut self, point: IoPoint) -> Result<()> {
+        if self.boundary != LocalStateTestBoundary::JournalPersistReady
+            || point != IoPoint::JournalPersist
+        {
+            return Ok(());
+        }
+        self.fire()
+    }
+
+    fn after(&mut self, point: IoPoint) -> Result<()> {
+        let expected = match self.boundary {
+            LocalStateTestBoundary::WalletStaged => IoPoint::StageFileSync(StateFile::Wallet),
+            LocalStateTestBoundary::JournalPrepared => IoPoint::JournalFileSync,
+            LocalStateTestBoundary::JournalPersistReady => return Ok(()),
+            LocalStateTestBoundary::JournalDurable => IoPoint::JournalDirectorySync,
+        };
+        if point != expected {
+            return Ok(());
+        }
+        self.fire()
+    }
+}
+
+#[cfg(test)]
+impl<F> LocalStateTestBoundaryHook<F>
+where
+    F: FnMut() -> Result<()>,
+{
+    fn fire(&mut self) -> Result<()> {
+        if self.fired {
+            return Ok(());
+        }
+        self.fired = true;
+        (self.at_boundary)()
+    }
+}
+
 #[derive(Debug)]
 struct SimulatedCrash;
 
@@ -1236,9 +1395,9 @@ mod tests {
     fn commit_applies_typed_write_set_and_cancellation_stays_before_journal() -> Result<()> {
         let directory = seeded_directory()?;
         let report = with_local_state_in(directory.path(), |session| {
-            session.commit(new_write_set(), || Ok(()))
+            session.commit(new_write_set(), &LocalStateCommitCancellation::default())
         })?;
-        if report.transaction_id.len() != LOCAL_STATE_TRANSACTION_ID_HEX_LENGTH {
+        if report.transaction_id().len() != LOCAL_STATE_TRANSACTION_ID_HEX_LENGTH {
             bail!("transaction id is invalid");
         }
         assert_triple(directory.path(), NEW_SETTINGS, NEW_IDL, NEW_WALLET)?;
@@ -1247,12 +1406,17 @@ mod tests {
         }
 
         seed_triple(directory.path())?;
+        let cancellation = LocalStateCommitCancellation::default();
+        cancellation.request();
         let error = with_local_state_in(directory.path(), |session| {
-            session.commit(new_write_set(), || bail!("canceled by caller"))
+            session.commit(new_write_set(), &cancellation)
         })
         .err()
         .context("canceled transaction should fail")?;
-        if !error.to_string().contains("canceled before commit") {
+        if !error
+            .to_string()
+            .contains("canceled before journal durability")
+        {
             bail!("unexpected cancellation error: {error:#}");
         }
         assert_triple(directory.path(), OLD_SETTINGS, OLD_IDL, OLD_WALLET)?;
@@ -1260,20 +1424,25 @@ mod tests {
             bail!("canceled transaction created a hot journal");
         }
 
-        let mut probes = 0_u8;
+        let cancellation = LocalStateCommitCancellation::default();
         let error = with_local_state_in(directory.path(), |session| {
-            session.commit(new_write_set(), || {
-                probes = probes.saturating_add(1);
-                if probes == 2 {
-                    bail!("canceled at final pre-persist boundary");
-                }
-                Ok(())
-            })
+            session.commit_with_test_boundary(
+                new_write_set(),
+                &cancellation,
+                LocalStateTestBoundary::JournalPrepared,
+                || {
+                    cancellation.request();
+                    Ok(())
+                },
+            )
         })
         .err()
         .context("final-boundary cancellation should fail")?;
-        if probes != 2 || !error.to_string().contains("canceled before commit") {
-            bail!("final cancellation probe was not honored: probes={probes}, error={error:#}");
+        if !error
+            .to_string()
+            .contains("canceled before journal durability")
+        {
+            bail!("final cancellation probe was not honored: {error:#}");
         }
         assert_triple(directory.path(), OLD_SETTINGS, OLD_IDL, OLD_WALLET)?;
         if path_present(&directory.path().join(JOURNAL_FILE_NAME))? {
@@ -1331,7 +1500,11 @@ mod tests {
             let mut hook = InjectHook::failure(point);
             let result = {
                 let mut session = LocalStateSession::acquire(directory.path(), &mut NoopHook)?;
-                session.commit_with_hook(new_write_set(), || Ok(()), &mut hook)
+                session.commit_with_hook(
+                    new_write_set(),
+                    &LocalStateCommitCancellation::default(),
+                    &mut hook,
+                )
             };
             if result.is_ok() {
                 bail!("injected forward failure succeeded at {point:?}");
@@ -1377,7 +1550,11 @@ mod tests {
             let error = {
                 let mut session = LocalStateSession::acquire(directory.path(), &mut NoopHook)?;
                 session
-                    .commit_with_hook(new_write_set(), || Ok(()), &mut hook)
+                    .commit_with_hook(
+                        new_write_set(),
+                        &LocalStateCommitCancellation::default(),
+                        &mut hook,
+                    )
                     .err()
                     .context("rollback fault should fail transaction")?
             };
@@ -1408,7 +1585,11 @@ mod tests {
         let error = {
             let mut session = LocalStateSession::acquire(directory.path(), &mut NoopHook)?;
             session
-                .commit_with_hook(new_write_set(), || Ok(()), &mut hook)
+                .commit_with_hook(
+                    new_write_set(),
+                    &LocalStateCommitCancellation::default(),
+                    &mut hook,
+                )
                 .err()
                 .context("rollback fault should fail")?
         };
@@ -1442,7 +1623,11 @@ mod tests {
             let error = {
                 let mut session = LocalStateSession::acquire(directory.path(), &mut NoopHook)?;
                 session
-                    .commit_with_hook(new_write_set(), || Ok(()), &mut hook)
+                    .commit_with_hook(
+                        new_write_set(),
+                        &LocalStateCommitCancellation::default(),
+                        &mut hook,
+                    )
                     .err()
                     .context("missing-target rollback fault should fail")?
             };
@@ -1489,7 +1674,11 @@ mod tests {
             let error = {
                 let mut session = LocalStateSession::acquire(directory.path(), &mut NoopHook)?;
                 session
-                    .commit_with_hook(new_write_set(), || Ok(()), &mut hook)
+                    .commit_with_hook(
+                        new_write_set(),
+                        &LocalStateCommitCancellation::default(),
+                        &mut hook,
+                    )
                     .err()
                     .context("journal reinstall double fault should fail")?
             };
@@ -1529,7 +1718,11 @@ mod tests {
         let error = {
             let mut session = LocalStateSession::acquire(directory.path(), &mut NoopHook)?;
             session
-                .commit_with_hook(new_write_set(), || Ok(()), &mut hook)
+                .commit_with_hook(
+                    new_write_set(),
+                    &LocalStateCommitCancellation::default(),
+                    &mut hook,
+                )
                 .err()
                 .context("journal inspection fault should fail transaction")?
         };
@@ -1559,7 +1752,11 @@ mod tests {
         {
             let mut session = LocalStateSession::acquire(directory.path(), &mut NoopHook)?;
             let error = session
-                .commit_with_hook(new_write_set(), || Ok(()), &mut hook)
+                .commit_with_hook(
+                    new_write_set(),
+                    &LocalStateCommitCancellation::default(),
+                    &mut hook,
+                )
                 .err()
                 .context("simulated crash should interrupt transaction")?;
             if !is_simulated_crash(&error) {
@@ -1674,7 +1871,11 @@ mod tests {
         {
             let mut session = LocalStateSession::acquire(directory.path(), &mut NoopHook)?;
             let error = session
-                .commit_with_hook(new_write_set(), || Ok(()), &mut hook)
+                .commit_with_hook(
+                    new_write_set(),
+                    &LocalStateCommitCancellation::default(),
+                    &mut hook,
+                )
                 .err()
                 .context("journal crash boundary should interrupt commit")?;
             if !is_simulated_crash(&error) {
@@ -1705,7 +1906,11 @@ mod tests {
             };
             let mut session = LocalStateSession::acquire(&writer_dir, &mut NoopHook)?;
             session
-                .commit_with_hook(new_write_set(), || Ok(()), &mut hook)
+                .commit_with_hook(
+                    new_write_set(),
+                    &LocalStateCommitCancellation::default(),
+                    &mut hook,
+                )
                 .map(|_| ())
         });
         entered_receiver
@@ -1764,7 +1969,11 @@ mod tests {
             };
             let mut session = LocalStateSession::acquire(&writer_dir, &mut NoopHook)?;
             session
-                .commit_with_hook(new_write_set(), || Ok(()), &mut hook)
+                .commit_with_hook(
+                    new_write_set(),
+                    &LocalStateCommitCancellation::default(),
+                    &mut hook,
+                )
                 .map(|_| ())
         });
         entered_receiver
@@ -1953,7 +2162,11 @@ mod tests {
             .context("crash directory is missing")?;
         let mut hook = crash_hook(&point_name)?;
         let mut session = LocalStateSession::acquire(&directory, &mut NoopHook)?;
-        let result = session.commit_with_hook(new_write_set(), || Ok(()), &mut hook);
+        let result = session.commit_with_hook(
+            new_write_set(),
+            &LocalStateCommitCancellation::default(),
+            &mut hook,
+        );
         bail!("crash point was not reached: {result:?}")
     }
 

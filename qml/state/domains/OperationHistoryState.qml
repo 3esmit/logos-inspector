@@ -466,8 +466,7 @@ QtObject {
         }
         const expectedRevision = String(ticket.backendRevision || "")
         const candidateRevision = operationBackendRevision(value)
-        return !expectedRevision.length || !candidateRevision.length
-            || candidateRevision === expectedRevision
+        return !expectedRevision.length || candidateRevision === expectedRevision
     }
 
     function historyResetIsCompatible(current, candidate) {

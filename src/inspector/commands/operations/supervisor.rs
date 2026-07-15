@@ -1174,8 +1174,12 @@ async fn run_supervisor_loop(
             }
         }
         let deadline = next_deadline(descriptors);
+        let terminal_history_expiry = shared.registry.next_terminal_expiry()?;
         tokio::select! {
             biased;
+            () = sleep_to(terminal_history_expiry), if !shutting_down => {
+                shared.registry.sweep_expired_terminal_history()?;
+            }
             joined = tasks.join_next_with_id(), if !tasks.is_empty() => {
                 if let Some(joined) = joined {
                     handle_joined_task(
@@ -1199,6 +1203,7 @@ async fn run_supervisor_loop(
                 shutting_down = true;
                 request_shutdown_for_all(shared)?;
             }
+            () = shared.registry.retention_changed(), if !shutting_down => {}
             () = sleep_to(deadline) => {
                 request_expired_deadlines(descriptors);
             }
@@ -1767,7 +1772,7 @@ mod tests {
     use super::*;
     use crate::inspector::commands::operations::{
         identity::EventCursor, record::running_runtime_operation_record,
-        request::runtime_operation_request_from_value,
+        request::runtime_operation_request_from_value, spec::OperationMethod,
     };
 
     struct TestOperation {
@@ -1884,6 +1889,63 @@ mod tests {
                 "local_only": false
             }
         }))
+    }
+
+    #[tokio::test]
+    async fn terminal_history_expires_while_registry_is_idle() -> Result<()> {
+        let registry = RuntimeOperationRegistry::default();
+        let operation_id = RuntimeOperationId::parse("idle-terminal-history")?;
+        let request = RuntimeOperationRequest::from_call(
+            OperationMethod::LocalWalletAccounts,
+            json!(["default"]),
+            "Wallet accounts",
+        )?;
+        registry.insert(running_runtime_operation_record(
+            operation_id.clone(),
+            &request,
+            1,
+        )?)?;
+        registry.transition(&operation_id, RuntimeOperationTransition::Started)?;
+        registry.transition(
+            &operation_id,
+            RuntimeOperationTransition::Resolved(RuntimeOperationOutcome::Completed(json!({
+                "accounts": []
+            }))),
+        )?;
+        registry.set_terminal_expiry_after(&operation_id, Duration::from_millis(20))?;
+
+        let root = CancellationToken::new();
+        let shared = Arc::new(SupervisorShared {
+            state: Mutex::new(SupervisorSharedState {
+                phase: SupervisorPhase::Open,
+                controls: HashMap::new(),
+                live_tasks: HashMap::new(),
+                shutdown_error: None,
+            }),
+            root: root.clone(),
+            registry: registry.clone(),
+        });
+        let (commands, receiver) = mpsc::channel(1);
+        let controller = tokio::spawn(run_supervisor(receiver, shared));
+
+        let expiry_result = tokio::time::timeout(Duration::from_secs(1), async {
+            while registry.contains_without_sweep(&operation_id)? {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            Ok::<(), anyhow::Error>(())
+        })
+        .await
+        .context("terminal history expiry worker did not wake")
+        .and_then(|result| result);
+
+        root.cancel();
+        drop(commands);
+        let controller_result = controller
+            .await
+            .context("terminal history supervisor task failed")
+            .and_then(|result| result);
+        expiry_result?;
+        controller_result
     }
 
     fn accepted_request(path: &Path) -> Result<RuntimeOperationRequest> {

@@ -504,6 +504,27 @@ TestCase {
         compare(history.runtimeOperations[operationId].method, "storageManifests")
     }
 
+    function test_poll_rejects_empty_backend_revision_override() {
+        const operationId = "op-empty-backend-revision"
+        verify(history.updateOperation(runtimeOperation(operationId, 0)))
+        const context = pollContext(operationId, "config", 1, testRoot)
+        const ticket = history.beginEventPoll(operationId, 0, context)
+        const response = eventResponse(
+            operationId,
+            1,
+            2,
+            false,
+            [eventValue(operationId, 1)]
+        )
+        response.value.operation.projectionBackendRevision = ""
+
+        const completion = history.finishEventPoll(ticket, response, context)
+
+        verify(completion.invalid)
+        verify(!completion.accepted)
+        compare(history.runtimeOperationEventSeq[operationId], undefined)
+    }
+
     function test_terminal_projection_maps_and_payloads_stay_bounded() {
         const payload = "x".repeat(history.maxDiagnosticPayloadBytes + 1)
         verify(history.updateOperation({

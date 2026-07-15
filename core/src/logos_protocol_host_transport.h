@@ -67,7 +67,10 @@ public:
     LogosProtocolHostTransport& operator=(LogosProtocolHostTransport&&) = delete;
 
     /// Binds event ingress before activation. The core remains caller-owned.
-    bool bindCore(LogosInspectorCore* core, IngestModuleEventFn ingest) noexcept override;
+    bool bindCore(
+        LogosInspectorCore* core,
+        IngestModuleEventFn ingest,
+        SetRuntimeModuleEventHealthFn setEventHealth) noexcept override;
 
     /// Creates all allowlisted clients and atomically arms the event catalog.
     bool activate() noexcept override;

@@ -1,10 +1,12 @@
 use std::{
     collections::{HashMap, VecDeque},
     sync::{Arc, Mutex},
+    time::Duration,
 };
 
 use anyhow::{Context as _, Result, bail};
 use serde_json::{Value, json};
+use tokio::{sync::Notify, time::Instant};
 
 use crate::{
     source_routing::{
@@ -30,6 +32,7 @@ use super::{
 };
 
 const MAX_PENDING_MODULE_EVENTS_PER_MODULE: usize = 32;
+const MAX_PENDING_MODULE_EVENT_BYTES_PER_MODULE: usize = 256 * 1024;
 const MAX_RETAINED_EVENTS_PER_OPERATION: usize = 256;
 const MAX_RETAINED_EVENT_BYTES_PER_OPERATION: usize = 256 * 1024;
 const MAX_INLINE_EVENT_PAYLOAD_BYTES: usize = 16 * 1024;
@@ -43,12 +46,13 @@ pub(super) const MAX_WIRE_EVENT_CURSOR: u64 = 9_007_199_254_740_991;
 #[derive(Debug, Clone, Default)]
 pub(super) struct RuntimeOperationRegistry {
     state: Arc<Mutex<RuntimeOperationRegistryState>>,
+    retention_changed: Arc<Notify>,
 }
 
 #[derive(Debug, Default)]
 struct RuntimeOperationRegistryState {
     records: HashMap<RuntimeOperationId, RuntimeOperationRecord>,
-    pending_module_events: HashMap<String, VecDeque<PendingModuleEvent>>,
+    pending_module_events: HashMap<String, PendingModuleEventJournal>,
     terminal_records: VecDeque<RuntimeOperationId>,
     retained_terminal_payload_bytes: usize,
 }
@@ -57,6 +61,13 @@ struct RuntimeOperationRegistryState {
 struct PendingModuleEvent {
     event: ModuleEventEnvelope,
     candidate_operation_ids: Vec<RuntimeOperationId>,
+    event_bytes: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+struct PendingModuleEventJournal {
+    events: VecDeque<PendingModuleEvent>,
+    retained_bytes: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -121,6 +132,7 @@ pub(super) struct RuntimeOperationRecord {
     coalesced_event_count: u64,
     history_truncated: bool,
     terminal_at: Option<u64>,
+    terminal_expires_at: Option<Instant>,
     retained_terminal_payload_bytes: usize,
     pub(super) result_purged: bool,
     pub(super) acknowledgement_purged: bool,
@@ -146,13 +158,89 @@ pub(super) enum RuntimeOperationStatus {
     TimedOut,
 }
 
+impl PendingModuleEvent {
+    fn new(
+        event: ModuleEventEnvelope,
+        candidate_operation_ids: Vec<RuntimeOperationId>,
+    ) -> Result<Self> {
+        let event_bytes = event.retained_serialized_bytes()?;
+        Ok(Self {
+            event,
+            candidate_operation_ids,
+            event_bytes,
+        })
+    }
+
+    fn retained_bytes(&self) -> usize {
+        self.event_bytes
+    }
+}
+
+impl PendingModuleEventJournal {
+    fn len(&self) -> usize {
+        self.events.len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &PendingModuleEvent> {
+        self.events.iter()
+    }
+
+    fn pop_front(&mut self) -> Result<Option<PendingModuleEvent>> {
+        let Some(pending) = self.events.pop_front() else {
+            return Ok(None);
+        };
+        self.retained_bytes = self
+            .retained_bytes
+            .checked_sub(pending.retained_bytes())
+            .context("pending runtime module event byte accounting underflow")?;
+        Ok(Some(pending))
+    }
+
+    fn push_back(&mut self, pending: PendingModuleEvent) -> Result<()> {
+        if self.events.len() >= MAX_PENDING_MODULE_EVENTS_PER_MODULE {
+            bail!("pending runtime module event journal count limit exceeded");
+        }
+        let retained_bytes = self
+            .retained_bytes
+            .checked_add(pending.retained_bytes())
+            .context("pending runtime module event byte count overflow")?;
+        if retained_bytes > MAX_PENDING_MODULE_EVENT_BYTES_PER_MODULE {
+            bail!("pending runtime module event journal byte limit exceeded");
+        }
+        self.events.push_back(pending);
+        self.retained_bytes = retained_bytes;
+        Ok(())
+    }
+
+    fn recalculate_retained_bytes(&mut self) -> Result<()> {
+        self.retained_bytes = self.events.iter().try_fold(0usize, |bytes, pending| {
+            bytes
+                .checked_add(pending.retained_bytes())
+                .context("pending runtime module event byte count overflow")
+        })?;
+        if self.events.len() > MAX_PENDING_MODULE_EVENTS_PER_MODULE
+            || self.retained_bytes > MAX_PENDING_MODULE_EVENT_BYTES_PER_MODULE
+        {
+            bail!("pending runtime module event journal invariant violated");
+        }
+        Ok(())
+    }
+}
+
 impl RuntimeOperationRegistry {
     pub(super) fn insert(&self, record: RuntimeOperationRecord) -> Result<()> {
+        let now = now_millis();
+        let monotonic_now = Instant::now();
+        let terminal_expires_at = terminal_history_expiry(monotonic_now)?;
         let mut state = self
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("runtime operation registry is unavailable"))?;
-        sweep_terminal_history(&mut state, now_millis());
+        sweep_terminal_history(&mut state, now, monotonic_now)?;
         let operation_id = record.operation.operation_id.clone();
         if state.records.contains_key(&operation_id) {
             bail!(
@@ -169,8 +257,13 @@ impl RuntimeOperationRegistry {
             bail!("{}", exclusive_operation_message(group));
         }
         state.records.insert(operation_id.clone(), record);
-        track_newly_terminal_record(&mut state, &operation_id, now_millis());
-        sweep_terminal_history(&mut state, now_millis());
+        let retention_changed =
+            track_newly_terminal_record(&mut state, &operation_id, now, terminal_expires_at);
+        sweep_terminal_history(&mut state, now, monotonic_now)?;
+        drop(state);
+        if retention_changed {
+            self.retention_changed.notify_one();
+        }
         Ok(())
     }
 
@@ -179,11 +272,14 @@ impl RuntimeOperationRegistry {
         operation_id: &RuntimeOperationId,
         transition: RuntimeOperationTransition,
     ) -> Result<TransitionDisposition> {
+        let now = now_millis();
+        let monotonic_now = Instant::now();
+        let terminal_expires_at = terminal_history_expiry(monotonic_now)?;
         let mut state = self
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("runtime operation registry is unavailable"))?;
-        sweep_terminal_history(&mut state, now_millis());
+        sweep_terminal_history(&mut state, now, monotonic_now)?;
         let Some(record) = state.records.get(operation_id) else {
             return apply_runtime_operation_transition(
                 &mut state.records,
@@ -238,9 +334,17 @@ impl RuntimeOperationRegistry {
                 }
             }
         }
-        if result.is_ok() {
-            track_newly_terminal_record(&mut state, operation_id, now_millis());
-            sweep_terminal_history(&mut state, now_millis());
+        let retention_changed = if result.is_ok() {
+            let retention_changed =
+                track_newly_terminal_record(&mut state, operation_id, now, terminal_expires_at);
+            sweep_terminal_history(&mut state, now, monotonic_now)?;
+            retention_changed
+        } else {
+            false
+        };
+        drop(state);
+        if retention_changed {
+            self.retention_changed.notify_one();
         }
         result
     }
@@ -255,11 +359,14 @@ impl RuntimeOperationRegistry {
         &self,
         event: ModuleEventEnvelope,
     ) -> Result<(Value, Option<RuntimeOperationId>)> {
+        let now = now_millis();
+        let monotonic_now = Instant::now();
+        let terminal_expires_at = terminal_history_expiry(monotonic_now)?;
         let mut state = self
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("runtime operation registry is unavailable"))?;
-        sweep_terminal_history(&mut state, now_millis());
+        sweep_terminal_history(&mut state, now, monotonic_now)?;
         let result = apply_module_event_ingress(&mut state.records, &event)?;
         let result = match result {
             unchanged @ (ModuleEventIngressResult::Unknown
@@ -281,9 +388,9 @@ impl RuntimeOperationRegistry {
             | ModuleEventIngressResult::Ambiguous { .. }) => unchanged,
         };
         let operation_id = result.operation_id().cloned();
-        if let Some(operation_id) = &operation_id {
-            track_newly_terminal_record(&mut state, operation_id, now_millis());
-        }
+        let retention_changed = operation_id.as_ref().is_some_and(|operation_id| {
+            track_newly_terminal_record(&mut state, operation_id, now, terminal_expires_at)
+        });
         let settled_operation_id = operation_id.as_ref().and_then(|operation_id| {
             state
                 .records
@@ -292,7 +399,11 @@ impl RuntimeOperationRegistry {
                 .map(|_| operation_id.clone())
         });
         let value = result.as_value(&state.records);
-        sweep_terminal_history(&mut state, now_millis());
+        sweep_terminal_history(&mut state, now, monotonic_now)?;
+        drop(state);
+        if retention_changed {
+            self.retention_changed.notify_one();
+        }
         Ok((value, settled_operation_id))
     }
 
@@ -358,8 +469,35 @@ impl RuntimeOperationRegistry {
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("runtime operation registry is unavailable"))?;
-        sweep_terminal_history(&mut state, now_millis());
+        sweep_terminal_history(&mut state, now_millis(), Instant::now())?;
         Ok(inspect(&state.records))
+    }
+
+    pub(super) fn next_terminal_expiry(&self) -> Result<Option<Instant>> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("runtime operation registry is unavailable"))?;
+        sweep_terminal_history(&mut state, now_millis(), Instant::now())?;
+        Ok(state
+            .terminal_records
+            .iter()
+            .filter_map(|operation_id| state.records.get(operation_id))
+            .filter_map(|record| record.terminal_expires_at)
+            .min())
+    }
+
+    pub(super) fn sweep_expired_terminal_history(&self) -> Result<()> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("runtime operation registry is unavailable"))?;
+        sweep_terminal_history(&mut state, now_millis(), Instant::now())?;
+        Ok(())
+    }
+
+    pub(super) async fn retention_changed(&self) {
+        self.retention_changed.notified().await;
     }
 
     pub(super) fn remove(&self, operation_id: &RuntimeOperationId) -> Result<()> {
@@ -367,7 +505,7 @@ impl RuntimeOperationRegistry {
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("runtime operation registry is unavailable"))?;
-        remove_record(&mut state, operation_id);
+        remove_record(&mut state, operation_id)?;
         Ok(())
     }
 
@@ -382,11 +520,23 @@ impl RuntimeOperationRegistry {
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("runtime operation registry is unavailable"))?;
-        sweep_terminal_history(&mut state, now_millis());
+        sweep_terminal_history(&mut state, now_millis(), Instant::now())?;
         Ok(state
             .pending_module_events
             .get(module_name)
-            .map_or(0, VecDeque::len))
+            .map_or(0, PendingModuleEventJournal::len))
+    }
+
+    #[cfg(test)]
+    pub(super) fn pending_module_event_bytes(&self, module_name: &str) -> Result<usize> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("runtime operation registry is unavailable"))?;
+        Ok(state
+            .pending_module_events
+            .get(module_name)
+            .map_or(0, |journal| journal.retained_bytes))
     }
 
     #[cfg(test)]
@@ -395,24 +545,66 @@ impl RuntimeOperationRegistry {
             .state
             .lock()
             .map_err(|_| anyhow::anyhow!("runtime operation registry is unavailable"))?;
-        sweep_terminal_history(&mut state, now);
+        sweep_terminal_history(&mut state, now, Instant::now())?;
         Ok(())
     }
+
+    #[cfg(test)]
+    pub(super) fn set_terminal_expiry_after(
+        &self,
+        operation_id: &RuntimeOperationId,
+        duration: Duration,
+    ) -> Result<()> {
+        let expires_at = Instant::now()
+            .checked_add(duration)
+            .context("test terminal history expiry overflow")?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("runtime operation registry is unavailable"))?;
+        let record = state
+            .records
+            .get_mut(operation_id)
+            .context("test terminal runtime operation is missing")?;
+        if !record.operation.status.is_terminal() {
+            bail!("test runtime operation is not terminal");
+        }
+        record.terminal_expires_at = Some(expires_at);
+        drop(state);
+        self.retention_changed.notify_one();
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(super) fn contains_without_sweep(&self, operation_id: &RuntimeOperationId) -> Result<bool> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("runtime operation registry is unavailable"))?;
+        Ok(state.records.contains_key(operation_id))
+    }
+}
+
+fn terminal_history_expiry(now: Instant) -> Result<Instant> {
+    now.checked_add(Duration::from_millis(TERMINAL_RECORD_MAX_AGE_MILLIS))
+        .context("runtime operation terminal history expiry overflow")
 }
 
 fn track_newly_terminal_record(
     state: &mut RuntimeOperationRegistryState,
     operation_id: &RuntimeOperationId,
     terminal_at: u64,
-) {
+    terminal_expires_at: Instant,
+) -> bool {
     let retained_payload_bytes = {
         let Some(record) = state.records.get_mut(operation_id) else {
-            return;
+            return false;
         };
         if !record.operation.status.is_terminal() || record.terminal_at.is_some() {
-            return;
+            return false;
         }
         record.terminal_at = Some(terminal_at);
+        record.terminal_expires_at = Some(terminal_expires_at);
         record.restart_request = None;
         record.retained_terminal_payload_bytes =
             retained_operation_payload_bytes(&record.operation);
@@ -422,6 +614,7 @@ fn track_newly_terminal_record(
         .retained_terminal_payload_bytes
         .saturating_add(retained_payload_bytes);
     state.terminal_records.push_back(operation_id.clone());
+    true
 }
 
 fn retained_operation_payload_bytes(operation: &RuntimeOperation) -> usize {
@@ -442,7 +635,11 @@ fn serialized_value_bytes(value: &Value) -> usize {
     value.to_string().len()
 }
 
-fn sweep_terminal_history(state: &mut RuntimeOperationRegistryState, now: u64) {
+fn sweep_terminal_history(
+    state: &mut RuntimeOperationRegistryState,
+    now: u64,
+    monotonic_now: Instant,
+) -> Result<()> {
     state.terminal_records.retain(|operation_id| {
         state.records.get(operation_id).is_some_and(|record| {
             record.operation.status.is_terminal() && record.terminal_at.is_some()
@@ -460,21 +657,21 @@ fn sweep_terminal_history(state: &mut RuntimeOperationRegistryState, now: u64) {
         .terminal_records
         .iter()
         .filter(|operation_id| {
-            state
-                .records
-                .get(*operation_id)
-                .and_then(|record| record.terminal_at)
-                .is_some_and(|terminal_at| {
+            state.records.get(*operation_id).is_some_and(|record| {
+                record.terminal_at.is_some_and(|terminal_at| {
                     now.saturating_sub(terminal_at) >= TERMINAL_RECORD_MAX_AGE_MILLIS
-                })
+                }) || record
+                    .terminal_expires_at
+                    .is_some_and(|expires_at| monotonic_now >= expires_at)
+            })
         })
         .cloned()
         .collect::<Vec<_>>();
     for operation_id in expired_operation_ids {
-        remove_record(state, &operation_id);
+        remove_record(state, &operation_id)?;
     }
     while state.terminal_records.len() > MAX_RETAINED_TERMINAL_RECORDS {
-        evict_oldest_terminal_record(state);
+        evict_oldest_terminal_record(state)?;
     }
     while state.retained_terminal_payload_bytes > MAX_RETAINED_TERMINAL_PAYLOAD_BYTES {
         if !purge_oldest_terminal_payload(state) {
@@ -482,13 +679,15 @@ fn sweep_terminal_history(state: &mut RuntimeOperationRegistryState, now: u64) {
             break;
         }
     }
+    Ok(())
 }
 
-fn evict_oldest_terminal_record(state: &mut RuntimeOperationRegistryState) {
+fn evict_oldest_terminal_record(state: &mut RuntimeOperationRegistryState) -> Result<()> {
     let Some(operation_id) = state.terminal_records.pop_front() else {
-        return;
+        return Ok(());
     };
-    remove_record(state, &operation_id);
+    remove_record(state, &operation_id)?;
+    Ok(())
 }
 
 fn purge_oldest_terminal_payload(state: &mut RuntimeOperationRegistryState) -> bool {
@@ -538,7 +737,8 @@ fn purge_oldest_terminal_payload(state: &mut RuntimeOperationRegistryState) -> b
 fn remove_record(
     state: &mut RuntimeOperationRegistryState,
     operation_id: &RuntimeOperationId,
-) -> Option<RuntimeOperationRecord> {
+) -> Result<Option<RuntimeOperationRecord>> {
+    remove_operation_from_pending_module_events(state, operation_id)?;
     state
         .terminal_records
         .retain(|candidate| candidate != operation_id);
@@ -548,8 +748,7 @@ fn remove_record(
             .retained_terminal_payload_bytes
             .saturating_sub(record.retained_terminal_payload_bytes);
     }
-    remove_operation_from_pending_module_events(state, operation_id);
-    removed
+    Ok(removed)
 }
 
 fn pending_module_event_candidates(
@@ -574,26 +773,69 @@ fn defer_module_event(
     candidate_operation_ids: Vec<RuntimeOperationId>,
 ) -> Result<()> {
     let module_name = event.module_name().to_owned();
-    let evicted = state
+    let pending = PendingModuleEvent::new(event, candidate_operation_ids.clone())?;
+    if pending.retained_bytes() > MAX_PENDING_MODULE_EVENT_BYTES_PER_MODULE {
+        bail!(
+            "runtime module event requires {} retained bytes, exceeding the {}-byte early-event journal limit",
+            pending.retained_bytes(),
+            MAX_PENDING_MODULE_EVENT_BYTES_PER_MODULE
+        );
+    }
+    let mut next_journal = state
         .pending_module_events
         .get(&module_name)
-        .filter(|events| events.len() >= MAX_PENDING_MODULE_EVENTS_PER_MODULE)
-        .and_then(|events| events.front())
-        .cloned();
+        .cloned()
+        .unwrap_or_default();
+    let mut evicted = Vec::new();
+    loop {
+        let retained_bytes = next_journal
+            .retained_bytes
+            .checked_add(pending.retained_bytes())
+            .context("pending runtime module event byte count overflow")?;
+        if next_journal.len() < MAX_PENDING_MODULE_EVENTS_PER_MODULE
+            && retained_bytes <= MAX_PENDING_MODULE_EVENT_BYTES_PER_MODULE
+        {
+            break;
+        }
+        let removed = next_journal
+            .pop_front()?
+            .context("pending runtime module event journal cannot satisfy its byte limit")?;
+        evicted.push(removed);
+    }
     let mut evidence_counts = HashMap::new();
     for operation_id in &candidate_operation_ids {
-        *evidence_counts.entry(operation_id.clone()).or_insert(0) += 1;
+        let count = evidence_counts
+            .entry(operation_id.clone())
+            .or_insert(0usize);
+        *count = count
+            .checked_add(1)
+            .context("pending runtime module event evidence count overflow")?;
     }
-    if let Some(evicted) = &evicted {
-        for operation_id in &evicted.candidate_operation_ids {
-            *evidence_counts.entry(operation_id.clone()).or_insert(0) += 1;
+    for evicted_event in &evicted {
+        for operation_id in &evicted_event.candidate_operation_ids {
+            let count = evidence_counts
+                .entry(operation_id.clone())
+                .or_insert(0usize);
+            *count = count
+                .checked_add(1)
+                .context("pending runtime module event evidence count overflow")?;
         }
     }
     ensure_event_cursor_capacity(&state.records, &evidence_counts)?;
 
-    if let Some(evicted) = &evicted {
-        for operation_id in &evicted.candidate_operation_ids {
-            let Some(record) = state.records.get_mut(operation_id) else {
+    let mut staged_records = evidence_counts
+        .keys()
+        .filter_map(|operation_id| {
+            state
+                .records
+                .get(operation_id)
+                .cloned()
+                .map(|record| (operation_id.clone(), record))
+        })
+        .collect::<HashMap<_, _>>();
+    for evicted_event in &evicted {
+        for operation_id in &evicted_event.candidate_operation_ids {
+            let Some(record) = staged_records.get_mut(operation_id) else {
                 continue;
             };
             push_runtime_operation_event_locked(
@@ -601,19 +843,13 @@ fn defer_module_event(
                 "module_event_journal_overflow",
                 "oldest deferred module event evicted before correlation registration",
                 None,
-                Some(evicted.event.result()),
-                evicted.event.error(),
+                Some(evicted_event.event.result()),
+                evicted_event.event.error(),
             )?;
         }
-        state
-            .pending_module_events
-            .entry(module_name.clone())
-            .or_default()
-            .pop_front();
     }
     for operation_id in &candidate_operation_ids {
-        let record = state
-            .records
+        let record = staged_records
             .get_mut(operation_id)
             .ok_or_else(|| anyhow::anyhow!("pending runtime operation disappeared"))?;
         push_runtime_operation_event_locked(
@@ -621,18 +857,17 @@ fn defer_module_event(
             "module_event_deferred",
             "module event arrived before dispatch correlation registration",
             None,
-            Some(event.result()),
-            event.error(),
+            Some(pending.event.result()),
+            pending.event.error(),
         )?;
+    }
+    next_journal.push_back(pending)?;
+    for (operation_id, record) in staged_records {
+        state.records.insert(operation_id, record);
     }
     state
         .pending_module_events
-        .entry(module_name)
-        .or_default()
-        .push_back(PendingModuleEvent {
-            event,
-            candidate_operation_ids,
-        });
+        .insert(module_name, next_journal);
     Ok(())
 }
 
@@ -686,8 +921,8 @@ fn pending_module_replay_count(
     state
         .pending_module_events
         .get(module_name)
-        .map_or(0, |pending_events| {
-            pending_events
+        .map_or(0, |journal| {
+            journal
                 .iter()
                 .filter(|pending| pending.candidate_operation_ids.contains(operation_id))
                 .count()
@@ -703,17 +938,18 @@ fn replay_pending_module_events(
     if let Some(record) = state.records.get(operation_id) {
         ensure_record_event_cursor_capacity(record, replay_count)?;
     }
-    let Some(mut pending_events) = state.pending_module_events.remove(module_name) else {
+    let Some(pending_journal) = state.pending_module_events.remove(module_name) else {
         return Ok(());
     };
+    let mut pending_events = pending_journal.events;
     let record = state
         .records
         .get_mut(operation_id)
         .ok_or_else(|| anyhow::anyhow!("pending runtime operation disappeared during replay"))?;
-    let mut retained_events = VecDeque::new();
+    let mut retained_events = PendingModuleEventJournal::default();
     while let Some(mut pending) = pending_events.pop_front() {
         if !pending.candidate_operation_ids.contains(operation_id) {
-            retained_events.push_back(pending);
+            retained_events.push_back(pending)?;
             continue;
         }
         match apply_deferred_module_event(record, &pending.event) {
@@ -723,12 +959,14 @@ fn replay_pending_module_events(
                     .candidate_operation_ids
                     .retain(|candidate| candidate != operation_id);
                 if !pending.candidate_operation_ids.is_empty() {
-                    retained_events.push_back(pending);
+                    retained_events.push_back(pending)?;
                 }
             }
             Err(error) => {
-                retained_events.push_back(pending);
-                retained_events.append(&mut pending_events);
+                retained_events.push_back(pending)?;
+                for pending in pending_events {
+                    retained_events.push_back(pending)?;
+                }
                 state
                     .pending_module_events
                     .insert(module_name.to_owned(), retained_events);
@@ -747,18 +985,22 @@ fn replay_pending_module_events(
 fn remove_operation_from_pending_module_events(
     state: &mut RuntimeOperationRegistryState,
     operation_id: &RuntimeOperationId,
-) {
-    for pending_events in state.pending_module_events.values_mut() {
-        for pending in pending_events.iter_mut() {
+) -> Result<()> {
+    let mut next_pending_module_events = state.pending_module_events.clone();
+    for pending_events in next_pending_module_events.values_mut() {
+        for pending in &mut pending_events.events {
             pending
                 .candidate_operation_ids
                 .retain(|candidate| candidate != operation_id);
         }
-        pending_events.retain(|pending| !pending.candidate_operation_ids.is_empty());
+        pending_events
+            .events
+            .retain(|pending| !pending.candidate_operation_ids.is_empty());
+        pending_events.recalculate_retained_bytes()?;
     }
-    state
-        .pending_module_events
-        .retain(|_, pending_events| !pending_events.is_empty());
+    next_pending_module_events.retain(|_, pending_events| !pending_events.is_empty());
+    state.pending_module_events = next_pending_module_events;
+    Ok(())
 }
 
 pub(super) fn running_runtime_operation_record(
@@ -805,6 +1047,7 @@ pub(super) fn running_runtime_operation_record(
         coalesced_event_count: 0,
         history_truncated: false,
         terminal_at: None,
+        terminal_expires_at: None,
         retained_terminal_payload_bytes: 0,
         result_purged: false,
         acknowledgement_purged: false,
@@ -1529,6 +1772,7 @@ mod tests {
             "deferred event wire evidence drifted: {deferred}"
         );
         anyhow::ensure!(registry.pending_module_event_count("storage_module")? == 1);
+        anyhow::ensure!(registry.pending_module_event_bytes("storage_module")? > 0);
 
         registry.transition(
             &id,
@@ -1543,6 +1787,7 @@ mod tests {
             "early terminal event was not replayed: {value}"
         );
         anyhow::ensure!(registry.pending_module_event_count("storage_module")? == 0);
+        anyhow::ensure!(registry.pending_module_event_bytes("storage_module")? == 0);
         Ok(())
     }
 
@@ -1615,7 +1860,7 @@ mod tests {
         let registry = RuntimeOperationRegistry::default();
         let id = operation_id("overflow")?;
         insert_module_operation(&registry, id.as_str())?;
-        for index in 0..=MAX_PENDING_MODULE_EVENTS_PER_MODULE {
+        for index in 0..MAX_PENDING_MODULE_EVENTS_PER_MODULE {
             registry.ingest_module_event(module_event(
                 &format!("session-{index}"),
                 &format!("cid-{index}"),
@@ -1623,19 +1868,47 @@ mod tests {
         }
         anyhow::ensure!(
             registry.pending_module_event_count("storage_module")?
+                == MAX_PENDING_MODULE_EVENTS_PER_MODULE,
+            "journal rejected its exact count boundary"
+        );
+        let newest_index = MAX_PENDING_MODULE_EVENTS_PER_MODULE;
+        let newest_session = format!("session-{newest_index}");
+        let newest_cid = format!("cid-{newest_index}");
+        registry.ingest_module_event(module_event(&newest_session, &newest_cid)?)?;
+        anyhow::ensure!(
+            registry.pending_module_event_count("storage_module")?
                 == MAX_PENDING_MODULE_EVENTS_PER_MODULE
         );
+        let retained_bytes = registry.pending_module_event_bytes("storage_module")?;
+        anyhow::ensure!(
+            retained_bytes > 0 && retained_bytes <= MAX_PENDING_MODULE_EVENT_BYTES_PER_MODULE
+        );
+        let recomputed_bytes = registry
+            .state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("registry unavailable"))?
+            .pending_module_events
+            .get("storage_module")
+            .context("overflow journal")?
+            .events
+            .iter()
+            .try_fold(0usize, |bytes, pending| {
+                bytes
+                    .checked_add(pending.event.retained_serialized_bytes()?)
+                    .context("test journal byte count overflow")
+            })?;
+        anyhow::ensure!(recomputed_bytes == retained_bytes);
 
         registry.transition(
             &id,
-            RuntimeOperationTransition::Resolved(accepted_outcome("session-32")?),
+            RuntimeOperationTransition::Resolved(accepted_outcome(&newest_session)?),
         )?;
 
         let value = registry.value(&id)?;
         anyhow::ensure!(
             value.get("status") == Some(&json!("completed"))
                 && value.get("result")
-                    == Some(&json!({ "sessionId": "session-32", "cid": "cid-32" })),
+                    == Some(&json!({ "sessionId": newest_session, "cid": newest_cid })),
             "newest deferred terminal event was not retained: {value}"
         );
         let has_overflow_evidence = registry.inspect(|records| {
@@ -1651,6 +1924,76 @@ mod tests {
             "journal eviction had no audit evidence"
         );
         anyhow::ensure!(registry.pending_module_event_count("storage_module")? == 0);
+        anyhow::ensure!(registry.pending_module_event_bytes("storage_module")? == 0);
+        Ok(())
+    }
+
+    #[test]
+    fn journal_byte_pressure_evicts_a_prefix_and_replays_the_newest_event() -> Result<()> {
+        let registry = RuntimeOperationRegistry::default();
+        let id = operation_id("byte-pressure")?;
+        insert_module_operation(&registry, id.as_str())?;
+        let cid_payload = "x".repeat(MAX_PENDING_MODULE_EVENT_BYTES_PER_MODULE / 16);
+        for index in 0..16 {
+            registry.ingest_module_event(module_event(
+                &format!("byte-session-{index}"),
+                &format!("{index}-{cid_payload}"),
+            )?)?;
+        }
+
+        let retained_count = registry.pending_module_event_count("storage_module")?;
+        let retained_bytes = registry.pending_module_event_bytes("storage_module")?;
+        anyhow::ensure!(
+            retained_count > 0
+                && retained_count < 16
+                && retained_bytes <= MAX_PENDING_MODULE_EVENT_BYTES_PER_MODULE,
+            "byte-pressure journal exceeded its limits: {retained_count} events, {retained_bytes} bytes"
+        );
+
+        registry.transition(
+            &id,
+            RuntimeOperationTransition::Resolved(accepted_outcome("byte-session-15")?),
+        )?;
+        let value = registry.value(&id)?;
+        anyhow::ensure!(
+            value.get("status") == Some(&json!("completed"))
+                && value
+                    .get("result")
+                    .and_then(|result| result.get("cid"))
+                    .and_then(Value::as_str)
+                    .is_some_and(|cid| cid.starts_with("15-")),
+            "byte-pressure journal lost its newest terminal evidence"
+        );
+        anyhow::ensure!(registry.pending_module_event_count("storage_module")? == 0);
+        anyhow::ensure!(registry.pending_module_event_bytes("storage_module")? == 0);
+        Ok(())
+    }
+
+    #[test]
+    fn oversized_early_event_is_rejected_without_record_or_journal_mutation() -> Result<()> {
+        let registry = RuntimeOperationRegistry::default();
+        let id = operation_id("oversized-early-event")?;
+        insert_module_operation(&registry, id.as_str())?;
+        let before = registry.value(&id)?;
+        let event = module_event(
+            "oversized-session",
+            &"x".repeat(MAX_PENDING_MODULE_EVENT_BYTES_PER_MODULE),
+        )?;
+        anyhow::ensure!(
+            event.retained_serialized_bytes()? > MAX_PENDING_MODULE_EVENT_BYTES_PER_MODULE
+        );
+
+        let Err(error) = registry.ingest_module_event(event) else {
+            bail!("oversized early module event was retained");
+        };
+
+        anyhow::ensure!(
+            error.to_string().contains("early-event journal limit")
+                && registry.pending_module_event_count("storage_module")? == 0
+                && registry.pending_module_event_bytes("storage_module")? == 0
+                && registry.value(&id)? == before,
+            "oversized early event changed bounded conversation state: {error:#}"
+        );
         Ok(())
     }
 
@@ -2080,14 +2423,15 @@ mod tests {
                     .state
                     .lock()
                     .map_err(|_| anyhow::anyhow!("registry unavailable"))?;
+                let pending = PendingModuleEvent::new(
+                    module_event("evicted-session", "evicted-cid")?,
+                    vec![id.clone()],
+                )?;
                 state
                     .pending_module_events
                     .entry("storage_module".to_owned())
                     .or_default()
-                    .push_back(PendingModuleEvent {
-                        event: module_event("evicted-session", "evicted-cid")?,
-                        candidate_operation_ids: vec![id.clone()],
-                    });
+                    .push_back(pending)?;
             }
         }
 
@@ -2095,6 +2439,7 @@ mod tests {
         anyhow::ensure!(registry.value(&first_terminal).is_err());
         anyhow::ensure!(registry.value(&active).is_ok());
         anyhow::ensure!(registry.pending_module_event_count("storage_module")? == 0);
+        anyhow::ensure!(registry.pending_module_event_bytes("storage_module")? == 0);
         anyhow::ensure!(registry.len()? == MAX_RETAINED_TERMINAL_RECORDS + 1);
 
         registry.sweep_at(

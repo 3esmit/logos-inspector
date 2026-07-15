@@ -470,6 +470,13 @@ pub trait ModuleTransport: Send + Sync {
         false
     }
 
+    /// Reports whether the Basecamp host owns a healthy native runtime-event
+    /// ingress path. Local Rust subscription registration alone is not upstream
+    /// event-delivery evidence.
+    fn native_runtime_module_events_ready(&self) -> bool {
+        false
+    }
+
     fn call_controlled(
         &self,
         call: ModuleCall,

@@ -508,6 +508,8 @@ LogosInspectorCoreApi LogosInspectorCoreApi::production()
     api.callModuleAsync = &logos_inspector_core_call_module_async;
     api.cancel = &logos_inspector_core_cancel;
     api.ingestModuleEvent = &logos_inspector_core_ingest_module_event;
+    api.setRuntimeModuleEventHealth =
+        &logos_inspector_core_set_runtime_module_event_health;
     return api;
 }
 
@@ -536,7 +538,10 @@ public:
         if (core_ == nullptr) {
             throw std::runtime_error("could not construct Logos Inspector asynchronous core");
         }
-        if (!hostTransport_->bindCore(core_, coreApi_.ingestModuleEvent)
+        if (!hostTransport_->bindCore(
+                core_,
+                coreApi_.ingestModuleEvent,
+                coreApi_.setRuntimeModuleEventHealth)
             || !hostTransport_->activate()) {
             coreApi_.close(core_);
             coreApi_.free(core_);
@@ -787,7 +792,8 @@ private:
         if (api.newWithHostTransport == nullptr || api.close == nullptr || api.free == nullptr
             || api.call == nullptr || api.stringFree == nullptr
             || api.callModuleAsync == nullptr || api.cancel == nullptr
-            || api.ingestModuleEvent == nullptr) {
+            || api.ingestModuleEvent == nullptr
+            || api.setRuntimeModuleEventHealth == nullptr) {
             throw std::invalid_argument("incomplete Logos Inspector core API");
         }
     }
