@@ -296,7 +296,7 @@ function probeScalarText(root, value) {
     if (value === undefined || value === null || value === "") {
         return ""
     }
-    const scalar = root.model.scalarValue(value)
+    const scalar = root.model.metrics.scalarValue(value)
     if (scalar === null || scalar === undefined || scalar === "") {
         return root.valueText(value)
     }

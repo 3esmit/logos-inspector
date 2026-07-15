@@ -5,6 +5,7 @@ import "../../qml/state"
 import "../../qml/state/source_routing/SourcePolicyCatalog.js" as SourcePolicyCatalog
 import "../../qml/state/source_routing/SourceDiagnosticsProjection.js" as SourceDiagnostics
 import "../../qml/state/status/StatusFactsProjection.js" as StatusFactsProjection
+import "MetricsCompatibilityManifest.js" as MetricsCompatibilityManifest
 import "SourceRoutingCompatibilityManifest.js" as SourceRoutingCompatibilityManifest
 import "fixtures"
 
@@ -136,11 +137,11 @@ TestCase {
         model.dashboardNode = null
         model.dashboardProvisionalBlocks = []
         model.metrics.blockchainSourceReport = null
-        model.blockchainModuleReport = null
-        model.storageModuleReport = null
-        model.messagingModuleReport = null
-        model.storageSourceReport = null
-        model.messagingSourceReport = null
+        model.metrics.blockchainModuleReport = null
+        model.metrics.storageModuleReport = null
+        model.metrics.messagingModuleReport = null
+        model.metrics.storageSourceReport = null
+        model.metrics.messagingSourceReport = null
         model.deliveryModuleEvents = []
         model.deliveryModuleEventRevision = 0
         model.deliveryConnectionStatus = ""
@@ -169,17 +170,17 @@ TestCase {
         model.operationHistory.runtimeOperationPendingPolls = ({})
         model.operationHistory.runtimeOperationTerminalOrder = []
         model.operationHistory.runtimeOperationCursorOrder = []
-        model.networkConnectionStatus = ({})
-        model.networkConnectionStatusRevision = 0
-        model.dashboardMetricHistory = ({})
-        model.dashboardMetricLastSeen = ({})
-        model.dashboardMetricHistoryRevision = 0
+        model.metrics.networkConnectionStatus = ({})
+        model.metrics.networkConnectionStatusRevision = 0
+        model.metrics.dashboardMetricHistory = ({})
+        model.metrics.dashboardMetricLastSeen = ({})
+        model.metrics.dashboardMetricHistoryRevision = 0
         model.metrics.observationReportRequestIdentities = ({})
-        model.blockchainRefreshRate = 30
-        model.messagingRefreshRate = 30
-        model.storageRefreshRate = 30
-        model.footerFieldSelections = model.metrics.defaultFooterFieldSelections()
-        model.dashboardGraphSelections = model.metrics.defaultDashboardGraphSelections()
+        model.metrics.blockchainRefreshRate = 30
+        model.metrics.messagingRefreshRate = 30
+        model.metrics.storageRefreshRate = 30
+        model.metrics.footerFieldSelections = model.metrics.defaultFooterFieldSelections()
+        model.metrics.dashboardGraphSelections = model.metrics.defaultDashboardGraphSelections()
         model.blocksPageRows = []
         model.blocksPageSlotFrom = 0
         model.blocksPageSlotTo = 0
@@ -691,21 +692,46 @@ TestCase {
         }
     }
 
-    function test_metrics_state_owns_appmodel_compatibility_aliases() {
-        model.storageRefreshRate = 45
-        compare(model.metrics.storageRefreshRate, 45)
+    function test_metrics_compatibility_manifest_matches_appmodel() {
+        const inventory = MetricsCompatibilityManifest.manifest()
+        const seen = ({})
+        const requiredProperties = ({})
+        const requiredMethods = ({})
+        let propertyCount = 0
+        let methodCount = 0
 
-        model.metrics.messagingRefreshRate = 75
-        compare(model.messagingRefreshRate, 75)
-
-        model.networkConnectionStatus = ({ storage: { known: true, ok: true } })
-        verify(model.metrics.networkConnectionStatus.storage.ok)
-
-        model.metrics.footerFieldSelections = ({ "storage.module": true })
-        verify(model.footerFieldSelections["storage.module"])
-
-        model.storageSourceReport = { marker: "compatibility-source" }
-        compare(model.metrics.sourceReport("storage").marker, "compatibility-source")
+        compare(inventory.ownerPath, "metrics")
+        compare(inventory.retainedMembers.length, 0)
+        verify(inventory.retainedDecision.length > 0)
+        compare(inventory.retiredMembers.length, 98)
+        for (let i = 0; i < inventory.retiredMembers.length; ++i) {
+            const member = inventory.retiredMembers[i]
+            verify(member.name.length > 0)
+            verify(seen[member.name] !== true, member.name)
+            seen[member.name] = true
+            compare(member.ownerPath, "metrics", member.name)
+            verify(member.ownerMember.length > 0, member.name)
+            verify(Array.isArray(member.formerConsumers), member.name)
+            verify(member.reason.length > 0, member.name)
+            compare(model[member.name], undefined, member.name)
+            if (member.kind === "property") {
+                propertyCount += 1
+                verify(model.metrics[member.ownerMember] !== undefined, member.name)
+                requiredProperties[member.ownerMember] = true
+            } else if (member.kind === "method") {
+                methodCount += 1
+                compare(typeof model.metrics[member.ownerMember], "function", member.name)
+                requiredMethods[member.ownerMember] = true
+            } else {
+                fail("Unknown inventory kind: " + member.kind)
+            }
+        }
+        compare(propertyCount, 22)
+        compare(methodCount, 76)
+        compare(Object.keys(requiredProperties).sort().join("|"),
+            inventory.requiredFacadeProperties.slice(0).sort().join("|"))
+        compare(Object.keys(requiredMethods).sort().join("|"),
+            inventory.requiredFacadeMethods.slice(0).sort().join("|"))
     }
 
     function test_source_routing_compatibility_manifest_matches_appmodel() {
@@ -717,7 +743,7 @@ TestCase {
 
         compare(inventory.retainedAliases.length, 0)
         verify(inventory.retainedAliasDecision.length > 0)
-        compare(inventory.retiredMembers.length, 33)
+        compare(inventory.retiredMembers.length, 34)
         for (let i = 0; i < inventory.retiredMembers.length; ++i) {
             const member = inventory.retiredMembers[i]
             verify(member.name.length > 0)
@@ -734,9 +760,9 @@ TestCase {
                 fail("Unknown inventory kind: " + member.kind)
             }
         }
-        compare(methodCount, 31)
+        compare(methodCount, 32)
         compare(aliasCount, 2)
-        compare(methodClasses.production, 10)
+        compare(methodClasses.production, 11)
         compare(methodClasses.test_only, 9)
         compare(methodClasses.none, 12)
 
@@ -1045,11 +1071,11 @@ TestCase {
             runtimeOperationStart: chainRuntimeStart({ blockchainNode: nodeResult })
         }
 
-        model.queryNetworkConnection("blockchain", false)
+        model.metrics.queryNetworkConnection("blockchain", false)
 
-        tryVerify(function () { return model.networkConnectionIsPending("blockchain") === false })
-        compare(model.cryptarchiaValue("slot"), 77)
-        compare(model.networkValue("n_peers"), 4)
+        tryVerify(function () { return model.metrics.networkConnectionIsPending("blockchain") === false })
+        compare(model.metrics.cryptarchiaValue("slot"), 77)
+        compare(model.metrics.networkValue("n_peers"), 4)
         compare(runtimeOperationCallCount("blockchainNode"), 1)
         compare(callCountFor("blockchainNode"), 0)
     }
@@ -1155,11 +1181,11 @@ TestCase {
             probes: []
         }
 
-        verify(model.moduleReportReachable(report))
-        verify(model.deliveryReportHealthy(report))
-        compare(model.networkConnectionSummary("messaging", report), "delivery source ready")
-        verify(model.sourceCapabilityAvailable(report, "metrics"))
-        compare(model.sourceCapabilityEvidence(report, "metrics"), "known Waku metric family observed")
+        verify(model.metrics.moduleReportReachable(report))
+        verify(model.metrics.deliveryReportHealthy(report))
+        compare(model.metrics.networkConnectionSummary("messaging", report), "delivery source ready")
+        verify(model.metrics.sourceCapabilityAvailable(report, "metrics"))
+        compare(model.metrics.sourceCapabilityEvidence(report, "metrics"), "known Waku metric family observed")
     }
 
     function test_source_report_health_facts_mark_storage_not_ready_without_probe_names() {
@@ -1178,14 +1204,14 @@ TestCase {
             probes: []
         }
 
-        verify(model.moduleReportReachable(report))
-        verify(!model.storageReportReady(report))
-        compare(model.networkConnectionSummary("storage", report), "required storage facts missing")
-        compare(model.sourceCapabilityAvailable(report, "identity"), false)
+        verify(model.metrics.moduleReportReachable(report))
+        verify(!model.metrics.storageReportReady(report))
+        compare(model.metrics.networkConnectionSummary("storage", report), "required storage facts missing")
+        compare(model.metrics.sourceCapabilityAvailable(report, "identity"), false)
     }
 
     function test_module_probe_lookup_ignores_source_facts_without_probe_names() {
-        model.storageModuleReport = {
+        model.metrics.storageModuleReport = {
             module: "storage_rest",
             probe_facts: [
                 {
@@ -1216,11 +1242,11 @@ TestCase {
         }
 
         compare(model.metrics.moduleProbeValue("storage", "peerId"), null)
-        compare(model.moduleProbeError("storage", "collectMetrics"), "")
+        compare(model.metrics.moduleProbeError("storage", "collectMetrics"), "")
     }
 
     function test_source_diagnostics_prefer_current_report_facts() {
-        model.storageModuleReport = {
+        model.metrics.storageModuleReport = {
             module: "storage_rest",
             probe_facts: [
                 {
@@ -1299,7 +1325,7 @@ TestCase {
     }
 
     function test_delivery_source_throughput_metric_aliases() {
-        model.messagingSourceReport = {
+        model.metrics.messagingSourceReport = {
             module: "delivery_metrics",
             probes: [
                 {
@@ -1314,9 +1340,9 @@ TestCase {
             ]
         }
 
-        compare(model.dashboardMetricRawValue("messaging.network_ingress_recent"), 20)
-        compare(model.dashboardMetricRawValue("messaging.store_query_requests_recent"), 4)
-        compare(model.dashboardMetricRawValue("messaging.store_messages"), 7)
+        compare(model.metrics.dashboardMetricRawValue("messaging.network_ingress_recent"), 20)
+        compare(model.metrics.dashboardMetricRawValue("messaging.store_query_requests_recent"), 4)
+        compare(model.metrics.dashboardMetricRawValue("messaging.store_messages"), 7)
     }
 
     function test_node_operation_start_dispatches_generic_request() {
@@ -1767,11 +1793,11 @@ TestCase {
         model.loadSettingsState()
 
         compare(model.metrics.blockchainRefreshRate, 11)
-        compare(model.messagingRefreshRate, 22)
+        compare(model.metrics.messagingRefreshRate, 22)
         compare(model.metrics.storageRefreshRate, 33)
-        verify(!model.footerFieldSelections["storage.module"])
+        verify(!model.metrics.footerFieldSelections["storage.module"])
         verify(model.metrics.footerFieldSelections["overall.status"])
-        verify(model.dashboardGraphSelections["bedrock.peer_count"])
+        verify(model.metrics.dashboardGraphSelections["bedrock.peer_count"])
         verify(!model.metrics.dashboardGraphSelections["storage.peer_count"])
         compare(model.metrics.footerFieldRevision, footerRevision + 1)
         compare(model.metrics.dashboardGraphRevision, graphRevision + 1)
@@ -3231,34 +3257,34 @@ TestCase {
     }
 
     function test_dashboard_metric_history_prefix_clear() {
-        model.dashboardMetricHistory = {
+        model.metrics.dashboardMetricHistory = {
             "messaging.messages": [{ timestamp: 1, value: 1 }],
             "storage.files": [{ timestamp: 1, value: 2 }],
             "chain.height": [{ timestamp: 1, value: 3 }]
         }
-        model.dashboardMetricLastSeen = {
+        model.metrics.dashboardMetricLastSeen = {
             "messaging.messages": { timestamp: 2, value: 1 },
             "storage.files": { timestamp: 2, value: 2 }
         }
 
-        model.clearDashboardMetricHistoryForPrefix("messaging.")
+        model.metrics.clearDashboardMetricHistoryForPrefix("messaging.")
 
-        compare(model.dashboardMetricHistory["messaging.messages"], undefined)
-        compare(model.dashboardMetricLastSeen["messaging.messages"], undefined)
-        verify(model.dashboardMetricHistory["storage.files"] !== undefined)
-        verify(model.dashboardMetricLastSeen["storage.files"] !== undefined)
-        verify(model.dashboardMetricHistory["chain.height"] !== undefined)
-        compare(model.dashboardMetricHistoryRevision, 1)
+        compare(model.metrics.dashboardMetricHistory["messaging.messages"], undefined)
+        compare(model.metrics.dashboardMetricLastSeen["messaging.messages"], undefined)
+        verify(model.metrics.dashboardMetricHistory["storage.files"] !== undefined)
+        verify(model.metrics.dashboardMetricLastSeen["storage.files"] !== undefined)
+        verify(model.metrics.dashboardMetricHistory["chain.height"] !== undefined)
+        compare(model.metrics.dashboardMetricHistoryRevision, 1)
     }
 
     function test_dashboard_metric_history_keeps_pre_change_sample() {
         const values = [100, 100, 100, 100, 100, 101, 101, 101, 101, 102, 101, 101, 101, 102]
         for (let i = 0; i < values.length; ++i) {
             setTipMinusLib(values[i])
-            model.recordDashboardSnapshot()
+            model.metrics.recordDashboardSnapshot()
         }
 
-        const samples = model.dashboardMetricHistory["bedrock.tip_minus_lib"]
+        const samples = model.metrics.dashboardMetricHistory["bedrock.tip_minus_lib"]
         const storedValues = samples.map(function (sample) {
             return sample.value
         })
@@ -3273,10 +3299,10 @@ TestCase {
     function test_dashboard_metric_history_keeps_300_samples() {
         for (let i = 0; i < 310; ++i) {
             setTipMinusLib(i)
-            model.recordDashboardSnapshot()
+            model.metrics.recordDashboardSnapshot()
         }
 
-        const samples = model.dashboardMetricHistory["bedrock.tip_minus_lib"]
+        const samples = model.metrics.dashboardMetricHistory["bedrock.tip_minus_lib"]
 
         compare(samples.length, 300)
         compare(samples[0].value, 10)
@@ -3659,9 +3685,9 @@ TestCase {
 
         model.chainPages.refreshBlocksPage()
         tryVerify(function () { return model.chainPages.blocksWorkflowRunning })
-        model.queryNetworkConnection("blockchain", false)
+        model.metrics.queryNetworkConnection("blockchain", false)
         tryVerify(function () {
-            return model.networkConnectionPending.blockchain === true
+            return model.metrics.networkConnectionPending.blockchain === true
         })
         model.blocksLiveEnabled = true
         const chainRevision = model.blockchainConfigurationRevision
@@ -3670,7 +3696,7 @@ TestCase {
 
         compare(model.blockchainConfigurationRevision, chainRevision)
         verify(model.chainPages.blocksWorkflowRunning)
-        verify(model.networkConnectionPending.blockchain === true)
+        verify(model.metrics.networkConnectionPending.blockchain === true)
         verify(model.blocksLiveEnabled)
         compare(fakeHost.calls.filter(function (call) {
             return call.method === "runtimeOperationCancel"
@@ -3679,7 +3705,7 @@ TestCase {
         model.nodeUrl = "http://127.0.0.1:18081/"
         tryVerify(function () { return !model.chainPages.operationsRunning })
         verify(model.blockchainConfigurationRevision > chainRevision)
-        verify(model.networkConnectionPending.blockchain !== true)
+        verify(model.metrics.networkConnectionPending.blockchain !== true)
         verify(!model.blocksLiveEnabled)
         tryVerify(function () {
             return fakeHost.calls.filter(function (call) {
@@ -4217,7 +4243,7 @@ TestCase {
     }
 
     function test_blockchain_module_probe_value_reads_peer_id() {
-        model.blockchainModuleReport = {
+        model.metrics.blockchainModuleReport = {
             module: model.blockchainModule,
             module_info: { ok: true, value: {}, label: "module", source: "logoscore modules" },
             probes: [
@@ -4238,7 +4264,7 @@ TestCase {
     }
 
     function test_bedrock_wallet_known_addresses_unwraps_module_payload() {
-        model.blockchainModuleReport = blockchainWalletReport("wallet_get_known_addresses", {
+        model.metrics.blockchainModuleReport = blockchainWalletReport("wallet_get_known_addresses", {
             runner: "plain logoscore",
             value: {
                 result: {
@@ -4261,7 +4287,7 @@ TestCase {
     }
 
     function test_bedrock_wallet_empty_known_addresses_are_known_shape() {
-        model.blockchainModuleReport = blockchainWalletReport("wallet_get_known_addresses", {
+        model.metrics.blockchainModuleReport = blockchainWalletReport("wallet_get_known_addresses", {
             result: {
                 value: []
             }
@@ -4272,7 +4298,7 @@ TestCase {
     }
 
     function test_bedrock_wallet_notes_rows_format_note_fields() {
-        model.blockchainModuleReport = blockchainWalletReport("wallet_get_notes", {
+        model.metrics.blockchainModuleReport = blockchainWalletReport("wallet_get_notes", {
             result: {
                 value: {
                     notes: [
@@ -4299,7 +4325,7 @@ TestCase {
     }
 
     function test_bedrock_wallet_voucher_rows_format_commitments() {
-        model.blockchainModuleReport = blockchainWalletReport("wallet_get_claimable_vouchers", {
+        model.metrics.blockchainModuleReport = blockchainWalletReport("wallet_get_claimable_vouchers", {
             result: {
                 value: {
                     claimable_vouchers: [
@@ -4324,7 +4350,7 @@ TestCase {
     }
 
     function test_bedrock_wallet_module_failure_keeps_other_probes_readable() {
-        model.blockchainModuleReport = {
+        model.metrics.blockchainModuleReport = {
             module: model.blockchainModule,
             module_info: { ok: true, value: {}, label: "module", source: "logoscore modules" },
             probes: [
@@ -4347,7 +4373,7 @@ TestCase {
 
         compare(model.bedrockWalletModuleKnownAddressRows().length, 1)
         compare(model.bedrockWalletModuleNoteRows().length, 0)
-        compare(model.moduleProbeError("blockchain", "wallet_get_notes"), "module unavailable")
+        compare(model.metrics.moduleProbeError("blockchain", "wallet_get_notes"), "module unavailable")
     }
 
     function test_bedrock_wallet_module_methods_are_read_only() {
@@ -4374,7 +4400,7 @@ TestCase {
             }
         }
 
-        compare(model.networkConnectionSummary("blockchain", value), "slot 42")
+        compare(model.metrics.networkConnectionSummary("blockchain", value), "slot 42")
     }
 
     function test_dashboard_refresh_uses_active_zone_projection_and_l1_sources() {
@@ -4435,9 +4461,9 @@ TestCase {
             deliverySourceReport: { ok: true, value: {}, text: "OK", error: "" }
         }
 
-        model.refreshDashboard()
+        model.metrics.refreshDashboard()
 
-        tryCompare(model, "dashboardRefreshing", false)
+        tryCompare(model.metrics, "dashboardRefreshing", false)
         compare(model.dashboardProvisionalBlocks.length, 1)
         compare(model.dashboardProvisionalBlocks[0].block_id, 104)
         compare(model.dashboardBlocks.length, 1)

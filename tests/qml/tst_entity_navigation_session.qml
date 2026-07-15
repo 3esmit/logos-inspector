@@ -21,8 +21,12 @@ TestCase {
                 resultValue = value
             }
         }
+        property QtObject metrics: QtObject {
+            function valueToString(value) {
+                return value === undefined || value === null ? "" : String(value)
+            }
+        }
 
-        function valueToString(value) { return value === undefined || value === null ? "" : String(value) }
         function pushNavigationHistory() {}
         function selectView(view, recordHistory) { currentView = String(view || "") }
         function walletProfileConfigured() { return false }

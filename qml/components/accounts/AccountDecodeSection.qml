@@ -184,7 +184,7 @@ ColumnLayout {
                         subvalue: String(modelData.subvalue || "")
                         subvalueCopyText: String(modelData.subvalueCopyText || "")
                         linkKind: String(modelData.linkKind || "")
-                        linkValue: root.modelRef ? root.modelRef.valueToString(modelData.linkValue) : String(modelData.linkValue || "")
+                        linkValue: root.modelRef ? root.modelRef.metrics.valueToString(modelData.linkValue) : String(modelData.linkValue || "")
                         tooltipText: String(modelData.tooltipText || "")
                         monospace: modelData.monospace !== undefined ? modelData.monospace : true
                         onActivated: root.rowActivated(modelData.linkKind, modelData.linkValue)

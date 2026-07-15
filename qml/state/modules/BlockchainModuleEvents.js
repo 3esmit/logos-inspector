@@ -11,7 +11,8 @@ function handleNewBlock(root, args) {
         AppModelPages.applyLiveBlockReport(root.chainPages, report, {
             checkedAt: ModuleEventUtils.eventTimeText("")
         })
-        blockchainLastEventText = qsTr("New block %1").arg(root.valueText(root.chainPages.blockSlot(block)))
+        blockchainLastEventText = qsTr("New block %1").arg(
+            root.metrics.valueText(root.chainPages.blockSlot(block)))
         blockchainModuleEventRevision += 1
         metrics.queryNetworkConnection("blockchain", false, false, "module-event")
 

@@ -980,7 +980,30 @@ QtObject {
     }
 
     function scalarValue(value) {
-        return gateway.scalarValue(value)
+        if (value === undefined || value === null || value === "") {
+            return null
+        }
+        if (typeof value === "number" || typeof value === "string" || typeof value === "boolean") {
+            return value
+        }
+        if (Array.isArray(value)) {
+            return value.length
+        }
+        if (typeof value === "object") {
+            if (value.result !== undefined && value.result !== null) {
+                return scalarValue(value.result)
+            }
+            if (value.value !== undefined && value.value !== null) {
+                return scalarValue(value.value)
+            }
+            if (value.count !== undefined && value.count !== null) {
+                return scalarValue(value.count)
+            }
+            if (value.total !== undefined && value.total !== null) {
+                return scalarValue(value.total)
+            }
+        }
+        return null
     }
 
     function dashboardGate(key) {

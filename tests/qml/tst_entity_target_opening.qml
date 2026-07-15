@@ -10,7 +10,11 @@ TestCase {
     QtObject {
         id: model
 
-        function valueToString(value) { return value === undefined || value === null ? "" : String(value) }
+        property QtObject metrics: QtObject {
+            function valueToString(value) {
+                return value === undefined || value === null ? "" : String(value)
+            }
+        }
     }
 
     QtObject {

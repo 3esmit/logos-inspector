@@ -356,7 +356,7 @@ function refreshBedrockWalletModule(root, address) {
         root.metrics.setModuleReport("blockchain", null)
         return requestModuleAsync(inspectorModule, "blockchainModuleReport", [target], qsTr("Bedrock wallet"), false, function (response) {
             if (response.ok) {
-                bedrockWalletModuleError = root.moduleLastError("blockchain")
+                bedrockWalletModuleError = root.metrics.moduleLastError("blockchain")
                 appendLocalWalletOperation(qsTr("Bedrock wallet module"), bedrockWalletModuleError.length ? "degraded" : "ok", target.length ? target : qsTr("module report"))
             } else {
                 bedrockWalletModuleError = response.error || qsTr("Bedrock wallet module query failed.")
@@ -444,9 +444,9 @@ function bedrockWalletModuleBalanceSummary(root) {
         if (balance === null) {
             return ""
         }
-        const scalar = root.scalarValue(balance)
+        const scalar = root.metrics.scalarValue(balance)
         if (scalar !== null) {
-            return root.valueText(scalar)
+            return root.metrics.valueText(scalar)
         }
         const keys = ["balance", "available", "spendable", "confirmed", "pending"]
         const parts = []
@@ -463,7 +463,7 @@ function bedrockWalletModuleBalanceSummary(root) {
 
 function bedrockWalletModuleRawText(root, method) {
     with (root) {
-        const probe = root.moduleProbe("blockchain", method)
+        const probe = root.metrics.moduleProbe("blockchain", method)
         if (!probe || probe.value === undefined || probe.value === null) {
             return ""
         }
