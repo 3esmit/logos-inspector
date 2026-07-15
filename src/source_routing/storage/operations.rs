@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use crate::modules::logos_core::{ModuleTransportKind, SharedModuleTransport};
 use crate::source_routing::{
-    AdapterInitialization, ModuleCorrelation, ModuleDispatchIdentityRole, ModuleDispatchReceipt,
+    AdapterInitialization, ModuleDispatchIdentityRole, ModuleDispatchReceipt,
     ModuleEventCorrelationKind, ModuleTerminalEventContract, NodeOperationOutcome,
     NodeOperationRequest, ObservableOperationAcceptance, StorageSourceMode,
 };
@@ -615,9 +615,9 @@ fn storage_module_dispatch_outcome(
     receipt: ModuleDispatchReceipt,
 ) -> Result<NodeOperationOutcome> {
     let accepted = match method {
-        "uploadUrl" => receipt.session_id().map(|session_id| {
+        "uploadUrl" => receipt.session_correlation().map(|correlation| {
             (
-                ModuleCorrelation::with_session(session_id),
+                correlation,
                 ModuleTerminalEventContract::new(
                     super::layer::module_id(),
                     Some("storageUploadProgress"),
@@ -1199,7 +1199,8 @@ mod tests {
                 json!({ "dispatched": true }),
                 &json!("session-1"),
                 ModuleDispatchIdentityRole::Session,
-            ),
+            )
+            .with_bridge_callback(crate::source_routing::BridgeCallbackId::new(31)),
         )?;
         let NodeOperationOutcome::Accepted(acceptance) = upload else {
             anyhow::bail!("module upload was not accepted");
@@ -1207,6 +1208,11 @@ mod tests {
         anyhow::ensure!(
             acceptance.correlation().session_id().map(|id| id.as_str()) == Some("session-1")
                 && acceptance.correlation().request_id().is_none()
+                && acceptance
+                    .correlation()
+                    .bridge_callback_id()
+                    .map(crate::source_routing::BridgeCallbackId::value)
+                    == Some(31)
                 && acceptance.terminal_event().correlation()
                     == &ModuleEventCorrelationKind::Session,
             "module upload identity role drifted"

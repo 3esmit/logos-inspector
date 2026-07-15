@@ -1,26 +1,6 @@
 use serde_json::{Map, Value};
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct BridgeCallbackId(u64);
-
-impl BridgeCallbackId {
-    #[must_use]
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Basecamp host transport allocates callback identities in the next adapter ticket"
-        )
-    )]
-    pub(crate) const fn new(value: u64) -> Self {
-        Self(value)
-    }
-
-    #[must_use]
-    pub(crate) const fn value(&self) -> u64 {
-        self.0
-    }
-}
+use crate::modules::logos_core::BridgeCallbackId;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct ModuleSessionId(String);
@@ -75,13 +55,6 @@ pub(crate) struct ModuleCorrelation {
 
 impl ModuleCorrelation {
     #[must_use]
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Basecamp host transport attaches callback identities in the next adapter ticket"
-        )
-    )]
     pub(crate) fn with_bridge_callback(mut self, bridge_callback_id: BridgeCallbackId) -> Self {
         self.bridge_callback_id = Some(bridge_callback_id);
         self
@@ -192,6 +165,7 @@ impl ModuleTerminalEventContract {
 pub(crate) struct ModuleDispatchReceipt {
     acknowledgement: Value,
     identity: ModuleDispatchIdentity,
+    bridge_callback_id: Option<BridgeCallbackId>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -250,22 +224,42 @@ impl ModuleDispatchReceipt {
         Self {
             acknowledgement,
             identity,
+            bridge_callback_id: None,
         }
     }
 
     #[must_use]
-    pub(crate) fn session_id(&self) -> Option<ModuleSessionId> {
-        match &self.identity {
-            ModuleDispatchIdentity::Session(session_id) => session_id.clone(),
-            ModuleDispatchIdentity::None | ModuleDispatchIdentity::Request(_) => None,
+    pub(crate) fn with_bridge_callback(mut self, bridge_callback_id: BridgeCallbackId) -> Self {
+        if let Value::Object(object) = &mut self.acknowledgement {
+            object.insert(
+                "bridgeCallbackId".to_owned(),
+                Value::from(bridge_callback_id.value()),
+            );
         }
+        self.bridge_callback_id = Some(bridge_callback_id);
+        self
     }
 
     #[must_use]
-    pub(crate) fn request_id(&self) -> Option<ModuleRequestId> {
-        match &self.identity {
-            ModuleDispatchIdentity::Request(request_id) => request_id.clone(),
-            ModuleDispatchIdentity::None | ModuleDispatchIdentity::Session(_) => None,
+    pub(crate) fn session_correlation(&self) -> Option<ModuleCorrelation> {
+        let ModuleDispatchIdentity::Session(Some(session_id)) = &self.identity else {
+            return None;
+        };
+        Some(self.attach_bridge_callback(ModuleCorrelation::with_session(session_id.clone())))
+    }
+
+    #[must_use]
+    pub(crate) fn request_correlation(&self) -> Option<ModuleCorrelation> {
+        let ModuleDispatchIdentity::Request(Some(request_id)) = &self.identity else {
+            return None;
+        };
+        Some(self.attach_bridge_callback(ModuleCorrelation::with_request(request_id.clone())))
+    }
+
+    fn attach_bridge_callback(&self, correlation: ModuleCorrelation) -> ModuleCorrelation {
+        match self.bridge_callback_id {
+            Some(bridge_callback_id) => correlation.with_bridge_callback(bridge_callback_id),
+            None => correlation,
         }
     }
 

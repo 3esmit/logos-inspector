@@ -14,8 +14,8 @@ use std::{
 use logos_inspector::{
     bridge::{InspectorBridge, InspectorBridgeCloseHandle},
     module_transport::{
-        ModuleCall, ModuleCallFuture, ModuleCallReply, ModuleTransport, ModuleTransportClosed,
-        ModuleTransportKind, SharedModuleTransport,
+        BridgeCallbackId, ModuleCall, ModuleCallFuture, ModuleCallReply, ModuleTransport,
+        ModuleTransportClosed, ModuleTransportKind, SharedModuleTransport,
     },
 };
 use serde_json::Value;
@@ -304,7 +304,8 @@ impl HostState {
                 }
                 Err(error) => return Err(std::io::Error::other(error).into()),
             };
-            Ok(ModuleCallReply::new(ModuleTransportKind::Module, value))
+            Ok(ModuleCallReply::new(ModuleTransportKind::Module, value)
+                .with_bridge_callback(BridgeCallbackId::new(module_request_id.0)))
         })
     }
 
@@ -2212,6 +2213,46 @@ mod tests {
             return err("dropped module future did not cancel its host request");
         }
         host.complete(request.id, 1, "12", false)?;
+        state.close();
+        Ok(())
+    }
+
+    #[test]
+    fn completed_host_dispatch_preserves_callback_identity() -> TestResult {
+        let host = TestHost::new();
+        let vtable = host.vtable();
+        // SAFETY: the local vtable provides a complete readable v1 prefix.
+        let copied = unsafe { HostVtable::copy_from(&vtable) }.map_err(std::io::Error::other)?;
+        let state = HostState::new(copied);
+        let call = ModuleCall::new(
+            ModuleTransportKind::Module,
+            "delivery_module",
+            "send",
+            Vec::new(),
+        )?;
+        let mut future = state.dispatch(call);
+        let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+        if std::future::Future::poll(future.as_mut(), &mut context).is_ready() {
+            return err("host module future completed before its reply");
+        }
+        let request = host.wait_for_request()?;
+        host.complete(request.id, 1, "\"request-7\"", false)?;
+        let reply = match std::future::Future::poll(future.as_mut(), &mut context) {
+            std::task::Poll::Ready(Ok(reply)) => reply,
+            std::task::Poll::Ready(Err(error)) => {
+                return err(&format!("host module future failed: {error:#}"));
+            }
+            std::task::Poll::Pending => {
+                return err("host module future remained pending after its reply");
+            }
+        };
+        if reply.bridge_callback_id().map(|id| id.value()) != Some(request.id) {
+            return err("host module reply lost its callback identity");
+        }
+        if reply.into_value() != Value::String("request-7".to_owned()) {
+            return err("host module reply value drifted");
+        }
+        drop(future);
         state.close();
         Ok(())
     }

@@ -4,9 +4,9 @@ use serde_json::{Map, Value, json};
 
 use crate::modules::logos_core::{ModuleTransportKind, SharedModuleTransport};
 use crate::source_routing::{
-    AdapterInitialization, DeliverySourceMode, ModuleCorrelation, ModuleDispatchIdentityRole,
-    ModuleDispatchReceipt, ModuleEventCorrelationKind, ModuleTerminalEventContract,
-    NodeOperationOutcome, NodeOperationRequest, ObservableOperationAcceptance,
+    AdapterInitialization, DeliverySourceMode, ModuleDispatchIdentityRole, ModuleDispatchReceipt,
+    ModuleEventCorrelationKind, ModuleTerminalEventContract, NodeOperationOutcome,
+    NodeOperationRequest, ObservableOperationAcceptance,
 };
 
 use super::{layer::MESSAGING_SOURCE_MODES, transport};
@@ -450,11 +450,11 @@ fn delivery_module_dispatch_outcome(
     receipt: ModuleDispatchReceipt,
 ) -> Result<NodeOperationOutcome> {
     let accepted = (method == "send")
-        .then(|| receipt.request_id())
+        .then(|| receipt.request_correlation())
         .flatten()
-        .map(|request_id| {
+        .map(|correlation| {
             (
-                ModuleCorrelation::with_request(request_id),
+                correlation,
                 ModuleTerminalEventContract::new(
                     super::layer::module_id(),
                     Some("messagePropagated"),
@@ -608,7 +608,8 @@ mod tests {
                 json!({ "dispatched": true }),
                 &json!("request-1"),
                 ModuleDispatchIdentityRole::Request,
-            ),
+            )
+            .with_bridge_callback(crate::source_routing::BridgeCallbackId::new(41)),
         )?;
 
         let NodeOperationOutcome::Accepted(acceptance) = outcome else {
@@ -617,6 +618,11 @@ mod tests {
         anyhow::ensure!(
             acceptance.correlation().request_id().map(|id| id.as_str()) == Some("request-1")
                 && acceptance.correlation().session_id().is_none()
+                && acceptance
+                    .correlation()
+                    .bridge_callback_id()
+                    .map(crate::source_routing::BridgeCallbackId::value)
+                    == Some(41)
                 && acceptance.terminal_event().correlation()
                     == &ModuleEventCorrelationKind::Request,
             "Delivery request identity role drifted"

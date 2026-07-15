@@ -28,6 +28,7 @@ pub(crate) fn dispatch_result(
     identity_role: ModuleDispatchIdentityRole,
 ) -> ModuleDispatchReceipt {
     let transport = reply.transport();
+    let bridge_callback_id = reply.bridge_callback_id();
     let value = reply.into_value();
     let raw_value = value.clone();
     let mut result = json!({
@@ -44,7 +45,11 @@ pub(crate) fn dispatch_result(
             }
         }
     }
-    ModuleDispatchReceipt::new(result, &raw_value, identity_role)
+    let receipt = ModuleDispatchReceipt::new(result, &raw_value, identity_role);
+    match bridge_callback_id {
+        Some(bridge_callback_id) => receipt.with_bridge_callback(bridge_callback_id),
+        None => receipt,
+    }
 }
 
 #[cfg(test)]
@@ -53,6 +58,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::modules::logos_core::BridgeCallbackId;
 
     #[test]
     fn dispatch_receipt_preserves_only_explicit_session_role() -> Result<()> {
@@ -64,14 +70,14 @@ mod tests {
             ModuleDispatchIdentityRole::Session,
         );
 
+        let correlation = receipt
+            .session_correlation()
+            .ok_or_else(|| anyhow::anyhow!("session correlation was lost"))?;
         anyhow::ensure!(
-            receipt.session_id().map(|id| id.as_str().to_owned()) == Some("42".to_owned()),
+            correlation.session_id().map(|id| id.as_str()) == Some("42"),
             "explicit session conversion lost scalar identity"
         );
-        anyhow::ensure!(
-            receipt.request_id().is_none(),
-            "session-tagged receipt exposed request identity"
-        );
+        anyhow::ensure!(correlation.request_id().is_none());
         let acknowledgement = receipt.into_acknowledgement();
         anyhow::ensure!(
             acknowledgement
@@ -103,15 +109,45 @@ mod tests {
             ModuleDispatchIdentityRole::Request,
         );
 
-        anyhow::ensure!(receipt.session_id().is_none());
-        anyhow::ensure!(
-            receipt.request_id().map(|id| id.as_str().to_owned()) == Some("request-7".to_owned())
-        );
+        let correlation = receipt
+            .request_correlation()
+            .ok_or_else(|| anyhow::anyhow!("request correlation was lost"))?;
+        anyhow::ensure!(correlation.session_id().is_none());
+        anyhow::ensure!(correlation.request_id().map(|id| id.as_str()) == Some("request-7"));
         let acknowledgement = receipt.into_acknowledgement();
         anyhow::ensure!(
             acknowledgement.get("requestId") == Some(&json!("request-7"))
                 && acknowledgement.get("sessionId").is_none(),
             "request receipt lost or conflated explicit identity"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn basecamp_callback_identity_reaches_acknowledgement_and_request_correlation() -> Result<()> {
+        let receipt = dispatch_result(
+            "delivery_module",
+            "send",
+            ModuleCallReply::new(ModuleTransportKind::Module, json!("request-7"))
+                .with_bridge_callback(BridgeCallbackId::new(17)),
+            &[],
+            ModuleDispatchIdentityRole::Request,
+        );
+
+        let correlation = receipt
+            .request_correlation()
+            .ok_or_else(|| anyhow::anyhow!("request correlation was lost"))?;
+        anyhow::ensure!(
+            correlation
+                .bridge_callback_id()
+                .map(BridgeCallbackId::value)
+                == Some(17),
+            "Basecamp callback identity was lost from request correlation"
+        );
+        let acknowledgement = receipt.into_acknowledgement();
+        anyhow::ensure!(
+            acknowledgement.get("bridgeCallbackId") == Some(&json!(17)),
+            "Basecamp callback identity was lost from dispatch acknowledgement"
         );
         Ok(())
     }
