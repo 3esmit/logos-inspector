@@ -62,9 +62,11 @@ Item {
             appModel.loadCapabilityRegistry()
             appModel.loadBackupCatalog()
             root.schedulePageLoaderUpdate()
-            if (appModel.shell.currentView === "overview" && appModel.dashboardRefreshInterval() > 0 && appModel.bridgeSupportsAsync()) {
+            if (appModel.shell.currentView === "overview"
+                    && appModel.metrics.dashboardRefreshInterval() > 0
+                    && appModel.bridgeSupportsAsync()) {
                 Qt.callLater(function () {
-                    appModel.refreshDashboard()
+                    appModel.metrics.refreshDashboard()
                 })
             }
             Qt.callLater(function () {

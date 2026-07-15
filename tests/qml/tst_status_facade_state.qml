@@ -109,17 +109,17 @@ TestCase {
     function test_dashboard_projection_marks_blocked_metric_without_hiding_card() {
         const item = StatusFactsProjection.dashboardGraphItem({
             metrics: {
-                dashboardMetricValue: function () { return 12 }
-            },
-            dashboardMetricSamples: function () { return [{ value: 12 }] },
-            valueText: function (value) { return String(value) },
-            dashboardGate: function () {
-                return {
-                    enabled: false,
-                    status: "disabled",
-                    missing: [{ dependency: "storage" }],
-                    warnings: [],
-                    provenance: ["source_routing"]
+                dashboardMetricValue: function () { return 12 },
+                dashboardMetricSamples: function () { return [{ value: 12 }] },
+                valueText: function (value) { return String(value) },
+                dashboardGate: function () {
+                    return {
+                        enabled: false,
+                        status: "disabled",
+                        missing: [{ dependency: "storage" }],
+                        warnings: [],
+                        provenance: ["source_routing"]
+                    }
                 }
             }
         }, "storage.peer_count")

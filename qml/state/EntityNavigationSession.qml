@@ -8,10 +8,6 @@ QtObject {
 
     required property var model
 
-    function refreshDashboard() { return AppModelSearch.refreshDashboard(model) }
-
-    function updateDashboardCache(method, value) { return AppModelSearch.updateDashboardCache(model, method, value) }
-
     function projectZoneDashboard() { return AppModelSearch.projectZoneDashboard(model) }
 
     function routeSearch(query) { return AppModelSearch.routeSearch(model, query) }

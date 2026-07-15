@@ -179,6 +179,7 @@ QtObject {
             method: command.method,
             args: (Array.isArray(sourceArgs) ? sourceArgs.slice(0) : []).concat(command.args),
             label: command.label,
+            configurationGeneration: Number(configurationGeneration),
             clientRequestId: clientRequestId
         }
     }
@@ -189,7 +190,8 @@ QtObject {
             return null
         }
         const context = {
-            source: source.mode
+            source: source.mode,
+            configurationGeneration: Number(configurationGeneration)
         }
         if (source.endpoint.length) {
             context.endpoint = source.endpoint

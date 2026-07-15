@@ -14,6 +14,9 @@ pub(super) struct CapabilityRuntimeInputs {
     storage_metrics_url: String,
     messaging_rest_url: String,
     messaging_metrics_url: String,
+    l1_configuration_generation: Option<u64>,
+    storage_configuration_generation: Option<u64>,
+    delivery_configuration_generation: Option<u64>,
     pub(super) storage_mutating_diagnostics_enabled: bool,
     pub(super) messaging_mutating_diagnostics_enabled: bool,
     pub(super) wallet_profile_configured: bool,
@@ -54,6 +57,12 @@ impl CapabilityRuntimeInputs {
             storage_metrics_url: string_input(value, "storage_metrics_url"),
             messaging_rest_url: string_input(value, "messaging_rest_url"),
             messaging_metrics_url: string_input(value, "messaging_metrics_url"),
+            l1_configuration_generation: configuration_generation(value, &["l1", "blockchain"]),
+            storage_configuration_generation: configuration_generation(value, &["storage"]),
+            delivery_configuration_generation: configuration_generation(
+                value,
+                &["delivery", "messaging"],
+            ),
             storage_mutating_diagnostics_enabled: bool_input(
                 value,
                 "storage_mutating_diagnostics_enabled",
@@ -68,6 +77,11 @@ impl CapabilityRuntimeInputs {
             local_devnet_enabled: bool_input(value, "local_devnet_enabled"),
             evidence,
         }
+    }
+
+    pub(super) fn with_evidence(mut self, evidence: CapabilityEvidenceSnapshot) -> Self {
+        self.evidence = evidence;
+        self
     }
 
     pub(super) fn connector_for(
@@ -135,6 +149,23 @@ impl CapabilityRuntimeInputs {
         }
     }
 
+    pub(super) fn metrics_endpoint_for(&self, scope: &str) -> &str {
+        match scope {
+            "storage" => &self.storage_metrics_url,
+            "delivery" => &self.messaging_metrics_url,
+            _ => "",
+        }
+    }
+
+    pub(super) fn configuration_generation_for(&self, scope: &str) -> Option<u64> {
+        match scope {
+            "l1" => self.l1_configuration_generation,
+            "storage" => self.storage_configuration_generation,
+            "delivery" => self.delivery_configuration_generation,
+            _ => None,
+        }
+    }
+
     pub(super) fn source_report_for(&self, scope: &str) -> Option<&Value> {
         self.evidence
             .source_report(scope)
@@ -196,6 +227,15 @@ fn bool_input(value: &Value, key: &str) -> bool {
         .or_else(|| value.get("source").and_then(|source| source.get(key)))
         .and_then(Value::as_bool)
         .unwrap_or(false)
+}
+
+fn configuration_generation(value: &Value, keys: &[&str]) -> Option<u64> {
+    let generations = value.get("configuration_generations")?;
+    keys.iter().find_map(|key| match generations.get(*key) {
+        Some(Value::Number(value)) => value.as_u64(),
+        Some(Value::String(value)) => value.trim().parse().ok(),
+        _ => None,
+    })
 }
 
 fn first_string(value: &Value, keys: &[&str]) -> Option<String> {

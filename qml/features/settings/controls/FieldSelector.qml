@@ -57,13 +57,13 @@ Panel {
                         label: String(modelData.label || "")
                         detail: String(modelData.detail || "")
                         checked: root.mode === "dashboard"
-                            ? root.modelRef.dashboardGraphEnabled(fieldKey)
-                            : root.modelRef.footerFieldEnabled(fieldKey)
+                            ? root.modelRef.metrics.dashboardGraphEnabled(fieldKey)
+                            : root.modelRef.metrics.footerFieldEnabled(fieldKey)
                         onToggled: {
                             if (root.mode === "dashboard") {
-                                root.modelRef.setDashboardGraphEnabled(fieldKey, checked)
+                                root.modelRef.metrics.setDashboardGraphEnabled(fieldKey, checked)
                             } else {
-                                root.modelRef.setFooterFieldEnabled(fieldKey, checked)
+                                root.modelRef.metrics.setFooterFieldEnabled(fieldKey, checked)
                             }
                         }
                     }

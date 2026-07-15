@@ -88,8 +88,8 @@ SourceSettingsPanel {
 
         RefreshRateField {
             theme: root.theme
-            value: root.modelRef.storageRefreshRate
-            onRateEdited: value => root.modelRef.setNetworkConnectionRate("storage", value)
+            value: root.modelRef.metrics.storageRefreshRate
+            onRateEdited: value => root.modelRef.metrics.setNetworkConnectionRate("storage", value)
         }
 
         SecondsField {

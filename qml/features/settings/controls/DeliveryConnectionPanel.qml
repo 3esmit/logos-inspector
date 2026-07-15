@@ -59,8 +59,8 @@ SourceSettingsPanel {
 
         RefreshRateField {
             theme: root.theme
-            value: root.modelRef.messagingRefreshRate
-            onRateEdited: value => root.modelRef.setNetworkConnectionRate("messaging", value)
+            value: root.modelRef.metrics.messagingRefreshRate
+            onRateEdited: value => root.modelRef.metrics.setNetworkConnectionRate("messaging", value)
         }
 
         SecondsField {

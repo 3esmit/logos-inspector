@@ -54,17 +54,21 @@ function applySettingsState(root, value) {
         localNodesEnabled = root.boolSetting(value, "local_nodes_enabled", localNodesEnabled)
         localDevnetEnabled = localNodesEnabled && root.boolSetting(value, "local_devnet_enabled", localDevnetEnabled)
         settingsBackupEncrypted = root.boolSetting(value, "settings_backup_encrypted", settingsBackupEncrypted)
-        blockchainRefreshRate = root.canonicalRefreshRate(root.numberSetting(value, "blockchain_refresh_rate", blockchainRefreshRate))
-        messagingRefreshRate = root.canonicalRefreshRate(root.numberSetting(value, "messaging_refresh_rate", messagingRefreshRate))
-        storageRefreshRate = root.canonicalRefreshRate(root.numberSetting(value, "storage_refresh_rate", storageRefreshRate))
+        root.metrics.blockchainRefreshRate = root.metrics.canonicalRefreshRate(
+            root.numberSetting(value, "blockchain_refresh_rate", root.metrics.blockchainRefreshRate))
+        root.metrics.messagingRefreshRate = root.metrics.canonicalRefreshRate(
+            root.numberSetting(value, "messaging_refresh_rate", root.metrics.messagingRefreshRate))
+        root.metrics.storageRefreshRate = root.metrics.canonicalRefreshRate(
+            root.numberSetting(value, "storage_refresh_rate", root.metrics.storageRefreshRate))
         if (value.footer_fields && typeof value.footer_fields === "object" && !Array.isArray(value.footer_fields)) {
-            footerFieldSelections = root.mergeMap(
+            root.metrics.footerFieldSelections = root.mergeMap(
                 root.metrics.defaultFooterFieldSelections(), value.footer_fields)
-            footerFieldRevision += 1
+            root.metrics.footerFieldRevision += 1
         }
         if (value.dashboard_graphs && typeof value.dashboard_graphs === "object" && !Array.isArray(value.dashboard_graphs)) {
-            dashboardGraphSelections = root.mergeMap(root.defaultDashboardGraphSelections(), value.dashboard_graphs)
-            dashboardGraphRevision += 1
+            root.metrics.dashboardGraphSelections = root.mergeMap(
+                root.metrics.defaultDashboardGraphSelections(), value.dashboard_graphs)
+            root.metrics.dashboardGraphRevision += 1
         }
         root.social.loadSettings(value)
         root.favoriteStore.load(value.favorites)
@@ -99,11 +103,11 @@ function settingsStatePayload(root) {
             local_nodes_enabled: localNodesEnabled === true,
             local_devnet_enabled: localNodesEnabled === true && localDevnetEnabled === true,
             settings_backup_encrypted: settingsBackupEncrypted === true,
-            blockchain_refresh_rate: root.canonicalRefreshRate(blockchainRefreshRate),
-            messaging_refresh_rate: root.canonicalRefreshRate(messagingRefreshRate),
-            storage_refresh_rate: root.canonicalRefreshRate(storageRefreshRate),
-            footer_fields: footerFieldSelections || {},
-            dashboard_graphs: dashboardGraphSelections || {},
+            blockchain_refresh_rate: root.metrics.canonicalRefreshRate(root.metrics.blockchainRefreshRate),
+            messaging_refresh_rate: root.metrics.canonicalRefreshRate(root.metrics.messagingRefreshRate),
+            storage_refresh_rate: root.metrics.canonicalRefreshRate(root.metrics.storageRefreshRate),
+            footer_fields: root.metrics.footerFieldSelections || {},
+            dashboard_graphs: root.metrics.dashboardGraphSelections || {},
             favorites: root.favoriteStore.payload()
         }, social)
     }

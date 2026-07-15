@@ -7,11 +7,11 @@ function dashboardGraphKeys() {
 }
 
 function selectedDashboardGraphItems(model) {
-    return DashboardMetricCatalog.selectedDashboardGraphItems(model)
+    return DashboardMetricCatalog.selectedDashboardGraphItems(model.metrics)
 }
 
 function dashboardGraphItem(model, key) {
-    return DashboardMetricCatalog.dashboardGraphItem(model, key)
+    return DashboardMetricCatalog.dashboardGraphItem(model.metrics, key)
 }
 
 function dashboardMetricTone(key, numeric) {
@@ -27,5 +27,5 @@ function dashboardMetricLabel(key) {
 }
 
 function dashboardMetricText(model, value) {
-    return DashboardMetricCatalog.dashboardMetricText(model, value)
+    return DashboardMetricCatalog.dashboardMetricText(model.metrics, value)
 }

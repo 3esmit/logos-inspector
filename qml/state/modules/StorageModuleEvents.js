@@ -7,7 +7,7 @@ function handle(root, event, forwardRuntimeEvent) {
         forwardRuntimeEvent
     )
     if (rawEventInvalidatesStorageObservations(eventName)) {
-        root.queryNetworkConnection("storage", false)
+        root.metrics.queryNetworkConnection("storage", false, false, "module-event")
         root.storageApp.refreshManifests(false)
     }
     return submitted !== null && submitted !== undefined

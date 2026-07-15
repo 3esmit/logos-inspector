@@ -1,7 +1,7 @@
 .import "../status/StatusFieldCatalog.js" as StatusFieldCatalog
 
 function connectionStatus(root, kind) {
-    return root.model.networkConnectionState(kind)
+    return root.model.metrics.networkConnectionState(kind)
 }
 
 function connectionStatusText(root, kind) {
@@ -15,7 +15,7 @@ function connectionStatusText(root, kind) {
 function connectionStatusDetail(root, kind) {
     const status = connectionStatus(root, kind)
     if (!status.known) {
-        const rate = root.model.networkConnectionRate(kind)
+        const rate = root.model.metrics.networkConnectionRate(kind)
         return rate > 0
             ? qsTr("Not queried. Auto refresh runs every %1 seconds.").arg(rate)
             : qsTr("Not queried. Auto refresh is off.")

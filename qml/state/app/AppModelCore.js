@@ -4,9 +4,9 @@
 
 function handleNetworkConfigurationChanged(root) {
     resetDashboardConfiguration(root)
-    clearNetworkConnectionFamily(root, "blockchain")
+    root.metrics.invalidateConfiguration("blockchain", qsTr("Blockchain configuration changed."))
+    root.refreshCapabilityRegistryIfLoaded()
     with (root) {
-        blockchainModuleReport = null
         localNodesReport = null
         localNodesError = ""
         localNodesRevision += 1
@@ -28,11 +28,9 @@ function handleBlockchainConfigurationChanged(root) {
 
 function handleMessagingConfigurationChanged(root) {
     resetDashboardConfiguration(root)
-    clearNetworkConnectionFamily(root, "messaging")
+    root.metrics.invalidateConfiguration("messaging", qsTr("Messaging configuration changed."))
+    root.refreshCapabilityRegistryIfLoaded()
     with (root) {
-        root.clearDashboardMetricHistoryForPrefix("messaging.")
-        messagingModuleReport = null
-        messagingSourceReport = null
         deliveryApp.invalidateSourceRequests()
         saveSettingsState()
     }
@@ -40,11 +38,9 @@ function handleMessagingConfigurationChanged(root) {
 
 function handleStorageConfigurationChanged(root) {
     resetDashboardConfiguration(root)
-    clearNetworkConnectionFamily(root, "storage")
+    root.metrics.invalidateConfiguration("storage", qsTr("Storage configuration changed."))
+    root.refreshCapabilityRegistryIfLoaded()
     with (root) {
-        root.clearDashboardMetricHistoryForPrefix("storage.")
-        storageModuleReport = null
-        storageSourceReport = null
         storageApp.invalidateSourceRequests()
         saveSettingsState()
     }
@@ -53,42 +49,8 @@ function handleStorageConfigurationChanged(root) {
 function resetDashboardConfiguration(root) {
     with (root) {
         networkConfigurationRevision += 1
-        dashboardOverview = null
-        dashboardNode = null
-        dashboardL1Blocks = []
-        dashboardBlocks = []
-        dashboardProvisionalBlocks = []
-        dashboardLezBlockRows = []
-        dashboardError = ""
-        dashboardRefreshing = false
-        dashboardRefreshSerial += 1
-        if (chainPages) {
-            chainPages.invalidateOperationCaller("dashboard.node",
-                qsTr("Dashboard configuration changed."))
-            chainPages.invalidateOperationCaller("dashboard.live",
-                qsTr("Dashboard configuration changed."))
-        }
+        metrics.invalidateDashboard(qsTr("Dashboard configuration changed."))
     }
-}
-
-function clearNetworkConnectionFamily(root, family) {
-    with (root) {
-        networkConnectionStatus = mapWithoutKey(networkConnectionStatus, family)
-        networkConnectionStatusRevision += 1
-        networkConnectionPending = mapWithoutKey(networkConnectionPending, family)
-        networkConnectionPendingRevision += 1
-    }
-}
-
-function mapWithoutKey(value, key) {
-    const next = ({})
-    const source = value && typeof value === "object" ? value : ({})
-    for (const currentKey in source) {
-        if (currentKey !== key) {
-            next[currentKey] = source[currentKey]
-        }
-    }
-    return next
 }
 
 function navTreeItems(root) {

@@ -30,11 +30,13 @@ TestCase {
         property string capabilityModule: "logos_capabilities"
         property string blockchainModule: "logos_blockchain"
         property string inspectorModule: "logos_inspector"
+        property QtObject metrics: QtObject {
+            function moduleProbe(kind, method) {
+                return { ok: true, value: "peer-id", probe_key: method }
+            }
+        }
 
         function scalarValue(value) { return value }
-        function moduleProbe(kind, method) {
-            return { ok: true, value: "peer-id", probe_key: method }
-        }
     }
 
     QtObject {

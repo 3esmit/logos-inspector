@@ -115,7 +115,10 @@ TestCase {
             endpoint = String(args[1] || "")
             offset = 2
         }
-        const context = { source: source }
+        const context = {
+            source: source,
+            configurationGeneration: Number(request.configurationGeneration)
+        }
         if (endpoint.length) {
             context.endpoint = endpoint
         }
@@ -156,6 +159,7 @@ TestCase {
         compare(gateway.startRequests.length, 1)
         compare(gateway.startRequests[0].domain, "blockchain")
         compare(gateway.startRequests[0].args[0], "http://blockchain.local")
+        compare(gateway.startRequests[0].configurationGeneration, 0)
         verify(String(gateway.startRequests[0].clientRequestId).length > 0)
         gateway.replyStart(0, {
             ok: true,

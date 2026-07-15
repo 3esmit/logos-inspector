@@ -1,81 +1,3 @@
-.import "../../services/BridgeHelpers.js" as BridgeHelpers
-
-function refreshDashboard(root) {
-    with (root) {
-        if (dashboardRefreshing) {
-            return
-        }
-        const refreshId = dashboardRefreshSerial + 1
-        const configRevision = networkConfigurationRevision
-        dashboardRefreshSerial = refreshId
-        dashboardRefreshing = true
-        dashboardError = ""
-        projectZoneDashboard(root)
-        const requests = [
-            { callerKey: "dashboard.node", method: "blockchainNode", args: [], label: qsTr("Blockchain node") },
-            { callerKey: "dashboard.live", method: "blockchainLiveBlocks", args: [0, 9007199254740991, 5], label: qsTr("Latest L1 blocks") },
-            { module: inspectorModule, method: "storageSourceReport", args: root.sourceRouting.storageSourceReportArgs(false), label: qsTr("Storage source") },
-            { module: inspectorModule, method: "deliverySourceReport", args: root.sourceRouting.deliverySourceReportArgs(), label: qsTr("Delivery source") }
-        ]
-        const errors = []
-        let remaining = requests.length
-        let okCount = 0
-
-        for (let i = 0; i < requests.length; ++i) {
-            const request = requests[i]
-            const callback = function (response) {
-                if (refreshId !== dashboardRefreshSerial || configRevision !== networkConfigurationRevision) {
-                    return false
-                }
-                if (response.ok) {
-                    okCount += 1
-                    if (request.callerKey) {
-                        root.updateDashboardCache(request.method, response.value)
-                    }
-                } else {
-                    errors.push(response.error)
-                }
-                if (request.method === "blockchainNode") {
-                    root.updateNetworkConnectionStatus("blockchain", response)
-                } else if (request.method === "storageSourceReport") {
-                    root.updateNetworkConnectionStatus("storage", response)
-                } else if (request.method === "deliverySourceReport") {
-                    root.updateNetworkConnectionStatus("messaging", response)
-                }
-                remaining -= 1
-                if (remaining === 0) {
-                    projectZoneDashboard(root)
-                    dashboardRefreshing = false
-                    dashboardError = errors.join("\n")
-                    root.recordDashboardSnapshot()
-                    if (okCount > 0) {
-                        shell.setResult(qsTr("Dashboard"), BridgeHelpers.formatValue({
-                            overview: dashboardOverview || null,
-                            node: dashboardNode || null,
-                            l1Blocks: dashboardL1Blocks || [],
-                            blocks: dashboardBlocks || [],
-                            storage: storageSourceReport || null,
-                            messaging: messagingSourceReport || null
-                        }), false)
-                    } else {
-                        shell.setResult(qsTr("Dashboard"), dashboardError, true)
-                    }
-                }
-                return false
-            }
-            if (request.callerKey) {
-                root.chainPages.startOperation(request.callerKey, request.method,
-                    request.args, request.label, callback)
-            } else {
-                requestModuleAsync(request.module, request.method, request.args,
-                    request.label, false, callback, function () {
-                return refreshId === dashboardRefreshSerial && configRevision === networkConfigurationRevision
-                })
-            }
-        }
-    }
-}
-
 function projectZoneDashboard(root) {
     with (root) {
         const state = zoneInspection
@@ -214,26 +136,6 @@ function zoneDashboardRows(state) {
         })
     }
     return result
-}
-
-function updateDashboardCache(root, method, value) {
-    with (root) {
-        if (method === "blockchainNode") {
-            dashboardNode = value
-        } else if (method === "blockchainLiveBlocks") {
-            dashboardL1Blocks = value && Array.isArray(value.blocks) ? value.blocks : []
-        } else if (method === "blockchainModuleReport") {
-            blockchainModuleReport = value || null
-        } else if (method === "storageReport") {
-            storageModuleReport = value || null
-        } else if (method === "storageSourceReport") {
-            storageSourceReport = value || null
-        } else if (method === "deliveryReport") {
-            messagingModuleReport = value || null
-        } else if (method === "deliverySourceReport") {
-            messagingSourceReport = value || null
-        }
-    }
 }
 
 function routeSearch(root, query) {
@@ -597,7 +499,7 @@ function openStorageCid(root, cid) {
             source: root.sourceRouting.storageSourceTarget()
         })
         if (root.sourceRouting.storageSourceTarget().length > 0) {
-            root.queryNetworkConnection("storage", false, true)
+            root.metrics.queryNetworkConnection("storage", false, true, "entity-open")
         }
     }
 }

@@ -353,14 +353,12 @@ function refreshBedrockWalletModule(root, address) {
         const target = String(address === undefined || address === null ? walletPublicKeyProbe : address).trim()
         bedrockWalletModuleError = ""
         shell.statusText = qsTr("Bedrock wallet")
-        blockchainModuleReport = null
+        root.metrics.setModuleReport("blockchain", null)
         return requestModuleAsync(inspectorModule, "blockchainModuleReport", [target], qsTr("Bedrock wallet"), false, function (response) {
             if (response.ok) {
-                blockchainModuleReport = response.value || null
                 bedrockWalletModuleError = root.moduleLastError("blockchain")
                 appendLocalWalletOperation(qsTr("Bedrock wallet module"), bedrockWalletModuleError.length ? "degraded" : "ok", target.length ? target : qsTr("module report"))
             } else {
-                blockchainModuleReport = null
                 bedrockWalletModuleError = response.error || qsTr("Bedrock wallet module query failed.")
                 appendLocalWalletOperation(qsTr("Bedrock wallet module"), "down", bedrockWalletModuleError)
             }

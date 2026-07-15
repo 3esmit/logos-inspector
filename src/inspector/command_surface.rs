@@ -8,7 +8,10 @@ use serde_json::{Value, json};
 use tokio::runtime::Runtime;
 
 use super::commands::{
-    operations::{OperationBridgeCommand, RuntimeOperationInterface, operation_bridge_command},
+    operations::{
+        OperationBridgeCommand, RuntimeOperationInterface, operation_bridge_command,
+        runtime_operation_request_from_value,
+    },
     runtime_methods::{self, RuntimeMethodEntry},
     zone_catalog::{ZoneCatalogCommand, ZoneCatalogCommandInterface, zone_catalog_command},
     zone_l2::{ZoneL2Command, ZoneL2CommandInterface, zone_l2_command},
@@ -170,17 +173,54 @@ impl InspectorCommandSurface {
 
     pub(crate) fn call_inspector(&self, method: &str, args: Value) -> Result<Value> {
         self.ensure_open()?;
+        let runtime_request = if method == "runtimeOperationStart" {
+            let bridge_args = Args::new(args.clone())?;
+            Some(runtime_operation_request_from_value(
+                bridge_args
+                    .value(0)
+                    .cloned()
+                    .context("runtime operation request is required")?,
+            )?)
+        } else {
+            None
+        };
+        let observation = if let Some(request) = &runtime_request {
+            self.capability_registry.begin_runtime_observation(
+                request.method_name(),
+                request.args(),
+                request.configuration_generation(),
+            )?
+        } else {
+            self.capability_registry.begin_observation(method, &args)?
+        };
         let result = self.dispatch_inspector(method, args).and_then(|value| {
             value.with_context(|| format!("unknown inspector method `{method}`"))
         });
-        match result {
-            Ok(value) => {
-                self.capability_registry.observe_success(method, &value)?;
+        match (result, runtime_request) {
+            (Ok(value), Some(request)) => {
+                self.capability_registry.track_runtime_operation(
+                    observation,
+                    request.configuration_generation(),
+                    &value,
+                )?;
+                self.capability_registry
+                    .complete_runtime_operation(&value)?;
                 Ok(value)
             }
-            Err(error) => {
+            (Ok(value), None) => {
                 self.capability_registry
-                    .observe_failure(method, &error.to_string())?;
+                    .complete_success(observation, &value)?;
+                self.capability_registry
+                    .complete_runtime_operation(&value)?;
+                Ok(value)
+            }
+            (Err(error), Some(_)) => {
+                self.capability_registry.abandon_observation(observation)?;
+                Err(error)
+            }
+            (Err(error), None) => {
+                self.capability_registry
+                    .complete_failure(observation, &error.to_string())?;
                 Err(error)
             }
         }
@@ -569,6 +609,73 @@ mod tests {
             bail!("unexpected callModule dispatch value: {value}");
         }
         Ok(())
+    }
+
+    #[test]
+    fn runtime_blockchain_terminal_result_updates_generation_zero_capability_evidence() -> Result<()>
+    {
+        let surface = InspectorCommandSurface::with_module_transport(FakeModuleTransport)
+            .context("surface")?;
+        let mut operation = surface.call_inspector(
+            "runtimeOperationStart",
+            json!([{
+                "domain": "blockchain",
+                "method": "blockchainNode",
+                "args": ["logoscore_cli"],
+                "label": "Blockchain node",
+                "configurationGeneration": 0,
+                "clientRequestId": "chain-0-1",
+            }]),
+        )?;
+        let operation_id = operation
+            .get("operationId")
+            .and_then(Value::as_str)
+            .context("runtime operation id")?
+            .to_owned();
+        if operation
+            .pointer("/context/configurationGeneration")
+            .and_then(Value::as_u64)
+            != Some(0)
+        {
+            bail!("runtime operation lost generation-zero context: {operation}");
+        }
+
+        for _ in 0..10_000 {
+            if operation.get("status").and_then(Value::as_str) == Some("completed") {
+                break;
+            }
+            thread::yield_now();
+            operation =
+                surface.call_inspector("runtimeOperationStatus", json!([operation_id.as_str()]))?;
+        }
+        if operation.get("status").and_then(Value::as_str) != Some("completed") {
+            bail!("runtime blockchain operation did not complete: {operation}");
+        }
+
+        let report = surface.call_inspector(
+            "capabilityRegistryReport",
+            json!([false, {
+                "configuration_generations": { "l1": 0 },
+                "network_connector_config": {
+                    "scopes": {
+                        "l1": { "connector_id": "logoscore_cli_blockchain_module" }
+                    }
+                }
+            }]),
+        )?;
+        let l1 = report
+            .get("capabilities")
+            .and_then(Value::as_array)
+            .and_then(|capabilities| {
+                capabilities
+                    .iter()
+                    .find(|capability| capability.get("key").and_then(Value::as_str) == Some("l1"))
+            })
+            .context("L1 capability")?;
+        if l1.get("status").and_then(Value::as_str) != Some("available") {
+            bail!("terminal L1 evidence was not projected: {l1}");
+        }
+        surface.shutdown()
     }
 
     #[test]
