@@ -54,14 +54,14 @@ TestCase {
         model.setNetworkConnectorMode("storage", "rest")
         model.setNetworkConnectorMode("delivery", "rest")
         model.storageCidProbe = ""
-        model.storageModuleReport = null
-        model.messagingModuleReport = null
-        model.storageSourceReport = null
-        model.messagingSourceReport = null
-        model.networkConnectionStatus = ({})
-        model.networkConnectionStatusRevision += 1
-        model.networkConnectionPending = ({})
-        model.networkConnectionPendingRevision += 1
+        model.metrics.storageModuleReport = null
+        model.metrics.messagingModuleReport = null
+        model.metrics.storageSourceReport = null
+        model.metrics.messagingSourceReport = null
+        model.metrics.networkConnectionStatus = ({})
+        model.metrics.networkConnectionStatusRevision += 1
+        model.metrics.networkConnectionPending = ({})
+        model.metrics.networkConnectionPendingRevision += 1
         model.metrics.activeObservationLeases = ({})
         model.metrics.observationWaiters = ({})
     }

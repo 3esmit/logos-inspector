@@ -34,9 +34,8 @@ TestCase {
             function moduleProbe(kind, method) {
                 return { ok: true, value: "peer-id", probe_key: method }
             }
+            function scalarValue(value) { return value }
         }
-
-        function scalarValue(value) { return value }
     }
 
     QtObject {

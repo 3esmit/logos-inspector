@@ -54,7 +54,7 @@ SourceSettingsPanel {
             sourceText: root.modelRef.messagingNetworkPreset
             syncSourceText: true
             placeholderText: qsTr("logos.test")
-            onTextEdited: text => root.modelRef.messagingNetworkPreset = root.modelRef.normalizedMessagingNetworkPreset(text)
+            onTextEdited: text => root.modelRef.messagingNetworkPreset = root.modelRef.sourceRouting.normalizedMessagingNetworkPreset(text)
         }
 
         RefreshRateField {

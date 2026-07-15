@@ -53,6 +53,7 @@ function manifest() {
             retired("storageSourceTarget", "method", "production", ["AppModelSearch", "FooterStatusProjection", "SourceInspectionReadModel", "SourceObservationProjection"]),
             retired("configuredStorageRestUrl", "method", "production", ["AppModel.capabilityRegistryRuntimeInputs", "SettingsPage.qml", "ModulePage.qml"]),
             retired("normalizedStorageSourceMode", "method", "test_only", ["tst_app_model.qml"]),
+            retired("normalizedMessagingNetworkPreset", "method", "production", ["DeliveryConnectionPanel.qml", "SettingsProfile.js"]),
             retired("sourcePolicy", "alias", "production", ["AppModel.networkProfiles"]),
             retired("sourcePolicyLoaded", "alias", "test_only", ["tst_app_model.qml"])
         ],
@@ -66,7 +67,8 @@ function manifest() {
             "deliverySourceTarget", "configuredMessagingRestUrl", "normalizedMessagingSourceMode",
             "effectiveMessagingSourceMode", "normalizedCoreSourceMode", "effectiveCoreSourceMode",
             "blockchainSourceLabel", "blockchainSourceTarget", "storageSourceTarget",
-            "configuredStorageRestUrl", "normalizedStorageSourceMode"
+            "configuredStorageRestUrl", "normalizedStorageSourceMode",
+            "normalizedMessagingNetworkPreset"
         ],
         requiredFacadeProperties: ["sourcePolicy", "sourcePolicyLoaded"]
     }

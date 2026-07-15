@@ -53,6 +53,12 @@ TestCase {
         state.messagingRestUrl = "http://delivery"
     }
 
+    function test_messaging_network_preset_normalization_is_owned_by_source_routing() {
+        compare(state.normalizedMessagingNetworkPreset(""), "logos.test")
+        compare(state.normalizedMessagingNetworkPreset(" testnet "), "logos.test")
+        compare(state.normalizedMessagingNetworkPreset(" custom.network "), "custom.network")
+    }
+
     function test_connector_config_is_storage_source_of_truth() {
         state.connectorConfig = ({
             scopes: {

@@ -1,5 +1,5 @@
 function referenceTarget(session, kind, value, payload) {
-    const target = session.model.valueToString(value).trim()
+    const target = session.model.metrics.valueToString(value).trim()
     if (!target.length && payload === undefined) {
         return { command: "", target: "", payload: undefined }
     }
