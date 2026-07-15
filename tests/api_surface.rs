@@ -38,7 +38,6 @@ fn module_transport_port_is_publicly_composable() {
 }
 
 #[test]
-#[allow(deprecated)]
 fn source_routing_exposes_adapter_boundaries() {
     let _ = logos_inspector::source_routing::network_profiles;
     let _ = logos_inspector::source_routing::resolve_network_endpoints;
@@ -46,8 +45,6 @@ fn source_routing_exposes_adapter_boundaries() {
     let _ = logos_inspector::source_routing::delivery_source_report;
     let _ = logos_inspector::source_routing::storage_source_report;
     let _ = logos_inspector::source_routing::channel_sources::load_channel_source_configs;
-    let _ = logos_inspector::source_routing::channel_sources::apply_channel_source_config;
-    let _ = logos_inspector::source_routing::channel_sources::record_sequencer_attestation;
     let _ = logos_inspector::source_routing::channel_sources::ChannelSourceTarget::Module {
         module_id: "lez_core".to_owned(),
     };
@@ -56,6 +53,27 @@ fn source_routing_exposes_adapter_boundaries() {
     ) {
     }
     accepts_channel_monitor(None);
+}
+
+#[test]
+fn source_routing_mutation_bypasses_remain_retired() {
+    let facade = include_str!("../src/source_routing/channel_sources.rs");
+    let store = include_str!("../src/source_routing/channel_sources/store.rs");
+    let retired_functions = [
+        ["apply_channel_source_", "config"].concat(),
+        ["record_sequencer_", "attestation"].concat(),
+    ];
+
+    for function in retired_functions {
+        assert!(
+            !facade.contains(&function),
+            "retired mutation bypass `{function}` was re-exported"
+        );
+        assert!(
+            !store.contains(&format!("pub fn {function}")),
+            "retired mutation bypass `{function}` was made public"
+        );
+    }
 }
 
 #[test]

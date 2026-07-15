@@ -19,10 +19,7 @@ pub use monitor::{
     ChannelSourceObservationSet, ChannelSourceProbeStage,
 };
 pub use probe::ChannelSourceFailureKind;
-#[allow(deprecated)]
-pub use store::{
-    apply_channel_source_config, load_channel_source_configs, record_sequencer_attestation,
-};
+pub use store::load_channel_source_configs;
 
 pub(crate) use store::{
     ChannelSourceAttestationOutcome, ChannelSourceConfigMutationInterface,
