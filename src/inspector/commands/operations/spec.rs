@@ -1203,4 +1203,32 @@ mod tests {
         }
         Ok(())
     }
+
+    #[test]
+    fn retired_operation_fact_adapters_stay_deleted() -> Result<()> {
+        let sources = [
+            ("spec.rs", include_str!("spec.rs")),
+            ("policy.rs", include_str!("policy.rs")),
+            ("record.rs", include_str!("record.rs")),
+            ("storage.rs", include_str!("storage.rs")),
+            ("delivery.rs", include_str!("delivery.rs")),
+        ];
+        let retired = [
+            concat!("Operation", "Executor"),
+            concat!("RuntimeOperationPolicy::", "from_method"),
+            concat!("test_runtime_", "operation_record"),
+            concat!("storage_", "operation("),
+            concat!("delivery_", "operation("),
+        ];
+
+        for (path, source) in sources {
+            for symbol in retired {
+                if source.contains(symbol) {
+                    bail!("retired operation adapter {symbol} returned in {path}");
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
