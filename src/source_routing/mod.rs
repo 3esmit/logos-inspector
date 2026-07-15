@@ -9,6 +9,7 @@ mod selection;
 mod shared;
 pub(crate) mod storage;
 
+pub(crate) use crate::modules::logos_core::BridgeCallbackId;
 pub use adapter::{
     AdapterConnectionType, AdapterInputPolicy, SourceAdapterPolicy, SourceModePolicy,
 };
@@ -28,7 +29,7 @@ pub use network_profiles::{
     infer_network_profile, network_profiles, resolve_network_endpoints,
 };
 pub(crate) use operation::{
-    BridgeCallbackId, ModuleCorrelation, ModuleDispatchIdentityRole, ModuleDispatchReceipt,
+    ModuleCorrelation, ModuleDispatchIdentityRole, ModuleDispatchReceipt,
     ModuleEventCorrelationKind, ModuleEventEnvelope, ModuleRequestId, ModuleSessionId,
     ModuleTerminalEventContract, NodeOperationOutcome, ObservableOperationAcceptance,
 };

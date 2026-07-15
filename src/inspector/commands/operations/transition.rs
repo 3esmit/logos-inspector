@@ -504,7 +504,7 @@ fn apply_outcome(
         }
         RuntimeOperationOutcome::Accepted(acceptance) => {
             let (acknowledgement, correlation, terminal_event) = (*acceptance).into_parts();
-            record.operation.bridge_callback_id = correlation.bridge_callback_id().cloned();
+            record.operation.bridge_callback_id = correlation.bridge_callback_id().copied();
             record.operation.module_session_id = correlation.session_id().cloned();
             record.operation.module_request_id = correlation.request_id().cloned();
             record.operation.terminal_event = Some(terminal_event);

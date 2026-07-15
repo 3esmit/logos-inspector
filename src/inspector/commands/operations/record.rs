@@ -895,7 +895,7 @@ pub(super) fn push_runtime_operation_event_locked(
         cursor,
         operation_id: record.operation.operation_id.clone(),
         client_request_id: record.operation.client_request_id.clone(),
-        bridge_callback_id: record.operation.bridge_callback_id.clone(),
+        bridge_callback_id: record.operation.bridge_callback_id,
         module_session_id: record.operation.module_session_id.clone(),
         module_request_id: record.operation.module_request_id.clone(),
         domain: record.operation.domain.clone(),

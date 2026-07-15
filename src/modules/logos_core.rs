@@ -126,6 +126,21 @@ impl Serialize for ModuleTransportKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BridgeCallbackId(u64);
+
+impl BridgeCallbackId {
+    #[must_use]
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    #[must_use]
+    pub const fn value(&self) -> u64 {
+        self.0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModuleCall {
     transport: ModuleTransportKind,
@@ -182,17 +197,33 @@ impl ModuleCall {
 pub struct ModuleCallReply {
     transport: ModuleTransportKind,
     value: Value,
+    bridge_callback_id: Option<BridgeCallbackId>,
 }
 
 impl ModuleCallReply {
     #[must_use]
     pub const fn new(transport: ModuleTransportKind, value: Value) -> Self {
-        Self { transport, value }
+        Self {
+            transport,
+            value,
+            bridge_callback_id: None,
+        }
+    }
+
+    #[must_use]
+    pub const fn with_bridge_callback(mut self, bridge_callback_id: BridgeCallbackId) -> Self {
+        self.bridge_callback_id = Some(bridge_callback_id);
+        self
     }
 
     #[must_use]
     pub const fn transport(&self) -> ModuleTransportKind {
         self.transport
+    }
+
+    #[must_use]
+    pub const fn bridge_callback_id(&self) -> Option<BridgeCallbackId> {
+        self.bridge_callback_id
     }
 
     #[must_use]
