@@ -96,18 +96,19 @@ QtObject {
         }
         switch (String(kind || "")) {
         case "dashboard":
-            return Math.max(1, Number(model.dashboardRefreshInterval ? model.dashboardRefreshInterval() : 0))
+            return Math.max(1, Number(model.metrics.dashboardRefreshInterval()))
         case "storageOperation":
         case "deliveryOperation":
         case "socialOperation":
         case "chainOperation":
             return Math.max(1, Number(operationPollInterval || 500))
         case "liveBlocks":
-            return Math.max(1, Number(model.refreshInterval ? model.refreshInterval(model.blockchainRefreshRate) : 0))
+            return Math.max(1, Number(model.metrics.refreshInterval(
+                model.metrics.blockchainRefreshRate)))
         case "zonesStatus":
             return Math.max(1, Number(root.zoneState() ? root.zoneState().statusPollInterval : 0))
         default:
-            return Math.max(1, Number(model.refreshInterval ? model.refreshInterval(root.refreshRateFor(kind)) : 0))
+            return Math.max(1, Number(model.metrics.refreshInterval(root.refreshRateFor(kind))))
         }
     }
 
@@ -151,9 +152,9 @@ QtObject {
         case "blockchain":
         case "messaging":
         case "storage":
-            return model.queryNetworkConnection(kind, false)
+            return model.metrics.queryNetworkConnection(kind, false, false, "scheduler")
         case "dashboard":
-            return model.refreshDashboard()
+            return model.metrics.refreshDashboard()
         case "storageOperation":
             return root.pollStorageOperations()
         case "deliveryOperation":
@@ -177,11 +178,11 @@ QtObject {
         }
         switch (String(kind || "")) {
         case "blockchain":
-            return Number(model.blockchainRefreshRate || 0)
+            return Number(model.metrics.blockchainRefreshRate || 0)
         case "messaging":
-            return Number(model.messagingRefreshRate || 0)
+            return Number(model.metrics.messagingRefreshRate || 0)
         case "storage":
-            return Number(model.storageRefreshRate || 0)
+            return Number(model.metrics.storageRefreshRate || 0)
         default:
             return 0
         }

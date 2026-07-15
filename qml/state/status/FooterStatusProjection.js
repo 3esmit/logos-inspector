@@ -1,7 +1,7 @@
 .import "StatusFieldCatalog.js" as StatusFieldCatalog
 
 function footerGroups(root, region) {
-    const revision = root.model.footerFieldRevision
+    const revision = root.model.metrics.footerFieldRevision
     const groups = footerSourceGroups()
     const rows = []
     for (let i = 0; i < groups.length; ++i) {
@@ -25,7 +25,7 @@ function footerGroupItems(root, group) {
     const rows = []
     const keys = group.keys || []
     const statusKey = String(group.statusKey || "")
-    if (statusKey.length > 0 && root.model.footerFieldEnabled(statusKey) && footerGroupVisible(root, keys)) {
+    if (statusKey.length > 0 && root.model.metrics.footerFieldEnabled(statusKey) && footerGroupVisible(root, keys)) {
         const statusItem = footerFieldItem(root, statusKey)
         if (!statusItem.hidden) {
             rows.push(statusItem)
@@ -33,7 +33,7 @@ function footerGroupItems(root, group) {
     }
     for (let i = 0; i < keys.length; ++i) {
         const key = keys[i]
-        if (key !== statusKey && root.model.footerFieldEnabled(key)) {
+        if (key !== statusKey && root.model.metrics.footerFieldEnabled(key)) {
             const item = footerFieldItem(root, key)
             if (!item.hidden) {
                 rows.push(item)
@@ -45,7 +45,7 @@ function footerGroupItems(root, group) {
 
 function footerGroupVisible(root, keys) {
     for (let i = 0; i < keys.length; ++i) {
-        if (root.model.footerFieldEnabled(keys[i]) && !footerFieldHidden(root, keys[i])) {
+        if (root.model.metrics.footerFieldEnabled(keys[i]) && !footerFieldHidden(root, keys[i])) {
             return true
         }
     }
@@ -133,13 +133,13 @@ function footerFieldValue(root, key) {
     case "lez.last_published_channel_update":
         return qsTr("n/a")
     case "lez.last_finalized_callback_height":
-        return root.valueOrNa(root.model.indexerHeadValue())
+        return root.valueOrNa(root.model.metrics.indexerHeadValue())
     case "indexer.rpc_health":
         return root.indexerDisplayStatus()
     case "indexer.indexer_version":
         return qsTr("n/a")
     case "indexer.indexed_finalized_height":
-        return root.valueOrNa(root.model.indexerHeadValue())
+        return root.valueOrNa(root.model.metrics.indexerHeadValue())
     case "indexer.indexed_finalized_hash":
         return root.shortHash(root.latestIndexerBlockValue("header_hash"))
     case "indexer.indexed_channel_message":
@@ -176,10 +176,10 @@ function footerFieldValue(root, key) {
     case "storage.dht_connected":
         return root.yesNo(root.model.metrics.openMetricValue("storage", ["storage_dht_connected", "dht_connected"]))
     case "storage.cid_fetch_test":
-        return root.valueOrNa(root.model.reportProbeValue(
-            root.model.metrics.moduleReport("storage"), "exists"))
+        return root.valueOrNa(root.model.metrics.reportProbeValue(
+            root.model.metrics.sourceReport("storage"), "exists"))
     case "storage.last_error":
-        return root.valueOrNa(root.model.moduleLastError("storage"))
+        return root.valueOrNa(configuredSourceError(root, "storage"))
     case "messaging.module":
         return root.moduleDisplayStatus("messaging")
     case "messaging.connection_state":
@@ -198,7 +198,7 @@ function footerFieldValue(root, key) {
     case "messaging.bootstrap_connected":
         return qsTr("n/a")
     case "messaging.last_error":
-        return root.valueOrNa(root.model.moduleLastError("messaging"))
+        return root.valueOrNa(configuredSourceError(root, "messaging"))
     case "overall.status":
         return overallStatusDisplay(root)
     case "overall.main_risk":
@@ -288,6 +288,30 @@ function footerFieldTone(root, key) {
     return "neutral"
 }
 
+function configuredSourceError(root, kind) {
+    const observation = root.model.metrics.sourceObservation(kind) || {}
+    const attempt = observation.latestAttempt || null
+    if (attempt && attempt.transportOk === false && String(attempt.error || "").length > 0) {
+        return String(attempt.error)
+    }
+    const report = observation.sourceReport || root.model.metrics.sourceReport(kind)
+    const reportError = root.model.metrics.moduleReportError(report)
+    if (String(reportError || "").length > 0) {
+        return String(reportError)
+    }
+    const health = report && report.health && typeof report.health === "object"
+        ? report.health : null
+    if (health && health.ready === false) {
+        const healthError = String(health.detail || health.summary || "")
+        if (healthError.length > 0) {
+            return healthError
+        }
+    }
+    const status = observation.status || null
+    return status && status.known === true && status.ok !== true
+        ? String(status.detail || "") : ""
+}
+
 function footerFieldWidth(key) {
     return StatusFieldCatalog.fieldWidth(key)
 }
@@ -322,14 +346,18 @@ function overallTone(root) {
             || root.toneForProbe("sequencer", "health") === "error"
             || root.indexerStatusTone() === "error"
             || root.moduleTone("storage") === "error"
-            || root.moduleTone("messaging") === "error") {
+            || root.moduleTone("messaging") === "error"
+            || root.connectionTone("storage") === "error"
+            || root.connectionTone("messaging") === "error") {
         return "error"
     }
     if (root.toneForProbe("node", "consensus") === "warning"
             || root.toneForProbe("sequencer", "health") === "warning"
             || root.indexerStatusTone() === "warning"
             || root.moduleTone("storage") === "warning"
-            || root.moduleTone("messaging") === "warning") {
+            || root.moduleTone("messaging") === "warning"
+            || root.connectionTone("storage") === "warning"
+            || root.connectionTone("messaging") === "warning") {
         return "warning"
     }
     return "success"
@@ -367,10 +395,12 @@ function mainRisk(root) {
     if (root.indexerStatusTone() === "error" || root.indexerStatusTone() === "warning") {
         return qsTr("indexer")
     }
-    if (root.moduleTone("storage") === "error") {
+    if (root.moduleTone("storage") === "error"
+            || root.connectionTone("storage") === "error") {
         return qsTr("storage")
     }
-    if (root.moduleTone("messaging") === "error") {
+    if (root.moduleTone("messaging") === "error"
+            || root.connectionTone("messaging") === "error") {
         return qsTr("messaging")
     }
     return qsTr("none")

@@ -6,11 +6,21 @@ TestCase {
     id: testRoot
 
     name: "SourceObservationProjection"
+    property bool storageMetricsConfigured: false
 
     QtObject {
         id: sourceRoutingStub
 
         function storageSourceTarget() { return "http://storage" }
+    }
+
+    QtObject {
+        id: storageMetrics
+
+        function dashboardMetricValue(key) {
+            return storageModel.metricValues[String(key || "")]
+        }
+        function sourceCapabilityAvailable(report, key) { return false }
     }
 
     QtObject {
@@ -27,12 +37,10 @@ TestCase {
             "storage.failed_transfers_recent": 0,
             "storage.local_storage_used": 1024
         })
-        readonly property var metrics: storageModel
+        readonly property alias metrics: storageMetrics
 
-        function dashboardMetricValue(key) { return metricValues[String(key || "")] }
         function valueText(value) { return String(value) }
         function storageDisplayPath(value) { return String(value || "") }
-        function sourceCapabilityAvailable(report, key) { return false }
     }
 
     QtObject {
@@ -55,16 +63,16 @@ TestCase {
         function probeKnown(method) { return probeValue(method) !== null }
         function probe(method) { return null }
         function metricDisplay(key) {
-            const value = storageModel.dashboardMetricValue(key)
+            const value = storageModel.metrics.dashboardMetricValue(key)
             return value === undefined ? "n/a" : String(value)
         }
-        function metricKnown(key) { return storageModel.dashboardMetricValue(key) !== undefined }
+        function metricKnown(key) { return storageModel.metrics.dashboardMetricValue(key) !== undefined }
         function failedProbeCount() { return 0 }
         function sourceName() { return "Direct REST" }
         function status() { return { known: true, ok: true, detail: "ok" } }
         function statusTone() { return "success" }
         function storageSourceMode() { return "rest" }
-        function metricsEndpointConfigured() { return false }
+        function metricsEndpointConfigured() { return testRoot.storageMetricsConfigured }
         function report() { return null }
         function valueSummary(value) { return value === null || value === undefined ? "n/a" : JSON.stringify(value) }
         function copyValue(value) { return String(value || "") }
@@ -87,6 +95,19 @@ TestCase {
     }
 
     QtObject {
+        id: deliveryMetrics
+
+        function dashboardMetricValue(key) {
+            return deliveryModel.metricValues[String(key || "")]
+        }
+        function dashboardMetricUsesWindow(key) { return true }
+        function deliveryHealthValueOk(value, fallback) {
+            return String(value || "") === "ready"
+        }
+        function sourceCapabilityAvailable(report, key) { return false }
+    }
+
+    QtObject {
         id: deliveryModel
 
         property int messagingRollingWindow: 45
@@ -97,13 +118,9 @@ TestCase {
             "messaging.lightpush_peers": 3,
             "messaging.content_topics": 5
         })
-        readonly property var metrics: deliveryModel
+        readonly property alias metrics: deliveryMetrics
 
-        function dashboardMetricValue(key) { return metricValues[String(key || "")] }
-        function dashboardMetricUsesWindow(key) { return true }
-        function deliveryHealthValueOk(value, fallback) { return String(value || "") === "ready" }
         function normalizedMessagingNetworkPreset(value) { return value }
-        function sourceCapabilityAvailable(report, key) { return false }
         function scalarValue(value) { return value }
     }
 
@@ -123,8 +140,8 @@ TestCase {
             }
             return null
         }
-        function metricKnown(key) { return deliveryModel.dashboardMetricValue(key) !== undefined }
-        function metricDisplay(key) { return String(deliveryModel.dashboardMetricValue(key)) }
+        function metricKnown(key) { return deliveryModel.metrics.dashboardMetricValue(key) !== undefined }
+        function metricDisplay(key) { return String(deliveryModel.metrics.dashboardMetricValue(key)) }
         function valueSummary(value) { return value === undefined || value === null ? "unknown" : String(value) }
         function statusRow(label, state, evidence, tone) {
             return { label: label, state: state, evidence: evidence, tone: tone }
@@ -134,6 +151,13 @@ TestCase {
         function protocolLabel(key) { return SourceObservation.deliveryProtocolLabel(key) }
         function healthValueTone(value) { return SourceObservation.deliveryHealthValueTone(deliveryPage, value) }
         function protocolHealthRows() { return SourceObservation.deliveryProtocolHealthRows(deliveryPage) }
+        function deliverySourceMode() { return "metrics" }
+        function report() { return null }
+        function statusTone() { return "success" }
+    }
+
+    function init() {
+        testRoot.storageMetricsConfigured = false
     }
 
     function test_storage_projection_extracts_identity_and_rows() {
@@ -151,5 +175,14 @@ TestCase {
         compare(rows[0].tone, "success")
         compare(SourceObservation.deliveryNetworkMonitorPeerCount(deliveryPage), 2)
         compare(SourceObservation.deliveryServicePeerCount(deliveryPage), 6)
+    }
+
+    function test_projection_reads_focused_metrics_interface() {
+        testRoot.storageMetricsConfigured = true
+
+        compare(SourceObservation.storageRestMetricsTone(storagePage), "warning")
+        compare(SourceObservation.deliveryHealthValueTone(deliveryPage, "ready"), "success")
+        compare(SourceObservation.deliveryMetricEvidence(deliveryPage, "messaging.store_peers"), "45 s window")
+        compare(SourceObservation.deliveryRestMetricsTone(deliveryPage), "warning")
     }
 }

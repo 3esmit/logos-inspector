@@ -22,6 +22,7 @@ pub(crate) struct RuntimeOperationRequest {
     definition: OperationDefinition,
     node_request: Option<NodeOperationRequest>,
     client_request_id: Option<ClientRequestId>,
+    configuration_generation: Option<u64>,
     pub(super) args: Value,
     pub(super) label: String,
 }
@@ -41,6 +42,7 @@ impl RuntimeOperationRequest {
             definition,
             node_request,
             client_request_id: None,
+            configuration_generation: None,
             args,
             label: label.to_owned(),
         };
@@ -70,6 +72,10 @@ impl RuntimeOperationRequest {
 
     pub(crate) fn label(&self) -> &str {
         &self.label
+    }
+
+    pub(crate) const fn configuration_generation(&self) -> Option<u64> {
+        self.configuration_generation
     }
 
     pub(super) fn client_request_id(&self) -> Option<&ClientRequestId> {
@@ -130,7 +136,6 @@ impl RuntimeOperationRequest {
         Ok(transport)
     }
 
-    #[cfg(test)]
     pub(crate) fn args(&self) -> &Value {
         &self.args
     }
@@ -170,6 +175,7 @@ pub(crate) fn runtime_operation_request_from_value(
         definition,
         node_request,
         client_request_id: optional_id(object, "clientRequestId", ClientRequestId::parse)?,
+        configuration_generation: optional_u64(object, "configurationGeneration")?,
         args,
         label: object_string(object, "label").unwrap_or_else(|| definition.label().to_owned()),
     };
@@ -189,6 +195,16 @@ fn optional_id<T>(
         .as_str()
         .with_context(|| format!("runtime operation {key} must be a string"))?;
     parse(value).map(Some)
+}
+
+fn optional_u64(object: &Map<String, Value>, key: &str) -> Result<Option<u64>> {
+    let Some(value) = object.get(key) else {
+        return Ok(None);
+    };
+    value
+        .as_u64()
+        .with_context(|| format!("runtime operation {key} must be a nonnegative integer"))
+        .map(Some)
 }
 
 fn object_string(object: &Map<String, Value>, key: &str) -> Option<String> {
@@ -267,6 +283,12 @@ pub(super) fn runtime_operation_pending_module(
 
 pub(super) fn runtime_operation_context(request: &RuntimeOperationRequest) -> Result<Value> {
     let mut context = Map::new();
+    if let Some(configuration_generation) = request.configuration_generation() {
+        context.insert(
+            "configurationGeneration".to_owned(),
+            json!(configuration_generation),
+        );
+    }
     if let Some(node_request) = &request.node_request {
         context.insert("source".to_owned(), json!(node_request.source_mode()));
         if let Some(endpoint) = node_request
@@ -333,6 +355,48 @@ mod tests {
         }
         if request.client_request_id().map(ClientRequestId::as_str) != Some("storage-client-1") {
             bail!("client request identity was not parsed independently");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn blockchain_runtime_request_preserves_zero_configuration_generation() -> Result<()> {
+        let request = runtime_operation_request_from_value(json!({
+            "domain": "blockchain",
+            "method": "blockchainNode",
+            "args": ["logoscore_cli"],
+            "configurationGeneration": 0,
+            "clientRequestId": "chain-0-1"
+        }))?;
+
+        if request.configuration_generation() != Some(0)
+            || runtime_operation_context(&request)?
+                != json!({
+                    "source": "logoscore_cli",
+                    "configurationGeneration": 0,
+                })
+        {
+            bail!("blockchain runtime request lost configuration generation");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_request_rejects_negative_configuration_generation() -> Result<()> {
+        let result = runtime_operation_request_from_value(json!({
+            "domain": "blockchain",
+            "method": "blockchainNode",
+            "args": ["logoscore_cli"],
+            "configurationGeneration": -1,
+        }));
+
+        let Err(error) = result else {
+            bail!("negative configuration generation was accepted");
+        };
+        if error.to_string()
+            != "runtime operation configurationGeneration must be a nonnegative integer"
+        {
+            bail!("unexpected configuration generation error: {error:#}");
         }
         Ok(())
     }

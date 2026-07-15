@@ -103,9 +103,29 @@ TestCase {
     QtObject {
         id: fakeModel
 
-        property int blockchainRefreshRate: 30
-        property int messagingRefreshRate: 0
-        property int storageRefreshRate: 0
+        property QtObject metrics: QtObject {
+            property int blockchainRefreshRate: 30
+            property int messagingRefreshRate: 0
+            property int storageRefreshRate: 0
+
+            function refreshInterval(seconds) {
+                return Math.max(5, Number(seconds || 0)) * 1000
+            }
+
+            function dashboardRefreshInterval() {
+                return 15000
+            }
+
+            function queryNetworkConnection(kind, showResult) {
+                fakeModel.queriedKinds = fakeModel.queriedKinds.concat([String(kind || "")])
+                return showResult
+            }
+
+            function refreshDashboard() {
+                fakeModel.dashboardCalls += 1
+                return fakeModel.dashboardCalls
+            }
+        }
         property QtObject shell: QtObject {
             property string currentView: "overview"
         }
@@ -123,24 +143,6 @@ TestCase {
         property int dashboardCalls: 0
         property int liveCalls: 0
 
-        function refreshInterval(seconds) {
-            return Math.max(5, Number(seconds || 0)) * 1000
-        }
-
-        function dashboardRefreshInterval() {
-            return 15000
-        }
-
-        function queryNetworkConnection(kind, showResult) {
-            queriedKinds = queriedKinds.concat([String(kind || "")])
-            return showResult
-        }
-
-        function refreshDashboard() {
-            dashboardCalls += 1
-            return dashboardCalls
-        }
-
         function refreshBlocksLivePage() {
             liveCalls += 1
             return liveCalls
@@ -155,9 +157,9 @@ TestCase {
     }
 
     function init() {
-        fakeModel.blockchainRefreshRate = 30
-        fakeModel.messagingRefreshRate = 0
-        fakeModel.storageRefreshRate = 0
+        fakeModel.metrics.blockchainRefreshRate = 30
+        fakeModel.metrics.messagingRefreshRate = 0
+        fakeModel.metrics.storageRefreshRate = 0
         fakeModel.shell.currentView = "overview"
         fakeModel.blocksLiveEnabled = false
         fakeModel.backupCatalogUploadRunning = false

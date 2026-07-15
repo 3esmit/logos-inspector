@@ -34,9 +34,12 @@ function networkConnectionSummary(root, kind, value) {
         if (!moduleReportReachable(root, value)) {
             return moduleReportError(value) || qsTr("source unavailable")
         }
-        const version = root.metrics.moduleProbeValue("messaging", "version")
-        return version !== null ? qsTr("version %1").arg(root.valueText(version))
-            : qsTr("%1 reachable").arg(root.sourceRouting.deliverySourceLabel())
+        const version = reportProbeValue(value, "version")
+        const label = root && root.sourceRouting
+            && typeof root.sourceRouting.deliverySourceLabel === "function"
+            ? root.sourceRouting.deliverySourceLabel() : qsTr("source")
+        return version !== null ? qsTr("version %1").arg(simpleValueText(version))
+            : qsTr("%1 reachable").arg(label)
     }
     if (kind === "storage") {
         const health = sourceHealth(value)
@@ -49,10 +52,13 @@ function networkConnectionSummary(root, kind, value) {
         if (String(value && value.module ? value.module : "") === "storage_metrics") {
             return qsTr("metrics available")
         }
-        const version = root.metrics.moduleProbeValue("storage", "version")
-            || root.metrics.moduleProbeValue("storage", "moduleVersion")
-        return version !== null ? qsTr("version %1").arg(root.valueText(version))
-            : qsTr("%1 reachable").arg(root.sourceRouting.storageSourceLabel())
+        const version = reportProbeValue(value, "version")
+            || reportProbeValue(value, "moduleVersion")
+        const label = root && root.sourceRouting
+            && typeof root.sourceRouting.storageSourceLabel === "function"
+            ? root.sourceRouting.storageSourceLabel() : qsTr("source")
+        return version !== null ? qsTr("version %1").arg(simpleValueText(version))
+            : qsTr("%1 reachable").arg(label)
     }
     return qsTr("reachable")
 }
@@ -169,4 +175,19 @@ function deliveryHealthValueOk(root, value, unknownOk) {
 
 function moduleReportError(report) {
     return InspectionFacts.error(report)
+}
+
+function simpleValueText(value) {
+    if (value === undefined || value === null) {
+        return "-"
+    }
+    if (typeof value === "object") {
+        if (value.value !== undefined && value.value !== null) {
+            return simpleValueText(value.value)
+        }
+        if (value.result !== undefined && value.result !== null) {
+            return simpleValueText(value.result)
+        }
+    }
+    return String(value)
 }

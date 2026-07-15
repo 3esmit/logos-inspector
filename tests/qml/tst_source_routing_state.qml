@@ -97,6 +97,28 @@ TestCase {
         compare(state.configuredStorageRestUrl(), "http://configured-storage")
     }
 
+    function test_healthless_source_report_uses_its_own_probe_evidence() {
+        const report = state.storageReportView({
+            module: "storage_module",
+            module_info: {
+                ok: true,
+                value: {},
+                error: null
+            },
+            probes: [{
+                probe_key: "version",
+                label: "storage_module.version",
+                ok: true,
+                value: "1.2.3",
+                error: null
+            }]
+        })
+
+        verify(report.reachable)
+        verify(report.ready)
+        compare(report.summary, "version 1.2.3")
+    }
+
     function test_source_family_view_combines_route_and_report_facts() {
         state.connectorConfig = ({
             scopes: {

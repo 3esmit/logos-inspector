@@ -8,7 +8,7 @@ function handle(root, event, forwardRuntimeEvent) {
         return false
     }
     if (effect.refreshMessagingConnection === true) {
-        root.queryNetworkConnection("messaging", false)
+        root.metrics.queryNetworkConnection("messaging", false, false, "module-event")
     }
     if (effect.deliveryMessage) {
         root.social.applyIncomingDeliveryMessage(effect.deliveryMessage)

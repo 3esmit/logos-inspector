@@ -340,35 +340,36 @@ Pane {
     }
 
     function tipMinusLib() {
-        return root.model.tipMinusLib()
+        return root.model.metrics.tipMinusLib()
     }
 
     function finalityLagSeconds() {
-        return root.model.finalityLagSeconds()
+        return root.model.metrics.finalityLagSeconds()
     }
 
     function indexerLag() {
-        return root.model.indexerLag()
+        return root.model.metrics.indexerLag()
     }
 
     function connectionStatus(kind) {
-        return root.model.networkConnectionState(kind)
+        return root.model.metrics.networkConnectionState(kind)
     }
 
     function moduleDisplayStatus(kind) {
-        const status = root.connectionStatus(kind)
-        if (!status.known) {
+        const report = root.model.metrics.moduleReport(kind)
+        if (!report) {
             return qsTr("unknown")
         }
-        return status.ok ? "" : qsTr("stopped")
+        return root.model.metrics.moduleReportReachable(report) ? "" : qsTr("stopped")
     }
 
     function moduleAccessibleStatus(kind) {
-        const status = root.connectionStatus(kind)
-        if (!status.known) {
+        const report = root.model.metrics.moduleReport(kind)
+        if (!report) {
             return qsTr("unknown")
         }
-        return status.ok ? qsTr("running") : qsTr("stopped")
+        return root.model.metrics.moduleReportReachable(report)
+            ? qsTr("running") : qsTr("stopped")
     }
 
     function connectionAccessibleStatus(kind) {
@@ -388,6 +389,14 @@ Pane {
     }
 
     function moduleTone(kind) {
+        const report = root.model.metrics.moduleReport(kind)
+        if (!report) {
+            return "neutral"
+        }
+        return root.model.metrics.moduleReportReachable(report) ? "success" : "error"
+    }
+
+    function connectionTone(kind) {
         const status = root.connectionStatus(kind)
         if (!status.known) {
             return "neutral"

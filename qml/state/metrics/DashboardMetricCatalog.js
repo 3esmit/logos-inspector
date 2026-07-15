@@ -57,7 +57,7 @@ function selectedDashboardGraphItems(model) {
 }
 
 function dashboardGraphItem(model, key) {
-    const raw = model.metrics.dashboardMetricValue(key)
+    const raw = model.dashboardMetricValue(key)
     const numeric = Number(raw)
     const gate = model.dashboardGate ? model.dashboardGate(key) : null
     const blocked = gate && gate.enabled === false
@@ -353,7 +353,15 @@ function dashboardMetricWindowDelta(root, key) {
     const timestamp = Date.now()
     const history = root.dashboardMetricHistory || {}
     const samples = normalizedDashboardSamples(history[String(key || "")]).slice()
-    if (samples.length === 0 || Number(samples[samples.length - 1].value) !== current) {
+    const seen = normalizedDashboardSample(
+        (root.dashboardMetricLastSeen || {})[String(key || "")]
+    )
+    if (seen && (samples.length === 0
+            || seen.timestamp > samples[samples.length - 1].timestamp)) {
+        samples.push(seen)
+    }
+    if (samples.length === 0 || Number(samples[samples.length - 1].value) !== current
+            || Number(samples[samples.length - 1].timestamp) < timestamp) {
         samples.push({ timestamp: timestamp, value: current })
     }
     return windowDeltaFromSamples(samples, timestamp, dashboardMetricWindowMs(root, key))
@@ -488,6 +496,13 @@ function trimDashboardMetricSamples(samples) {
 function dashboardMetricWindowSamples(root, key) {
     const history = root.dashboardMetricHistory || {}
     const samples = normalizedDashboardSamples(history[String(key || "")])
+    const seen = normalizedDashboardSample(
+        (root.dashboardMetricLastSeen || {})[String(key || "")]
+    )
+    if (seen && (samples.length === 0
+            || seen.timestamp > samples[samples.length - 1].timestamp)) {
+        samples.push(seen)
+    }
     const windowMs = dashboardMetricWindowMs(root, key)
     const rows = []
     for (let i = 0; i < samples.length; ++i) {

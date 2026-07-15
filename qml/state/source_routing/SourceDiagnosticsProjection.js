@@ -2,12 +2,12 @@
 .import "../../utils/UiFormat.js" as UiFormat
 
 function probe(model, family, report, method) {
-    return model.sourceProbeFact(report, method) || model.moduleProbe(family, method)
+    return model.metrics.sourceProbeFact(report, method)
+        || model.metrics.reportProbe(report, method)
 }
 
 function probeValue(model, family, report, method) {
-    const value = model.reportProbeValue(report, method)
-    return value !== null ? value : model.metrics.moduleProbeValue(family, method)
+    return model.metrics.reportProbeValue(report, method)
 }
 
 function probeKnown(page, family, method) {
@@ -59,6 +59,11 @@ function diagnosticsGateDetailText(gate, fallbackLabel) {
     return qsTr("%1 unavailable").arg(String(fallbackLabel || qsTr("Diagnostics")))
 }
 
+function reportCheckedAt(session) {
+    return session && typeof session.reportCheckedAt === "function"
+        ? String(session.reportCheckedAt() || "") : ""
+}
+
 function statusLine(session) {
     if (session.pending()) {
         return qsTr("Refreshing %1").arg(session.sourceLabel())
@@ -66,6 +71,11 @@ function statusLine(session) {
     const status = session.status()
     if (!status.known) {
         return qsTr("Not queried")
+    }
+    if (status.stale === true) {
+        return qsTr("Latest check failed %1; showing last completed report from %2")
+            .arg(status.checkedAt || qsTr("at an unknown time"))
+            .arg(reportCheckedAt(session) || qsTr("an earlier check"))
     }
     return qsTr("%1, checked %2").arg(status.detail || status.text).arg(status.checkedAt || qsTr("now"))
 }
@@ -75,6 +85,11 @@ function freshnessText(session) {
     if (!status.known) {
         return qsTr("No source check")
     }
+    if (status.stale === true) {
+        return qsTr("Last known report from %1; latest check failed %2")
+            .arg(reportCheckedAt(session) || qsTr("an earlier check"))
+            .arg(status.checkedAt || qsTr("at an unknown time"))
+    }
     return status.checkedAt && status.checkedAt.length ? qsTr("Updated %1").arg(status.checkedAt) : qsTr("Updated")
 }
 
@@ -82,6 +97,12 @@ function freshnessCompactText(session) {
     const status = session.status()
     if (!status.known) {
         return qsTr("not queried")
+    }
+    if (status.stale === true) {
+        const reportTime = reportCheckedAt(session)
+        return reportTime.length
+            ? qsTr("last known %1").arg(reportTime)
+            : qsTr("last known")
     }
     return status.checkedAt && status.checkedAt.length ? status.checkedAt : qsTr("updated")
 }
@@ -95,7 +116,8 @@ function sourceBadges(session, preset, windowText) {
     ]
     const status = session.status()
     rows.push(status.known ? freshnessText(session) : qsTr("not queried"))
-    rows.push(status.known ? (status.ok ? qsTr("reachable") : qsTr("problem")) : qsTr("unknown"))
+    rows.push(status.known ? (status.stale === true ? qsTr("last known")
+        : (status.ok ? qsTr("reachable") : qsTr("problem"))) : qsTr("unknown"))
     return rows
 }
 
@@ -104,11 +126,11 @@ function moduleInfoProbe(report) {
 }
 
 function sourceFactAvailable(model, report, key) {
-    return model.sourceCapabilityAvailable(report, key) === true
+    return model.metrics.sourceCapabilityAvailable(report, key) === true
 }
 
 function sourceFactEvidence(model, report, key, fallback) {
-    const evidence = model.sourceCapabilityEvidence(report, key)
+    const evidence = model.metrics.sourceCapabilityEvidence(report, key)
     return evidence.length > 0 ? evidence : fallback
 }
 

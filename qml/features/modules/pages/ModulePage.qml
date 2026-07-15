@@ -328,19 +328,14 @@ ColumnLayout {
                     enabled: !root.requestBusy
                     Layout.fillWidth: true
                     accessibleName: qsTr("Run storage source report")
-                    onClicked: root.model.callInspectorAsync(
-                        "storageSourceReport",
-                        root.model.sourceRouting.storageSourceReportArgs(
-                            root.model.sourceRouting.connectorSourceMode(
-                                "storage", root.model.storageSourceMode),
-                            root.model.sourceRouting.configuredStorageRestUrl(),
-                            root.model.storageMetricsUrl,
-                            cid.text.trim(),
-                            cid.text.trim().length > 0,
-                            root.model.storagePrivilegedDebugEnabled
-                        ),
-                        qsTr("Storage report")
-                    )
+                    onClicked: {
+                        root.model.storageCidProbe = cid.text.trim()
+                        root.model.metrics.queryNetworkConnection(
+                            "storage",
+                            true,
+                            cid.text.trim().length > 0
+                        )
+                    }
                 }
 
                 ActionButton {
@@ -349,7 +344,14 @@ ColumnLayout {
                     enabled: !root.model.shell.busy
                     Layout.fillWidth: true
                     accessibleName: qsTr("Query storage status")
-                    onClicked: root.model.queryNetworkConnection("storage", true, cid.text.trim().length > 0)
+                    onClicked: {
+                        root.model.storageCidProbe = cid.text.trim()
+                        root.model.metrics.queryNetworkConnection(
+                            "storage",
+                            true,
+                            cid.text.trim().length > 0
+                        )
+                    }
                 }
 
                 ActionButton {
@@ -389,9 +391,7 @@ ColumnLayout {
                     enabled: !root.requestBusy
                     Layout.fillWidth: true
                     accessibleName: qsTr("Run delivery source report")
-                    onClicked: root.model.callInspectorAsync("deliverySourceReport",
-                        root.model.sourceRouting.deliverySourceReportArgs(),
-                        qsTr("Messaging report"))
+                    onClicked: root.model.metrics.queryNetworkConnection("messaging", true)
                 }
 
                 ActionButton {
@@ -400,7 +400,7 @@ ColumnLayout {
                     enabled: !root.model.shell.busy
                     Layout.fillWidth: true
                     accessibleName: qsTr("Query delivery status")
-                    onClicked: root.model.queryNetworkConnection("messaging", true)
+                    onClicked: root.model.metrics.queryNetworkConnection("messaging", true)
                 }
 
                 ActionButton {

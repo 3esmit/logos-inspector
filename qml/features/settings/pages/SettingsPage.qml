@@ -1084,14 +1084,14 @@ ColumnLayout {
             sourceSelectorVisible: true
             sourceOptions: coreSourceOptions
             sourceIndex: settingsRoot.coreSourceIndexFor(settingsRoot.model.currentConnectorSourceMode("l1", "rpc"))
-            refreshRate: settingsRoot.model.blockchainRefreshRate
+            refreshRate: settingsRoot.model.metrics.blockchainRefreshRate
             statusText: settingsRoot.connectionStatusText("blockchain")
             statusDetail: settingsRoot.connectionStatusDetail("blockchain")
             statusColor: settingsRoot.connectionStatusColor("blockchain")
             onSourceActivated: index => settingsRoot.model.setNetworkConnectorMode("l1", settingsRoot.coreSourceModeAt(index))
             onEndpointEdited: value => settingsRoot.updateNodeUrl(value)
-            onRefreshRateEdited: value => settingsRoot.model.setNetworkConnectionRate("blockchain", value)
-            onQueryClicked: settingsRoot.model.queryNetworkConnection("blockchain", true)
+            onRefreshRateEdited: value => settingsRoot.model.metrics.setNetworkConnectionRate("blockchain", value)
+            onQueryClicked: settingsRoot.model.metrics.queryNetworkConnection("blockchain", true)
         }
     }
 
@@ -1108,7 +1108,7 @@ ColumnLayout {
             statusDetail: settingsRoot.connectionStatusDetail("messaging")
             statusColor: settingsRoot.connectionStatusColor("messaging")
             sourceOptions: deliverySourceOptions
-            onQueryClicked: settingsRoot.model.queryNetworkConnection("messaging", true)
+            onQueryClicked: settingsRoot.model.metrics.queryNetworkConnection("messaging", true)
         }
     }
 
@@ -1125,7 +1125,7 @@ ColumnLayout {
             statusDetail: settingsRoot.connectionStatusDetail("storage")
             statusColor: settingsRoot.connectionStatusColor("storage")
             sourceOptions: storageSourceOptions
-            onQueryClicked: settingsRoot.model.queryNetworkConnection("storage", true)
+            onQueryClicked: settingsRoot.model.metrics.queryNetworkConnection("storage", true)
         }
     }
 

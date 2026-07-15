@@ -42,7 +42,7 @@ function moduleReport(root, kind) {
 
 function moduleProbe(root, kind, method) {
     with (root) {
-        const report = moduleReport(root, kind)
+        const report = root.moduleReport(kind)
         const probes = report && Array.isArray(report.probes) ? report.probes : []
         const wanted = String(method || "")
         if (report && report.module_info && String(report.module_info.probe_key || "") === wanted) {
@@ -73,6 +73,30 @@ function moduleProbeValue(root, kind, method) {
     }
 }
 
+function sourceProbe(root, kind, method) {
+    with (root) {
+        return root.reportProbe(root.sourceReport(kind), method)
+    }
+}
+
+function sourceProbeValue(root, kind, method) {
+    with (root) {
+        const probe = root.sourceProbe(kind, method)
+        if (!probe || probe.ok !== true || probe.value === undefined || probe.value === null) {
+            return null
+        }
+        return probe.value
+    }
+}
+
+function observationProbeValue(root, kind, method) {
+    with (root) {
+        return String(kind || "") === "blockchain"
+            ? root.moduleProbeValue(kind, method)
+            : root.sourceProbeValue(kind, method)
+    }
+}
+
 function moduleProbeError(root, kind, method) {
     with (root) {
         const probe = root.moduleProbe(kind, method)
@@ -82,7 +106,7 @@ function moduleProbeError(root, kind, method) {
 
 function moduleLastError(root, kind) {
     with (root) {
-        const report = moduleReport(root, kind)
+        const report = root.moduleReport(kind)
         if (!report) {
             return ""
         }
@@ -102,7 +126,7 @@ function moduleLastError(root, kind) {
 
 function openMetricsText(root, kind) {
     with (root) {
-        const value = moduleProbeValue(root, kind,
+        const value = root.observationProbeValue(kind,
             kind === "storage" ? "collectMetrics" : "collectOpenMetricsText")
         return root.openMetricsTextFromValue(value)
     }
@@ -121,7 +145,7 @@ function openMetricsTextFromValue(root, value) {
 function openMetricValue(root, kind, names) {
     with (root) {
         const wanted = Array.isArray(names) ? names : [names]
-        const value = moduleProbeValue(root, kind,
+        const value = root.observationProbeValue(kind,
             kind === "storage" ? "collectMetrics" : "collectOpenMetricsText")
         const jsonMetric = root.metricJsonValue(value, wanted)
         if (jsonMetric !== null) {
@@ -379,7 +403,7 @@ function indexerLag(root) {
 
 function moduleMetricValue(root, kind, names) {
     with (root) {
-        const metric = openMetricValue(root, kind, names)
+        const metric = root.openMetricValue(kind, names)
         if (metric !== null) {
             return metric
         }
@@ -405,7 +429,7 @@ function moduleMetricSum(root, kind, names) {
 
 function storageManifestCount(root) {
     with (root) {
-        const manifests = moduleProbeValue(root, "storage", "manifests")
+        const manifests = root.observationProbeValue("storage", "manifests")
         if (Array.isArray(manifests)) {
             return manifests.length
         }

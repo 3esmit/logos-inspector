@@ -135,6 +135,7 @@ TestCase {
         model.zoneInspection.zoneDetail = null
         model.dashboardNode = null
         model.dashboardProvisionalBlocks = []
+        model.metrics.blockchainSourceReport = null
         model.blockchainModuleReport = null
         model.storageModuleReport = null
         model.messagingModuleReport = null
@@ -173,6 +174,12 @@ TestCase {
         model.dashboardMetricHistory = ({})
         model.dashboardMetricLastSeen = ({})
         model.dashboardMetricHistoryRevision = 0
+        model.metrics.observationReportRequestIdentities = ({})
+        model.blockchainRefreshRate = 30
+        model.messagingRefreshRate = 30
+        model.storageRefreshRate = 30
+        model.footerFieldSelections = model.metrics.defaultFooterFieldSelections()
+        model.dashboardGraphSelections = model.metrics.defaultDashboardGraphSelections()
         model.blocksPageRows = []
         model.blocksPageSlotFrom = 0
         model.blocksPageSlotTo = 0
@@ -407,6 +414,9 @@ TestCase {
             offset = 2
         }
         const context = { source: source }
+        if (request && request.configurationGeneration !== undefined) {
+            context.configurationGeneration = Number(request.configurationGeneration)
+        }
         if (endpoint.length) {
             context.endpoint = endpoint
         }
@@ -679,6 +689,23 @@ TestCase {
         }
     }
 
+    function test_metrics_state_owns_appmodel_compatibility_aliases() {
+        model.storageRefreshRate = 45
+        compare(model.metrics.storageRefreshRate, 45)
+
+        model.metrics.messagingRefreshRate = 75
+        compare(model.messagingRefreshRate, 75)
+
+        model.networkConnectionStatus = ({ storage: { known: true, ok: true } })
+        verify(model.metrics.networkConnectionStatus.storage.ok)
+
+        model.metrics.footerFieldSelections = ({ "storage.module": true })
+        verify(model.footerFieldSelections["storage.module"])
+
+        model.storageSourceReport = { marker: "compatibility-source" }
+        compare(model.metrics.sourceReport("storage").marker, "compatibility-source")
+    }
+
     function test_source_routing_compatibility_manifest_matches_appmodel() {
         const inventory = SourceRoutingCompatibilityManifest.manifest()
         const seen = ({})
@@ -766,6 +793,7 @@ TestCase {
         fakeHost.callCount = 0
         fakeHost.lastMethod = ""
         fakeHost.lastArgs = []
+        fakeHost.calls = []
         fakeHost.responses = ({
             localNodesAction: {
                 ok: true,
@@ -1268,8 +1296,8 @@ TestCase {
         verify(view.capabilityAvailable("space"))
     }
 
-    function test_delivery_throughput_metric_aliases() {
-        model.messagingModuleReport = {
+    function test_delivery_source_throughput_metric_aliases() {
+        model.messagingSourceReport = {
             module: "delivery_metrics",
             probes: [
                 {
@@ -1708,6 +1736,58 @@ TestCase {
 
         compare(fakeHost.lastMethod, "saveSettingsState")
         compare(fakeHost.lastArgs[0].favorites.length, 2)
+    }
+
+    function test_metrics_preferences_round_trip_settings_state() {
+        const footerRevision = model.metrics.footerFieldRevision
+        const graphRevision = model.metrics.dashboardGraphRevision
+        fakeHost.responses = {
+            loadSettingsState: {
+                ok: true,
+                value: {
+                    blockchain_refresh_rate: 11,
+                    messaging_refresh_rate: 22,
+                    storage_refresh_rate: 33,
+                    footer_fields: {
+                        "storage.module": false,
+                        "overall.status": true
+                    },
+                    dashboard_graphs: {
+                        "bedrock.peer_count": true,
+                        "storage.peer_count": false
+                    }
+                },
+                text: "OK",
+                error: ""
+            }
+        }
+
+        model.loadSettingsState()
+
+        compare(model.metrics.blockchainRefreshRate, 11)
+        compare(model.messagingRefreshRate, 22)
+        compare(model.metrics.storageRefreshRate, 33)
+        verify(!model.footerFieldSelections["storage.module"])
+        verify(model.metrics.footerFieldSelections["overall.status"])
+        verify(model.dashboardGraphSelections["bedrock.peer_count"])
+        verify(!model.metrics.dashboardGraphSelections["storage.peer_count"])
+        compare(model.metrics.footerFieldRevision, footerRevision + 1)
+        compare(model.metrics.dashboardGraphRevision, graphRevision + 1)
+
+        const payload = model.settingsStatePayload()
+        compare(payload.blockchain_refresh_rate, 11)
+        compare(payload.messaging_refresh_rate, 22)
+        compare(payload.storage_refresh_rate, 33)
+        verify(!payload.footer_fields["storage.module"])
+        verify(payload.footer_fields["overall.status"])
+        verify(payload.dashboard_graphs["bedrock.peer_count"])
+        verify(!payload.dashboard_graphs["storage.peer_count"])
+
+        fakeHost.calls = []
+        model.saveSettingsState()
+        compare(fakeHost.lastMethod, "saveSettingsState")
+        compare(fakeHost.lastArgs[0].storage_refresh_rate, 33)
+        verify(fakeHost.lastArgs[0].footer_fields["overall.status"])
     }
 
     function test_social_settings_round_trip_identity_and_shared_idl_policy() {
@@ -4116,6 +4196,9 @@ TestCase {
             ]
         }
 
+        compare(model.metrics.blockchainModuleReport.probes.length, 1)
+        compare(model.metrics.moduleReport("blockchain").probes.length, 1)
+        compare(model.metrics.moduleProbe("blockchain", "get_peer_id").value, "peer-123")
         compare(model.metrics.moduleProbeValue("blockchain", "get_peer_id"), "peer-123")
     }
 

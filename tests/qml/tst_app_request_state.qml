@@ -104,6 +104,7 @@ TestCase {
     property var cachedValue: null
     property string networkMethod: ""
     property bool networkOk: false
+    property int projectedResponseCount: 0
 
     function init() {
         shell.busy = false
@@ -123,6 +124,8 @@ TestCase {
         cachedValue = null
         networkMethod = ""
         networkOk = false
+        projectedResponseCount = 0
+        requests.projectObservationResponse = null
     }
 
     function test_external_module_calls_route_through_inspector() {
@@ -173,6 +176,45 @@ TestCase {
         compare(bridge.lastArgs[1], "space")
         compare(bridge.lastArgs[2][0], "rest")
         compare(callbackCount, 1)
+    }
+
+    function test_unobserved_async_request_skips_domain_projection() {
+        let callbackCount = 0
+
+        requests.requestModuleAsyncUnobserved(
+            "logos_inspector",
+            "storageSourceReport",
+            [],
+            "Storage",
+            true,
+            function () { callbackCount += 1 }
+        )
+
+        compare(callbackCount, 1)
+        compare(shell.resultTitle, "Storage")
+        compare(cachedMethod, "")
+        compare(networkMethod, "")
+    }
+
+    function test_combined_projection_replaces_legacy_double_hooks() {
+        requests.projectObservationResponse = function (method, response, cacheResult) {
+            projectedResponseCount += 1
+            compare(method, "storageSourceReport")
+            verify(response.ok)
+            verify(cacheResult)
+        }
+
+        requests.requestModuleAsync(
+            "logos_inspector",
+            "storageSourceReport",
+            [],
+            "Storage",
+            false
+        )
+
+        compare(projectedResponseCount, 1)
+        compare(cachedMethod, "")
+        compare(networkMethod, "")
     }
 
     function test_async_zone_status_uses_inspector_route() {

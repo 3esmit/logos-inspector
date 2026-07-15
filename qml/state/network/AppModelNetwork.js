@@ -65,179 +65,11 @@ function setNetworkConnectionRate(root, kind, seconds) {
     }
 }
 
-function queryNetworkConnection(root, kind, showResult, includeSensitiveProbe) {
-    with (root) {
-        const target = String(kind || "")
-        const configRevision = target === "blockchain"
-            ? blockchainConfigurationRevision : networkConfigurationRevision
-        const request = root.networkConnectionRequest(target, includeSensitiveProbe === true)
-        if (!request) {
-            return {
-                ok: false,
-                text: "",
-                error: qsTr("Unknown connection.")
-            }
-        }
-
-        if (root.networkConnectionPending[target] === true) {
-            return {
-                ok: false,
-                text: "",
-                error: qsTr("Connection query already running.")
-            }
-        }
-
-        root.setNetworkConnectionPending(target, true)
-        if (target === "blockchain") {
-            const callback = function (response) {
-                if (configRevision !== blockchainConfigurationRevision) {
-                    return false
-                }
-                root.setNetworkConnectionPending(target, false)
-                root.updateNetworkConnectionStatus(target, response)
-                root.cacheNetworkConnectionResult(target, response)
-                root.recordDashboardSnapshot()
-                return false
-            }
-            return showResult === true
-                ? root.chainPages.presentOperation("network.blockchain", request.method,
-                    request.args, request.label, shell.currentView, callback)
-                : root.chainPages.startOperation("network.blockchain", request.method,
-                    request.args, request.label, callback)
-        }
-        return requestModuleAsync(request.module, request.method, request.args, request.label, showResult, function (response) {
-            root.setNetworkConnectionPending(target, false)
-            root.updateNetworkConnectionStatus(target, response)
-            root.cacheNetworkConnectionResult(target, response)
-            root.recordDashboardSnapshot()
-        }, function () {
-            return configRevision === networkConfigurationRevision
-        })
-    }
-}
-
-function networkConnectionRequest(root, kind, includeSensitiveProbe) {
-    with (root) {
-        switch (kind) {
-        case "blockchain":
-            return { module: inspectorModule, method: "blockchainNode", args: [], label: qsTr("Blockchain node") }
-        case "messaging":
-            return { module: inspectorModule, method: "deliverySourceReport", args: root.sourceRouting.deliverySourceReportArgs(), label: qsTr("Delivery source") }
-        case "storage":
-            return { module: inspectorModule, method: "storageSourceReport", args: root.sourceRouting.storageSourceReportArgs(includeSensitiveProbe), label: qsTr("Storage source") }
-        default:
-            return null
-        }
-    }
-}
-
 function blockchainRpcArgs(root, extra) {
     with (root) {
         return [String(nodeUrl || "")].concat(Array.isArray(extra) ? extra : [])
     }
 }
-
-function updateNetworkConnectionStatusForMethod(root, method, response) {
-    with (root) {
-        const kind = root.networkConnectionKindForMethod(method)
-        if (kind.length > 0) {
-            root.updateNetworkConnectionStatus(kind, response)
-        }
-    }
-}
-
-function networkConnectionKindForMethod(root, method) {
-    with (root) {
-        switch (String(method || "")) {
-        case "blockchainNode":
-        case "blockchainLiveBlocks":
-            return "blockchain"
-        case "deliverySourceReport":
-            return "messaging"
-        case "storageSourceReport":
-            return "storage"
-        default:
-            return ""
-        }
-    }
-}
-
-function setNetworkConnectionPending(root, kind, pending) {
-    with (root) {
-        const next = copyMap(networkConnectionPending)
-        next[String(kind || "")] = pending === true
-        networkConnectionPending = next
-        networkConnectionPendingRevision += 1
-    }
-}
-
-function networkConnectionIsPending(root, kind) {
-    with (root) {
-        const revision = networkConnectionPendingRevision
-        return networkConnectionPending[String(kind || "")] === true
-    }
-}
-
-function updateNetworkConnectionStatus(root, kind, response) {
-    with (root) {
-        const next = copyMap(networkConnectionStatus)
-        const value = response && response.value !== undefined ? response.value : null
-        const ok = response && response.ok === true && root.connectionValueOk(kind, value)
-        next[kind] = {
-            known: true,
-            ok: ok,
-            text: ok ? qsTr("OK") : qsTr("Error"),
-            detail: response && response.ok ? networkConnectionSummary(kind, value) : (response && response.error ? response.error : qsTr("No response")),
-            value: value,
-            checkedAt: new Date().toLocaleTimeString(Qt.locale(), "hh:mm:ss")
-        }
-        networkConnectionStatus = next
-        networkConnectionStatusRevision += 1
-        if (typeof root.refreshCapabilityRegistryIfLoaded === "function"
-                && typeof Qt !== "undefined"
-                && typeof Qt.callLater === "function") {
-            Qt.callLater(function () { root.refreshCapabilityRegistryIfLoaded() })
-        } else if (typeof root.refreshCapabilityRegistryIfLoaded === "function") {
-            root.refreshCapabilityRegistryIfLoaded()
-        }
-    }
-}
-
-function cacheNetworkConnectionResult(root, kind, response) {
-    with (root) {
-        if (!response || response.ok !== true) {
-            return
-        }
-        const target = String(kind || "")
-        const value = response.value
-        if (target === "blockchain") {
-            dashboardNode = value || null
-            const probe = value && value.cryptarchia_info ? value.cryptarchia_info : null
-            const overview = root.copyMap(dashboardOverview || {})
-            const node = root.copyMap(overview.node || {})
-            if (probe) {
-                node.consensus = {
-                    ok: probe.ok === true,
-                    value: probe.value === undefined ? null : probe.value,
-                    error: probe.error === undefined ? null : probe.error
-                }
-            }
-            node.endpoint = nodeUrl
-            overview.node = node
-            dashboardOverview = overview
-            return
-        }
-	        if (target === "messaging") {
-	            messagingSourceReport = value || null
-	            root.refreshCapabilityRegistryIfLoaded()
-	            return
-	        }
-	        if (target === "storage") {
-	            storageSourceReport = value || null
-	            root.refreshCapabilityRegistryIfLoaded()
-	        }
-	    }
-	}
 
 function networkConnectionSummary(root, kind, value) {
     return SourceHealthProjection.networkConnectionSummary(root, kind, value)
@@ -330,7 +162,7 @@ function networkConnectionState(root, kind) {
 
 function setFooterFieldEnabled(root, key, enabled) {
     with (root) {
-        const next = copyMap(footerFieldSelections)
+        const next = root.copyMap(footerFieldSelections)
         next[String(key || "")] = enabled === true
         footerFieldSelections = next
         footerFieldRevision += 1
@@ -347,7 +179,7 @@ function footerFieldEnabled(root, key) {
 
 function setDashboardGraphEnabled(root, key, enabled) {
     with (root) {
-        const next = copyMap(dashboardGraphSelections)
+        const next = root.copyMap(dashboardGraphSelections)
         next[String(key || "")] = enabled === true
         dashboardGraphSelections = next
         dashboardGraphRevision += 1

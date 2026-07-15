@@ -261,7 +261,7 @@ function responseProbeRows(root) {
 function blockchainPeerIdProbe(root) {
     const value = root.responseValue
     if (!value || typeof value !== "object" || Array.isArray(value)) {
-        return root.model.moduleProbe("blockchain", "get_peer_id")
+        return root.model.metrics.moduleProbe("blockchain", "get_peer_id")
     }
     if (isBlockchainModuleReport(root, value)) {
         return findModuleProbe(value, "get_peer_id")
@@ -269,7 +269,7 @@ function blockchainPeerIdProbe(root) {
     if (isBlockchainModuleReport(root, value.blockchain)) {
         return findModuleProbe(value.blockchain, "get_peer_id")
     }
-    return root.model.moduleProbe("blockchain", "get_peer_id")
+    return root.model.metrics.moduleProbe("blockchain", "get_peer_id")
 }
 
 function blockchainPeerIdText(root) {

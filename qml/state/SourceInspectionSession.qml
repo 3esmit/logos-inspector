@@ -13,7 +13,12 @@ QtObject {
 
     function refresh(showResult, includeCidProbe) {
         const networkKind = family === "storage" ? "storage" : "messaging"
-        return model.queryNetworkConnection(networkKind, showResult === true, includeCidProbe === true)
+        return model.metrics.queryNetworkConnection(
+            networkKind,
+            showResult === true,
+            includeCidProbe === true,
+            "source-inspection"
+        )
     }
 
     function diagnosticsGateDetailText(gate, fallbackLabel) {

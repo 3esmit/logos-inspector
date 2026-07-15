@@ -9,6 +9,7 @@ QtObject {
 
     property var updateDashboardCache: null
     property var updateNetworkConnectionStatus: null
+    property var projectObservationResponse: null
     property int nextAsyncGeneration: 1
     property var latestAsyncGenerationByMethod: ({})
     property int activePresentationGeneration: 0
@@ -62,6 +63,34 @@ QtObject {
     }
 
     function requestModuleAsync(moduleName, method, args, label, showResult, callback, acceptResponse) {
+        return requestModuleAsyncWithProjection(
+            moduleName,
+            method,
+            args,
+            label,
+            showResult,
+            callback,
+            acceptResponse,
+            true
+        )
+    }
+
+    function requestModuleAsyncUnobserved(moduleName, method, args, label, showResult,
+            callback, acceptResponse) {
+        return requestModuleAsyncWithProjection(
+            moduleName,
+            method,
+            args,
+            label,
+            showResult,
+            callback,
+            acceptResponse,
+            false
+        )
+    }
+
+    function requestModuleAsyncWithProjection(moduleName, method, args, label, showResult,
+            callback, acceptResponse, projectResponse) {
         const target = targetCall(moduleName, method, args)
         const methodKey = JSON.stringify([
             String(moduleName || ""),
@@ -88,7 +117,8 @@ QtObject {
                     response,
                     ownsPresentation,
                     ownsMethod,
-                    presentation ? presentation.owner : ""
+                    presentation ? presentation.owner : "",
+                    projectResponse
                 )
             }
             if (callback) {
@@ -167,11 +197,9 @@ QtObject {
         }
     }
 
-    function handleResponse(method, label, response, showResult, cacheResult, resultOwner) {
+    function handleResponse(method, label, response, showResult, cacheResult, resultOwner,
+            projectResponse) {
         if (response && response.ok) {
-            if (cacheResult && updateDashboardCache) {
-                updateDashboardCache(method, response.value)
-            }
             if (showResult) {
                 shell.setResult(label, response.text, false, response.value, resultOwner)
             }
@@ -183,6 +211,16 @@ QtObject {
                 null,
                 resultOwner
             )
+        }
+        if (projectResponse === false) {
+            return
+        }
+        if (projectObservationResponse) {
+            projectObservationResponse(method, response, cacheResult)
+            return
+        }
+        if (response && response.ok && cacheResult && updateDashboardCache) {
+            updateDashboardCache(method, response.value)
         }
         if (updateNetworkConnectionStatus) {
             updateNetworkConnectionStatus(method, response)

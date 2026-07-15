@@ -316,7 +316,8 @@ function storageRestMetricsTone(page) {
         if (page.metricsEndpointConfigured() && metricsProbe && metricsProbe.ok === false) {
             return "error"
         }
-        if (page.metricsEndpointConfigured() && page.model.sourceCapabilityAvailable(page.report(), "metrics") === false) {
+        if (page.metricsEndpointConfigured()
+                && page.model.metrics.sourceCapabilityAvailable(page.report(), "metrics") === false) {
             return "warning"
         }
         if (page.metricsEndpointConfigured() && (!metricsProbe || metricsProbe.ok !== true)) {
@@ -544,7 +545,7 @@ function deliveryHealthValueTone(page, value) {
     if (value === undefined || value === null) {
         return "neutral"
     }
-    return page.model.deliveryHealthValueOk(value, false) ? "success" : "error"
+    return page.model.metrics.deliveryHealthValueOk(value, false) ? "success" : "error"
 }
 
 function deliveryCombinedHealthTone(page, left, right) {
@@ -611,7 +612,9 @@ function deliveryMetricRow(page, label, key) {
 }
 
 function deliveryMetricEvidence(page, key) {
-    return page.model.dashboardMetricUsesWindow(key) ? qsTr("%1 s window").arg(page.model.messagingRollingWindow) : qsTr("OpenMetrics value")
+    return page.model.metrics.dashboardMetricUsesWindow(key)
+        ? qsTr("%1 s window").arg(page.model.messagingRollingWindow)
+        : qsTr("OpenMetrics value")
 }
 
 function deliveryProtocolStatusRow(page, label, protocol, metricKey) {
@@ -686,7 +689,8 @@ function deliveryRestMetricsTone(page) {
     if (sourceMode === "unsupported") {
         return "warning"
     }
-    if (page.model.sourceCapabilityAvailable(page.report(), "metrics") === false && (sourceMode === "metrics" || sourceMode === "network-monitor")) {
+    if (page.model.metrics.sourceCapabilityAvailable(page.report(), "metrics") === false
+            && (sourceMode === "metrics" || sourceMode === "network-monitor")) {
         return "warning"
     }
     return page.statusTone()

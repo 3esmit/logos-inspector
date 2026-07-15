@@ -5,9 +5,10 @@ function build(model, theme, family) {
     const storage = String(family || "") === "storage"
     const moduleFamily = storage ? "storage" : "messaging"
     const networkKind = storage ? "storage" : "messaging"
-    const report = model.metrics.moduleReport(moduleFamily)
-    const status = model.networkConnectionState(networkKind) || ({ known: false, ok: false })
-    const pending = model.networkConnectionIsPending(networkKind)
+    const observation = model.metrics.sourceObservation(moduleFamily)
+    const report = observation.sourceReport
+    const status = observation.status || ({ known: false, ok: false })
+    const pending = observation.pending === true
     const sourceName = storage ? model.sourceRouting.storageSourceLabel()
         : model.sourceRouting.deliverySourceLabel()
     const sourceTarget = storage ? model.sourceRouting.storageSourceTarget()
@@ -23,6 +24,8 @@ function build(model, theme, family) {
     page.report = function () { return report }
     page.status = function () { return status }
     page.pending = function () { return pending }
+    page.reportCheckedAt = function () { return String(observation.reportCheckedAt || "") }
+    page.reportCheckedAtMs = function () { return Number(observation.reportCheckedAtMs || 0) }
     page.sourceLabel = function () { return sourceName }
     page.sourceName = function () { return sourceName }
     page.sourceTarget = function () { return sourceTarget }
@@ -194,7 +197,8 @@ function storageView(page, common) {
     common.transferFailures = page.metricDisplay("storage.failed_transfers_recent")
     common.transferFailureColor = SourceObservation.storageTransferFailureTone(page)
     common.reliabilityText = SourceObservation.storageReliabilityText(page)
-    common.reliabilityDetail = page.model.moduleLastError("storage") || page.sourceName()
+    common.reliabilityDetail = page.model.metrics.moduleReportError(page.report())
+        || page.sourceName()
     common.reliabilityColor = SourceObservation.storageReliabilityTone(page)
     common.healthRows = SourceObservation.storageHealthRows(page)
     common.activeOperationRows = SourceObservation.storageActiveOperationRows(page)
@@ -281,7 +285,8 @@ function deliveryView(page, common) {
     common.peerColor = SourceDiagnostics.metricTone(page.theme, page.model, "messaging.peer_count")
     common.messageCount = page.metricDisplay("messaging.message_received_events_recent")
     common.errorCount = page.metricDisplay("messaging.message_error_events_recent")
-    common.errorDetail = page.model.moduleLastError("messaging") || page.sourceName()
+    common.errorDetail = page.model.metrics.moduleReportError(page.report())
+        || page.sourceName()
     common.errorColor = SourceDiagnostics.metricTone(page.theme, page.model, "messaging.message_error_events_recent")
     common.healthRows = SourceObservation.deliveryHealthRows(page)
     common.topologyRows = SourceObservation.deliveryTopologyRows(page)

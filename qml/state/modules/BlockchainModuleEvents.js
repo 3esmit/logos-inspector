@@ -13,7 +13,7 @@ function handleNewBlock(root, args) {
         })
         blockchainLastEventText = qsTr("New block %1").arg(root.valueText(root.chainPages.blockSlot(block)))
         blockchainModuleEventRevision += 1
-        queryNetworkConnection("blockchain", false)
+        metrics.queryNetworkConnection("blockchain", false, false, "module-event")
 
         const wallet = String(walletPublicKeyProbe || "").trim()
         if (wallet.length > 0 && ModuleEventUtils.valueContainsText(block, wallet)) {

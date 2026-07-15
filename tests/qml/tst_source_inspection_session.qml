@@ -60,6 +60,10 @@ TestCase {
         model.messagingSourceReport = null
         model.networkConnectionStatus = ({})
         model.networkConnectionStatusRevision += 1
+        model.networkConnectionPending = ({})
+        model.networkConnectionPendingRevision += 1
+        model.metrics.activeObservationLeases = ({})
+        model.metrics.observationWaiters = ({})
     }
 
     function test_family_views_expose_complete_page_contracts() {
@@ -83,5 +87,116 @@ TestCase {
 
         tryCompare(storageSession.view.cidRows, "length", 5)
         compare(storageSession.view.cidRows[0].copyText, "z-test")
+    }
+
+    function test_configured_source_report_never_falls_back_to_module_report() {
+        model.metrics.setModuleReport("storage", {
+            marker: "stale-module",
+            probes: [{
+                probe_key: "space",
+                label: "storage_module.space",
+                ok: true,
+                value: { marker: "module-space" },
+                error: null
+            }]
+        })
+        model.metrics.setSourceReport("storage", {
+            marker: "fresh-source",
+            health: {
+                ready: false,
+                status: "degraded",
+                summary: "source degraded",
+                detail: "capacity unavailable"
+            },
+            probes: [{
+                probe_key: "space",
+                label: "storage_rest.space",
+                ok: true,
+                value: { marker: "source-space" },
+                error: null
+            }]
+        }, { origin: "test" })
+        model.metrics.networkConnectionStatus = ({
+            storage: {
+                known: true,
+                ok: false,
+                transportOk: true,
+                text: "Error",
+                detail: "source degraded",
+                checkedAt: "10:00:00",
+                stale: false
+            }
+        })
+        model.metrics.networkConnectionStatusRevision += 1
+
+        compare(storageSession.view.report.marker, "fresh-source")
+        compare(storageSession.view.capacitySummary, "1 field(s)")
+        compare(storageSession.view.status.ok, false)
+        compare(storageSession.view.healthText, "Problem")
+    }
+
+    function test_refresh_populates_configured_source_report() {
+        fakeHost.responses = ({
+            storageSourceReport: {
+                ok: true,
+                value: {
+                    marker: "refreshed-source",
+                    health: {
+                        ready: true,
+                        status: "healthy",
+                        summary: "source ready",
+                        detail: "ready"
+                    },
+                    probes: []
+                },
+                text: "OK",
+                error: ""
+            }
+        })
+
+        storageSession.refresh(false, false)
+
+        tryVerify(function () {
+            return storageSession.view.report
+                && storageSession.view.report.marker === "refreshed-source"
+        })
+        verify(!storageSession.view.pending)
+        verify(storageSession.view.status.ok)
+        compare(fakeHost.lastArgs[0].configuration_generation,
+            model.metrics.familyConfigurationGeneration("storage"))
+    }
+
+    function test_hard_failure_marks_retained_report_last_known() {
+        const reportCheckedAtMs = Date.UTC(2026, 0, 2, 8, 30, 0)
+        const reportCheckedAt = model.metrics.observationTimeText(reportCheckedAtMs)
+        model.metrics.setSourceReport("storage", {
+            marker: "last-known",
+            health: {
+                ready: true,
+                status: "healthy",
+                summary: "source ready",
+                detail: "ready"
+            },
+            probes: []
+        }, { origin: "test", checkedAtMs: reportCheckedAtMs })
+        model.metrics.networkConnectionStatus = ({
+            storage: {
+                known: true,
+                ok: false,
+                transportOk: false,
+                text: "Error",
+                detail: "transport down",
+                checkedAt: "10:01:00",
+                stale: true
+            }
+        })
+        model.metrics.networkConnectionStatusRevision += 1
+
+        compare(storageSession.view.report.marker, "last-known")
+        verify(storageSession.view.statusLine.indexOf("last completed report") >= 0)
+        verify(storageSession.view.statusLine.indexOf(reportCheckedAt) >= 0)
+        verify(storageSession.view.statusLine.indexOf("10:01:00") >= 0)
+        verify(storageSession.view.freshnessText.indexOf(reportCheckedAt) >= 0)
+        verify(storageSession.view.sourceBadges.indexOf("last known") >= 0)
     }
 }

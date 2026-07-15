@@ -19,9 +19,9 @@ ColumnLayout {
     spacing: 16
 
     Component.onCompleted: {
-        if (model.dashboardRefreshInterval() > 0 && model.bridgeSupportsAsync()) {
+        if (model.metrics.dashboardRefreshInterval() > 0 && model.bridgeSupportsAsync()) {
             Qt.callLater(function () {
-                model.refreshDashboard()
+                model.metrics.refreshDashboard()
             })
         }
     }

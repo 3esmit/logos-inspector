@@ -14,11 +14,6 @@ TestCase {
         property int dashboardMetricHistoryRevision: 0
         property int storageRollingWindow: 60
         property int messagingRollingWindow: 60
-        property QtObject metrics: QtObject {
-            function dashboardMetricValue(key) {
-                return model.dashboardMetricValue(key)
-            }
-        }
 
         function copyMap(value) {
             const copy = {}
@@ -155,6 +150,23 @@ TestCase {
         compare(DashboardMetricCatalog.windowDeltaFromSamples([{ timestamp: 0, value: 1 }, { timestamp: 1000, value: 4 }], 1000, 1000), 3)
     }
 
+    function test_stable_counter_older_than_window_reports_zero() {
+        const now = Date.now()
+        model.dashboardMetricHistory = ({
+            "storage.failed_transfers_recent": [
+                { timestamp: now - 120000, value: 7 }
+            ]
+        })
+        model.dashboardMetricLastSeen = ({
+            "storage.failed_transfers_recent": { timestamp: now, value: 7 }
+        })
+
+        compare(DashboardMetricCatalog.dashboardMetricValue(
+            model,
+            "storage.failed_transfers_recent"
+        ), 0)
+    }
+
     function test_selected_items_include_gate_state() {
         const rows = DashboardMetricCatalog.selectedDashboardGraphItems(model)
 
@@ -163,5 +175,13 @@ TestCase {
         compare(rows[2].key, "messaging.message_error_events_recent")
         compare(rows[2].tone, "warning")
         compare(rows[2].value, "blocked")
+    }
+
+    function test_graph_item_consumes_metrics_interface_directly() {
+        const item = DashboardMetricCatalog.dashboardGraphItem(model, "bedrock.peer_count")
+
+        compare(item.key, "bedrock.peer_count")
+        compare(item.numericValue, 6)
+        compare(item.value, "6")
     }
 }

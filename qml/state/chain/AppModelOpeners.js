@@ -280,7 +280,7 @@ function openLocalWallet(root, wallet, tab) {
         }
         if (localWalletTab === "bedrockNotes" && walletPublicKeyProbe !== target) {
             walletPublicKeyProbe = target
-            blockchainModuleReport = null
+            root.metrics.setModuleReport("blockchain", null)
             bedrockWalletModuleError = ""
             bedrockWalletBalanceValue = null
             bedrockWalletBalanceError = ""

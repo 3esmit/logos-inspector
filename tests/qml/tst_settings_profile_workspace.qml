@@ -34,6 +34,15 @@ TestCase {
         property var localWalletStatus: null
         property string localWalletStatusError: ""
         property bool settingsBackupEncrypted: false
+        property QtObject metrics: QtObject {
+            function networkConnectionState(kind) {
+                return kind === "ok"
+                    ? { known: true, ok: true, detail: "ready", checkedAt: "now" }
+                    : { known: false }
+            }
+
+            function networkConnectionRate(kind) { return kind === "slow" ? 15 : 0 }
+        }
 
         function inferNetworkProfileFromEndpoint(node) {
             return String(node || "").indexOf("custom") >= 0
@@ -41,11 +50,6 @@ TestCase {
                 : "default"
         }
 
-        function networkConnectionState(kind) {
-            return kind === "ok" ? { known: true, ok: true, detail: "ready", checkedAt: "now" } : { known: false }
-        }
-
-        function networkConnectionRate(kind) { return kind === "slow" ? 15 : 0 }
         function networkProfileOptions() { return [{ key: "default", label: "Default" }, { key: "custom", label: "Custom" }] }
         function profileIndexFor(value) { return value === "custom" ? 1 : 0 }
         function networkProfileLabel(value) { return value === "custom" ? "Custom" : "Default" }

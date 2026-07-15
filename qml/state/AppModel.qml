@@ -4,7 +4,6 @@ import "app/AppModelCore.js" as AppModelCore
 import "domains" as Domains
 import "identity/AppModelIdentity.js" as AppModelIdentity
 import "network/AppModelNetwork.js" as AppModelNetwork
-import "metrics/AppModelMetrics.js" as AppModelMetrics
 import "programs" as Programs
 import "programs/AppModelRegistry.js" as AppModelRegistry
 import "programs/ProgramDecodeSession.js" as ProgramDecodeSession
@@ -81,7 +80,147 @@ QtObject {
         model: root
     }
     property Domains.MetricsState metrics: Domains.MetricsState {
-        model: root
+        id: metricsState
+
+        sourceRouting: sourceRoutingState
+        inspectorModule: root.inspectorModule
+        nodeUrl: root.nodeUrl
+        storageRollingWindow: root.storageRollingWindow
+        messagingRollingWindow: root.messagingRollingWindow
+        dashboardOverview: chainPageState.dashboardOverview
+        dashboardNode: chainPageState.dashboardNode
+        dashboardL1Blocks: chainPageState.dashboardL1Blocks
+        dashboardBlocks: chainPageState.dashboardBlocks
+        gateway: QtObject {
+            function requestModuleAsyncUnobserved(moduleName, method, args, label,
+                    showResult, callback, acceptResponse) {
+                return appRequestState.requestModuleAsyncUnobserved(
+                    moduleName,
+                    method,
+                    args,
+                    label,
+                    showResult,
+                    callback,
+                    acceptResponse
+                )
+            }
+
+            function startBlockchainObservation(showResult, request, callback) {
+                if (showResult === true) {
+                    return chainPageState.presentOperation(
+                        "network.blockchain",
+                        request.method,
+                        request.args,
+                        request.label,
+                        appShellState.currentView,
+                        callback
+                    )
+                }
+                return chainPageState.startOperation(
+                    "network.blockchain",
+                    request.method,
+                    request.args,
+                    request.label,
+                    callback
+                )
+            }
+
+            function startDashboardBlockchainOperation(request, callback) {
+                return chainPageState.startOperation(
+                    "dashboard.live",
+                    request.method,
+                    request.args,
+                    request.label,
+                    callback
+                )
+            }
+
+            function beginObservationPresentation(label) {
+                return appRequestState.beginPresentation(
+                    String(label || ""),
+                    appShellState.currentView
+                )
+            }
+
+            function completeObservationPresentation(lease, title, text,
+                    isError, value) {
+                return appRequestState.completePresentation(
+                    lease,
+                    title,
+                    text,
+                    isError === true,
+                    value
+                )
+            }
+
+            function cacheBlockchainResult(method, value) {
+                if (method === "blockchainLiveBlocks") {
+                    chainPageState.dashboardL1Blocks = value && Array.isArray(value.blocks)
+                        ? value.blocks : []
+                    return
+                }
+                if (method !== "blockchainNode") {
+                    return
+                }
+                chainPageState.dashboardNode = value || null
+                const probe = value && value.cryptarchia_info
+                    ? value.cryptarchia_info : null
+                const overview = root.copyMap(chainPageState.dashboardOverview || {})
+                const node = root.copyMap(overview.node || {})
+                if (probe) {
+                    node.consensus = {
+                        ok: probe.ok === true,
+                        value: probe.value === undefined ? null : probe.value,
+                        error: probe.error === undefined ? null : probe.error
+                    }
+                }
+                node.endpoint = root.nodeUrl
+                overview.node = node
+                chainPageState.dashboardOverview = overview
+            }
+
+            function clearBlockchainObservation() {
+                chainPageState.dashboardNode = null
+                const overview = root.copyMap(chainPageState.dashboardOverview || {})
+                delete overview.node
+                chainPageState.dashboardOverview = Object.keys(overview).length > 0
+                    ? overview : null
+            }
+
+            function projectZoneDashboard() {
+                return entityNavigationState.projectZoneDashboard()
+            }
+
+            function resetDashboardProjection() {
+                chainPageState.dashboardOverview = null
+                chainPageState.dashboardNode = null
+                chainPageState.dashboardL1Blocks = []
+                chainPageState.dashboardBlocks = []
+                chainPageState.dashboardProvisionalBlocks = []
+                chainPageState.dashboardLezBlockRows = []
+            }
+
+            function invalidateDashboardOperations(reason) {
+                chainPageState.invalidateOperationCaller("dashboard.node", reason)
+                chainPageState.invalidateOperationCaller("dashboard.live", reason)
+            }
+
+            function setDashboardResult(ok, text, value) {
+                appShellState.setResult(qsTr("Dashboard"), text, ok !== true, value)
+            }
+
+            function refreshCapabilityRegistryIfLoaded() {
+                return root.refreshCapabilityRegistryIfLoaded()
+            }
+
+            function scalarValue(value) {
+                return AppModelNetwork.scalarValue(root, value)
+            }
+
+            function dashboardGate(key) {
+                return root.dashboardGate(key)
+            }
+        }
     }
     property AppRequestState requests: AppRequestState {
         id: appRequestState
@@ -89,11 +228,8 @@ QtObject {
         bridge: root.bridge
         shell: appShellState
         inspectorModule: root.inspectorModule
-        updateDashboardCache: function (method, value) {
-            return root.updateDashboardCache(method, value)
-        }
-        updateNetworkConnectionStatus: function (method, response) {
-            return root.updateNetworkConnectionStatusForMethod(method, response)
+        projectObservationResponse: function (method, response, cacheResult) {
+            return metricsState.projectResponse(method, response, cacheResult)
         }
     }
     readonly property bool asyncPresentationBusy: appRequestState.presentationBusy
@@ -140,7 +276,7 @@ QtObject {
 
             function blockchainRpcArgs(extra) { return root.blockchainRpcArgs(extra) }
 
-            function networkConnectionState(kind) { return root.networkConnectionState(kind) }
+            function networkConnectionState(kind) { return metricsState.networkConnectionState(kind) }
 
             function valueToString(value) { return root.valueToString(value) }
 
@@ -155,7 +291,7 @@ QtObject {
     property alias dashboardBlocks: chainPageState.dashboardBlocks
     property alias dashboardProvisionalBlocks: chainPageState.dashboardProvisionalBlocks
     property alias dashboardLezBlockRows: chainPageState.dashboardLezBlockRows
-    property alias dashboardError: chainPageState.dashboardError
+    property alias dashboardError: metricsState.dashboardError
     property alias blockDetailValue: chainPageState.blockDetailValue
     property alias blockDetailError: chainPageState.blockDetailError
     property alias transactionDetailValue: chainPageState.transactionDetailValue
@@ -318,29 +454,29 @@ QtObject {
     property alias settingsSection: appShellState.settingsSection
     property alias settingsNetworkSection: appShellState.settingsNetworkSection
     property alias settingsUiSection: appShellState.settingsUiSection
-    property int blockchainRefreshRate: 30
-    property int messagingRefreshRate: 30
-    property int storageRefreshRate: 30
-    property var networkConnectionStatus: ({})
-    property int networkConnectionStatusRevision: 0
+    property alias blockchainRefreshRate: metricsState.blockchainRefreshRate
+    property alias messagingRefreshRate: metricsState.messagingRefreshRate
+    property alias storageRefreshRate: metricsState.storageRefreshRate
+    property alias networkConnectionStatus: metricsState.networkConnectionStatus
+    property alias networkConnectionStatusRevision: metricsState.networkConnectionStatusRevision
     property int networkConfigurationRevision: 0
     property int blockchainConfigurationRevision: 0
-    property var footerFieldSelections: metrics.defaultFooterFieldSelections()
-    property int footerFieldRevision: 0
-    property var dashboardGraphSelections: defaultDashboardGraphSelections()
-    property int dashboardGraphRevision: 0
-    property var dashboardMetricHistory: ({})
-    property var dashboardMetricLastSeen: ({})
-    property int dashboardMetricHistoryRevision: 0
-    property var networkConnectionPending: ({})
-    property int networkConnectionPendingRevision: 0
-    property bool dashboardRefreshing: false
-    property int dashboardRefreshSerial: 0
-    property var blockchainModuleReport: null
-    property var storageModuleReport: null
-    property var messagingModuleReport: null
-    property var storageSourceReport: null
-    property var messagingSourceReport: null
+    property alias footerFieldSelections: metricsState.footerFieldSelections
+    property alias footerFieldRevision: metricsState.footerFieldRevision
+    property alias dashboardGraphSelections: metricsState.dashboardGraphSelections
+    property alias dashboardGraphRevision: metricsState.dashboardGraphRevision
+    property alias dashboardMetricHistory: metricsState.dashboardMetricHistory
+    property alias dashboardMetricLastSeen: metricsState.dashboardMetricLastSeen
+    property alias dashboardMetricHistoryRevision: metricsState.dashboardMetricHistoryRevision
+    property alias networkConnectionPending: metricsState.networkConnectionPending
+    property alias networkConnectionPendingRevision: metricsState.networkConnectionPendingRevision
+    property alias dashboardRefreshing: metricsState.dashboardRefreshing
+    property alias dashboardRefreshSerial: metricsState.dashboardRefreshSerial
+    property alias blockchainModuleReport: metricsState.blockchainModuleReport
+    property alias storageModuleReport: metricsState.storageModuleReport
+    property alias messagingModuleReport: metricsState.messagingModuleReport
+    property alias storageSourceReport: metricsState.storageSourceReport
+    property alias messagingSourceReport: metricsState.messagingSourceReport
     property int blockchainModuleEventRevision: 0
     property string blockchainLastEventText: ""
 
@@ -495,7 +631,8 @@ QtObject {
             }
 
             function refreshStorageObservations() {
-                root.queryNetworkConnection("storage", false)
+                metricsState.queryNetworkConnection(
+                    "storage", false, false, "storage-refresh")
                 return root.storageApp.refreshManifests(false)
             }
 
@@ -537,7 +674,7 @@ QtObject {
         resultText: appShellState.resultText
         resultIsError: appShellState.resultIsError
         resultOwner: appShellState.resultOwner
-        sourceReport: root.storageSourceReport
+        sourceReport: metricsState.sourceReport("storage")
         gateFacade: root.capabilities
     }
     property alias storageAppTab: storageAppState.currentTab
@@ -622,11 +759,11 @@ QtObject {
         capabilityFacade: root.capabilities
         operationHistory: root.operationHistory
         reports: ({
-            blockchain: root.blockchainModuleReport,
-            storage: root.storageModuleReport,
-            delivery: root.messagingModuleReport,
-            storage_source: root.storageSourceReport,
-            delivery_source: root.messagingSourceReport
+            blockchain: metricsState.moduleReport("blockchain"),
+            storage: metricsState.moduleReport("storage"),
+            delivery: metricsState.moduleReport("messaging"),
+            storage_source: metricsState.sourceReport("storage"),
+            delivery_source: metricsState.sourceReport("messaging")
         })
         events: ({
             blockchain_revision: root.blockchainModuleEventRevision,
@@ -1233,11 +1370,11 @@ QtObject {
 
     function decodeSelectionEntry(selection, candidates) { return ProgramDecodeSession.decodeSelectionEntry(root, selection, candidates) }
 
-    function refreshInterval(seconds) { return AppModelNetwork.refreshInterval(root, seconds) }
+    function refreshInterval(seconds) { return metricsState.refreshInterval(seconds) }
 
-    function dashboardRefreshInterval() { return AppModelNetwork.dashboardRefreshInterval(root) }
+    function dashboardRefreshInterval() { return metricsState.dashboardRefreshInterval() }
 
-    function canonicalRefreshRate(seconds) { return AppModelNetwork.canonicalRefreshRate(root, seconds) }
+    function canonicalRefreshRate(seconds) { return metricsState.canonicalRefreshRate(seconds) }
 
     function loadCapabilityRegistry() { return capabilityGateState.loadRegistry(root.prefersBasecampModules(), capabilityRegistryRuntimeInputs()) }
 
@@ -1267,6 +1404,11 @@ QtObject {
 
     function capabilityRegistryRuntimeInputs() {
         return {
+            configuration_generations: {
+                l1: metricsState.familyConfigurationGeneration("blockchain"),
+                storage: metricsState.familyConfigurationGeneration("storage"),
+                delivery: metricsState.familyConfigurationGeneration("messaging")
+            },
             network_connector_config: networkConnectorConfigPayload(),
             wallet_connector_config: walletConnectorConfigPayload(),
             node_url: String(nodeUrl || ""),
@@ -1424,65 +1566,65 @@ QtObject {
         return sourceRouting.connectorSourceMode(scope, fallback)
     }
 
-    function networkConnectionRate(kind) { return AppModelNetwork.networkConnectionRate(root, kind) }
+    function networkConnectionRate(kind) { return metricsState.networkConnectionRate(kind) }
 
-    function setNetworkConnectionRate(kind, seconds) { return AppModelNetwork.setNetworkConnectionRate(root, kind, seconds) }
+    function setNetworkConnectionRate(kind, seconds) { return metricsState.setNetworkConnectionRate(kind, seconds) }
 
-    function queryNetworkConnection(kind, showResult, includeSensitiveProbe) { return AppModelNetwork.queryNetworkConnection(root, kind, showResult, includeSensitiveProbe) }
+    function queryNetworkConnection(kind, showResult, includeSensitiveProbe, origin) { return metricsState.queryNetworkConnection(kind, showResult, includeSensitiveProbe, origin) }
 
-    function networkConnectionRequest(kind, includeSensitiveProbe) { return AppModelNetwork.networkConnectionRequest(root, kind, includeSensitiveProbe) }
+    function networkConnectionRequest(kind, includeSensitiveProbe) { return metricsState.networkConnectionRequest(kind, includeSensitiveProbe) }
 
-    function updateNetworkConnectionStatusForMethod(method, response) { return AppModelNetwork.updateNetworkConnectionStatusForMethod(root, method, response) }
+    function updateNetworkConnectionStatusForMethod(method, response) { return metricsState.updateNetworkConnectionStatusForMethod(method, response) }
 
-    function networkConnectionKindForMethod(method) { return AppModelNetwork.networkConnectionKindForMethod(root, method) }
+    function networkConnectionKindForMethod(method) { return metricsState.networkConnectionKindForMethod(method) }
 
-    function setNetworkConnectionPending(kind, pending) { return AppModelNetwork.setNetworkConnectionPending(root, kind, pending) }
+    function setNetworkConnectionPending(kind, pending) { return metricsState.setNetworkConnectionPending(kind, pending) }
 
-    function networkConnectionIsPending(kind) { return AppModelNetwork.networkConnectionIsPending(root, kind) }
+    function networkConnectionIsPending(kind) { return metricsState.networkConnectionIsPending(kind) }
 
-    function updateNetworkConnectionStatus(kind, response) { return AppModelNetwork.updateNetworkConnectionStatus(root, kind, response) }
+    function updateNetworkConnectionStatus(kind, response) { return metricsState.updateNetworkConnectionStatus(kind, response) }
 
-    function cacheNetworkConnectionResult(kind, response) { return AppModelNetwork.cacheNetworkConnectionResult(root, kind, response) }
+    function cacheNetworkConnectionResult(kind, response) { return metricsState.cacheNetworkConnectionResult(kind, response) }
 
-    function networkConnectionSummary(kind, value) { return AppModelNetwork.networkConnectionSummary(root, kind, value) }
+    function networkConnectionSummary(kind, value) { return metricsState.networkConnectionSummary(kind, value) }
 
-    function connectionValueOk(kind, value) { return AppModelNetwork.connectionValueOk(root, kind, value) }
+    function connectionValueOk(kind, value) { return metricsState.connectionValueOk(kind, value) }
 
-    function storageReportReady(report) { return AppModelNetwork.storageReportReady(root, report) }
+    function storageReportReady(report) { return metricsState.storageReportReady(report) }
 
-    function moduleReportReachable(report) { return AppModelNetwork.moduleReportReachable(root, report) }
+    function moduleReportReachable(report) { return metricsState.moduleReportReachable(report) }
 
-    function sourceHealthReady(report) { return AppModelNetwork.sourceHealthReady(root, report) }
+    function sourceHealthReady(report) { return metricsState.sourceHealthReady(report) }
 
-    function sourceCapabilityAvailable(report, key) { return AppModelNetwork.sourceCapabilityAvailable(root, report, key) }
+    function sourceCapabilityAvailable(report, key) { return metricsState.sourceCapabilityAvailable(report, key) }
 
-    function sourceCapabilityEvidence(report, key) { return AppModelNetwork.sourceCapabilityEvidence(root, report, key) }
+    function sourceCapabilityEvidence(report, key) { return metricsState.sourceCapabilityEvidence(report, key) }
 
-    function sourceCapabilityValue(report, key) { return AppModelNetwork.sourceCapabilityValue(root, report, key) }
+    function sourceCapabilityValue(report, key) { return metricsState.sourceCapabilityValue(report, key) }
 
-    function sourceProbeFact(report, key) { return AppModelNetwork.sourceProbeFact(root, report, key) }
+    function sourceProbeFact(report, key) { return metricsState.sourceProbeFact(report, key) }
 
-    function reportProbeValue(report, method) { return AppModelNetwork.reportProbeValue(root, report, method) }
+    function reportProbeValue(report, method) { return metricsState.reportProbeValue(report, method) }
 
-    function reportProbeOk(report, method) { return AppModelNetwork.reportProbeOk(root, report, method) }
+    function reportProbeOk(report, method) { return metricsState.reportProbeOk(report, method) }
 
-    function reportProbe(report, method) { return AppModelNetwork.reportProbe(root, report, method) }
+    function reportProbe(report, method) { return metricsState.reportProbe(report, method) }
 
-    function deliveryReportHealthy(report) { return AppModelNetwork.deliveryReportHealthy(root, report) }
+    function deliveryReportHealthy(report) { return metricsState.deliveryReportHealthy(report) }
 
-    function deliveryHealthValueOk(value, unknownOk) { return AppModelNetwork.deliveryHealthValueOk(root, value, unknownOk) }
+    function deliveryHealthValueOk(value, unknownOk) { return metricsState.deliveryHealthValueOk(value, unknownOk) }
 
-    function moduleReportError(report) { return AppModelNetwork.moduleReportError(root, report) }
+    function moduleReportError(report) { return metricsState.moduleReportError(report) }
 
-    function networkConnectionState(kind) { return AppModelNetwork.networkConnectionState(root, kind) }
+    function networkConnectionState(kind) { return metricsState.networkConnectionState(kind) }
 
-    function setFooterFieldEnabled(key, enabled) { return AppModelNetwork.setFooterFieldEnabled(root, key, enabled) }
+    function setFooterFieldEnabled(key, enabled) { return metricsState.setFooterFieldEnabled(key, enabled) }
 
-    function footerFieldEnabled(key) { return AppModelNetwork.footerFieldEnabled(root, key) }
+    function footerFieldEnabled(key) { return metricsState.footerFieldEnabled(key) }
 
-    function setDashboardGraphEnabled(key, enabled) { return AppModelNetwork.setDashboardGraphEnabled(root, key, enabled) }
+    function setDashboardGraphEnabled(key, enabled) { return metricsState.setDashboardGraphEnabled(key, enabled) }
 
-    function dashboardGraphEnabled(key) { return AppModelNetwork.dashboardGraphEnabled(root, key) }
+    function dashboardGraphEnabled(key) { return metricsState.dashboardGraphEnabled(key) }
 
     function copyMap(source) { return AppModelNetwork.copyMap(root, source) }
 
@@ -1569,87 +1711,87 @@ QtObject {
 
     function scalarValue(value) { return AppModelNetwork.scalarValue(root, value) }
 
-    function valueText(value) { return AppModelMetrics.valueText(root, value) }
+    function valueText(value) { return metricsState.valueText(value) }
 
-    function valueToString(value) { return AppModelMetrics.valueToString(root, value) }
+    function valueToString(value) { return metricsState.valueToString(value) }
 
-    function moduleProbe(kind, method) { return AppModelMetrics.moduleProbe(root, kind, method) }
+    function moduleProbe(kind, method) { return metricsState.moduleProbe(kind, method) }
 
-    function moduleProbeError(kind, method) { return AppModelMetrics.moduleProbeError(root, kind, method) }
+    function moduleProbeError(kind, method) { return metricsState.moduleProbeError(kind, method) }
 
-    function moduleLastError(kind) { return AppModelMetrics.moduleLastError(root, kind) }
+    function moduleLastError(kind) { return metricsState.moduleLastError(kind) }
 
-    function openMetricsText(kind) { return AppModelMetrics.openMetricsText(root, kind) }
+    function openMetricsText(kind) { return metricsState.openMetricsText(kind) }
 
-    function openMetricsTextFromValue(value) { return AppModelMetrics.openMetricsTextFromValue(root, value) }
+    function openMetricsTextFromValue(value) { return metricsState.openMetricsTextFromValue(value) }
 
-    function openMetricLabels(text) { return AppModelMetrics.openMetricLabels(root, text) }
+    function openMetricLabels(text) { return metricsState.openMetricLabels(text) }
 
-    function metricJsonValue(value, names) { return AppModelMetrics.metricJsonValue(root, value, names) }
+    function metricJsonValue(value, names) { return metricsState.metricJsonValue(value, names) }
 
-    function metricSpecName(spec) { return AppModelMetrics.metricSpecName(root, spec) }
+    function metricSpecName(spec) { return metricsState.metricSpecName(spec) }
 
-    function metricSpecLabels(spec) { return AppModelMetrics.metricSpecLabels(root, spec) }
+    function metricSpecLabels(spec) { return metricsState.metricSpecLabels(spec) }
 
-    function metricJsonLabels(value) { return AppModelMetrics.metricJsonLabels(root, value) }
+    function metricJsonLabels(value) { return metricsState.metricJsonLabels(value) }
 
-    function metricLabelsMatch(actual, wanted) { return AppModelMetrics.metricLabelsMatch(root, actual, wanted) }
+    function metricLabelsMatch(actual, wanted) { return metricsState.metricLabelsMatch(actual, wanted) }
 
-    function metricNumber(value) { return AppModelMetrics.metricNumber(root, value) }
+    function metricNumber(value) { return metricsState.metricNumber(value) }
 
-    function overviewProbeValue(section, field) { return AppModelMetrics.overviewProbeValue(root, section, field) }
+    function overviewProbeValue(section, field) { return metricsState.overviewProbeValue(section, field) }
 
-    function indexerHeadValue() { return AppModelMetrics.indexerHeadValue(root) }
+    function indexerHeadValue() { return metricsState.indexerHeadValue() }
 
-    function sequencerHeadValue() { return AppModelMetrics.sequencerHeadValue(root) }
+    function sequencerHeadValue() { return metricsState.sequencerHeadValue() }
 
-    function nodeProbeValue(name) { return AppModelMetrics.nodeProbeValue(root, name) }
+    function nodeProbeValue(name) { return metricsState.nodeProbeValue(name) }
 
-    function cryptarchiaInfo() { return AppModelMetrics.cryptarchiaInfo(root) }
+    function cryptarchiaInfo() { return metricsState.cryptarchiaInfo() }
 
-    function cryptarchiaValue(key) { return AppModelMetrics.cryptarchiaValue(root, key) }
+    function cryptarchiaValue(key) { return metricsState.cryptarchiaValue(key) }
 
-    function networkInfo() { return AppModelMetrics.networkInfo(root) }
+    function networkInfo() { return metricsState.networkInfo() }
 
-    function networkValue(key) { return AppModelMetrics.networkValue(root, key) }
+    function networkValue(key) { return metricsState.networkValue(key) }
 
-    function mantleMetrics() { return AppModelMetrics.mantleMetrics(root) }
+    function mantleMetrics() { return metricsState.mantleMetrics() }
 
-    function mantleValue(keys) { return AppModelMetrics.mantleValue(root, keys) }
+    function mantleValue(keys) { return metricsState.mantleValue(keys) }
 
-    function tipMinusLib() { return AppModelMetrics.tipMinusLib(root) }
+    function tipMinusLib() { return metricsState.tipMinusLib() }
 
-    function finalityLagSeconds() { return AppModelMetrics.finalityLagSeconds(root) }
+    function finalityLagSeconds() { return metricsState.finalityLagSeconds() }
 
-    function indexerLag() { return AppModelMetrics.indexerLag(root) }
+    function indexerLag() { return metricsState.indexerLag() }
 
-    function moduleMetricValue(kind, names) { return AppModelMetrics.moduleMetricValue(root, kind, names) }
+    function moduleMetricValue(kind, names) { return metricsState.moduleMetricValue(kind, names) }
 
-    function moduleMetricSum(kind, names) { return AppModelMetrics.moduleMetricSum(root, kind, names) }
+    function moduleMetricSum(kind, names) { return metricsState.moduleMetricSum(kind, names) }
 
-    function storageManifestCount() { return AppModelMetrics.storageManifestCount(root) }
+    function storageManifestCount() { return metricsState.storageManifestCount() }
 
-    function dashboardMetricRawValue(key) { return AppModelMetrics.dashboardMetricRawValue(root, key) }
+    function dashboardMetricRawValue(key) { return metricsState.dashboardMetricRawValue(key) }
 
-    function dashboardMetricUsesWindow(key) { return AppModelMetrics.dashboardMetricUsesWindow(root, key) }
+    function dashboardMetricUsesWindow(key) { return metricsState.dashboardMetricUsesWindow(key) }
 
-    function dashboardMetricWindowDelta(key) { return AppModelMetrics.dashboardMetricWindowDelta(root, key) }
+    function dashboardMetricWindowDelta(key) { return metricsState.dashboardMetricWindowDelta(key) }
 
-    function recordDashboardSnapshot() { return AppModelMetrics.recordDashboardSnapshot(root) }
+    function recordDashboardSnapshot() { return metricsState.recordDashboardSnapshot() }
 
-    function dashboardMetricSamples(key) { return AppModelMetrics.dashboardMetricSamples(root, key) }
+    function dashboardMetricSamples(key) { return metricsState.dashboardMetricSamples(key) }
 
-    function normalizedDashboardSamples(samples) { return AppModelMetrics.normalizedDashboardSamples(root, samples) }
+    function normalizedDashboardSamples(samples) { return metricsState.normalizedDashboardSamples(samples) }
 
-    function dashboardMetricWindowSamples(key) { return AppModelMetrics.dashboardMetricWindowSamples(root, key) }
+    function dashboardMetricWindowSamples(key) { return metricsState.dashboardMetricWindowSamples(key) }
 
-    function windowDeltaFromSamples(samples, timestamp, windowMs) { return AppModelMetrics.windowDeltaFromSamples(root, samples, timestamp, windowMs) }
+    function windowDeltaFromSamples(samples, timestamp, windowMs) { return metricsState.windowDeltaFromSamples(samples, timestamp, windowMs) }
 
-    function defaultDashboardGraphSelections() { return AppModelMetrics.defaultDashboardGraphSelections(root) }
+    function defaultDashboardGraphSelections() { return metricsState.defaultDashboardGraphSelections() }
 
-    function refreshDashboard() { return entityNavigation.refreshDashboard() }
+    function refreshDashboard() { return metricsState.refreshDashboard() }
 
-    function updateDashboardCache(method, value) { return entityNavigation.updateDashboardCache(method, value) }
+    function updateDashboardCache(method, value) { return metricsState.cacheResponseValue(method, value) }
 
     function resolveInspectionTarget(query) { return entityNavigation.resolveInspectionTarget(query) }
 
@@ -1714,6 +1856,6 @@ QtObject {
 
     function removeIdl(index) { return AppModelRegistry.removeIdl(root, index) }
 
-    function clearDashboardMetricHistoryForPrefix(prefix) { return AppModelMetrics.clearDashboardMetricHistoryForPrefix(root, prefix) }
+    function clearDashboardMetricHistoryForPrefix(prefix) { return metricsState.clearDashboardMetricHistoryForPrefix(prefix) }
 
 }
