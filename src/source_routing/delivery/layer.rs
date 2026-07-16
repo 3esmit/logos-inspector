@@ -1,4 +1,5 @@
 use anyhow::{Context as _, Result};
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::{
@@ -304,6 +305,19 @@ pub(crate) struct MessagingReportInputs {
     pub(crate) source_mode: String,
     pub(crate) rest_endpoint: Option<String>,
     pub(crate) metrics_endpoint: Option<String>,
+    pub(crate) runtime_diagnostics_enabled: bool,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct MessagingReportEnvelope {
+    #[serde(default)]
+    options: MessagingReportOptions,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct MessagingReportOptions {
+    #[serde(default)]
+    runtime_diagnostics_enabled: bool,
 }
 
 impl<'a> MessagingAdapter<'a> {
@@ -372,12 +386,15 @@ pub(crate) fn report_inputs(args: &crate::support::args::Args) -> Result<Messagi
         .value(0)
         .context("Messaging adapter initialization is required")?;
     let initialization = AdapterInitialization::parse(value, MESSAGING_SOURCE_MODES, "rest")?;
+    let envelope: MessagingReportEnvelope = serde_json::from_value(value.clone())
+        .context("Messaging adapter initialization must be an object")?;
     Ok(MessagingReportInputs {
         source_mode: initialization.source_mode().to_owned(),
         rest_endpoint: initialization.input("rest_endpoint").map(ToOwned::to_owned),
         metrics_endpoint: initialization
             .input("metrics_endpoint")
             .map(ToOwned::to_owned),
+        runtime_diagnostics_enabled: envelope.options.runtime_diagnostics_enabled,
     })
 }
 
@@ -389,8 +406,15 @@ pub(crate) async fn module_report(
     module_transport: &SharedModuleTransport,
     transport: ModuleTransportKind,
     content_topic: Option<&str>,
+    runtime_diagnostics_enabled: bool,
 ) -> ModuleReport {
-    crate::modules::delivery_report(module_transport, transport, content_topic).await
+    crate::modules::delivery_report(
+        module_transport,
+        transport,
+        content_topic,
+        runtime_diagnostics_enabled,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -517,7 +541,8 @@ mod tests {
     fn messaging_report_boundary_parses_compact_adapter_inputs() -> Result<()> {
         let module = crate::support::args::Args::new(json!([{
             "source_mode": "module",
-            "inputs": {}
+            "inputs": {},
+            "options": { "runtime_diagnostics_enabled": true }
         }]))?;
         let metrics = crate::support::args::Args::new(json!([{
             "source_mode": "metrics",
@@ -526,7 +551,9 @@ mod tests {
 
         if report_inputs(&module)?.rest_endpoint.is_some()
             || report_inputs(&module)?.metrics_endpoint.is_some()
+            || !report_inputs(&module)?.runtime_diagnostics_enabled
             || report_inputs(&metrics)?.metrics_endpoint.as_deref() != Some("http://metrics")
+            || report_inputs(&metrics)?.runtime_diagnostics_enabled
         {
             anyhow::bail!("compact Messaging report inputs were parsed incorrectly");
         }

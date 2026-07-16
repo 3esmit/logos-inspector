@@ -56,12 +56,19 @@ pub async fn delivery_source_report(
     source_mode: &str,
     rest_endpoint: Option<&str>,
     metrics_endpoint: Option<&str>,
+    runtime_diagnostics_enabled: bool,
     module_transport: &SharedModuleTransport,
 ) -> SourceReport {
     match MessagingAdapter::select(source_mode, rest_endpoint, metrics_endpoint) {
         MessagingAdapter::Module { transport } => module_source_report(
             SourceReportKind::Delivery(DeliverySourceReportKind::Module),
-            layer::module_report(module_transport, transport, None).await,
+            layer::module_report(
+                module_transport,
+                transport,
+                None,
+                runtime_diagnostics_enabled,
+            )
+            .await,
         ),
         MessagingAdapter::Rest {
             endpoint,
