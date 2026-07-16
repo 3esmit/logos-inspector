@@ -57,6 +57,7 @@ TestCase {
 
     function init() {
         fakeHost.reset()
+        testWindow.width = testRoot.width
         model.metrics.blockchainRefreshRate = 0
         model.metrics.messagingRefreshRate = 0
         model.metrics.storageRefreshRate = 0
@@ -157,6 +158,77 @@ TestCase {
         }]
         compare(panel.zones.length, 3)
         verify(!hasVisibleText(page, "999"))
+    }
+
+    function test_narrow_dashboard_layout_stacks_activity_panels() {
+        testWindow.width = 820
+        const grid = findChild(page, "dashboardActivityGrid")
+        const blocks = findChild(page, "dashboardL1BlocksPanel")
+        const transactions = findChild(page, "dashboardL1TransactionsPanel")
+        const zones = findChild(page, "dashboardZonesPanel")
+        verify(grid !== null)
+        verify(blocks !== null)
+        verify(transactions !== null)
+        verify(zones !== null)
+
+        tryVerify(function () {
+            return grid.columns === 1
+                && blocks.width > 0
+                && transactions.width > 0
+                && zones.width > 0
+        })
+
+        compare(blocks.x, transactions.x)
+        compare(blocks.x, zones.x)
+        compare(blocks.width, transactions.width)
+        compare(blocks.width, zones.width)
+        verify(transactions.y >= blocks.y + blocks.height,
+               "Recent L1 Transactions must follow Recent L1 Blocks")
+        verify(zones.y >= transactions.y + transactions.height,
+               "Zones must follow Recent L1 Transactions")
+    }
+
+    function test_wide_dashboard_layout_keeps_l1_panels_readable_beside_zones() {
+        testWindow.width = 900
+        const zonesFixture = dashboardZones()
+        const manyZones = []
+        for (let index = 0; index < 20; ++index) {
+            manyZones.push(zonesFixture[index % zonesFixture.length])
+        }
+        model.zoneInspection.zoneSummaries = manyZones
+        const grid = findChild(page, "dashboardActivityGrid")
+        const blocks = findChild(page, "dashboardL1BlocksPanel")
+        const transactions = findChild(page, "dashboardL1TransactionsPanel")
+        const zones = findChild(page, "dashboardZonesPanel")
+        verify(grid !== null)
+        verify(blocks !== null)
+        verify(transactions !== null)
+        verify(zones !== null)
+
+        tryVerify(function () {
+            return grid.columns === 2
+                && blocks.width > 0
+                && transactions.width > 0
+                && zones.width > 0
+        })
+
+        verify(blocks.width >= 300,
+               "Recent L1 Blocks must keep a readable wide-layout column")
+        verify(transactions.width >= 300,
+               "Recent L1 Transactions must keep a readable wide-layout column")
+        verify(zones.width >= 300,
+               "Zones must keep a readable wide-layout column")
+        compare(blocks.x, transactions.x)
+        compare(blocks.width, transactions.width)
+        verify(Math.abs(blocks.width - zones.width) <= 1,
+               "Dashboard wide-layout columns must be balanced")
+        verify(blocks.x + blocks.width + grid.columnSpacing <= zones.x + 1,
+               "Recent L1 Blocks must not overlap Zones")
+        verify(transactions.x + transactions.width
+               + grid.columnSpacing <= zones.x + 1,
+               "Recent L1 Transactions must not overlap Zones")
+        verify(transactions.y >= blocks.y + blocks.height,
+               "Recent L1 Transactions must render below Recent L1 Blocks")
     }
 
     function test_dashboard_zone_activation_opens_zones() {
