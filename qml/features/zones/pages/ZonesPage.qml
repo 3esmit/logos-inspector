@@ -19,6 +19,7 @@ ColumnLayout {
     property string initialDetailTab: "overview"
     property bool sourceEditorInitiallyOpen: false
     property string pendingZoneId: ""
+    property bool retainDetailForDraft: false
     readonly property var zoneState: root.model && root.model.zoneInspection
         ? root.model.zoneInspection : null
     readonly property bool rowsStale: root.zoneState
@@ -32,6 +33,14 @@ ColumnLayout {
     readonly property bool stacked: width < 900
     readonly property bool hasDirtyDraft: detailLoader.detailItem !== null
         && detailLoader.detailItem.hasDirtyDraft
+
+    onHasDirtyDraftChanged: {
+        if (hasDirtyDraft) {
+            retainDetailForDraft = true
+        } else if (zoneState && zoneState.zoneDetail !== null) {
+            retainDetailForDraft = false
+        }
+    }
 
     objectName: "zonesPage"
     width: parent ? parent.width : 1180
@@ -289,8 +298,10 @@ ColumnLayout {
 
                 readonly property ZoneDetail detailItem: item as ZoneDetail
 
-                active: root.zoneState.zoneDetail !== null
-                    || (detailItem && detailItem.hasDirtyDraft)
+                // Do not derive Loader.active from item. Keep a separate
+                // latch for an unsaved draft, while avoiding a ZoneDetail
+                // instance when there is no detail to render.
+                active: root.zoneState.zoneDetail !== null || root.retainDetailForDraft
                 asynchronous: false
                 Layout.fillWidth: true
                 sourceComponent: ZoneDetail {
@@ -334,6 +345,7 @@ ColumnLayout {
         if (detailLoader.detailItem) {
             detailLoader.detailItem.discardSourceDraft()
         }
+        retainDetailForDraft = false
     }
 
     function targetCandidateRows() {
