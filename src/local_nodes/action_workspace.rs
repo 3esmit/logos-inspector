@@ -8,7 +8,7 @@ use std::{
 use anyhow::{Context as _, Result, bail};
 use serde_json::Value;
 
-use crate::modules::logos_core::normalize_module_call_value;
+use crate::modules::logos_core::{LogoscoreCliRuntime, normalize_module_call_value};
 use crate::support::{
     command_runner::{CommandControl, CommandTerminated},
     time::now_millis,
@@ -26,10 +26,7 @@ use super::model::{
     LocalNodeOperationReport, LocalNodesState, NodeAction, NodeKind, NodeLifecycleState,
 };
 use super::paths::{path_is_inside, remove_dir_inside};
-use super::process::{
-    find_command, process_group_has_live_members, process_group_is_alive, spawn_detached,
-    stop_process,
-};
+use super::process::{find_command, process_group_has_live_members, spawn_detached, stop_process};
 use super::runtime::LogoscoreRuntimeProfile;
 use super::workflow::node_set_for_profile;
 
@@ -345,6 +342,15 @@ fn runtime_start(
     control: Option<&CommandControl>,
 ) -> LocalNodeActionResult {
     operation_result(request, None, || {
+        if let Some(existing) = runtime.as_ref()
+            && existing.is_managed()
+            && !existing.is_running()
+        {
+            reap_runtime_process_group(existing)?;
+            if let Some(process_id) = existing.daemon_process_id {
+                wait_for_runtime_process_group_exit(process_id, control)?;
+            }
+        }
         let mut profile = LogoscoreRuntimeProfile::create_or_restart(
             runtime_config_root,
             runtime.as_ref(),
@@ -407,6 +413,9 @@ fn runtime_stop(
         }
         if !profile.is_running() {
             reap_runtime_process_group(profile)?;
+            if let Some(process_id) = profile.daemon_process_id {
+                wait_for_runtime_process_group_exit(process_id, control)?;
+            }
             profile.daemon_process_id = None;
             reset_module_contexts(state);
             return Ok(OperationOutcome {
@@ -427,6 +436,9 @@ fn runtime_stop(
         };
         if stopped {
             reap_runtime_process_group(profile)?;
+            if let Some(process_id) = profile.daemon_process_id {
+                wait_for_runtime_process_group_exit(process_id, control)?;
+            }
             profile.daemon_process_id = None;
             reset_module_contexts(state);
             return Ok(OperationOutcome {
@@ -447,7 +459,7 @@ fn reap_runtime_process_group(profile: &LogoscoreRuntimeProfile) -> Result<()> {
     let Some(process_id) = profile.daemon_process_id else {
         return Ok(());
     };
-    if !process_group_is_alive(process_id) {
+    if !process_group_has_live_members(process_id) {
         return Ok(());
     }
     stop_process(process_id).with_context(|| {
@@ -623,6 +635,40 @@ fn node_initialize(
         };
         match execution {
             Ok(value) => {
+                if kind == NodeKind::Messaging {
+                    let runtime = runtime
+                        .as_mut()
+                        .filter(|profile| profile.is_managed())
+                        .context(
+                            "Inspector-managed logoscore runtime disappeared during Messaging verification",
+                        )?;
+                    match verify_messaging_context(state, runtime, control) {
+                        Ok(verification) => {
+                            mark_node_initialized(state, profile, kind, &spec.program)?;
+                            return Ok(OperationOutcome {
+                                status: "initialized".to_owned(),
+                                detail: format!(
+                                    "{}; verified Messaging context with MyPeerId `{}`",
+                                    operation_detail_from_value(&value),
+                                    verification.peer_id
+                                ),
+                                command: Some(spec.display),
+                            });
+                        }
+                        Err(probe_error) if is_control_interruption(&probe_error) => {
+                            return Err(probe_error);
+                        }
+                        Err(probe_error) => {
+                            return Ok(OperationOutcome {
+                                status: "failed".to_owned(),
+                                detail: format!(
+                                    "Messaging initialization response was accepted, but context verification failed: {probe_error:#}"
+                                ),
+                                command: Some(spec.display),
+                            });
+                        }
+                    }
+                }
                 mark_node_initialized(state, profile, kind, &spec.program)?;
                 Ok(OperationOutcome {
                     status: "initialized".to_owned(),
@@ -715,6 +761,62 @@ fn is_ambiguous_messaging_create_error(error: &anyhow::Error) -> bool {
 struct MessagingContextVerification {
     peer_id: String,
     restarted_runtime: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum MessagingContextProbe {
+    Available,
+    Absent,
+    Unknown,
+}
+
+pub(super) fn probe_messaging_context(
+    cli: &LogoscoreCliRuntime,
+    control: CommandControl,
+) -> MessagingContextProbe {
+    let args = ["MyPeerId".to_owned()];
+    let Ok(response) = cli.call_controlled("delivery_module", "getNodeInfo", &args, control) else {
+        return MessagingContextProbe::Unknown;
+    };
+    messaging_context_probe_from_response(&response.value)
+}
+
+fn messaging_context_probe_from_response(response: &Value) -> MessagingContextProbe {
+    if response.get("status").and_then(Value::as_str) != Some("ok") {
+        return MessagingContextProbe::Unknown;
+    }
+    let Some(result) = response.get("result").and_then(Value::as_object) else {
+        return MessagingContextProbe::Unknown;
+    };
+    match result.get("success").and_then(Value::as_bool) {
+        Some(true) => {
+            if result
+                .get("value")
+                .and_then(Value::as_str)
+                .is_some_and(|peer_id| !peer_id.trim().is_empty())
+            {
+                MessagingContextProbe::Available
+            } else {
+                MessagingContextProbe::Unknown
+            }
+        }
+        Some(false) => {
+            if result
+                .get("error")
+                .and_then(Value::as_str)
+                .is_some_and(|error| {
+                    error
+                        .to_ascii_lowercase()
+                        .contains("context not initialized")
+                })
+            {
+                MessagingContextProbe::Absent
+            } else {
+                MessagingContextProbe::Unknown
+            }
+        }
+        None => MessagingContextProbe::Unknown,
+    }
 }
 
 fn messaging_context_recovery_detail(verification: &MessagingContextVerification) -> String {
@@ -1610,7 +1712,7 @@ mod tests {
     use anyhow::{Context as _, Result, bail};
 
     #[cfg(unix)]
-    use super::super::process::process_is_alive;
+    use super::super::process::{process_group_is_alive, process_is_alive};
     use super::*;
 
     #[cfg(unix)]
@@ -1642,6 +1744,34 @@ mod tests {
             bail!("operation error detail lost a cause: {detail}");
         }
         Ok(())
+    }
+
+    #[test]
+    fn messaging_context_probe_requires_a_successful_nonempty_peer_id() {
+        let available = serde_json::json!({
+            "status": "ok",
+            "result": {"success": true, "value": "peer-test"}
+        });
+        let absent = serde_json::json!({
+            "status": "ok",
+            "result": {"success": false, "error": "Context not initialized", "value": null}
+        });
+        let malformed = serde_json::json!({
+            "result": {"success": true, "value": "peer-test"}
+        });
+
+        assert_eq!(
+            messaging_context_probe_from_response(&available),
+            MessagingContextProbe::Available
+        );
+        assert_eq!(
+            messaging_context_probe_from_response(&absent),
+            MessagingContextProbe::Absent
+        );
+        assert_eq!(
+            messaging_context_probe_from_response(&malformed),
+            MessagingContextProbe::Unknown
+        );
     }
 
     #[test]
@@ -1702,6 +1832,128 @@ mod tests {
     #[test]
     fn runtime_stop_reaps_module_hosts_after_daemon_already_exited() -> Result<()> {
         runtime_stop_reaps_module_hosts(true)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_start_reaps_module_hosts_after_daemon_already_exited() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let cli = directory.path().join("logoscore");
+        fs::write(
+            &cli,
+            r#"#!/bin/sh
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --config-dir|--persistence-path|--modules-dir)
+            shift 2
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+case "$1" in
+    daemon)
+        trap 'exit 0' TERM INT
+        while :; do sleep 1; done
+        ;;
+    status)
+        printf '%s\n' '{"daemon":{"status":"running"}}'
+        ;;
+esac
+"#,
+        )?;
+        let mut permissions = fs::metadata(&cli)?.permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&cli, permissions)?;
+
+        let child_path = directory.path().join("module-host.pid");
+        let mut daemon_command = Command::new("/bin/sh");
+        daemon_command
+            .args([
+                "-c",
+                "sleep 30 & printf '%s' \"$!\" > \"$1\"; wait",
+                "sh",
+                child_path
+                    .to_str()
+                    .context("test child path is not valid UTF-8")?,
+            ])
+            .process_group(0);
+        let mut daemon = daemon_command.spawn()?;
+        let daemon_process_id = daemon.id();
+        let _old_cleanup = ProcessGroupGuard {
+            process_id: daemon_process_id,
+        };
+        let child_process_id = wait_for_process_id(&child_path)?;
+        let status = Command::new("kill")
+            .arg("-TERM")
+            .arg(daemon_process_id.to_string())
+            .status()
+            .context("failed to terminate test daemon without its module host")?;
+        anyhow::ensure!(
+            status.success(),
+            "test daemon termination exited with {status}"
+        );
+        anyhow::ensure!(
+            wait_until_stopped(daemon_process_id),
+            "test daemon {daemon_process_id} did not stop"
+        );
+        anyhow::ensure!(
+            process_is_alive(child_process_id),
+            "test module host {child_process_id} stopped with daemon"
+        );
+
+        let mut profile = LogoscoreRuntimeProfile::create_or_restart(
+            directory.path(),
+            None,
+            Some(
+                cli.to_str()
+                    .context("test LogosCore CLI path is not valid UTF-8")?,
+            ),
+            Some(
+                directory
+                    .path()
+                    .to_str()
+                    .context("test modules path is not valid UTF-8")?,
+            ),
+        )?;
+        profile.daemon_process_id = Some(daemon_process_id);
+        let mut runtime = Some(profile);
+        let mut state = LocalNodesState::default_for_config_dir(directory.path());
+        let request = LocalNodeActionRequest {
+            action: NodeAction::StartRuntime,
+            node: None,
+            network_id: None,
+            workspace_path: None,
+            runtime_modules_dir: None,
+            runtime_binary_path: None,
+            label: None,
+        };
+
+        let result = runtime_start(&mut state, &mut runtime, directory.path(), &request, None);
+
+        anyhow::ensure!(
+            result.report.status == "started",
+            "runtime start did not complete: {}",
+            result.report.detail
+        );
+        anyhow::ensure!(
+            wait_until_stopped(child_process_id),
+            "runtime start left module host {child_process_id} running"
+        );
+        let replacement_process_id = runtime
+            .as_ref()
+            .and_then(|profile| profile.daemon_process_id)
+            .context("runtime start did not record a replacement daemon")?;
+        let _replacement_cleanup = ProcessGroupGuard {
+            process_id: replacement_process_id,
+        };
+        anyhow::ensure!(
+            replacement_process_id != daemon_process_id && process_is_alive(replacement_process_id),
+            "runtime start did not replace the exited daemon"
+        );
+        let _status = daemon.wait()?;
+        Ok(())
     }
 
     #[cfg(unix)]
@@ -1906,6 +2158,33 @@ fi
 
     #[cfg(unix)]
     #[test]
+    fn messaging_initialize_rejects_accepted_create_without_context() -> Result<()> {
+        let (result, state, calls) = messaging_initialize_test_case("accepted-absent")?;
+
+        anyhow::ensure!(
+            result.report.status == "failed",
+            "Messaging initialization accepted an unverified context: {}",
+            result.report.detail
+        );
+        let messaging = testnet_node(&state, NodeKind::Messaging)?;
+        anyhow::ensure!(
+            !messaging.installed && messaging.lifecycle_state == NodeLifecycleState::NotInitialized,
+            "Messaging persisted a context that getNodeInfo could not verify: {messaging:?}"
+        );
+        assert_single_messaging_create(&calls)?;
+        anyhow::ensure!(
+            result
+                .report
+                .detail
+                .contains("response was accepted, but context verification failed"),
+            "Messaging initialization did not expose verification failure: {}",
+            result.report.detail
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn messaging_initialize_retries_preflight_before_single_create() -> Result<()> {
         // Arrange
         let (result, state, calls) = messaging_initialize_test_case("preflight-retry")?;
@@ -1925,8 +2204,10 @@ fi
             .iter()
             .filter(|call| call.as_str() == "module-info")
             .count();
-        if module_info_calls != 4 {
-            bail!("expected four module preflight attempts, found {module_info_calls}: {calls:?}");
+        if module_info_calls != 5 {
+            bail!(
+                "expected four preflight attempts and one context verification, found {module_info_calls}: {calls:?}"
+            );
         }
         let create_calls = calls
             .iter()
@@ -2212,7 +2493,7 @@ case "$1" in
         case "$3" in
             createNode)
                 printf '%s\n' createNode >> "$config_dir/calls"
-                if [ "$(cat "$config_dir/recovery-mode")" = preflight-retry ]; then
+                if [ "$(cat "$config_dir/recovery-mode")" = preflight-retry ] || [ "$(cat "$config_dir/recovery-mode")" = accepted-absent ]; then
                     printf '%s\n' '{"module":"delivery_module","method":"createNode","result":{"success":true,"value":"created"},"status":"ok"}'
                     exit 0
                 fi
@@ -2221,7 +2502,7 @@ case "$1" in
                 ;;
             getNodeInfo)
                 printf '%s\n' getNodeInfo >> "$config_dir/calls"
-                if [ "$(cat "$config_dir/recovery-mode")" = ready ]; then
+                if [ "$(cat "$config_dir/recovery-mode")" = ready ] || [ "$(cat "$config_dir/recovery-mode")" = preflight-retry ]; then
                     printf '%s\n' '{"module":"delivery_module","method":"getNodeInfo","result":{"success":true,"value":"peer-test"},"status":"ok"}'
                 else
                     printf '%s\n' '{"code":"CONTEXT_MISSING","message":"no delivery context","status":"error"}'
