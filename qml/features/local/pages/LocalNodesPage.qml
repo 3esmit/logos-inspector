@@ -315,7 +315,7 @@ ColumnLayout {
                     width: 130
                 },
                 {
-                    text: root.model.localMode() ? qsTr("Run") : qsTr("Health"),
+                    text: root.model.localMode() ? qsTr("Run") : qsTr("Status"),
                     width: 110
                 },
                 {
@@ -680,7 +680,7 @@ ColumnLayout {
         if (text === "running" || text === "online") {
             return "success";
         }
-        if (text === "starting" || text === "stopping" || text === "stale_pid"
+        if (text === "initializing" || text === "starting" || text === "stopping" || text === "stale_pid"
                 || text === "syncing") {
             return "warning";
         }

@@ -149,6 +149,7 @@ pub struct LocalNodeStatus {
     pub label: String,
     pub install_state: String,
     pub run_state: String,
+    pub ownership: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

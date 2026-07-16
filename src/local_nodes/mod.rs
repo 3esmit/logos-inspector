@@ -219,6 +219,7 @@ mod tests {
             label: kind.as_str().to_owned(),
             install_state: install_state.to_owned(),
             run_state: "stopped".to_owned(),
+            ownership: "external".to_owned(),
             endpoint: None,
             data_dir: None,
             config_path: None,
@@ -633,6 +634,33 @@ mod tests {
             devnets: Vec::new(),
             operations: Vec::new(),
         };
+        let managed_report = action_engine::report_for_state("default", &state);
+        let managed_indexer = managed_report
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Indexer)
+            .context("missing managed Indexer status")?;
+        anyhow::ensure!(
+            managed_indexer.ownership == "inspector_managed",
+            "managed Indexer ownership was not projected"
+        );
+        let mut external_state = state.clone();
+        external_state
+            .testnet
+            .as_mut()
+            .and_then(|record| record.nodes.first_mut())
+            .context("missing external Indexer config")?
+            .installed = false;
+        let external_report = action_engine::report_for_state("default", &external_state);
+        let external_indexer = external_report
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Indexer)
+            .context("missing external Indexer status")?;
+        anyhow::ensure!(
+            external_indexer.ownership == "external",
+            "unregistered Indexer was claimed as Inspector-managed"
+        );
         let request = LocalNodeActionRequest {
             action: NodeAction::Stop,
             node: Some(NodeKind::Indexer),
