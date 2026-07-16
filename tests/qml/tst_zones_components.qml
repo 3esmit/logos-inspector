@@ -310,6 +310,8 @@ TestCase {
             return findChild(detail, "zoneL2Accounts") !== null
         })
         const accounts = findChild(detail, "zoneL2Accounts")
+        const accountPosition = accounts.mapToItem(testWindow.contentItem, 0, 0)
+        verify(accountPosition.y < testWindow.height)
         const finalized = findChild(accounts, "zoneL2FinalizedAccountSnapshot")
         const provisional = findChild(accounts, "zoneL2ProvisionalAccountSnapshot")
         verify(finalized !== null && provisional !== null)

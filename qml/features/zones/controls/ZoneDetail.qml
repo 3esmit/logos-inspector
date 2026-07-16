@@ -117,7 +117,10 @@ ColumnLayout {
     Loader {
         active: root.currentTab === "overview"
         asynchronous: false
+        visible: active
         Layout.fillWidth: true
+        Layout.preferredHeight: active ? implicitHeight : 0
+        Layout.maximumHeight: active ? Number.POSITIVE_INFINITY : 0
         sourceComponent: ZoneOverview {
             theme: root.theme
             detail: root.detail
@@ -127,7 +130,10 @@ ColumnLayout {
     Loader {
         active: root.currentTab === "l2"
         asynchronous: false
+        visible: active
         Layout.fillWidth: true
+        Layout.preferredHeight: active ? implicitHeight : 0
+        Layout.maximumHeight: active ? Number.POSITIVE_INFINITY : 0
         sourceComponent: ZoneL2Inspector {
             theme: root.theme
             zoneState: root.l2BlockState
@@ -139,7 +145,10 @@ ColumnLayout {
     Loader {
         active: root.currentTab === "accounts"
         asynchronous: false
+        visible: active
         Layout.fillWidth: true
+        Layout.preferredHeight: active ? implicitHeight : 0
+        Layout.maximumHeight: active ? Number.POSITIVE_INFINITY : 0
         sourceComponent: ZoneL2Accounts {
             theme: root.theme
             zoneState: root.l2AccountState
@@ -153,7 +162,10 @@ ColumnLayout {
     Loader {
         active: root.currentTab === "programs"
         asynchronous: false
+        visible: active
         Layout.fillWidth: true
+        Layout.preferredHeight: active ? implicitHeight : 0
+        Layout.maximumHeight: active ? Number.POSITIVE_INFINITY : 0
         sourceComponent: ZoneL2Programs {
             theme: root.theme
             zoneState: root.l2ToolState
@@ -164,7 +176,10 @@ ColumnLayout {
     Loader {
         active: root.currentTab === "transfers"
         asynchronous: false
+        visible: active
         Layout.fillWidth: true
+        Layout.preferredHeight: active ? implicitHeight : 0
+        Layout.maximumHeight: active ? Number.POSITIVE_INFINITY : 0
         sourceComponent: ZoneL2Transfers {
             theme: root.theme
             zoneState: root.l2ToolState
@@ -182,7 +197,10 @@ ColumnLayout {
 
         active: root.currentTab === "sources"
         asynchronous: false
+        visible: active
         Layout.fillWidth: true
+        Layout.preferredHeight: active ? implicitHeight : 0
+        Layout.maximumHeight: active ? Number.POSITIVE_INFINITY : 0
         sourceComponent: ChannelSourcesSection {
             theme: root.theme
             zoneState: root.sourceEditorState
@@ -198,7 +216,10 @@ ColumnLayout {
     Loader {
         active: root.currentTab === "evidence"
         asynchronous: false
+        visible: active
         Layout.fillWidth: true
+        Layout.preferredHeight: active ? implicitHeight : 0
+        Layout.maximumHeight: active ? Number.POSITIVE_INFINITY : 0
         sourceComponent: ZoneEvidenceViewer {
             theme: root.theme
             zoneState: root.evidenceState
