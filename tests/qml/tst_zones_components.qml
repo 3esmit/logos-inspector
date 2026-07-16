@@ -130,6 +130,24 @@ TestCase {
         compare(zoneState.activeZoneId, FixtureData.identity("8"))
     }
 
+    function test_dirty_detail_component_survives_temporary_detail_reset() {
+        const detail = findChild(page, "zoneDetail")
+        verify(detail !== null)
+        verify(detail.requestTab("sources"))
+        tryVerify(function () {
+            return findChild(detail, "channelSourcesSection") !== null
+        })
+        const sources = findChild(detail, "channelSourcesSection")
+        sources.beginEditor("sequencer", null)
+        const endpoint = findChild(sources, "channelSourceEndpointField")
+        endpoint.text = "https://draft.example/"
+        tryVerify(function () { return page.hasDirtyDraft })
+        zoneState.zoneDetail = null
+        tryVerify(function () {
+            return findChild(page, "zoneDetail") !== null && page.hasDirtyDraft
+        })
+    }
+
     function test_l1_evidence_viewer_renders_exact_payload_as_plain_text() {
         const detail = findChild(page, "zoneDetail")
         verify(detail !== null)
