@@ -126,6 +126,10 @@ TestCase {
         confirmPopup.open()
         tryCompare(confirmPopup, "opened", true)
 
+        const messageText = findChild(confirmPopup.contentItem, "messageText")
+        verify(messageText !== null)
+        compare(messageText.wrapMode, Text.Wrap)
+
         const confirmButton = findChild(confirmPopup.contentItem, "confirmButton")
         verify(confirmButton !== null)
         mouseClick(confirmButton, confirmButton.width / 2, confirmButton.height / 2)

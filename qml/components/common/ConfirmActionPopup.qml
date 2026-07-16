@@ -48,10 +48,11 @@ Popup {
         }
 
         Text {
+            objectName: "messageText"
             text: root.message
             color: root.theme.textMuted
             textFormat: Text.PlainText
-            wrapMode: Text.WrapAnywhere
+            wrapMode: Text.Wrap
             font.pixelSize: root.theme.secondaryText
             Layout.fillWidth: true
         }
