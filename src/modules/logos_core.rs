@@ -654,6 +654,30 @@ impl LogoscoreCliTransport {
     pub(crate) fn runtime(&self) -> Result<LogoscoreCliRuntime> {
         self.runtime.resolve()
     }
+
+    fn pinned(&self) -> Result<Self> {
+        Ok(Self {
+            runtime: LogoscoreRuntimeBinding::Fixed(self.runtime.resolve()?),
+        })
+    }
+}
+
+/// Freezes dynamic LogosCore selection for one Inspector request so a
+/// multi-call report cannot migrate to a runtime that started mid-request.
+pub(crate) fn pin_module_transport(
+    module_transport: SharedModuleTransport,
+) -> Result<SharedModuleTransport> {
+    if module_transport.kind() != ModuleTransportKind::LogoscoreCli {
+        return Ok(module_transport);
+    }
+    let pinned = module_transport
+        .logoscore_cli_transport()
+        .map(LogoscoreCliTransport::pinned)
+        .transpose()?;
+    match pinned {
+        Some(transport) => Ok(Arc::new(transport)),
+        None => Ok(module_transport),
+    }
 }
 
 impl ModuleTransport for LogoscoreCliTransport {
@@ -4500,6 +4524,47 @@ esac
                 && stopped.runner.config_dir.is_none()
                 && selected_explicit == explicit,
             "dynamic LogosCore runtime selection retained stale state"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pinned_cli_transport_keeps_one_runtime_identity() -> Result<()> {
+        let current = Arc::new(Mutex::new(Some(LogoscoreCliRuntime::managed(
+            "/bin/first".to_owned(),
+            "/config/first".to_owned(),
+        ))));
+        let resolver_state = Arc::clone(&current);
+        let transport = LogoscoreCliTransport {
+            runtime: LogoscoreRuntimeBinding::ConfiguredWithFallback(Arc::new(move || {
+                resolver_state
+                    .lock()
+                    .map(|runtime| runtime.clone())
+                    .map_err(|_| anyhow::anyhow!("runtime resolver lock poisoned"))
+            })),
+        };
+
+        let pinned = pin_module_transport(Arc::new(transport.clone()))?;
+        *current
+            .lock()
+            .map_err(|_| anyhow::anyhow!("runtime state lock poisoned"))? = Some(
+            LogoscoreCliRuntime::managed("/bin/second".to_owned(), "/config/second".to_owned()),
+        );
+
+        anyhow::ensure!(
+            pinned
+                .logoscore_cli_transport()
+                .context("pinned transport lost LogosCore CLI identity")?
+                .runtime()?
+                .runner
+                .config_dir
+                .as_deref()
+                == Some("/config/first"),
+            "pinned transport migrated to a newer runtime"
+        );
+        anyhow::ensure!(
+            transport.runtime()?.runner.config_dir.as_deref() == Some("/config/second"),
+            "dynamic transport stopped tracking runtime changes"
         );
         Ok(())
     }

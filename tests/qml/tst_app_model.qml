@@ -1899,13 +1899,83 @@ TestCase {
         const runtimeInputs = model.capabilityRegistryRuntimeInputs()
         verify(runtimeInputs.messaging_mutating_diagnostics_enabled)
         verify(runtimeInputs.storage_mutating_diagnostics_enabled)
+        model.localNodesReport = {
+            runtime: {
+                ownership: "external",
+                run_state: "not_configured"
+            },
+            nodes: []
+        }
+        model.localNodesRevision += 1
+        compare(model.localNodesReport.runtime.ownership, "external")
+        verify(model.localNodes.runtimeDiagnosticsReady("messaging"))
         const deliveryArgs = model.sourceRouting.deliverySourceReportArgs()
+        compare(deliveryArgs[0].source_mode, "logoscore_cli")
         verify(deliveryArgs[0].options.runtime_diagnostics_enabled)
         const storageArgs = model.sourceRouting.storageSourceReportArgs(false)
         verify(storageArgs[0].options.runtime_diagnostics_enabled)
         const payload = model.settingsStatePayload()
         verify(payload.messaging_mutating_diagnostics_enabled === undefined)
         verify(payload.storage_mutating_diagnostics_enabled === undefined)
+    }
+
+    function test_managed_logoscore_runtime_probes_wait_for_running_node_context() {
+        installSourceModePolicy(model)
+        model.setNetworkConnectorMode("delivery", "logoscore_cli")
+        model.setNetworkConnectorMode("storage", "logoscore_cli")
+
+        verify(!model.sourceRouting.deliverySourceReportArgs()[0]
+            .options.runtime_diagnostics_enabled)
+        verify(!model.sourceRouting.storageSourceReportArgs(false)[0]
+            .options.runtime_diagnostics_enabled)
+
+        model.localNodesReport = {
+            runtime: {
+                ownership: "external",
+                run_state: "not_configured"
+            },
+            nodes: []
+        }
+        model.localNodesRevision += 1
+
+        verify(model.sourceRouting.deliverySourceReportArgs()[0]
+            .options.runtime_diagnostics_enabled)
+        verify(model.sourceRouting.storageSourceReportArgs(false)[0]
+            .options.runtime_diagnostics_enabled)
+
+        model.localNodesReport = {
+            runtime: {
+                ownership: "inspector_managed",
+                run_state: "running"
+            },
+            nodes: [
+                { kind: "messaging", run_state: "running" },
+                { kind: "storage", run_state: "not_initialized" }
+            ]
+        }
+        model.localNodesRevision += 1
+
+        verify(model.sourceRouting.deliverySourceReportArgs()[0]
+            .options.runtime_diagnostics_enabled)
+        verify(!model.sourceRouting.storageSourceReportArgs(false)[0]
+            .options.runtime_diagnostics_enabled)
+
+        model.localNodesReport = {
+            runtime: {
+                ownership: "inspector_managed",
+                run_state: "running"
+            },
+            nodes: [
+                { kind: "messaging", run_state: "running" },
+                { kind: "storage", run_state: "running" }
+            ]
+        }
+        model.localNodesRevision += 1
+
+        verify(model.sourceRouting.deliverySourceReportArgs()[0]
+            .options.runtime_diagnostics_enabled)
+        verify(model.sourceRouting.storageSourceReportArgs(false)[0]
+            .options.runtime_diagnostics_enabled)
     }
 
     function test_restore_defaults_loads_testnet_without_wallet_calls() {

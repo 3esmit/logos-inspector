@@ -4,7 +4,7 @@ use anyhow::Result;
 use serde_json::Value;
 use tokio::runtime::Runtime;
 
-use crate::modules::logos_core::SharedModuleTransport;
+use crate::modules::logos_core::{SharedModuleTransport, pin_module_transport};
 
 mod decode;
 mod local_nodes;
@@ -72,7 +72,7 @@ impl RuntimeMethodEntry {
             RuntimeMethodHandler::WithRuntime(handler) => handler(runtime, args),
             RuntimeMethodHandler::NoArgs(handler) => handler(),
             RuntimeMethodHandler::WithModuleTransport(handler) => {
-                handler(runtime, args, module_transport)
+                handler(runtime, args, pin_module_transport(module_transport)?)
             }
         }
     }

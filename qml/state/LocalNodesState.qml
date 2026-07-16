@@ -8,6 +8,8 @@ QtObject {
     required property var gateway
     property string networkProfile: "default"
     property bool busy: false
+    property bool sourceObservationBusy: false
+    readonly property bool actionBusy: busy || sourceObservationBusy
 
     property var report: null
     property string error: ""
@@ -66,7 +68,7 @@ QtObject {
     }
 
     function runAction(action, node, networkId, workspacePath, label, runtimeModulesDir, runtimeBinaryPath) {
-        if (busy) {
+        if (actionBusy) {
             gateway.setResult(qsTr("Local nodes"), qsTr("Another inspection is already running."), true, null);
             return null;
         }
@@ -348,11 +350,11 @@ QtObject {
     function actionEnabled(kind, action) {
         const node = nodeByKind(kind);
         const actions = node && Array.isArray(node.available_actions) ? node.available_actions : [];
-        return actions.indexOf(String(action || "")) >= 0 && busy !== true;
+        return actions.indexOf(String(action || "")) >= 0 && !actionBusy;
     }
 
     function networkActionEnabled(action) {
-        if (busy) {
+        if (actionBusy) {
             return false;
         }
         const key = String(action || "");
@@ -377,7 +379,7 @@ QtObject {
     }
 
     function runtimeActionEnabled(action) {
-        if (busy) {
+        if (actionBusy) {
             return false;
         }
         const reportValue = report || null;
@@ -399,6 +401,22 @@ QtObject {
     function runtimeState() {
         const runtime = runtimeInfo();
         return String(runtime && runtime.run_state ? runtime.run_state : "not_configured");
+    }
+
+    function runtimeDiagnosticsReady(kind) {
+        const reportValue = report || null
+        if (!reportValue) {
+            return false
+        }
+        const runtime = reportValue.runtime || null
+        if (!runtime || String(runtime.ownership || "") !== "inspector_managed") {
+            return true
+        }
+        if (String(runtime.run_state || "") !== "running") {
+            return false
+        }
+        const node = nodeByKind(kind)
+        return String(node && node.run_state || "") === "running"
     }
 
     function localMode() {

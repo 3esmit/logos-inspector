@@ -167,18 +167,18 @@ function coreSourceArgs(root, sourceMode, endpoint, extra) {
     return [String(endpoint || "")].concat(rest)
 }
 
-function deliverySourceReportArgs(root, sourceMode, restEndpoint, metricsEndpoint) {
+function deliverySourceReportArgs(root, sourceMode, restEndpoint, metricsEndpoint, runtimeDiagnosticsEnabled) {
     const initialization = adapterInitialization(root, "delivery", sourceMode, {
         rest_endpoint: String(restEndpoint || ""),
         metrics_endpoint: String(metricsEndpoint || "")
     })
     initialization.options = {
-        runtime_diagnostics_enabled: true
+        runtime_diagnostics_enabled: runtimeDiagnosticsEnabled !== false
     }
     return [initialization]
 }
 
-function storageSourceReportArgs(root, sourceMode, restEndpoint, metricsEndpoint, cid, includeCidProbe, privilegedDebugEnabled) {
+function storageSourceReportArgs(root, sourceMode, restEndpoint, metricsEndpoint, cid, includeCidProbe, privilegedDebugEnabled, runtimeDiagnosticsEnabled) {
     const initialization = adapterInitialization(root, "storage", sourceMode, {
         rest_endpoint: String(restEndpoint || ""),
         metrics_endpoint: String(metricsEndpoint || "")
@@ -186,7 +186,7 @@ function storageSourceReportArgs(root, sourceMode, restEndpoint, metricsEndpoint
     initialization.options = {
         cid: includeCidProbe === true && sourceModeSupportsCidProbe(root, "storage", sourceMode) ? String(cid || "") : "",
         privileged_debug_enabled: privilegedDebugEnabled === true,
-        runtime_diagnostics_enabled: true
+        runtime_diagnostics_enabled: runtimeDiagnosticsEnabled !== false
     }
     return [initialization]
 }

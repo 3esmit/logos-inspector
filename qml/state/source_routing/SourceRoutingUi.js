@@ -37,7 +37,15 @@ function deliverySourceView(root) {
         moduleName: root.deliveryModule,
         networkPreset: root.messagingNetworkPreset,
         mutatingDiagnosticsEnabled: true,
-        reportArgs: function () { return SourcePolicyProjection.deliverySourceReportArgs(root, mode, root.configuredMessagingRestUrl(), root.messagingMetricsUrl) },
+        reportArgs: function () {
+            return SourcePolicyProjection.deliverySourceReportArgs(
+                root,
+                mode,
+                root.configuredMessagingRestUrl(),
+                root.messagingMetricsUrl,
+                root.runtimeDiagnosticsEnabled("delivery", mode)
+            )
+        },
         actionArgs: function (extra) {
             const source = deliverySourceView(root)
             const args = [source.effectiveMode]
@@ -68,7 +76,8 @@ function storageSourceView(root) {
                 root.storageMetricsUrl,
                 root.storageCidProbe,
                 includeCidProbe === true,
-                root.storagePrivilegedDebugEnabled
+                root.storagePrivilegedDebugEnabled,
+                root.runtimeDiagnosticsEnabled("storage", mode)
             )
         },
         actionArgs: function (extra) {
