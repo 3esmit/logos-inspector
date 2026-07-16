@@ -875,7 +875,8 @@ function refreshSharedIdlsForAccount(root, entityRef, dataHex, ownerProgramId) {
         dataHex: String(dataHex || "").trim(),
         ownerProgramId: String(ownerProgramId || ""),
         topic: socialZoneAccountIdlTopic(root, entityRef),
-        readEnabled: socialSharedIdlReadAvailable(root)
+        readEnabled: socialSharedIdlReadAvailable(root),
+        zoneScope: sharedIdlZoneScope(root)
     }
     if (request.policy === "disabled" || !request.accountId.length
             || !request.topic.length || !request.dataHex.length
@@ -883,43 +884,223 @@ function refreshSharedIdlsForAccount(root, entityRef, dataHex, ownerProgramId) {
         return false
     }
     const callerKey = "shared-idl|" + account
-    if (root.storeQueryCallerPending(callerKey)) {
+    const existing = sharedIdlRetry(root, callerKey)
+    if (existing && sharedIdlRetryMatches(existing, request)) {
+        return false
+    }
+    if (existing) {
+        root.invalidateStoreQueryCaller(callerKey)
+        clearSharedIdlRetry(root, callerKey)
+    } else if (root.storeQueryCallerPending(callerKey)) {
+        return false
+    }
+
+    const intent = beginSharedIdlRetry(root, callerKey, request)
+    return startSharedIdlStoreQuery(root, intent)
+}
+
+function pollSharedIdlRetries(root) {
+    const intents = root.sharedIdlRetryRequests || ({})
+    const keys = Object.keys(intents)
+    const now = Date.now()
+    let started = 0
+    for (let i = 0; i < keys.length; ++i) {
+        const callerKey = keys[i]
+        const intent = intents[callerKey] || null
+        if (!sharedIdlRetryCurrent(root, intent)) {
+            root.invalidateStoreQueryCaller(callerKey)
+            clearSharedIdlRetry(root, callerKey)
+            continue
+        }
+        if (intent.hydrating === true || root.storeQueryCallerPending(callerKey)
+                || Number(intent.dueAt || 0) > now) {
+            continue
+        }
+        if (startSharedIdlStoreQuery(root, intent)) {
+            started += 1
+        }
+    }
+    return started
+}
+
+function invalidateSharedIdlRetries(root) {
+    root.sharedIdlRetryGeneration += 1
+    root.sharedIdlRetryRequests = ({})
+}
+
+function startSharedIdlStoreQuery(root, intent) {
+    if (!sharedIdlRetryCurrent(root, intent) || intent.hydrating === true
+            || root.storeQueryCallerPending(intent.callerKey)) {
         return false
     }
 
     const query = querySocialStore(root, {
-        callerKey: callerKey,
+        callerKey: intent.callerKey,
         family: "shared-idl",
-        accountId: account,
-        topic: request.topic
+        accountId: intent.accountId,
+        topic: intent.topic
     }, "", 20, qsTr("Shared IDLs"), function (response, ticket) {
-        if (!response || response.ok !== true || !root.isCurrentStoreQuery(ticket)) {
+        if (!response || response.ok !== true) {
+            if (root.isCurrentStoreQuery(ticket) && sharedIdlRetryCurrent(root, intent)) {
+                clearSharedIdlRetry(root, intent.callerKey)
+            }
+            return false
+        }
+        if (!root.isCurrentStoreQuery(ticket) || !sharedIdlRetryCurrent(root, intent)) {
+            return false
+        }
+        if (!markSharedIdlRetryHydrating(root, intent)) {
+            root.releaseStoreQuery(ticket)
             return false
         }
         const admitted = SharedIdlTransport.acceptedEntriesFromStore(
             root,
-            request,
+            intent,
             response.value,
             function (acceptedResponse) {
                 if (!root.isCurrentStoreQuery(ticket)) {
                     return
                 }
+                if (!sharedIdlRetryCurrent(root, intent)) {
+                    root.releaseStoreQuery(ticket)
+                    return
+                }
+                if (!acceptedResponse || acceptedResponse.ok !== true) {
+                    clearSharedIdlRetry(root, intent.callerKey)
+                    root.releaseStoreQuery(ticket)
+                    return
+                }
                 const entries = acceptedResponse && acceptedResponse.ok === true
                         && Array.isArray(acceptedResponse.value)
                     ? acceptedResponse.value : []
-                for (let i = 0; i < entries.length; ++i) {
-                    applySharedIdlPolicy(root, account, entries[i])
+                if (entries.length === 0) {
+                    scheduleSharedIdlRetry(root, intent)
+                } else {
+                    for (let i = 0; i < entries.length; ++i) {
+                        applySharedIdlPolicy(root, intent.accountId, entries[i])
+                    }
+                    clearSharedIdlRetry(root, intent.callerKey)
                 }
                 root.releaseStoreQuery(ticket)
             }
         )
         if (admitted === false || admitted === null) {
+            clearSharedIdlRetry(root, intent.callerKey)
             root.releaseStoreQuery(ticket)
             return false
         }
         return true
     })
+    if (!query.ok) {
+        clearSharedIdlRetry(root, intent.callerKey)
+    }
     return query.ok
+}
+
+function beginSharedIdlRetry(root, callerKey, request) {
+    root.sharedIdlRetryGeneration += 1
+    const intent = copyMap(request)
+    intent.callerKey = String(callerKey || "")
+    intent.generation = root.sharedIdlRetryGeneration
+    intent.attempt = 1
+    intent.dueAt = 0
+    intent.hydrating = false
+    setSharedIdlRetry(root, intent)
+    return intent
+}
+
+function scheduleSharedIdlRetry(root, intent) {
+    if (!sharedIdlRetryCurrent(root, intent)) {
+        return false
+    }
+    const attempt = Math.max(1, Number(intent.attempt || 1))
+    if (attempt >= sharedIdlRetryMaxAttempts(root)) {
+        clearSharedIdlRetry(root, intent.callerKey)
+        return false
+    }
+    const next = copyMap(intent)
+    next.attempt = attempt + 1
+    next.dueAt = Date.now() + sharedIdlRetryDelay(root, attempt)
+    next.hydrating = false
+    setSharedIdlRetry(root, next)
+    return true
+}
+
+function markSharedIdlRetryHydrating(root, intent) {
+    if (!sharedIdlRetryCurrent(root, intent)) {
+        return false
+    }
+    const next = copyMap(intent)
+    next.hydrating = true
+    setSharedIdlRetry(root, next)
+    return true
+}
+
+function sharedIdlRetryDelay(root, attempt) {
+    const configured = Number(root.sharedIdlRetryBaseDelayMs || 1000)
+    const base = Number.isFinite(configured) ? Math.max(1, Math.floor(configured)) : 1000
+    return Math.min(30000, base * Math.pow(2, Math.max(0, Number(attempt || 1) - 1)))
+}
+
+function sharedIdlRetryMaxAttempts(root) {
+    const configured = Number(root.sharedIdlRetryMaxAttempts || 4)
+    return Number.isFinite(configured) ? Math.max(1, Math.floor(configured)) : 4
+}
+
+function sharedIdlRetryCurrent(root, intent) {
+    const value = intent || null
+    const callerKey = String(value && value.callerKey || "")
+    const current = callerKey.length ? sharedIdlRetry(root, callerKey) : null
+    if (!current || Number(current.generation) !== Number(value.generation)
+            || Number(current.attempt) !== Number(value.attempt)
+            || !sharedIdlRetryMatches(current, value)) {
+        return false
+    }
+    const zoneScope = String(value.zoneScope || "")
+    return (!zoneScope.length || zoneScope === sharedIdlZoneScope(root))
+        && normalizedSharedIdlPolicy(root.sharedIdlPolicy) === String(value.policy || "")
+        && socialSharedIdlReadAvailable(root)
+}
+
+function sharedIdlRetryMatches(left, right) {
+    const first = left || {}
+    const second = right || {}
+    return String(first.policy || "") === String(second.policy || "")
+        && String(first.accountId || "") === String(second.accountId || "")
+        && String(first.dataHex || "") === String(second.dataHex || "")
+        && String(first.ownerProgramId || "") === String(second.ownerProgramId || "")
+        && String(first.topic || "") === String(second.topic || "")
+        && String(first.zoneScope || "") === String(second.zoneScope || "")
+        && first.readEnabled === second.readEnabled
+}
+
+function sharedIdlRetry(root, callerKey) {
+    const requests = root.sharedIdlRetryRequests || ({})
+    return requests[String(callerKey || "")] || null
+}
+
+function setSharedIdlRetry(root, intent) {
+    const next = copyMap(root.sharedIdlRetryRequests || {})
+    next[String(intent.callerKey || "")] = intent
+    root.sharedIdlRetryRequests = next
+}
+
+function clearSharedIdlRetry(root, callerKey) {
+    const key = String(callerKey || "")
+    const requests = root.sharedIdlRetryRequests || ({})
+    if (!key.length || !requests[key]) {
+        return false
+    }
+    const next = copyMap(requests)
+    delete next[key]
+    root.sharedIdlRetryRequests = next
+    return true
+}
+
+function sharedIdlZoneScope(root) {
+    const gateway = root.gateway || null
+    return gateway && typeof gateway.zoneScopeKey === "function"
+        ? String(gateway.zoneScopeKey() || "") : ""
 }
 
 function applySharedIdlPolicy(root, accountId, entry) {
