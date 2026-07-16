@@ -42,7 +42,6 @@ function applySettingsState(root, value) {
             root.stringSetting(value, "messaging_network_preset", messagingNetworkPreset))
         messagingRollingWindow = root.numberSetting(value, "messaging_rolling_window", messagingRollingWindow)
         messagingAdminRestEnabled = root.boolSetting(value, "messaging_admin_rest_enabled", messagingAdminRestEnabled)
-        messagingMutatingDiagnosticsEnabled = root.boolSetting(value, "messaging_mutating_diagnostics_enabled", messagingMutatingDiagnosticsEnabled)
         storageRestUrl = root.stringSetting(value, "storage_rest_url", storageRestUrl)
         storageMetricsUrl = root.stringSetting(value, "storage_metrics_url", storageMetricsUrl)
         storageNetworkPreset = root.stringSetting(value, "storage_network_preset", storageNetworkPreset)
@@ -51,7 +50,6 @@ function applySettingsState(root, value) {
         storageRollingWindow = root.numberSetting(value, "storage_rolling_window", storageRollingWindow)
         storageLocalDiagnosticsEnabled = root.boolSetting(value, "storage_local_diagnostics_enabled", storageLocalDiagnosticsEnabled)
         storagePrivilegedDebugEnabled = root.boolSetting(value, "storage_privileged_debug_enabled", storagePrivilegedDebugEnabled)
-        storageMutatingDiagnosticsEnabled = root.boolSetting(value, "storage_mutating_diagnostics_enabled", storageMutatingDiagnosticsEnabled)
         localNodesEnabled = root.boolSetting(value, "local_nodes_enabled", localNodesEnabled)
         localDevnetEnabled = localNodesEnabled && root.boolSetting(value, "local_devnet_enabled", localDevnetEnabled)
         settingsBackupEncrypted = root.boolSetting(value, "settings_backup_encrypted", settingsBackupEncrypted)
@@ -91,7 +89,6 @@ function settingsStatePayload(root) {
             messaging_network_preset: root.sourceRouting.normalizedMessagingNetworkPreset(messagingNetworkPreset),
             messaging_rolling_window: Number(messagingRollingWindow || 0),
             messaging_admin_rest_enabled: messagingAdminRestEnabled === true,
-            messaging_mutating_diagnostics_enabled: messagingMutatingDiagnosticsEnabled === true,
             storage_rest_url: String(storageRestUrl || ""),
             storage_metrics_url: String(storageMetricsUrl || ""),
             storage_network_preset: String(storageNetworkPreset || ""),
@@ -100,7 +97,6 @@ function settingsStatePayload(root) {
             storage_rolling_window: Number(storageRollingWindow || 0),
             storage_local_diagnostics_enabled: storageLocalDiagnosticsEnabled === true,
             storage_privileged_debug_enabled: storagePrivilegedDebugEnabled === true,
-            storage_mutating_diagnostics_enabled: storageMutatingDiagnosticsEnabled === true,
             local_nodes_enabled: localNodesEnabled === true,
             local_devnet_enabled: localNodesEnabled === true && localDevnetEnabled === true,
             settings_backup_encrypted: settingsBackupEncrypted === true,

@@ -84,7 +84,10 @@ impl NodeOperationRequest {
     }
 
     pub(crate) fn from_value(value: &Value) -> Result<Self> {
-        serde_json::from_value(value.clone()).context("node operation request must be an object")
+        let mut request: Self = serde_json::from_value(value.clone())
+            .context("node operation request must be an object")?;
+        request.mutating_enabled = true;
+        Ok(request)
     }
 
     #[must_use]
@@ -103,13 +106,6 @@ impl NodeOperationRequest {
     #[must_use]
     pub(crate) const fn mutating_enabled(&self) -> bool {
         self.mutating_enabled
-    }
-
-    pub(crate) fn require_mutating(&self, label: &str) -> Result<()> {
-        if self.mutating_enabled {
-            return Ok(());
-        }
-        bail!("{label} requires mutating diagnostics to be enabled")
     }
 
     #[must_use]

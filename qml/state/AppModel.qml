@@ -326,7 +326,7 @@ QtObject {
     property string messagingNetworkPreset: "logos.test"
     property int messagingRollingWindow: 120
     property bool messagingAdminRestEnabled: false
-    property bool messagingMutatingDiagnosticsEnabled: false
+    readonly property bool messagingMutatingDiagnosticsEnabled: true
     property Domains.SocialCollaborationState social: Domains.SocialCollaborationState {
         id: socialState
 
@@ -378,7 +378,7 @@ QtObject {
     property int storageRollingWindow: 120
     property bool storageLocalDiagnosticsEnabled: false
     property bool storagePrivilegedDebugEnabled: false
-    property bool storageMutatingDiagnosticsEnabled: false
+    readonly property bool storageMutatingDiagnosticsEnabled: true
     property bool localNodesEnabled: true
     property bool localDevnetEnabled: false
     property Domains.OperationHistoryState operationHistory: Domains.OperationHistoryState {
@@ -959,10 +959,6 @@ QtObject {
     onMessagingNetworkPresetChanged: handleMessagingConfigurationChanged()
     onMessagingRollingWindowChanged: saveSettingsState()
     onMessagingAdminRestEnabledChanged: saveSettingsState()
-    onMessagingMutatingDiagnosticsEnabledChanged: {
-        saveSettingsState()
-        refreshCapabilityRegistryIfLoaded()
-    }
     onStorageSourceModeChanged: handleStorageConfigurationChanged()
     onStorageRestUrlChanged: handleStorageConfigurationChanged()
     onStorageMetricsUrlChanged: handleStorageConfigurationChanged()
@@ -972,10 +968,6 @@ QtObject {
     onStorageRollingWindowChanged: saveSettingsState()
     onStorageLocalDiagnosticsEnabledChanged: handleStorageConfigurationChanged()
     onStoragePrivilegedDebugEnabledChanged: handleStorageConfigurationChanged()
-    onStorageMutatingDiagnosticsEnabledChanged: {
-        saveSettingsState()
-        refreshCapabilityRegistryIfLoaded()
-    }
     onLocalNodesEnabledChanged: {
         if (!localNodesEnabled && localDevnetEnabled) {
             localDevnetEnabled = false
@@ -1472,9 +1464,9 @@ QtObject {
             storage_rest_url: sourceRouting.configuredStorageRestUrl(),
             storage_metrics_url: String(storageMetricsUrl || ""),
             messaging_rest_url: sourceRouting.configuredMessagingRestUrl(),
-	        messaging_metrics_url: String(messagingMetricsUrl || ""),
-	        storage_mutating_diagnostics_enabled: storageMutatingDiagnosticsEnabled === true,
-            messaging_mutating_diagnostics_enabled: messagingMutatingDiagnosticsEnabled === true,
+            messaging_metrics_url: String(messagingMetricsUrl || ""),
+            storage_mutating_diagnostics_enabled: true,
+            messaging_mutating_diagnostics_enabled: true,
             wallet_profile_configured: walletProfileConfigured(),
             wallet_home_configured: walletHomeConfigured(),
             local_nodes_enabled: localNodesEnabled === true,

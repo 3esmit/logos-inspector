@@ -22,13 +22,13 @@ QtObject {
     property string messagingRestUrl: ""
     property string messagingMetricsUrl: ""
     property string messagingNetworkPreset: ""
-    property bool messagingMutatingDiagnosticsEnabled: false
+    property bool messagingMutatingDiagnosticsEnabled: true
     property string storageRestUrl: ""
     property string storageMetricsUrl: ""
     property string storageNetworkPreset: ""
     property string storageCidProbe: ""
     property bool storagePrivilegedDebugEnabled: false
-    property bool storageMutatingDiagnosticsEnabled: false
+    property bool storageMutatingDiagnosticsEnabled: true
     property var connectorConfig: ({})
 
     function loadSourcePolicy() {

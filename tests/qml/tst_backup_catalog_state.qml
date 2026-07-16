@@ -176,6 +176,7 @@ TestCase {
             context: {
                 source: "rest",
                 endpoint: "http://storage",
+                mutatingEnabled: true,
                 cid: expectedCid,
                 downloadScope: "network"
             },
@@ -526,7 +527,7 @@ TestCase {
         compare(request.method, "storageDownloadBackupCatalogEntry")
         compare(request.adapter.source_mode, "rest")
         compare(request.adapter.inputs.rest_endpoint, "http://storage")
-        compare(request.mutating_enabled, false)
+        compare(request.mutating_enabled, true)
         compare(request.payload.cid, "cid-download")
         compare(request.payload.local_only, false)
         compare(callbackCount, 1)

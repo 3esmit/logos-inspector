@@ -1,10 +1,10 @@
 .pragma library
 
-function envelope(adapterInitialization, payload, mutatingEnabled) {
+function envelope(adapterInitialization, payload) {
     return {
         adapter: adapterInitialization || ({ source_mode: "", inputs: ({}) }),
         payload: payload || ({}),
-        mutating_enabled: mutatingEnabled === true
+        mutating_enabled: true
     }
 }
 

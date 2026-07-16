@@ -359,6 +359,7 @@ TestCase {
             context: {
                 source: "rest",
                 endpoint: model.sourceRouting.configuredStorageRestUrl(),
+                mutatingEnabled: true,
                 cid: String(cid || "cid-restore"),
                 downloadScope: "network"
             },
@@ -1878,6 +1879,31 @@ TestCase {
         verify(fakeHost.lastArgs[0].footer_fields["overall.status"])
     }
 
+    function test_legacy_mutating_diagnostics_settings_are_ignored() {
+        fakeHost.responses = {
+            loadSettingsState: {
+                ok: true,
+                value: {
+                    messaging_mutating_diagnostics_enabled: false,
+                    storage_mutating_diagnostics_enabled: false
+                },
+                text: "OK",
+                error: ""
+            }
+        }
+
+        model.loadSettingsState()
+
+        verify(model.messagingMutatingDiagnosticsEnabled)
+        verify(model.storageMutatingDiagnosticsEnabled)
+        const runtimeInputs = model.capabilityRegistryRuntimeInputs()
+        verify(runtimeInputs.messaging_mutating_diagnostics_enabled)
+        verify(runtimeInputs.storage_mutating_diagnostics_enabled)
+        const payload = model.settingsStatePayload()
+        verify(payload.messaging_mutating_diagnostics_enabled === undefined)
+        verify(payload.storage_mutating_diagnostics_enabled === undefined)
+    }
+
     function test_restore_defaults_loads_testnet_without_wallet_calls() {
         model.settingsStateLoaded = true
         model.networkProfile = "custom"
@@ -2671,8 +2697,6 @@ TestCase {
 
     function test_publish_account_idl_uploads_artifact_before_delivery_send() {
         setActiveZone("")
-        model.storageMutatingDiagnosticsEnabled = true
-        model.messagingMutatingDiagnosticsEnabled = true
         fakeHost.responses = {
             socialZoneAccountIdlTopic: {
                 ok: true,
@@ -2740,8 +2764,6 @@ TestCase {
     function test_publish_account_idl_uploads_through_logoscore_cli() {
         setActiveZone("")
         model.setNetworkConnectorMode("storage", "logoscore_cli")
-        model.storageMutatingDiagnosticsEnabled = true
-        model.messagingMutatingDiagnosticsEnabled = true
         fakeHost.responses = {
             socialZoneAccountIdlTopic: {
                 ok: true,
@@ -2797,8 +2819,6 @@ TestCase {
 
     function test_verified_local_idl_selection_honors_auto_share_setting() {
         setActiveZone("")
-        model.storageMutatingDiagnosticsEnabled = true
-        model.messagingMutatingDiagnosticsEnabled = true
         model.social.createIdentity("Auto publisher")
         model.social.sharedIdlAutoShare = true
         fakeHost.responses = {
@@ -2865,7 +2885,6 @@ TestCase {
             }]
         })
         model.storageSourceMode = "rest"
-        model.storageMutatingDiagnosticsEnabled = true
         fakeHost.responses = {
             createLocalSettingsBackup: {
                 ok: true,
@@ -2898,7 +2917,6 @@ TestCase {
             }]
         })
         model.storageSourceMode = "rest"
-        model.storageMutatingDiagnosticsEnabled = true
         fakeHost.responses = {
             runtimeOperationStart: {
                 ok: true,
@@ -3022,7 +3040,6 @@ TestCase {
         model.settingsStateLoaded = true
         model.idlStateLoaded = true
         model.walletStateLoaded = true
-        model.storageMutatingDiagnosticsEnabled = true
         configureReadyWallet()
         model.settingsBackupEncrypted = true
         fakeHost.responses = {
@@ -3152,7 +3169,6 @@ TestCase {
         model.settingsStateLoaded = true
         model.idlStateLoaded = true
         model.walletStateLoaded = true
-        model.storageMutatingDiagnosticsEnabled = false
         configureReadyWallet()
         fakeHost.responses = {
             runtimeOperationStart: {
@@ -3201,7 +3217,7 @@ TestCase {
         compare(downloadCalls[0].args[0].method, "storageDownloadBackupCatalogEntry")
         compare(downloadCalls[0].args[0].adapter.source_mode, "rest")
         compare(downloadCalls[0].args[0].adapter.inputs.rest_endpoint, model.sourceRouting.configuredStorageRestUrl())
-        compare(downloadCalls[0].args[0].mutating_enabled, false)
+        compare(downloadCalls[0].args[0].mutating_enabled, true)
         compare(downloadCalls[0].args[0].payload.cid, "cid-restore")
         compare(downloadCalls[0].args[0].payload.local_only, false)
         verify(!fakeHost.calls.some(function (call) { return call.method === "storageRestoreSettings" }))

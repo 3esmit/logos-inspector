@@ -30,26 +30,6 @@ pub(crate) enum StorageOperation {
     Remove,
 }
 
-impl StorageOperation {
-    const fn mutating(self) -> bool {
-        matches!(
-            self,
-            Self::Fetch | Self::Upload | Self::Download | Self::Remove
-        )
-    }
-
-    const fn action_label(self) -> &'static str {
-        match self {
-            Self::Manifests => "storage manifests",
-            Self::DownloadManifest => "storage manifest download",
-            Self::Fetch => "storage network action",
-            Self::Upload => "storage upload action",
-            Self::Download => "storage download action",
-            Self::Remove => "storage remove action",
-        }
-    }
-}
-
 pub(crate) enum StorageOperationOutput {
     Outcome(NodeOperationOutcome),
     Download(StorageDownloadRequest),
@@ -328,9 +308,6 @@ impl StorageOperationRequest {
         request: &NodeOperationRequest,
         operation: StorageOperation,
     ) -> Result<Self> {
-        if operation.mutating() {
-            request.require_mutating(operation.action_label())?;
-        }
         let client = StorageClient::from_initialization(request.adapter())?;
         let (plan, context) = operation_plan(request, operation, client)?;
         Ok(Self { plan, context })
@@ -702,7 +679,6 @@ pub(crate) struct StorageBackupUploadRequest {
 
 impl StorageBackupUploadRequest {
     pub(crate) fn parse_request(request: &NodeOperationRequest) -> Result<Self> {
-        request.require_mutating("settings backup action")?;
         let payload: BackupUploadPayload = request.payload("settings backup")?;
         Ok(Self {
             client: StorageClient::from_initialization(request.adapter())?,
@@ -741,7 +717,6 @@ pub(crate) struct StoragePayloadUploadRequest {
 
 impl StoragePayloadUploadRequest {
     pub(crate) fn parse_request(request: &NodeOperationRequest) -> Result<Self> {
-        request.require_mutating("storage payload upload")?;
         let payload: PayloadUploadPayload = request.payload("storage payload upload")?;
         Ok(Self {
             client: StorageClient::from_initialization(request.adapter())?,
@@ -1129,7 +1104,7 @@ mod tests {
     }
 
     #[test]
-    fn payload_upload_request_requires_mutating_diagnostics() -> Result<()> {
+    fn payload_upload_request_enables_legacy_mutating_flag() -> Result<()> {
         let request = request(json!({
             "adapter": {
                 "source_mode": "rest",
@@ -1142,15 +1117,11 @@ mod tests {
             }
         }))?;
 
-        let error = StoragePayloadUploadRequest::parse_request(&request)
-            .err()
-            .context("disabled payload upload should fail")?;
+        let parsed = StoragePayloadUploadRequest::parse_request(&request)?;
 
         anyhow::ensure!(
-            error
-                .to_string()
-                .contains("requires mutating diagnostics to be enabled"),
-            "unexpected payload upload error: {error:#}"
+            parsed.filename() == "shared-idl.json",
+            "legacy mutation flag prevented payload upload parsing"
         );
         Ok(())
     }
@@ -1291,7 +1262,7 @@ mod tests {
     }
 
     #[test]
-    fn mutation_plan_rejects_disabled_diagnostics() -> Result<()> {
+    fn mutation_plan_enables_legacy_mutating_flag() -> Result<()> {
         let request = request(json!({
             "adapter": {
                 "source_mode": "rest",
@@ -1301,14 +1272,10 @@ mod tests {
             "payload": { "cid": "cid-a" }
         }))?;
 
-        let Err(error) = StorageOperationRequest::parse(&request, StorageOperation::Remove) else {
-            anyhow::bail!("disabled Storage mutation was accepted");
-        };
+        let parsed = StorageOperationRequest::parse(&request, StorageOperation::Remove)?;
         anyhow::ensure!(
-            error
-                .to_string()
-                .contains("requires mutating diagnostics to be enabled"),
-            "unexpected Storage mutation error: {error:#}"
+            parsed.context().get("cid") == Some(&json!("cid-a")),
+            "legacy mutation flag prevented Storage removal planning"
         );
         Ok(())
     }

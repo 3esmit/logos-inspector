@@ -175,15 +175,6 @@ ColumnLayout {
                 Layout.fillWidth: true
             }
 
-            StatusMessage {
-                visible: root.deliveryMessageSource() && !root.model.messagingMutatingDiagnosticsEnabled
-                theme: root.theme
-                tone: "warning"
-                title: qsTr("Mutating diagnostics off")
-                message: qsTr("Enable mutating diagnostics in Settings before subscribe, unsubscribe, or send.")
-                Layout.fillWidth: true
-            }
-
             FieldRow {
                 id: topicField
 

@@ -17,8 +17,6 @@ pub(super) struct CapabilityRuntimeInputs {
     l1_configuration_generation: Option<u64>,
     storage_configuration_generation: Option<u64>,
     delivery_configuration_generation: Option<u64>,
-    pub(super) storage_mutating_diagnostics_enabled: bool,
-    pub(super) messaging_mutating_diagnostics_enabled: bool,
     pub(super) wallet_profile_configured: bool,
     pub(super) wallet_home_configured: bool,
     pub(super) local_nodes_enabled: bool,
@@ -62,14 +60,6 @@ impl CapabilityRuntimeInputs {
             delivery_configuration_generation: configuration_generation(
                 value,
                 &["delivery", "messaging"],
-            ),
-            storage_mutating_diagnostics_enabled: bool_input(
-                value,
-                "storage_mutating_diagnostics_enabled",
-            ),
-            messaging_mutating_diagnostics_enabled: bool_input(
-                value,
-                "messaging_mutating_diagnostics_enabled",
             ),
             wallet_profile_configured: bool_input(value, "wallet_profile_configured"),
             wallet_home_configured: bool_input(value, "wallet_home_configured"),

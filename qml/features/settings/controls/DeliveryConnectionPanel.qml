@@ -1,7 +1,6 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
-import QtQuick.Layouts
 import "../../../components"
 import "../../../state"
 
@@ -68,19 +67,6 @@ SourceSettingsPanel {
             label: qsTr("Rolling window")
             value: root.modelRef.messagingRollingWindow
             onValueEdited: value => root.modelRef.messagingRollingWindow = value
-        }
-    }
-
-    Flow {
-        spacing: root.theme.gapSmall
-        Layout.fillWidth: true
-
-        SafetyToggle {
-            theme: root.theme
-            text: qsTr("Mutating diagnostics")
-            detail: qsTr("Allows publish, subscribe, and unsubscribe actions after per-action confirmation.")
-            checked: root.modelRef.messagingMutatingDiagnosticsEnabled
-            onToggled: root.modelRef.messagingMutatingDiagnosticsEnabled = checked
         }
     }
 

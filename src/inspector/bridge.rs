@@ -703,62 +703,6 @@ mod tests {
     }
 
     #[test]
-    fn delivery_mutations_require_mutating_diagnostics_flag() -> Result<()> {
-        let bridge = InspectorBridge::new()?;
-        let result = bridge.call_module_value(
-            INSPECTOR_MODULE,
-            "deliverySend",
-            json!([{
-                "adapter": {
-                    "source_mode": "rest",
-                    "inputs": { "rest_endpoint": "http://127.0.0.1:8645" }
-                },
-                "mutating_enabled": false,
-                "payload": { "topic": "/app/1/chat/proto", "payload": "hello" }
-            }]),
-        );
-
-        let Err(error) = result else {
-            bail!("expected disabled mutating diagnostics to fail");
-        };
-        if !error
-            .to_string()
-            .contains("requires mutating diagnostics to be enabled")
-        {
-            bail!("unexpected error: {error:#}");
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn storage_mutations_require_mutating_diagnostics_flag() -> Result<()> {
-        let bridge = InspectorBridge::new()?;
-        let result = bridge.call_module_value(
-            INSPECTOR_MODULE,
-            "storageFetch",
-            json!([{
-                "adapter": {
-                    "source_mode": "rest",
-                    "inputs": { "rest_endpoint": "http://127.0.0.1:8080/api/storage/v1" }
-                },
-                "mutating_enabled": false,
-                "payload": { "cid": "zDvtest" }
-            }]),
-        );
-
-        let Err(error) = result else {
-            bail!("expected disabled mutating diagnostics to fail");
-        };
-        if !error
-            .to_string()
-            .contains("requires mutating diagnostics to be enabled")
-        {
-            bail!("unexpected error: {error:#}");
-        }
-        Ok(())
-    }
-
-    #[test]
     fn local_wallet_deploy_program_requires_confirmation() -> Result<()> {
         let bridge = InspectorBridge::new()?;
         let result = bridge.call_module_value(

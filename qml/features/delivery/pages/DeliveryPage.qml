@@ -305,9 +305,9 @@ ColumnLayout {
             ]
             pending: root.sourceView.pending
             statusText: root.diagnosticsStatusText("delivery", root.sourceView.statusLine, qsTr("Delivery diagnostics"))
-            guardedTitle: qsTr("Mutating diagnostics")
-            permissionEnabled: root.model.messagingMutatingDiagnosticsEnabled && root.diagnosticsGateEnabled("delivery")
-            permissionDisabledTitle: root.diagnosticsGateEnabled("delivery") ? qsTr("Permission disabled") : qsTr("Diagnostics unavailable")
+            guardedTitle: qsTr("Confirmed actions")
+            permissionEnabled: root.diagnosticsGateEnabled("delivery")
+            permissionDisabledTitle: qsTr("Diagnostics unavailable")
             guardedMessage: qsTr("Dial, publish, subscribe, and lightpush probes are not auto-run. They need backend adapters and per-action confirmation.")
             guardedActions: [
                 { text: qsTr("Ping peer"), width: 118 },

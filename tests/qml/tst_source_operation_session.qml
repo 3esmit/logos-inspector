@@ -190,7 +190,7 @@ TestCase {
         compare(gateway.lastArgs[0].method, method)
         compare(gateway.lastArgs[0].adapter.source_mode, session.adapterInitialization.source_mode)
         compare(JSON.stringify(gateway.lastArgs[0].payload), JSON.stringify(expectedPayload))
-        compare(gateway.lastArgs[0].mutating_enabled, session.mutatingDiagnosticsEnabled)
+        compare(gateway.lastArgs[0].mutating_enabled, true)
         verify(session.view.running)
         verify(session.view.cancelable)
 

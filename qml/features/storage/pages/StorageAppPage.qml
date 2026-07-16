@@ -349,15 +349,6 @@ ColumnLayout {
                 Layout.fillWidth: true
             }
 
-            StatusMessage {
-                visible: root.model.storageDataSource() && !root.model.mutatingDiagnosticsEnabled
-                theme: root.theme
-                tone: "warning"
-                title: qsTr("Mutating diagnostics off")
-                message: qsTr("Enable mutating diagnostics in Settings before upload, download, fetch, or remove.")
-                Layout.fillWidth: true
-            }
-
             GridLayout {
                 columns: root.width < 760 ? 1 : 2
                 columnSpacing: root.theme.gap

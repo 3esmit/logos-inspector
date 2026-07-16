@@ -10,7 +10,7 @@ QtObject {
 
     required property string domain
     property var adapterInitialization: ({ source_mode: "", inputs: ({}) })
-    property bool mutatingDiagnosticsEnabled: false
+    property bool mutatingDiagnosticsEnabled: true
     property string defaultLabel: qsTr("Runtime operation")
     property string busyError: qsTr("A runtime operation is already running.")
     property var terminalDetailProvider: null
@@ -47,8 +47,7 @@ QtObject {
     function requestArgs(method, args) {
         return [NodeOperationRequest.envelope(
             adapterInitialization,
-            NodeOperationRequest.payload(domain, method, args),
-            mutatingDiagnosticsEnabled
+            NodeOperationRequest.payload(domain, method, args)
         )]
     }
 
@@ -86,8 +85,7 @@ QtObject {
 
         const request = NodeOperationRequest.envelope(
             adapterInitialization,
-            NodeOperationRequest.payload(domain, method, args),
-            mutatingDiagnosticsEnabled
+            NodeOperationRequest.payload(domain, method, args)
         )
         request.domain = domain
         request.method = String(method || "")

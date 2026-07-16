@@ -24,20 +24,6 @@ pub(crate) enum DeliveryOperation {
     StoreQuery,
 }
 
-impl DeliveryOperation {
-    const fn mutating(self) -> bool {
-        !matches!(self, Self::StoreQuery)
-    }
-
-    const fn action_label(self) -> &'static str {
-        match self {
-            Self::Subscribe | Self::Unsubscribe | Self::Send => "delivery message action",
-            Self::CreateNode | Self::Start | Self::Stop => "delivery node lifecycle action",
-            Self::StoreQuery => "Delivery Store query",
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum MessagingOperationAdapter {
     Module(ModuleTransportKind),
@@ -66,9 +52,6 @@ impl DeliveryOperationRequest {
         request: &NodeOperationRequest,
         operation: DeliveryOperation,
     ) -> Result<Self> {
-        if operation.mutating() {
-            request.require_mutating(operation.action_label())?;
-        }
         let adapter = parse_adapter(request.adapter())?;
         let (plan, context) = operation_plan(request, adapter, operation)?;
         Ok(Self { plan, context })
@@ -554,12 +537,17 @@ mod tests {
     }
 
     #[test]
-    fn module_send_plan_owns_method_and_dispatch_context() -> Result<()> {
+    fn module_send_plan_enables_legacy_mutating_flag() -> Result<()> {
         let request = request(json!({
             "adapter": { "source_mode": "module", "inputs": {} },
-            "mutating_enabled": true,
+            "mutating_enabled": false,
             "payload": { "topic": "/topic", "payload": "hello" }
         }))?;
+
+        anyhow::ensure!(
+            request.mutating_enabled(),
+            "legacy Delivery request was not enabled"
+        );
 
         let request = DeliveryOperationRequest::parse(&request, DeliveryOperation::Send)?;
 

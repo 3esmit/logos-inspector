@@ -112,7 +112,7 @@ fn storage_state(
         connector,
         sub_capabilities,
     );
-    let state = match storage_backup_download_transport(&connector.id) {
+    match storage_backup_download_transport(&connector.id) {
         Some(transport)
             if !inputs.source_report_for("storage").is_some_and(|report| {
                 storage_backup_download_contract_supported(report, transport)
@@ -132,21 +132,7 @@ fn storage_state(
             )
         }
         _ => state,
-    };
-    if connector.id != "direct_storage_rest" || inputs.storage_mutating_diagnostics_enabled {
-        return state;
     }
-    merge_state_constraints(
-        state,
-        vec![
-            "storage.content.upload".to_owned(),
-            "storage.rest.upload".to_owned(),
-            "storage.content.download_to_file".to_owned(),
-            "storage.content.remove".to_owned(),
-        ],
-        vec!["Storage mutating diagnostics are disabled".to_owned()],
-        Vec::new(),
-    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -347,25 +333,10 @@ fn delivery_state(
             "Delivery adapter endpoint is required".to_owned(),
         );
     }
-    let state = adapter_constrained_state(
+    adapter_constrained_state(
         source_report_state(inputs, "delivery", "Delivery", sub_capabilities),
         connector,
         sub_capabilities,
-    );
-    if connector.id != "direct_delivery_rest" || inputs.messaging_mutating_diagnostics_enabled {
-        return state;
-    }
-    merge_state_constraints(
-        state,
-        vec![
-            "delivery.subscribe".to_owned(),
-            "delivery.unsubscribe".to_owned(),
-            "delivery.send".to_owned(),
-            "delivery.node.start".to_owned(),
-            "delivery.node.stop".to_owned(),
-        ],
-        vec!["Delivery mutating diagnostics are disabled".to_owned()],
-        Vec::new(),
     )
 }
 
