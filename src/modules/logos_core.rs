@@ -39,7 +39,7 @@ const LOGOSCORE_EVENT_FIELD_LIMIT: usize = 64;
 const LOGOSCORE_EVENT_QUEUE_CAPACITY: usize = 64;
 const LOGOSCORE_WATCH_STOP_GRACE: Duration = Duration::from_millis(250);
 const LOGOSCORE_MODULE_DISCOVERY_ATTEMPTS: usize = 2;
-const LOGOSCORE_MODULE_DISCOVERY_RETRY_DELAY: Duration = Duration::from_millis(250);
+const LOGOSCORE_MODULE_DISCOVERY_RETRY_DELAY: Duration = Duration::from_secs(5);
 const LOGOSCORE_WATCH_PROTOCOL: &str = "logoscore.watch";
 const LOGOSCORE_WATCH_PROTOCOL_VERSION: u64 = 1;
 static LOGOSCORE_WATCH_RECOVERY: LazyLock<
@@ -3525,7 +3525,7 @@ esac
         );
         let control = CommandControl::new(
             CancellationToken::new(),
-            StdInstant::now() + Duration::from_secs(5),
+            StdInstant::now() + Duration::from_secs(15),
         );
 
         let result = runtime.call_checked_controlled(
@@ -3593,7 +3593,7 @@ esac
         );
         let control = CommandControl::new(
             CancellationToken::new(),
-            StdInstant::now() + Duration::from_secs(5),
+            StdInstant::now() + Duration::from_secs(15),
         );
 
         let error = runtime
