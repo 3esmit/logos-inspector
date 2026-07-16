@@ -1068,6 +1068,7 @@ TestCase {
         compare(payload.request_revision, l2BlockState.l2BlocksRequestRevision)
         compare(payload.query.cursor, null)
         compare(payload.query.limit, 25)
+        compare(payload.query.exact_source_id, null)
         verify(JSON.stringify(payload).indexOf("endpoint") < 0)
 
         const finalized = l2Source("idx-a", "indexer", "finalized", "live")
@@ -1111,6 +1112,78 @@ TestCase {
         compare(l2BlockState.l2BlockRows.length, 3)
         compare(l2BlockState.l2BlocksDistinctCount, 2)
         verify(!l2BlockState.l2BlocksHasMore)
+    }
+
+    function test_l2_sequencer_block_pages_keep_exact_source_across_cursor() {
+        loadConfiguredL2Zone()
+
+        verify(l2BlockState.refreshL2BlocksForSource("seq-a") !== null)
+        const request = gateway.lastRequest("zoneL2Blocks")
+        compare(request.args[0].query.exact_source_id, "seq-a")
+        compare(l2BlockState.l2BlocksExactSourceId, "seq-a")
+
+        const provisional = l2Source(
+            "seq-a", "sequencer", "provisional", "live")
+        gateway.respond(request, ok(l2Report(request, "lez.blocks", {
+            outcome: "found",
+            value: {
+                rows: [l2Block(15, "a".repeat(64), [provisional])],
+                next_cursor: "sequencer-next",
+                has_more: true,
+                distinct_block_ids: 1,
+                source_heads: [{
+                    source_id: "seq-a",
+                    source_role: "sequencer",
+                    block_id: 15,
+                    block_hash: "a".repeat(64)
+                }]
+            }
+        }, {
+            route: {
+                policy: "exact_source",
+                attempts: [{
+                    source_id: "seq-a",
+                    source_role: "sequencer"
+                }]
+            }
+        })))
+        compare(l2BlockState.l2BlockRows.length, 1)
+        compare(l2BlockState.l2BlockRows[0].observations[0].source_role,
+            "sequencer")
+
+        verify(l2BlockState.loadMoreL2Blocks() !== null)
+        const nextRequest = gateway.lastRequest("zoneL2Blocks")
+        compare(nextRequest.args[0].query.cursor, "sequencer-next")
+        compare(nextRequest.args[0].query.exact_source_id, "seq-a")
+    }
+
+    function test_l2_sequencer_empty_block_page_accepts_exact_route_without_head() {
+        loadConfiguredL2Zone()
+
+        verify(l2BlockState.refreshL2BlocksForSource("seq-a") !== null)
+        const request = gateway.lastRequest("zoneL2Blocks")
+        gateway.respond(request, ok(l2Report(request, "lez.blocks", {
+            outcome: "found",
+            value: {
+                rows: [],
+                next_cursor: null,
+                has_more: false,
+                distinct_block_ids: 0,
+                source_heads: []
+            }
+        }, {
+            route: {
+                policy: "exact_source",
+                attempts: [{
+                    source_id: "seq-a",
+                    source_role: "sequencer"
+                }]
+            }
+        })))
+
+        compare(l2BlockState.l2BlocksError, "")
+        verify(l2BlockState.l2BlocksLoaded)
+        compare(l2BlockState.l2BlockRows.length, 0)
     }
 
     function test_l2_block_detail_rejects_superseded_reply_and_resolves_exact_source() {
@@ -1607,6 +1680,33 @@ TestCase {
         compare(l2AccountState.l2AccountHistorical.source.retrieval, "memory_cache")
         compare(l2AccountState.l2AccountFinalized.account.balance, "17")
         compare(l2AccountState.l2AccountProvisional.account.balance, "19")
+    }
+
+    function test_l2_sequencer_account_requests_only_provisional_source() {
+        loadConfiguredL2Zone()
+
+        verify(l2AccountState.inspectL2SequencerAccount("account-a"))
+        compare(gateway.requestCount("zoneL2Account"), 1)
+        compare(gateway.requestCount("zoneL2AccountActivity"), 0)
+        const request = gateway.lastRequest("zoneL2Account")
+        compare(request.args[0].query.snapshot.kind, "provisional")
+        compare(request.args[0].query.exact_source_id, "seq-a")
+        compare(l2AccountState.l2AccountFinalized, null)
+
+        const provisional = l2AccountSnapshot("account-a", "19",
+            l2Source("seq-a", "sequencer", "provisional"), "exact", 14)
+        gateway.respond(request, ok(l2Report(request, "lez.account", {
+            outcome: "found",
+            value: provisional
+        })))
+        compare(l2AccountState.l2AccountProvisional.source.source_role,
+            "sequencer")
+
+        verify(l2AccountState.refreshL2SequencerAccount())
+        compare(gateway.requestCount("zoneL2Account"), 2)
+        compare(gateway.lastRequest("zoneL2Account")
+            .args[0].query.exact_source_id, "seq-a")
+        compare(gateway.requestCount("zoneL2AccountActivity"), 0)
     }
 
     function test_l2_account_matching_idl_decodes_snapshots_without_cross_cancellation() {

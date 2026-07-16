@@ -14,8 +14,15 @@ Rectangle {
     property bool selected: false
     property bool stale: false
     property bool interactive: !stale
+    readonly property bool sequencerConfigured: String(root.zone
+        && root.zone.kind || "") === "sequencer_zone"
+        && String(root.zone && root.zone.active_zone_context_fields
+            && root.zone.active_zone_context_fields.selected_sequencer_source_id
+            || root.zone && root.zone.settlement_link
+            && root.zone.settlement_link.selected_sequencer_source_id || "").length > 0
     readonly property string tone: Presentation.stateTone(root.zone, root.stale)
     signal activated()
+    signal channelActivated()
 
     objectName: "zoneListRow_" + String(root.zone && root.zone.channel_id || "")
     implicitHeight: 112
@@ -80,17 +87,21 @@ Rectangle {
             }
 
             LinkCell {
+                objectName: "zoneChannelLink_"
+                    + String(root.zone && root.zone.channel_id || "")
                 theme: root.theme
                 text: String(root.zone && root.zone.channel_id || "")
                 copyText: text
                 copyable: true
                 copyInline: false
+                link: root.interactive && root.sequencerConfigured
                 monospace: true
                 fitSingleLine: true
                 minimumPixelSize: 8
                 textPixelSize: root.theme.dataText
                 textColor: root.stale ? root.theme.textDim : root.theme.textMuted
                 Layout.fillWidth: true
+                onActivated: root.channelActivated()
             }
 
             RowLayout {

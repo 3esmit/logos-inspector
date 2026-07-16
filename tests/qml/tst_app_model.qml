@@ -2202,6 +2202,54 @@ TestCase {
         compare(callCountFor("blockchainBlock"), 0)
     }
 
+    function test_l2_navigation_routes_sequencer_and_qualifies_policy_reads() {
+        setActiveZone("")
+        const accountRef = zoneEntityRef("account", "account-a", "", "")
+        accountRef.layer = "l2"
+        verify(accountRef.network_scope !== undefined)
+        compare(model.zoneInspection.scopeKey(accountRef.network_scope),
+            model.zoneInspection.scopeKey(model.zoneInspection.networkScope))
+        compare(accountRef.channel_id,
+            model.zoneInspection.zoneSummaries[0].channel_id)
+        compare(accountRef.zone_kind, model.zoneInspection.zoneSummaries[0].kind)
+        compare(accountRef.entity_kind, "account")
+        verify(model.zoneInspection.l2.l2SequencerReadEnabled)
+        compare(model.zoneInspection.l2.l2SequencerSourceId(), "seq-a")
+        wait(0)
+        fakeHost.callCount = 0
+        fakeHost.calls = []
+
+        const opened = model.openInspectionEntityRef(accountRef, false)
+        compare(model.shell.currentView, "sequencerDashboard")
+        compare(opened, true)
+        compare(model.zoneInspection.requestedDetailTab, "accounts")
+        tryCompare(fakeHost, "callCount", 1)
+        compare(fakeHost.lastMethod, "zoneL2Account")
+        compare(callCountFor("zoneL2Account"), 1)
+        compare(callCountFor("zoneL2AccountActivity"), 0)
+        const request = fakeHost.calls.filter(function (call) {
+            return call.method === "zoneL2Account"
+        })[0].args[0]
+        compare(request.query.snapshot.kind, "provisional")
+        compare(request.query.exact_source_id, "seq-a")
+
+        fakeHost.calls = []
+        fakeHost.callCount = 0
+        const indexerRef = zoneEntityRef(
+            "account", "account-a", "idx-a", "indexer")
+        indexerRef.layer = "l2"
+        compare(model.openInspectionEntityRef(indexerRef, false), true)
+        compare(model.shell.currentView, "zones")
+        tryCompare(fakeHost, "callCount", 2)
+        compare(callCountFor("zoneL2Account"), 1)
+        compare(callCountFor("zoneL2AccountActivity"), 1)
+        const indexerRequest = fakeHost.calls.filter(function (call) {
+            return call.method === "zoneL2Account"
+        })[0].args[0]
+        compare(indexerRequest.query.snapshot.kind, "finalized")
+        compare(indexerRequest.query.exact_source_id, "idx-a")
+    }
+
     function test_social_comment_topics_for_supported_detail_kinds() {
         fakeHost.responses = {
             socialCommentTopic: function(args) {

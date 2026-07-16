@@ -216,6 +216,8 @@ Item {
             return blockchainPage
         case "zones":
             return zonesPage
+        case "sequencerDashboard":
+            return sequencerDashboardPage
         case "storage":
             return storagePage
         case "messaging":
@@ -319,6 +321,15 @@ Item {
             theme: theme
             model: appModel
             initialDetailTab: appModel.zoneInspection.requestedDetailTab
+        }
+    }
+
+    Component {
+        id: sequencerDashboardPage
+        ZonePages.SequencerDashboardPage {
+            theme: theme
+            model: appModel
+            initialTab: appModel.zoneInspection.requestedDetailTab
         }
     }
 

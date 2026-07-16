@@ -171,6 +171,15 @@ TestCase {
         compare(model.zoneInspection.activeZoneId, channelId)
     }
 
+    function test_dashboard_configured_sequencer_opens_sequencer_dashboard() {
+        const panel = findChild(page, "dashboardZonesPanel")
+        const channelId = ZoneFixtureData.identity("1")
+
+        verify(panel.openZone(channelId))
+        compare(model.zoneInspection.activeZoneId, channelId)
+        compare(model.shell.currentView, "sequencerDashboard")
+    }
+
     function dashboardZones() {
         const scope = ZoneFixtureData.networkScope()
         return ZoneFixtureData.zones().map(function (zone) {
