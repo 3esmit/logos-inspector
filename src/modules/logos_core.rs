@@ -1383,6 +1383,24 @@ impl LogoscoreCliRuntime {
         Ok(())
     }
 
+    pub(crate) fn unload_module(&self, module: &str) -> Result<LogosCoreOutput> {
+        if module.trim().is_empty() {
+            bail!("module name is required");
+        }
+        self.run_json(["unload-module", module, "--json"], command_timeout())
+    }
+
+    pub(crate) fn unload_module_controlled(
+        &self,
+        module: &str,
+        control: CommandControl,
+    ) -> Result<LogosCoreOutput> {
+        if module.trim().is_empty() {
+            bail!("module name is required");
+        }
+        self.run_json_controlled(["unload-module", module, "--json"], control)
+    }
+
     pub(crate) fn call(
         &self,
         module: &str,

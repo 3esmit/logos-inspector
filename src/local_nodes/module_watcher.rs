@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeSet,
+    io::{ErrorKind, Read as _, Write as _},
     net::{Ipv4Addr, SocketAddr, TcpStream},
     sync::{Arc, Mutex, mpsc},
     thread,
@@ -33,6 +34,8 @@ const PENDING_LIFECYCLE_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const DAEMON_STATUS_TIMEOUT: Duration = Duration::from_secs(2);
 const NODE_CONNECT_TIMEOUT: Duration = Duration::from_millis(250);
 const MESSAGING_CONTEXT_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+const MESSAGING_HEALTH_TIMEOUT: Duration = Duration::from_secs(1);
+const MESSAGING_HEALTH_RESPONSE_LIMIT: u64 = 64 * 1024;
 const SUBSCRIBER_QUEUE_CAPACITY: usize = 128;
 const LIFECYCLE_CONFIRMATION_TIMEOUT_MILLIS: u64 = 30_000;
 const RUNTIME_MODULE: &str = "logoscore_runtime";
@@ -161,6 +164,7 @@ struct NodeLivenessProbe {
     topology_id: String,
     record_updated_at: u64,
     kind: NodeKind,
+    port: Option<u16>,
     lifecycle_state: NodeLifecycleState,
     module: &'static str,
     event_route: LifecycleEventRoute,
@@ -191,6 +195,16 @@ impl NodeLivenessProbe {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ModuleAvailability {
     Loaded,
+    Unavailable,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MessagingHealth {
+    Ready,
+    Initializing,
+    ShuttingDown,
+    EventLoopLagging,
     Unavailable,
     Unknown,
 }
@@ -527,16 +541,28 @@ fn reconcile_messaging_liveness(
     cancellation: &CancellationToken,
 ) {
     for probe in probes.iter_mut().filter(|probe| {
-        probe.kind == NodeKind::Messaging
-            && probe.alive
-            && probe.module_availability == ModuleAvailability::Loaded
+        probe.kind == NodeKind::Messaging && probe.module_availability == ModuleAvailability::Loaded
     }) {
+        let health = apply_messaging_health_probe(probe);
+        if probe.is_pending()
+            || !matches!(
+                health,
+                MessagingHealth::Ready
+                    | MessagingHealth::Initializing
+                    | MessagingHealth::EventLoopLagging
+            )
+        {
+            continue;
+        }
         let now = Instant::now();
         let deadline = now
             .checked_add(MESSAGING_CONTEXT_PROBE_TIMEOUT)
             .unwrap_or(now);
         let control = CommandControl::new(cancellation.clone(), deadline);
-        apply_messaging_context_probe(probe, probe_messaging_context(runtime, control));
+        match probe_messaging_context(runtime, control) {
+            MessagingContextProbe::Available => {}
+            context => apply_messaging_context_probe(probe, context),
+        }
     }
 }
 
@@ -552,6 +578,46 @@ fn apply_messaging_context_probe(probe: &mut NodeLivenessProbe, context: Messagi
             probe.liveness_known = false;
             probe.unavailable_detail =
                 Some("Messaging context could not be verified in the Inspector-managed runtime");
+        }
+    }
+}
+
+fn apply_messaging_health_probe(probe: &mut NodeLivenessProbe) -> MessagingHealth {
+    let Some(port) = liveness_port_for_kind(probe.kind, probe.port) else {
+        probe.liveness_known = false;
+        probe.unavailable_detail = Some("Messaging REST health endpoint has no configured port");
+        return MessagingHealth::Unknown;
+    };
+    let health = messaging_health(port);
+    apply_messaging_health(probe, health);
+    health
+}
+
+fn apply_messaging_health(probe: &mut NodeLivenessProbe, health: MessagingHealth) {
+    match health {
+        MessagingHealth::Ready | MessagingHealth::EventLoopLagging => {
+            probe.alive = true;
+            probe.liveness_known = true;
+            probe.unavailable_detail = None;
+        }
+        MessagingHealth::Initializing => {
+            probe.alive = false;
+            probe.liveness_known = true;
+            probe.unavailable_detail = Some("Messaging REST health is INITIALIZING");
+        }
+        MessagingHealth::ShuttingDown => {
+            probe.alive = false;
+            probe.liveness_known = false;
+            probe.unavailable_detail = Some("Messaging REST health is SHUTTING_DOWN");
+        }
+        MessagingHealth::Unavailable => {
+            probe.alive = false;
+            probe.liveness_known = true;
+            probe.unavailable_detail = Some("Messaging REST health endpoint is unavailable");
+        }
+        MessagingHealth::Unknown => {
+            probe.liveness_known = false;
+            probe.unavailable_detail = Some("Messaging REST health could not be verified");
         }
     }
 }
@@ -606,15 +672,26 @@ fn liveness_probe(
     }
     let (module, event_route) = lifecycle_event_route(node.kind)?;
     let process_backed = matches!(lifecycle, NodeLifecycle::RegisteredProcess { .. });
-    let alive = if process_backed {
-        node.process_id.is_some_and(process_group_has_live_members)
+    let (alive, liveness_known, unavailable_detail) = if process_backed {
+        (
+            node.process_id.is_some_and(process_group_has_live_members),
+            true,
+            None,
+        )
+    } else if node.kind == NodeKind::Messaging {
+        (
+            false,
+            false,
+            Some("Messaging lifecycle requires managed REST health verification"),
+        )
     } else {
-        tcp_port_is_open(liveness_port(node)?)
+        (tcp_port_is_open(liveness_port(node)?), true, None)
     };
     Some(NodeLivenessProbe {
         topology_id: record.id.clone(),
         record_updated_at: record.updated_at,
         kind: node.kind,
+        port: node.port,
         lifecycle_state: node.lifecycle_state,
         module,
         event_route,
@@ -630,8 +707,8 @@ fn liveness_probe(
             ModuleAvailability::Unknown
         },
         alive,
-        liveness_known: true,
-        unavailable_detail: None,
+        liveness_known,
+        unavailable_detail,
     })
 }
 
@@ -660,10 +737,14 @@ fn lifecycle_event_route(kind: NodeKind) -> Option<(&'static str, LifecycleEvent
 }
 
 fn liveness_port(node: &LocalNodeConfigRecord) -> Option<u16> {
-    match node.kind {
+    liveness_port_for_kind(node.kind, node.port)
+}
+
+fn liveness_port_for_kind(kind: NodeKind, configured_port: Option<u16>) -> Option<u16> {
+    match kind {
         NodeKind::Storage => Some(STORAGE_LISTEN_PORT),
         NodeKind::Bedrock | NodeKind::Sequencer | NodeKind::Indexer | NodeKind::Messaging => {
-            node.port.or_else(|| adapter_for(node.kind).default_port())
+            configured_port.or_else(|| adapter_for(kind).default_port())
         }
     }
 }
@@ -671,6 +752,66 @@ fn liveness_port(node: &LocalNodeConfigRecord) -> Option<u16> {
 fn tcp_port_is_open(port: u16) -> bool {
     let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
     TcpStream::connect_timeout(&address, NODE_CONNECT_TIMEOUT).is_ok()
+}
+
+fn messaging_health(port: u16) -> MessagingHealth {
+    let address = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+    let mut stream = match TcpStream::connect_timeout(&address, NODE_CONNECT_TIMEOUT) {
+        Ok(stream) => stream,
+        Err(error) => {
+            return match error.kind() {
+                ErrorKind::ConnectionRefused
+                | ErrorKind::ConnectionAborted
+                | ErrorKind::NotConnected => MessagingHealth::Unavailable,
+                _ => MessagingHealth::Unknown,
+            };
+        }
+    };
+    if stream
+        .set_read_timeout(Some(MESSAGING_HEALTH_TIMEOUT))
+        .is_err()
+        || stream
+            .set_write_timeout(Some(MESSAGING_HEALTH_TIMEOUT))
+            .is_err()
+    {
+        return MessagingHealth::Unknown;
+    }
+    let request =
+        format!("GET /health HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+    if stream.write_all(request.as_bytes()).is_err() {
+        return MessagingHealth::Unknown;
+    }
+    let mut response = Vec::new();
+    if stream
+        .take(MESSAGING_HEALTH_RESPONSE_LIMIT)
+        .read_to_end(&mut response)
+        .is_err()
+    {
+        return MessagingHealth::Unknown;
+    }
+    messaging_health_from_http_response(&response)
+}
+
+fn messaging_health_from_http_response(response: &[u8]) -> MessagingHealth {
+    let Ok(response) = std::str::from_utf8(response) else {
+        return MessagingHealth::Unknown;
+    };
+    let Some((head, body)) = response.split_once("\r\n\r\n") else {
+        return MessagingHealth::Unknown;
+    };
+    if !head.starts_with("HTTP/1.1 200") && !head.starts_with("HTTP/1.0 200") {
+        return MessagingHealth::Unknown;
+    }
+    let Ok(value) = serde_json::from_str::<Value>(body) else {
+        return MessagingHealth::Unknown;
+    };
+    match value.get("nodeHealth").and_then(Value::as_str) {
+        Some("READY") => MessagingHealth::Ready,
+        Some("INITIALIZING") => MessagingHealth::Initializing,
+        Some("SHUTTING_DOWN") => MessagingHealth::ShuttingDown,
+        Some("EVENT_LOOP_LAGGING") => MessagingHealth::EventLoopLagging,
+        _ => MessagingHealth::Unknown,
+    }
 }
 
 fn apply_liveness_observation(
@@ -1050,6 +1191,14 @@ mod tests {
         }
     }
 
+    fn only_node(state: &LocalNodesState) -> Result<&LocalNodeConfigRecord> {
+        state
+            .devnets
+            .first()
+            .and_then(|record| record.nodes.first())
+            .context("missing node")
+    }
+
     fn probe_for(
         kind: NodeKind,
         lifecycle_state: NodeLifecycleState,
@@ -1062,6 +1211,7 @@ mod tests {
             topology_id: "devnet".to_owned(),
             record_updated_at: 0,
             kind,
+            port: adapter_for(kind).default_port(),
             lifecycle_state,
             module,
             event_route,
@@ -1366,6 +1516,129 @@ mod tests {
             .and_then(|record| record.nodes.first())
             .context("missing node")?;
         anyhow::ensure!(node.lifecycle_state == NodeLifecycleState::Stopped);
+        Ok(())
+    }
+
+    #[test]
+    fn messaging_health_parses_semantic_node_state() {
+        let response = |node_health: &str| {
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{{\"nodeHealth\":\"{node_health}\"}}"
+            )
+        };
+
+        assert_eq!(
+            messaging_health_from_http_response(response("READY").as_bytes()),
+            MessagingHealth::Ready
+        );
+        assert_eq!(
+            messaging_health_from_http_response(response("INITIALIZING").as_bytes()),
+            MessagingHealth::Initializing
+        );
+        assert_eq!(
+            messaging_health_from_http_response(response("SHUTTING_DOWN").as_bytes()),
+            MessagingHealth::ShuttingDown
+        );
+        assert_eq!(
+            messaging_health_from_http_response(response("EVENT_LOOP_LAGGING").as_bytes()),
+            MessagingHealth::EventLoopLagging
+        );
+        assert_eq!(
+            messaging_health_from_http_response(b"HTTP/1.1 503 Service Unavailable\r\n\r\n{}"),
+            MessagingHealth::Unknown
+        );
+    }
+
+    #[test]
+    fn messaging_initializing_health_does_not_promote_stopped_node() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let mut state = state_with_node(
+            &directory,
+            NodeKind::Messaging,
+            NodeLifecycleState::Stopped,
+            None,
+        );
+        let mut probe = probe_for(
+            NodeKind::Messaging,
+            NodeLifecycleState::Stopped,
+            true,
+            ModuleAvailability::Loaded,
+        )?;
+
+        apply_messaging_health(&mut probe, MessagingHealth::Initializing);
+        let (changed, events) = apply_liveness_observation(&mut state, &[probe])?;
+
+        anyhow::ensure!(!changed && events.is_empty());
+        let node = only_node(&state)?;
+        anyhow::ensure!(node.lifecycle_state == NodeLifecycleState::Stopped);
+        Ok(())
+    }
+
+    #[test]
+    fn messaging_ready_health_confirms_pending_start() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let mut state = state_with_node(
+            &directory,
+            NodeKind::Messaging,
+            NodeLifecycleState::Starting,
+            Some(NodeAction::Start),
+        );
+        let mut probe = probe_for(
+            NodeKind::Messaging,
+            NodeLifecycleState::Starting,
+            false,
+            ModuleAvailability::Loaded,
+        )?;
+
+        apply_messaging_health(&mut probe, MessagingHealth::Ready);
+        let (changed, events) = apply_liveness_observation(&mut state, &[probe])?;
+
+        anyhow::ensure!(changed && events.len() == 1);
+        anyhow::ensure!(
+            events
+                .first()
+                .is_some_and(|event| event.event() == "nodeStarted")
+        );
+        let node = only_node(&state)?;
+        anyhow::ensure!(
+            node.lifecycle_state == NodeLifecycleState::Running
+                && node.pending_lifecycle_action.is_none()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn messaging_shutting_down_health_keeps_pending_stop_unconfirmed() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let mut state = state_with_node(
+            &directory,
+            NodeKind::Messaging,
+            NodeLifecycleState::Stopping,
+            Some(NodeAction::Stop),
+        );
+        let updated_at = now_millis();
+        state
+            .devnets
+            .first_mut()
+            .context("missing devnet")?
+            .updated_at = updated_at;
+        let mut probe = probe_for(
+            NodeKind::Messaging,
+            NodeLifecycleState::Stopping,
+            true,
+            ModuleAvailability::Loaded,
+        )?;
+        probe.record_updated_at = updated_at;
+
+        apply_messaging_health(&mut probe, MessagingHealth::ShuttingDown);
+        let (changed, events) = apply_liveness_observation(&mut state, &[probe])?;
+
+        anyhow::ensure!(!changed && events.is_empty());
+        let node = only_node(&state)?;
+        anyhow::ensure!(
+            node.lifecycle_state == NodeLifecycleState::Stopping
+                && node.pending_lifecycle_action == Some(NodeAction::Stop)
+        );
         Ok(())
     }
 
