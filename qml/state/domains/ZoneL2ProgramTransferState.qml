@@ -4,6 +4,7 @@ QtObject {
     id: root
 
     required property var l2Context
+    readonly property var activeZoneContext: l2Context.activeZoneContext
     readonly property bool l2Applicable: l2Context.l2Applicable
     readonly property bool l2SourceConfigured: l2Context.l2SourceConfigured
     readonly property bool l2ReadEnabled: l2Context.l2ReadEnabled

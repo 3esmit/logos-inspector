@@ -224,8 +224,20 @@ TestCase {
         function normalizedIdlEntry(entry) {
             return entry
         }
-        function idlEntryForKey() {
+        function idlEntryForKey(key) {
+            const wanted = String(key || "")
+            for (let i = 0; i < registeredIdls.count; ++i) {
+                const entry = registeredIdls.get(i)
+                if (String(entry.key || "") === wanted) {
+                    return entry
+                }
+            }
             return null
+        }
+        function zoneAccountEntityRef(accountId) {
+            const entity = testRoot.autoShareEntity()
+            entity.canonical_key = String(accountId || "")
+            return entity
         }
         function idlNameFromJson() {
             return "IDL"
@@ -289,6 +301,7 @@ TestCase {
         social.socialIdentityRevision = 0
         social.socialCommentRevision = 0
         social.socialSharedIdls = ({})
+        registeredIdls.clear()
         social.sharedIdlAutoShare = false
         social.socialAutoSharedIdls = ({})
         social.sharedIdlRevision = 0
@@ -777,6 +790,34 @@ TestCase {
         verify(!social.maybeAutoShareAccountIdl(entity, "program-1", entry))
         compare(startRequests.length, 2)
         compare(syncSendCalls, 0)
+    }
+
+    function test_registered_idl_can_be_shared_from_public_ui_seam() {
+        gateEnabled = true
+        messagingMutatingEnabled = true
+        storageMutatingEnabled = true
+        autoCompleteSend = false
+        social.createIdentity("IDL publisher")
+        registeredIdls.append({
+            key: "idl-1",
+            name: "Local",
+            json: "{\"name\":\"Local\",\"accounts\":[]}",
+            programIdHex: "program-1",
+            source: "local"
+        })
+
+        verify(social.publishRegisteredIdl("account-1", "idl-1"))
+        compare(startRequests.length, 1)
+        compare(startRequests[0].method, "storageUploadPayload")
+
+        replyStart(0, uploadOperation("upload-idl", "completed", {
+            cid: "cid-idl",
+            filename: "logos-inspector-shared-idl.json"
+        }, 1))
+
+        compare(startRequests.length, 2)
+        compare(startRequests[1].method, "deliverySend")
+        compare(startRequests[1].payload.topic, "/lez/account/account-1/idl")
     }
 
     function test_auto_share_delivery_failure_does_not_persist_marker() {

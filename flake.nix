@@ -160,7 +160,11 @@ EOF
 
       forAllSystems = forSystems qmlSystems;
 
-      sourceSets = import ./nix/source-sets.nix { inherit lib; root = ./.; };
+      # Within flake evaluation, ./. is the Git-filtered source, not the raw worktree.
+      sourceSets = import ./nix/source-sets.nix {
+        inherit lib;
+        root = ./.;
+      };
       source = sourceSets.workspace;
       standaloneRustSource = sourceSets.standaloneRust;
       standaloneAssetSource = sourceSets.standaloneAssets;
@@ -217,7 +221,7 @@ EOF
           };
         };
         tests = {
-          dir = ./core/tests;
+          dir = coreModuleSource + "/tests";
           extraCmakeFlags = [
             "-DLOGOS_INSPECTOR_ENABLE_COMPOSED_HOST_TESTS=ON"
           ];

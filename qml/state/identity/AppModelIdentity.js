@@ -11,6 +11,7 @@ function saveIdlState(root) {
 
 function loadSettingsState(root) {
     with (root) {
+        settingsStateLoaded = false
         const response = bridge.callModule(inspectorModule, "loadSettingsState", [])
         if (!response.ok || !response.value || typeof response.value !== "object") {
             settingsStateLoaded = true
@@ -19,6 +20,27 @@ function loadSettingsState(root) {
         }
 
         SettingsProfile.applySettingsState(root, response.value)
+    }
+}
+
+function restoreDefaultSettings(root) {
+    with (root) {
+        const wasLoaded = settingsStateLoaded
+        settingsStateLoaded = false
+        const response = bridge.callModule(inspectorModule, "restoreDefaultSettingsState", [])
+        if (!response.ok || !response.value || typeof response.value !== "object") {
+            settingsStateLoaded = wasLoaded
+            settingsStateError = response && response.error
+                ? response.error : qsTr("Testnet defaults could not be restored.")
+            return false
+        }
+
+        SettingsProfile.applySettingsState(root, response.value)
+        localNodes.refresh(false)
+        refreshCapabilityRegistryIfLoaded()
+        zoneInspection.appResumed()
+        settingsBackupStatus = qsTr("Testnet defaults restored. Wallet was not changed.")
+        return true
     }
 }
 
@@ -589,6 +611,13 @@ function cacheAccountIdlSelection(root, accountId, idlEntry, accountType, ownerP
         accountIdlSelections = next
         accountIdlSelectionRevision += 1
         saveIdlState()
+        if (String(entry.source || "") !== "shared" && zoneInspection && zoneInspection.l2
+                && typeof zoneInspection.l2.l2EntityRef === "function") {
+            const entityRef = zoneInspection.l2.l2EntityRef("account", accountId, null)
+            if (entityRef) {
+                social.maybeAutoShareAccountIdl(entityRef, ownerProgramId, entry)
+            }
+        }
     }
 }
 

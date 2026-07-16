@@ -19,6 +19,11 @@ TestCase {
 
         property string storageEndpoint: "http://storage.invalid"
         property string storageCid: "z-test-cid"
+        property bool supportsLiveBlocks: true
+
+        function blockchainSupportsCapability(capability) {
+            return capability === "l1.live_blocks.observe" && supportsLiveBlocks
+        }
 
         function deliverySourceReportArgs() {
             return [{ source_mode: "rest", inputs: { rest_endpoint: "http://delivery.invalid" } }]
@@ -306,6 +311,7 @@ TestCase {
         gateway.reset()
         sourceRouting.storageEndpoint = "http://storage.invalid"
         sourceRouting.storageCid = "z-test-cid"
+        sourceRouting.supportsLiveBlocks = true
         testRoot.dashboardOverview = null
         testRoot.dashboardNode = null
         testRoot.dashboardL1Blocks = []
@@ -617,6 +623,28 @@ TestCase {
         verify(!observation.status.known)
     }
 
+    function test_missing_lib_slot_keeps_finality_gap_unknown() {
+        testRoot.dashboardNode = {
+            cryptarchia_info: {
+                value: {
+                    cryptarchia_info: { slot: 42, lib_slot: null }
+                }
+            }
+        }
+        compare(metrics.tipMinusLib(), null)
+        compare(metrics.finalityLagSeconds(), null)
+
+        testRoot.dashboardNode = {
+            cryptarchia_info: {
+                value: {
+                    cryptarchia_info: { slot: 42 }
+                }
+            }
+        }
+        compare(metrics.tipMinusLib(), null)
+        compare(metrics.finalityLagSeconds(), null)
+    }
+
     function test_dashboard_uses_shared_family_pending_lifecycle() {
         verify(metrics.refreshDashboard())
 
@@ -638,6 +666,22 @@ TestCase {
         compare(metrics.sourceReport("storage").marker, "storage-dashboard")
         compare(metrics.sourceReport("messaging").marker, "messaging-dashboard")
         compare(gateway.dashboardResultCount, 1)
+        verify(gateway.dashboardResultOk)
+    }
+
+    function test_dashboard_omits_live_block_request_when_connector_does_not_support_it() {
+        sourceRouting.supportsLiveBlocks = false
+
+        verify(metrics.refreshDashboard())
+
+        compare(gateway.requests.length, 3)
+        verify(!gateway.requests.some(function (request) {
+            return request.method === "blockchainLiveBlocks"
+        }))
+        gateway.completeRequest(0, success({ cryptarchia_info: null }))
+        gateway.completeRequest(0, success(sourceReport(true, "storage")))
+        gateway.completeRequest(0, success(sourceReport(true, "messaging")))
+        verify(!metrics.dashboardRefreshing)
         verify(gateway.dashboardResultOk)
     }
 

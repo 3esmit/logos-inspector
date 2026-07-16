@@ -195,7 +195,7 @@ impl StorageClient {
                 let runtime = module_transport
                     .logoscore_cli_transport()
                     .context("active LogosCore CLI transport does not expose its runtime")?
-                    .runtime();
+                    .runtime()?;
                 transport::module_upload_bytes_controlled(
                     runtime, filename, bytes, block_size, control,
                 )
@@ -293,7 +293,7 @@ impl StorageClient {
                 let runtime = module_transport
                     .logoscore_cli_transport()
                     .context("active LogosCore CLI transport does not expose its runtime")?
-                    .runtime();
+                    .runtime()?;
                 transport::module_download_backup_bytes_controlled(
                     runtime,
                     cid,

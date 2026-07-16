@@ -360,6 +360,9 @@ QtObject {
             function socialGate(action) { return root.socialGate(action) }
             function normalizedIdlEntry(entry, fallbackIndex) { return root.normalizedIdlEntry(entry, fallbackIndex) }
             function idlEntryForKey(key) { return root.idlEntryForKey(key) }
+            function zoneAccountEntityRef(accountId) {
+                return zoneInspectionState.l2.l2EntityRef("account", accountId, null)
+            }
             function idlNameFromJson(value) { return root.idlNameFromJson(value) }
             function canonicalProgramIdHex(value) { return root.canonicalProgramIdHex(value) }
             function normalizedHexText(value) { return root.normalizedHexText(value) }
@@ -376,7 +379,7 @@ QtObject {
     property bool storageLocalDiagnosticsEnabled: false
     property bool storagePrivilegedDebugEnabled: false
     property bool storageMutatingDiagnosticsEnabled: false
-    property bool localNodesEnabled: false
+    property bool localNodesEnabled: true
     property bool localDevnetEnabled: false
     property Domains.OperationHistoryState operationHistory: Domains.OperationHistoryState {
         id: operationHistoryState
@@ -546,11 +549,6 @@ QtObject {
                 return root.appendOperationHistory(operation, detail)
             }
 
-            function activateLocalProfile() {
-                root.applyProfileIndex(root.profileIndexFor("local"))
-                root.saveSettingsState()
-                return root.networkProfile === "local"
-            }
         }
     }
     property alias walletStateLoaded: walletState.loaded
@@ -768,9 +766,18 @@ QtObject {
             function appendOperationHistory(operation, detail) {
                 return root.appendOperationHistory(operation, detail)
             }
+
+            function activateLocalProfile() {
+                root.localNodesEnabled = true
+                root.localDevnetEnabled = true
+                root.applyProfileIndex(root.profileIndexFor("local"))
+                root.saveSettingsState()
+                return root.networkProfile === "local"
+            }
         }
         networkProfile: root.networkProfile
         busy: appShellState.busy
+        observedNodes: root.localNodeObservedNodes()
     }
     property alias localNodesReport: localNodesState.report
     property alias localNodesError: localNodesState.error
@@ -897,15 +904,19 @@ QtObject {
         target: zoneInspectionState.l2.accounts
 
         function onL2AccountFinalizedChanged() {
-            root.captureCurrentZoneEntityRef(zoneInspectionState.l2.accounts.l2AccountEntityRef(
-                zoneInspectionState.l2.accounts.l2AccountFinalized))
+            const snapshot = zoneInspectionState.l2.accounts.l2AccountFinalized
+            const entityRef = zoneInspectionState.l2.accounts.l2AccountEntityRef(snapshot)
+            root.captureCurrentZoneEntityRef(entityRef)
+            root.refreshSharedIdlsFromAccountSnapshot(snapshot, entityRef)
         }
 
         function onL2AccountProvisionalChanged() {
+            const snapshot = zoneInspectionState.l2.accounts.l2AccountProvisional
+            const entityRef = zoneInspectionState.l2.accounts.l2AccountEntityRef(snapshot)
             if (!zoneInspectionState.l2.accounts.l2AccountFinalized) {
-                root.captureCurrentZoneEntityRef(zoneInspectionState.l2.accounts.l2AccountEntityRef(
-                    zoneInspectionState.l2.accounts.l2AccountProvisional))
+                root.captureCurrentZoneEntityRef(entityRef)
             }
+            root.refreshSharedIdlsFromAccountSnapshot(snapshot, entityRef)
         }
     }
 
@@ -1063,13 +1074,26 @@ QtObject {
     function zoneCatalogL1SourceDescriptor() {
         const source = sourceRouting.coreSourceView("blockchain")
         const endpoint = String(source && source.endpoint || "").trim()
-        if (!source || String(source.effectiveMode || "") !== "rpc" || endpoint.length === 0) {
-            return null
+        if (source && String(source.effectiveMode || "") === "rpc" && endpoint.length > 0) {
+            const descriptor = {
+                kind: "direct_http",
+                endpoint: endpoint
+            }
+            if (localNodesEnabled && networkProfile === "default"
+                    && normalizeEndpoint(endpoint) === normalizeEndpoint(nodeUrl)) {
+                descriptor.default_topology = "logos_testnet"
+            }
+            return descriptor
         }
-        return {
-            kind: "direct_http",
-            endpoint: endpoint
+        const localEndpoint = String(nodeUrl || "").trim()
+        if (localNodesEnabled && networkProfile === "default" && localEndpoint.length > 0) {
+            return {
+                kind: "direct_http",
+                endpoint: localEndpoint,
+                default_topology: "logos_testnet"
+            }
         }
+        return null
     }
 
     function startBlockchainOperation(callerKey, method, args, label, callback) {
@@ -1170,6 +1194,8 @@ QtObject {
     }
 
     function loadSettingsState() { return AppModelIdentity.loadSettingsState(root) }
+
+    function restoreDefaultSettings() { return AppModelIdentity.restoreDefaultSettings(root) }
 
     function saveSettingsState() { return AppModelIdentity.saveSettingsState(root) }
 
@@ -1374,6 +1400,63 @@ QtObject {
 
     function statusFacts() { return statusFacadeState.facts() }
 
+    function localNodeSourceObservation(kind) {
+        const observation = metricsState.sourceObservation(kind) || ({})
+        const report = observation.sourceReport || null
+        const health = report && report.health && typeof report.health === "object"
+            ? report.health : null
+        const status = observation.status || ({})
+        let observedStatus = "unknown"
+        if (health && health.ready === true) {
+            observedStatus = "healthy"
+        } else if (health && health.ready === false) {
+            observedStatus = "unavailable"
+        } else if (status.known === true) {
+            observedStatus = status.ok === true ? "healthy" : "unavailable"
+        }
+        return {
+            status: observedStatus,
+            detail: String(health && (health.detail || health.summary)
+                || status.detail || ""),
+            checked_at: String(observation.checkedAt || ""),
+            checked_at_ms: Number(observation.checkedAtMs || observation.reportCheckedAtMs || 0),
+            provenance: observation.provenance || ["metrics_source_observation", String(kind || "")]
+        }
+    }
+
+    function localNodeIndexerObservation() {
+        const overview = metricsState.dashboardOverview || ({})
+        const indexer = overview.indexer || ({})
+        const health = indexer.health || null
+        const healthValue = String(health && health.value || "unknown").toLowerCase()
+        let status = "unknown"
+        if (health && health.ok === true
+                && (healthValue === "reachable" || healthValue === "healthy"
+                    || healthValue === "ready" || healthValue === "running")) {
+            status = "reachable"
+        } else if (health && health.ok === false) {
+            status = "unavailable"
+        }
+        return {
+            status: status,
+            head: metricsState.overviewProbeValue("indexer", "head"),
+            upstream_head: metricsState.overviewProbeValue("sequencer", "head"),
+            detail: healthValue === "unknown" ? "" : healthValue,
+            provenance: ["zone_source_observation", "indexer"]
+        }
+    }
+
+    function localNodeObservedNodes() {
+        const observationRevision = metricsState.observationRevision
+        const dashboardRevision = metricsState.dashboardSnapshotRevision
+        return {
+            bedrock: localNodeSourceObservation("blockchain"),
+            indexer: localNodeIndexerObservation(),
+            storage: localNodeSourceObservation("storage"),
+            messaging: localNodeSourceObservation("messaging")
+        }
+    }
+
     function dashboardGate(key) { return statusFacadeState.dashboardGate(key) }
 
     function capabilityRegistryRuntimeInputs() {
@@ -1415,7 +1498,7 @@ QtObject {
         return {
             scopes: {
                 "l1": {
-                    connector_id: prefersBasecampModules() ? "blockchain_module" : "logoscore_cli_blockchain_module",
+                    connector_id: prefersBasecampModules() ? "blockchain_module" : "direct_l1_rpc",
                     provenance: "build_default"
                 },
                 "delivery": {
@@ -1434,7 +1517,18 @@ QtObject {
         const raw = value && value.network_connector_config && typeof value.network_connector_config === "object"
             ? value.network_connector_config
             : defaultNetworkConnectorConfig()
-        networkConnectorConfig = normalizedNetworkConnectorConfig(raw)
+        const normalized = normalizedNetworkConnectorConfig(raw)
+        const scopes = raw && raw.scopes && typeof raw.scopes === "object" ? raw.scopes : ({})
+        const defaults = defaultNetworkConnectorConfig().scopes
+        const keys = ["l1", "delivery", "storage"]
+        for (let i = 0; i < keys.length; ++i) {
+            const key = keys[i]
+            const entry = scopes[key] && typeof scopes[key] === "object" ? scopes[key] : ({})
+            if (String(entry.provenance || "") === "testnet_default") {
+                normalized.scopes[key] = defaults[key]
+            }
+        }
+        networkConnectorConfig = normalized
         syncSourceModesFromConnectorConfig()
     }
 
@@ -1609,6 +1703,20 @@ QtObject {
     function zoneL2Capability(sourceRole) { return zoneInspection.l2.l2Capability(sourceRole) }
 
     function zoneCollaborationCapability() { return zoneInspection.l2.collaborationCapability() }
+
+    function refreshSharedIdlsFromAccountSnapshot(snapshot, entityRef) {
+        const account = snapshot && snapshot.account ? snapshot.account : null
+        if (!account || !entityRef) {
+            return false
+        }
+        const ownerProgram = String(account.owner_program_hex
+            || account.owner_program_base58 || "").trim()
+        return social.refreshSharedIdlsForAccount(
+            entityRef,
+            String(account.data_hex || "").trim(),
+            ownerProgram
+        )
+    }
 
     function resolveInspectionTarget(query) { return entityNavigation.resolveInspectionTarget(query) }
 

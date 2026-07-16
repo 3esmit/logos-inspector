@@ -218,6 +218,12 @@ QtObject {
         return coreSourceLabel(connectorSourceMode("l1", blockchainSourceMode), qsTr("Bedrock RPC"))
     }
 
+    function blockchainSupportsCapability(capability) {
+        const descriptor = sourceModeDescriptor(
+            "core", connectorSourceMode("l1", blockchainSourceMode))
+        return descriptor.capabilities.indexOf(String(capability || "")) >= 0
+    }
+
     function blockchainSourceTarget() {
         return effectiveCoreSourceMode(blockchainSourceMode) === "module" ? blockchainModule : connectorEndpoint("l1", nodeUrl)
     }

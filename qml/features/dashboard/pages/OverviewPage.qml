@@ -420,14 +420,11 @@ ColumnLayout {
     }
 
     function tipMinusLib() {
-        const slot = Number(root.cryptarchiaValue("slot"))
-        const lib = Number(root.cryptarchiaValue("lib_slot"))
-        return Number.isFinite(slot) && Number.isFinite(lib) ? Math.max(0, slot - lib) : null
+        return root.model.metrics.tipMinusLib()
     }
 
     function finalityLagSeconds() {
-        const gap = root.tipMinusLib()
-        return gap === null ? null : gap * 2
+        return root.model.metrics.finalityLagSeconds()
     }
 
     function indexerLag() {
@@ -630,6 +627,18 @@ ColumnLayout {
         property real numericValue: NaN
         property string tone: "neutral"
         property var samples: []
+        property int historyPointCount: 0
+
+        onSamplesChanged: historyPointCount = graphRoot.validSampleCount()
+
+        Component.onCompleted: historyPointCount = graphRoot.validSampleCount()
+
+        objectName: "dashboardGraphTile"
+        Accessible.role: Accessible.Chart
+        Accessible.name: graphRoot.title
+        Accessible.description: qsTr("%1 history points; current value %2")
+            .arg(graphRoot.historyPointCount)
+            .arg(graphRoot.value)
 
         padding: graphRoot.theme.gap
         Layout.fillWidth: true
@@ -712,10 +721,11 @@ ColumnLayout {
                     ctx.lineTo(width - inset, height - inset)
                     ctx.stroke()
 
-                    const raw = Array.isArray(graphRoot.samples) && graphRoot.samples.length > 0 ? graphRoot.samples : [{ timestamp: Date.now(), value: graphRoot.numericValue }]
+                    const raw = graphRoot.sampleSequence()
+                    const sourceSamples = raw.length > 0 ? raw : [{ timestamp: Date.now(), value: graphRoot.numericValue }]
                     const samples = []
-                    for (let i = 0; i < raw.length; ++i) {
-                        const sample = raw[i]
+                    for (let i = 0; i < sourceSamples.length; ++i) {
+                        const sample = sourceSamples[i]
                         const value = Number(sample && typeof sample === "object" ? sample.value : sample)
                         if (Number.isFinite(value)) {
                             const timestamp = Number(sample && typeof sample === "object" ? sample.timestamp : i)
@@ -785,6 +795,25 @@ ColumnLayout {
             }
             return graphRoot.theme.accent
         }
+
+        function validSampleCount() {
+            const raw = graphRoot.sampleSequence()
+            let count = 0
+            for (let index = 0; index < raw.length; ++index) {
+                const sample = raw[index]
+                const value = Number(sample && typeof sample === "object" ? sample.value : sample)
+                if (Number.isFinite(value)) {
+                    count += 1
+                }
+            }
+            return count
+        }
+
+        function sampleSequence() {
+            const candidate = graphRoot.samples
+            return candidate && typeof candidate.length === "number" ? candidate : []
+        }
+
     }
 
     component DashboardHeader: Item {

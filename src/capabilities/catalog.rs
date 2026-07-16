@@ -198,7 +198,7 @@ pub(super) fn default_connector(
         (CapabilityBuildMode::Basecamp, "delivery") => "delivery_module",
         (CapabilityBuildMode::Basecamp, "wallet.l2") => "lez_core",
         (_, "wallet") => "composed_wallet",
-        (_, "l1") => "logoscore_cli_blockchain_module",
+        (_, "l1") => "direct_l1_rpc",
         (_, "storage") => "logoscore_cli_storage_module",
         (_, "delivery") => "logoscore_cli_delivery_module",
         (_, "wallet.l1" | "wallet.l2") => "composed_wallet",

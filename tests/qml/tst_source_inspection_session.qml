@@ -13,6 +13,10 @@ TestCase {
         id: fakeHost
     }
 
+    AsyncBridgeHostFixture {
+        id: asyncHost
+    }
+
     BridgeClient {
         id: bridgeClient
 
@@ -51,8 +55,11 @@ TestCase {
 
     function init() {
         fakeHost.reset()
+        asyncHost.reset()
+        bridgeClient.host = fakeHost
         model.setNetworkConnectorMode("storage", "rest")
         model.setNetworkConnectorMode("delivery", "rest")
+        model.metrics.observationTimeoutMs = 45000
         model.storageCidProbe = ""
         model.metrics.storageModuleReport = null
         model.metrics.messagingModuleReport = null
@@ -164,6 +171,32 @@ TestCase {
         verify(storageSession.view.status.ok)
         compare(fakeHost.lastArgs[0].configuration_generation,
             model.metrics.familyConfigurationGeneration("storage"))
+    }
+
+    function test_delivery_refresh_times_out_when_async_callback_is_lost() {
+        bridgeClient.host = asyncHost
+        asyncHost.deferAsyncRequests = true
+        model.metrics.observationTimeoutMs = 1
+
+        deliverySession.refresh(true, false)
+
+        tryCompare(asyncHost.pendingAsyncRequests, "length", 1)
+        compare(asyncHost.lastMethod, "deliverySourceReport")
+        verify(deliverySession.view.pending)
+        tryVerify(function () { return !deliverySession.view.pending }, 500)
+        verify(deliverySession.view.status.known)
+        verify(!deliverySession.view.status.ok)
+        compare(deliverySession.view.status.detail, "Source observation timed out.")
+        verify(model.shell.resultIsError)
+
+        verify(asyncHost.completeAsyncAt(0, {
+            ok: true,
+            value: { marker: "late" },
+            text: "OK",
+            error: ""
+        }))
+        compare(deliverySession.view.status.detail, "Source observation timed out.")
+        verify(model.shell.resultIsError)
     }
 
     function test_hard_failure_marks_retained_report_last_known() {

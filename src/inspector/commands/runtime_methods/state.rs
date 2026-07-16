@@ -2,6 +2,7 @@ use anyhow::{Context as _, Result};
 use serde_json::Value;
 
 use crate::{
+    source_routing::channel_sources::restore_default_settings_state,
     support::args::Args,
     support::backup_catalog::{
         attach_remote_backup_metadata, create_local_settings_backup, load_backup_catalog_value,
@@ -22,6 +23,7 @@ pub(super) const METHOD_CATALOG: &[RuntimeMethodEntry] = &[
     RuntimeMethodEntry::no_args("loadWalletState", load_wallet_state),
     RuntimeMethodEntry::sync("saveWalletState", save_wallet_state),
     RuntimeMethodEntry::no_args("loadSettingsState", load_settings_state),
+    RuntimeMethodEntry::no_args("restoreDefaultSettingsState", restore_default_settings),
     RuntimeMethodEntry::sync("saveSettingsState", save_settings_state),
     RuntimeMethodEntry::no_args("loadBackupCatalog", load_backup_catalog),
     RuntimeMethodEntry::sync("createLocalSettingsBackup", create_local_backup),
@@ -48,6 +50,10 @@ pub(super) fn save_wallet_state(args: Value) -> Result<Value> {
 
 pub(super) fn load_settings_state() -> Result<Value> {
     load_settings_state_store()
+}
+
+pub(super) fn restore_default_settings() -> Result<Value> {
+    restore_default_settings_state()
 }
 
 pub(super) fn save_settings_state(args: Value) -> Result<Value> {

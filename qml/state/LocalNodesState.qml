@@ -14,6 +14,7 @@ QtObject {
     property var operations: []
     property int revision: 0
     property var devnets: []
+    property var observedNodes: ({})
     property string pendingAction: ""
     property string pendingNode: ""
     property string pendingNetworkId: ""
@@ -409,10 +410,109 @@ QtObject {
     }
 
     function modeLabel() {
+        const mode = String(report && report.mode || "")
+        if (mode === "public_testnet") {
+            return qsTr("Testnet")
+        }
         return localMode() ? qsTr("Local Devnet") : qsTr("External Network");
     }
 
+    function publicTestnetMode() {
+        return String(report && report.mode || "") === "public_testnet"
+    }
+
+    function observedNode(kind) {
+        const key = String(kind || "")
+        const values = observedNodes && typeof observedNodes === "object"
+            ? observedNodes : ({})
+        return values[key] || null
+    }
+
+    function observationNumber(value) {
+        if (value === undefined || value === null || value === "") {
+            return null
+        }
+        const number = Number(value)
+        return Number.isFinite(number) ? number : null
+    }
+
+    function observedRunState(kind) {
+        const key = String(kind || "")
+        const observation = observedNode(key)
+        const status = String(observation && observation.status || "unknown").toLowerCase()
+        const reachable = status === "healthy" || status === "ready"
+            || status === "reachable" || status === "online"
+        if (reachable && key === "indexer") {
+            const head = observationNumber(observation.head)
+            const upstreamHead = observationNumber(observation.upstream_head)
+            if (head === null || upstreamHead === null) {
+                return "unknown"
+            }
+            return Math.max(0, upstreamHead - head) <= 128 ? "online" : "syncing"
+        }
+        if (reachable) {
+            return "online"
+        }
+        if (status === "syncing" || status === "degraded" || status === "backfilling") {
+            return "syncing"
+        }
+        if (status === "unavailable" || status === "unreachable" || status === "failed"
+                || status === "offline") {
+            return "unavailable"
+        }
+        return "unknown"
+    }
+
+    function observedSummary() {
+        const nodes = report && Array.isArray(report.nodes) ? report.nodes : []
+        const summary = { total: nodes.length, online: 0, syncing: 0, unavailable: 0, unknown: 0 }
+        for (let i = 0; i < nodes.length; ++i) {
+            const node = nodes[i] || ({})
+            const state = observedRunState(node.key || node.kind)
+            if (state === "online") {
+                summary.online += 1
+            } else if (state === "syncing") {
+                summary.syncing += 1
+            } else if (state === "unavailable") {
+                summary.unavailable += 1
+            } else {
+                summary.unknown += 1
+            }
+        }
+        return summary
+    }
+
+    function controlState(node) {
+        const value = node || ({})
+        if (localMode()) {
+            return String(value.install_state || "needs_configuration")
+        }
+        if (String(value.install_state || "") === "installed") {
+            return "managed"
+        }
+        return "external"
+    }
+
+    function summaryTone() {
+        if (publicTestnetMode()) {
+            const observed = observedSummary()
+            if (observed.total > 0 && observed.online === observed.total) {
+                return "success"
+            }
+            return observed.unavailable > 0 ? "error" : "warning"
+        }
+        const summary = report && report.summary ? report.summary : null
+        if (!summary || Number(summary.needs_configuration || 0) > 0) {
+            return "warning"
+        }
+        return Number(summary.running || 0) > 0 ? "success" : "neutral"
+    }
+
     function summaryText() {
+        if (publicTestnetMode()) {
+            const observed = observedSummary()
+            return qsTr("%1/%2 online").arg(observed.online).arg(observed.total)
+        }
         const summary = report && report.summary ? report.summary : null;
         if (!summary) {
             return qsTr("Not loaded");

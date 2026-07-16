@@ -19,6 +19,7 @@ ColumnLayout {
     required property AppModel model
     readonly property bool hasResponse: root.model.pageHasOutput("programs")
     readonly property var responseValue: root.hasResponse ? root.model.shell.resultValue : null
+    property string shareAccountId: ""
 
     width: parent ? parent.width : 900
     spacing: 16
@@ -555,6 +556,84 @@ ColumnLayout {
                 onToggled: root.model.social.setSharedIdlAutoShare(checked)
                 Layout.fillWidth: true
             }
+
+            GridLayout {
+                columns: root.width < 760 ? 1 : 3
+                columnSpacing: root.theme.gapSmall
+                rowSpacing: root.theme.gapSmall
+                Layout.fillWidth: true
+
+                FieldRow {
+                    id: shareAccount
+
+                    theme: root.theme
+                    label: qsTr("Account ID")
+                    sourceText: root.shareAccountId
+                    syncSourceText: true
+                    placeholderText: qsTr("Account receiving this IDL")
+                    Layout.fillWidth: true
+                    onTextEdited: text => root.shareAccountId = text
+                }
+
+                ColumnLayout {
+                    spacing: 6
+                    Layout.fillWidth: true
+
+                    Text {
+                        text: qsTr("Local IDL")
+                        color: root.theme.textMuted
+                        textFormat: Text.PlainText
+                        font.pixelSize: root.theme.secondaryText
+                        font.weight: Font.Medium
+                    }
+
+                    ComboBox {
+                        id: shareIdl
+
+                        model: root.shareIdlLabels()
+                        enabled: root.model.registeredIdls.count > 0
+                        hoverEnabled: true
+                        Accessible.name: qsTr("IDL to share")
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: root.theme.controlHeight
+
+                        contentItem: TextField {
+                            text: shareIdl.displayText
+                            color: root.theme.text
+                            placeholderText: qsTr("Save a local IDL first")
+                            placeholderTextColor: root.theme.textDim
+                            verticalAlignment: Text.AlignVCenter
+                            leftPadding: 12
+                            rightPadding: 24
+                            readOnly: true
+                            background: null
+                            font.pixelSize: root.theme.primaryText
+                        }
+
+                        background: Rectangle {
+                            radius: root.theme.radius
+                            color: shareIdl.hovered || shareIdl.activeFocus
+                                ? root.theme.surfaceRaised : root.theme.field
+                            border.width: shareIdl.activeFocus ? 2 : 1
+                            border.color: shareIdl.activeFocus
+                                ? root.theme.accent : root.theme.outlineMuted
+                        }
+                    }
+                }
+
+                ActionButton {
+                    objectName: "shareRegisteredIdlButton"
+                    theme: root.theme
+                    text: qsTr("Share IDL")
+                    primary: true
+                    enabled: !root.model.shell.busy && !root.model.social.writesRunning
+                        && root.model.registeredIdls.count > 0
+                        && root.shareAccountId.trim().length > 0
+                    Layout.preferredWidth: 128
+                    Layout.alignment: Qt.AlignBottom
+                    onClicked: root.shareSelectedIdl(shareIdl.currentIndex)
+                }
+            }
         }
     }
 
@@ -610,6 +689,33 @@ ColumnLayout {
 
     function sharedPolicyText() {
         return ProgramResultPresentation.sharedPolicyText(root)
+    }
+
+    function shareIdlLabels() {
+        const rows = []
+        for (let i = 0; i < root.model.registeredIdls.count; ++i) {
+            const entry = root.model.idlEntryAt(i)
+            rows.push(String(entry.name || entry.programIdHex || qsTr("IDL %1").arg(i + 1)))
+        }
+        return rows
+    }
+
+    function shareSelectedIdl(index) {
+        const entry = root.model.idlEntryAt(Number(index || 0))
+        let completed = false
+        const started = root.model.social.publishRegisteredIdl(
+            root.shareAccountId.trim(), String(entry && entry.key || ""), function (response) {
+                completed = true
+                const ok = response && response.ok === true
+                root.model.shell.setResult(qsTr("Share IDL"), ok
+                    ? qsTr("Shared %1 with account %2.").arg(String(entry.name || qsTr("IDL"))).arg(root.shareAccountId.trim())
+                    : String(response && response.error || qsTr("IDL sharing failed.")), !ok)
+            })
+        if (!started && !completed) {
+            root.model.shell.setResult(qsTr("Share IDL"),
+                qsTr("Select an active Channel Zone, configure a Social identity, and enable Storage and Delivery writes."), true)
+        }
+        return started
     }
 
     function validProgramId(value) {

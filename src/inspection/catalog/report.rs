@@ -21,7 +21,17 @@ pub struct ZoneCatalogConfigureRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ZoneCatalogSourceRequest {
-    DirectHttp { endpoint: String },
+    DirectHttp {
+        endpoint: String,
+        #[serde(default)]
+        default_topology: Option<ZoneCatalogDefaultTopology>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ZoneCatalogDefaultTopology {
+    LogosTestnet,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

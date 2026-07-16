@@ -5,9 +5,16 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+autolib = false
+autobins = false
+autoexamples = false
+autotests = false
+autobenches = false
+build = false
 
 [lib]
 name = "logos_inspector_core"
+path = "src/lib.rs"
 crate-type = ["cdylib"]
 
 [dependencies]

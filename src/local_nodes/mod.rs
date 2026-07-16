@@ -1,5 +1,6 @@
 use anyhow::Result;
 
+use crate::modules::logos_core::LogoscoreCliRuntime;
 use crate::support::command_runner::CommandControl;
 
 mod action_engine;
@@ -16,8 +17,9 @@ mod workflow;
 
 pub use model::{
     LocalDevnetListReport, LocalDevnetRecord, LocalNodeActionRequest, LocalNodeConfigRecord,
-    LocalNodeOperationReport, LocalNodeProblemCode, LocalNodeReport, LocalNodeStatus,
-    LocalNodeSummary, LocalNodeTools, NodeAction, NodeKind, NodeLifecycleState, ToolStatus,
+    LocalNodeDeployment, LocalNodeOperationReport, LocalNodeProblemCode, LocalNodeReport,
+    LocalNodeStatus, LocalNodeSummary, LocalNodeTools, NodeAction, NodeKind, NodeLifecycleState,
+    ToolStatus,
 };
 pub use runtime::LogoscoreRuntimeStatus;
 
@@ -51,6 +53,15 @@ pub(crate) fn local_nodes_action_controlled(
     )
 }
 
+pub(crate) fn running_managed_logoscore_runtime() -> Result<Option<LogoscoreCliRuntime>> {
+    let config_dir = crate::support::state_store::config_dir()?;
+    let profile = runtime::LogoscoreRuntimeStore::system(config_dir).load()?;
+    profile
+        .filter(runtime::LogoscoreRuntimeProfile::is_running)
+        .map(|profile| profile.cli_runtime())
+        .transpose()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,21 +92,24 @@ mod tests {
     }
 
     #[test]
-    fn testnet_profile_excludes_local_sequencer_and_purge() {
+    fn testnet_profile_excludes_local_sequencer_and_exposes_node_actions() {
         let nodes = workflow::node_set_for_profile("default");
         let actions = workflow::available_actions_for("default", Some(NodeKind::Bedrock), true);
 
         assert!(!nodes.contains(&NodeKind::Sequencer));
-        assert!(!actions.contains(&NodeAction::Purge));
+        assert!(actions.contains(&NodeAction::Initialize));
+        assert!(actions.contains(&NodeAction::Purge));
     }
 
     #[test]
     fn report_exposes_normalized_profile_and_network_actions() {
         let state = LocalNodesState {
-            version: 1,
+            version: 2,
             active_devnet: Some("devnet".to_owned()),
+            testnet: None,
             managed_workspace_root: "/tmp/local-nodes".to_owned(),
             devnets: vec![LocalDevnetRecord {
+                deployment: LocalNodeDeployment::LocalDevnet,
                 id: "devnet".to_owned(),
                 label: "Devnet".to_owned(),
                 workspace: "/tmp/local-nodes/devnet".to_owned(),
@@ -174,23 +188,17 @@ mod tests {
     }
 
     #[test]
-    fn indexer_is_not_actionable_without_a_verified_module_contract() -> Result<()> {
-        let state = LocalNodesState::default_for_config_dir(Path::new("/tmp/local-nodes-contract"));
-
-        let report = action_engine::report_for_state("local", &state);
-        let indexer = report
-            .nodes
-            .iter()
-            .find(|node| node.kind == NodeKind::Indexer)
-            .context("missing indexer node")?;
-
-        if indexer.install_state != "needs_configuration"
-            || !indexer.available_actions.is_empty()
-            || !indexer
-                .detail
-                .contains("no verified logoscore module lifecycle contract")
+    fn indexer_uses_registered_process_lifecycle() -> Result<()> {
+        let adapter = super::adapters::adapter_for(NodeKind::Indexer);
+        if !matches!(
+            adapter.lifecycle(),
+            super::adapters::NodeLifecycle::RegisteredProcess {
+                program: "indexer_service"
+            }
+        ) || !adapter.workflow_actions().contains(&NodeAction::Start)
+            || adapter.startup_rpc_health_method() != Some("checkHealth")
         {
-            bail!("unexpected indexer discovery gate: {indexer:?}");
+            bail!("Indexer did not expose its registered process contract");
         }
         Ok(())
     }
@@ -218,15 +226,16 @@ mod tests {
         let bedrock = command_spec_for(
             NodeKind::Bedrock,
             NodeAction::Start,
-            "/tmp/bedrock.json",
-            "local",
+            "/tmp/bedrock.yaml",
+            "/tmp/bedrock",
+            Some(8080),
         )
         .context("missing bedrock command")?;
         let expected_bedrock = vec![
             "call",
             "blockchain_module",
             "start",
-            "/tmp/bedrock.json",
+            "/tmp/bedrock.yaml",
             "",
             "--json",
         ];
@@ -234,22 +243,32 @@ mod tests {
             bail!("unexpected bedrock command: {:?}", bedrock.args);
         }
 
-        if command_spec_for(
+        let indexer = command_spec_for(
             NodeKind::Indexer,
             NodeAction::Start,
             "/tmp/indexer.json",
-            "local",
+            "/tmp/indexer-data",
+            Some(8779),
         )
-        .is_some()
+        .context("missing indexer command")?;
+        if indexer.args
+            != [
+                "/tmp/indexer.json",
+                "--port",
+                "8779",
+                "--data-dir",
+                "/tmp/indexer-data",
+            ]
         {
-            bail!("indexer start must stay unavailable without a verified module contract");
+            bail!("unexpected indexer command: {:?}", indexer.args);
         }
 
         let messaging = command_spec_for(
             NodeKind::Messaging,
             NodeAction::Initialize,
             "/tmp/delivery.json",
-            "local",
+            "/tmp/delivery",
+            Some(8645),
         )
         .context("missing messaging command")?;
         let expected_messaging = vec![
@@ -426,7 +445,7 @@ mod tests {
         ];
 
         for (kind, action, module, method) in cases {
-            let spec = command_spec_for(kind, action, "/tmp/ignored.json", "local")
+            let spec = command_spec_for(kind, action, "/tmp/ignored.json", "/tmp/data", None)
                 .with_context(|| format!("missing {module}.{method} command"))?;
 
             if spec.args != ["call", module, method, "--json"] {
@@ -442,7 +461,8 @@ mod tests {
             NodeKind::Storage,
             NodeAction::Initialize,
             "/tmp/storage.json",
-            "local",
+            "/tmp/storage",
+            None,
         )
         .context("missing storage init command")?;
 
@@ -471,7 +491,7 @@ mod tests {
         let text = serde_json::to_string(&state)?;
         let parsed: LocalNodesState = serde_json::from_str(&text)?;
 
-        if parsed.version != 1 {
+        if parsed.version != 2 {
             bail!("unexpected state version");
         }
         if !parsed.managed_workspace_root.ends_with("local-nodes") {
@@ -505,6 +525,233 @@ mod tests {
         }
         fs::remove_dir_all(&config)
             .with_context(|| format!("failed to remove {}", config.display()))?;
+        Ok(())
+    }
+
+    #[test]
+    fn missing_local_node_state_materializes_public_testnet_topology() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = action_engine::LocalNodeStore::for_config_dir(directory.path().to_path_buf());
+
+        let state = store.load()?;
+        let testnet = state.testnet.context("missing public Testnet topology")?;
+        if testnet.deployment != LocalNodeDeployment::PublicTestnet
+            || testnet
+                .nodes
+                .iter()
+                .any(|node| node.kind == NodeKind::Sequencer)
+        {
+            bail!("unexpected public Testnet topology: {testnet:?}");
+        }
+        let bedrock = testnet
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Bedrock)
+            .context("missing Testnet Bedrock")?;
+        let initialization_path = bedrock
+            .initialization_config_path
+            .as_deref()
+            .context("missing Bedrock initialization config")?;
+        let bedrock_config: Value =
+            serde_json::from_str(&fs::read_to_string(initialization_path)?)?;
+        if bedrock_config
+            .pointer("/initial_peers/0")
+            .and_then(Value::as_str)
+            != crate::testnet::LOGOS_TESTNET_BOOTSTRAP_PEERS
+                .first()
+                .copied()
+            || bedrock_config.get("output").and_then(Value::as_str)
+                != Some(bedrock.config_path.as_str())
+            || Path::new(&bedrock.config_path).exists()
+        {
+            bail!("unexpected Testnet Bedrock bootstrap config: {bedrock_config}");
+        }
+        let indexer = testnet
+            .nodes
+            .iter()
+            .find(|node| node.kind == NodeKind::Indexer)
+            .context("missing Testnet Indexer")?;
+        let indexer_config: Value =
+            serde_json::from_str(&fs::read_to_string(&indexer.config_path)?)?;
+        if indexer_config
+            .pointer("/bedrock_config/addr")
+            .and_then(Value::as_str)
+            != Some("http://127.0.0.1:8080")
+            || indexer_config.get("channel_id").and_then(Value::as_str)
+                != Some(crate::testnet::LOGOS_TESTNET_CHANNEL_ID)
+        {
+            bail!("unexpected Testnet Indexer config: {indexer_config}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn stopping_registered_process_without_owned_pid_is_rejected() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let record = LocalDevnetRecord {
+            deployment: LocalNodeDeployment::PublicTestnet,
+            id: "logos-testnet".to_owned(),
+            label: "Logos Testnet".to_owned(),
+            workspace: directory.path().display().to_string(),
+            manifest_path: directory
+                .path()
+                .join("local-network.json")
+                .display()
+                .to_string(),
+            created_at: 0,
+            updated_at: 0,
+            nodes: vec![LocalNodeConfigRecord {
+                kind: NodeKind::Indexer,
+                config_path: directory.path().join("indexer.json").display().to_string(),
+                initialization_config_path: None,
+                data_dir: directory.path().join("indexer").display().to_string(),
+                endpoint: Some(crate::testnet::LOCAL_INDEXER_ENDPOINT.to_owned()),
+                port: Some(8779),
+                package_path: Some("/usr/bin/indexer_service".to_owned()),
+                module_path: None,
+                process_id: None,
+                installed: true,
+                lifecycle_state: NodeLifecycleState::Stopped,
+                pending_lifecycle_action: None,
+            }],
+        };
+        let mut state = LocalNodesState {
+            version: 2,
+            active_devnet: None,
+            testnet: Some(record),
+            managed_workspace_root: directory.path().display().to_string(),
+            devnets: Vec::new(),
+            operations: Vec::new(),
+        };
+        let request = LocalNodeActionRequest {
+            action: NodeAction::Stop,
+            node: Some(NodeKind::Indexer),
+            network_id: None,
+            workspace_path: None,
+            runtime_modules_dir: None,
+            runtime_binary_path: None,
+            label: None,
+        };
+        let mut runtime = None;
+
+        let operation = action_workspace::LocalNodeActionWorkspace::system().apply(
+            &mut state,
+            &mut runtime,
+            directory.path(),
+            "default",
+            &request,
+            None,
+        );
+
+        assert_eq!(operation.report.status, "needs_configuration");
+        assert!(operation.report.detail.contains("Inspector-owned"));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bedrock_reinitialization_reuses_generated_config_without_key_generation() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir()?;
+        let binary = directory.path().join("logoscore-fake");
+        let calls = directory.path().join("calls.log");
+        let config_path = directory.path().join("bedrock.yaml");
+        let keystore_path = directory.path().join("keystore.yaml");
+        let init_path = directory.path().join("bedrock.init.json");
+        let manifest_path = directory.path().join("local-network.json");
+        fs::write(&config_path, b"bedrock-sentinel")?;
+        fs::write(&keystore_path, b"keystore-sentinel")?;
+        fs::write(&init_path, b"{}")?;
+        fs::write(
+            &binary,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nprintf '%s\\n' '[{{\"name\":\"blockchain_module\",\"status\":\"loaded\"}}]'\n",
+                calls.display()
+            ),
+        )?;
+        let mut permissions = fs::metadata(&binary)?.permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&binary, permissions)?;
+        let record = LocalDevnetRecord {
+            deployment: LocalNodeDeployment::PublicTestnet,
+            id: "logos-testnet".to_owned(),
+            label: "Logos Testnet".to_owned(),
+            workspace: directory.path().display().to_string(),
+            manifest_path: manifest_path.display().to_string(),
+            created_at: 0,
+            updated_at: 0,
+            nodes: vec![LocalNodeConfigRecord {
+                kind: NodeKind::Bedrock,
+                config_path: config_path.display().to_string(),
+                initialization_config_path: Some(init_path.display().to_string()),
+                data_dir: directory.path().join("data").display().to_string(),
+                endpoint: Some(crate::testnet::LOCAL_BEDROCK_ENDPOINT.to_owned()),
+                port: Some(8080),
+                package_path: None,
+                module_path: None,
+                process_id: None,
+                installed: false,
+                lifecycle_state: NodeLifecycleState::NotInitialized,
+                pending_lifecycle_action: None,
+            }],
+        };
+        let mut state = LocalNodesState {
+            version: 2,
+            active_devnet: None,
+            testnet: Some(record),
+            managed_workspace_root: directory.path().display().to_string(),
+            devnets: Vec::new(),
+            operations: Vec::new(),
+        };
+        let mut runtime = Some(runtime::LogoscoreRuntimeProfile {
+            id: "test-runtime".to_owned(),
+            binary_path: binary.display().to_string(),
+            config_dir: directory.path().join("runtime").display().to_string(),
+            modules_dir: Some(directory.path().display().to_string()),
+            persistence_path: Some(directory.path().join("runtime-data").display().to_string()),
+            ownership: runtime::LogoscoreRuntimeOwnership::InspectorManaged,
+            timeout_profile: runtime::LogoscoreTimeoutProfile::Lifecycle,
+            daemon_process_id: Some(std::process::id()),
+        });
+        let request = LocalNodeActionRequest {
+            action: NodeAction::Initialize,
+            node: Some(NodeKind::Bedrock),
+            network_id: None,
+            workspace_path: None,
+            runtime_modules_dir: None,
+            runtime_binary_path: None,
+            label: None,
+        };
+
+        let operation = action_workspace::LocalNodeActionWorkspace::system().apply(
+            &mut state,
+            &mut runtime,
+            directory.path(),
+            "default",
+            &request,
+            None,
+        );
+
+        let calls = fs::read_to_string(&calls)?;
+        let node = state
+            .testnet
+            .as_ref()
+            .and_then(|topology| topology.nodes.first())
+            .context("missing Bedrock node")?;
+        if operation.report.status != "initialized"
+            || calls.contains("generate_user_config")
+            || !calls.contains("list-modules")
+            || !node.installed
+            || node.lifecycle_state != NodeLifecycleState::Stopped
+            || fs::read(&config_path)? != b"bedrock-sentinel"
+            || fs::read(&keystore_path)? != b"keystore-sentinel"
+        {
+            bail!(
+                "Bedrock existing-config attach reran generation: operation={:?}, calls={calls}",
+                operation.report
+            );
+        }
         Ok(())
     }
 

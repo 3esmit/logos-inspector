@@ -4,7 +4,6 @@ use serde_json::{Value, json};
 use crate::{
     AccountReport, AccountTransactionSummary, IndexerBlockReport, IndexerStatusReport, ProbeReport,
     TransactionSummary,
-    blockchain::BlockchainLiveBlocksReport,
     blockchain::BlockchainNodeReport,
     lez::{
         indexer_account_report, summarize_account_transaction, summarize_indexer_status_response,
@@ -79,23 +78,6 @@ pub(crate) async fn blockchain_recent_blocks(
 ) -> Result<Value> {
     let blocks = blockchain_blocks(transport, transport_kind, slot_from, slot_to).await?;
     Ok(sort_and_limit_blocks(blocks, limit.clamp(1, 500)))
-}
-
-pub(crate) async fn blockchain_live_blocks_snapshot(
-    transport: &SharedModuleTransport,
-    transport_kind: ModuleTransportKind,
-    slot_from: u64,
-    slot_to: u64,
-    limit: u64,
-) -> Result<BlockchainLiveBlocksReport> {
-    let blocks =
-        blockchain_recent_blocks(transport, transport_kind, slot_from, slot_to, limit).await?;
-    Ok(BlockchainLiveBlocksReport {
-        endpoint: BLOCKCHAIN_MODULE.to_owned(),
-        source: "module_range".to_owned(),
-        blocks: value_array(blocks),
-        unknown_events: Vec::new(),
-    })
 }
 
 pub(crate) async fn blockchain_block(
@@ -360,13 +342,6 @@ fn block_slot(block: &Value) -> u64 {
         .and_then(Value::as_u64)
         .or_else(|| block.get("slot").and_then(Value::as_u64))
         .unwrap_or_default()
-}
-
-fn value_array(value: Value) -> Vec<Value> {
-    match value {
-        Value::Array(values) => values,
-        _ => Vec::new(),
-    }
 }
 
 fn empty_module_lookup(value: &Value) -> bool {

@@ -29,6 +29,7 @@ TestCase {
         state.operations = []
         state.revision = 0
         state.devnets = []
+        state.observedNodes = ({})
         state.clearActionDraft()
     }
 
@@ -80,6 +81,39 @@ TestCase {
                 run_state: "running",
                 modules_dir: "/tmp/modules",
                 detail: "Inspector-managed logoscore daemon process is running"
+            }
+        }
+    }
+
+    function testnetReport() {
+        const nodes = ["bedrock", "indexer", "storage", "messaging"].map(function (kind) {
+            return {
+                key: kind,
+                label: kind,
+                available_actions: [],
+                install_state: "needs_configuration",
+                run_state: "not_initialized",
+                process_id: null
+            }
+        })
+        return {
+            profile: "default",
+            mode: "public_testnet",
+            available_network_actions: [],
+            available_runtime_actions: ["start_runtime"],
+            active_devnet: "logos-testnet",
+            workspace_root: "/tmp/logos-testnet",
+            summary: {
+                total: nodes.length,
+                installed: 0,
+                running: 0,
+                needs_configuration: nodes.length
+            },
+            nodes: nodes,
+            operations: [],
+            runtime: {
+                ownership: "external",
+                run_state: "not_configured"
             }
         }
     }
@@ -209,6 +243,7 @@ TestCase {
         })
         state.revision += 1
 
+        compare(state.modeLabel(), "Testnet")
         verify(!state.networkActionEnabled("new_network"))
         verify(!state.networkActionEnabled("delete_network"))
 
@@ -244,6 +279,43 @@ TestCase {
         compare(state.runtimeModulesDir(), "/tmp/modules")
         compare(state.nodeByKind("sequencer").label, "Sequencer")
         compare(state.toolProblem(), "sequencer_service not found. Local sequencer start requires a configured binary.")
+    }
+
+    function test_testnet_observation_health_is_separate_from_control_ownership() {
+        state.report = testnetReport()
+        state.observedNodes = ({
+            bedrock: { status: "healthy", detail: "Online" },
+            indexer: {
+                status: "reachable",
+                head: 22352,
+                upstream_head: 22418,
+                detail: "Indexer caught up"
+            },
+            storage: { status: "healthy", detail: "25 DHT peers" },
+            messaging: { status: "healthy", detail: "10 relay peers" }
+        })
+
+        compare(state.summaryText(), "4/4 online")
+        compare(state.summaryTone(), "success")
+        compare(state.observedRunState("bedrock"), "online")
+        compare(state.observedRunState("indexer"), "online")
+        compare(state.controlState(state.nodeByKind("indexer")), "external")
+        verify(!state.actionEnabled("indexer", "stop"))
+
+        state.observedNodes = ({
+            bedrock: { status: "healthy" },
+            indexer: {
+                status: "reachable",
+                head: 6001,
+                upstream_head: 22418
+            },
+            storage: { status: "healthy" },
+            messaging: { status: "healthy" }
+        })
+
+        compare(state.summaryText(), "3/4 online")
+        compare(state.summaryTone(), "warning")
+        compare(state.observedRunState("indexer"), "syncing")
     }
 
     function test_node_action_draft_owns_confirmation_facts() {

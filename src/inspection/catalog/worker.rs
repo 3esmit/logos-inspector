@@ -9,13 +9,14 @@ use tokio::time::sleep;
 use super::{
     CatalogCandidateActivation, CatalogEngineContext, CatalogL1RangePage, CatalogL1RangeRequest,
     CatalogL1Source, CatalogMetadata, CatalogPageReduction, CatalogRepairConfirmation,
-    CatalogSnapshot, ChannelSourceCatalogIdentityRebinder, DirectCatalogL1Source, ZoneCatalog,
-    ZoneCatalogPublication, ZoneCatalogRunContext, ZoneCatalogRunMode, ZoneCatalogServiceError,
-    ZoneCatalogServiceResult, ZoneCatalogSourceDescriptor, ZoneCatalogWorker,
-    ZoneCatalogWorkerFuture, apply_catalog_identity_promotion, catalog_gap_repair_request,
-    catalog_prefix_repair_request, confirm_catalog_repair_gap, prepare_catalog_catch_up,
-    reduce_catalog_gap_repair, reduce_catalog_page, reduce_catalog_prefix_repair,
-    reduce_catalog_repair, repair_catalog_ancestry, verify_catalog_candidate,
+    CatalogSnapshot, ChannelSourceCatalogIdentityRebinder, DirectCatalogL1Source,
+    MAX_CATALOG_L1_RANGE_BLOCKS, ZoneCatalog, ZoneCatalogPublication, ZoneCatalogRunContext,
+    ZoneCatalogRunMode, ZoneCatalogServiceError, ZoneCatalogServiceResult,
+    ZoneCatalogSourceDescriptor, ZoneCatalogWorker, ZoneCatalogWorkerFuture,
+    apply_catalog_identity_promotion, catalog_gap_repair_request, catalog_prefix_repair_request,
+    confirm_catalog_repair_gap, prepare_catalog_catch_up, reduce_catalog_gap_repair,
+    reduce_catalog_page, reduce_catalog_prefix_repair, reduce_catalog_repair,
+    repair_catalog_ancestry, verify_catalog_candidate,
 };
 use crate::{
     inspection::{CatalogVerificationState, NetworkScope},
@@ -24,7 +25,7 @@ use crate::{
 
 const CATALOG_DIRECTORY: &str = "zone-catalogs";
 const CATALOG_FILE_EXTENSION: &str = "redb";
-const CATALOG_RANGE_BLOCK_LIMIT: usize = 256;
+const CATALOG_RANGE_BLOCK_LIMIT: usize = MAX_CATALOG_L1_RANGE_BLOCKS;
 const CATALOG_POLL_INTERVAL: Duration = Duration::from_secs(5);
 const CATALOG_REPAIR_INTERVAL_SECONDS: u64 = 30;
 
@@ -444,30 +445,7 @@ async fn create_catalog(
     source: &dyn CatalogL1Source,
     context: &ZoneCatalogRunContext,
 ) -> ZoneCatalogServiceResult<Arc<ZoneCatalog>> {
-    context.ensure_current()?;
-    let status = source.chain_status().await.map_err(map_source_error)?;
-    context.ensure_current()?;
-    let network_scope = if let Some(genesis_id) = status.genesis_id {
-        NetworkScope::GenesisId { genesis_id }
-    } else {
-        let time = source.time_status().await.map_err(map_source_error)?;
-        context.ensure_current()?;
-        let block = source
-            .block(status.snapshot.lib.block_id)
-            .await
-            .map_err(map_source_error)?
-            .ok_or_else(|| {
-                ZoneCatalogServiceError::Source(
-                    "L1 source cannot return its finalized anchor block".to_owned(),
-                )
-            })?;
-        NetworkScope::FinalizedAnchor {
-            genesis_time: time.genesis_time_unix_ms.to_string(),
-            block_slot: block.checkpoint.slot,
-            block_id: block.checkpoint.block_id,
-            parent_id: block.checkpoint.parent_id,
-        }
-    };
+    let network_scope = resolve_catalog_network_scope(source, || context.ensure_current()).await?;
     let metadata = CatalogMetadata::new(network_scope, now_unix()).map_err(map_catalog_error)?;
     let path = directory.join(format!(
         "{}.{}",
@@ -477,6 +455,48 @@ async fn create_catalog(
         .run_blocking_catalog(move || ZoneCatalog::create(path, metadata))
         .await?;
     Ok(Arc::new(catalog))
+}
+
+async fn resolve_catalog_network_scope<F>(
+    source: &dyn CatalogL1Source,
+    mut ensure_current: F,
+) -> ZoneCatalogServiceResult<NetworkScope>
+where
+    F: FnMut() -> ZoneCatalogServiceResult<()>,
+{
+    ensure_current()?;
+    let status = source.chain_status().await.map_err(map_source_error)?;
+    ensure_current()?;
+    let network_scope = if let Some(genesis_id) = status.genesis_id {
+        NetworkScope::GenesisId { genesis_id }
+    } else {
+        let time = source.time_status().await.map_err(map_source_error)?;
+        ensure_current()?;
+        let request =
+            CatalogL1RangeRequest::new(0, status.snapshot.lib, 1).map_err(map_source_error)?;
+        let page = source
+            .finalized_range(request)
+            .await
+            .map_err(map_source_error)?;
+        ensure_current()?;
+        let block = page
+            .events
+            .into_iter()
+            .next()
+            .map(|event| event.block)
+            .ok_or_else(|| {
+                ZoneCatalogServiceError::Source(
+                    "L1 source cannot return its earliest finalized anchor block".to_owned(),
+                )
+            })?;
+        NetworkScope::FinalizedAnchor {
+            genesis_time: time.genesis_time_unix_ms.to_string(),
+            block_slot: block.checkpoint.slot,
+            block_id: block.checkpoint.block_id,
+            parent_id: block.checkpoint.parent_id,
+        }
+    };
+    Ok(network_scope)
 }
 
 async fn catalog_paths(directory: &Path) -> ZoneCatalogServiceResult<Vec<PathBuf>> {
@@ -605,6 +625,95 @@ mod tests {
 
     use super::*;
 
+    struct FallbackIdentitySource {
+        status: super::super::CatalogL1ChainStatus,
+        time: super::super::CatalogL1TimeStatus,
+        anchor: super::super::CatalogL1Block,
+    }
+
+    impl CatalogL1Source for FallbackIdentitySource {
+        fn chain_status(
+            &self,
+        ) -> super::super::CatalogL1SourceFuture<'_, super::super::CatalogL1ChainStatus> {
+            Box::pin(async { Ok(self.status.clone()) })
+        }
+
+        fn time_status(
+            &self,
+        ) -> super::super::CatalogL1SourceFuture<'_, super::super::CatalogL1TimeStatus> {
+            Box::pin(async { Ok(self.time.clone()) })
+        }
+
+        fn finalized_range(
+            &self,
+            request: CatalogL1RangeRequest,
+        ) -> super::super::CatalogL1SourceFuture<'_, CatalogL1RangePage> {
+            Box::pin(async move {
+                if request.slot_from() != 0
+                    || request.blocks_limit().get() != 1
+                    || request.target_lib() != &self.status.snapshot.lib
+                {
+                    return Err(super::super::CatalogL1SourceError::InvalidRequest(
+                        "fallback identity did not request the earliest finalized block".to_owned(),
+                    ));
+                }
+                Ok(CatalogL1RangePage {
+                    events: vec![super::super::CatalogL1BlockEvent {
+                        block: self.anchor.clone(),
+                        snapshot: self.status.snapshot.clone(),
+                    }],
+                })
+            })
+        }
+
+        fn block(
+            &self,
+            _block_id: String,
+        ) -> super::super::CatalogL1SourceFuture<'_, Option<super::super::CatalogL1Block>> {
+            Box::pin(async {
+                Err(super::super::CatalogL1SourceError::InvalidRequest(
+                    "fallback identity must not use the moving LIB block".to_owned(),
+                ))
+            })
+        }
+    }
+
+    fn fallback_identity_source(lib_slot: u64, lib_id: char) -> FallbackIdentitySource {
+        FallbackIdentitySource {
+            status: super::super::CatalogL1ChainStatus {
+                snapshot: super::super::CatalogL1ChainSnapshot {
+                    tip: super::super::CatalogBlockReference {
+                        slot: lib_slot.saturating_add(5),
+                        block_id: id('f'),
+                    },
+                    lib: super::super::CatalogBlockReference {
+                        slot: lib_slot,
+                        block_id: id(lib_id),
+                    },
+                },
+                genesis_id: None,
+            },
+            time: super::super::CatalogL1TimeStatus {
+                genesis_time_unix_ms: 1_000,
+                slot_duration_ms: 1_000,
+                current_slot: lib_slot.saturating_add(10),
+                current_epoch: 1,
+            },
+            anchor: super::super::CatalogL1Block {
+                checkpoint: super::super::CatalogBlockCheckpoint {
+                    slot: 1_008,
+                    block_id: id('9'),
+                    parent_id: id('8'),
+                },
+                payload: serde_json::json!({}),
+            },
+        }
+    }
+
+    fn id(value: char) -> String {
+        value.to_string().repeat(64)
+    }
+
     #[test]
     fn source_namespace_and_worker_errors_do_not_expose_endpoint_text() -> Result<()> {
         let descriptor =
@@ -621,6 +730,42 @@ mod tests {
                 .is_none_or(|name| name.len() != 64)
         {
             bail!("catalog source namespace or error leaked endpoint: {combined}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn worker_range_limit_satisfies_source_request_contract() -> Result<()> {
+        let target = super::super::CatalogBlockReference {
+            slot: 1,
+            block_id: "a".repeat(64),
+        };
+
+        CatalogL1RangeRequest::new(0, target, CATALOG_RANGE_BLOCK_LIMIT)?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn provisional_scope_uses_stable_earliest_finalized_anchor() -> Result<()> {
+        let first =
+            resolve_catalog_network_scope(&fallback_identity_source(10_000, 'a'), || Ok(()))
+                .await?;
+        let later =
+            resolve_catalog_network_scope(&fallback_identity_source(20_000, 'b'), || Ok(()))
+                .await?;
+
+        if first != later {
+            bail!("provisional network scope changed when only the current LIB advanced");
+        }
+        if first
+            != (NetworkScope::FinalizedAnchor {
+                genesis_time: "1000".to_owned(),
+                block_slot: 1_008,
+                block_id: id('9'),
+                parent_id: id('8'),
+            })
+        {
+            bail!("provisional network scope did not use the earliest finalized block");
         }
         Ok(())
     }

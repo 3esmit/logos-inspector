@@ -33,7 +33,7 @@ ColumnLayout {
         breadcrumb: qsTr("Home / System / Local Nodes")
         title: qsTr("Local Nodes")
         layerLabel: qsTr("System")
-        subtitle: qsTr("Manual lifecycle controls for configured Logos nodes.")
+        subtitle: qsTr("Local Bedrock, Indexer, Delivery, and Storage connected to Logos Testnet.")
         Layout.fillWidth: true
     }
 
@@ -57,7 +57,7 @@ ColumnLayout {
                 theme: root.theme
                 label: qsTr("Mode")
                 value: root.model.modeLabel()
-                tone: root.model.localMode() ? "success" : "neutral"
+                tone: root.model.report ? "success" : "neutral"
                 compact: true
                 showIndicator: true
                 Layout.fillWidth: true
@@ -65,7 +65,7 @@ ColumnLayout {
 
             StatusChip {
                 theme: root.theme
-                label: qsTr("Active Devnet")
+                label: qsTr("Active Topology")
                 value: root.shortText(root.activeNetworkId(), 24)
                 detail: root.activeNetworkId()
                 tone: root.activeNetworkId().length ? "success" : "warning"
@@ -88,7 +88,7 @@ ColumnLayout {
                 theme: root.theme
                 label: qsTr("Status")
                 value: root.model.summaryText()
-                tone: root.summaryTone()
+                tone: root.model.summaryTone()
                 compact: true
                 showIndicator: true
                 Layout.fillWidth: true
@@ -122,6 +122,15 @@ ColumnLayout {
         tone: "warning"
         title: qsTr("Configuration required")
         message: root.model.toolProblem()
+        Layout.fillWidth: true
+    }
+
+    StatusMessage {
+        visible: root.model.error.length === 0 && !root.model.localMode()
+        theme: root.theme
+        tone: "info"
+        title: qsTr("Logos Testnet topology")
+        message: qsTr("Local Bedrock feeds the UI and Local Indexer. Channel Zones use Local Indexer history with the remote Testnet Sequencer.")
         Layout.fillWidth: true
     }
 
@@ -159,6 +168,7 @@ ColumnLayout {
             }
 
             GridLayout {
+                visible: root.model.localMode()
                 columns: root.width < 840 ? 1 : 4
                 columnSpacing: root.theme.gapSmall
                 rowSpacing: root.theme.gapSmall
@@ -204,6 +214,7 @@ ColumnLayout {
             }
 
             GridLayout {
+                visible: root.model.localMode()
                 columns: root.width < 840 ? 1 : 3
                 columnSpacing: root.theme.gapSmall
                 rowSpacing: root.theme.gapSmall
@@ -300,11 +311,11 @@ ColumnLayout {
                     width: 150
                 },
                 {
-                    text: qsTr("Install"),
+                    text: root.model.localMode() ? qsTr("Install") : qsTr("Control"),
                     width: 130
                 },
                 {
-                    text: qsTr("Run"),
+                    text: root.model.localMode() ? qsTr("Run") : qsTr("Health"),
                     width: 110
                 },
                 {
@@ -454,18 +465,6 @@ ColumnLayout {
         return String(report && report.workspace_root ? report.workspace_root : "");
     }
 
-    function summaryTone() {
-        const report = root.model.report || null;
-        const summary = report && report.summary ? report.summary : null;
-        if (!summary) {
-            return "warning";
-        }
-        if (Number(summary.needs_configuration || 0) > 0) {
-            return "warning";
-        }
-        return Number(summary.running || 0) > 0 ? "success" : "neutral";
-    }
-
     function runtimeDetail() {
         const runtime = root.model.runtimeInfo();
         return String(runtime && runtime.detail ? runtime.detail : "");
@@ -525,6 +524,12 @@ ColumnLayout {
             ];
         }
         return nodes.map(function (node) {
+            const controlState = root.model.controlState(node)
+            const runState = root.model.publicTestnetMode()
+                ? root.model.observedRunState(node.key || node.kind)
+                : String(node.run_state || "unknown")
+            const observation = root.model.observedNode(node.key || node.kind)
+            const observationDetail = String(observation && observation.detail || "")
             return {
                 key: String(node.key || node.kind || ""),
                 cells: [
@@ -534,15 +539,15 @@ ColumnLayout {
                         monospace: false
                     },
                     {
-                        text: root.stateLabel(node.install_state),
+                        text: root.stateLabel(controlState),
                         width: 130,
-                        tone: root.installTone(node.install_state),
+                        tone: root.installTone(controlState),
                         monospace: false
                     },
                     {
-                        text: root.stateLabel(node.run_state),
+                        text: root.stateLabel(runState),
                         width: 110,
-                        tone: root.runTone(node.run_state),
+                        tone: root.runTone(runState),
                         monospace: false
                     },
                     {
@@ -557,7 +562,8 @@ ColumnLayout {
                         copyText: String(node.data_dir || "")
                     },
                     {
-                        text: root.lastActionText(node.last_action),
+                        text: observationDetail.length > 0
+                            ? observationDetail : root.lastActionText(node.last_action),
                         width: 180,
                         monospace: false
                     }
@@ -660,7 +666,7 @@ ColumnLayout {
 
     function installTone(value) {
         const text = String(value || "");
-        if (text === "installed") {
+        if (text === "installed" || text === "managed") {
             return "success";
         }
         if (text === "needs_configuration") {
@@ -671,13 +677,14 @@ ColumnLayout {
 
     function runTone(value) {
         const text = String(value || "");
-        if (text === "running") {
+        if (text === "running" || text === "online") {
             return "success";
         }
-        if (text === "starting" || text === "stopping" || text === "stale_pid") {
+        if (text === "starting" || text === "stopping" || text === "stale_pid"
+                || text === "syncing") {
             return "warning";
         }
-        if (text === "failed") {
+        if (text === "failed" || text === "unavailable") {
             return "error";
         }
         return "neutral";

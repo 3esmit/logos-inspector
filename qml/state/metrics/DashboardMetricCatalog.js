@@ -58,7 +58,7 @@ function selectedDashboardGraphItems(model) {
 
 function dashboardGraphItem(model, key) {
     const raw = model.dashboardMetricValue(key)
-    const numeric = Number(raw)
+    const numeric = raw === undefined || raw === null || raw === "" ? NaN : Number(raw)
     const gate = model.dashboardGate ? model.dashboardGate(key) : null
     const blocked = gate && gate.enabled === false
     return {
@@ -141,6 +141,16 @@ function dashboardMetricText(model, value) {
     return model.valueText(value)
 }
 
+function preferredModuleMetricValue(root, kind, names) {
+    for (let i = 0; i < names.length; ++i) {
+        const value = root.moduleMetricValue(kind, names[i])
+        if (value !== null && value !== undefined) {
+            return value
+        }
+    }
+    return null
+}
+
 function dashboardMetricRawValue(root, key) {
     switch (key) {
     case "bedrock.peer_count":
@@ -162,8 +172,10 @@ function dashboardMetricRawValue(root, key) {
     case "indexer.indexer_lag_vs_sequencer_head":
         return root.indexerLag()
     case "storage.peer_count":
-        return root.moduleMetricValue("storage", [
+        return preferredModuleMetricValue(root, "storage", [
+            "dht_routing_table_nodes",
             { name: "libp2p_peers", labels: { type: "connected" } },
+            "libp2p_peers",
             "storage_peer_count",
             "storage_libp2p_peers",
             "peers"
@@ -183,7 +195,9 @@ function dashboardMetricRawValue(root, key) {
     case "storage.failed_transfers_total":
         return root.moduleMetricSum("storage", ["storage_block_exchange_requests_failed_total", "storage_block_exchange_peer_timeouts_total"])
     case "messaging.peer_count":
-        return root.moduleMetricValue("messaging", [
+        return preferredModuleMetricValue(root, "messaging", [
+            "waku_total_unique_peers",
+            "waku_connected_peers",
             { name: "libp2p_peers", labels: { type: "connected" } },
             "libp2p_peers",
             "waku_peers",
@@ -440,7 +454,15 @@ function dashboardMetricSamples(root, key) {
         return dashboardMetricWindowSamples(root, key)
     }
     const history = root.dashboardMetricHistory || {}
-    const samples = normalizedDashboardSamples(history[String(key || "")])
+    const metricKey = String(key || "")
+    const samples = normalizedDashboardSamples(history[metricKey])
+    const seen = normalizedDashboardSample(
+        (root.dashboardMetricLastSeen || {})[metricKey]
+    )
+    if (seen && (samples.length === 0
+            || seen.timestamp > samples[samples.length - 1].timestamp)) {
+        samples.push(seen)
+    }
     if (Array.isArray(samples) && samples.length > 0) {
         return samples
     }

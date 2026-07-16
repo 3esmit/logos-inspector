@@ -142,6 +142,54 @@ TestCase {
         compare(DashboardMetricCatalog.dashboardMetricRawValue(model, "messaging.network_ingress_recent"), 11)
     }
 
+    function test_messaging_peer_count_prefers_total_unique_peers_from_live_payload() {
+        const root = liveMetricRoot("messaging", [
+            {
+                name: "waku_connected_peers",
+                labels: {
+                    direction: "Out",
+                    protocol: "/vac/waku/relay/2.0.0"
+                },
+                value: 10
+            },
+            { name: "waku_total_unique_peers", labels: {}, value: 30 }
+        ])
+
+        compare(DashboardMetricCatalog.dashboardMetricRawValue(root, "messaging.peer_count"), 30)
+    }
+
+    function test_messaging_peer_count_falls_back_to_connected_peers_from_live_payload() {
+        const root = liveMetricRoot("messaging", [
+            {
+                name: "waku_connected_peers",
+                labels: {
+                    direction: "Out",
+                    protocol: "/vac/waku/relay/2.0.0"
+                },
+                value: 10
+            }
+        ])
+
+        compare(DashboardMetricCatalog.dashboardMetricRawValue(root, "messaging.peer_count"), 10)
+    }
+
+    function test_storage_peer_count_prefers_dht_routing_nodes_from_live_payload() {
+        const root = liveMetricRoot("storage", [
+            { name: "libp2p_peers", labels: {}, value: 0 },
+            { name: "dht_routing_table_nodes", labels: {}, value: 25 }
+        ])
+
+        compare(DashboardMetricCatalog.dashboardMetricRawValue(root, "storage.peer_count"), 25)
+    }
+
+    function test_storage_peer_count_falls_back_to_bare_libp2p_peers_from_live_payload() {
+        const root = liveMetricRoot("storage", [
+            { name: "libp2p_peers", labels: {}, value: 0 }
+        ])
+
+        compare(DashboardMetricCatalog.dashboardMetricRawValue(root, "storage.peer_count"), 0)
+    }
+
     function test_window_metric_uses_sample_delta() {
         const now = Date.now()
         model.dashboardMetricHistory = ({ "storage.failed_transfers_recent": [{ timestamp: now - 1000, value: 2 }, { timestamp: now, value: 7 }] })
@@ -167,6 +215,25 @@ TestCase {
         ), 0)
     }
 
+    function test_non_window_graph_includes_latest_observation_endpoint() {
+        model.dashboardMetricHistory = ({
+            "bedrock.peer_count": [{ timestamp: 100, value: 6 }]
+        })
+        model.dashboardMetricLastSeen = ({
+            "bedrock.peer_count": { timestamp: 200, value: 6 }
+        })
+
+        const samples = DashboardMetricCatalog.dashboardMetricSamples(
+            model,
+            "bedrock.peer_count"
+        )
+
+        compare(samples.length, 2)
+        compare(samples[0].timestamp, 100)
+        compare(samples[1].timestamp, 200)
+        compare(samples[1].value, 6)
+    }
+
     function test_selected_items_include_gate_state() {
         const rows = DashboardMetricCatalog.selectedDashboardGraphItems(model)
 
@@ -183,5 +250,57 @@ TestCase {
         compare(item.key, "bedrock.peer_count")
         compare(item.numericValue, 6)
         compare(item.value, "6")
+    }
+
+    function test_graph_item_keeps_missing_metric_numeric_value_unknown() {
+        const missingModel = {
+            dashboardMetricValue: function() { return null },
+            dashboardMetricSamples: function() { return [] },
+            dashboardGate: function() { return null },
+            valueText: function(value) { return String(value) }
+        }
+
+        const item = DashboardMetricCatalog.dashboardGraphItem(
+            missingModel, "bedrock.tip_minus_lib")
+
+        compare(item.value, "n/a")
+        verify(!Number.isFinite(item.numericValue))
+    }
+
+    function liveMetricRoot(kind, rows) {
+        return {
+            moduleMetricValue: function(requestKind, names) {
+                if (requestKind !== kind) {
+                    return null
+                }
+                const wanted = Array.isArray(names) ? names : [names]
+                for (let i = 0; i < rows.length; ++i) {
+                    const row = rows[i]
+                    for (let j = 0; j < wanted.length; ++j) {
+                        const spec = wanted[j]
+                        const name = spec && typeof spec === "object"
+                            ? String(spec.name || "")
+                            : String(spec || "")
+                        const labels = spec && typeof spec === "object"
+                            ? (spec.labels || {})
+                            : {}
+                        if (row.name === name && labelsMatch(row.labels, labels)) {
+                            return row.value
+                        }
+                    }
+                }
+                return null
+            }
+        }
+    }
+
+    function labelsMatch(actual, wanted) {
+        const keys = Object.keys(wanted || {})
+        for (let i = 0; i < keys.length; ++i) {
+            if (String((actual || {})[keys[i]] || "") !== String(wanted[keys[i]])) {
+                return false
+            }
+        }
+        return true
     }
 }

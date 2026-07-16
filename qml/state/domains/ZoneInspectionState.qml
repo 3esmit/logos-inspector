@@ -53,6 +53,7 @@ QtObject {
     property bool controlInFlight: false
     property bool targetResolutionInFlight: false
     property int statusFailureCount: 0
+    property bool startupAutoSelectionPending: true
 
     readonly property bool statusPollingEnabled: started
         && catalogConfigured
@@ -171,12 +172,15 @@ QtObject {
         }
         return {
             kind: kind,
-            endpoint: endpoint
+            endpoint: endpoint,
+            default_topology: String(value.default_topology || "") === "logos_testnet"
+                ? "logos_testnet" : ""
         }
     }
 
     function sourceKey(value) {
-        return value ? String(value.kind || "") + "\n" + String(value.endpoint || "") : ""
+        return value ? String(value.kind || "") + "\n" + String(value.endpoint || "")
+            + "\n" + String(value.default_topology || "") : ""
     }
 
     function syncCatalogSource() {
@@ -212,8 +216,15 @@ QtObject {
         const requestRevision = configureRequestRevision
         const generation = sourceGeneration
         const key = desiredSourceKey
+        const source = {
+            kind: desiredSource.kind,
+            endpoint: desiredSource.endpoint
+        }
+        if (String(desiredSource.default_topology || "").length) {
+            source.default_topology = desiredSource.default_topology
+        }
         return dispatch("zoneCatalogConfigure", {
-            source: desiredSource
+            source: source
         }, function (response) {
             if (requestRevision !== configureRequestRevision) {
                 return
@@ -512,6 +523,7 @@ QtObject {
 
         const report = assembly.report
         if (activeZoneId.length > 0) {
+            startupAutoSelectionPending = false
             const nextActiveRow = rowFromRows(rows, activeZoneId)
             if (!nextActiveRow) {
                 clearActiveZone()
@@ -537,6 +549,7 @@ QtObject {
         if (summaryStale) {
             reconcileSummaries()
         } else {
+            selectStartupZone()
             reconcileDetail()
         }
     }
@@ -551,7 +564,7 @@ QtObject {
         }
     }
 
-    function activateZone(channelId) {
+    function activateZone(channelId, automatic) {
         const normalizedId = String(channelId || "")
         if (verification !== "verified" || networkScopeKey.length === 0) {
             return false
@@ -559,6 +572,9 @@ QtObject {
         const row = zoneSummary(normalizedId)
         if (!row) {
             return false
+        }
+        if (automatic !== true) {
+            startupAutoSelectionPending = false
         }
         if (activeZoneId === normalizedId) {
             reconcileDetail()
@@ -571,6 +587,40 @@ QtObject {
         detailStale = true
         reconcileDetail()
         return true
+    }
+
+    function selectStartupZone() {
+        if (!startupAutoSelectionPending) {
+            return false
+        }
+        if (activeZoneId.length > 0) {
+            startupAutoSelectionPending = false
+            return false
+        }
+        startupAutoSelectionPending = false
+        const channelId = configuredSequencerZoneId(zoneSummaries)
+        return channelId.length > 0 && activateZone(channelId, true)
+    }
+
+    function configuredSequencerZoneId(rows) {
+        const values = Array.isArray(rows) ? rows : []
+        let candidate = ""
+        for (let i = 0; i < values.length; ++i) {
+            const row = values[i] || ({})
+            const fields = row.active_zone_context_fields || ({})
+            const channelId = String(row.channel_id || "")
+            if (String(row.kind || "") !== "sequencer_zone"
+                    || channelId.length === 0
+                    || String(fields.selected_sequencer_source_id || "").length === 0
+                    || numericRevision(fields.source_config_revision) === 0) {
+                continue
+            }
+            if (candidate.length > 0) {
+                return ""
+            }
+            candidate = channelId
+        }
+        return candidate
     }
 
     function clearActiveZone() {

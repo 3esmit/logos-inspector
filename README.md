@@ -51,6 +51,11 @@ Build the standalone QML host alongside the launcher:
 cargo build -p logos-inspector -p logos-inspector-standalone-gui
 ```
 
+Cargo targets are declared explicitly, so untracked `build.rs`, binary, test,
+example, and benchmark files are not discovered. Rust modules explicitly named
+by tracked source still resolve from the working tree; use the Nix build for a
+Git-filtered source boundary.
+
 Run the local verification profile:
 
 ```bash
@@ -73,6 +78,12 @@ Check the Nix standalone build plan before running a full build:
 df -h /
 nix build --dry-run .#standalone
 ```
+
+Use the Git flake form shown above. `nix build .` includes tracked files and
+tracked working-tree changes while excluding untracked files. Do not use
+`nix build path:.`, which imports the entire working tree before filtering.
+Verify the source boundary with
+`python3 scripts/check-nix-tracked-source.py` on a Nix-enabled host.
 
 Build plugin outputs:
 

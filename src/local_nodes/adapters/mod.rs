@@ -30,10 +30,8 @@ const ALL_ADAPTERS: [&dyn LocalNodeAdapter; 5] = [
 
 #[derive(Debug, Clone, Copy)]
 pub(super) enum NodeLifecycle {
-    RuntimeOwnedModule(&'static ManagedNodeContract),
     InitializedModule(&'static ManagedNodeContract),
     RegisteredProcess { program: &'static str },
-    Unavailable { reason: &'static str },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,9 +48,6 @@ pub(super) enum NodeActionPolicy {
     PurgeData {
         requires_removed_context: bool,
     },
-    Unavailable {
-        reason: &'static str,
-    },
     Unsupported {
         reason: &'static str,
     },
@@ -62,7 +57,7 @@ impl NodeActionPolicy {
     #[must_use]
     pub(super) const fn blocked_reason(self) -> Option<&'static str> {
         match self {
-            Self::Unavailable { reason } | Self::Unsupported { reason } => Some(reason),
+            Self::Unsupported { reason } => Some(reason),
             Self::RegisterExecutable { .. }
             | Self::RemoveExecutableRegistration
             | Self::ExecuteManaged { .. }
@@ -87,8 +82,17 @@ pub(super) enum NodeCommandPlan {
 #[derive(Debug, Clone, Copy)]
 pub(super) struct NodeConfigContext<'a> {
     pub network_id: &'a str,
+    pub config_path: &'a str,
     pub data_dir: &'a str,
     pub endpoint: Option<&'a str>,
+    pub port: Option<u16>,
+    pub public_testnet: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct NodeCommandContext<'a> {
+    pub config_path: &'a str,
+    pub data_dir: &'a str,
     pub port: Option<u16>,
 }
 
@@ -126,6 +130,18 @@ pub(super) trait LocalNodeAdapter: std::fmt::Debug + Sync {
         true
     }
 
+    fn preserve_generated_config_on_runtime_reset(&self) -> bool {
+        false
+    }
+
+    fn ensure_loaded_before_start(&self) -> bool {
+        false
+    }
+
+    fn startup_rpc_health_method(&self) -> Option<&'static str> {
+        None
+    }
+
     fn endpoint(&self, port: Option<u16>) -> Option<String> {
         port.map(|value| format!("http://127.0.0.1:{value}/"))
     }
@@ -133,53 +149,47 @@ pub(super) trait LocalNodeAdapter: std::fmt::Debug + Sync {
     fn required_executable(&self) -> Option<&'static str> {
         match self.lifecycle() {
             NodeLifecycle::RegisteredProcess { program } => Some(program),
-            NodeLifecycle::RuntimeOwnedModule(_)
-            | NodeLifecycle::InitializedModule(_)
-            | NodeLifecycle::Unavailable { .. } => None,
+            NodeLifecycle::InitializedModule(_) => None,
         }
     }
 
     fn managed_contract(&self) -> Option<&'static ManagedNodeContract> {
         match self.lifecycle() {
-            NodeLifecycle::RuntimeOwnedModule(contract)
-            | NodeLifecycle::InitializedModule(contract) => Some(contract),
-            NodeLifecycle::RegisteredProcess { .. } | NodeLifecycle::Unavailable { .. } => None,
+            NodeLifecycle::InitializedModule(contract) => Some(contract),
+            NodeLifecycle::RegisteredProcess { .. } => None,
         }
     }
 
-    fn command_plan(&self, action: NodeAction, config_path: &str) -> Option<NodeCommandPlan> {
+    fn command_plan(
+        &self,
+        action: NodeAction,
+        context: NodeCommandContext<'_>,
+    ) -> Option<NodeCommandPlan> {
         match self.lifecycle() {
-            NodeLifecycle::RuntimeOwnedModule(contract)
-            | NodeLifecycle::InitializedModule(contract) => {
-                let call = contract.call_spec(managed_action(action)?, config_path)?;
+            NodeLifecycle::InitializedModule(contract) => {
+                let call = contract.call_spec(managed_action(action)?, context.config_path)?;
                 Some(NodeCommandPlan::ManagedModule { contract, call })
             }
             NodeLifecycle::RegisteredProcess { program } if action == NodeAction::Start => {
                 Some(NodeCommandPlan::DetachedProcess {
                     program,
-                    args: vec![config_path.to_owned()],
+                    args: vec![context.config_path.to_owned()],
                 })
             }
-            NodeLifecycle::RegisteredProcess { .. } | NodeLifecycle::Unavailable { .. } => None,
+            NodeLifecycle::RegisteredProcess { .. } => None,
         }
     }
 
     fn action_policy(&self, action: NodeAction) -> NodeActionPolicy {
         let lifecycle = self.lifecycle();
-        if let NodeLifecycle::Unavailable { reason } = lifecycle {
-            return NodeActionPolicy::Unavailable { reason };
-        }
         match action {
             NodeAction::Install => match lifecycle {
                 NodeLifecycle::RegisteredProcess { program } => {
                     NodeActionPolicy::RegisterExecutable { program }
                 }
-                NodeLifecycle::RuntimeOwnedModule(_) | NodeLifecycle::InitializedModule(_) => {
-                    NodeActionPolicy::Unsupported {
-                        reason: "module nodes must be initialized before they can start",
-                    }
-                }
-                NodeLifecycle::Unavailable { reason } => NodeActionPolicy::Unavailable { reason },
+                NodeLifecycle::InitializedModule(_) => NodeActionPolicy::Unsupported {
+                    reason: "module nodes must be initialized before they can start",
+                },
             },
             NodeAction::Initialize => match lifecycle {
                 NodeLifecycle::InitializedModule(_) => NodeActionPolicy::ExecuteManaged {
@@ -189,17 +199,12 @@ pub(super) trait LocalNodeAdapter: std::fmt::Debug + Sync {
                 NodeLifecycle::RegisteredProcess { .. } => NodeActionPolicy::Unsupported {
                     reason: "this process node uses install registration instead of module initialization",
                 },
-                NodeLifecycle::RuntimeOwnedModule(_) => NodeActionPolicy::Unsupported {
-                    reason: "this module is initialized by its runtime-owned start lifecycle",
-                },
-                NodeLifecycle::Unavailable { reason } => NodeActionPolicy::Unavailable { reason },
             },
             NodeAction::Uninstall => match lifecycle {
                 NodeLifecycle::RegisteredProcess { .. } => {
                     NodeActionPolicy::RemoveExecutableRegistration
                 }
-                NodeLifecycle::RuntimeOwnedModule(contract)
-                | NodeLifecycle::InitializedModule(contract) => {
+                NodeLifecycle::InitializedModule(contract) => {
                     if contract.call_spec(ManagedNodeAction::Destroy, "").is_some() {
                         NodeActionPolicy::ExecuteManaged {
                             ensure_loaded: false,
@@ -211,29 +216,20 @@ pub(super) trait LocalNodeAdapter: std::fmt::Debug + Sync {
                         }
                     }
                 }
-                NodeLifecycle::Unavailable { reason } => NodeActionPolicy::Unavailable { reason },
             },
             NodeAction::Start => match lifecycle {
                 NodeLifecycle::RegisteredProcess { .. } => NodeActionPolicy::ExecuteDetached,
-                NodeLifecycle::RuntimeOwnedModule(_) => NodeActionPolicy::ExecuteManaged {
-                    ensure_loaded: true,
-                    requires_installed_context: false,
+                NodeLifecycle::InitializedModule(_) => NodeActionPolicy::ExecuteManaged {
+                    ensure_loaded: self.ensure_loaded_before_start(),
+                    requires_installed_context: true,
                 },
+            },
+            NodeAction::Stop => match lifecycle {
+                NodeLifecycle::RegisteredProcess { .. } => NodeActionPolicy::ExecuteDetached,
                 NodeLifecycle::InitializedModule(_) => NodeActionPolicy::ExecuteManaged {
                     ensure_loaded: false,
                     requires_installed_context: true,
                 },
-                NodeLifecycle::Unavailable { reason } => NodeActionPolicy::Unavailable { reason },
-            },
-            NodeAction::Stop => match lifecycle {
-                NodeLifecycle::RegisteredProcess { .. } => NodeActionPolicy::ExecuteDetached,
-                NodeLifecycle::RuntimeOwnedModule(_) | NodeLifecycle::InitializedModule(_) => {
-                    NodeActionPolicy::ExecuteManaged {
-                        ensure_loaded: false,
-                        requires_installed_context: true,
-                    }
-                }
-                NodeLifecycle::Unavailable { reason } => NodeActionPolicy::Unavailable { reason },
             },
             NodeAction::Purge => NodeActionPolicy::PurgeData {
                 requires_removed_context: !matches!(
@@ -253,19 +249,7 @@ pub(super) trait LocalNodeAdapter: std::fmt::Debug + Sync {
     }
 
     fn resets_with_runtime(&self) -> bool {
-        matches!(
-            self.lifecycle(),
-            NodeLifecycle::RuntimeOwnedModule(_) | NodeLifecycle::InitializedModule(_)
-        )
-    }
-
-    fn unavailable_reason(&self) -> Option<&'static str> {
-        match self.lifecycle() {
-            NodeLifecycle::Unavailable { reason } => Some(reason),
-            NodeLifecycle::RuntimeOwnedModule(_)
-            | NodeLifecycle::InitializedModule(_)
-            | NodeLifecycle::RegisteredProcess { .. } => None,
-        }
+        matches!(self.lifecycle(), NodeLifecycle::InitializedModule(_))
     }
 
     fn project_status(&self, context: NodeStatusContext<'_>) -> NodeStatusProjection {
@@ -276,8 +260,7 @@ pub(super) trait LocalNodeAdapter: std::fmt::Debug + Sync {
             NodeLifecycle::RegisteredProcess { .. } => {
                 context.config.is_some_and(|node| node.installed) || context.executable_available
             }
-            NodeLifecycle::Unavailable { .. } => false,
-            NodeLifecycle::RuntimeOwnedModule(_) | NodeLifecycle::InitializedModule(_) => {
+            NodeLifecycle::InitializedModule(_) => {
                 runtime_running && context.config.is_some_and(|node| node.installed)
             }
         };
@@ -294,17 +277,14 @@ pub(super) trait LocalNodeAdapter: std::fmt::Debug + Sync {
                 "stale_pid"
             }
             NodeLifecycle::RegisteredProcess { .. } => "stopped",
-            NodeLifecycle::Unavailable { .. } => "not_initialized",
-            NodeLifecycle::RuntimeOwnedModule(_) | NodeLifecycle::InitializedModule(_)
-                if !runtime_running =>
-            {
+            NodeLifecycle::InitializedModule(_) if !runtime_running => {
                 if context.config.is_some_and(|node| node.installed) {
                     "stopped"
                 } else {
                     "not_initialized"
                 }
             }
-            NodeLifecycle::RuntimeOwnedModule(_) | NodeLifecycle::InitializedModule(_) => context
+            NodeLifecycle::InitializedModule(_) => context
                 .config
                 .map(|node| node.lifecycle_state.as_str())
                 .unwrap_or("not_initialized"),
@@ -321,20 +301,26 @@ pub(super) trait LocalNodeAdapter: std::fmt::Debug + Sync {
 
     fn available_actions(&self, context: &NodeStatusContext<'_>) -> Vec<NodeAction> {
         match self.lifecycle() {
-            NodeLifecycle::Unavailable { .. } => Vec::new(),
-            NodeLifecycle::RegisteredProcess { .. } => context.workflow_actions.clone(),
-            NodeLifecycle::RuntimeOwnedModule(_) => {
-                if !context
-                    .runtime
-                    .is_some_and(|profile| profile.is_managed() && profile.is_running())
-                    || context.config.is_none()
-                    || context
-                        .config
-                        .is_some_and(|node| node.lifecycle_state.is_pending())
-                {
+            NodeLifecycle::RegisteredProcess { .. } => {
+                let Some(config) = context.config else {
+                    return Vec::new();
+                };
+                if config.lifecycle_state.is_pending() {
                     return Vec::new();
                 }
-                context.workflow_actions.clone()
+                let mut actions = context.workflow_actions.clone();
+                if !config.installed {
+                    actions.retain(|action| *action == NodeAction::Install);
+                    return actions;
+                }
+                actions.retain(|action| match action {
+                    NodeAction::Install => false,
+                    NodeAction::Start => !context.process_running,
+                    NodeAction::Stop => context.process_running && config.process_id.is_some(),
+                    NodeAction::Uninstall | NodeAction::Purge => true,
+                    _ => false,
+                });
+                actions
             }
             NodeLifecycle::InitializedModule(_) => {
                 if !context
@@ -365,9 +351,6 @@ pub(super) trait LocalNodeAdapter: std::fmt::Debug + Sync {
         context: &NodeStatusContext<'_>,
     ) -> String {
         if install_state == "needs_configuration" {
-            if let Some(reason) = self.unavailable_reason() {
-                return reason.to_owned();
-            }
             if let Some(executable) = self.required_executable()
                 && !context.executable_available
             {
@@ -444,6 +427,41 @@ mod tests {
 
     use super::*;
 
+    fn registered_process_config(
+        installed: bool,
+        process_id: Option<u32>,
+    ) -> LocalNodeConfigRecord {
+        LocalNodeConfigRecord {
+            kind: NodeKind::Indexer,
+            config_path: "/tmp/indexer.json".to_owned(),
+            initialization_config_path: None,
+            data_dir: "/tmp/indexer".to_owned(),
+            endpoint: Some("http://127.0.0.1:8779/".to_owned()),
+            port: Some(8779),
+            package_path: Some("/usr/bin/indexer_service".to_owned()),
+            module_path: None,
+            process_id,
+            installed,
+            lifecycle_state: super::super::NodeLifecycleState::Stopped,
+            pending_lifecycle_action: None,
+        }
+    }
+
+    fn configured_tools() -> LocalNodeTools {
+        LocalNodeTools {
+            logoscore: super::super::ToolStatus {
+                available: true,
+                command: "logoscore".to_owned(),
+                path: Some("/usr/bin/logoscore".to_owned()),
+            },
+            lgpm: super::super::ToolStatus {
+                available: false,
+                command: "lgpm".to_owned(),
+                path: None,
+            },
+        }
+    }
+
     fn assert_adapter_contract(adapter: &dyn LocalNodeAdapter) -> Result<()> {
         if adapter.label().trim().is_empty() {
             bail!("{} adapter has no label", adapter.kind().as_str());
@@ -459,18 +477,13 @@ mod tests {
             }
             seen_actions.push(*action);
         }
-        if matches!(adapter.lifecycle(), NodeLifecycle::Unavailable { .. }) && !actions.is_empty() {
-            bail!(
-                "unavailable {} adapter exposes actions",
-                adapter.kind().as_str()
-            );
-        }
-
         let config = adapter.build_config(NodeConfigContext {
             network_id: "contract-test",
+            config_path: "/tmp/contract-test.json",
             data_dir: "/tmp/contract-test",
             endpoint: adapter.endpoint(adapter.default_port()).as_deref(),
             port: adapter.default_port(),
+            public_testnet: false,
         });
         if !config.is_object() {
             bail!(
@@ -487,7 +500,14 @@ mod tests {
                     action
                 );
             }
-            let command = adapter.command_plan(*action, "/tmp/config.json");
+            let command = adapter.command_plan(
+                *action,
+                NodeCommandContext {
+                    config_path: "/tmp/config.json",
+                    data_dir: "/tmp/data",
+                    port: adapter.default_port(),
+                },
+            );
             if matches!(
                 adapter.action_policy(*action),
                 NodeActionPolicy::ExecuteManaged { .. }
@@ -521,22 +541,62 @@ mod tests {
     #[test]
     fn managed_module_adapters_share_module_contract() -> Result<()> {
         for adapter in ALL_ADAPTERS {
-            if !matches!(
-                adapter.lifecycle(),
-                NodeLifecycle::RuntimeOwnedModule(_) | NodeLifecycle::InitializedModule(_)
-            ) {
+            if !matches!(adapter.lifecycle(), NodeLifecycle::InitializedModule(_)) {
                 continue;
             }
             if adapter.managed_contract().is_none() {
                 bail!("{} lost managed module contract", adapter.kind().as_str());
             }
             if adapter
-                .command_plan(NodeAction::Start, "/tmp/config.json")
+                .command_plan(
+                    NodeAction::Start,
+                    NodeCommandContext {
+                        config_path: "/tmp/config.json",
+                        data_dir: "/tmp/data",
+                        port: adapter.default_port(),
+                    },
+                )
                 .is_none()
             {
                 bail!("{} lost start command", adapter.kind().as_str());
             }
         }
         Ok(())
+    }
+
+    #[test]
+    fn registered_process_actions_require_owned_process_for_stop() {
+        let adapter = adapter_for(NodeKind::Indexer);
+        let tools = configured_tools();
+        let unowned = registered_process_config(true, None);
+
+        let unowned_status = adapter.project_status(NodeStatusContext {
+            config: Some(&unowned),
+            runtime: None,
+            tools: &tools,
+            process_running: false,
+            executable_available: true,
+            workflow_actions: adapter.workflow_actions().to_vec(),
+        });
+
+        assert!(
+            unowned_status
+                .available_actions
+                .contains(&NodeAction::Start)
+        );
+        assert!(!unowned_status.available_actions.contains(&NodeAction::Stop));
+
+        let owned = registered_process_config(true, Some(42));
+        let owned_status = adapter.project_status(NodeStatusContext {
+            config: Some(&owned),
+            runtime: None,
+            tools: &tools,
+            process_running: true,
+            executable_available: true,
+            workflow_actions: adapter.workflow_actions().to_vec(),
+        });
+
+        assert!(!owned_status.available_actions.contains(&NodeAction::Start));
+        assert!(owned_status.available_actions.contains(&NodeAction::Stop));
     }
 }

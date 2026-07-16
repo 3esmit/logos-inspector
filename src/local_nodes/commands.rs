@@ -3,8 +3,11 @@ use std::process::Command;
 use anyhow::{Context as _, Result};
 use serde_json::{Value, json};
 
-use super::adapters::{NodeCommandPlan, adapter_for};
-use super::{NodeAction, NodeKind, process::spawn_detached};
+use super::adapters::{NodeCommandContext, NodeCommandPlan, adapter_for};
+use super::{
+    NodeAction, NodeKind,
+    process::{spawn_detached, spawn_rpc_ready},
+};
 use crate::{
     modules::logos_core::LogoscoreCliRuntime,
     source_routing::{ManagedModuleCallSpec, ManagedNodeContract},
@@ -33,9 +36,15 @@ pub(super) fn command_spec_for(
     kind: NodeKind,
     action: NodeAction,
     config_path: &str,
-    _deployment: &str,
+    data_dir: &str,
+    port: Option<u16>,
 ) -> Option<LocalNodeCommandSpec> {
-    match adapter_for(kind).command_plan(action, config_path)? {
+    let context = NodeCommandContext {
+        config_path,
+        data_dir,
+        port,
+    };
+    match adapter_for(kind).command_plan(action, context)? {
         NodeCommandPlan::ManagedModule { contract, call } => Some(logoscore_spec(contract, call)),
         NodeCommandPlan::DetachedProcess { program, args } => Some(spawn_spec(program, args)),
     }
@@ -92,6 +101,30 @@ pub(super) fn execute_command_spec(
             }))
         }
     }
+}
+
+pub(super) fn execute_ready_process_spec(
+    spec: &LocalNodeCommandSpec,
+    endpoint: &str,
+    health_method: &str,
+    control: Option<&CommandControl>,
+) -> Result<Value> {
+    if !matches!(&spec.backend, CommandBackend::SpawnProcess) {
+        anyhow::bail!("{} is not a registered process command", spec.display);
+    }
+    if let Some(control) = control {
+        control.check_active()?;
+    }
+    let mut command = Command::new(&spec.program);
+    for arg in &spec.args {
+        command.arg(arg);
+    }
+    let pid = spawn_rpc_ready(command, &spec.display, endpoint, health_method, control)?;
+    Ok(json!({
+        "pid": pid,
+        "command": spec.display,
+        "readiness": "rpc",
+    }))
 }
 
 fn logoscore_spec(

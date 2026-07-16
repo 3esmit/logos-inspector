@@ -375,8 +375,13 @@ function mantleValue(root, keys) {
 
 function tipMinusLib(root) {
     with (root) {
-        const tip = Number(root.cryptarchiaValue("slot"))
-        const lib = Number(root.cryptarchiaValue("lib_slot"))
+        const tipValue = root.cryptarchiaValue("slot")
+        const libValue = root.cryptarchiaValue("lib_slot")
+        if (tipValue === null || libValue === null) {
+            return null
+        }
+        const tip = Number(tipValue)
+        const lib = Number(libValue)
         return Number.isFinite(tip) && Number.isFinite(lib) ? Math.max(0, tip - lib) : null
     }
 }
