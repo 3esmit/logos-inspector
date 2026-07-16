@@ -374,8 +374,9 @@ pub(super) trait LocalNodeAdapter: std::fmt::Debug + Sync {
             return "recorded process id is not running".to_owned();
         }
         match run_state {
-            "starting" | "stopping" => "waiting for module lifecycle event".to_owned(),
-            "unknown" => "module dispatch has no verified lifecycle observer".to_owned(),
+            "starting" => "waiting for endpoint confirmation".to_owned(),
+            "stopping" => "waiting for endpoint shutdown confirmation".to_owned(),
+            "unknown" => "endpoint liveness is not confirmed".to_owned(),
             "failed" => "latest module lifecycle event reported failure".to_owned(),
             _ => "ready".to_owned(),
         }

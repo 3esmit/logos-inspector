@@ -81,6 +81,18 @@ TestCase {
     }
 
     QtObject {
+        id: nativeWatcherHost
+
+        signal moduleEventJson(string moduleName, string eventName, string argsJson)
+
+        property bool ownsRuntimeModuleEvents: true
+
+        function backendOwnsRuntimeModuleEvents() {
+            return ownsRuntimeModuleEvents
+        }
+    }
+
+    QtObject {
         id: jsonHostWithUnrelatedAsync
 
         property int jsonCallCount: 0
@@ -397,6 +409,7 @@ TestCase {
         client.basecampAsyncMaxPendingCalls = 128
         client.moduleEventSubscriptions = ({})
         client.moduleEventRegistrations = []
+        nativeWatcherHost.ownsRuntimeModuleEvents = true
         receivedModule = ""
         receivedEvent = ""
         receivedArgs = null
@@ -1469,6 +1482,26 @@ TestCase {
         nativeEventOwnerPropertyHost.logosInspectorOwnsRuntimeModuleEvents = "true"
         verify(!client.backendOwnsRuntimeModuleEvents())
         compare(nativeEventOwnerPropertyHost.probeCallCount, 0)
+    }
+
+    function test_native_watcher_event_is_decoded_without_relaying_invalid_payloads() {
+        client.host = nativeWatcherHost
+
+        verify(client.backendOwnsRuntimeModuleEvents())
+        nativeWatcherHost.moduleEventJson(
+            "delivery_module",
+            "nodeStarted",
+            JSON.stringify([{ success: true, simulated: true }])
+        )
+
+        compare(receivedModule, "delivery_module")
+        compare(receivedEvent, "nodeStarted")
+        compare(receivedArgs[0].success, true)
+        compare(receivedArgs[0].simulated, true)
+
+        nativeWatcherHost.moduleEventJson("delivery_module", "nodeStarted", "{")
+
+        compare(moduleEventReceiptCount, 1)
     }
 
     function test_runtime_event_owner_direct_probe_requires_exact_true() {

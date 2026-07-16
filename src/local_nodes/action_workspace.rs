@@ -20,7 +20,7 @@ use super::commands::{
     execute_ready_process_spec, operation_detail_from_value, preflight_command_spec,
     preflight_command_spec_once,
 };
-use super::lifecycle::{has_event_contract, reset_module_contexts};
+use super::lifecycle::reset_module_contexts;
 use super::model::{
     LocalDevnetRecord, LocalNodeActionRequest, LocalNodeConfigRecord, LocalNodeDeployment,
     LocalNodeOperationReport, LocalNodesState, NodeAction, NodeKind, NodeLifecycleState,
@@ -64,14 +64,73 @@ impl LocalNodeActionWorkspace {
         request: &LocalNodeActionRequest,
         control: Option<&CommandControl>,
     ) -> LocalNodeActionResult {
-        dispatch_action(
+        let target_network_id = request
+            .action
+            .is_network_action()
+            .then(|| {
+                request
+                    .network_id
+                    .clone()
+                    .or_else(|| state.active_devnet.clone())
+            })
+            .flatten();
+        let result = dispatch_action(
             state,
             runtime,
             runtime_config_root,
             normalized_profile,
             request,
             control,
-        )
+        );
+        update_module_context_binding(
+            state,
+            normalized_profile,
+            request,
+            target_network_id.as_deref(),
+            &result,
+        );
+        result
+    }
+}
+
+fn update_module_context_binding(
+    state: &mut LocalNodesState,
+    profile: &str,
+    request: &LocalNodeActionRequest,
+    target_network_id: Option<&str>,
+    result: &LocalNodeActionResult,
+) {
+    let status = result.report.status.as_str();
+    match request.action {
+        NodeAction::Initialize if status == "initialized" => {
+            if let Some(kind) = request.node
+                && adapter_for(kind).managed_contract().is_some()
+            {
+                state.set_module_context_topology_for_profile(kind, profile);
+            }
+        }
+        NodeAction::Uninstall if status == "uninstalled" => {
+            if let Some(kind) = request.node
+                && adapter_for(kind).managed_contract().is_some()
+            {
+                state.clear_module_context_topology(kind);
+            }
+        }
+        NodeAction::Purge if status == "purged" => {
+            if let Some(kind) = request.node
+                && adapter_for(kind).managed_contract().is_some()
+            {
+                state.clear_module_context_topology(kind);
+            }
+        }
+        NodeAction::DeleteNetwork | NodeAction::ResetNetwork
+            if matches!(status, "deleted" | "reset") =>
+        {
+            if let Some(network_id) = target_network_id {
+                state.clear_module_context_topologies_for_network(network_id);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -510,6 +569,9 @@ fn node_initialize(
                 adapter.label()
             );
         };
+        if let Some(detail) = managed_context_initialization_problem(state, profile, kind) {
+            return Ok(needs_configuration(&detail));
+        }
         let cli = {
             let Some(runtime) = managed_runtime(runtime.as_ref()) else {
                 return Ok(needs_configuration(
@@ -853,6 +915,28 @@ fn node_start(
         if let Some(reason) = policy.blocked_reason() {
             return Ok(needs_configuration(reason));
         }
+        let managed_options = match policy {
+            NodeActionPolicy::ExecuteDetached => None,
+            NodeActionPolicy::ExecuteManaged {
+                ensure_loaded,
+                requires_installed_context,
+            } => Some((ensure_loaded, requires_installed_context)),
+            _ => bail!(
+                "{} adapter returned an invalid start policy",
+                adapter.label()
+            ),
+        };
+        let managed_runtime_profile = managed_runtime(runtime);
+        if managed_options.is_some() {
+            if managed_runtime_profile.is_none() {
+                return Ok(needs_configuration(
+                    "start an Inspector-managed logoscore runtime before starting a module node",
+                ));
+            }
+            if let Some(detail) = managed_context_binding_problem(state, profile, kind) {
+                return Ok(needs_configuration(&detail));
+            }
+        }
         let record = active_topology_mut(state, profile)?;
         let config = required_node_config(record, kind)?;
         fs::create_dir_all(&config.data_dir)
@@ -901,20 +985,14 @@ fn node_start(
                 }),
             };
         }
-        let NodeActionPolicy::ExecuteManaged {
-            ensure_loaded,
-            requires_installed_context,
-        } = policy
-        else {
+        let Some((ensure_loaded, requires_installed_context)) = managed_options else {
+            bail!("{} adapter has no managed start policy", adapter.label());
+        };
+        let Some(runtime) = managed_runtime_profile else {
             bail!(
-                "{} adapter returned an invalid start policy",
+                "{} managed runtime disappeared before start",
                 adapter.label()
             );
-        };
-        let Some(runtime) = managed_runtime(runtime) else {
-            return Ok(needs_configuration(
-                "start an Inspector-managed logoscore runtime before starting a module node",
-            ));
         };
         if config.lifecycle_state.is_pending() {
             return Ok(needs_configuration(
@@ -933,18 +1011,13 @@ fn node_start(
         match execute_command_spec(&spec, Some(&cli), control) {
             Ok(value) => {
                 config.installed = true;
-                if has_event_contract(kind, NodeAction::Start) {
-                    config.lifecycle_state = NodeLifecycleState::Starting;
-                    config.pending_lifecycle_action = Some(NodeAction::Start);
-                } else {
-                    config.lifecycle_state = NodeLifecycleState::Unknown;
-                    config.pending_lifecycle_action = None;
-                }
+                config.lifecycle_state = NodeLifecycleState::Starting;
+                config.pending_lifecycle_action = Some(NodeAction::Start);
                 record.updated_at = now_millis();
                 write_devnet_manifest(record)?;
                 Ok(OperationOutcome {
                     status: "starting".to_owned(),
-                    detail: lifecycle_dispatch_detail(kind, NodeAction::Start, &value),
+                    detail: lifecycle_dispatch_detail(&value),
                     command: Some(spec.display),
                 })
             }
@@ -973,6 +1046,28 @@ fn node_stop(
         if let Some(reason) = policy.blocked_reason() {
             return Ok(needs_configuration(reason));
         }
+        let requires_installed_context = match policy {
+            NodeActionPolicy::ExecuteDetached => None,
+            NodeActionPolicy::ExecuteManaged {
+                requires_installed_context,
+                ..
+            } => Some(requires_installed_context),
+            _ => bail!(
+                "{} adapter returned an invalid stop policy",
+                adapter.label()
+            ),
+        };
+        let managed_runtime_profile = managed_runtime(runtime);
+        if requires_installed_context.is_some() {
+            if managed_runtime_profile.is_none() {
+                return Ok(needs_configuration(
+                    "start an Inspector-managed logoscore runtime before stopping a module node",
+                ));
+            }
+            if let Some(detail) = managed_context_binding_problem(state, profile, kind) {
+                return Ok(needs_configuration(&detail));
+            }
+        }
         let record = active_topology_mut(state, profile)?;
         let config = required_node_config(record, kind)?;
         if policy == NodeActionPolicy::ExecuteDetached {
@@ -991,20 +1086,14 @@ fn node_stop(
                 command: None,
             });
         }
-        let NodeActionPolicy::ExecuteManaged {
-            requires_installed_context,
-            ..
-        } = policy
-        else {
+        let Some(requires_installed_context) = requires_installed_context else {
+            bail!("{} adapter has no managed stop policy", adapter.label());
+        };
+        let Some(runtime) = managed_runtime_profile else {
             bail!(
-                "{} adapter returned an invalid stop policy",
+                "{} managed runtime disappeared before stop",
                 adapter.label()
             );
-        };
-        let Some(runtime) = managed_runtime(runtime) else {
-            return Ok(needs_configuration(
-                "start an Inspector-managed logoscore runtime before stopping a module node",
-            ));
         };
         if config.lifecycle_state.is_pending() {
             return Ok(needs_configuration(
@@ -1027,18 +1116,13 @@ fn node_stop(
         let cli = runtime.cli_runtime()?;
         match execute_command_spec(&spec, Some(&cli), control) {
             Ok(value) => {
-                if has_event_contract(kind, NodeAction::Stop) {
-                    config.lifecycle_state = NodeLifecycleState::Stopping;
-                    config.pending_lifecycle_action = Some(NodeAction::Stop);
-                } else {
-                    config.lifecycle_state = NodeLifecycleState::Unknown;
-                    config.pending_lifecycle_action = None;
-                }
+                config.lifecycle_state = NodeLifecycleState::Stopping;
+                config.pending_lifecycle_action = Some(NodeAction::Stop);
                 record.updated_at = now_millis();
                 write_devnet_manifest(record)?;
                 Ok(OperationOutcome {
                     status: "stopping".to_owned(),
-                    detail: lifecycle_dispatch_detail(kind, NodeAction::Stop, &value),
+                    detail: lifecycle_dispatch_detail(&value),
                     command: Some(spec.display),
                 })
             }
@@ -1116,6 +1200,62 @@ fn managed_runtime(runtime: Option<&LogoscoreRuntimeProfile>) -> Option<&Logosco
     runtime.filter(|profile| profile.is_managed() && profile.is_running())
 }
 
+fn managed_context_binding_problem(
+    state: &LocalNodesState,
+    profile: &str,
+    kind: NodeKind,
+) -> Option<String> {
+    let topology = state.active_topology(profile)?;
+    match state.module_context_topology_id(kind) {
+        Some(topology_id) if topology_id == topology.id => None,
+        Some(topology_id) => Some(format!(
+            "{} module context is bound to `{topology_id}`; initialize it for `{}` before controlling it",
+            adapter_for(kind).label(),
+            topology.id,
+        )),
+        None => Some(format!(
+            "initialize {} to bind its LogosCore module context to `{}` before controlling it",
+            adapter_for(kind).label(),
+            topology.id,
+        )),
+    }
+}
+
+fn managed_context_initialization_problem(
+    state: &LocalNodesState,
+    profile: &str,
+    kind: NodeKind,
+) -> Option<String> {
+    let topology = state.active_topology(profile)?;
+    if let Some(topology_id) = state.module_context_topology_id(kind) {
+        return (topology_id != topology.id).then(|| {
+            format!(
+                "{} module context is bound to `{topology_id}`; stop the managed runtime before initializing it for `{}`",
+                adapter_for(kind).label(),
+                topology.id,
+            )
+        });
+    }
+
+    let another_initialized_context = state
+        .testnet
+        .iter()
+        .chain(state.devnets.iter())
+        .filter(|record| record.id != topology.id)
+        .any(|record| {
+            record.nodes.iter().any(|node| {
+                node.kind == kind && node.installed && node.lifecycle_state.has_module_context()
+            })
+        });
+    another_initialized_context.then(|| {
+        format!(
+            "{} has an unbound initialized context in another topology; stop the managed runtime before initializing it for `{}`",
+            adapter_for(kind).label(),
+            topology.id,
+        )
+    })
+}
+
 fn needs_configuration(detail: &str) -> OperationOutcome {
     OperationOutcome {
         status: "needs_configuration".to_owned(),
@@ -1168,13 +1308,9 @@ fn clear_module_context(config: &mut LocalNodeConfigRecord) {
     config.pending_lifecycle_action = None;
 }
 
-fn lifecycle_dispatch_detail(kind: NodeKind, action: NodeAction, value: &Value) -> String {
+fn lifecycle_dispatch_detail(value: &Value) -> String {
     let result = operation_detail_from_value(value);
-    if has_event_contract(kind, action) {
-        format!("{result}; waiting for module lifecycle event")
-    } else {
-        format!("{result}; no verified module lifecycle observer")
-    }
+    format!("{result}; waiting for Inspector endpoint confirmation")
 }
 
 fn command_display(command: &std::process::Command) -> String {
@@ -1365,11 +1501,11 @@ pub(super) fn ensure_testnet_topology(state: &mut LocalNodesState) -> Result<boo
     generate_topology_files(&record, false)?;
     write_devnet_manifest(&record)?;
     state.testnet = Some(record);
-    state.version = 2;
+    state.version = 3;
     Ok(true)
 }
 
-fn write_devnet_manifest(record: &LocalDevnetRecord) -> Result<()> {
+pub(super) fn write_devnet_manifest(record: &LocalDevnetRecord) -> Result<()> {
     let path = PathBuf::from(&record.manifest_path);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)

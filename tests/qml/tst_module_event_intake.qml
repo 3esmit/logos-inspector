@@ -193,6 +193,27 @@ TestCase {
         }
     }
 
+    QtObject {
+        id: nativeWatcherHost
+
+        signal moduleEventJson(string moduleName, string eventName, string argsJson)
+
+        property var calls: []
+
+        function backendOwnsRuntimeModuleEvents() {
+            return true
+        }
+
+        function callModuleJson(moduleName, method, argsJson) {
+            calls = calls.concat([{
+                moduleName: String(moduleName || ""),
+                method: String(method || ""),
+                args: JSON.parse(String(argsJson || "[]"))
+            }])
+            return JSON.stringify({ ok: true, value: {}, text: "OK", error: "" })
+        }
+    }
+
     BridgeClient {
         id: bridge
 
@@ -226,6 +247,7 @@ TestCase {
         directEventOwnerHost.subscriptions = []
         directEventOwnerHost.calls = []
         directEventOwnerHost.ownerResponse = true
+        nativeWatcherHost.calls = []
         bridge.moduleEventSubscriptions = ({})
         bridge.moduleEventRegistrations = []
         model.deliveryModuleEvents = []
@@ -365,6 +387,28 @@ TestCase {
 
         compare(model.deliveryModuleEventRows()[0].label, "messageSent")
         compare(runtimeModuleEventCalls(directEventOwnerHost.calls), 0)
+    }
+
+    function test_native_watcher_event_refreshes_local_nodes_without_second_ingress() {
+        bridge.host = nativeWatcherHost
+        verify(!intake.forwardsRuntimeOperationEvents())
+
+        nativeWatcherHost.moduleEventJson(
+            model.deliveryModule,
+            "nodeStarted",
+            JSON.stringify([{ success: true, simulated: true }])
+        )
+
+        tryVerify(function () {
+            for (let i = 0; i < nativeWatcherHost.calls.length; ++i) {
+                if (nativeWatcherHost.calls[i].method === "localNodesStatus") {
+                    return true
+                }
+            }
+            return false
+        })
+        compare(model.deliveryModuleEventRows()[0].label, "nodeStarted")
+        compare(runtimeModuleEventCalls(nativeWatcherHost.calls), 0)
     }
 
     function test_ingest_blockchain_event_updates_live_rows() {

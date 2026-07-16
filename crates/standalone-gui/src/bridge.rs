@@ -1,14 +1,33 @@
 use std::{
     pin::Pin,
-    sync::{Arc, Condvar, Mutex, OnceLock},
+    sync::{
+        Arc, Condvar, Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread,
+    time::Duration,
 };
 
+use anyhow::Context as _;
 use cxx_qt::Threading;
 use cxx_qt_lib::QString;
-use logos_inspector::bridge::InspectorBridge;
+use logos_inspector::{
+    bridge::InspectorBridge,
+    local_nodes::{LocalNodeModuleSubscription, LocalNodeModuleWatcher},
+    module_transport::ModuleTransportEvent,
+};
 
 static BRIDGE: OnceLock<InspectorBridge> = OnceLock::new();
 static CALL_LIFECYCLE: OnceLock<Arc<CallLifecycle>> = OnceLock::new();
+static MODULE_WATCHER: OnceLock<Mutex<Option<ModuleWatcherRuntime>>> = OnceLock::new();
+
+const MODULE_WATCHER_DELIVERY_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+struct ModuleWatcherRuntime {
+    watcher: LocalNodeModuleWatcher,
+    delivery_stop: Arc<AtomicBool>,
+    delivery_worker: thread::JoinHandle<()>,
+}
 
 #[derive(Default)]
 struct CallLifecycleState {
@@ -145,12 +164,29 @@ pub mod qobject {
             args_json: &QString,
         );
 
+        #[qinvokable]
+        #[cxx_name = "startModuleWatcher"]
+        fn start_module_watcher(self: Pin<&mut LogosBridge>) -> bool;
+
+        #[qinvokable]
+        #[cxx_name = "backendOwnsRuntimeModuleEvents"]
+        fn backend_owns_runtime_module_events(self: &LogosBridge) -> bool;
+
         #[qsignal]
         #[cxx_name = "moduleCallFinished"]
         fn module_call_finished(
             self: Pin<&mut LogosBridge>,
             request_id: i32,
             response_json: &QString,
+        );
+
+        #[qsignal]
+        #[cxx_name = "moduleEventJson"]
+        fn module_event_json(
+            self: Pin<&mut LogosBridge>,
+            module: &QString,
+            event: &QString,
+            args_json: &QString,
         );
     }
 
@@ -209,6 +245,132 @@ impl qobject::LogosBridge {
             self.module_call_finished(request_id, &response);
         }
     }
+
+    pub fn start_module_watcher(self: Pin<&mut Self>) -> bool {
+        start_module_watcher_runtime(self.qt_thread()).is_ok()
+    }
+
+    pub fn backend_owns_runtime_module_events(&self) -> bool {
+        module_watcher_is_running()
+    }
+}
+
+fn start_module_watcher_runtime(qt_thread: qobject::LogosBridgeCxxQtThread) -> anyhow::Result<()> {
+    if call_lifecycle().is_closing()? {
+        anyhow::bail!("standalone bridge is shutting down");
+    }
+    bridge()?;
+
+    let mut runtime = module_watcher_runtime()
+        .lock()
+        .map_err(|_| anyhow::anyhow!("standalone module watcher is unavailable"))?;
+    if runtime.is_some() {
+        return Ok(());
+    }
+
+    let watcher = LocalNodeModuleWatcher::start()?;
+    let subscription = watcher.subscribe()?;
+    let delivery_stop = Arc::new(AtomicBool::new(false));
+    let worker_delivery_stop = Arc::clone(&delivery_stop);
+    let delivery_worker = thread::Builder::new()
+        .name("logos-inspector-module-event-delivery".to_owned())
+        .spawn(move || deliver_module_watcher_events(subscription, qt_thread, worker_delivery_stop))
+        .context("failed to start standalone module event delivery worker")?;
+    *runtime = Some(ModuleWatcherRuntime {
+        watcher,
+        delivery_stop,
+        delivery_worker,
+    });
+    Ok(())
+}
+
+fn module_watcher_runtime() -> &'static Mutex<Option<ModuleWatcherRuntime>> {
+    MODULE_WATCHER.get_or_init(|| Mutex::new(None))
+}
+
+fn module_watcher_is_running() -> bool {
+    module_watcher_runtime()
+        .lock()
+        .is_ok_and(|runtime| runtime.is_some())
+}
+
+fn deliver_module_watcher_events(
+    mut subscription: LocalNodeModuleSubscription,
+    qt_thread: qobject::LogosBridgeCxxQtThread,
+    delivery_stop: Arc<AtomicBool>,
+) {
+    while !delivery_stop.load(Ordering::Acquire) {
+        match subscription.next_within(MODULE_WATCHER_DELIVERY_POLL_INTERVAL) {
+            Ok(Some(event)) => {
+                if !module_watcher_delivery_allowed() {
+                    break;
+                }
+                deliver_module_watcher_event(event, &qt_thread);
+            }
+            Ok(None) => {}
+            Err(_) => break,
+        }
+    }
+}
+
+fn module_watcher_delivery_allowed() -> bool {
+    call_lifecycle().is_closing().is_ok_and(|closing| !closing)
+}
+
+fn deliver_module_watcher_event(
+    event: ModuleTransportEvent,
+    qt_thread: &qobject::LogosBridgeCxxQtThread,
+) {
+    let module = event.module().to_owned();
+    let event_name = event.event().to_owned();
+    let args_json = serde_json::to_string(event.args()).ok();
+    let args = event.args().to_vec();
+
+    if let Ok(bridge) = bridge() {
+        let _ingest_result = bridge.ingest_module_event(&module, &event_name, args);
+    }
+
+    let Some(args_json) = args_json else {
+        return;
+    };
+    if !module_watcher_delivery_allowed() {
+        return;
+    }
+    let _queue_result = qt_thread.queue(move |mut qobject| {
+        if !module_watcher_delivery_allowed() {
+            return;
+        }
+        let module = QString::from(module);
+        let event = QString::from(event_name);
+        let args_json = QString::from(args_json);
+        qobject
+            .as_mut()
+            .module_event_json(&module, &event, &args_json);
+    });
+}
+
+fn stop_module_watcher() -> anyhow::Result<()> {
+    let runtime = module_watcher_runtime()
+        .lock()
+        .map_err(|_| anyhow::anyhow!("standalone module watcher is unavailable"))?
+        .take();
+    let Some(mut runtime) = runtime else {
+        return Ok(());
+    };
+
+    runtime.delivery_stop.store(true, Ordering::Release);
+    let watcher_result = runtime.watcher.stop();
+    let delivery_result = runtime
+        .delivery_worker
+        .join()
+        .map_err(|_| anyhow::anyhow!("standalone module event delivery worker panicked"));
+    match (watcher_result, delivery_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(watcher_error), Err(delivery_error)) => Err(watcher_error.context(format!(
+            "standalone module event delivery worker also failed: {delivery_error:#}"
+        ))),
+    }
 }
 
 fn call_module_response_json(module: &str, method: &str, args_json: &str) -> String {
@@ -259,9 +421,14 @@ fn begin_async_call_for(lifecycle: Arc<CallLifecycle>) -> anyhow::Result<ActiveC
 
 pub(crate) fn begin_close() -> anyhow::Result<()> {
     call_lifecycle().begin_close()?;
-    if let Some(bridge) = BRIDGE.get() {
-        bridge.begin_close()?;
-    }
+    let watcher_result = stop_module_watcher();
+    let bridge_result = if let Some(bridge) = BRIDGE.get() {
+        bridge.begin_close()
+    } else {
+        Ok(())
+    };
+    watcher_result?;
+    bridge_result?;
     Ok(())
 }
 
