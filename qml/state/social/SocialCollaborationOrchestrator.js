@@ -626,7 +626,6 @@ function querySocialStore(root, scope, cursor, pageSize, label, callback) {
 
 function socialCommentSendAvailable(root, topic) {
     return !root.busy
-        && root.messagingMutatingDiagnosticsEnabled === true
         && root.writesRunning !== true
         && socialCommentWriteGate(root, topic).enabled === true
 }
@@ -638,9 +637,6 @@ function socialCommentWriteError(root, state, gate) {
     }
     if (value.sending === true || root.writesRunning === true) {
         return qsTr("A Social write is already running.")
-    }
-    if (root.messagingMutatingDiagnosticsEnabled !== true) {
-        return qsTr("Enable mutating diagnostics to post comments.")
     }
     return socialGateDetailText(root, gate, qsTr("Posting is unavailable."))
 }
@@ -654,9 +650,7 @@ function socialSharedIdlReadAvailable(root) {
 }
 
 function socialSharedIdlWriteAvailable(root, topic) {
-    return root.storageMutatingDiagnosticsEnabled === true
-        && root.messagingMutatingDiagnosticsEnabled === true
-        && root.writesRunning !== true
+    return root.writesRunning !== true
         && socialSharedIdlWriteGate(root, topic).enabled === true
 }
 

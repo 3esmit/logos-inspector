@@ -24,7 +24,7 @@ QtObject {
     })
     property string moduleName: "storage_module"
     property string networkPreset: "logos.test"
-    property bool mutatingDiagnosticsEnabled: false
+    property bool mutatingDiagnosticsEnabled: true
     property string currentView: ""
     property string currentTab: "files"
     property string cidProbe: ""
@@ -100,7 +100,7 @@ QtObject {
     }
 
     function storageMutatingSource() {
-        return supportsMutatingDiagnostics && mutatingDiagnosticsEnabled === true
+        return supportsMutatingDiagnostics
     }
 
     function storageDataSource() {

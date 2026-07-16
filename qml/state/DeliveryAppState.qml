@@ -23,7 +23,7 @@ QtObject {
     })
     property string moduleName: "delivery_module"
     property string networkPreset: "logos.test"
-    property bool mutatingDiagnosticsEnabled: false
+    property bool mutatingDiagnosticsEnabled: true
     property string currentTab: "messages"
     property string activeTopic: "/logos-inspector/1/chat/proto"
 
@@ -312,7 +312,7 @@ QtObject {
 
     function messageControlsEnabled(topic) {
         return !busy && !deliveryOperations.view.busy && deliveryMessageSource()
-            && mutatingDiagnosticsEnabled && validContentTopic(topic)
+            && validContentTopic(topic)
     }
 
     function validContentTopic(topic) {

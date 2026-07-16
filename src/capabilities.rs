@@ -454,19 +454,19 @@ mod tests {
         if storage.get("connector_provenance").and_then(Value::as_str) != Some("network_profile") {
             bail!("storage did not preserve connector provenance: {storage}");
         }
-        if storage.get("status").and_then(Value::as_str) != Some("degraded") {
-            bail!("storage should be degraded without mutating diagnostics: {storage}");
+        if storage.get("status").and_then(Value::as_str) != Some("available") {
+            bail!("storage should remain available with legacy mutation input: {storage}");
         }
         let unavailable = storage
             .get("unavailable_sub_capabilities")
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default();
-        if !unavailable
+        if unavailable
             .iter()
             .any(|value| value.as_str() == Some("storage.content.upload"))
         {
-            bail!("storage upload should be unavailable: {storage}");
+            bail!("storage upload should remain available: {storage}");
         }
 
         let Some(wallet) = capability_for(&value, "wallet.l1") else {

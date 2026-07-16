@@ -6,7 +6,7 @@ QtObject {
 
     required property var gateway
     property var storageAdapterInitialization: ({ source_mode: "", inputs: ({}) })
-    property bool storageMutatingDiagnosticsEnabled: false
+    property bool storageMutatingDiagnosticsEnabled: true
 
     property var entries: []
     property bool loaded: false
@@ -52,7 +52,7 @@ QtObject {
         gateway: root.gateway
         domain: "storage"
         adapterInitialization: root.storageAdapterInitialization
-        mutatingDiagnosticsEnabled: false
+        mutatingDiagnosticsEnabled: true
         defaultLabel: qsTr("Backup download")
         busyError: qsTr("A backup download is already running.")
         operationValidator: function (operation) {
@@ -469,7 +469,7 @@ QtObject {
             "",
             requestedCid,
             "network",
-            false
+            true
         )
         const started = downloadOperations.start(
             "storageDownloadBackupCatalogEntry",
@@ -689,7 +689,7 @@ QtObject {
             catalogId,
             "",
             "",
-            storageMutatingDiagnosticsEnabled
+            true
         )
         const started = uploadOperations.start(
             "storageUploadBackupCatalogEntry",

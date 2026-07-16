@@ -732,7 +732,7 @@ TestCase {
         compare(syncSendCalls, 0)
     }
 
-    function test_pending_comment_policy_invalidation_retains_write_error() {
+    function test_legacy_mutating_flags_do_not_cancel_admitted_comment() {
         gateEnabled = true
         messagingMutatingEnabled = true
         autoCompleteSend = false
@@ -742,19 +742,18 @@ TestCase {
 
         messagingMutatingEnabled = false
 
-        const invalidated = social.commentsView("/valid/topic")
-        verify(!social.writesRunning)
-        verify(!invalidated.state.sending)
-        verify(String(invalidated.state.sendError).length > 0)
-        compare(invalidated.rows.length, 0)
-        const retainedError = invalidated.state.sendError
+        const pending = social.commentsView("/valid/topic")
+        verify(social.writesRunning)
+        verify(pending.state.sending)
+        compare(pending.rows.length, 0)
 
         replyStart(0, sendOperation("send-late", "completed", "/valid/topic", {
             sent: true
         }, 1))
         const afterLateReply = social.commentsView("/valid/topic")
-        compare(afterLateReply.rows.length, 0)
-        compare(afterLateReply.state.sendError, retainedError)
+        compare(afterLateReply.rows.length, 1)
+        verify(!afterLateReply.state.sending)
+        compare(afterLateReply.state.sendError, "")
     }
 
     function test_auto_share_marker_waits_for_upload_and_delivery_completion() {

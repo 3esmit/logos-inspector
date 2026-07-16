@@ -365,9 +365,9 @@ ColumnLayout {
             ]
             pending: root.sourceView.pending
             statusText: root.diagnosticsStatusText("storage", root.sourceView.statusLine, qsTr("Storage diagnostics"))
-            guardedTitle: qsTr("Guarded diagnostics")
-            permissionEnabled: root.model.storageMutatingDiagnosticsEnabled && root.diagnosticsGateEnabled("storage")
-            permissionDisabledTitle: root.diagnosticsGateEnabled("storage") ? qsTr("Permission disabled") : qsTr("Diagnostics unavailable")
+            guardedTitle: qsTr("Confirmed actions")
+            permissionEnabled: root.diagnosticsGateEnabled("storage")
+            permissionDisabledTitle: qsTr("Diagnostics unavailable")
             guardedMessage: qsTr("Manifest fetch, provider lookup, download, connect, remove, upload, and lifecycle controls are not background-polled. They need backend adapters and per-action confirmation.")
             guardedActions: [
                 { text: qsTr("Manifest fetch"), width: 142 },

@@ -7,7 +7,7 @@ QtObject {
 
     required property var gateway
     property var adapterInitialization: ({ source_mode: "", inputs: ({}) })
-    property bool mutatingDiagnosticsEnabled: false
+    property bool mutatingDiagnosticsEnabled: true
     property int maxPendingQueries: 16
     property int maxPollsPerTick: 4
 
@@ -193,8 +193,7 @@ QtObject {
                 size,
                 true,
                 true
-            ]),
-            mutatingDiagnosticsEnabled
+            ])
         )
         request.domain = "delivery"
         request.method = "deliveryStoreQuery"

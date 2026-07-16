@@ -36,7 +36,7 @@ function deliverySourceView(root) {
         metricsEndpoint: root.messagingMetricsUrl,
         moduleName: root.deliveryModule,
         networkPreset: root.messagingNetworkPreset,
-        mutatingDiagnosticsEnabled: root.messagingMutatingDiagnosticsEnabled === true,
+        mutatingDiagnosticsEnabled: true,
         reportArgs: function () { return SourcePolicyProjection.deliverySourceReportArgs(root, mode, root.configuredMessagingRestUrl(), root.messagingMetricsUrl) },
         actionArgs: function (extra) {
             const source = deliverySourceView(root)
@@ -59,7 +59,7 @@ function storageSourceView(root) {
         metricsEndpoint: root.storageMetricsUrl,
         moduleName: root.storageModule,
         networkPreset: root.storageNetworkPreset,
-        mutatingDiagnosticsEnabled: root.storageMutatingDiagnosticsEnabled === true,
+        mutatingDiagnosticsEnabled: true,
         reportArgs: function (includeCidProbe) {
             return SourcePolicyProjection.storageSourceReportArgs(
                 root,

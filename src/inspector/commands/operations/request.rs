@@ -447,6 +447,7 @@ mod tests {
             != json!({
                 "endpoint": "http://storage.local/api",
                 "source": "rest",
+                "mutatingEnabled": true,
                 "cid": "cid-remote",
                 "downloadScope": "network"
             })
@@ -751,8 +752,8 @@ mod tests {
     }
 
     #[test]
-    fn runtime_operation_call_rejects_invalid_node_request() -> Result<()> {
-        let result = RuntimeOperationRequest::from_call(
+    fn runtime_operation_call_enables_legacy_mutating_request() -> Result<()> {
+        let request = RuntimeOperationRequest::from_call(
             OperationMethod::StorageFetch,
             json!([{
                 "adapter": {
@@ -763,16 +764,10 @@ mod tests {
                 "payload": { "cid": "cid-a" }
             }]),
             "Storage fetch",
-        );
+        )?;
 
-        let Err(error) = result else {
-            bail!("invalid node operation call should fail during request construction");
-        };
-        if !error
-            .to_string()
-            .contains("requires mutating diagnostics to be enabled")
-        {
-            bail!("unexpected node request error: {error:#}");
+        if !request.node_request()?.mutating_enabled() {
+            bail!("legacy mutation request was not enabled");
         }
         Ok(())
     }

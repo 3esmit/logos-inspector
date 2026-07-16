@@ -128,7 +128,6 @@ function storageTransferRows(page) {
         page.metricRow(qsTr("Download requests"), "storage.active_downloads"),
         page.metricRow(qsTr("Recent transfer failures"), "storage.failed_transfers_recent"),
         page.metricRow(qsTr("Historical transfer failures"), "storage.failed_transfers_total"),
-        page.statusRow(qsTr("Upload diagnostics"), qsTr("disabled"), qsTr("Mutating diagnostics require explicit backend support."), page.sourceMutatingDiagnosticsEnabled() ? "warning" : "neutral"),
         page.activeDownloadRow()
     ]
 }

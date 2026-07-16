@@ -713,7 +713,7 @@ ColumnLayout {
             })
         if (!started && !completed) {
             root.model.shell.setResult(qsTr("Share IDL"),
-                qsTr("Select an active Channel Zone, configure a Social identity, and enable Storage and Delivery writes."), true)
+                qsTr("Select an active Channel Zone and configure a Social identity."), true)
         }
         return started
     }

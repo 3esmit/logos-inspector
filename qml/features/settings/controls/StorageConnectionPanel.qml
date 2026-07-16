@@ -119,14 +119,6 @@ SourceSettingsPanel {
             checked: root.modelRef.storagePrivilegedDebugEnabled
             onToggled: root.modelRef.storagePrivilegedDebugEnabled = checked
         }
-
-        SafetyToggle {
-            theme: root.theme
-            text: qsTr("Mutating diagnostics")
-            detail: qsTr("Allows future upload, download, connect, remove, and lifecycle probes after per-action confirmation.")
-            checked: root.modelRef.storageMutatingDiagnosticsEnabled
-            onToggled: root.modelRef.storageMutatingDiagnosticsEnabled = checked
-        }
     }
 
     StatusMessage {

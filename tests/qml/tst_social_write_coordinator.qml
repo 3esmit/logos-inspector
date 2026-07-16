@@ -282,26 +282,27 @@ TestCase {
         compare(history.length, 0)
     }
 
-    function test_write_policy_is_checked_before_runtime_admission() {
+    function test_legacy_write_policy_flags_do_not_block_runtime_admission() {
         coordinator.deliveryMutatingDiagnosticsEnabled = false
         let commentCompletion = null
-        verify(!coordinator.startComment({
+        verify(coordinator.startComment({
             topic: "/topic/comment",
             payloadText: "{}"
         }, function (response) {
             commentCompletion = response
         }))
-        verify(commentCompletion && !commentCompletion.ok)
-        compare(startRequests.length, 0)
+        compare(startRequests.length, 1)
+        compare(startRequests[0].mutating_enabled, true)
 
-        coordinator.deliveryMutatingDiagnosticsEnabled = true
+        coordinator.invalidate("")
         coordinator.storageMutatingDiagnosticsEnabled = false
+        coordinator.deliveryMutatingDiagnosticsEnabled = false
         let sharedCompletion = null
-        verify(!coordinator.startSharedIdl(sharedRequest("/topic/idl"), function (response) {
+        verify(coordinator.startSharedIdl(sharedRequest("/topic/idl"), function (response) {
             sharedCompletion = response
         }))
-        verify(sharedCompletion && !sharedCompletion.ok)
-        compare(startRequests.length, 0)
+        compare(startRequests.length, 2)
+        compare(startRequests[1].mutating_enabled, true)
     }
 
     function test_duplicate_admission_is_rejected_during_both_stages() {

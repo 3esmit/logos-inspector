@@ -13,8 +13,8 @@ QtObject {
             source_mode: "",
             inputs: ({})
         })
-    property bool storageMutatingDiagnosticsEnabled: false
-    property bool deliveryMutatingDiagnosticsEnabled: false
+    property bool storageMutatingDiagnosticsEnabled: true
+    property bool deliveryMutatingDiagnosticsEnabled: true
 
     property int workflowGeneration: 0
     property string workflowKind: ""
@@ -62,8 +62,6 @@ QtObject {
 
     onStorageAdapterInitializationChanged: invalidate(qsTr("Storage source changed during Social write."))
     onDeliveryAdapterInitializationChanged: invalidate(qsTr("Delivery source changed during Social write."))
-    onStorageMutatingDiagnosticsEnabledChanged: invalidate(qsTr("Storage write policy changed during Social write."))
-    onDeliveryMutatingDiagnosticsEnabledChanged: invalidate(qsTr("Delivery write policy changed during Social write."))
 
     function startComment(request, onComplete) {
         const value = request && typeof request === "object" ? request : ({})
@@ -71,9 +69,6 @@ QtObject {
         const payloadText = String(value.payloadText || "")
         if (!topic.length || !payloadText.length) {
             return reject(onComplete, qsTr("Comment topic and payload are required."))
-        }
-        if (deliveryMutatingDiagnosticsEnabled !== true) {
-            return reject(onComplete, qsTr("Enable mutating diagnostics to post comments."))
         }
         return beginWorkflow("comment", {
             topic: topic,
@@ -91,9 +86,6 @@ QtObject {
         const message = frozenValue(value.message)
         if (!filename.length || !topic.length || !artifact || !message) {
             return reject(onComplete, qsTr("Shared IDL upload input is incomplete."))
-        }
-        if (storageMutatingDiagnosticsEnabled !== true || deliveryMutatingDiagnosticsEnabled !== true) {
-            return reject(onComplete, qsTr("Enable Storage and Delivery writes to share an IDL."))
         }
         return beginWorkflow("shared-idl", {
             filename: filename,
