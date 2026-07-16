@@ -479,6 +479,64 @@ mod tests {
     }
 
     #[test]
+    fn delivery_store_queries_require_a_rest_connector() -> Result<()> {
+        let delivery_capability = |build_mode, connector_id: &str, endpoint: Option<&str>| {
+            let inputs = json!({
+                "network_connector_config": {
+                    "scopes": {
+                        "delivery": {
+                            "connector_id": connector_id,
+                            "provenance": "test"
+                        }
+                    }
+                },
+                "messaging_rest_url": endpoint.unwrap_or_default(),
+                "source_reports": {
+                    "delivery": {
+                        "health": {
+                            "ready": true,
+                            "reachable": true,
+                            "status": "ready",
+                            "detail": "delivery source reachable"
+                        }
+                    }
+                }
+            });
+            let value =
+                serde_json::to_value(test_registry_report_with_value(build_mode, Some(&inputs)))?;
+            capability_for(&value, "delivery")
+                .cloned()
+                .context("delivery capability missing")
+        };
+
+        for (build_mode, connector_id) in [
+            (CapabilityBuildMode::Basecamp, "delivery_module"),
+            (
+                CapabilityBuildMode::Standalone,
+                "logoscore_cli_delivery_module",
+            ),
+        ] {
+            let delivery = delivery_capability(build_mode, connector_id, None)?;
+            if !unavailable_contains(&delivery, "delivery.store.query") {
+                bail!("{connector_id} overclaimed Delivery Store queries: {delivery}");
+            }
+            if unavailable_contains(&delivery, "delivery.send") {
+                bail!("{connector_id} should retain Delivery send: {delivery}");
+            }
+        }
+
+        let rest = delivery_capability(
+            CapabilityBuildMode::Standalone,
+            "direct_delivery_rest",
+            Some("http://127.0.0.1:8645"),
+        )?;
+        if unavailable_contains(&rest, "delivery.store.query") {
+            bail!("Direct Waku REST should provide Delivery Store queries: {rest}");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn storage_module_fails_backup_sync_read_closed_without_runtime_contract() -> Result<()> {
         let inputs = serde_json::json!({
             "network_connector_config": {

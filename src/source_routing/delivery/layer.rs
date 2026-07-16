@@ -134,7 +134,6 @@ const METRICS_INPUTS: &[AdapterInputPolicy] = &[AdapterInputPolicy {
 const MODULE_CAPABILITIES: &[&str] = &[
     "delivery.identity.read",
     "delivery.topics.read",
-    "delivery.store.query",
     "delivery.subscribe",
     "delivery.unsubscribe",
     "delivery.send",
@@ -498,6 +497,20 @@ mod tests {
                 metrics_endpoint: None
             }
         );
+    }
+
+    #[test]
+    fn messaging_module_adapters_do_not_advertise_store_queries() {
+        let supports_store_query = |key: &str| {
+            MESSAGING_SOURCE_MODES
+                .iter()
+                .find(|mode| mode.key == key)
+                .is_some_and(|mode| mode.adapter.capabilities.contains(&"delivery.store.query"))
+        };
+
+        assert!(!supports_store_query("module"));
+        assert!(!supports_store_query("logoscore_cli"));
+        assert!(supports_store_query("rest"));
     }
 
     #[test]
