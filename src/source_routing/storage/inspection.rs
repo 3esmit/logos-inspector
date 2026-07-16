@@ -59,12 +59,20 @@ pub async fn storage_source_report(
     metrics_endpoint: Option<&str>,
     cid: Option<&str>,
     privileged_debug_enabled: bool,
+    runtime_diagnostics_enabled: bool,
     module_transport: &SharedModuleTransport,
 ) -> SourceReport {
     match StorageAdapter::select(source_mode, rest_endpoint, metrics_endpoint) {
         StorageAdapter::Module { transport } => module_source_report(
             SourceReportKind::Storage(StorageSourceReportKind::Module),
-            layer::module_report(module_transport, transport, cid, privileged_debug_enabled).await,
+            layer::module_report(
+                module_transport,
+                transport,
+                cid,
+                privileged_debug_enabled,
+                runtime_diagnostics_enabled,
+            )
+            .await,
         ),
         StorageAdapter::Rest {
             endpoint,
@@ -411,9 +419,16 @@ mod tests {
             calls: Arc::clone(&calls),
         });
 
-        let report =
-            storage_source_report("logoscore_cli", None, None, None, false, &module_transport)
-                .await;
+        let report = storage_source_report(
+            "logoscore_cli",
+            None,
+            None,
+            None,
+            false,
+            false,
+            &module_transport,
+        )
+        .await;
 
         if report.adapter != Some(AdapterConnectionType::LogoscoreCli) {
             bail!("source adapter identity was lost: {report:?}");
@@ -435,7 +450,7 @@ mod tests {
         });
 
         let report =
-            storage_source_report("module", None, None, None, false, &module_transport).await;
+            storage_source_report("module", None, None, None, false, true, &module_transport).await;
 
         if report.adapter != Some(AdapterConnectionType::Module)
             || report.module_info.probe_key.as_deref()
@@ -447,6 +462,23 @@ mod tests {
         }
         if calls.load(Ordering::SeqCst) == 0 {
             bail!("Basecamp report did not use injected transport");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn metadata_only_basecamp_source_skips_storage_runtime_calls() -> Result<()> {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let module_transport: SharedModuleTransport = Arc::new(RecordingBasecampTransport {
+            calls: Arc::clone(&calls),
+        });
+
+        let _report =
+            storage_source_report("module", None, None, None, false, false, &module_transport)
+                .await;
+
+        if calls.load(Ordering::SeqCst) != 0 {
+            bail!("metadata-only Storage source invoked a runtime method");
         }
         Ok(())
     }

@@ -26,9 +26,12 @@ pub async fn storage_report(
     adapter: ModuleTransportKind,
     cid: Option<&str>,
     privileged_debug_enabled: bool,
+    runtime_diagnostics_enabled: bool,
 ) -> ModuleReport {
     let mut probes = Vec::new();
-    for step in storage_module_probe_plan(cid, privileged_debug_enabled) {
+    for step in
+        storage_module_probe_plan(cid, privileged_debug_enabled, runtime_diagnostics_enabled)
+    {
         probes.push(match step.key {
             Some(key) => {
                 call_source_probe(
@@ -64,12 +67,13 @@ pub async fn storage_report(
             .unwrap_or_else(|| unavailable_metadata_probe(adapter, STORAGE_MODULE)),
         ModuleTransportKind::Module | ModuleTransportKind::LogoscoreCli => metadata.clone(),
     };
-    match adapter {
-        ModuleTransportKind::Module => {
-            probes.push(basecamp_backup_download_readiness_probe(module_transport, &metadata).await)
-        }
-        ModuleTransportKind::LogoscoreCli => {
-            probes.push(logoscore_backup_download_readiness_probe(module_transport).await);
+    if runtime_diagnostics_enabled {
+        match adapter {
+            ModuleTransportKind::Module => probes
+                .push(basecamp_backup_download_readiness_probe(module_transport, &metadata).await),
+            ModuleTransportKind::LogoscoreCli => {
+                probes.push(logoscore_backup_download_readiness_probe(module_transport).await);
+            }
         }
     }
     ModuleReport::new(adapter, STORAGE_MODULE, module_info, probes)
@@ -360,7 +364,8 @@ mod tests {
     async fn basecamp_report_advertises_exact_backup_download_readiness() -> Result<()> {
         let transport: SharedModuleTransport = Arc::new(fake_transport());
 
-        let report = storage_report(&transport, ModuleTransportKind::Module, None, false).await;
+        let report =
+            storage_report(&transport, ModuleTransportKind::Module, None, false, true).await;
         let readiness = report
             .probes
             .iter()
@@ -382,6 +387,22 @@ mod tests {
                 != Some(BASECAMP_EVENT_TRANSPORT_PROTOCOL)
         {
             bail!("Basecamp backup readiness was not established: {readiness:?}");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn metadata_only_report_skips_storage_runtime_probes() -> Result<()> {
+        let transport: SharedModuleTransport = Arc::new(fake_transport());
+
+        let report =
+            storage_report(&transport, ModuleTransportKind::Module, None, false, false).await;
+
+        if !report.probes.is_empty() {
+            bail!(
+                "metadata-only Storage report invoked runtime probes: {:?}",
+                report.probes
+            );
         }
         Ok(())
     }

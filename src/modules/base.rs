@@ -62,7 +62,7 @@ pub async fn modules_report(module_transport: &SharedModuleTransport) -> LogosMo
         adapter,
         status: logoscore_status_report(module_transport).await,
         blockchain: blockchain_module_report(module_transport, adapter, None).await,
-        storage: storage_report(module_transport, adapter, None, false).await,
+        storage: storage_report(module_transport, adapter, None, false, false).await,
         delivery: delivery_report(module_transport, adapter, None).await,
         capabilities: capabilities_report(module_transport, adapter).await,
     }
