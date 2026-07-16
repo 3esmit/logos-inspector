@@ -96,6 +96,8 @@ ColumnLayout {
                     theme: root.theme
                     title: qsTr("Recent L1 Blocks")
                     action: qsTr("View all")
+                    actionObjectName: "dashboardL1BlocksViewAll"
+                    actionAccessibleName: qsTr("View all L1 blocks")
                     onActivated: root.model.selectView("blocks")
                 }
 
@@ -162,6 +164,8 @@ ColumnLayout {
                     theme: root.theme
                     title: qsTr("Recent L1 Transactions")
                     action: qsTr("View all")
+                    actionObjectName: "dashboardL1TransactionsViewAll"
+                    actionAccessibleName: qsTr("View all L1 transactions")
                     onActivated: {
                         root.model.selectView("transactions")
                     }
@@ -671,6 +675,8 @@ ColumnLayout {
         required property Theme theme
         property string title: ""
         property string action: ""
+        property string actionObjectName: ""
+        property string actionAccessibleName: action
         signal activated()
 
         Layout.fillWidth: true
@@ -692,9 +698,11 @@ ColumnLayout {
             }
 
             ActionButton {
+                objectName: headerRoot.actionObjectName
                 visible: headerRoot.action.length > 0
                 theme: headerRoot.theme
                 text: headerRoot.action
+                accessibleName: headerRoot.actionAccessibleName
                 Layout.preferredWidth: Math.max(96, headerRoot.action.length * 8 + 28)
                 onClicked: headerRoot.activated()
             }

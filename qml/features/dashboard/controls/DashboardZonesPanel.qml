@@ -81,6 +81,7 @@ Frame {
                     objectName: "dashboardZonesViewAll"
                     theme: root.theme
                     text: qsTr("View all")
+                    accessibleName: qsTr("View all Zones")
                     Layout.preferredWidth: 96
                     onClicked: root.openZones()
                 }

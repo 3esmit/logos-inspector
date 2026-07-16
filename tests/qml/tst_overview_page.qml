@@ -160,6 +160,30 @@ TestCase {
         verify(!hasVisibleText(page, "999"))
     }
 
+    function test_dashboard_view_all_actions_are_contextual_and_routed() {
+        const blocks = findChild(page, "dashboardL1BlocksViewAll")
+        const zones = findChild(page, "dashboardZonesViewAll")
+        const transactions = findChild(page, "dashboardL1TransactionsViewAll")
+        verify(blocks !== null)
+        verify(zones !== null)
+        verify(transactions !== null)
+
+        compare(blocks.Accessible.name, "View all L1 blocks")
+        compare(zones.Accessible.name, "View all Zones")
+        compare(transactions.Accessible.name, "View all L1 transactions")
+
+        mouseClick(blocks)
+        compare(model.shell.currentView, "blocks")
+        model.shell.selectView("overview")
+
+        mouseClick(zones)
+        compare(model.shell.currentView, "zones")
+        model.shell.selectView("overview")
+
+        mouseClick(transactions)
+        compare(model.shell.currentView, "transactions")
+    }
+
     function test_narrow_dashboard_layout_stacks_activity_panels() {
         testWindow.width = 820
         const grid = findChild(page, "dashboardActivityGrid")
