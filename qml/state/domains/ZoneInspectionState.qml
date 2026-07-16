@@ -56,6 +56,8 @@ QtObject {
     property bool automaticRetryPending: false
     property int automaticRetryAttempt: 0
     property bool startupAutoSelectionPending: true
+    property string pendingZoneRestoreId: ""
+    property string pendingZoneRestoreScopeKey: ""
 
     readonly property bool statusPollingEnabled: started
         && catalogConfigured
@@ -316,16 +318,28 @@ QtObject {
     function acceptStatus(report) {
         const nextScope = report.network_scope || null
         const nextScopeKey = scopeKey(nextScope)
-        const scopeChanged = networkScopeKey.length > 0 && nextScopeKey !== networkScopeKey
+        const scopeChanged = networkScopeKey.length > 0
+            && nextScopeKey.length > 0
+            && nextScopeKey !== networkScopeKey
+        const restoreScopeChanged = pendingZoneRestoreScopeKey.length > 0
+            && nextScopeKey.length > 0
+            && nextScopeKey !== pendingZoneRestoreScopeKey
         const catalogChanged = catalogStatus !== null
             && numericRevision(report.catalog_revision) !== catalogRevision
-        if (scopeChanged) {
+        if (scopeChanged || restoreScopeChanged) {
+            pendingZoneRestoreId = ""
+            pendingZoneRestoreScopeKey = ""
+            startupAutoSelectionPending = true
             clearActiveZone()
             invalidateSummary(true)
         } else if (catalogChanged) {
             evidence.resetEvidenceState(true)
         }
         if (String(report.verification || "") !== "verified") {
+            if (activeZoneId.length > 0) {
+                pendingZoneRestoreId = activeZoneId
+                pendingZoneRestoreScopeKey = networkScopeKey
+            }
             clearActiveZone()
         }
 
@@ -345,9 +359,9 @@ QtObject {
             automaticRetryPending = true
         } else {
             automaticRetryPending = false
-            if (verification === "verified" || ingestion.worker_running === true) {
-                automaticRetryAttempt = 0
-            }
+        }
+        if (verification === "verified" && currentError.length === 0) {
+            automaticRetryAttempt = 0
         }
 
         if (verification === "verified") {
@@ -363,6 +377,7 @@ QtObject {
         }
         if (summaryMatchesStatus()) {
             summaryStale = false
+            selectStartupZone()
             reconcileDetail()
             return true
         }
@@ -546,6 +561,8 @@ QtObject {
         const report = assembly.report
         if (activeZoneId.length > 0) {
             startupAutoSelectionPending = false
+            pendingZoneRestoreId = ""
+            pendingZoneRestoreScopeKey = ""
             const nextActiveRow = rowFromRows(rows, activeZoneId)
             if (!nextActiveRow) {
                 clearActiveZone()
@@ -597,6 +614,8 @@ QtObject {
         }
         if (automatic !== true) {
             startupAutoSelectionPending = false
+            pendingZoneRestoreId = ""
+            pendingZoneRestoreScopeKey = ""
         }
         if (activeZoneId === normalizedId) {
             reconcileDetail()
@@ -612,16 +631,44 @@ QtObject {
     }
 
     function selectStartupZone() {
+        if (activeZoneId.length > 0) {
+            startupAutoSelectionPending = false
+            pendingZoneRestoreId = ""
+            pendingZoneRestoreScopeKey = ""
+            return false
+        }
+        if (pendingZoneRestoreId.length > 0) {
+            const restoreId = pendingZoneRestoreId
+            if (!zoneSummary(restoreId)) {
+                return false
+            }
+            if (pendingZoneRestoreScopeKey.length > 0
+                    && pendingZoneRestoreScopeKey !== networkScopeKey) {
+                pendingZoneRestoreId = ""
+                pendingZoneRestoreScopeKey = ""
+                startupAutoSelectionPending = true
+                return false
+            }
+            if (!activateZone(restoreId, true)) {
+                return false
+            }
+            pendingZoneRestoreId = ""
+            pendingZoneRestoreScopeKey = ""
+            startupAutoSelectionPending = false
+            return true
+        }
         if (!startupAutoSelectionPending) {
             return false
         }
-        if (activeZoneId.length > 0) {
-            startupAutoSelectionPending = false
+        const channelId = configuredSequencerZoneId(zoneSummaries)
+        if (channelId.length === 0) {
+            return false
+        }
+        if (!activateZone(channelId, true)) {
             return false
         }
         startupAutoSelectionPending = false
-        const channelId = configuredSequencerZoneId(zoneSummaries)
-        return channelId.length > 0 && activateZone(channelId, true)
+        return true
     }
 
     function configuredSequencerZoneId(rows) {
@@ -831,6 +878,10 @@ QtObject {
                 return
             }
             if (nextSourceRevision !== sourceRevision) {
+                if (activeZoneId.length > 0) {
+                    pendingZoneRestoreId = activeZoneId
+                    pendingZoneRestoreScopeKey = networkScopeKey
+                }
                 sourceGeneration += 1
                 sourceRevision = nextSourceRevision
                 clearActiveZone()
@@ -1066,6 +1117,11 @@ QtObject {
         statusFailureCount = 0
         automaticRetryPending = false
         automaticRetryAttempt = 0
+        if (clearRows) {
+            startupAutoSelectionPending = true
+            pendingZoneRestoreId = ""
+            pendingZoneRestoreScopeKey = ""
+        }
         networkScope = null
         networkScopeKey = ""
         catalogRevision = 0
