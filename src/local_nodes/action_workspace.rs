@@ -25,7 +25,10 @@ use super::model::{
     LocalNodeOperationReport, LocalNodesState, NodeAction, NodeKind, NodeLifecycleState,
 };
 use super::paths::{path_is_inside, remove_dir_inside};
-use super::process::{find_command, process_group_is_alive, process_is_alive, stop_process};
+use super::process::{
+    find_command, process_group_has_live_members, process_group_is_alive, process_is_alive,
+    spawn_detached, stop_process,
+};
 use super::runtime::LogoscoreRuntimeProfile;
 use super::workflow::node_set_for_profile;
 
@@ -33,6 +36,9 @@ const MANIFEST_FILE: &str = "local-network.json";
 const TESTNET_ID: &str = "logos-testnet";
 const MESSAGING_CONTEXT_PROBE_ATTEMPTS: usize = 20;
 const MESSAGING_CONTEXT_PROBE_INTERVAL: Duration = Duration::from_millis(250);
+const MESSAGING_CONTEXT_RUNTIME_RESTARTS: usize = 1;
+const RUNTIME_PROCESS_GROUP_REAP_TIMEOUT: Duration = Duration::from_secs(5);
+const RUNTIME_PROCESS_GROUP_REAP_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct LocalNodeActionWorkspace;
@@ -90,13 +96,9 @@ fn dispatch_action(
         NodeAction::DeleteNetwork => delete_network(state, runtime.as_ref(), request),
         NodeAction::ResetNetwork => reset_network(state, runtime.as_ref(), request),
         NodeAction::Install => node_install(state, normalized_profile, request),
-        NodeAction::Initialize => node_initialize(
-            state,
-            runtime.as_ref(),
-            normalized_profile,
-            request,
-            control,
-        ),
+        NodeAction::Initialize => {
+            node_initialize(state, runtime, normalized_profile, request, control)
+        }
         NodeAction::Uninstall => node_uninstall(
             state,
             runtime.as_ref(),
@@ -394,6 +396,58 @@ fn reap_runtime_process_group(profile: &LogoscoreRuntimeProfile) -> Result<()> {
     })
 }
 
+fn restart_managed_runtime_for_messaging_context(
+    runtime: &mut LogoscoreRuntimeProfile,
+    control: Option<&CommandControl>,
+) -> Result<()> {
+    if runtime.is_running() {
+        return Ok(());
+    }
+    if let Some(process_id) = runtime.daemon_process_id {
+        reap_runtime_process_group(runtime)?;
+        wait_for_runtime_process_group_exit(process_id, control)?;
+    }
+    if let Some(control) = control {
+        control.check_active()?;
+    }
+    runtime.daemon_process_id = None;
+    let command = runtime.daemon_command()?;
+    let process_id = spawn_detached(command, "Inspector-managed logoscore daemon")?;
+    runtime.daemon_process_id = Some(process_id);
+    match control {
+        Some(control) => runtime.wait_until_ready_controlled(control),
+        None => runtime.wait_until_ready(),
+    }
+    .context("restarted Inspector-managed logoscore daemon did not become ready")?;
+
+    let cli = runtime.cli_runtime()?;
+    match control {
+        Some(control) => cli.ensure_module_loaded_controlled("delivery_module", control.clone()),
+        None => cli.ensure_module_loaded("delivery_module"),
+    }
+    .context("restarted Inspector-managed logoscore daemon did not load delivery_module")
+}
+
+fn wait_for_runtime_process_group_exit(
+    process_id: u32,
+    control: Option<&CommandControl>,
+) -> Result<()> {
+    let deadline = Instant::now() + RUNTIME_PROCESS_GROUP_REAP_TIMEOUT;
+    while process_group_has_live_members(process_id) {
+        if let Some(control) = control {
+            control.check_active()?;
+        }
+        if Instant::now() >= deadline {
+            bail!(
+                "Inspector-managed logoscore process group {process_id} still has live members after termination"
+            );
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        thread::sleep(RUNTIME_PROCESS_GROUP_REAP_POLL_INTERVAL.min(remaining));
+    }
+    Ok(())
+}
+
 fn node_install(
     state: &mut LocalNodesState,
     profile: &str,
@@ -435,7 +489,7 @@ fn node_install(
 
 fn node_initialize(
     state: &mut LocalNodesState,
-    runtime: Option<&LogoscoreRuntimeProfile>,
+    runtime: &mut Option<LogoscoreRuntimeProfile>,
     profile: &str,
     request: &LocalNodeActionRequest,
     control: Option<&CommandControl>,
@@ -454,10 +508,13 @@ fn node_initialize(
                 adapter.label()
             );
         };
-        let Some(runtime) = managed_runtime(runtime) else {
-            return Ok(needs_configuration(
-                "start an Inspector-managed logoscore runtime before initializing a module node",
-            ));
+        let cli = {
+            let Some(runtime) = managed_runtime(runtime.as_ref()) else {
+                return Ok(needs_configuration(
+                    "start an Inspector-managed logoscore runtime before initializing a module node",
+                ));
+            };
+            runtime.cli_runtime()?
         };
         let record = active_topology_mut(state, profile)?;
         let config = required_node_config(record, kind)?;
@@ -470,7 +527,6 @@ fn node_initialize(
             config.port,
         )
         .with_context(|| format!("{} initialization is not implemented", adapter.label()))?;
-        let cli = runtime.cli_runtime()?;
         if ensure_loaded {
             ensure_module_loaded(&spec, Some(&cli), control)?;
         }
@@ -506,8 +562,14 @@ fn node_initialize(
             Err(error)
                 if kind == NodeKind::Messaging && is_ambiguous_messaging_create_error(&error) =>
             {
+                let runtime = runtime
+                    .as_mut()
+                    .filter(|profile| profile.is_managed())
+                    .context(
+                        "Inspector-managed logoscore runtime disappeared during Messaging recovery",
+                    )?;
                 match verify_messaging_context(runtime, control) {
-                    Ok(peer_id) => {
+                    Ok(verification) => {
                         config.installed = true;
                         config.package_path = Some(spec.program.clone());
                         config.lifecycle_state = NodeLifecycleState::Stopped;
@@ -516,16 +578,15 @@ fn node_initialize(
                         write_devnet_manifest(record)?;
                         Ok(OperationOutcome {
                             status: "initialized".to_owned(),
-                            detail: format!(
-                                "createNode response was lost; verified Messaging context with MyPeerId `{peer_id}`"
-                            ),
+                            detail: messaging_context_recovery_detail(&verification),
                             command: Some(spec.display),
                         })
                     }
+                    Err(probe_error) if is_control_interruption(&probe_error) => Err(probe_error),
                     Err(probe_error) => Ok(OperationOutcome {
                         status: "failed".to_owned(),
                         detail: format!(
-                            "{error}; Messaging context verification failed: {probe_error}"
+                            "{error:#}; Messaging context verification failed: {probe_error:#}"
                         ),
                         command: Some(spec.display),
                     }),
@@ -545,10 +606,29 @@ fn is_ambiguous_messaging_create_error(error: &anyhow::Error) -> bool {
     error.to_string().contains("RPC_FAILED")
 }
 
+struct MessagingContextVerification {
+    peer_id: String,
+    restarted_runtime: bool,
+}
+
+fn messaging_context_recovery_detail(verification: &MessagingContextVerification) -> String {
+    if verification.restarted_runtime {
+        format!(
+            "createNode response was lost; restarted the Inspector-managed LogosCore runtime and verified Messaging context with MyPeerId `{}`",
+            verification.peer_id
+        )
+    } else {
+        format!(
+            "createNode response was lost; verified Messaging context with MyPeerId `{}`",
+            verification.peer_id
+        )
+    }
+}
+
 fn verify_messaging_context(
-    runtime: &LogoscoreRuntimeProfile,
+    runtime: &mut LogoscoreRuntimeProfile,
     control: Option<&CommandControl>,
-) -> Result<String> {
+) -> Result<MessagingContextVerification> {
     let deadline = control.map_or_else(
         || {
             Instant::now()
@@ -557,12 +637,27 @@ fn verify_messaging_context(
         CommandControl::deadline,
     );
     let mut last_error = None;
+    let mut runtime_restarts = 0;
     for attempt in 0..MESSAGING_CONTEXT_PROBE_ATTEMPTS {
         if let Some(control) = control {
             control.check_active()?;
         }
+        if !runtime.is_running() {
+            if runtime_restarts >= MESSAGING_CONTEXT_RUNTIME_RESTARTS {
+                bail!(
+                    "Messaging context verification found the restarted Inspector-managed LogosCore runtime stopped"
+                );
+            }
+            restart_managed_runtime_for_messaging_context(runtime, control)?;
+            runtime_restarts += 1;
+        }
         match messaging_peer_id(runtime, control) {
-            Ok(peer_id) => return Ok(peer_id),
+            Ok(peer_id) => {
+                return Ok(MessagingContextVerification {
+                    peer_id,
+                    restarted_runtime: runtime_restarts > 0,
+                });
+            }
             Err(error) => last_error = Some(error),
         }
         if attempt + 1 == MESSAGING_CONTEXT_PROBE_ATTEMPTS {
@@ -1537,6 +1632,178 @@ fi
     }
 
     #[cfg(unix)]
+    #[test]
+    fn messaging_initialize_restarts_crashed_runtime_without_replaying_create() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir()?;
+        let cli = directory.path().join("logoscore");
+        fs::write(
+            &cli,
+            r#"#!/bin/sh
+config_dir=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --config-dir)
+            config_dir="$2"
+            shift 2
+            ;;
+        --persistence-path|--modules-dir)
+            shift 2
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+case "$1" in
+    daemon)
+        starts_path="$config_dir/daemon-starts"
+        starts=0
+        if [ -f "$starts_path" ]; then
+            starts="$(cat "$starts_path")"
+        fi
+        starts=$((starts + 1))
+        printf '%s' "$starts" > "$starts_path"
+        printf '%s' "$$" > "$config_dir/daemon.pid"
+        touch "$config_dir/daemon-ready"
+        trap 'exit 0' TERM INT
+        while :; do sleep 1; done
+        ;;
+    status)
+        printf '%s\n' '{"daemon":{"status":"running"}}'
+        ;;
+    list-modules)
+        printf '%s\n' '{"modules":[{"name":"delivery_module","status":"loaded"}]}'
+        ;;
+    module-info)
+        printf '%s\n' '{"name":"delivery_module","methods":[{"isInvokable":true,"name":"createNode","signature":"createNode(QString)"},{"isInvokable":true,"name":"getNodeInfo","signature":"getNodeInfo(QString)"}]}'
+        ;;
+    call)
+        case "$3" in
+            createNode)
+                printf '%s\n' createNode >> "$config_dir/calls"
+                kill -TERM "$(cat "$config_dir/daemon.pid")"
+                printf '%s\n' '{"code":"RPC_FAILED","message":"delivery create response lost","status":"error"}'
+                exit 4
+                ;;
+            getNodeInfo)
+                printf '%s\n' getNodeInfo >> "$config_dir/calls"
+                if [ "$(cat "$config_dir/daemon-starts")" -ge 2 ]; then
+                    printf '%s\n' '{"module":"delivery_module","method":"getNodeInfo","result":{"success":true,"value":"peer-after-restart"},"status":"ok"}'
+                else
+                    printf '%s\n' '{"code":"CONTEXT_UNAVAILABLE","message":"runtime restart required","status":"error"}'
+                    exit 4
+                fi
+                ;;
+        esac
+        ;;
+esac
+"#,
+        )?;
+        let mut permissions = fs::metadata(&cli)?.permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&cli, permissions)?;
+
+        let mut profile = LogoscoreRuntimeProfile::create_or_restart(
+            directory.path(),
+            None,
+            Some(
+                cli.to_str()
+                    .context("test LogosCore CLI path is not valid UTF-8")?,
+            ),
+            Some(
+                directory
+                    .path()
+                    .to_str()
+                    .context("test modules path is not valid UTF-8")?,
+            ),
+        )?;
+        fs::create_dir_all(&profile.config_dir)?;
+        let initial_process_id = spawn_detached(
+            profile.daemon_command()?,
+            "test Inspector-managed logoscore daemon",
+        )?;
+        profile.daemon_process_id = Some(initial_process_id);
+        let _initial_cleanup = ProcessGroupGuard {
+            process_id: initial_process_id,
+        };
+        let daemon_pid_path = Path::new(&profile.config_dir).join("daemon.pid");
+        let daemon_start_deadline = Instant::now() + Duration::from_secs(1);
+        while !daemon_pid_path.is_file() {
+            if Instant::now() >= daemon_start_deadline {
+                bail!("test Inspector-managed logoscore daemon did not start");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        let mut state = LocalNodesState::default_for_config_dir(directory.path());
+        ensure_testnet_topology(&mut state)?;
+        let request = LocalNodeActionRequest {
+            action: NodeAction::Initialize,
+            node: Some(NodeKind::Messaging),
+            network_id: None,
+            workspace_path: None,
+            runtime_modules_dir: None,
+            runtime_binary_path: None,
+            label: None,
+        };
+        let control = CommandControl::new(
+            tokio_util::sync::CancellationToken::new(),
+            Instant::now() + Duration::from_secs(10),
+        );
+        let mut runtime = Some(profile);
+
+        let result = node_initialize(
+            &mut state,
+            &mut runtime,
+            "default",
+            &request,
+            Some(&control),
+        );
+
+        let profile = runtime
+            .as_ref()
+            .context("Messaging recovery removed the managed runtime profile")?;
+        let recovered_process_id = profile
+            .daemon_process_id
+            .context("Messaging recovery did not record a replacement daemon")?;
+        let _replacement_cleanup = ProcessGroupGuard {
+            process_id: recovered_process_id,
+        };
+        if result.report.status != "initialized" {
+            bail!(
+                "Messaging initialization did not recover after daemon crash: {}",
+                result.report.detail
+            );
+        }
+        anyhow::ensure!(
+            recovered_process_id != initial_process_id,
+            "Messaging recovery retained the crashed daemon process id"
+        );
+        anyhow::ensure!(
+            fs::read_to_string(Path::new(&profile.config_dir).join("daemon-starts"))?.trim() == "2",
+            "Messaging recovery did not start exactly one replacement daemon"
+        );
+        let calls = fs::read_to_string(Path::new(&profile.config_dir).join("calls"))?;
+        assert_single_messaging_create(&calls.lines().map(ToOwned::to_owned).collect::<Vec<_>>())?;
+        let messaging = testnet_node(&state, NodeKind::Messaging)?;
+        anyhow::ensure!(
+            messaging.installed && messaging.lifecycle_state == NodeLifecycleState::Stopped,
+            "Messaging context was not persisted after restart recovery: {messaging:?}"
+        );
+        anyhow::ensure!(
+            result
+                .report
+                .detail
+                .contains("restarted the Inspector-managed LogosCore runtime"),
+            "Messaging recovery did not disclose runtime restart: {}",
+            result.report.detail
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
     fn messaging_initialize_test_case(
         recovery_mode: &str,
     ) -> Result<(LocalNodeActionResult, LocalNodesState, Vec<String>)> {
@@ -1615,17 +1882,23 @@ esac
         };
 
         let deadline = Instant::now()
-            .checked_add(Duration::from_secs(6))
+            .checked_add(Duration::from_secs(15))
             .context("Messaging recovery test deadline overflow")?;
         let control = CommandControl::new(tokio_util::sync::CancellationToken::new(), deadline);
+        let mut runtime = Some(runtime);
         let result = node_initialize(
             &mut state,
-            Some(&runtime),
+            &mut runtime,
             "default",
             &request,
             Some(&control),
         );
-        let calls_path = Path::new(&runtime.config_dir).join("calls");
+        let config_dir = runtime
+            .as_ref()
+            .context("Messaging test runtime disappeared")?
+            .config_dir
+            .clone();
+        let calls_path = Path::new(&config_dir).join("calls");
         let calls = calls_path
             .is_file()
             .then(|| fs::read_to_string(calls_path))
