@@ -1279,6 +1279,16 @@ impl LogoscoreCliRuntime {
                     control.check_active()?;
                     thread::sleep(retry_delay);
                 }
+                Err(error)
+                    if is_module_discovery_attempt_timeout(&error, &control, attempt_deadline) =>
+                {
+                    control.check_active()?;
+                    bail!(
+                        "logoscore module `{module}` discovery attempt {}/{} exceeded its bounded deadline: {error:#}",
+                        attempt + 1,
+                        LOGOSCORE_MODULE_DISCOVERY_ATTEMPTS,
+                    );
+                }
                 Err(error) => return Err(error),
             }
         }
@@ -1747,6 +1757,17 @@ fn is_transient_module_discovery_error(error: &anyhow::Error) -> bool {
         let detail = cause.to_string();
         detail.contains("RPC_FAILED") || detail.contains("command stopped after deadline exceeded")
     })
+}
+
+fn is_module_discovery_attempt_timeout(
+    error: &anyhow::Error,
+    control: &CommandControl,
+    attempt_deadline: StdInstant,
+) -> bool {
+    attempt_deadline < control.deadline()
+        && error
+            .downcast_ref::<CommandTerminated>()
+            .is_some_and(|termination| termination.reason() == CommandStopReason::DeadlineExceeded)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3789,6 +3810,130 @@ fi
         anyhow::ensure!(
             !directory.path().join("concurrent").exists(),
             "same-runtime CLI requests overlapped"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn controlled_module_discovery_surfaces_exhausted_attempt_timeout() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir()?;
+        let program = directory.path().join("logoscore-exhausted-metadata");
+        fs::write(
+            &program,
+            r#"#!/bin/sh
+if [ "$1" = "--config-dir" ]; then
+    config_dir="$2"
+    shift 2
+fi
+case "$1" in
+    list-modules)
+        printf '%s\n' '{"modules":[{"name":"storage_module","status":"loaded"}]}'
+        ;;
+    module-info)
+        count_path="$config_dir/module-info-count"
+        count=0
+        if [ -f "$count_path" ]; then
+            count="$(cat "$count_path")"
+        fi
+        printf '%s' "$((count + 1))" > "$count_path"
+        sleep 1
+        printf '%s\n' '{"name":"storage_module","methods":[{"isInvokable":true,"name":"init","signature":"init(QString)"}]}'
+        ;;
+esac
+"#,
+        )?;
+        let mut permissions = fs::metadata(&program)?.permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&program, permissions)?;
+        let runtime = LogoscoreCliRuntime::managed(
+            program.display().to_string(),
+            directory.path().display().to_string(),
+        );
+        let control = CommandControl::new(
+            CancellationToken::new(),
+            StdInstant::now() + Duration::from_secs(5),
+        );
+
+        let Err(error) = runtime.discover_module_controlled_with(
+            "storage_module",
+            control.clone(),
+            Duration::from_millis(250),
+            Duration::from_millis(10),
+        ) else {
+            bail!("exhausted module metadata probes unexpectedly succeeded");
+        };
+
+        control.check_active()?;
+        anyhow::ensure!(
+            error.downcast_ref::<CommandTerminated>().is_none(),
+            "child metadata timeout was exposed as a parent interruption: {error:#}"
+        );
+        let detail = format!("{error:#}");
+        anyhow::ensure!(
+            detail.contains("storage_module")
+                && detail.contains("command stopped after deadline exceeded"),
+            "exhausted metadata failure lost diagnostics: {detail}"
+        );
+        anyhow::ensure!(
+            fs::read_to_string(directory.path().join("module-info-count"))?.trim() == "3",
+            "module metadata did not use all bounded probes"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn controlled_module_discovery_preserves_parent_deadline() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir()?;
+        let program = directory.path().join("logoscore-parent-metadata-deadline");
+        fs::write(
+            &program,
+            r#"#!/bin/sh
+if [ "$1" = "--config-dir" ]; then
+    shift 2
+fi
+case "$1" in
+    list-modules)
+        printf '%s\n' '{"modules":[{"name":"storage_module","status":"loaded"}]}'
+        ;;
+    module-info)
+        sleep 1
+        ;;
+esac
+"#,
+        )?;
+        let mut permissions = fs::metadata(&program)?.permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&program, permissions)?;
+        let runtime = LogoscoreCliRuntime::managed(
+            program.display().to_string(),
+            directory.path().display().to_string(),
+        );
+        let control = CommandControl::new(
+            CancellationToken::new(),
+            StdInstant::now() + Duration::from_millis(100),
+        );
+
+        let Err(error) = runtime.discover_module_controlled_with(
+            "storage_module",
+            control,
+            Duration::from_secs(1),
+            Duration::from_millis(10),
+        ) else {
+            bail!("parent-deadline module metadata probe unexpectedly succeeded");
+        };
+
+        let termination = error
+            .downcast_ref::<CommandTerminated>()
+            .context("parent deadline was converted into a normal metadata failure")?;
+        anyhow::ensure!(
+            termination.reason() == CommandStopReason::DeadlineExceeded,
+            "module metadata ended for the wrong reason"
         );
         Ok(())
     }
