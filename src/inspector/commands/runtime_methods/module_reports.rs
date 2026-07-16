@@ -118,6 +118,7 @@ pub(super) fn delivery_report(
         &module_transport,
         adapter,
         args.optional_string(0),
+        args.optional_bool(1),
     )))
 }
 
@@ -132,6 +133,7 @@ pub(super) fn delivery_source_report(
         &inputs.source_mode,
         inputs.rest_endpoint.as_deref(),
         inputs.metrics_endpoint.as_deref(),
+        inputs.runtime_diagnostics_enabled,
         &module_transport,
     )))
 }
