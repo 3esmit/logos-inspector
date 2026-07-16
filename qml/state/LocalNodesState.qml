@@ -462,6 +462,10 @@ QtObject {
 
     function observedRunState(kind) {
         const key = String(kind || "")
+        const lifecycleState = managedLifecycleRunState(key)
+        if (lifecycleState.length) {
+            return lifecycleState
+        }
         const observation = observedNode(key)
         const status = String(observation && observation.status || "unknown").toLowerCase()
         const reachable = status === "healthy" || status === "ready"
@@ -488,6 +492,28 @@ QtObject {
         return "unknown"
     }
 
+    function managedLifecycleRunState(kind) {
+        const node = nodeByKind(kind)
+        if (!node || controlState(node) !== "managed") {
+            return ""
+        }
+        switch (String(node.run_state || "unknown")) {
+        case "running":
+            return "online"
+        case "initializing":
+        case "starting":
+        case "stopping":
+            return String(node.run_state)
+        case "stopped":
+        case "not_initialized":
+        case "failed":
+        case "stale_pid":
+            return "unavailable"
+        default:
+            return "unknown"
+        }
+    }
+
     function observedSummary() {
         const nodes = report && Array.isArray(report.nodes) ? report.nodes : []
         const summary = { total: nodes.length, online: 0, syncing: 0, unavailable: 0, unknown: 0 }
@@ -496,7 +522,8 @@ QtObject {
             const state = observedRunState(node.key || node.kind)
             if (state === "online") {
                 summary.online += 1
-            } else if (state === "syncing") {
+            } else if (state === "syncing" || state === "initializing"
+                    || state === "starting" || state === "stopping") {
                 summary.syncing += 1
             } else if (state === "unavailable") {
                 summary.unavailable += 1
@@ -511,6 +538,10 @@ QtObject {
         const value = node || ({})
         if (localMode()) {
             return String(value.install_state || "needs_configuration")
+        }
+        const ownership = String(value.ownership || "")
+        if (ownership.length) {
+            return ownership === "inspector_managed" ? "managed" : "external"
         }
         if (String(value.install_state || "") === "installed") {
             return "managed"

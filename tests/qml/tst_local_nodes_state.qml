@@ -93,6 +93,7 @@ TestCase {
                 available_actions: [],
                 install_state: "needs_configuration",
                 run_state: "not_initialized",
+                ownership: "external",
                 process_id: null
             }
         })
@@ -116,6 +117,30 @@ TestCase {
                 run_state: "not_configured"
             }
         }
+    }
+
+    function managedTestnetReport() {
+        const report = testnetReport()
+        report.available_runtime_actions = ["stop_runtime"]
+        report.runtime = {
+            ownership: "inspector_managed",
+            run_state: "running"
+        }
+        report.nodes = report.nodes.map(function (node) {
+            return Object.assign({}, node, {
+                install_state: "installed",
+                run_state: "running",
+                ownership: "inspector_managed",
+                process_id: node.key === "indexer" ? 42 : null
+            })
+        })
+        report.summary = {
+            total: report.nodes.length,
+            installed: report.nodes.length,
+            running: report.nodes.length,
+            needs_configuration: 0
+        }
+        return report
     }
 
     function test_refresh_updates_report_and_operations() {
@@ -392,6 +417,96 @@ TestCase {
         })
 
         compare(state.observedRunState("indexer"), "syncing")
+    }
+
+    function test_managed_testnet_lifecycle_stays_online_when_diagnostics_degrade() {
+        state.report = managedTestnetReport()
+        state.observedNodes = ({
+            bedrock: { status: "unavailable", detail: "diagnostic timeout" },
+            indexer: {
+                status: "reachable",
+                head: 24,
+                upstream_head: 23509,
+                detail: "backfilling"
+            },
+            storage: { status: "unavailable", detail: "diagnostic timeout" },
+            messaging: { status: "unavailable", detail: "diagnostic contention" }
+        })
+
+        compare(state.summaryText(), "4/4 online")
+        compare(state.summaryTone(), "success")
+        compare(state.observedRunState("bedrock"), "online")
+        compare(state.observedRunState("indexer"), "online")
+        compare(state.observedRunState("storage"), "online")
+        compare(state.observedRunState("messaging"), "online")
+    }
+
+    function test_managed_testnet_lifecycle_rejects_stale_healthy_observation() {
+        const report = managedTestnetReport()
+        report.nodes[2].run_state = "initializing"
+        state.report = report
+        state.observedNodes = ({
+            storage: { status: "healthy", detail: "stale source response" }
+        })
+
+        compare(state.observedRunState("storage"), "initializing")
+        compare(state.summaryText(), "3/4 online")
+        compare(state.summaryTone(), "warning")
+
+        report.nodes[2].run_state = "stopping"
+        state.report = Object.assign({}, report)
+
+        compare(state.observedRunState("storage"), "stopping")
+        compare(state.summaryText(), "3/4 online")
+        compare(state.summaryTone(), "warning")
+
+        report.nodes[2].run_state = "stopped"
+        state.report = Object.assign({}, report)
+
+        compare(state.observedRunState("storage"), "unavailable")
+        compare(state.summaryText(), "3/4 online")
+        compare(state.summaryTone(), "error")
+    }
+
+    function test_managed_process_stop_does_not_fall_back_to_stale_diagnostics() {
+        const report = managedTestnetReport()
+        report.runtime = {
+            ownership: "external",
+            run_state: "not_configured"
+        }
+        report.nodes[1].process_id = null
+        report.nodes[1].run_state = "stopped"
+        state.report = report
+        state.observedNodes = ({
+            indexer: {
+                status: "reachable",
+                head: 23509,
+                upstream_head: 23509,
+                detail: "stale source response"
+            }
+        })
+
+        compare(state.controlState(state.nodeByKind("indexer")), "managed")
+        compare(state.observedRunState("indexer"), "unavailable")
+    }
+
+    function test_external_installed_process_remains_diagnostic_driven() {
+        const report = testnetReport()
+        report.nodes[1].install_state = "installed"
+        report.nodes[1].run_state = "stopped"
+        report.nodes[1].ownership = "external"
+        state.report = report
+        state.observedNodes = ({
+            indexer: {
+                status: "reachable",
+                head: 23509,
+                upstream_head: 23509,
+                detail: "external Indexer"
+            }
+        })
+
+        compare(state.controlState(state.nodeByKind("indexer")), "external")
+        compare(state.observedRunState("indexer"), "online")
     }
 
     function test_node_action_draft_owns_confirmation_facts() {

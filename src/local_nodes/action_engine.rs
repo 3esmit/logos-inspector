@@ -214,6 +214,12 @@ impl LocalNodeReportProjector {
             label: adapter.label().to_owned(),
             install_state: status.install_state.to_owned(),
             run_state: status.run_state.to_owned(),
+            ownership: if config.is_some_and(|node| node.installed) {
+                "inspector_managed"
+            } else {
+                "external"
+            }
+            .to_owned(),
             endpoint: config
                 .and_then(|node| node.endpoint.clone())
                 .or_else(|| adapter.endpoint(adapter.default_port())),
