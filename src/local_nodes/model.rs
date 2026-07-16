@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{collections::BTreeMap, path::Path};
 
 use serde::{Deserialize, Serialize};
 
@@ -282,12 +282,21 @@ impl NodeLifecycleState {
     pub(super) fn is_pending(self) -> bool {
         matches!(self, Self::Initializing | Self::Starting | Self::Stopping)
     }
+
+    pub(super) fn has_module_context(self) -> bool {
+        matches!(
+            self,
+            Self::Starting | Self::Running | Self::Stopping | Self::Stopped | Self::Unknown
+        )
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct LocalNodesState {
     pub(super) version: u32,
     pub(super) active_devnet: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(super) module_context_topology_by_kind: BTreeMap<NodeKind, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) testnet: Option<LocalDevnetRecord>,
     pub(super) managed_workspace_root: String,
@@ -298,8 +307,9 @@ pub(super) struct LocalNodesState {
 impl LocalNodesState {
     pub(super) fn default_for_config_dir(config: &Path) -> Self {
         Self {
-            version: 2,
+            version: 3,
             active_devnet: None,
+            module_context_topology_by_kind: BTreeMap::new(),
             testnet: None,
             managed_workspace_root: config.join("local-nodes").display().to_string(),
             devnets: Vec::new(),
@@ -331,6 +341,88 @@ impl LocalNodesState {
         } else {
             self.testnet.as_mut()
         }
+    }
+
+    pub(super) fn module_context_topology(&self, kind: NodeKind) -> Option<&LocalDevnetRecord> {
+        self.module_context_topology_by_kind
+            .get(&kind)
+            .and_then(|network_id| self.topology(network_id))
+    }
+
+    pub(super) fn module_context_topology_id(&self, kind: NodeKind) -> Option<&str> {
+        self.module_context_topology_by_kind
+            .get(&kind)
+            .map(String::as_str)
+    }
+
+    pub(super) fn set_module_context_topology_for_profile(
+        &mut self,
+        kind: NodeKind,
+        profile: &str,
+    ) {
+        let topology_id = self
+            .active_topology(profile)
+            .map(|topology| topology.id.clone());
+        if let Some(topology_id) = topology_id {
+            self.module_context_topology_by_kind
+                .insert(kind, topology_id);
+        } else {
+            self.module_context_topology_by_kind.remove(&kind);
+        }
+    }
+
+    pub(super) fn clear_module_context_topologies(&mut self) {
+        self.module_context_topology_by_kind.clear();
+    }
+
+    pub(super) fn clear_module_context_topology(&mut self, kind: NodeKind) {
+        self.module_context_topology_by_kind.remove(&kind);
+    }
+
+    pub(super) fn clear_module_context_topologies_for_network(&mut self, network_id: &str) {
+        self.module_context_topology_by_kind
+            .retain(|_, topology_id| topology_id != network_id);
+    }
+
+    pub(super) fn infer_unambiguous_module_context_topologies(&mut self) -> bool {
+        let inferred = [NodeKind::Messaging, NodeKind::Storage]
+            .into_iter()
+            .filter_map(|kind| {
+                if self.module_context_topology_id(kind).is_some() {
+                    return None;
+                }
+                let mut candidates = self
+                    .testnet
+                    .iter()
+                    .chain(self.devnets.iter())
+                    .filter(|record| {
+                        record.nodes.iter().any(|node| {
+                            node.kind == kind
+                                && node.installed
+                                && node.lifecycle_state.has_module_context()
+                        })
+                    })
+                    .map(|record| record.id.clone());
+                let topology_id = candidates.next()?;
+                candidates.next().is_none().then_some((kind, topology_id))
+            })
+            .collect::<Vec<_>>();
+        if inferred.is_empty() {
+            return false;
+        }
+        self.module_context_topology_by_kind.extend(inferred);
+        true
+    }
+
+    pub(super) fn topology(&self, network_id: &str) -> Option<&LocalDevnetRecord> {
+        if let Some(record) = self
+            .testnet
+            .as_ref()
+            .filter(|record| record.id == network_id)
+        {
+            return Some(record);
+        }
+        self.devnets.iter().find(|record| record.id == network_id)
     }
 
     pub(super) fn devnet_mut(&mut self, network_id: &str) -> Option<&mut LocalDevnetRecord> {

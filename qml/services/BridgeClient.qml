@@ -1,5 +1,6 @@
 import QtQuick
 import "BridgeEnvelope.js" as BridgeEnvelope
+import "BridgeHelpers.js" as BridgeHelpers
 
 QtObject {
     id: root
@@ -44,8 +45,17 @@ QtObject {
     }
 
     function backendOwnsRuntimeModuleEvents() {
-        return !root.closed
-            && BridgeEnvelope.basecampInspectorOwnsRuntimeModuleEvents(root.host)
+        if (root.closed || !root.host) {
+            return false
+        }
+        try {
+            if (typeof root.host["backendOwnsRuntimeModuleEvents"] === "function"
+                    && root.host["backendOwnsRuntimeModuleEvents"]() === true) {
+                return true
+            }
+        } catch (error) {
+        }
+        return BridgeEnvelope.basecampInspectorOwnsRuntimeModuleEvents(root.host)
     }
 
     function callModule(moduleName, method, args) {
@@ -1077,6 +1087,21 @@ QtObject {
             if (!root.closed) {
                 root.moduleEventReceived(String(moduleName || ""), String(eventName || ""), args)
             }
+        }
+
+        function onModuleEventJson(moduleName, eventName, argsJson) {
+            if (root.closed) {
+                return
+            }
+            const parsed = BridgeHelpers.parseJson(String(argsJson || "[]"))
+            if (!parsed.ok || !Array.isArray(parsed.value)) {
+                return
+            }
+            root.moduleEventReceived(
+                String(moduleName || ""),
+                String(eventName || ""),
+                parsed.value
+            )
         }
     }
 

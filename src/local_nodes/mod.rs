@@ -9,6 +9,7 @@ mod adapters;
 mod commands;
 mod lifecycle;
 mod model;
+mod module_watcher;
 mod paths;
 mod presentation;
 mod process;
@@ -21,6 +22,7 @@ pub use model::{
     LocalNodeStatus, LocalNodeSummary, LocalNodeTools, NodeAction, NodeKind, NodeLifecycleState,
     ToolStatus,
 };
+pub use module_watcher::{LocalNodeModuleSubscription, LocalNodeModuleWatcher};
 pub use runtime::LogoscoreRuntimeStatus;
 
 pub fn local_nodes_status(profile: &str) -> Result<LocalNodeReport> {
@@ -104,8 +106,9 @@ mod tests {
     #[test]
     fn report_exposes_normalized_profile_and_network_actions() {
         let state = LocalNodesState {
-            version: 2,
+            version: 3,
             active_devnet: Some("devnet".to_owned()),
+            module_context_topology_by_kind: std::collections::BTreeMap::new(),
             testnet: None,
             managed_workspace_root: "/tmp/local-nodes".to_owned(),
             devnets: vec![LocalDevnetRecord {
@@ -491,7 +494,7 @@ mod tests {
         let text = serde_json::to_string(&state)?;
         let parsed: LocalNodesState = serde_json::from_str(&text)?;
 
-        if parsed.version != 2 {
+        if parsed.version != 3 {
             bail!("unexpected state version");
         }
         if !parsed.managed_workspace_root.ends_with("local-nodes") {
@@ -616,8 +619,9 @@ mod tests {
             }],
         };
         let mut state = LocalNodesState {
-            version: 2,
+            version: 3,
             active_devnet: None,
+            module_context_topology_by_kind: std::collections::BTreeMap::new(),
             testnet: Some(record),
             managed_workspace_root: directory.path().display().to_string(),
             devnets: Vec::new(),
@@ -705,8 +709,9 @@ mod tests {
             }],
         };
         let mut state = LocalNodesState {
-            version: 2,
+            version: 3,
             active_devnet: None,
+            module_context_topology_by_kind: std::collections::BTreeMap::new(),
             testnet: Some(record),
             managed_workspace_root: directory.path().display().to_string(),
             devnets: Vec::new(),

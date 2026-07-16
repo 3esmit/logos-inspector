@@ -6,6 +6,7 @@ QtObject {
 
     required property var bridge
     required property var model
+    property bool localNodeRefreshQueued: false
 
     function install() {
         if (!bridge || !model) {
@@ -21,13 +22,55 @@ QtObject {
     }
 
     function ingest(moduleName, eventName, args) {
-        return ModuleEventProjection.project(
+        const projected = ModuleEventProjection.project(
             model,
             moduleName,
             eventName,
             args,
             root.forwardsRuntimeOperationEvents()
         )
+        if (root.refreshesLocalNodeStatus(moduleName, eventName)) {
+            root.queueLocalNodeRefresh()
+        }
+        return projected
+    }
+
+    function refreshesLocalNodeStatus(moduleName, eventName) {
+        const moduleText = String(moduleName || "")
+        const eventText = String(eventName || "")
+        if (moduleText === "logoscore_runtime") {
+            return eventText === "daemonStarted"
+                || eventText === "daemonStopped"
+                || eventText === "daemonUnavailable"
+        }
+        if (moduleText === String(model && model.deliveryModule ? model.deliveryModule : "")) {
+            return eventText === "moduleReady"
+                || eventText === "moduleUnavailable"
+                || eventText === "nodeStarted"
+                || eventText === "nodeStopped"
+                || eventText === "nodeUnavailable"
+        }
+        if (moduleText === String(model && model.storageModule ? model.storageModule : "")) {
+            return eventText === "moduleReady"
+                || eventText === "moduleUnavailable"
+                || eventText === "storageStart"
+                || eventText === "storageStop"
+                || eventText === "nodeUnavailable"
+        }
+        return false
+    }
+
+    function queueLocalNodeRefresh() {
+        if (root.localNodeRefreshQueued) {
+            return
+        }
+        root.localNodeRefreshQueued = true
+        Qt.callLater(function () {
+            root.localNodeRefreshQueued = false
+            if (root.model && typeof root.model.refreshLocalNodes === "function") {
+                root.model.refreshLocalNodes(false)
+            }
+        })
     }
 
     function forwardsRuntimeOperationEvents() {

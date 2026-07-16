@@ -10,10 +10,7 @@ use crate::support::{confirmation::ConfirmationPolicy, state_store::config_dir};
 
 use super::action_workspace::LocalNodeActionWorkspace;
 use super::adapters::{NodeStatusContext, adapter_for};
-use super::lifecycle::{
-    LifecycleTarget, acquire_state_lock, apply_event, cancel_event_watch, has_event_contract,
-    start_event_watch,
-};
+use super::lifecycle::acquire_state_lock;
 use super::model::{
     LocalDevnetListReport, LocalDevnetRecord, LocalNodeActionRequest, LocalNodeConfigRecord,
     LocalNodeOperationReport, LocalNodeReport, LocalNodeStatus, LocalNodeSummary, LocalNodeTools,
@@ -28,7 +25,7 @@ const STATE_FILE: &str = "local_nodes.json";
 
 #[derive(Debug, Clone)]
 pub(super) struct LocalNodeActionEngine {
-    store: LocalNodeStore,
+    pub(super) store: LocalNodeStore,
     runtime_store: LogoscoreRuntimeStore,
     projector: LocalNodeReportProjector,
     workspace: LocalNodeActionWorkspace,
@@ -97,8 +94,6 @@ impl LocalNodeActionEngine {
         let workflow = LocalNodeWorkflow::for_state(profile, &state);
         workflow.validate_request(&request)?;
 
-        let watch =
-            self.start_lifecycle_watch(&state, runtime.as_ref(), workflow.profile(), &request)?;
         let operation = self.workspace.apply(
             &mut state,
             &mut runtime,
@@ -107,11 +102,6 @@ impl LocalNodeActionEngine {
             &request,
             control.as_ref(),
         );
-        if !matches!(operation.report.status.as_str(), "starting" | "stopping")
-            && let Some(watch) = watch
-        {
-            cancel_event_watch(watch);
-        }
         state.push_operation(operation.report);
         self.store.save(&state)?;
         self.runtime_store.save(runtime.as_ref())?;
@@ -119,48 +109,6 @@ impl LocalNodeActionEngine {
             return Err(interruption);
         }
         Ok(self.projector.report(profile, &state, runtime.as_ref()))
-    }
-
-    fn start_lifecycle_watch(
-        &self,
-        state: &LocalNodesState,
-        runtime: Option<&LogoscoreRuntimeProfile>,
-        profile: &str,
-        request: &LocalNodeActionRequest,
-    ) -> Result<Option<super::lifecycle::LifecycleWatchRegistration>> {
-        let Some(kind) = request.node else {
-            return Ok(None);
-        };
-        if !matches!(request.action, NodeAction::Start | NodeAction::Stop)
-            || !has_event_contract(kind, request.action)
-        {
-            return Ok(None);
-        }
-        let Some(runtime) = runtime.filter(|profile| profile.is_managed() && profile.is_running())
-        else {
-            return Ok(None);
-        };
-        let Some(network_id) = state
-            .active_topology(profile)
-            .map(|topology| topology.id.clone())
-        else {
-            return Ok(None);
-        };
-        let store = self.store.clone();
-        let target = LifecycleTarget {
-            network_id,
-            kind,
-            action: request.action,
-        };
-        start_event_watch(runtime, target, move |event| {
-            let _state_lock = acquire_state_lock()?;
-            let mut state = store.load()?;
-            if apply_event(&mut state, &event) {
-                store.save(&state)?;
-            }
-            Ok(())
-        })
-        .map(Some)
     }
 }
 
@@ -354,11 +302,14 @@ impl LocalNodeStore {
                 self.config_dir.join("local-nodes").display().to_string();
             changed = true;
         }
-        if state.version < 2 {
-            state.version = 2;
+        if state.version < 3 {
+            state.version = 3;
             changed = true;
         }
         if super::action_workspace::ensure_testnet_topology(&mut state)? {
+            changed = true;
+        }
+        if state.infer_unambiguous_module_context_topologies() {
             changed = true;
         }
         if changed {
