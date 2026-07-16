@@ -85,6 +85,7 @@ pub(super) fn storage_report(
         adapter,
         args.optional_string(0),
         args.optional_bool(1),
+        args.optional_bool(2),
     )))
 }
 
@@ -101,6 +102,7 @@ pub(super) fn storage_source_report(
         inputs.metrics_endpoint.as_deref(),
         inputs.cid.as_deref(),
         inputs.privileged_debug_enabled,
+        inputs.runtime_diagnostics_enabled,
         &module_transport,
     )))
 }

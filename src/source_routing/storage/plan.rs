@@ -3,7 +3,11 @@ use crate::source_routing::{SourceProbeKey, shared::plan::ModuleProbeStep};
 pub(crate) fn storage_module_probe_plan<'a>(
     cid: Option<&'a str>,
     privileged_debug_enabled: bool,
+    runtime_diagnostics_enabled: bool,
 ) -> Vec<ModuleProbeStep<'a>> {
+    if !runtime_diagnostics_enabled {
+        return Vec::new();
+    }
     let mut steps = vec![
         ModuleProbeStep::keyed("version", SourceProbeKey::StorageVersion),
         ModuleProbeStep::keyed("moduleVersion", SourceProbeKey::StorageModuleVersion),
@@ -35,7 +39,7 @@ mod tests {
 
     #[test]
     fn storage_plan_includes_optional_debug_and_cid_steps() {
-        let steps = storage_module_probe_plan(Some("cid-1"), true);
+        let steps = storage_module_probe_plan(Some("cid-1"), true, true);
         let keys = steps.iter().filter_map(|step| step.key).collect::<Vec<_>>();
 
         assert!(keys.contains(&SourceProbeKey::StorageDebug));
@@ -48,9 +52,9 @@ mod tests {
     }
 
     #[test]
-    fn storage_plan_does_not_probe_runtime_metrics_by_default() {
-        let steps = storage_module_probe_plan(None, false);
+    fn storage_plan_defers_runtime_probes_until_explicitly_enabled() {
+        let steps = storage_module_probe_plan(None, false, false);
 
-        assert!(steps.iter().all(|step| step.method != "collectMetrics"));
+        assert!(steps.is_empty());
     }
 }

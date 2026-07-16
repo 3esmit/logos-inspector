@@ -306,6 +306,7 @@ pub(crate) struct StorageReportInputs {
     pub(crate) metrics_endpoint: Option<String>,
     pub(crate) cid: Option<String>,
     pub(crate) privileged_debug_enabled: bool,
+    pub(crate) runtime_diagnostics_enabled: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -320,6 +321,8 @@ struct StorageReportOptions {
     cid: String,
     #[serde(default)]
     privileged_debug_enabled: bool,
+    #[serde(default)]
+    runtime_diagnostics_enabled: bool,
 }
 
 impl<'a> StorageAdapter<'a> {
@@ -378,6 +381,7 @@ pub(crate) fn report_inputs(args: &crate::support::args::Args) -> Result<Storage
     let StorageReportOptions {
         cid,
         privileged_debug_enabled,
+        runtime_diagnostics_enabled,
     } = envelope.options;
     let cid = cid.trim().to_owned();
     Ok(StorageReportInputs {
@@ -388,6 +392,7 @@ pub(crate) fn report_inputs(args: &crate::support::args::Args) -> Result<Storage
             .map(ToOwned::to_owned),
         cid: if cid.is_empty() { None } else { Some(cid) },
         privileged_debug_enabled,
+        runtime_diagnostics_enabled,
     })
 }
 
@@ -400,8 +405,16 @@ pub(crate) async fn module_report(
     transport: ModuleTransportKind,
     cid: Option<&str>,
     privileged_debug_enabled: bool,
+    runtime_diagnostics_enabled: bool,
 ) -> ModuleReport {
-    crate::modules::storage_report(module_transport, transport, cid, privileged_debug_enabled).await
+    crate::modules::storage_report(
+        module_transport,
+        transport,
+        cid,
+        privileged_debug_enabled,
+        runtime_diagnostics_enabled,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -506,7 +519,11 @@ mod tests {
         let module = crate::support::args::Args::new(json!([{
             "source_mode": "module",
             "inputs": {},
-            "options": { "cid": "cid-a", "privileged_debug_enabled": true }
+            "options": {
+                "cid": "cid-a",
+                "privileged_debug_enabled": true,
+                "runtime_diagnostics_enabled": true
+            }
         }]))?;
         let metrics = crate::support::args::Args::new(json!([{
             "source_mode": "metrics",
@@ -515,8 +532,10 @@ mod tests {
 
         if report_inputs(&module)?.rest_endpoint.is_some()
             || report_inputs(&module)?.cid.as_deref() != Some("cid-a")
+            || !report_inputs(&module)?.runtime_diagnostics_enabled
             || report_inputs(&metrics)?.metrics_endpoint.as_deref() != Some("http://metrics")
             || report_inputs(&metrics)?.cid.is_some()
+            || report_inputs(&metrics)?.runtime_diagnostics_enabled
         {
             anyhow::bail!("compact Storage report inputs were parsed incorrectly");
         }
