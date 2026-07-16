@@ -10,7 +10,7 @@ use anyhow::{Context as _, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::modules::logos_core::LogoscoreCliRuntime;
-use crate::support::command_runner::{CommandControl, CommandStopReason, CommandTerminated};
+use crate::support::command_runner::CommandControl;
 
 use super::process::{find_command, process_is_alive};
 
@@ -150,13 +150,12 @@ impl LogoscoreRuntimeProfile {
                 None => control.deadline(),
             };
             let probe_control = control.with_deadline(probe_deadline);
-            let probe_deadline = probe_control.deadline();
             match cli.status_controlled(probe_control) {
                 Ok(_) => return Ok(()),
-                Err(error) if probe_deadline < control.deadline() && is_probe_deadline(&error) => {
+                Err(error) => {
+                    control.check_active()?;
                     last_error = Some(error);
                 }
-                Err(error) => return Err(error),
             }
             controlled_sleep(control, Duration::from_millis(100))?;
         }
@@ -216,12 +215,6 @@ impl LogoscoreRuntimeProfile {
         }
         Ok(())
     }
-}
-
-fn is_probe_deadline(error: &anyhow::Error) -> bool {
-    error
-        .downcast_ref::<CommandTerminated>()
-        .is_some_and(|terminated| terminated.reason() == CommandStopReason::DeadlineExceeded)
 }
 
 fn controlled_sleep(control: &CommandControl, duration: Duration) -> Result<()> {
@@ -449,6 +442,50 @@ mod tests {
             || profile.timeout_profile != LogoscoreTimeoutProfile::Lifecycle
         {
             bail!("unexpected managed runtime daemon command: {args:?}");
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn controlled_readiness_retries_not_configured_until_runtime_is_ready() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir()?;
+        let binary = directory.path().join("logoscore");
+        fs::write(
+            &binary,
+            r#"#!/bin/sh
+marker="$0.calls"
+printf '%s\n' status >> "$marker"
+if [ "$(wc -l < "$marker")" -eq 1 ]; then
+    printf '%s\n' '{"daemon":{"status":"not_configured"}}'
+    exit 1
+fi
+printf '%s\n' '{"daemon":{"status":"running"}}'
+"#,
+        )?;
+        let mut permissions = fs::metadata(&binary)?.permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&binary, permissions)?;
+        let profile = LogoscoreRuntimeProfile::create_or_restart(
+            directory.path(),
+            None,
+            Some(&binary.display().to_string()),
+            Some(&directory.path().display().to_string()),
+        )?;
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(2))
+            .context("controlled readiness test deadline overflow")?;
+        let control = CommandControl::new(tokio_util::sync::CancellationToken::new(), deadline);
+
+        profile.wait_until_ready_controlled(&control)?;
+
+        let calls = fs::read_to_string(binary.with_extension("calls"))?
+            .lines()
+            .count();
+        if calls != 2 {
+            bail!("controlled readiness made {calls} status probes instead of retrying once");
         }
         Ok(())
     }
