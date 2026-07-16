@@ -234,6 +234,8 @@ pub(super) fn capability_specs() -> &'static [CapabilitySpec] {
                 "storage.content.upload",
                 "storage.backup.sync_read_by_cid",
                 "storage.backup.sync_upload",
+                "storage.shared_idl.sync_read",
+                "storage.shared_idl.sync_upload",
                 "storage.rest.read_by_cid",
                 "storage.rest.upload",
                 "storage.content.download_to_file",
