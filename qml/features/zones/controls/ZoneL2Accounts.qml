@@ -174,6 +174,9 @@ ColumnLayout {
             report: root.zoneState.l2AccountFinalizedReport
             error: root.zoneState.l2AccountFinalizedError
             busy: root.zoneState.l2AccountFinalizedInFlight
+            decode: root.zoneState.l2AccountFinalizedDecode
+            decodeError: root.zoneState.l2AccountFinalizedDecodeError
+            decodeInFlight: root.zoneState.l2AccountFinalizedDecodeInFlight
         }
 
         ZoneL2AccountSnapshot {
@@ -184,6 +187,9 @@ ColumnLayout {
             report: root.zoneState.l2AccountProvisionalReport
             error: root.zoneState.l2AccountProvisionalError
             busy: root.zoneState.l2AccountProvisionalInFlight
+            decode: root.zoneState.l2AccountProvisionalDecode
+            decodeError: root.zoneState.l2AccountProvisionalDecodeError
+            decodeInFlight: root.zoneState.l2AccountProvisionalDecodeInFlight
         }
     }
 
@@ -255,6 +261,9 @@ ColumnLayout {
             report: root.zoneState.l2AccountHistoricalReport
             error: root.zoneState.l2AccountHistoricalError
             busy: root.zoneState.l2AccountHistoricalInFlight
+            decode: root.zoneState.l2AccountHistoricalDecode
+            decodeError: root.zoneState.l2AccountHistoricalDecodeError
+            decodeInFlight: root.zoneState.l2AccountHistoricalDecodeInFlight
         }
     }
 

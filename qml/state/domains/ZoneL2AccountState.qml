@@ -9,6 +9,9 @@ QtObject {
     readonly property bool l2ReadEnabled: l2Context.l2ReadEnabled
     readonly property bool l2IndexerReadEnabled: l2Context.l2IndexerReadEnabled
     readonly property bool l2SequencerReadEnabled: l2Context.l2SequencerReadEnabled
+    readonly property var appModel: l2Context.appModel || null
+    readonly property int registeredIdlCount: appModel && appModel.registeredIdls
+        ? Number(appModel.registeredIdls.count || 0) : 0
 
     function l2AvailabilityMessage() {
         return l2Context.l2AvailabilityMessage()
@@ -27,15 +30,24 @@ QtObject {
     property var l2AccountFinalized: null
     property string l2AccountFinalizedError: ""
     property var l2AccountFinalizedErrorDetails: null
+    property var l2AccountFinalizedDecode: null
+    property string l2AccountFinalizedDecodeError: ""
+    property bool l2AccountFinalizedDecodeInFlight: false
     property var l2AccountProvisionalReport: null
     property var l2AccountProvisional: null
     property string l2AccountProvisionalError: ""
     property var l2AccountProvisionalErrorDetails: null
+    property var l2AccountProvisionalDecode: null
+    property string l2AccountProvisionalDecodeError: ""
+    property bool l2AccountProvisionalDecodeInFlight: false
     property var l2AccountHistoricalTarget: null
     property var l2AccountHistoricalReport: null
     property var l2AccountHistorical: null
     property string l2AccountHistoricalError: ""
     property var l2AccountHistoricalErrorDetails: null
+    property var l2AccountHistoricalDecode: null
+    property string l2AccountHistoricalDecodeError: ""
+    property bool l2AccountHistoricalDecodeInFlight: false
     property int l2AccountActivityLimit: 25
     property var l2AccountActivityReport: null
     property string l2AccountActivityCanonicalId: ""
@@ -53,6 +65,11 @@ QtObject {
     property int l2AccountProvisionalRequestRevision: 0
     property int l2AccountHistoricalRequestRevision: 0
     property int l2AccountActivityRequestRevision: 0
+    property int l2AccountFinalizedDecodeRequestRevision: 0
+    property int l2AccountProvisionalDecodeRequestRevision: 0
+    property int l2AccountHistoricalDecodeRequestRevision: 0
+
+    onRegisteredIdlCountChanged: reDecodeL2AccountSnapshots()
 
     function resetL2AccountState(clearAccount) {
         resetL2CurrentAccountSnapshots()
@@ -72,10 +89,12 @@ QtObject {
         l2AccountFinalized = null
         l2AccountFinalizedError = ""
         l2AccountFinalizedErrorDetails = null
+        resetL2AccountSnapshotDecode("finalized")
         l2AccountProvisionalReport = null
         l2AccountProvisional = null
         l2AccountProvisionalError = ""
         l2AccountProvisionalErrorDetails = null
+        resetL2AccountSnapshotDecode("provisional")
     }
 
     function resetL2HistoricalAccountState() {
@@ -86,6 +105,7 @@ QtObject {
         l2AccountHistorical = null
         l2AccountHistoricalError = ""
         l2AccountHistoricalErrorDetails = null
+        resetL2AccountSnapshotDecode("historical")
     }
 
     function resetL2AccountActivityState(clearRows) {
@@ -281,6 +301,7 @@ QtObject {
             l2AccountFinalized = null
             l2AccountFinalizedError = ""
             l2AccountFinalizedErrorDetails = null
+            resetL2AccountSnapshotDecode(kind)
             return l2AccountFinalizedRequestRevision
         }
         if (kind === "provisional") {
@@ -290,6 +311,7 @@ QtObject {
             l2AccountProvisional = null
             l2AccountProvisionalError = ""
             l2AccountProvisionalErrorDetails = null
+            resetL2AccountSnapshotDecode(kind)
             return l2AccountProvisionalRequestRevision
         }
         if (kind === "historical") {
@@ -299,6 +321,7 @@ QtObject {
             l2AccountHistorical = null
             l2AccountHistoricalError = ""
             l2AccountHistoricalErrorDetails = null
+            resetL2AccountSnapshotDecode(kind)
             return l2AccountHistoricalRequestRevision
         }
         return -1
@@ -341,6 +364,148 @@ QtObject {
             l2AccountProvisional = value
         } else if (kind === "historical") {
             l2AccountHistorical = value
+        }
+        decodeL2AccountSnapshot(kind)
+    }
+
+    function l2AccountSnapshotValue(kind) {
+        if (kind === "finalized") {
+            return l2AccountFinalized
+        }
+        if (kind === "provisional") {
+            return l2AccountProvisional
+        }
+        return kind === "historical" ? l2AccountHistorical : null
+    }
+
+    function resetL2AccountSnapshotDecode(kind) {
+        if (kind === "finalized") {
+            l2AccountFinalizedDecodeRequestRevision += 1
+            l2AccountFinalizedDecodeInFlight = false
+            l2AccountFinalizedDecode = null
+            l2AccountFinalizedDecodeError = ""
+        } else if (kind === "provisional") {
+            l2AccountProvisionalDecodeRequestRevision += 1
+            l2AccountProvisionalDecodeInFlight = false
+            l2AccountProvisionalDecode = null
+            l2AccountProvisionalDecodeError = ""
+        } else if (kind === "historical") {
+            l2AccountHistoricalDecodeRequestRevision += 1
+            l2AccountHistoricalDecodeInFlight = false
+            l2AccountHistoricalDecode = null
+            l2AccountHistoricalDecodeError = ""
+        }
+    }
+
+    function l2AccountDecodeRevision(kind) {
+        if (kind === "finalized") {
+            return l2AccountFinalizedDecodeRequestRevision
+        }
+        if (kind === "provisional") {
+            return l2AccountProvisionalDecodeRequestRevision
+        }
+        return kind === "historical" ? l2AccountHistoricalDecodeRequestRevision : -1
+    }
+
+    function setL2AccountDecodeInFlight(kind, value) {
+        if (kind === "finalized") {
+            l2AccountFinalizedDecodeInFlight = value
+        } else if (kind === "provisional") {
+            l2AccountProvisionalDecodeInFlight = value
+        } else if (kind === "historical") {
+            l2AccountHistoricalDecodeInFlight = value
+        }
+    }
+
+    function setL2AccountSnapshotDecode(kind, value) {
+        if (kind === "finalized") {
+            l2AccountFinalizedDecode = value
+        } else if (kind === "provisional") {
+            l2AccountProvisionalDecode = value
+        } else if (kind === "historical") {
+            l2AccountHistoricalDecode = value
+        }
+    }
+
+    function setL2AccountSnapshotDecodeError(kind, message) {
+        if (kind === "finalized") {
+            l2AccountFinalizedDecodeError = String(message || "")
+        } else if (kind === "provisional") {
+            l2AccountProvisionalDecodeError = String(message || "")
+        } else if (kind === "historical") {
+            l2AccountHistoricalDecodeError = String(message || "")
+        }
+    }
+
+    function snapshotMatchesDecodeInput(kind, accountId, ownerProgramId, dataHex) {
+        const snapshot = l2AccountSnapshotValue(kind)
+        const account = snapshot && snapshot.account ? snapshot.account : null
+        return account !== null
+            && String(account.account_id || account.account_id_base58 || "") === accountId
+            && String(account.owner_program_hex || "") === ownerProgramId
+            && String(account.data_hex || "") === dataHex
+    }
+
+    function decodeL2AccountSnapshot(kind) {
+        resetL2AccountSnapshotDecode(kind)
+        const model = appModel
+        const snapshot = l2AccountSnapshotValue(kind)
+        const account = snapshot && snapshot.account ? snapshot.account : null
+        if (!model || !account || typeof model.accountDecodeCandidates !== "function"
+                || typeof model.programDecodeCandidatePayload !== "function"
+                || typeof model.selectAccountDecodeSessionAsync !== "function") {
+            return null
+        }
+        const accountId = String(account.account_id || account.account_id_base58 || "")
+        const ownerProgramId = String(account.owner_program_hex || "")
+        const dataHex = String(account.data_hex || "")
+        if (accountId.length === 0 || ownerProgramId.length === 0 || dataHex.length === 0) {
+            return null
+        }
+        const candidates = model.accountDecodeCandidates(accountId, ownerProgramId)
+        if (!Array.isArray(candidates) || candidates.length === 0) {
+            return null
+        }
+        const candidatePayload = model.programDecodeCandidatePayload(candidates)
+        if (!Array.isArray(candidatePayload) || candidatePayload.length === 0) {
+            return null
+        }
+        const requestRevision = l2AccountDecodeRevision(kind)
+        setL2AccountDecodeInFlight(kind, true)
+        return model.selectAccountDecodeSessionAsync(dataHex, accountId, ownerProgramId,
+            candidatePayload, function (response) {
+                if (requestRevision !== l2AccountDecodeRevision(kind)) {
+                    return
+                }
+                setL2AccountDecodeInFlight(kind, false)
+                if (!snapshotMatchesDecodeInput(kind, accountId, ownerProgramId, dataHex)) {
+                    return
+                }
+                const session = response && response.ok === true && response.value
+                    ? response.value : null
+                const selected = session && session.selected ? session.selected : null
+                if (selected && selected.report) {
+                    setL2AccountSnapshotDecode(kind, {
+                        evidence: selected.evidence || ({}),
+                        report: selected.report
+                    })
+                    return
+                }
+                setL2AccountSnapshotDecodeError(kind,
+                    String(session && (session.firstError || session.first_error)
+                        || response && response.error || qsTr("Registered IDL did not decode this account.")))
+            })
+    }
+
+    function reDecodeL2AccountSnapshots() {
+        if (l2AccountFinalized !== null) {
+            decodeL2AccountSnapshot("finalized")
+        }
+        if (l2AccountProvisional !== null) {
+            decodeL2AccountSnapshot("provisional")
+        }
+        if (l2AccountHistorical !== null) {
+            decodeL2AccountSnapshot("historical")
         }
     }
 

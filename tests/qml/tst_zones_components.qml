@@ -323,6 +323,10 @@ TestCase {
         verify(hasVisibleText(provisional, "Sequencer head moved"))
         verify(hasVisibleText(finalized, "Indexer"))
         verify(hasVisibleText(provisional, "Sequencer"))
+        verify(hasVisibleText(provisional, "IDL Decode"))
+        verify(hasVisibleText(provisional, "Token Fixture"))
+        verify(hasVisibleText(provisional, "TokenDefinition"))
+        verify(hasVisibleText(provisional, "Pebble"))
 
         const activityRows = accounts.activityRows()
         compare(activityRows.length, 3)

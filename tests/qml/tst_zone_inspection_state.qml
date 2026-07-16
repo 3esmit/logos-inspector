@@ -83,6 +83,37 @@ TestCase {
         }
     }
 
+    QtObject {
+        id: decodeRegistry
+
+        property int count: 0
+    }
+
+    QtObject {
+        id: decodeAppModel
+
+        property var registeredIdls: decodeRegistry
+        property var candidates: []
+
+        function accountDecodeCandidates(accountId, ownerProgramId) {
+            return candidates.slice()
+        }
+
+        function programDecodeCandidatePayload(values) {
+            return Array.isArray(values) ? values.slice() : []
+        }
+
+        function selectAccountDecodeSessionAsync(dataHex, accountId, ownerProgramId,
+                candidatesValue, callback) {
+            return gateway.request("selectAccountDecodeSession", [
+                String(dataHex || ""),
+                String(accountId || ""),
+                Array.isArray(candidatesValue) ? candidatesValue : [],
+                String(ownerProgramId || "")
+            ], callback)
+        }
+    }
+
     Component {
         id: stateComponent
 
@@ -99,6 +130,8 @@ TestCase {
         gateway.reset()
         mutationCallbackResponse = null
         activeZoneSeenOnSummaryChange = ""
+        decodeRegistry.count = 0
+        decodeAppModel.candidates = []
         zoneState = stateComponent.createObject(testRoot, {
             gateway: gateway
         })
@@ -534,6 +567,43 @@ TestCase {
             }
         }
         return null
+    }
+
+    function accountDecodeRequest(dataHex) {
+        for (let i = gateway.requests.length - 1; i >= 0; --i) {
+            const entry = gateway.requests[i]
+            const args = entry.args || []
+            if (entry.method === "selectAccountDecodeSession" && !entry.completed
+                    && args.length > 0 && String(args[0] || "") === String(dataHex || "")) {
+                return entry
+            }
+        }
+        return null
+    }
+
+    function accountDecodeSession(accountType, value) {
+        return {
+            selected: {
+                evidence: {
+                    key: "token-idl",
+                    name: "Token Fixture",
+                    programIdHex: "cd".repeat(32),
+                    accountType: String(accountType),
+                    source: "local"
+                },
+                report: {
+                    account_id: "account-a",
+                    account_type: String(accountType),
+                    consumed_bytes: 2,
+                    total_bytes: 2,
+                    remaining_bytes: 0,
+                    decoded: { value: String(value) },
+                    rows: [{ path: "value", value: String(value) }]
+                }
+            },
+            partial: null,
+            firstError: null
+        }
     }
 
     function loadOneZone(row) {
@@ -1243,6 +1313,86 @@ TestCase {
         compare(l2AccountState.l2AccountHistorical.source.retrieval, "memory_cache")
         compare(l2AccountState.l2AccountFinalized.account.balance, "17")
         compare(l2AccountState.l2AccountProvisional.account.balance, "19")
+    }
+
+    function test_l2_account_matching_idl_decodes_snapshots_without_cross_cancellation() {
+        zoneState.appModel = decodeAppModel
+        verify(l2State.appModel === decodeAppModel)
+        verify(l2AccountState.appModel === decodeAppModel)
+        decodeRegistry.count = 1
+        decodeAppModel.candidates = [{
+            key: "token-idl",
+            name: "Token Fixture",
+            programIdHex: "cd".repeat(32),
+            json: "{\"name\":\"token\"}",
+            source: "local"
+        }]
+        loadConfiguredL2Zone()
+        verify(l2AccountState.inspectL2Account("account-a"))
+
+        const finalized = l2AccountSnapshot("account-a", "17",
+            l2Source("idx-a", "indexer", "finalized"), "exact", 12)
+        finalized.account.data_hex = "0103"
+        const provisional = l2AccountSnapshot("account-a", "19",
+            l2Source("seq-a", "sequencer", "provisional"), "moving", 14)
+        provisional.account.data_hex = "0102"
+        provisional.after_anchor = {
+            block_id: 15,
+            block_hash: "f".repeat(64)
+        }
+        const finalizedRequest = l2AccountRequest("finalized")
+        const provisionalRequest = l2AccountRequest("provisional")
+        gateway.respond(provisionalRequest, ok(l2Report(provisionalRequest, "lez.account", {
+            outcome: "found",
+            value: provisional
+        })))
+        gateway.respond(finalizedRequest, ok(l2Report(finalizedRequest, "lez.account", {
+            outcome: "found",
+            value: finalized
+        })))
+
+        const provisionalDecode = accountDecodeRequest("0102")
+        const finalizedDecode = accountDecodeRequest("0103")
+        verify(provisionalDecode !== null)
+        verify(finalizedDecode !== null)
+        compare(provisionalDecode.args[1], "account-a")
+        compare(provisionalDecode.args[3], "cd".repeat(32))
+
+        gateway.respond(finalizedDecode, ok(accountDecodeSession("FinalizedToken", "17")))
+        gateway.respond(provisionalDecode, ok(accountDecodeSession("TokenDefinition", "Pebble")))
+        compare(l2AccountState.l2AccountFinalizedDecode.report.account_type, "FinalizedToken")
+        compare(l2AccountState.l2AccountProvisionalDecode.report.account_type, "TokenDefinition")
+        compare(l2AccountState.l2AccountProvisionalDecode.report.rows[0].value, "Pebble")
+    }
+
+    function test_l2_account_redecodes_loaded_snapshot_when_idl_is_registered() {
+        zoneState.appModel = decodeAppModel
+        loadConfiguredL2Zone()
+        verify(l2AccountState.inspectL2Account("account-a"))
+        const provisionalRequest = l2AccountRequest("provisional")
+        const provisional = l2AccountSnapshot("account-a", "19",
+            l2Source("seq-a", "sequencer", "provisional"), "exact", 14)
+        provisional.account.data_hex = "0102"
+        gateway.respond(provisionalRequest, ok(l2Report(provisionalRequest, "lez.account", {
+            outcome: "found",
+            value: provisional
+        })))
+        compare(gateway.requestCount("selectAccountDecodeSession"), 0)
+
+        decodeAppModel.candidates = [{
+            key: "token-idl",
+            name: "Token Fixture",
+            programIdHex: "cd".repeat(32),
+            json: "{\"name\":\"token\"}",
+            source: "local"
+        }]
+        decodeRegistry.count = 1
+        tryVerify(function () {
+            return accountDecodeRequest("0102") !== null
+        })
+        const decodeRequest = accountDecodeRequest("0102")
+        gateway.respond(decodeRequest, ok(accountDecodeSession("TokenDefinition", "Pebble")))
+        compare(l2AccountState.l2AccountProvisionalDecode.report.account_type, "TokenDefinition")
     }
 
     function test_l2_account_activity_appends_oldest_first_without_touching_snapshots() {

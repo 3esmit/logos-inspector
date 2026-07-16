@@ -495,6 +495,22 @@ function l2AccountSnapshot(kind) {
     }
 }
 
+function l2AccountDecode() {
+    return {
+        evidence: {
+            name: "Token Fixture",
+            account_type: "TokenDefinition"
+        },
+        report: {
+            account_type: "TokenDefinition",
+            consumed_bytes: 16,
+            total_bytes: 16,
+            rows: [{ path: "name", value: "Pebble" },
+                { path: "total_supply", value: "7654321" }]
+        }
+    }
+}
+
 function l2AccountActivityRows() {
     return [l2AccountActivityRow(0, identity("2"), "incoming"),
         l2AccountActivityRow(1, identity("3"), "outgoing"),

@@ -7,6 +7,7 @@ QtObject {
     required property var gateway
     required property var activeZoneContext
     required property string verification
+    property var appModel: null
     readonly property bool l2Applicable: activeZoneContext !== null
         && String(activeZoneContext.zone_kind || "") === "sequencer_zone"
     readonly property bool l2SourceConfigured: activeZoneContext !== null
