@@ -38,7 +38,8 @@ const LOGOSCORE_EVENT_LINE_LIMIT: usize = 1024 * 1024;
 const LOGOSCORE_EVENT_FIELD_LIMIT: usize = 64;
 const LOGOSCORE_EVENT_QUEUE_CAPACITY: usize = 64;
 const LOGOSCORE_WATCH_STOP_GRACE: Duration = Duration::from_millis(250);
-const LOGOSCORE_MODULE_DISCOVERY_ATTEMPTS: usize = 2;
+const LOGOSCORE_MODULE_DISCOVERY_ATTEMPTS: usize = 3;
+const LOGOSCORE_MODULE_DISCOVERY_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(30);
 const LOGOSCORE_MODULE_DISCOVERY_RETRY_DELAY: Duration = Duration::from_secs(5);
 const LOGOSCORE_WATCH_PROTOCOL: &str = "logoscore.watch";
 const LOGOSCORE_WATCH_PROTOCOL_VERSION: u64 = 1;
@@ -1238,14 +1239,33 @@ impl LogoscoreCliRuntime {
         module: &str,
         control: CommandControl,
     ) -> Result<LogoscoreModuleDiscovery> {
+        self.discover_module_controlled_with(
+            module,
+            control,
+            LOGOSCORE_MODULE_DISCOVERY_ATTEMPT_TIMEOUT,
+            LOGOSCORE_MODULE_DISCOVERY_RETRY_DELAY,
+        )
+    }
+
+    fn discover_module_controlled_with(
+        &self,
+        module: &str,
+        control: CommandControl,
+        attempt_timeout: Duration,
+        retry_delay: Duration,
+    ) -> Result<LogoscoreModuleDiscovery> {
         for attempt in 0..LOGOSCORE_MODULE_DISCOVERY_ATTEMPTS {
             control.check_active()?;
+            let attempt_deadline = StdInstant::now()
+                .checked_add(attempt_timeout)
+                .unwrap_or(control.deadline());
+            let attempt_control = control.with_deadline(attempt_deadline);
             let result = (|| {
                 let modules = self
-                    .list_modules_controlled(control.clone())
+                    .list_modules_controlled(attempt_control.clone())
                     .context("failed to list logoscore modules")?;
                 let module_info = self
-                    .module_info_controlled(module, control.clone())
+                    .module_info_controlled(module, attempt_control)
                     .with_context(|| format!("failed to inspect logoscore module `{module}`"))?;
                 module_discovery(module, &modules.value, &module_info.value)
             })();
@@ -1256,7 +1276,7 @@ impl LogoscoreCliRuntime {
                         && is_transient_module_discovery_error(&error) =>
                 {
                     control.check_active()?;
-                    thread::sleep(LOGOSCORE_MODULE_DISCOVERY_RETRY_DELAY);
+                    thread::sleep(retry_delay);
                 }
                 Err(error) => return Err(error),
             }
@@ -1663,9 +1683,10 @@ impl LogoscoreCliRuntime {
 }
 
 fn is_transient_module_discovery_error(error: &anyhow::Error) -> bool {
-    error
-        .chain()
-        .any(|cause| cause.to_string().contains("RPC_FAILED"))
+    error.chain().any(|cause| {
+        let detail = cause.to_string();
+        detail.contains("RPC_FAILED") || detail.contains("command stopped after deadline exceeded")
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3552,6 +3573,67 @@ esac
                 .lines()
                 .eq(["init"]),
             "Storage init was retried after metadata recovery"
+        );
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn controlled_module_discovery_retries_a_timed_out_metadata_probe() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir()?;
+        let program = directory.path().join("logoscore-timeout-metadata");
+        fs::write(
+            &program,
+            r#"#!/bin/sh
+if [ "$1" = "--config-dir" ]; then
+    config_dir="$2"
+    shift 2
+fi
+case "$1" in
+    list-modules)
+        printf '%s\n' '{"modules":[{"name":"storage_module","status":"loaded"}]}'
+        ;;
+    module-info)
+        count_path="$config_dir/module-info-count"
+        count=0
+        if [ -f "$count_path" ]; then
+            count="$(cat "$count_path")"
+        fi
+        count=$((count + 1))
+        printf '%s' "$count" > "$count_path"
+        if [ "$count" -eq 1 ]; then
+            sleep 1
+        fi
+        printf '%s\n' '{"name":"storage_module","methods":[{"isInvokable":true,"name":"init","signature":"init(QString)"}]}'
+        ;;
+esac
+"#,
+        )?;
+        let mut permissions = fs::metadata(&program)?.permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&program, permissions)?;
+        let runtime = LogoscoreCliRuntime::managed(
+            program.display().to_string(),
+            directory.path().display().to_string(),
+        );
+        let control = CommandControl::new(
+            CancellationToken::new(),
+            StdInstant::now() + Duration::from_secs(2),
+        );
+
+        let discovery = runtime.discover_module_controlled_with(
+            "storage_module",
+            control,
+            Duration::from_millis(100),
+            Duration::from_millis(10),
+        )?;
+
+        discovery.require_method("init", "init(QString)")?;
+        anyhow::ensure!(
+            fs::read_to_string(directory.path().join("module-info-count"))?.trim() == "2",
+            "timed-out metadata probe was not retried"
         );
         Ok(())
     }
