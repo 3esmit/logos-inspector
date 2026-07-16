@@ -16,19 +16,6 @@ pub(crate) fn delivery_module_probe_plan(info_id: Option<&str>) -> Vec<ModulePro
             SourceProbeKey::DeliveryCollectOpenMetricsText,
         ),
     ];
-    for (info_id, key) in [
-        ("Version", SourceProbeKey::DeliveryNodeInfoVersion),
-        ("Metrics", SourceProbeKey::DeliveryNodeInfoMetrics),
-        ("MyMultiaddresses", SourceProbeKey::DeliveryMyMultiaddresses),
-        ("MyENR", SourceProbeKey::DeliveryMyEnr),
-        ("MyPeerId", SourceProbeKey::DeliveryMyPeerId),
-    ] {
-        steps.push(ModuleProbeStep::keyed_with_args(
-            "getNodeInfo",
-            vec![info_id],
-            key,
-        ));
-    }
     if let Some(info_id) = info_id.map(str::trim).filter(|info_id| !info_id.is_empty()) {
         match delivery_node_info_probe_key(info_id) {
             Some(key) => steps.push(ModuleProbeStep::keyed_with_args(
@@ -58,19 +45,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn delivery_plan_keys_known_node_info_steps() {
+    fn delivery_plan_keys_explicit_known_node_info_step() {
         let steps = delivery_module_probe_plan(Some("MyPeerId"));
         let peer_id_steps = steps
             .iter()
             .filter(|step| step.key == Some(SourceProbeKey::DeliveryMyPeerId))
             .collect::<Vec<_>>();
 
-        assert_eq!(peer_id_steps.len(), 2);
+        assert_eq!(peer_id_steps.len(), 1);
         assert!(
             peer_id_steps
                 .iter()
                 .all(|step| step.method == "getNodeInfo" && step.args == ["MyPeerId"])
         );
+    }
+
+    #[test]
+    fn delivery_plan_does_not_probe_node_info_without_explicit_request() {
+        let steps = delivery_module_probe_plan(None);
+
+        assert!(steps.iter().all(|step| step.method != "getNodeInfo"));
     }
 
     #[test]
