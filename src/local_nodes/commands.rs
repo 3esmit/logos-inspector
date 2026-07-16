@@ -72,19 +72,61 @@ pub(super) fn execute_command_spec(
     runtime: Option<&LogoscoreCliRuntime>,
     control: Option<&CommandControl>,
 ) -> Result<Value> {
+    if let Some(control) = control {
+        preflight_command_spec(spec, runtime, Some(control))?;
+        return execute_preflighted_command_spec(spec, runtime, Some(control));
+    }
+    match &spec.backend {
+        CommandBackend::LogosCore { contract, call } => {
+            let runtime = runtime.context("an Inspector-managed logoscore runtime is required")?;
+            contract.call(runtime, call)
+        }
+        CommandBackend::SpawnProcess => execute_preflighted_command_spec(spec, runtime, None),
+    }
+}
+
+pub(super) fn preflight_command_spec(
+    spec: &LocalNodeCommandSpec,
+    runtime: Option<&LogoscoreCliRuntime>,
+    control: Option<&CommandControl>,
+) -> Result<()> {
     match &spec.backend {
         CommandBackend::LogosCore { contract, call } => {
             let runtime = runtime.context("an Inspector-managed logoscore runtime is required")?;
             match control {
-                Some(control) => runtime.call_checked_controlled(
+                Some(control) => runtime.require_module_method_controlled(
                     contract.module_id(),
                     call.method,
                     call.signature,
+                    control.clone(),
+                ),
+                None => {
+                    runtime.require_module_method(contract.module_id(), call.method, call.signature)
+                }
+            }
+        }
+        CommandBackend::SpawnProcess => Ok(()),
+    }
+}
+
+pub(super) fn execute_preflighted_command_spec(
+    spec: &LocalNodeCommandSpec,
+    runtime: Option<&LogoscoreCliRuntime>,
+    control: Option<&CommandControl>,
+) -> Result<Value> {
+    match &spec.backend {
+        CommandBackend::LogosCore { contract, call } => {
+            let runtime = runtime.context("an Inspector-managed logoscore runtime is required")?;
+            let output = match control {
+                Some(control) => runtime.call_controlled(
+                    contract.module_id(),
+                    call.method,
                     &call.args,
                     control.clone(),
                 ),
-                None => contract.call(runtime, call),
-            }
+                None => return contract.call(runtime, call),
+            }?;
+            serde_json::to_value(output).context("failed to serialize logoscore call output")
         }
         CommandBackend::SpawnProcess => {
             if let Some(control) = control {
