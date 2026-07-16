@@ -15,6 +15,7 @@ QtObject {
     property int revision: 0
     property var devnets: []
     property var observedNodes: ({})
+    property int publicTestnetFinalityWindowBlocks: 256
     property string pendingAction: ""
     property string pendingNode: ""
     property string pendingNetworkId: ""
@@ -448,7 +449,8 @@ QtObject {
             if (head === null || upstreamHead === null) {
                 return "unknown"
             }
-            return Math.max(0, upstreamHead - head) <= 128 ? "online" : "syncing"
+            return Math.max(0, upstreamHead - head) <= publicTestnetFinalityWindowBlocks
+                ? "online" : "syncing"
         }
         if (reachable) {
             return "online"
