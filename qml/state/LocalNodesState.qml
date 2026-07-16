@@ -16,6 +16,7 @@ QtObject {
     property var devnets: []
     property var observedNodes: ({})
     property int publicTestnetFinalityWindowBlocks: 256
+    readonly property string defaultRuntimeModulesDir: "/opt/logos-node/modules"
     property string pendingAction: ""
     property string pendingNode: ""
     property string pendingNetworkId: ""
@@ -225,7 +226,9 @@ QtObject {
         pendingNode = "";
         pendingNetworkId = "";
         pendingWorkspace = "";
-        pendingRuntimeModulesDir = String(modulesDir || "").trim();
+        const requestedModulesDir = String(modulesDir || "").trim();
+        pendingRuntimeModulesDir = requestedModulesDir.length
+            ? requestedModulesDir : runtimeModulesDir();
         pendingRuntimeBinaryPath = String(binaryPath || "").trim();
     }
 
@@ -386,7 +389,8 @@ QtObject {
 
     function runtimeModulesDir() {
         const runtime = runtimeInfo();
-        return String(runtime && runtime.modules_dir ? runtime.modules_dir : "");
+        const configured = String(runtime && runtime.modules_dir ? runtime.modules_dir : "").trim();
+        return configured.length ? configured : defaultRuntimeModulesDir;
     }
 
     function runtimeState() {
