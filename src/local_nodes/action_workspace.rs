@@ -343,6 +343,7 @@ fn runtime_stop(
             });
         }
         if !profile.is_running() {
+            reap_runtime_process_group(profile)?;
             profile.daemon_process_id = None;
             reset_module_contexts(state);
             return Ok(OperationOutcome {
@@ -362,15 +363,7 @@ fn runtime_stop(
             None => profile.wait_until_stopped(),
         };
         if stopped {
-            if let Some(process_id) = profile.daemon_process_id
-                && process_group_is_alive(process_id)
-            {
-                stop_process(process_id).with_context(|| {
-                    format!(
-                        "failed to stop remaining processes owned by Inspector-managed logoscore runtime {process_id}"
-                    )
-                })?;
-            }
+            reap_runtime_process_group(profile)?;
             profile.daemon_process_id = None;
             reset_module_contexts(state);
             return Ok(OperationOutcome {
@@ -384,6 +377,20 @@ fn runtime_stop(
             detail: "stop request accepted; waiting for managed daemon exit".to_owned(),
             command: Some("logoscore --config-dir <managed> stop --json".to_owned()),
         })
+    })
+}
+
+fn reap_runtime_process_group(profile: &LogoscoreRuntimeProfile) -> Result<()> {
+    let Some(process_id) = profile.daemon_process_id else {
+        return Ok(());
+    };
+    if !process_group_is_alive(process_id) {
+        return Ok(());
+    }
+    stop_process(process_id).with_context(|| {
+        format!(
+            "failed to stop remaining processes owned by Inspector-managed logoscore runtime {process_id}"
+        )
     })
 }
 
@@ -1306,6 +1313,17 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn runtime_stop_reaps_module_hosts_after_daemon_exit() -> Result<()> {
+        runtime_stop_reaps_module_hosts(false)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_stop_reaps_module_hosts_after_daemon_already_exited() -> Result<()> {
+        runtime_stop_reaps_module_hosts(true)
+    }
+
+    #[cfg(unix)]
+    fn runtime_stop_reaps_module_hosts(daemon_already_exited: bool) -> Result<()> {
         // Arrange
         let directory = tempfile::tempdir()?;
         let cli = directory.path().join("logoscore");
@@ -1344,6 +1362,23 @@ fi
             process_id: daemon_process_id,
         };
         let child_process_id = wait_for_process_id(&child_path)?;
+
+        if daemon_already_exited {
+            let status = Command::new("kill")
+                .arg("-TERM")
+                .arg(daemon_process_id.to_string())
+                .status()
+                .context("failed to terminate test daemon without its module host")?;
+            if !status.success() {
+                bail!("test daemon termination exited with {status}");
+            }
+            if !wait_until_stopped(daemon_process_id) {
+                bail!("test daemon {daemon_process_id} did not stop");
+            }
+            if !process_is_alive(child_process_id) {
+                bail!("test module host {child_process_id} stopped with daemon");
+            }
+        }
 
         let mut profile = LogoscoreRuntimeProfile::create_or_restart(
             directory.path(),
