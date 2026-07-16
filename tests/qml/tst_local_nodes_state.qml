@@ -381,6 +381,14 @@ TestCase {
         verify(state.actionDraftMessage().indexOf("This starts Bedrock") === 0)
     }
 
+    function test_messaging_stop_action_draft_explains_reinitialization() {
+        state.beginNodeAction("stop", "messaging")
+
+        compare(state.actionDraftTitle(), "Stop Messaging")
+        compare(state.actionDraftMessage(),
+                "This stops Messaging by unloading its Delivery context. Its data and config remain, but you must initialize Messaging before starting it again.")
+    }
+
     function test_network_action_draft_runs_pending_request() {
         state.networkProfile = "local"
         state.beginNetworkAction("load_network", "", "/tmp/local-devnet")

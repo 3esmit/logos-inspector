@@ -1,5 +1,6 @@
 use std::{
     fs,
+    net::{Ipv4Addr, SocketAddr, TcpStream},
     path::{Path, PathBuf},
     thread,
     time::{Duration, Instant},
@@ -38,6 +39,8 @@ const MESSAGING_CONTEXT_RUNTIME_RESTARTS: usize = 1;
 const INITIALIZATION_PREFLIGHT_RETRY_DELAY: Duration = Duration::from_millis(500);
 const RUNTIME_PROCESS_GROUP_REAP_TIMEOUT: Duration = Duration::from_secs(5);
 const RUNTIME_PROCESS_GROUP_REAP_POLL_INTERVAL: Duration = Duration::from_millis(25);
+const MESSAGING_UNLOAD_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(5);
+const MESSAGING_UNLOAD_CONFIRMATION_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(super) struct LocalNodeActionWorkspace;
@@ -112,6 +115,9 @@ fn update_module_context_binding(
             {
                 state.clear_module_context_topology(kind);
             }
+        }
+        NodeAction::Stop if status == "stopped" && request.node == Some(NodeKind::Messaging) => {
+            state.clear_module_context_topology(NodeKind::Messaging);
         }
         NodeAction::Purge if status == "purged" => {
             if let Some(kind) = request.node
@@ -1236,6 +1242,30 @@ fn node_stop(
                 "initialize the module node before stopping it",
             ));
         }
+        if kind == NodeKind::Messaging {
+            let cli = runtime.cli_runtime()?;
+            return match unload_messaging_context(&cli, config.port, control) {
+                Ok(value) => {
+                    clear_module_context(config);
+                    record.updated_at = now_millis();
+                    write_devnet_manifest(record)?;
+                    Ok(OperationOutcome {
+                        status: "stopped".to_owned(),
+                        detail: format!(
+                            "{}; unloaded Delivery and cleared its Messaging context; initialize Messaging before starting it again",
+                            operation_detail_from_value(&value)
+                        ),
+                        command: Some("logoscore unload-module delivery_module --json".to_owned()),
+                    })
+                }
+                Err(error) if is_control_interruption(&error) => Err(error),
+                Err(error) => Ok(OperationOutcome {
+                    status: "failed".to_owned(),
+                    detail: operation_error_detail(&error),
+                    command: Some("logoscore unload-module delivery_module --json".to_owned()),
+                }),
+            };
+        }
         let spec = command_spec_for(
             kind,
             NodeAction::Stop,
@@ -1265,6 +1295,67 @@ fn node_stop(
             }),
         }
     })
+}
+
+fn unload_messaging_context(
+    cli: &LogoscoreCliRuntime,
+    configured_port: Option<u16>,
+    control: Option<&CommandControl>,
+) -> Result<Value> {
+    let output = match control {
+        Some(control) => cli.unload_module_controlled("delivery_module", control.clone()),
+        None => cli.unload_module("delivery_module"),
+    }
+    .context("failed to unload Delivery while stopping Messaging")?;
+    let modules = match control {
+        Some(control) => cli.list_modules_controlled(control.clone()),
+        None => cli.list_modules(),
+    }
+    .context("failed to confirm Delivery unload while stopping Messaging")?;
+    if !module_is_unloaded(&modules.value, "delivery_module") {
+        bail!("Delivery remained loaded after its stop teardown request");
+    }
+    wait_for_messaging_rest_close(configured_port.unwrap_or(8645), control)?;
+    Ok(output.value)
+}
+
+fn module_is_unloaded(value: &Value, module: &str) -> bool {
+    value
+        .as_array()
+        .or_else(|| value.get("modules").and_then(Value::as_array))
+        .and_then(|modules| {
+            modules
+                .iter()
+                .find(|candidate| candidate.get("name").and_then(Value::as_str) == Some(module))
+        })
+        .and_then(|candidate| candidate.get("status").and_then(Value::as_str))
+        .is_some_and(|status| status == "not_loaded")
+}
+
+fn wait_for_messaging_rest_close(port: u16, control: Option<&CommandControl>) -> Result<()> {
+    let deadline = control.map_or_else(
+        || Instant::now() + MESSAGING_UNLOAD_CONFIRMATION_TIMEOUT,
+        CommandControl::deadline,
+    );
+    while messaging_rest_is_open(port) {
+        if let Some(control) = control {
+            control.check_active()?;
+        }
+        if Instant::now() >= deadline {
+            bail!("Messaging REST endpoint on port {port} remained open after Delivery unload");
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        thread::sleep(MESSAGING_UNLOAD_CONFIRMATION_INTERVAL.min(remaining));
+    }
+    Ok(())
+}
+
+fn messaging_rest_is_open(port: u16) -> bool {
+    TcpStream::connect_timeout(
+        &SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
+        Duration::from_millis(250),
+    )
+    .is_ok()
 }
 
 fn node_purge(
@@ -1772,6 +1863,167 @@ mod tests {
             messaging_context_probe_from_response(&malformed),
             MessagingContextProbe::Unknown
         );
+    }
+
+    #[test]
+    fn module_unload_confirmation_accepts_array_and_wrapped_module_rows() {
+        let array = serde_json::json!([
+            {"name": "delivery_module", "status": "not_loaded"}
+        ]);
+        let wrapped = serde_json::json!({
+            "modules": [
+                {"name": "delivery_module", "status": "not_loaded"}
+            ]
+        });
+        let still_loaded = serde_json::json!({
+            "modules": [
+                {"name": "delivery_module", "status": "loaded"}
+            ]
+        });
+
+        assert!(module_is_unloaded(&array, "delivery_module"));
+        assert!(module_is_unloaded(&wrapped, "delivery_module"));
+        assert!(!module_is_unloaded(&still_loaded, "delivery_module"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn messaging_stop_unloads_delivery_context_and_clears_binding() -> Result<()> {
+        // Arrange
+        let directory = tempfile::tempdir()?;
+        let cli = directory.path().join("logoscore");
+        fs::write(
+            &cli,
+            r#"#!/bin/sh
+if [ "$1" = "--config-dir" ]; then
+    config_dir="$2"
+    shift 2
+fi
+case "$1" in
+    unload-module)
+        printf '%s\n' unload-module >> "$config_dir/calls"
+        printf '%s\n' '{"module":"delivery_module","status":"ok"}'
+        ;;
+    list-modules)
+        printf '%s\n' list-modules >> "$config_dir/calls"
+        printf '%s\n' '{"modules":[{"name":"delivery_module","status":"not_loaded"}]}'
+        ;;
+    *)
+        printf '%s\n' "unexpected command: $1" >&2
+        exit 1
+        ;;
+esac
+"#,
+        )?;
+        let mut permissions = fs::metadata(&cli)?.permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&cli, permissions)?;
+
+        let port = {
+            let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
+            listener.local_addr()?.port()
+        };
+        let mut profile = LogoscoreRuntimeProfile::create_or_restart(
+            directory.path(),
+            None,
+            Some(
+                cli.to_str()
+                    .context("test LogosCore CLI path is not valid UTF-8")?,
+            ),
+            Some(
+                directory
+                    .path()
+                    .to_str()
+                    .context("test modules path is not valid UTF-8")?,
+            ),
+        )?;
+        fs::create_dir_all(&profile.config_dir)?;
+        profile.daemon_process_id = Some(process::id());
+
+        let mut state = LocalNodesState::default_for_config_dir(directory.path());
+        ensure_testnet_topology(&mut state)?;
+        let messaging = state
+            .testnet
+            .as_mut()
+            .and_then(|record| node_config_mut(record, NodeKind::Messaging))
+            .context("missing Messaging node")?;
+        messaging.installed = true;
+        messaging.package_path = Some("delivery_module".to_owned());
+        messaging.module_path = Some("delivery_module".to_owned());
+        messaging.port = Some(port);
+        messaging.lifecycle_state = NodeLifecycleState::Running;
+        state.set_module_context_topology_for_profile(NodeKind::Messaging, "default");
+        let request = LocalNodeActionRequest {
+            action: NodeAction::Stop,
+            node: Some(NodeKind::Messaging),
+            network_id: None,
+            workspace_path: None,
+            runtime_modules_dir: None,
+            runtime_binary_path: None,
+            label: None,
+        };
+        let mut runtime = Some(profile);
+
+        // Act
+        let result = LocalNodeActionWorkspace::system().apply(
+            &mut state,
+            &mut runtime,
+            directory.path(),
+            "default",
+            &request,
+            None,
+        );
+
+        // Assert
+        anyhow::ensure!(
+            result.report.status == "stopped",
+            "Messaging stop did not complete: {}",
+            result.report.detail
+        );
+        anyhow::ensure!(
+            result
+                .report
+                .detail
+                .contains("unloaded Delivery and cleared its Messaging context"),
+            "Messaging stop did not disclose context teardown: {}",
+            result.report.detail
+        );
+        anyhow::ensure!(
+            result.report.command.as_deref()
+                == Some("logoscore unload-module delivery_module --json"),
+            "Messaging stop did not report the unload command: {:?}",
+            result.report.command
+        );
+        let messaging = testnet_node(&state, NodeKind::Messaging)?;
+        anyhow::ensure!(
+            !messaging.installed
+                && messaging.package_path.is_none()
+                && messaging.module_path.is_none()
+                && messaging.process_id.is_none()
+                && messaging.lifecycle_state == NodeLifecycleState::NotInitialized
+                && messaging.pending_lifecycle_action.is_none(),
+            "Messaging stop retained its module context: {messaging:?}"
+        );
+        anyhow::ensure!(
+            state
+                .module_context_topology_id(NodeKind::Messaging)
+                .is_none(),
+            "Messaging stop retained its topology binding"
+        );
+        let calls = fs::read_to_string(
+            Path::new(
+                &runtime
+                    .as_ref()
+                    .context("Messaging stop removed the managed runtime")?
+                    .config_dir,
+            )
+            .join("calls"),
+        )?;
+        anyhow::ensure!(
+            calls.lines().eq(["unload-module", "list-modules"]),
+            "Messaging stop used unexpected CLI calls: {calls:?}"
+        );
+        Ok(())
     }
 
     #[test]

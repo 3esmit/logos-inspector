@@ -297,6 +297,9 @@ QtObject {
         if (action === "start") {
             return qsTr("This starts %1 using config %2.").arg(nodeLabel(pendingNode)).arg(String(node.config_path || "-"));
         }
+        if (action === "stop" && pendingNode === "messaging") {
+            return qsTr("This stops Messaging by unloading its Delivery context. Its data and config remain, but you must initialize Messaging before starting it again.");
+        }
         if (action === "stop") {
             return qsTr("This stops %1 and keeps its data and config.").arg(nodeLabel(pendingNode));
         }
