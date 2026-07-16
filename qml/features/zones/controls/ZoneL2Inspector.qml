@@ -12,6 +12,7 @@ ColumnLayout {
     required property var zoneState
     property string initialView: "blocks"
     property string currentView: initialView
+    property string exactSourceId: ""
 
     signal configureSourcesRequested()
 
@@ -20,6 +21,7 @@ ColumnLayout {
     Layout.fillWidth: true
 
     onInitialViewChanged: root.currentView = root.initialView
+    onExactSourceIdChanged: Qt.callLater(root.ensureLoaded)
 
     Component.onCompleted: root.ensureLoaded()
 
@@ -54,6 +56,7 @@ ColumnLayout {
         visible: root.zoneState.l2ReadEnabled && root.currentView === "blocks"
         theme: root.theme
         zoneState: root.zoneState
+        exactSourceId: root.exactSourceId
         Layout.fillWidth: true
         onBlockRequested: function (summary, exactSourceId) {
             root.currentView = "block"
@@ -95,8 +98,17 @@ ColumnLayout {
     }
 
     function ensureLoaded() {
-        if (root.zoneState.l2ReadEnabled && !root.zoneState.l2BlocksLoaded
-                && !root.zoneState.l2BlocksInFlight) {
+        if (!root.zoneState.l2ReadEnabled || root.zoneState.l2BlocksInFlight) {
+            return
+        }
+        if (root.exactSourceId.length > 0) {
+            if (!root.zoneState.l2BlocksLoaded
+                    || String(root.zoneState.l2BlocksExactSourceId || "")
+                        !== root.exactSourceId) {
+                root.zoneState.refreshL2BlocksForSource(root.exactSourceId)
+            }
+        } else if (!root.zoneState.l2BlocksLoaded
+                || String(root.zoneState.l2BlocksExactSourceId || "").length > 0) {
             root.zoneState.refreshL2Blocks()
         }
     }

@@ -1,5 +1,15 @@
 function navTreeItems(root) {
     with (root) {
+        const sequencerChildren = zoneInspection
+            && zoneInspection.l2
+            && zoneInspection.l2.l2SequencerReadEnabled === true
+            ? [{
+                key: "sequencerDashboard",
+                view: "sequencerDashboard",
+                label: qsTr("Sequencer"),
+                token: "SEQ",
+                layer: "l2"
+            }] : []
         return [
             { type: "item", key: "overview", view: "overview", label: qsTr("Dashboard"), token: "DAS", layer: "system" },
             {
@@ -11,7 +21,14 @@ function navTreeItems(root) {
                 children: [
                     { key: "blocks", view: "blocks", label: qsTr("Blocks"), token: "L1B", layer: "l1" },
                     { key: "transactions", view: "transactions", label: qsTr("Mantle Tx"), token: "L1T", layer: "l1" },
-                    { key: "zones", view: "zones", label: qsTr("Zones"), token: "ZON", layer: "l1" },
+                    {
+                        key: "zones",
+                        view: "zones",
+                        label: qsTr("Zones"),
+                        token: "ZON",
+                        layer: "l1",
+                        children: sequencerChildren
+                    },
                     { key: "blockchain", view: "blockchain", label: qsTr("Node / Module"), token: "L1N", layer: "l1" }
                 ]
             },
@@ -70,34 +87,30 @@ function parentNavKeyForView(root, view) {
     if (target === "blockDetail" || target === "transactionDetail") {
         return "l1"
     }
-    const tree = navTreeItems(root)
-    for (let i = 0; i < tree.length; ++i) {
-        const item = tree[i]
-        const children = item.children || []
-        for (let j = 0; j < children.length; ++j) {
-            if (String(children[j].view || "") === target) {
-                return item.key
-            }
+    const path = navPathForView(root, target)
+    if (path.length < 2) {
+        return ""
+    }
+    return String(path[0].key || "")
+}
+
+function ancestorNavKeysForView(root, view) {
+    const path = navPathForView(root, view)
+    const keys = []
+    for (let i = 0; i < path.length - 1; ++i) {
+        if (String(path[i].type || "") === "group") {
+            keys.push(String(path[i].key || ""))
         }
     }
-    return ""
+    return keys
 }
 
 function navItemForView(root, view) {
     with (root) {
         const target = String(view || "")
-        const tree = navTreeItems(root)
-        for (let i = 0; i < tree.length; ++i) {
-            const item = tree[i]
-            if (String(item.view || "") === target) {
-                return item
-            }
-            const children = item.children || []
-            for (let j = 0; j < children.length; ++j) {
-                if (String(children[j].view || "") === target) {
-                    return children[j]
-                }
-            }
+        const path = navPathForView(root, target)
+        if (path.length > 0) {
+            return path[path.length - 1]
         }
         if (target === "blockDetail") {
             return { key: "blockDetail", view: "blockDetail", label: qsTr("Block"), token: "L1B", layer: "l1" }
@@ -126,20 +139,7 @@ function navTokenForView(root, view) {
 
 function navItemForQuery(root, query) {
     const normalized = String(query || "").trim().toLowerCase()
-    const tree = navTreeItems(root)
-    for (let i = 0; i < tree.length; ++i) {
-        const item = tree[i]
-        if (navItemMatches(item, normalized)) {
-            return item
-        }
-        const children = item.children || []
-        for (let j = 0; j < children.length; ++j) {
-            if (navItemMatches(children[j], normalized)) {
-                return children[j]
-            }
-        }
-    }
-    return null
+    return navItemForQueryIn(navTreeItems(root), normalized)
 }
 
 function navItemMatches(item, normalized) {
@@ -159,4 +159,56 @@ function viewTitle(root) {
 
 function normalizedNavigationView(requestedView) {
     return String(requestedView || "")
+}
+
+function navPathForView(root, view) {
+    return navPathForViewIn(navTreeItems(root), String(view || ""), [])
+}
+
+function navPathForViewIn(items, target, ancestors) {
+    const values = Array.isArray(items) ? items : []
+    for (let i = 0; i < values.length; ++i) {
+        const item = values[i]
+        const path = ancestors.concat([item])
+        if (String(item.view || "") === target) {
+            return path
+        }
+        const nested = navPathForViewIn(item.children || [], target, path)
+        if (nested.length > 0) {
+            return nested
+        }
+    }
+    return []
+}
+
+function navItemForQueryIn(items, normalized) {
+    const values = Array.isArray(items) ? items : []
+    for (let i = 0; i < values.length; ++i) {
+        const item = values[i]
+        if (navItemMatches(item, normalized)) {
+            return item
+        }
+        const nested = navItemForQueryIn(item.children || [], normalized)
+        if (nested) {
+            return nested
+        }
+    }
+    return null
+}
+
+function navItemContainsView(item, view) {
+    if (!item) {
+        return false
+    }
+    const target = String(view || "")
+    if (String(item.view || "") === target) {
+        return true
+    }
+    const children = item.children || []
+    for (let i = 0; i < children.length; ++i) {
+        if (navItemContainsView(children[i], target)) {
+            return true
+        }
+    }
+    return false
 }

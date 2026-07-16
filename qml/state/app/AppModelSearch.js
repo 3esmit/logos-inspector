@@ -289,10 +289,11 @@ function openInspectionEntityRef(root, entity, recordHistory) {
             return false
         }
         const tab = inspectionDetailTab(entity.entity_kind)
+        const sequencerView = inspectionEntityUsesSequencerDashboard(root, entity)
         zoneInspection.requestedDetailTab = tab
         zoneInspection.requestedL2View = String(entity.entity_kind || "") === "transaction"
             ? "transaction" : (String(entity.entity_kind || "") === "block" ? "block" : "blocks")
-        selectView("zones", false)
+        selectView(sequencerView ? "sequencerDashboard" : "zones", false)
         if (!zoneInspection.activeZoneContext
                 || String(zoneInspection.activeZoneId || "") !== String(entity.channel_id || "")) {
             pendingInspectionEntityRef = entity
@@ -302,7 +303,7 @@ function openInspectionEntityRef(root, entity, recordHistory) {
             }
             return true
         }
-        return openInspectionEntityInActiveZone(entity)
+        return openInspectionEntityInActiveZone(root, entity)
     }
 }
 
@@ -321,13 +322,14 @@ function resumePendingInspectionEntityRef(root) {
             return false
         }
         pendingInspectionEntityRef = null
-        return openInspectionEntityInActiveZone(entity)
+        return openInspectionEntityInActiveZone(root, entity)
     }
 }
 
 function inspectionEntityRefMatchesCatalog(root, entity) {
     with (root) {
-        if (!zoneInspection || !inspectionNetworkScopeMatches(root, entity.network_scope)) {
+        if (!zoneInspection || !entity || typeof entity !== "object"
+                || !inspectionNetworkScopeMatches(root, entity.network_scope)) {
             return false
         }
         const rows = Array.isArray(zoneInspection.zoneSummaries)
@@ -349,6 +351,37 @@ function inspectionNetworkScopeMatches(root, scope) {
             === root.zoneInspection.scopeKey(root.zoneInspection.networkScope)
 }
 
+function inspectionEntityUsesSequencerDashboard(root, entity) {
+    const source = entity && entity.source && typeof entity.source === "object"
+        ? entity.source : ({ kind: "policy" })
+    if (String(source.kind || "policy") === "exact") {
+        return String(source.source_role || "") === "sequencer"
+    }
+    const state = root.zoneInspection
+    const channelId = String(entity && entity.channel_id || "")
+    if (!state || channelId.length === 0) {
+        return false
+    }
+    if (String(state.activeZoneId || "") === channelId
+            && state.l2
+            && String(state.l2.l2SequencerSourceId()).length > 0) {
+        return true
+    }
+    const rows = Array.isArray(state.zoneSummaries) ? state.zoneSummaries : []
+    for (let i = 0; i < rows.length; ++i) {
+        const row = rows[i] || ({})
+        if (String(row.channel_id || "") !== channelId
+                || String(row.kind || "") !== "sequencer_zone") {
+            continue
+        }
+        const fields = row.active_zone_context_fields || ({})
+        const link = row.settlement_link || ({})
+        return String(fields.selected_sequencer_source_id
+            || link.selected_sequencer_source_id || "").length > 0
+    }
+    return false
+}
+
 function openInspectionEntityInActiveZone(root, entity) {
     with (root) {
         if (!inspectionEntityRefMatchesCatalog(root, entity)) {
@@ -357,26 +390,48 @@ function openInspectionEntityInActiveZone(root, entity) {
         const source = entity.source && typeof entity.source === "object"
             ? entity.source : ({ kind: "policy" })
         const sourceId = String(source.source_id || "")
+        const sourceRole = String(source.source_role || "")
+        const sequencerView = String(shell.currentView || "")
+            === "sequencerDashboard"
+        if (sequencerView && String(source.kind || "policy") === "exact"
+                && sourceRole !== "sequencer") {
+            shell.setResult(qsTr("Open reference"),
+                qsTr("Sequencer view cannot open Indexer-qualified data."),
+                true, entity)
+            return false
+        }
         if (String(source.kind || "policy") === "exact") {
-            const role = String(source.source_role || "")
-            const currentId = role === "indexer" ? zoneInspection.l2.l2IndexerSourceId()
-                : (role === "sequencer" ? zoneInspection.l2.l2SequencerSourceId() : "")
+            const currentId = sourceRole === "indexer"
+                ? zoneInspection.l2.l2IndexerSourceId()
+                : (sourceRole === "sequencer"
+                    ? zoneInspection.l2.l2SequencerSourceId() : "")
             if (!sourceId.length || sourceId !== currentId) {
                 zoneInspection.requestedDetailTab = "sources"
                 shell.setResult(qsTr("Open reference"), qsTr("Exact source is no longer configured for this Zone."), true, entity)
                 return false
             }
         }
+        const exactSourceId = sequencerView
+            ? zoneInspection.l2.l2SequencerSourceId() : sourceId
         const kind = String(entity.entity_kind || "")
         const key = String(entity.canonical_key || "")
         let opened = false
         if (kind === "block") {
             const block = inspectionBlockTarget(key)
-            opened = block ? zoneInspection.l2.blocks.openL2Block(block, sourceId) !== null : false
+            opened = block
+                ? zoneInspection.l2.blocks.openL2Block(block, exactSourceId) !== null
+                : false
         } else if (kind === "transaction") {
-            opened = zoneInspection.l2.blocks.openL2Transaction(key, sourceId) !== null
+            opened = zoneInspection.l2.blocks.openL2Transaction(
+                key, exactSourceId) !== null
         } else if (kind === "account") {
-            opened = zoneInspection.l2.accounts.inspectL2AccountReference(key, source)
+            opened = sequencerView
+                ? zoneInspection.l2.accounts.inspectL2AccountReference(key, {
+                    kind: "exact",
+                    source_id: exactSourceId,
+                    source_role: "sequencer"
+                })
+                : zoneInspection.l2.accounts.inspectL2AccountReference(key, source)
         } else if (kind === "program") {
             opened = zoneInspection.l2.tools.refreshL2Programs() !== null
         }

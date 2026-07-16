@@ -49,6 +49,7 @@ QtObject {
     property string networkScopeKey: "genesis_id:" + FixtureData.identity("f")
 
     property int l2BlocksLimit: 25
+    property string l2BlocksExactSourceId: ""
     property var l2BlockRows: FixtureData.l2BlockRows()
     property string l2BlocksNextCursor: ""
     property bool l2BlocksHasMore: false
@@ -263,6 +264,7 @@ QtObject {
         l2TransactionDetailReport = null
         l2TransactionTrace = null
         l2TransactionTraceReport = null
+        l2BlocksExactSourceId = ""
         l2BlockRows = l2Applicable ? FixtureData.l2BlockRows() : []
         l2BlocksLoaded = l2Applicable
         l2AccountId = l2Applicable ? FixtureData.l2AccountId() : ""
@@ -292,11 +294,36 @@ QtObject {
     }
 
     function refreshL2Blocks() {
+        l2BlocksExactSourceId = ""
         l2RefreshCount += 1
         l2BlockRows = l2Applicable ? FixtureData.l2BlockRows() : []
         l2BlocksLoaded = true
         l2BlocksError = l2ReadEnabled ? "" : l2AvailabilityMessage()
         return l2ReadEnabled ? l2RefreshCount : null
+    }
+
+    function refreshL2BlocksForSource(exactSourceId) {
+        l2BlocksExactSourceId = String(exactSourceId || "")
+        l2RefreshCount += 1
+        const rows = FixtureData.l2BlockRows()
+        l2BlockRows = rows.map(function (row) {
+            const observations = Array.isArray(row.observations)
+                ? row.observations.filter(function (observation) {
+                    return String(observation.source_id || "")
+                        === l2BlocksExactSourceId
+                        && String(observation.source_role || "") === "sequencer"
+                }) : []
+            return {
+                summary: row.summary,
+                observations: observations
+            }
+        }).filter(function (row) {
+            return row.observations.length > 0
+        })
+        l2BlocksLoaded = true
+        l2BlocksError = l2SequencerReadEnabled ? ""
+            : "Select a Sequencer source for this Zone."
+        return l2SequencerReadEnabled ? l2RefreshCount : null
     }
 
     function loadMoreL2Blocks() {
@@ -376,8 +403,23 @@ QtObject {
         return true
     }
 
+    function inspectL2SequencerAccount(accountId) {
+        l2AccountId = String(accountId || "")
+        l2AccountFinalized = null
+        l2AccountProvisional = FixtureData.l2AccountSnapshot("provisional")
+        l2AccountActivityRows = []
+        l2AccountActivityLoaded = true
+        return true
+    }
+
     function refreshL2AccountSnapshots() {
         l2AccountFinalized = FixtureData.l2AccountSnapshot("finalized")
+        l2AccountProvisional = FixtureData.l2AccountSnapshot("provisional")
+        return true
+    }
+
+    function refreshL2SequencerAccount() {
+        l2AccountFinalized = null
         l2AccountProvisional = FixtureData.l2AccountSnapshot("provisional")
         return true
     }

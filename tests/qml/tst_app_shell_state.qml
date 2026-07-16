@@ -40,6 +40,8 @@ TestCase {
         model.shell.settingsSection = "general"
         model.shell.settingsNetworkSection = "blockchain"
         model.shell.settingsUiSection = "footer"
+        model.zoneInspection.verification = "empty"
+        model.zoneInspection.activeZoneContext = null
     }
 
     function test_shell_state_owns_result_aliases() {
@@ -84,5 +86,48 @@ TestCase {
         verify(rows.some(function (row) {
             return String(row.view || "") === "zones"
         }))
+    }
+
+    function test_sequencer_route_appears_only_for_selected_source() {
+        verify(!model.shell.navRows().some(function (row) {
+            return String(row.view || "") === "sequencerDashboard"
+        }))
+
+        model.zoneInspection.verification = "verified"
+        model.zoneInspection.activeZoneContext = {
+            network_scope: {
+                kind: "genesis_id",
+                genesis_id: "11".repeat(32)
+            },
+            channel_id: "22".repeat(32),
+            zone_kind: "sequencer_zone",
+            selected_sequencer_source_id: "seq-a",
+            indexer_source_id: "idx-a",
+            source_config_revision: 1,
+            context_revision: 1
+        }
+        wait(0)
+
+        const rows = model.shell.navRows()
+        const sequencer = rows.filter(function (row) {
+            return String(row.view || "") === "sequencerDashboard"
+        })
+        compare(sequencer.length, 1)
+        compare(sequencer[0].parentKey, "zones")
+        compare(sequencer[0].depth, 2)
+        compare(model.shell.parentNavKeyForView("sequencerDashboard"), "l1")
+
+        model.shell.selectView("sequencerDashboard")
+        compare(model.shell.currentView, "sequencerDashboard")
+        compare(model.shell.viewTitle(), "Sequencer")
+        model.currentInspectionEntityRef = {
+            layer: "l2",
+            channel_id: "22".repeat(32),
+            entity_kind: "account",
+            canonical_key: "account-a"
+        }
+        const snapshot = model.shell.navigationSnapshot()
+        verify(snapshot.values.inspectionEntityRef !== null)
+        compare(snapshot.values.inspectionEntityRef.canonical_key, "account-a")
     }
 }

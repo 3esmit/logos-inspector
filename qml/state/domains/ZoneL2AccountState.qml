@@ -153,6 +153,19 @@ QtObject {
         return dispatched
     }
 
+    function inspectL2SequencerAccount(accountId) {
+        const normalizedId = String(accountId || "").trim()
+        if (!l2Context.l2SequencerReadEnabled || normalizedId.length === 0) {
+            return false
+        }
+        resetL2AccountState(true)
+        l2AccountId = normalizedId
+        requestL2AccountSnapshot("provisional", { kind: "provisional" },
+            l2Context.l2SequencerSourceId())
+        l2AccountActivityLoaded = true
+        return true
+    }
+
     function inspectL2AccountReference(accountId, source) {
         const qualifier = source && typeof source === "object" ? source : ({ kind: "policy" })
         if (String(qualifier.kind || "policy") !== "exact") {
@@ -201,6 +214,16 @@ QtObject {
             l2AccountProvisionalError = qsTr("Select a Sequencer source for provisional account state.")
         }
         return dispatched
+    }
+
+    function refreshL2SequencerAccount() {
+        if (l2AccountId.length === 0 || !l2Context.l2SequencerReadEnabled) {
+            return false
+        }
+        resetL2CurrentAccountSnapshots()
+        requestL2AccountSnapshot("provisional", { kind: "provisional" },
+            l2Context.l2SequencerSourceId())
+        return true
     }
 
     function requestL2HistoricalAccount(blockId, blockHash) {

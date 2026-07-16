@@ -27,6 +27,7 @@ QtObject {
     }
 
     property int l2BlocksLimit: 25
+    property string l2BlocksExactSourceId: ""
     property var l2BlockRows: []
     property string l2BlocksNextCursor: ""
     property bool l2BlocksHasMore: false
@@ -85,6 +86,7 @@ QtObject {
         l2BlocksError = ""
         l2BlocksErrorDetails = null
         if (clearRows) {
+            l2BlocksExactSourceId = ""
             l2BlockRows = []
             l2BlocksDistinctCount = 0
             l2BlocksSourceHeads = []
@@ -130,8 +132,20 @@ QtObject {
     }
 
     function refreshL2Blocks() {
+        return refreshL2BlocksForSource("")
+    }
+
+    function refreshL2BlocksForSource(exactSourceId) {
         resetL2BlocksState(true)
         resetL2BlockInspectionState()
+        const sourceId = String(exactSourceId || "")
+        l2BlocksExactSourceId = sourceId
+        if (sourceId.length > 0 && (!l2Context.l2SequencerReadEnabled
+                || sourceId !== l2Context.l2SequencerSourceId())) {
+            l2BlocksLoaded = true
+            l2BlocksError = qsTr("Selected Sequencer source is unavailable.")
+            return null
+        }
         if (!l2Context.l2ReadEnabled) {
             l2BlocksLoaded = true
             l2BlocksError = l2Context.l2AvailabilityMessage()
@@ -154,7 +168,7 @@ QtObject {
             return false
         }
         l2BlocksLimit = next
-        refreshL2Blocks()
+        refreshL2BlocksForSource(l2BlocksExactSourceId)
         return true
     }
 
@@ -174,7 +188,9 @@ QtObject {
             request_revision: requestRevision,
             query: {
                 cursor: cursorText.length > 0 ? cursorText : null,
-                limit: l2BlocksLimit
+                limit: l2BlocksLimit,
+                exact_source_id: l2BlocksExactSourceId.length > 0
+                    ? l2BlocksExactSourceId : null
             }
         }, function (response) {
             if (requestRevision !== l2BlocksRequestRevision) {
@@ -209,6 +225,12 @@ QtObject {
                 l2BlocksError = qsTr("L2 blocks returned an invalid page.")
                 return
             }
+            if (l2BlocksExactSourceId.length > 0
+                    && !l2BlocksReportMatchesExactSource(
+                        report, page, l2BlocksExactSourceId)) {
+                l2BlocksError = qsTr("L2 blocks returned data from another source.")
+                return
+            }
             l2BlockRows = append ? l2BlockRows.concat(page.rows) : page.rows
             l2BlocksDistinctCount = append
                 ? l2BlocksDistinctCount + Number(page.distinct_block_ids || 0)
@@ -233,6 +255,38 @@ QtObject {
                 l2BlocksSourceHeads = []
             }
         }
+    }
+
+    function l2BlocksReportMatchesExactSource(report, page, exactSourceId) {
+        const sourceId = String(exactSourceId || "")
+        const route = report && report.route ? report.route : ({})
+        const attempts = Array.isArray(route.attempts) ? route.attempts : []
+        const heads = page && Array.isArray(page.source_heads) ? page.source_heads : []
+        const rows = page && Array.isArray(page.rows) ? page.rows : []
+        if (sourceId.length === 0
+                || String(route.policy || "") !== "exact_source"
+                || attempts.length !== 1
+                || String(attempts[0].source_id || "") !== sourceId
+                || String(attempts[0].source_role || "") !== "sequencer"
+                || heads.length > 1
+                || (rows.length > 0 && heads.length !== 1)) {
+            return false
+        }
+        if (heads.length === 1
+                && (String(heads[0].source_id || "") !== sourceId
+                    || String(heads[0].source_role || "") !== "sequencer")) {
+            return false
+        }
+        for (let i = 0; i < rows.length; ++i) {
+            const observations = rows[i] && Array.isArray(rows[i].observations)
+                ? rows[i].observations : []
+            if (observations.length !== 1
+                    || String(observations[0].source_id || "") !== sourceId
+                    || String(observations[0].source_role || "") !== "sequencer") {
+                return false
+            }
+        }
+        return true
     }
 
     function openL2Block(value, exactSourceId) {

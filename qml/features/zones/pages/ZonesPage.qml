@@ -19,6 +19,7 @@ ColumnLayout {
     property string initialDetailTab: "overview"
     property bool sourceEditorInitiallyOpen: false
     property string pendingZoneId: ""
+    property string pendingZoneView: ""
     property bool retainDetailForDraft: false
     readonly property var zoneState: root.model && root.model.zoneInspection
         ? root.model.zoneInspection : null
@@ -231,6 +232,8 @@ ColumnLayout {
                         && modelData.provenance.verification_state || "verified") !== "verified"
                     interactive: !stale
                     onActivated: root.requestZoneActivation(String(modelData.channel_id || ""))
+                    onChannelActivated: root.requestSequencerActivation(
+                        String(modelData.channel_id || ""))
                 }
 
                 ScrollBar.vertical: ScrollBar {}
@@ -324,8 +327,9 @@ ColumnLayout {
         confirmText: qsTr("Discard")
         onAccepted: {
             root.discardSourceDraft()
-            root.zoneState.activateZone(root.pendingZoneId)
+            root.activateZoneForView(root.pendingZoneId, root.pendingZoneView)
             root.pendingZoneId = ""
+            root.pendingZoneView = ""
         }
     }
 
@@ -335,10 +339,36 @@ ColumnLayout {
         }
         if (hasDirtyDraft) {
             pendingZoneId = channelId
+            pendingZoneView = ""
             zoneGuardPopup.open()
             return false
         }
         return zoneState.activateZone(channelId)
+    }
+
+    function requestSequencerActivation(channelId) {
+        if (channelId.length === 0) {
+            return false
+        }
+        if (hasDirtyDraft) {
+            pendingZoneId = channelId
+            pendingZoneView = "sequencerDashboard"
+            zoneGuardPopup.open()
+            return false
+        }
+        return activateZoneForView(channelId, "sequencerDashboard")
+    }
+
+    function activateZoneForView(channelId, view) {
+        if (!zoneState.activateZone(channelId)) {
+            return false
+        }
+        if (String(view || "") === "sequencerDashboard") {
+            Qt.callLater(function () {
+                root.model.selectView("sequencerDashboard")
+            })
+        }
+        return true
     }
 
     function discardSourceDraft() {

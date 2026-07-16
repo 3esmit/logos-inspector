@@ -61,53 +61,38 @@ function navRows(root) {
     with (root) {
         const revision = shell.navRevision
         const rows = []
-        const parentKey = parentNavKeyForView(shell.currentView)
-        const tree = navTreeItems()
-        for (let i = 0; i < tree.length; ++i) {
-            const item = tree[i]
-            if (item.type === "group") {
-                rows.push({
-                    type: "group",
-                    key: item.key,
-                    label: item.label,
-                    token: item.token,
-                    layer: item.layer,
-                    expanded: navGroupExpanded(item.key),
-                    active: parentKey === item.key,
-                    depth: 0
-                })
-                if (!navGroupExpanded(item.key)) {
-                    continue
-                }
-                const children = item.children || []
-                for (let j = 0; j < children.length; ++j) {
-                    const child = children[j]
-                    rows.push({
-                        type: "item",
-                        key: child.key,
-                        view: child.view,
-                        label: child.label,
-                        token: child.token,
-                        layer: child.layer,
-                        parentKey: item.key,
-                        active: shell.currentView === child.view,
-                        depth: 1
-                    })
-                }
-                continue
-            }
-            rows.push({
-                type: "item",
-                key: item.key,
-                view: item.view,
-                label: item.label,
-                token: item.token,
-                layer: item.layer,
-                active: shell.currentView === item.view,
-                depth: 0
-            })
-        }
+        appendNavRows(root, rows, navTreeItems(), 0, "")
         return rows
+    }
+}
+
+function appendNavRows(root, rows, items, depth, parentKey) {
+    const values = Array.isArray(items) ? items : []
+    for (let i = 0; i < values.length; ++i) {
+        const item = values[i]
+        const isGroup = String(item.type || "") === "group"
+        const row = {
+            type: isGroup ? "group" : "item",
+            key: item.key,
+            view: item.view,
+            label: item.label,
+            token: item.token,
+            layer: item.layer,
+            parentKey: parentKey,
+            active: isGroup
+                ? PageRegistry.navItemContainsView(item, root.shell.currentView)
+                : root.shell.currentView === item.view,
+            depth: depth
+        }
+        if (isGroup) {
+            row.expanded = navGroupExpanded(root, item.key)
+        }
+        rows.push(row)
+        if (isGroup && !row.expanded) {
+            continue
+        }
+        appendNavRows(root, rows, item.children || [], depth + 1,
+            String(item.key || ""))
     }
 }
 
@@ -133,12 +118,22 @@ function toggleNavGroup(root, key) {
 
 function expandNavGroupForView(root, view) {
     with (root) {
-        const parentKey = parentNavKeyForView(view)
-        if (!parentKey || shell.navExpanded[parentKey] === true) {
+        const ancestorKeys = PageRegistry.ancestorNavKeysForView(root, view)
+        if (ancestorKeys.length === 0) {
             return
         }
         const next = copyMap(shell.navExpanded)
-        next[parentKey] = true
+        let changed = false
+        for (let i = 0; i < ancestorKeys.length; ++i) {
+            const key = String(ancestorKeys[i] || "")
+            if (key.length > 0 && next[key] !== true) {
+                next[key] = true
+                changed = true
+            }
+        }
+        if (!changed) {
+            return
+        }
         shell.navExpanded = next
         shell.navRevision += 1
     }
@@ -217,7 +212,9 @@ function navigationSnapshot(root) {
         settingsNetworkSection: String(root.shell.settingsNetworkSection || ""),
         settingsUiSection: String(root.shell.settingsUiSection || "")
     }
-    values.inspectionEntityRef = String(root.shell.currentView || "") === "zones"
+    const currentView = String(root.shell.currentView || "")
+    values.inspectionEntityRef = currentView === "zones"
+            || currentView === "sequencerDashboard"
         ? cloneNavigationValue(root, root.currentInspectionEntityRef) : null
     const snapshot = {
         view: normalizedNavigationView(root, root.shell.currentView),

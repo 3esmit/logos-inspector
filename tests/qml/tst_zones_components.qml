@@ -26,6 +26,11 @@ TestCase {
         id: appModel
 
         property var zoneInspection: zoneState
+        property string selectedView: ""
+
+        function selectView(view) {
+            selectedView = String(view || "")
+        }
     }
 
     ApplicationWindow {
@@ -69,6 +74,7 @@ TestCase {
         zoneState.evidenceDetail = null
         zoneState.lastMutationRequest = null
         zoneState.mutationFailure = ""
+        appModel.selectedView = ""
         page.filter = "all"
         page.query = ""
         const detail = findChild(page, "zoneDetail")
@@ -99,6 +105,26 @@ TestCase {
         verify(cachedRow !== null)
         verify(cachedRow.stale)
         verify(!cachedRow.interactive)
+    }
+
+    function test_configured_zone_channel_opens_sequencer_dashboard() {
+        const channelId = FixtureData.identity("1")
+        const row = findChild(page, "zoneListRow_" + channelId)
+        const channelLink = findChild(page, "zoneChannelLink_" + channelId)
+        verify(row !== null)
+        verify(channelLink !== null)
+        verify(channelLink.link)
+
+        mouseClick(channelLink, channelLink.width / 2,
+            channelLink.height / 2)
+
+        tryCompare(appModel, "selectedView", "sequencerDashboard")
+        compare(zoneState.activeZoneId, channelId)
+
+        const dataLink = findChild(
+            page, "zoneChannelLink_" + FixtureData.identity("8"))
+        verify(dataLink !== null)
+        verify(!dataLink.link)
     }
 
     function test_dirty_source_editor_guards_zone_change() {

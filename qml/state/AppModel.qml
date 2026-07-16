@@ -872,6 +872,7 @@ QtObject {
             root.currentInspectionEntityRef = null
             root.knownProgramIds = ({})
             root.knownProgramIdsRevision += 1
+            root.shell.navRevision += 1
             Qt.callLater(entityNavigationState.resumePendingInspectionEntityRef)
             entityNavigationState.projectZoneDashboard()
         }
@@ -879,6 +880,14 @@ QtObject {
         function onZoneDetailChanged() {
             Qt.callLater(entityNavigationState.resumePendingInspectionEntityRef)
             entityNavigationState.projectZoneDashboard()
+        }
+    }
+
+    property Connections zoneL2NavigationConnections: Connections {
+        target: zoneInspectionState.l2
+
+        function onL2SequencerReadEnabledChanged() {
+            root.shell.navRevision += 1
         }
     }
 

@@ -12,6 +12,7 @@ ColumnLayout {
     required property Theme theme
     required property var zoneState
     property string transactionQuery: ""
+    property string exactSourceId: ""
 
     signal blockRequested(var summary, string exactSourceId)
     signal transactionRequested(string transactionId, string exactSourceId)
@@ -124,7 +125,8 @@ ColumnLayout {
                 && !root.zoneState.l2TransactionDetailInFlight
             Layout.preferredWidth: 104
             Layout.alignment: Qt.AlignBottom
-            onClicked: root.transactionRequested(root.transactionQuery, "")
+            onClicked: root.transactionRequested(root.transactionQuery,
+                root.exactSourceId)
         }
     }
 
@@ -147,7 +149,7 @@ ColumnLayout {
         ]
         rows: root.blockRows()
         Layout.fillWidth: true
-        onRefreshRequested: root.zoneState.refreshL2Blocks()
+        onRefreshRequested: root.refreshBlocks()
         onOlderRequested: root.zoneState.loadMoreL2Blocks()
         onLoadCountSelected: function (count) {
             root.zoneState.setL2BlocksLimit(count)
@@ -262,7 +264,9 @@ ColumnLayout {
     function routeSummary() {
         const route = root.zoneState.l2BlocksRoute || ({})
         if (!root.zoneState.l2BlocksLoaded && !root.zoneState.l2BlocksInFlight) {
-            return qsTr("Active Zone source policy")
+            return root.exactSourceId.length > 0
+                ? qsTr("Selected Sequencer source")
+                : qsTr("Active Zone source policy")
         }
         if (root.zoneState.l2BlocksInFlight) {
             return qsTr("Loading current source observations...")
@@ -304,8 +308,14 @@ ColumnLayout {
         if (recovery === "configure_source" || recovery === "select_source") {
             root.configureSourcesRequested()
         } else {
-            root.zoneState.refreshL2Blocks()
+            root.refreshBlocks()
         }
+    }
+
+    function refreshBlocks() {
+        return root.exactSourceId.length > 0
+            ? root.zoneState.refreshL2BlocksForSource(root.exactSourceId)
+            : root.zoneState.refreshL2Blocks()
     }
 
     function shortHash(value) {

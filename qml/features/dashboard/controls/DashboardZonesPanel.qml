@@ -249,6 +249,26 @@ Frame {
         ]
     }
 
+    function zoneById(channelId) {
+        const target = String(channelId || "")
+        for (let index = 0; index < root.allZones.length; ++index) {
+            const zone = root.allZones[index] || ({})
+            if (String(zone.channel_id || "") === target) {
+                return zone
+            }
+        }
+        return null
+    }
+
+    function sequencerConfigured(zone) {
+        const fields = zone && zone.active_zone_context_fields
+            ? zone.active_zone_context_fields : ({})
+        const link = zone && zone.settlement_link ? zone.settlement_link : ({})
+        return String(zone && zone.kind || "") === "sequencer_zone"
+            && String(fields.selected_sequencer_source_id
+                || link.selected_sequencer_source_id || "").length > 0
+    }
+
     function emptyText() {
         if (!root.zoneState) {
             return qsTr("Zone catalog is unavailable.")
@@ -277,6 +297,9 @@ Frame {
                 || !root.zoneState.activateZone(target)) {
             return false
         }
-        return root.openZones()
+        const zone = root.zoneById(target)
+        root.model.selectView(root.sequencerConfigured(zone)
+            ? "sequencerDashboard" : "zones")
+        return true
     }
 }
